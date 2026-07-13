@@ -1,0 +1,26 @@
+{
+  "model": "sonnet",
+  "fallbackModel": ["opus", "haiku"],
+  "language": "romanian",
+  "includeGitInstructions": true,
+  "autoMemoryEnabled": true,
+  "permissions": {
+    "allow": [
+      "Bash(git status *)",
+      "Bash(git diff *)",
+      "Bash(git log *)",
+      "Bash(rg *)"
+    ],
+    "deny": [
+      "Read(./.env)",
+      "Read(./.env.*)",
+      "Read(./*.env)",
+      "Read(./.ifrim/private/**)",
+      "Read(./.ifrim/tmp/**)",
+      "Bash(git push *)",
+      "Bash(git remote add *)",
+      "Bash(gh repo create *)",
+      "Bash(gh auth *)"
+    ]
+  }
+}

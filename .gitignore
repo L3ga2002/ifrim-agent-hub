@@ -1,0 +1,12 @@
+node_modules/
+dist/
+output/
+test-results/
+.playwright-cli/
+.env
+.env.*
+!.env.example
+.ifrim/BACKUPS/
+.ifrim/private/
+.ifrim/tmp/
+npm-debug.log*
