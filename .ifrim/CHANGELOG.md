@@ -1,5 +1,14 @@
 # Changelog - Ifrim Agent Hub
 
+## 2026-07-13
+
+- Synchronized central and project memory with the operational v1 state, approval-gated OpenClaw execution and adaptive 30-minute/2-hour/6-hour profiles.
+- Created a pre-change local recovery archive excluding secrets, private SQLite state, dependencies and generated folders.
+- Initialized the separate private GitHub repository `L3ga2002/ifrim-agent-hub`, committed the v1 source and pushed `main`.
+- Added Git exclusions for backups, private runtime state, environment files, generated QA output and build artifacts.
+- Restarted Agent Hub and verified persistent recovery of 17 tasks, 45 agent runs, 37 recorded backups, 2 snapshots and 29 workflow transitions.
+- Restarted OpenClaw visibly, removed one stale paused console and verified exactly one gateway process, one visible launcher and a healthy Telegram connection.
+
 ## 2026-07-12
 
 - Restored ChatGPT OAuth as the primary OpenAI auth route and removed the accidentally forced direct API runtime from GPT-5.6 models.

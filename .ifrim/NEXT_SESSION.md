@@ -129,3 +129,7 @@ git status --short --branch
 - All five registered projects return a read-only continuation payload with three workflow steps and `automaticLaunch: false`; invalid project slug returns 400.
 - Browser QA verified `Continuare coordonata`, ProDelivery `PD-HUB-001`, backup gate and owner/reviewer/QA routing without console errors.
 - `openclaw agent --help` confirms per-run `--model` and `--thinking` overrides, plus `--message-file`; launcher uses these explicit controls.
+- Private GitHub repository `L3ga2002/ifrim-agent-hub` is active on `main`; initial v1 commit is `af29e4e`.
+- Restart recovery passed on 2026-07-13 with unchanged persistent counts: 17 tasks, 45 agent runs, 37 recorded backups, 2 snapshots and 29 workflow transitions.
+- Runtime singleton checks passed after restart: one Hub API, one Hub frontend, one visible OpenClaw console and one gateway process.
+- `openclaw health --json --timeout 15000` returned `ok: true`; Telegram is connected and plugin errors are empty.

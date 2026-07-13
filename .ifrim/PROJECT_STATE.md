@@ -78,6 +78,9 @@ Current priority screen:
 - `HUB-007` Prompt Architect / Task Compiler flow is implemented.
 - `HUB-008` Agent Directory / full agent catalog is implemented.
 - Separate private Git repository `L3ga2002/ifrim-agent-hub` was created for this project; private runtime state, backups and environment files are excluded.
+- Recovery verification passed on 2026-07-13: Agent Hub preserved 17 tasks, 45 agent runs, 37 recorded backups, 2 snapshots and 29 workflow transitions across restart.
+- Runtime singleton verification passed: one Hub API process, one Hub frontend process, one visible OpenClaw launcher and one gateway process; ports 3004, 8004 and 18789 are listening.
+- `openclaw health --json` returned `ok: true`; Telegram is configured, running and connected, with no plugin errors.
 
 Not approved yet:
 
