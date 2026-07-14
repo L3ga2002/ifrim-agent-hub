@@ -18,6 +18,8 @@ Agent Hub selects one adaptive ceiling from task risk and complexity:
 
 The outer shell/tool timeout must exceed the selected ceiling by at least 5 minutes. A ceiling does not force the agent to run for that duration.
 
+Reasoning is selected per task. `max` is reserved for critical/P0 work. `ultra` is allowed only when a critical/P0 packet explicitly requests it and the selected model is Sol or Terra. Luna is capped at `max`; no agent stores `max` or `ultra` as a permanent default.
+
 ## Common Agents
 
 - ifrim-product

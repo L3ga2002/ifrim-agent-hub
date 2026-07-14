@@ -22,7 +22,7 @@ const snapshotCreatePromises = new Map();
 const taskStatuses = new Set(["draft", "backlog", "ready", "in_progress", "blocked", "review", "qa", "done", "cancelled"]);
 const lockStatuses = new Set(["active", "released", "expired"]);
 const lockTypes = new Set(["advisory", "exclusive"]);
-const agentPacketVersion = "workflow-orchestrator-v1";
+const agentPacketVersion = "workflow-orchestrator-v2";
 const diagnosticTimeoutMs = 8000;
 const executionRuntimeArmed = true;
 const executionProfiles = Object.freeze({
@@ -1346,7 +1346,7 @@ async function createWorkflowStageRun({ sourceRun, sourceAttempt, stage, cycle, 
   const packet = {
     ...sourcePacket,
     id: runId,
-    packetVersion: "workflow-orchestrator-v1",
+    packetVersion: agentPacketVersion,
     generatedAt: nowIso(),
     executionMode: "manual_approval_required",
     workflow: { stage, cycle, parentRunId: sourceRun.id, sourceAttemptId: sourceAttempt.id, maxFixCycles: maxWorkflowFixCycles },
@@ -1967,6 +1967,10 @@ function getTaskSearchText(task) {
   return `${task.title || ""} ${task.goal || ""} ${task.affected_area || ""} ${task.owner_agent || ""} ${task.compiler_payload_json || ""}`.toLowerCase();
 }
 
+function getTaskRiskText(task) {
+  return `${task.title || ""} ${task.goal || ""} ${task.affected_area || ""} ${task.acceptance || ""} ${task.risks || ""} ${task.compiler_payload_json || ""}`.toLowerCase();
+}
+
 function isDesignTask(task) {
   const text = getTaskSearchText(task);
   return designKeywords.some((keyword) => new RegExp(`(^|[^a-z0-9])${keyword}([^a-z0-9]|$)`, "i").test(text));
@@ -2012,7 +2016,7 @@ async function getDesignGovernance(project, task = null) {
 async function selectTaskModel(task, agentId) {
   const registry = JSON.parse(await fs.readFile(agentRegistryPath, "utf8"));
   const agent = (registry.agents || []).find((item) => item.id === agentId);
-  const text = getTaskSearchText(task);
+  const text = getTaskRiskText(task);
   const critical = task.priority === "critical" || /\bp0\b|critical|critic|destructive|distructiv/.test(text);
   const deepRisk = /security|securitate|privacy|gdpr|migration|migrare|database|baza de date|data integrity|integritate|architect|arhitect/.test(text);
   const simple = /tiny|small|smoke|summary|summar|classification|clasific|triage|text only|copy only/.test(text);
@@ -2024,21 +2028,26 @@ async function selectTaskModel(task, agentId) {
   if (!["openai/gpt-5.6-sol", "openai/gpt-5.6-terra", "openai/gpt-5.6-luna"].includes(desiredModel)) desiredModel = baseModel;
   const effectiveModel = desiredModel === "openai/gpt-5.6-luna" && !lunaEnabled ? "openai/gpt-5.6-terra" : desiredModel;
   let thinking = normalizeText(agent?.thinking || "medium");
-  const allowedThinking = new Set(["off", "minimal", "low", "medium", "high", "xhigh", "adaptive", "max"]);
+  const allowedThinking = new Set(["off", "minimal", "low", "medium", "high", "xhigh", "adaptive", "max", "ultra"]);
   if (!allowedThinking.has(thinking)) thinking = "medium";
-  const rank = { off: 0, minimal: 1, low: 2, medium: 3, high: 4, adaptive: 4, xhigh: 5, max: 6 };
+  const rank = { off: 0, minimal: 1, low: 2, medium: 3, high: 4, adaptive: 4, xhigh: 5, max: 6, ultra: 7 };
   const atLeast = (level) => { if ((rank[thinking] ?? 3) < rank[level]) thinking = level; };
-  if (critical && /\bp0\b/.test(text)) thinking = "max";
+  const ultraRequested = critical
+    && /\bultra\b/.test(text)
+    && ["openai/gpt-5.6-sol", "openai/gpt-5.6-terra"].includes(effectiveModel);
+  if (ultraRequested) thinking = "ultra";
+  else if (critical && /\bp0\b/.test(text)) thinking = "max";
   else if (critical || deepRisk) atLeast("xhigh");
   else if (task.priority === "high" || /debug|multi-module|multi-file|integration|design system/.test(text)) atLeast("high");
   else if (lunaCandidate || (simple && ["low", "medium"].includes(thinking))) thinking = "low";
   const strict = critical || /security|securitate|migration|migrare|data integrity|integritate|payment|plata|auth/.test(text);
   return {
-    source: "task-router-v1",
+    source: "task-router-v2",
     agentId,
     desiredModel,
     effectiveModel,
     thinking,
+    ultraRequested,
     strict,
     lunaStatus,
     fallbackReason: desiredModel !== effectiveModel ? "Luna is not entitled; routed to Terra for this run." : "",
@@ -2088,6 +2097,7 @@ function buildPrompt(task, project, ownerAgents, reviewerAgents, qaAgents, activ
     `Task ID: ${task.id}`,
     `Task title: ${task.title}`,
     `Task goal: ${task.goal}`,
+    `Workflow stage: OWNER`,
     ...compilerLines,
     ...(designGovernance?.required ? [
       `Design System governance: ENFORCED`,

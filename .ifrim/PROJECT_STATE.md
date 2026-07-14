@@ -7,7 +7,7 @@
 - Backend API: http://127.0.0.1:8004/api/
 - GitHub repo: L3ga2002/ifrim-agent-hub
 - Status: v1 operational; hardening and recovery verification
-- Last updated: 2026-07-13
+- Last updated: 2026-07-14
 
 ## Purpose
 
@@ -41,8 +41,15 @@ Current priority screen:
 - Diagnostics verify CLI/script availability and safe version checks only; real agent/review execution remains manual and gated.
 - Central agent directory is live through `GET /api/agent-directory` and the Hub UI.
 - The directory reads `.ifrim-system/AGENT_TEAM_V2.json`, displays all 23 agents, model/reasoning/fallback, and detects drift against `~/.openclaw/openclaw.json`.
-- OpenClaw is on isolated-tested beta `2026.7.1-beta.2` because GPT-5.6 support is not present in stable `2026.6.11`.
+- OpenClaw stable `2026.7.1` is installed and runs visibly through Node `24.16.0`.
 - GPT-5.6 Terra, Sol and Luna passed fresh OAuth/Codex harness probes without fallback on 2026-07-12.
+- Stable 2026.7.1 probes passed for Sol/Ultra, Terra/Ultra and Luna/Max without fallback on 2026-07-14.
+- Per-task routing supports coordinator-gated Ultra only for explicit critical/P0 tasks on Sol/Terra; Luna is capped at Max and no agent has Max/Ultra as a permanent default.
+- The stale Codex app-server path and conflicting legacy plugin metadata were repaired without deleting sessions; the active Codex CLI is `0.144.2`.
+- Workflow packet v2 exposes `Workflow stage: OWNER` in the initial packet and separates task-risk keywords from agent role names to prevent false Sol/XHigh escalation.
+- Stable E2E workflow `HUB-STABLE-FLOW-2-20260714` completed owner -> reviewer -> QA with three separate approvals: Terra/medium, Terra/high and Luna/low, all without fallback and without automatic launch.
+- Vite ignores `.ifrim` runtime/backup files, so OneDrive ZIP locks no longer crash preview port 3004 during the mandatory backup gate.
+- The Windows tray now self-recovers a missing API or web process with a 30-second retry cooldown; controlled process-stop verification restored port 3004 and HTTP 200 automatically.
 - On 2026-07-11 Prompt Architect passed on Terra/medium and Security Reviewer passed fail-closed on Sol/xhigh, both without fallback.
 - The existing main Telegram session was migrated in place to Terra/medium without deleting history or delivering the internal test response externally.
 - Central Design System rule created at `.ifrim-system/DESIGN_SYSTEM.md`.

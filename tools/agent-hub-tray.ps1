@@ -13,6 +13,16 @@ $privateDir = Join-Path $projectRoot ".ifrim\private"
 $logDir = Join-Path $privateDir "logs"
 $pidFile = Join-Path $privateDir "agent-hub-services.json"
 $mutexName = "Local\IfrimDigitalAgentHubTray"
+$nodeRuntime = Join-Path $env:APPDATA "fnm\node-versions\v24.16.0\installation\node.exe"
+$npmCli = Join-Path $env:APPDATA "fnm\node-versions\v24.16.0\installation\node_modules\npm\bin\npm-cli.js"
+
+if (-not (Test-Path -LiteralPath $nodeRuntime)) {
+  throw "Runtime-ul Node compatibil nu exista: $nodeRuntime"
+}
+if (-not (Test-Path -LiteralPath $npmCli)) {
+  throw "CLI-ul npm compatibil nu exista: $npmCli"
+}
+$env:PATH = "$(Split-Path -Parent $nodeRuntime);$env:PATH"
 
 New-Item -ItemType Directory -Path $logDir -Force | Out-Null
 
@@ -75,7 +85,7 @@ function Start-AgentHubServices {
   $stamp = Get-Date -Format "yyyyMMdd-HHmmss"
 
   if (-not $apiOwner) {
-    $apiProcess = Start-Process -FilePath "node.exe" `
+    $apiProcess = Start-Process -FilePath $nodeRuntime `
       -ArgumentList "apps/api/src/server.mjs" `
       -WorkingDirectory $projectRoot `
       -WindowStyle Hidden `
@@ -86,8 +96,8 @@ function Start-AgentHubServices {
   }
 
   if (-not $webOwner) {
-    $webProcess = Start-Process -FilePath "npm.cmd" `
-      -ArgumentList "run", "dev:web" `
+    $webProcess = Start-Process -FilePath $nodeRuntime `
+      -ArgumentList $npmCli, "run", "dev:web" `
       -WorkingDirectory $projectRoot `
       -WindowStyle Hidden `
       -RedirectStandardOutput (Join-Path $logDir "$stamp-web.out.log") `
@@ -201,12 +211,23 @@ $stopItem.add_Click({
 
 $timer = New-Object System.Windows.Forms.Timer
 $timer.Interval = 10000
+$script:lastRecoveryAttempt = [DateTime]::MinValue
 $timer.add_Tick({
   if ((Test-AgentHubHealth) -and (Get-PortOwner -Port 3004)) {
     $notifyIcon.Text = "Ifrim Agent Hub - Online"
   }
   else {
     $notifyIcon.Text = "Ifrim Agent Hub - Offline"
+    if (((Get-Date) - $script:lastRecoveryAttempt).TotalSeconds -ge 30) {
+      $script:lastRecoveryAttempt = Get-Date
+      try {
+        [void](Start-AgentHubServices)
+        $notifyIcon.Text = "Ifrim Agent Hub - Online"
+      }
+      catch {
+        # Keep the tray responsive and retry with a cooldown.
+      }
+    }
   }
 })
 $timer.Start()

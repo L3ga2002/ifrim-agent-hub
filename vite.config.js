@@ -6,6 +6,9 @@ export default defineConfig({
   server: {
     host: "127.0.0.1",
     port: 3004,
+    watch: {
+      ignored: ["**/.ifrim/**"],
+    },
   },
   build: {
     outDir: "dist",

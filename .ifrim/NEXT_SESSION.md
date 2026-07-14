@@ -120,6 +120,10 @@ git status --short --branch
 - Launcher allows one active task globally, records output/error safely, redacts secrets and terminates the process tree at the selected adaptive ceiling: 30 minutes, 2 hours or 6 hours.
 - Model guidance: Sol/high or xhigh for architecture, security and critical engineering; Terra/medium or high for normal production work; Luna/low for low-risk QA, classification and prototypes.
 - Per-task router is implemented and visible in packets/runner. Fresh live probes passed through ChatGPT OAuth and the Codex harness for Terra/medium, Sol/xhigh and Luna/low with no fallback.
+- Stable OpenClaw `2026.7.1` is live on Node `24.16.0`; strict Sol/Ultra, Terra/Ultra and Luna/Max probes passed through OAuth/Codex with no fallback on 2026-07-14.
+- Router v2 permits Ultra only for an explicit critical/P0 task on Sol/Terra. P0 defaults to Max when Ultra is not explicitly requested; no agent stores Max/Ultra as its default.
+- Workflow packet v2 includes the initial OWNER stage explicitly and the live `HUB-STABLE-FLOW-2-20260714` owner/reviewer/QA sequence completed with separate approvals and no fallback.
+- Preview watcher survival and tray self-healing were verified after a real backup: port 3004 stayed HTTP 200, then recovered automatically after a controlled Vite process stop.
 - Workflow Orchestrator v1 is implemented and live. It prepares but never auto-launches owner -> reviewer -> QA/fix stages, requires a new approval per stage, and stops after three failed fix cycles.
 - Structured verdicts require both `IFRIM_WORKFLOW_VERDICT` and `IFRIM_WORKFLOW_SUMMARY`; incomplete output enters `awaiting_verdict` instead of advancing.
 - Provider failures create a controlled same-stage retry instead of restarting the owner. The final `HUB-014-SMOKE-2` run completed after one fix cycle; QA passed on Luna/low and marked the task `done`.

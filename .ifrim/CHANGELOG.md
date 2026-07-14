@@ -1,5 +1,19 @@
 # Changelog - Ifrim Agent Hub
 
+## 2026-07-14
+
+- Promoted OpenClaw from `2026.7.1-beta.2` to stable `2026.7.1` after local recovery backups.
+- Pinned the visible gateway and Agent Hub tray services to compatible Node `24.16.0` while the system Node remains below the new minimum.
+- Ran `doctor --fix`, migrated 230 Codex bindings, archived the conflicting legacy `@openclaw/codex@2026.5.27` install index and retained the current SQLite `2026.7.1` record.
+- Refreshed the Codex app-server path to CLI `0.144.2`.
+- Verified Sol/Ultra, Terra/Ultra and Luna/Max through ChatGPT OAuth and the Codex harness with no fallback.
+- Added router v2 support for coordinator-gated Ultra on explicit critical/P0 Sol/Terra tasks; permanent agent defaults remain below Max.
+- Separated task-risk text from agent role names so `ifrim-prompt-architect` no longer triggers a false architecture-risk escalation.
+- Added `Workflow stage: OWNER` to initial packets and bumped controlled packets to `workflow-orchestrator-v2`.
+- Completed live owner -> independent reviewer -> QA verification with separate approvals on Terra/medium, Terra/high and Luna/low; all stages passed without fallback or automatic launch.
+- Excluded `.ifrim` backup/runtime files from Vite watching to prevent OneDrive `EBUSY` ZIP locks from terminating preview port 3004.
+- Added tray self-healing with a 30-second cooldown and verified automatic frontend recovery after a controlled Vite process stop.
+
 ## 2026-07-13
 
 - Synchronized central and project memory with the operational v1 state, approval-gated OpenClaw execution and adaptive 30-minute/2-hour/6-hour profiles.
