@@ -1,5 +1,49 @@
 # Project State - Ifrim Agent Hub
 
+## Current State - 2026-09-29
+
+HUB-018 is in progress, not accepted. Native Codex Luna/max produced the expected marker with no fallback. The isolated Gateway and both subscriptions/all23 roles were recertified, but the latest Claude attempt failed before model admission because the backup gate timed out. Gate is suspended; no general execution activation. Backup filter and reparse-point protections have a reviewed local source fix and passing ZIP fixture, but still need an idle-API reload and complete real backup. The latest broad regression had 549 pass, one continuation API timeout and one Windows privilege skip; build passed. See `.ifrim/OPUS_HANDOFF.md` and the newest HUB-018 report for exact evidence. Older sections below are historical.
+
+
+## Authoritative Checkpoint - 2026-09-29, Native Readiness Unknown
+
+- Supersedes older PID/readiness notes below. HUB-018 is NOT operationally accepted. Isolated Gateway23596/18790 remains source-receipted; API22828/8004 replaced30808 through existing hidden supervisor4852 after SQLite leases0/runs0. Frontend3004 is Vite dev, not production preview.
+- Backup backup-mululwl8-9lomtj123files0skipped and consistent isolated checkpoint2026-09-28T22-58-34.718Z integrityOK protect this work. No other project/global/vendor/Git history edits or PC restart.
+- Owner full serial regression186/186 PASS and production build PASS. Reviewer source GO; independent transport QA48/48 PASS, connection classification5 persistent plus4 additional simulated checks PASS. New connection helper is now loaded by API22828.
+- Native creation-only request6:dfcb6fab-d660-49f5-ad5d-949386c36410 SUCCEEDED after1780436ms (~29m40s), sessionId6273c92f-f187-48ea-a7df-a13d78f2b543, exact key agent:ifrim-backend:ifrim-hub:d79b32fc58d1542d5d5439f8edd1d8a2. runStarted:false; no agent/model submitted.
+- Read-only describe/chat.metadata confirm the same session, Hub cwd, Luna/max, read-only, native Codex, user-pinned approved subscription and webSearch:false. Actual transport observer coverage confirmed:66 records/8 PIDs,8 initialize OK,7 model/list OK. These are not executed task acceptance.
+- Fresh subscription certification PASS for Codex+Claude/all23 roles. A single reviewed120s existing-session ensure was stopped BEFORE send by its readiness guard: health/status omitted modelRuntime. This means UNKNOWN, not demonstrated degradation/auth failure. Official success publishes degraded:false/pendingAgents:[]; undefined projection can also follow runtime invalidation or closure. No create/agent request was sent by that ensure.
+- Execution gate re-suspended; certificate evidence preserved. No reuse branch implemented: sessions.create has an official existing-session ensure path, not necessarily recreation. Do not bypass idle/binding checks, increase timeout blindly or treat omitted modelRuntime as ready.
+- Remaining: diagnose why publication readiness disappears and severe cold preparation takes~30m; then one bounded Hub-native Codex turn, Claude turn, real cancellation and clicked actual Hub-session visibility. Main Luna/max chat and pure tests do not satisfy these gates. No automatic retry or API billing fallback.
+- Owner, reviewer and QA evidence is in LOOP_REPORTS/2026-09-29-hub-018-finalization-plan.md. Preserve existing session/history; reconcile before any next native action.
+
+## Current Override - 2026-09-29
+
+Latest verified override: comparative Gateway29340 READY on18790, API30808 healthy, frontend3004 Vite dev. BOM-free receipt writer and original-receipt checkpoint verified. Owner serial171/171 PASS/build PASS; independent QA67/67 and16/16 contract/BOM PASS. Gate remains suspended. Latest native creation-only request6:b05a8477-8082-4515-8b36-38d80e7fe4e9 failed80420ms at01:35:05.941 EEST with codex app-server request timeout; postfailure exact Hub key absent and health/status runtime not degraded. No agent/model submitted. Additional fresh-home initialize-only with ephemeral/stdio arguments PASS1657ms, child11508 closed, no credentials/model. This does NOT resolve the native integration blocker; no further creation retry.
+
+HUB-018 is IN_PROGRESS, not operationally accepted. Hub API8004 recovered as PID30808; frontend3004 remains available. All23 isolated subscription roles previously certified; user browser login completed. Gate remains suspended after native Codex acceptance failed before agent admission.
+
+Owner repaired safe RPC diagnostics including remote-unknown lease path; full regression169/169 PASS and build PASS. Independent focused QA67/67 PASS. Managed Codex0.155.1-win32-x64 initialize-only probe passed928ms in a clean private home, no auth/model, owned child closed. This does not verify the real backend home or an executed task.
+
+Diagnostic-SDK startup experiment PID19068 failed native lease-heartbeat readiness5000ms at entry-not-observed after480084ms process uptime. Process exited, children0 and listeners0 confirmed. Worker inheritance hypothesis was disproven by explicit native execArgv. Only added SDK sink bootstrap was rolled back; isolation/hidden policy/receipt safeguards and API diagnostics remain. Sanitizer is staged, not loaded. Fresh checkpoint2026-09-28T22-08-28.107Z integrityOK; one comparative controlled startup is in progress. Never disable native lease or mark completion from tests/login.
+
+## Current override - post-crash native acceptance, 2026-09-28
+
+Approved isolated settlement/audits and subscription certification passed for both providers/all23 roles. Isolated Gateway18790 actually running with protected receipt/logs; global18789 stopped but scheduled-start risk remains. API8004/frontend3004 recovered. Owner115/115 pure regression and production build PASS; reviewer source-only GO and independent focused QA PASS.
+
+HUB-018 is NOT complete: bounded Codex creation timed out120s before agent submission. Subsequent read-only native list found no Hub session; late creation is not ruled out. Execution gate suspended, credentials/evidence/history preserved. Claude turn, real cancellation, clicked session visibility and provider usage/billing outcome are unverified. Earlier expired-OAuth/gateway-not-started notes below are historical, not current state.
+
+## Final local closeout - 2026-09-28
+
+Local hardening verified: owner 107/107 PASS (outside-project workflow fixture excluded), independent QA 22/22 PASS, reviewer GO source-only, build/diff checks PASS and API reloaded. Pre-start audit rejects the preserved historical API profile; legacy execution/compiler use receipt-bound executable and environment. Backup backup-mul369op-pelx7k contains 93 files with zero skipped. Operational BLOCKED remains: ambient no-API isolation, OpenAI OAuth and native session-create acceptance incomplete. Gateway stopped, gate suspended, scheduled task Ready (disable Access denied/elevation cancelled). Do not claim live completion or zero API billing.
+
+
+## Current override - HUB-018, 2026-09-28
+
+Final status: BLOCKED. Controlled Gateway stopped and subscription gate suspended after logs exposed automatic setup-inference probes on the historical OpenAI API route (403). All three Hub session-create attempts failed, latest timeout 120s; no verified Hub native turn. OAuth device login cancelled for safety. Local regression 105/105, independent pure QA 20/20 and build passed. Zero active Hub runs/leases; implementation lock released. Audit ambient no-API routing before restart/reactivation; provider billing outcome is unverified.
+
+Global OpenClaw 2026.9.6 now has all 23 GPT-6 role defaults applied (6 Luna/max, 13 Sol/high, 4 Astra/xhigh), with no fallback and zero API directory drift. Actual task routing remains adaptive. Native Claude subscription certification passed for a controlled Gateway; restarts require recertification. OpenAI subscription authentication requires reconnection after OAuth 401. Two bounded acceptance attempts produced no verified model result (creation principal mismatch, then creation timeout). HUB-018 is not live-complete. See NEXT_SESSION and the HUB-018 loop report before launching anything. Existing history and dirty source are preserved; no client-project edits, commit, push or deploy.
+
 - Project: Ifrim Agent Hub
 - Path: C:\Users\mihai\OneDrive\Desktop\Ifrim Digital Proiecte\Ifrim Agent Hub
 - Stack: Node.js API + SQLite local database + React + Vite dashboard; local-first coordination hub for Codex, OpenClaw, and Claude Code
@@ -7,7 +51,16 @@
 - Backend API: http://127.0.0.1:8004/api/
 - GitHub repo: L3ga2002/ifrim-agent-hub
 - Status: v1 operational; hardening and recovery verification
-- Last updated: 2026-07-14
+- Last updated: 2026-09-26
+
+## Current Model Policy
+
+- HUB-018 (2026-09-28): conversation gateway integration is implemented locally, but live activation is BLOCKED pending native subscription/noAPIbilling certification and approval of the adaptive global candidate. Requested versus verified provider/model/reasoning is now visible. No global config update was applied; historical packet policy remains unchanged.
+
+- HUB-016 (2026-09-27): GPT-6 OpenAI-only policy. Luna Max is the explicit default; Sol/Astra reasoning is adaptive (low for routine, medium for moderate, high for complex, xhigh for demanding risk), with max/ultra only on explicit request. Model and effort are selected independently.
+- Explicit Ultra is accepted for Sol/Astra only. Claude is disabled, not removed.
+- All 23 agent roles remain visible. Hub model settings are separate from global runtime defaults; July GPT-5.6 probes do not verify GPT-6.
+- See `.ifrim/MODEL_POLICY.md` for active routing and runtime verification limits. Historical V1 evidence below is retained and does not override this policy.
 
 ## Purpose
 
@@ -27,7 +80,7 @@ It exists to prevent context loss between Codex threads and specialist agents. I
 
 ## Phase
 
-Current phase: Phase 1 - local coordination control plane, Windows tray runtime, persistent continuation, task queue/locks, Prompt Compiler, manual agent packets and GPT-5.6 agent directory.
+Current phase: Local coordination control plane with GPT-6 OpenAI-only routing, persistent continuation, task queue/locks, Prompt Compiler and approval-gated agent packets. OpenClaw GPT-6 live verification is pending.
 
 Current priority screen:
 
@@ -72,6 +125,7 @@ Current priority screen:
 - Routing uses Luna/low for eligible low-risk QA/prototype work, Terra for normal implementation and Sol for deep-risk work.
 - Windows tray runtime is installed as `Ifrim Agent Hub`, starts at user logon and keeps the local dashboard/API visible and controllable without a console window.
 - `GET /api/projects/<slug>/continuation` rebuilds project stage, focus, active task, routing, backup, approval, attempt, snapshot, locks and next action without starting execution.
+- Continuation selection is reconciled from persisted task, agent-run and workflow-transition state: a current actionable task wins only when newer than the latest completion or actively running; otherwise the latest completed workflow is shown with `define_next_task`.
 - The dashboard exposes a `Continuare coordonata` panel and owner -> independent reviewer -> QA workflow state.
 - Workflow launch remains approval-aware and fail-closed for high-risk operations even though OpenClaw model entitlement is now verified.
 - Confirmed provider results now drive automatic packet preparation under the existing approval gates; launches remain manual.

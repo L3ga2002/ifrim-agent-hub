@@ -2,9 +2,19 @@ import fs from "node:fs/promises";
 import http from "node:http";
 import path from "node:path";
 import { execFile, spawn } from "node:child_process";
-import { DatabaseSync } from "node:sqlite";
+import { DatabaseSync, backup as sqliteBackup } from "node:sqlite";
 import { promisify } from "node:util";
 import { fileURLToPath } from "node:url";
+import { selectContinuationTask } from "./continuation-selection.mjs";
+import { modelPolicy, selectModelForTask, validatePacketModelPolicy, validateExecutionModel } from "./model-policy.mjs";
+import { findReusableWorkflowChild } from "./workflow-policy.mjs";
+import { createConversationStore } from "./conversation-store.mjs";
+import { createContextEnvelope, renderHandoffPrompt, repositoryState } from "./context-engine.mjs";
+import { startProvider } from "./provider-runtime.mjs";
+import { selectConversationRoute } from "./conversation-route.mjs";
+import { assertSubscriptionGate, previewSubscriptionGate } from "./openclaw-subscription-gate.mjs";
+import { subscriptionProfiles } from "./subscription-auth.mjs";
+import { configuredAgentEntries, agentRoleDefault } from "./openclaw-config.mjs";
 
 const __filename = fileURLToPath(import.meta.url);
 const projectRoot = path.resolve(path.dirname(__filename), "../../..");
@@ -14,7 +24,14 @@ const agentRegistryPath = path.join(projectsRoot, ".ifrim-system", "AGENT_TEAM_V
 const designSystemPath = path.join(projectsRoot, ".ifrim-system", "DESIGN_SYSTEM.md");
 const openClawConfigPath = path.join(process.env.USERPROFILE || "", ".openclaw", "openclaw.json");
 const port = Number(process.env.PORT || 8004);
-const dbPath = path.join(projectRoot, ".ifrim", "private", "agent-hub.sqlite");
+const testMode = process.env.NODE_ENV === "test";
+const dbPath = testMode && process.env.HUB_TEST_DB_PATH
+  ? path.resolve(process.env.HUB_TEST_DB_PATH)
+  : path.join(projectRoot, ".ifrim", "private", "agent-hub.sqlite");
+const testDbRelative = path.relative(path.join(projectRoot, ".ifrim", "tmp"), dbPath);
+if (testMode && (!process.env.HUB_TEST_DB_PATH || !testDbRelative || testDbRelative === ".." || testDbRelative.startsWith(`..${path.sep}`) || path.isAbsolute(testDbRelative))) {
+  throw new Error("Tests require an isolated database inside .ifrim/tmp.");
+}
 const execFileAsync = promisify(execFile);
 
 const textCache = new Map();
@@ -22,9 +39,9 @@ const snapshotCreatePromises = new Map();
 const taskStatuses = new Set(["draft", "backlog", "ready", "in_progress", "blocked", "review", "qa", "done", "cancelled"]);
 const lockStatuses = new Set(["active", "released", "expired"]);
 const lockTypes = new Set(["advisory", "exclusive"]);
-const agentPacketVersion = "workflow-orchestrator-v2";
+const agentPacketVersion = "workflow-orchestrator-v3-openai-gpt6";
 const diagnosticTimeoutMs = 8000;
-const executionRuntimeArmed = true;
+const executionRuntimeArmed = !testMode;
 const executionProfiles = Object.freeze({
   normal: Object.freeze({ id: "normal", timeoutSeconds: 1800, outerShellTimeoutSeconds: 2100, checkpointIntervalSeconds: 900 }),
   complex: Object.freeze({ id: "complex", timeoutSeconds: 7200, outerShellTimeoutSeconds: 7500, checkpointIntervalSeconds: 900 }),
@@ -38,6 +55,7 @@ const db = new DatabaseSync(dbPath);
 db.exec("PRAGMA journal_mode = WAL");
 db.exec("PRAGMA foreign_keys = ON");
 db.exec("PRAGMA busy_timeout = 5000");
+const conversationStore = createConversationStore(db);
 db.exec(`
   CREATE TABLE IF NOT EXISTS tasks (
     id TEXT PRIMARY KEY,
@@ -335,6 +353,7 @@ function rowToAgentRun(row) {
     parentRunId: row.parent_run_id || "",
     workflowCycle: row.workflow_cycle || 0,
     packet,
+    modelPolicyCurrent: !validatePacketModelPolicy(packet),
     commandPreview: row.command_preview,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
@@ -508,25 +527,32 @@ async function loadAgentDirectory() {
   }
 
   const configuredAgents = new Map(
-    (Array.isArray(runtimeConfig?.agents?.list) ? runtimeConfig.agents.list : []).map((agent) => [agent.id, agent])
+    configuredAgentEntries(runtimeConfig || {}).map((agent) => [agent.id, agent])
   );
   const agents = registeredAgents.map((agent) => {
+    const selection = selectModelForTask({}, agent.id);
+    const role = agentRoleDefault(agent.id);
     const configured = configuredAgents.get(agent.id);
     const configuredModel = normalizeModelConfig(configured?.model);
-    const expectedFallbacks = Array.isArray(agent.fallbacks) ? agent.fallbacks : [];
+    const expectedFallbacks = [];
     const drift = [];
 
     if (!configured) drift.push("agent_missing_from_openclaw_config");
-    if (configured && configuredModel.primary !== agent.model) drift.push("primary_model_mismatch");
-    if (configured && normalizeText(configured.thinkingDefault) !== normalizeText(agent.thinking)) drift.push("reasoning_mismatch");
+    if (configured && configuredModel.primary !== role.model) drift.push("primary_model_mismatch");
+    if (configured && normalizeText(configured.thinkingDefault) !== role.reasoning) drift.push("reasoning_mismatch");
     if (configured && JSON.stringify(configuredModel.fallbacks) !== JSON.stringify(expectedFallbacks)) drift.push("fallback_mismatch");
 
     return {
       id: agent.id,
       title: agent.title,
       kind: agent.kind,
-      model: agent.model,
-      reasoning: agent.thinking,
+      model: role.model,
+      reasoning: role.reasoning,
+      routineTaskModel: selection.effectiveModel,
+      routineTaskReasoning: selection.thinking,
+      runtimeModel: configuredModel.primary,
+      runtimeReasoning: normalizeText(configured?.thinkingDefault),
+      runtimeFallbacks: configuredModel.fallbacks,
       fallbacks: expectedFallbacks,
       failClosed: expectedFallbacks.length === 0,
       focus: Array.isArray(agent.focus) ? agent.focus : [],
@@ -543,22 +569,25 @@ async function loadAgentDirectory() {
 
   return {
     registryVersion: normalizeText(registry.version),
+    policyVersion: modelPolicy.version,
+    providerPolicy: modelPolicy.providerPolicy,
+    defaultModel: modelPolicy.defaultModel,
+    defaultThinking: modelPolicy.defaultThinking,
+    supportedModels: modelPolicy.models,
     generatedAt: nowIso(),
     totalAgents: agents.length,
     configuredAgents: agents.filter((agent) => agent.configured).length,
     driftCount,
     runtimeConfigPresent: Boolean(runtimeConfig),
-    lunaStatus: normalizeText(registry.lunaStatus || "unknown"),
-    entitlementStatus: registry.liveVerification?.terra?.startsWith("pass") && registry.liveVerification?.sol?.startsWith("pass") && registry.liveVerification?.luna?.startsWith("pass")
-      ? "sol_terra_luna_verified"
-      : "not_verified",
+    lunaStatus: "configured_not_runtime_verified",
+    entitlementStatus: "not_verified",
     liveVerification: {
-      verifiedAt: normalizeText(registry.liveVerification?.verifiedAt),
-      terra: normalizeText(registry.liveVerification?.terra || "not_verified"),
-      sol: normalizeText(registry.liveVerification?.sol || "not_verified"),
-      luna: normalizeText(registry.liveVerification?.luna || "not_verified"),
+      verifiedAt: "",
+      astra: "not_verified",
+      sol: "not_verified",
+      luna: "not_verified",
     },
-    entitlementNote: "This endpoint reads the last recorded approved probes; it does not consume usage by running a new model call.",
+    entitlementNote: "GPT-6 OpenClaw execution has not been verified. Historical GPT-5.6 probes do not verify GPT-6. Directory reads do not run model calls.",
     modelCounts,
     agents,
   };
@@ -617,6 +646,7 @@ async function runDiagnosticCommand(file, args, options = {}) {
       timeout: options.timeout || diagnosticTimeoutMs,
       windowsHide: true,
       maxBuffer: 1024 * 1024,
+      env: options.env || { ...process.env, PATH: `${path.dirname(process.execPath)}${path.delimiter}${process.env.PATH || ""}` },
     });
     return {
       ok: true,
@@ -639,6 +669,10 @@ async function runDiagnosticCommand(file, args, options = {}) {
 }
 
 async function findCommand(commandName) {
+  if (commandName === "openclaw" && process.platform === "win32" && process.env.APPDATA) {
+    const installedCli = path.join(process.env.APPDATA, "npm", "openclaw.cmd");
+    if (await fileExists(installedCli)) return { ok: true, path: installedCli, stdout: installedCli, stderr: "", command: "Local npm OpenClaw shim", durationMs: 0 };
+  }
   const lookup = process.platform === "win32"
     ? await runDiagnosticCommand("where.exe", [commandName], { timeout: 5000 })
     : await runDiagnosticCommand("sh", ["-lc", `command -v ${commandName}`], { timeout: 5000 });
@@ -671,7 +705,7 @@ function buildOpenClawManualCommands(project) {
     {
       label: "Manual OpenClaw smoke test after Catalin/Codex approval",
       type: "manual-agent-smoke-test",
-      command: `Set-Location -LiteralPath '${projectPath}'\n$task = 'Diagnostic smoke test only. Do not edit files. Reply with available/blocked status.'\nopenclaw agent --agent ifrim-qa --message $task --json --timeout 60`,
+      command: `Set-Location -LiteralPath '${projectPath}'\n$task = 'Diagnostic smoke test only. Do not edit files. Reply with available/blocked status.'\nopenclaw agent --agent ifrim-qa --model ${modelPolicy.defaultModel} --thinking ${modelPolicy.defaultThinking} --message $task --json --timeout 60`,
     },
   ];
 }
@@ -946,7 +980,7 @@ function sendJson(res, status, payload) {
   const body = JSON.stringify(payload, null, 2);
   res.writeHead(status, {
     "Content-Type": "application/json; charset=utf-8",
-    "Access-Control-Allow-Origin": "http://127.0.0.1:3004",
+    "Access-Control-Allow-Origin": process.env.HUB_FRONTEND_ORIGIN || "http://127.0.0.1:3004",
     "Access-Control-Allow-Methods": "GET, POST, PATCH, OPTIONS",
     "Access-Control-Allow-Headers": "Content-Type",
     "Cache-Control": "no-store",
@@ -1020,20 +1054,6 @@ function listWorkflowTransitions(projectSlug = "", taskId = "") {
     rows = statement.all();
   }
   return rows.map(rowToWorkflowTransition);
-}
-
-function continuationTaskScore(task) {
-  const statusWeight = {
-    in_progress: 90,
-    review: 85,
-    qa: 80,
-    ready: 70,
-    backlog: 60,
-    draft: 50,
-    blocked: 40,
-  };
-  const priorityWeight = { critical: 30, high: 20, normal: 10, low: 0 };
-  return (statusWeight[task.status] || 0) + (priorityWeight[task.priority] || 0);
 }
 
 function selectExecutionProfile(task) {
@@ -1128,13 +1148,11 @@ async function buildProjectContinuation(projectSlug) {
   if (!project) return { status: 400, payload: { error: "Project slug invalid sau lipsa." } };
 
   const allTasks = listTasks(projectSlug);
-  const activeTasks = allTasks
-    .filter((task) => !["done", "cancelled", "rejected"].includes(task.status))
-    .sort((a, b) => continuationTaskScore(b) - continuationTaskScore(a) || b.updatedAt.localeCompare(a.updatedAt));
   const runs = listAgentRuns(projectSlug);
-  const latestRun = runs[0] || null;
-  const task = activeTasks[0] || (latestRun ? allTasks.find((item) => item.id === latestRun.taskId) : null) || null;
-  const run = task ? runs.find((item) => item.taskId === task.id) || null : latestRun;
+  const allTransitions = listWorkflowTransitions(projectSlug);
+  const selection = selectContinuationTask({ tasks: allTasks, runs, transitions: allTransitions });
+  const task = selection.task;
+  const run = task ? runs.find((item) => item.taskId === task.id) || null : null;
   const approvals = listExecutionApprovals(projectSlug);
   const approval = run ? approvals.find((item) => item.agentRunId === run.id) || null : null;
   const attempts = listExecutionAttempts(projectSlug);
@@ -1144,7 +1162,7 @@ async function buildProjectContinuation(projectSlug) {
   const snapshots = listSnapshots(projectSlug);
   const snapshot = snapshots.find((item) => item.status === "approved") || snapshots[0] || null;
   const activeLocks = listLocks(projectSlug).filter((item) => item.status === "active");
-  const transitions = task ? listWorkflowTransitions(projectSlug, task.id) : [];
+  const transitions = task ? allTransitions.filter((item) => item.taskId === task.id) : [];
   const nextAction = buildContinuationNextAction({ task, run, approval, backup });
   const workflow = buildWorkflowState({ task, run, approval, attempt, backup, transitions });
 
@@ -1167,6 +1185,7 @@ async function buildProjectContinuation(projectSlug) {
         openIssues: project.summary.openIssues || "Nu exista OPEN_ISSUES documentat.",
         latestReports: project.reports || [],
         task,
+        selection,
         routing: task ? { owner: task.ownerAgent, reviewer: task.reviewerAgent, qa: task.qaAgent } : null,
         run,
         approval,
@@ -1283,7 +1302,9 @@ function workflowStagePrompt({ stage, task, project, sourceRun, sourceAttempt, s
     ? "Review independently. Assume the implementation may be wrong. Inspect code, run deterministic checks, and report fix-ready findings. Do not edit source files."
     : stage === "qa"
       ? "Verify the application like a real user. Exercise affected buttons, forms, settings, loading/error states, desktop/mobile layout and adjacent regressions. Use browser automation when available. Do not edit source files. The task remains in QA while your own run is active; do not fail solely because the task is not yet marked done. The orchestrator marks it done only after your PASS verdict."
-      : "Implement only the confirmed reviewer/QA fixes. Preserve existing flows, add production validation/error handling, and re-run affected checks.";
+      : stage === "owner"
+        ? "Implement the approved task scope. Read project memory first, preserve existing work, and run the acceptance checks."
+        : "Implement only the confirmed reviewer/QA fixes. Preserve existing flows, add production validation/error handling, and re-run affected checks.";
   const verdictInstruction = readOnly
     ? [
         "Your final response MUST end with exactly these two machine-readable lines:",
@@ -1325,8 +1346,9 @@ function workflowStagePrompt({ stage, task, project, sourceRun, sourceAttempt, s
 }
 
 async function createWorkflowStageRun({ sourceRun, sourceAttempt, stage, cycle, evidence }) {
-  const existing = db.prepare("SELECT * FROM agent_runs WHERE parent_run_id = ? AND workflow_stage = ? AND workflow_cycle = ?").get(sourceRun.id, stage, cycle);
-  if (existing) return rowToAgentRun(existing);
+  const findChild = (parentId) => db.prepare("SELECT * FROM agent_runs WHERE parent_run_id = ? AND workflow_stage = ? AND workflow_cycle = ?").get(parentId, stage, cycle);
+  const childState = findReusableWorkflowChild(sourceRun.id, findChild);
+  if (childState.existing) return rowToAgentRun(childState.existing);
   const task = db.prepare("SELECT * FROM tasks WHERE id = ?").get(sourceRun.task_id);
   if (!task) throw new Error("Workflow task missing");
   const project = await findProjectBySlug(sourceRun.project_slug);
@@ -1337,8 +1359,9 @@ async function createWorkflowStageRun({ sourceRun, sourceAttempt, stage, cycle, 
   if (!(await knownAgentIds()).has(agentId)) throw new Error(`Workflow agent invalid for ${stage}: ${agentId || "missing"}`);
   const modelSelection = await selectTaskModel(task, agentId);
   const executionPolicy = sourcePacket.routing?.executionPolicy || selectExecutionProfile(task);
-  const backup = stage === "fix"
-    ? await createProjectBackup({ project, taskId: task.id, reason: `Automatic backup before workflow fix cycle ${cycle} for ${task.id}` })
+  const refreshPolicy = Boolean(validatePacketModelPolicy(sourcePacket)) || childState.parentRunId !== sourceRun.id;
+  const backup = stage === "fix" || refreshPolicy || sourcePacket.backup?.status !== "created"
+    ? await createProjectBackup({ project, taskId: task.id, reason: `Automatic backup before workflow ${stage} cycle ${cycle} for ${task.id}` })
     : sourcePacket.backup;
   if (!backup || backup.status !== "created") throw new Error(`Workflow ${stage} packet blocked: valid backup missing`);
   const runId = createId("run");
@@ -1349,12 +1372,15 @@ async function createWorkflowStageRun({ sourceRun, sourceAttempt, stage, cycle, 
     packetVersion: agentPacketVersion,
     generatedAt: nowIso(),
     executionMode: "manual_approval_required",
-    workflow: { stage, cycle, parentRunId: sourceRun.id, sourceAttemptId: sourceAttempt.id, maxFixCycles: maxWorkflowFixCycles },
+    workflow: { stage, cycle, parentRunId: childState.parentRunId, sourceAttemptId: sourceAttempt.id, maxFixCycles: maxWorkflowFixCycles },
     backup,
     routing: {
       ...sourcePacket.routing,
       workflowOwnerAgents: sourcePacket.routing?.workflowOwnerAgents || sourcePacket.routing?.ownerAgents || [],
       ownerAgents: [agentId],
+      providerPolicy: modelPolicy.providerPolicy,
+      modelPolicyVersion: modelPolicy.version,
+      modelSelections: { [agentId]: modelSelection },
       modelSelection,
       executionPolicy,
     },
@@ -1376,10 +1402,10 @@ async function createWorkflowStageRun({ sourceRun, sourceAttempt, stage, cycle, 
     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'packet_ready', ?, ?, ?, ?, ?, ?, ?)`)
       .run(runId, sourceRun.task_id, sourceRun.project_slug, sourceRun.project_name, `workflow-${stage}`, agentId,
         sourceRun.reviewer_agent, sourceRun.qa_agent, JSON.stringify(packet), packet.commands[0].command,
-        stage, sourceRun.id, cycle, timestamp, timestamp);
+        stage, childState.parentRunId, cycle, timestamp, timestamp);
   } catch (error) {
     if (String(error?.message || "").includes("UNIQUE")) {
-      const reused = db.prepare("SELECT * FROM agent_runs WHERE parent_run_id = ? AND workflow_stage = ? AND workflow_cycle = ?").get(sourceRun.id, stage, cycle);
+      const reused = findReusableWorkflowChild(sourceRun.id, findChild).existing;
       if (reused) return rowToAgentRun(reused);
     }
     throw error;
@@ -1485,34 +1511,26 @@ async function retryWorkflowStage(runId, body) {
   if (body.confirmRetry !== true) return { status: 400, payload: { error: "confirmRetry=true este obligatoriu." } };
   const run = db.prepare("SELECT * FROM agent_runs WHERE id = ?").get(runId);
   if (!run) return { status: 404, payload: { error: "Agent run not found" } };
-  if (!new Set(["failed", "timed_out", "workflow_error"]).has(run.status)) {
-    return { status: 409, payload: { error: "Doar o etapa failed, timed_out sau workflow_error poate fi reprogramata." } };
+  const packet = rowToAgentRun(run).packet;
+  const obsoletePacket = Boolean(validatePacketModelPolicy(packet));
+  if (!new Set(["failed", "timed_out", "workflow_error"]).has(run.status) && !(run.status === "packet_ready" && obsoletePacket)) {
+    return { status: 409, payload: { error: "Doar o etapa esuata sau un packet pregatit cu politica veche poate fi reprogramat." } };
   }
   if (activeExecutionId || db.prepare("SELECT id FROM execution_attempts WHERE status = 'running' LIMIT 1").get()) {
     return { status: 409, payload: { error: "Exista deja o executie activa." } };
   }
-  const existing = db.prepare("SELECT * FROM agent_runs WHERE parent_run_id = ? AND workflow_stage = ? AND workflow_cycle = ?").get(run.id, run.workflow_stage || "owner", run.workflow_cycle || 0);
-  if (existing) return { status: 200, payload: { agentRun: rowToAgentRun(existing), reused: true } };
-  const packet = rowToAgentRun(run).packet;
-  if (packet?.backup?.status !== "created") return { status: 409, payload: { error: "Retry blocat fara backup valid." } };
-  const id = createId("run");
-  const timestamp = nowIso();
-  const retryPacket = {
-    ...packet,
-    id,
-    generatedAt: timestamp,
-    workflow: { ...(packet.workflow || {}), parentRunId: run.id, retryOfRunId: run.id },
-  };
-  db.prepare(`INSERT INTO agent_runs (
-    id, task_id, project_slug, project_name, route, owner_agent, reviewer_agent, qa_agent,
-    status, packet_json, command_preview, workflow_stage, parent_run_id, workflow_cycle, created_at, updated_at
-  ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'packet_ready', ?, ?, ?, ?, ?, ?, ?)`)
-    .run(id, run.task_id, run.project_slug, run.project_name, run.route, run.owner_agent, run.reviewer_agent, run.qa_agent,
-      JSON.stringify(retryPacket), run.command_preview, run.workflow_stage || "owner", run.id, run.workflow_cycle || 0, timestamp, timestamp);
+  const task = db.prepare("SELECT * FROM tasks WHERE id = ?").get(run.task_id);
+  if (!task || ["done", "cancelled"].includes(task.status)) return { status: 409, payload: { error: "Taskul este inchis sau lipseste; istoricul nu poate fi relansat." } };
+  const stage = run.workflow_stage || "owner";
+  const cycle = run.workflow_cycle || 0;
+  const childState = findReusableWorkflowChild(run.id, (parentId) => db.prepare("SELECT * FROM agent_runs WHERE parent_run_id = ? AND workflow_stage = ? AND workflow_cycle = ?").get(parentId, stage, cycle));
+  if (childState.existing) return { status: 200, payload: { agentRun: rowToAgentRun(childState.existing), reused: true } };
+  const sourceAttempt = db.prepare("SELECT * FROM execution_attempts WHERE agent_run_id = ? ORDER BY created_at DESC LIMIT 1").get(run.id) || { id: "", output: "", agent_id: run.owner_agent };
+  const agentRun = await createWorkflowStageRun({ sourceRun: run, sourceAttempt, stage, cycle, evidence: sourceAttempt.error || "Retry/refresh requested. A new approval is required before execution." });
   const stageStatus = run.workflow_stage === "reviewer" ? "review" : run.workflow_stage === "qa" ? "qa" : "ready";
-  db.prepare("UPDATE tasks SET status = ?, blockers = '', updated_at = ? WHERE id = ?").run(stageStatus, timestamp, run.task_id);
-  addEvent("prepared", "workflow_retry", id, run.project_slug, `Retry pregatit pentru etapa ${run.workflow_stage || "owner"} a ${run.task_id}`);
-  return { status: 201, payload: { agentRun: rowToAgentRun(db.prepare("SELECT * FROM agent_runs WHERE id = ?").get(id)), reused: false } };
+  db.prepare("UPDATE tasks SET status = ?, blockers = '', updated_at = ? WHERE id = ?").run(stageStatus, nowIso(), run.task_id);
+  addEvent("prepared", "workflow_retry", agentRun.id, run.project_slug, `Retry pregatit pentru etapa ${stage} a ${run.task_id}`);
+  return { status: 201, payload: { agentRun, reused: false } };
 }
 
 async function runExecutionPreflight(runId) {
@@ -1536,6 +1554,9 @@ async function runExecutionPreflight(runId) {
   if (!task || task.project_slug !== run.project_slug) addBlocker("task", "Task/project binding is invalid.");
 
   const packet = rowToAgentRun(run).packet;
+  const modelPolicyError = validatePacketModelPolicy(packet);
+  addCheck("OpenAI model policy", !modelPolicyError, modelPolicyError || `Current policy: ${modelPolicy.version}`);
+  if (modelPolicyError) addBlocker("model_policy", modelPolicyError);
   const backupPath = packet?.backup?.path;
   const backupRecorded = packet?.backup?.status === "created" && !packet?.backup?.manifest?.error;
   let backupExists = false;
@@ -1570,24 +1591,23 @@ async function runExecutionPreflight(runId) {
 }
 
 async function resolveOpenClawCli() {
-  const result = await execFileAsync("where.exe", ["openclaw"], { timeout: 5000, windowsHide: true, maxBuffer: 64 * 1024 });
-  const candidates = String(result.stdout || "").split(/\r?\n/).map((item) => item.trim()).filter(Boolean);
-  const selected = candidates.find((item) => /\.cmd$/i.test(item)) || candidates.find((item) => !/\.ps1$/i.test(item));
-  if (!selected) throw new Error("OpenClaw CLI nu a fost gasit.");
-  return selected;
+  const result = await findCommand("openclaw");
+  if (!result.ok || !result.path) throw new Error("OpenClaw CLI nu a fost gasit.");
+  return result.path;
 }
 
 async function startOpenClawExecution({ attemptId, run, project, agentId, prompt, modelSelection, executionPolicy }) {
+  const certified = await assertSubscriptionGate({ provider: "codex", agentId, model: modelSelection.effectiveModel, reasoning: modelSelection.thinking, cwd: project.path });
   const inputDir = path.join(projectRoot, ".ifrim", "private", "execution-inputs");
   await fs.mkdir(inputDir, { recursive: true });
   const promptFile = path.join(inputDir, `${attemptId}.txt`);
   await fs.writeFile(promptFile, prompt, "utf8");
-  const openClawCli = await resolveOpenClawCli();
-  const fixedScript = "& $env:IFRIM_OPENCLAW_CMD agent --agent $env:IFRIM_AGENT_ID --model $env:IFRIM_MODEL_ID --thinking $env:IFRIM_REASONING --message-file $env:IFRIM_PROMPT_FILE --json --timeout $env:IFRIM_TIMEOUT_SECONDS";
-  const child = spawn("powershell.exe", ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", fixedScript], {
+  const child = spawn(certified.cli.executable, [certified.cli.entrypoint, "agent", "--agent", agentId,
+    "--model", `${modelSelection.effectiveModel}@${subscriptionProfiles.codex}`, "--thinking", modelSelection.thinking,
+    "--message-file", promptFile, "--json", "--timeout", String(executionPolicy.timeoutSeconds)], {
     cwd: project.path,
     windowsHide: true,
-    env: { ...process.env, IFRIM_OPENCLAW_CMD: openClawCli, IFRIM_AGENT_ID: agentId, IFRIM_MODEL_ID: modelSelection.effectiveModel, IFRIM_REASONING: modelSelection.thinking, IFRIM_PROMPT_FILE: promptFile, IFRIM_TIMEOUT_SECONDS: String(executionPolicy.timeoutSeconds) },
+    env: certified.cli.environment,
     stdio: ["ignore", "pipe", "pipe"],
   });
   activeExecutionId = attemptId;
@@ -1605,9 +1625,14 @@ async function startOpenClawExecution({ attemptId, run, project, agentId, prompt
     clearTimeout(timer);
     clearInterval(heartbeatTimer);
     const completedAt = nowIso();
-    const status = timedOut ? "timed_out" : exitCode === 0 && !processError ? "completed" : "failed";
+    let modelError = "";
+    if (exitCode === 0 && !processError && !timedOut) {
+      try { modelError = validateExecutionModel(JSON.parse(stdout), modelSelection); }
+      catch { modelError = "Execution returned no verifiable model metadata."; }
+    }
+    const status = timedOut ? "timed_out" : exitCode === 0 && !processError && !modelError ? "completed" : "failed";
     const cleanOutput = sanitizeDiagnosticText(stdout, 200000);
-    const cleanError = sanitizeDiagnosticText([processError, stderr].filter(Boolean).join("\n"), 200000);
+    const cleanError = sanitizeDiagnosticText([modelError, processError, stderr].filter(Boolean).join("\n"), 200000);
     db.prepare(`UPDATE execution_attempts SET status = ?, output = ?, error = ?, exit_code = ?, completed_at = ? WHERE id = ?`)
       .run(status, cleanOutput, cleanError, Number.isInteger(exitCode) ? exitCode : null, completedAt, attemptId);
     db.prepare("UPDATE agent_runs SET status = ?, updated_at = ? WHERE id = ?")
@@ -1675,7 +1700,7 @@ async function launchManualExecution(runId, body) {
   if (!project) return { status: 409, payload: { error: "Proiectul nu mai exista in registry." } };
 
   const task = db.prepare("SELECT * FROM tasks WHERE id = ?").get(run.task_id);
-  const modelSelection = packet?.routing?.modelSelection || await selectTaskModel(task, agentId);
+  const modelSelection = packet.routing.modelSelection;
   const executionPolicy = packet?.routing?.executionPolicy || selectExecutionProfile(task);
   const attemptId = createId("execution");
   const timestamp = nowIso();
@@ -1845,17 +1870,29 @@ $zip = [System.IO.Compression.ZipFile]::Open($dest, [System.IO.Compression.ZipAr
 $count = 0
 $sourceBytes = [int64]0
 $skippedFiles = @()
+function Get-BackupFiles([string]$directory) {
+  foreach ($item in Get-ChildItem -LiteralPath $directory -Force) {
+    if ($item.LinkType -in @('Junction', 'SymbolicLink') -or ($item.Attributes -band [System.IO.FileAttributes]::ReparsePoint)) { continue }
+    if ($item.PSIsContainer) {
+      $relativeDir = $item.FullName.Substring($source.Length).TrimStart('\', '/').Replace([char]92, '/')
+      if ($excludeDirs -contains $item.Name -or $item.Name -like '.env*' -or $relativeDir -eq '.ifrim/BACKUPS' -or ($env:IFRIM_BACKUP_EXCLUDE_PRIVATE -eq '1' -and $relativeDir -eq '.ifrim/private')) { continue }
+      Get-BackupFiles $item.FullName
+    } elseif ($item.Name -notlike '.env*') {
+      $item
+    }
+  }
+}
 try {
-  Get-ChildItem -LiteralPath $source -Recurse -File -Force | ForEach-Object {
+  Get-BackupFiles $source | ForEach-Object {
     $relative = $_.FullName.Substring($source.Length).TrimStart('\', '/')
-    $normalized = $relative -replace '/', '\'
-    $parts = $normalized -split '\\'
+    $normalized = $relative.Replace([char]92, '/')
+    $parts = $normalized -split '/'
     foreach ($part in $parts) {
       if ($excludeDirs -contains $part) { return }
     }
-    if ($normalized -like '.ifrim\BACKUPS\*') { return }
+    if ($normalized -like '.ifrim/BACKUPS/*' -or ($env:IFRIM_BACKUP_EXCLUDE_PRIVATE -eq '1' -and $normalized -like '.ifrim/private/*')) { return }
     if ($excludeFiles -contains $_.Name) { return }
-    $entryName = $normalized -replace '\\', '/'
+    $entryName = $normalized
     try {
       [System.IO.Compression.ZipFileExtensions]::CreateEntryFromFile($zip, $_.FullName, $entryName, [System.IO.Compression.CompressionLevel]::Optimal) | Out-Null
       $script:count += 1
@@ -1877,10 +1914,11 @@ $manifest = [ordered]@{
   sourceBytes = $sourceBytes
   zipBytes = $zipInfo.Length
   excludedDirs = $excludeDirs
-  excludedFiles = $excludeFiles
+  excludedFiles = @('.env*')
+  excludedPrivateRuntime = ($env:IFRIM_BACKUP_EXCLUDE_PRIVATE -eq '1')
   skippedFiles = $skippedFiles
   warning = if ($skippedFiles.Count -gt 0) { 'Some files could not be copied, usually because they were locked by a running local service.' } else { '' }
-  secretsPolicy = 'Excluded common .env files from backup archive.'
+  secretsPolicy = 'Excluded all .env* files from backup archive.'
 }
 $manifest | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath $manifestPath -Encoding UTF8
 `;
@@ -1892,6 +1930,7 @@ $manifest | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath $manifestPath -En
         IFRIM_BACKUP_SOURCE: projectPath,
         IFRIM_BACKUP_DEST: backupPath,
         IFRIM_BACKUP_MANIFEST: manifestPath,
+        IFRIM_BACKUP_EXCLUDE_PRIVATE: project.slug === "ifrim-agent-hub" ? "1" : "0",
       },
       timeout: 120000,
       windowsHide: true,
@@ -2014,44 +2053,7 @@ async function getDesignGovernance(project, task = null) {
 }
 
 async function selectTaskModel(task, agentId) {
-  const registry = JSON.parse(await fs.readFile(agentRegistryPath, "utf8"));
-  const agent = (registry.agents || []).find((item) => item.id === agentId);
-  const text = getTaskRiskText(task);
-  const critical = task.priority === "critical" || /\bp0\b|critical|critic|destructive|distructiv/.test(text);
-  const deepRisk = /security|securitate|privacy|gdpr|migration|migrare|database|baza de date|data integrity|integritate|architect|arhitect/.test(text);
-  const simple = /tiny|small|smoke|summary|summar|classification|clasific|triage|text only|copy only/.test(text);
-  const lunaCandidate = ["ifrim-qa", "ifrim-prototype"].includes(agentId) && !["high", "critical"].includes(task.priority) && !critical && !deepRisk;
-  const lunaStatus = normalizeText(registry.lunaStatus);
-  const lunaEnabled = /available|enabled|verified|pass/i.test(lunaStatus) && !/disabled|blocked|fail/i.test(lunaStatus);
-  const baseModel = normalizeText(agent?.model || "openai/gpt-5.6-terra");
-  let desiredModel = lunaCandidate ? "openai/gpt-5.6-luna" : (deepRisk || critical ? "openai/gpt-5.6-sol" : baseModel);
-  if (!["openai/gpt-5.6-sol", "openai/gpt-5.6-terra", "openai/gpt-5.6-luna"].includes(desiredModel)) desiredModel = baseModel;
-  const effectiveModel = desiredModel === "openai/gpt-5.6-luna" && !lunaEnabled ? "openai/gpt-5.6-terra" : desiredModel;
-  let thinking = normalizeText(agent?.thinking || "medium");
-  const allowedThinking = new Set(["off", "minimal", "low", "medium", "high", "xhigh", "adaptive", "max", "ultra"]);
-  if (!allowedThinking.has(thinking)) thinking = "medium";
-  const rank = { off: 0, minimal: 1, low: 2, medium: 3, high: 4, adaptive: 4, xhigh: 5, max: 6, ultra: 7 };
-  const atLeast = (level) => { if ((rank[thinking] ?? 3) < rank[level]) thinking = level; };
-  const ultraRequested = critical
-    && /\bultra\b/.test(text)
-    && ["openai/gpt-5.6-sol", "openai/gpt-5.6-terra"].includes(effectiveModel);
-  if (ultraRequested) thinking = "ultra";
-  else if (critical && /\bp0\b/.test(text)) thinking = "max";
-  else if (critical || deepRisk) atLeast("xhigh");
-  else if (task.priority === "high" || /debug|multi-module|multi-file|integration|design system/.test(text)) atLeast("high");
-  else if (lunaCandidate || (simple && ["low", "medium"].includes(thinking))) thinking = "low";
-  const strict = critical || /security|securitate|migration|migrare|data integrity|integritate|payment|plata|auth/.test(text);
-  return {
-    source: "task-router-v2",
-    agentId,
-    desiredModel,
-    effectiveModel,
-    thinking,
-    ultraRequested,
-    strict,
-    lunaStatus,
-    fallbackReason: desiredModel !== effectiveModel ? "Luna is not entitled; routed to Terra for this run." : "",
-  };
+  return selectModelForTask(task, agentId);
 }
 
 function buildPrompt(task, project, ownerAgents, reviewerAgents, qaAgents, activeLocks, backup, designGovernance, modelSelection) {
@@ -2166,38 +2168,27 @@ function buildPrompt(task, project, ownerAgents, reviewerAgents, qaAgents, activ
     .join("\n");
 }
 
-function buildCommandPreview(project, packet, ownerAgents, claudeProfile) {
+function buildCommandPreview(project, packet, ownerAgents) {
   const projectPath = escapePowerShellSingleQuoted(project.path);
   const prompt = packet.prompt;
   const commands = [];
   const executionPolicy = packet.routing.executionPolicy || executionProfiles.normal;
 
-  if (ownerAgents.length) {
-    const selection = packet.routing.modelSelection;
-    const modelArgs = selection?.effectiveModel ? ` --model ${selection.effectiveModel} --thinking ${selection.thinking}` : "";
+  for (const [stage, agents, type] of [
+    ["owner", ownerAgents, "openclaw"],
+    ["reviewer", packet.routing.reviewerAgents, "openclaw-review"],
+    ["qa", packet.routing.qaAgents, "openclaw-qa"],
+  ]) {
+    if (!agents?.length) continue;
+    const selection = packet.routing.modelSelections[agents[0]];
+    const modelArgs = ` --model ${selection.effectiveModel} --thinking ${selection.thinking}`;
     commands.push({
-      label: `OpenClaw owner: ${ownerAgents[0]}`,
-      type: "openclaw",
+      label: `OpenClaw ${stage}: ${agents[0]}`,
+      type,
       timeoutSeconds: executionPolicy.outerShellTimeoutSeconds,
-      command: `Set-Location -LiteralPath '${projectPath}'\n$task = @'\n${prompt}\n'@\nopenclaw agent --agent ${ownerAgents[0]}${modelArgs} --message $task --json --timeout ${executionPolicy.timeoutSeconds}`,
+      command: `Set-Location -LiteralPath '${projectPath}'\n$task = @'\n${prompt}\n'@\nopenclaw agent --agent ${agents[0]}${modelArgs} --message $task --json --timeout ${executionPolicy.timeoutSeconds}`,
     });
   }
-
-  if (packet.routing.reviewerAgents.length) {
-    commands.push({
-      label: `OpenClaw reviewer: ${packet.routing.reviewerAgents[0]}`,
-      type: "openclaw-review",
-      timeoutSeconds: executionPolicy.outerShellTimeoutSeconds,
-      command: `Set-Location -LiteralPath '${projectPath}'\n$task = @'\n${prompt}\n'@\nopenclaw agent --agent ${packet.routing.reviewerAgents[0]} --message $task --json --timeout ${executionPolicy.timeoutSeconds}`,
-    });
-  }
-
-  commands.push({
-    label: `Claude Code review: ${claudeProfile}`,
-    type: "claude-review",
-    timeoutSeconds: 1800,
-    command: `Set-Location -LiteralPath '${projectPath}'\n$task = @'\n${prompt}\n'@\n.\\tools\\claude-review.ps1 -Profile ${claudeProfile} -Task $task`,
-  });
 
   return commands;
 }
@@ -2370,8 +2361,13 @@ async function bridgeDiagnostics(body = {}) {
   const project = await findProjectBySlug(projectSlug);
   if (!project) return { status: 400, payload: { error: "Project slug invalid sau lipsa." } };
 
-  const [openClaw, claude] = await Promise.all([inspectOpenClawBridge(project), inspectClaudeBridge(project)]);
-  const providers = [openClaw, claude];
+  const openClaw = await inspectOpenClawBridge(project);
+  const providers = [openClaw, {
+    id: "claude", label: "Claude Code", status: "skipped", disabled: true,
+    lastBlocker: "Disabled by OpenAI-only policy.",
+    fallback: "Review and QA use OpenAI models through Codex/OpenClaw.",
+    commands: [], steps: [diagnosticStep("Provider policy", "skipped", { details: "OpenAI only. No Claude diagnostics or model calls are executed." })],
+  }];
   const summaryStatus = summarizeDiagnostics(providers.map((provider) => ({ status: provider.status })));
 
   return {
@@ -2490,9 +2486,7 @@ function containsSecretLike(value) {
 }
 
 async function compileWithPromptArchitect(project, requestText, draftId) {
-  const cli = await findCommand("openclaw");
-  if (!cli.ok || !cli.path) throw new Error("OpenClaw CLI nu este disponibil pentru Prompt Architect.");
-
+  if (testMode) throw new Error("Model calls are disabled in test mode.");
   const prompt = [
     "You are ifrim-prompt-architect. Advisory compilation only. Do not edit files, create tasks, create locks, create backups, invoke agents, or send messages.",
     `Active project: ${project.name}`,
@@ -2509,17 +2503,22 @@ async function compileWithPromptArchitect(project, requestText, draftId) {
     "Use questions only when product direction, destructive scope, data risk, external cost, or an irreversible choice is genuinely unclear. Prefer Romanian output text. Use only registered ifrim-* agent ids or Codex.",
   ].join("\n\n");
 
-  const tempDir = path.join(process.env.USERPROFILE || projectRoot, ".openclaw", "tmp", "agent-hub-compiler");
+  const selection = await selectTaskModel({}, "ifrim-prompt-architect");
+  const certified = await assertSubscriptionGate({ provider: "codex", agentId: "ifrim-prompt-architect", model: selection.effectiveModel, reasoning: selection.thinking, cwd: projectRoot });
+  const tempDir = path.join(projectRoot, ".ifrim", "private", "compiler-inputs");
   const promptFile = path.join(tempDir, `${draftId}-prompt.txt`);
   await fs.mkdir(tempDir, { recursive: true });
   await fs.writeFile(promptFile, prompt, "utf8");
   try {
-    const result = await runDiagnosticCommand(cli.path, [
-      "agent", "--agent", "ifrim-prompt-architect", "--session-id", draftId,
+    const result = await runDiagnosticCommand(certified.cli.executable, [
+      certified.cli.entrypoint, "agent", "--agent", "ifrim-prompt-architect", "--session-id", draftId,
+      "--model", `${selection.effectiveModel}@${subscriptionProfiles.codex}`, "--thinking", selection.thinking,
       "--message-file", promptFile, "--json", "--timeout", "1800",
-    ], { cwd: projectRoot, timeout: 2100000 });
+    ], { cwd: projectRoot, timeout: 2100000, env: certified.cli.environment });
     if (!result.ok) throw new Error(sanitizeDiagnosticText(result.stderr || result.message, 800) || "Prompt Architect a esuat.");
     const envelope = JSON.parse(result.stdout);
+    const modelError = validateExecutionModel(envelope, selection);
+    if (modelError) throw new Error(modelError);
     const text = envelope?.result?.payloads?.find((payload) => typeof payload?.text === "string")?.text;
     if (!text) throw new Error("Prompt Architect nu a returnat continut.");
     return parseJsonObject(text);
@@ -2691,6 +2690,7 @@ async function createAgentRun(body) {
     const existingRun = rowToAgentRun(existing);
     if (
       existingRun.packet?.packetVersion === agentPacketVersion &&
+      !validatePacketModelPolicy(existingRun.packet) &&
       existingRun.packet?.backup?.status === "created" &&
       !existingRun.packet?.backup?.manifest?.error
     ) {
@@ -2711,9 +2711,10 @@ async function createAgentRun(body) {
   const activeLocks = listLocks(task.project_slug).filter((lock) => lock.status === "active");
   const relatedLocks = activeLocks.filter((lock) => !task.affected_area || lock.scope === slugify(task.affected_area) || lock.taskId === task.id);
   const route = chooseRoute(task, ownerAgents);
-  const modelSelection = ownerAgents.length ? await selectTaskModel(task, ownerAgents[0]) : null;
+  const modelSelections = Object.fromEntries(uniqueValues([...ownerAgents, ...reviewerAgents, ...qaAgents])
+    .map((id) => [id, selectModelForTask(task, id)]));
+  const modelSelection = ownerAgents.length ? modelSelections[ownerAgents[0]] : null;
   const executionPolicy = selectExecutionProfile(task);
-  const claudeProfile = chooseClaudeProfile(task);
   const packetId = createId("run");
   const backup = await createProjectBackup({
     project,
@@ -2744,12 +2745,15 @@ async function createAgentRun(body) {
       reviewerAgents,
       qaAgents,
       generatorEvaluatorSplit: true,
-      claudeProfile,
+      claudeProfile: null,
+      providerPolicy: modelPolicy.providerPolicy,
+      modelPolicyVersion: modelPolicy.version,
+      modelSelections,
       openClawTimeoutSeconds: executionPolicy.timeoutSeconds,
       outerShellTimeoutSeconds: executionPolicy.outerShellTimeoutSeconds,
       modelSelection,
       executionPolicy,
-      fallback: "If OpenClaw/Claude is unavailable, Codex continues only with strict local verification and reports the blocker.",
+      fallback: "OpenAI only. If OpenClaw is unavailable, Codex records the blocker. No automatic model or provider fallback.",
     },
     designGovernance,
     memoryChecklist: [
@@ -2787,7 +2791,7 @@ async function createAgentRun(body) {
     locks: relatedLocks.length ? relatedLocks : activeLocks,
   };
   packet.prompt = buildPrompt(task, project, ownerAgents, reviewerAgents, qaAgents, packet.locks, backup, designGovernance, modelSelection);
-  packet.commands = buildCommandPreview(project, packet, ownerAgents, claudeProfile);
+  packet.commands = buildCommandPreview(project, packet, ownerAgents);
 
   const owner = ownerAgents[0] || (String(task.owner_agent || "").includes("Codex") ? "Codex" : firstAgent(task.owner_agent, ""));
   const reviewer = reviewerAgents[0] || firstAgent(task.reviewer_agent, "");
@@ -3017,6 +3021,167 @@ function listEvents(limit = 50) {
     }));
 }
 
+const activeProviderRuns = new Map();
+const conversationStreams = new Map();
+
+function publishConversation(conversationId, event) {
+  for (const response of conversationStreams.get(conversationId) || []) {
+    try { response.write(`data: ${JSON.stringify(event)}\n\n`); } catch { conversationStreams.get(conversationId)?.delete(response); }
+  }
+}
+
+async function createVerifiedRunBackup(project, taskId, runId) {
+  const result = await createProjectBackup({ project, taskId, reason: `provider run ${runId}` });
+  if (result.status !== "created" || !result.manifest?.fileCount) throw new Error("Backup gate failed");
+  const skipped = result.manifest.skippedFiles || [];
+  const expectedSqlite = /^\.ifrim[\\/]private[\\/]agent-hub\.sqlite(?:-(?:wal|shm))?$/i;
+  if (skipped.length && (project.slug !== "ifrim-agent-hub" || skipped.some((item) => !expectedSqlite.test(String(item.path || ""))))) {
+    throw new Error(`Backup gate incomplete: ${skipped.length} files skipped`);
+  }
+  const stat = await fs.stat(result.path);
+  if (!stat.size) throw new Error("Backup archive is empty");
+  let sqlitePath = "";
+  if (project.slug === "ifrim-agent-hub") {
+    sqlitePath = path.join(project.path, ".ifrim", "BACKUPS", `${runId}.sqlite`);
+    await sqliteBackup(db, sqlitePath);
+    const copy = new DatabaseSync(sqlitePath);
+    try { if (copy.prepare("PRAGMA integrity_check").get().integrity_check !== "ok") throw new Error("SQLite checkpoint failed integrity check"); }
+    finally { copy.close(); }
+  }
+  return { id: result.id, path: result.path, sqlitePath };
+}
+
+function conversationRoute(conversation, requestedProvider, overrides = {}, message = "") {
+  const provider = requestedProvider === "auto" ? (conversation.preferredProvider === "auto" ? "codex" : conversation.preferredProvider) : requestedProvider;
+  const task = conversation.activeTaskId ? db.prepare("SELECT * FROM tasks WHERE id=? AND project_slug=?").get(conversation.activeTaskId, conversation.projectSlug) : null;
+  const content = message || conversationStore.listMessages(conversation.id, 30).filter((item) => item.role === "user").at(-1)?.content || "";
+  try { return selectConversationRoute(provider, task || {}, content, overrides); }
+  catch (error) { throw Object.assign(error, { statusCode: 400 }); }
+}
+
+async function launchConversationRun(conversationId, requestedProvider, overrides = {}) {
+  const previousRun = null;
+  const conversation = conversationStore.getConversation(conversationId);
+  if (!conversation) throw Object.assign(new Error("Conversation not found"), { statusCode: 404 });
+  if (conversation.projectSlug !== "ifrim-agent-hub") {
+    throw Object.assign(new Error("Provider execution is approved only for Ifrim Agent Hub; this project needs a separate approval gate"), { statusCode: 403 });
+  }
+  if (!executionRuntimeArmed) throw Object.assign(new Error("Provider execution disabled in test mode"), { statusCode: 409 });
+  const project = await findProjectBySlug(conversation.projectSlug);
+  if (!project || path.resolve(project.path) !== path.resolve(conversation.workspace)) throw Object.assign(new Error("Workspace no longer matches project registry"), { statusCode: 409 });
+  const route = conversationRoute(conversation, requestedProvider, overrides);
+  const { provider, model, reasoning: reasoningLevel } = route;
+  try { await previewSubscriptionGate({ ...route, cwd: conversation.workspace, conversationId }); }
+  catch (error) { throw Object.assign(error, { statusCode: 409 }); }
+  if (activeProviderRuns.has(conversationId) || conversationStore.listRuns(conversationId).some((item) => item.status === "running")) {
+    throw Object.assign(new Error("Conversation already has an active run"), { statusCode: 409 });
+  }
+  const run = conversationStore.createRun({ conversationId, taskId: conversation.activeTaskId, provider, model, reasoningLevel,
+    metadata: { route, transport: "openclaw", accessMode: route.accessMode } });
+  conversationStore.updateRun(run.id, { metadata: { route, transport: "openclaw", accessMode: route.accessMode } });
+  if (!conversationStore.acquireLease("workspace-write", conversation.workspace, conversationId, run.id, provider)) {
+    conversationStore.updateRun(run.id, { status: "blocked", errorCategory: "PERMISSION_DENIED", finishedAt: nowIso() });
+    throw Object.assign(new Error("Workspace write lease is already held"), { statusCode: 409 });
+  }
+  activeProviderRuns.set(conversationId, { runId: run.id, runtime: null, cancelled: false });
+  const reply = conversationStore.addMessage({ conversationId, taskId: conversation.activeTaskId, runId: run.id,
+    role: "assistant", content: "", provider, model, metadata: { status: "preparing" } });
+  conversationStore.updateConversation(conversationId, { currentProvider: provider, status: "running" });
+  addEvent("run.started", "provider_run", run.id, conversation.projectSlug, `${provider} run preparing`);
+  publishConversation(conversationId, { type: "status", runId: run.id, status: "preparing", provider });
+  try {
+    const checkpoint = await createVerifiedRunBackup(project, conversation.activeTaskId, run.id);
+    if (activeProviderRuns.get(conversationId)?.cancelled) {
+      conversationStore.updateRun(run.id, { status: "cancelled", errorCategory: "USER_CANCELLED", finishedAt: nowIso() });
+      conversationStore.updateMessage(reply.id, { metadata: { status: "cancelled" } });
+      conversationStore.releaseLease("workspace-write", conversation.workspace, run.id);
+      activeProviderRuns.delete(conversationId);
+      conversationStore.updateConversation(conversationId, { status: "ready" });
+      publishConversation(conversationId, { type: "status", runId: run.id, status: "cancelled", provider });
+      return conversationStore.getRun(run.id);
+    }
+    const envelope = await createContextEnvelope({ store: conversationStore, conversation, project, previousRun });
+    conversationStore.addCheckpoint(conversationId, run.id, envelope);
+    const latestUser = conversationStore.listMessages(conversationId, 30).filter((item) => item.role === "user").at(-1);
+    const prompt = renderHandoffPrompt(envelope, latestUser?.content || "");
+    let streamed = "";
+    let lastPersisted = 0;
+    const activity = [];
+    const runtime = startProvider(provider, { cwd: conversation.workspace, prompt, conversationId, runId: run.id,
+      agentId: route.agentId, accessMode: route.accessMode, model, reasoning: reasoningLevel,
+      onEvent: (event) => {
+        if (event.type === "rpc") {
+          const current = conversationStore.getRun(run.id);
+          const rpcRequests = [...(current.metadata.rpcRequests || []), { method: event.method, requestId: event.requestId, sentAt: event.sentAt }].slice(-8);
+          conversationStore.updateRun(run.id, { metadata: { ...current.metadata, rpcRequests } });
+          publishConversation(conversationId, { type: "activity", runId: run.id, label: `OpenClaw: ${event.method} sent` });
+        }
+        if (event.type === "binding") {
+          const current = conversationStore.getRun(run.id);
+          conversationStore.updateRun(run.id, { metadata: { ...current.metadata, openclawSessionKey: event.sessionKey, gatewaySessionId: event.sessionId,
+            ...(event.gatewayPort ? { openclawGatewayPort: event.gatewayPort } : {}),
+            ...(event.gatewayRunId ? { gatewayRunId: event.gatewayRunId } : {}), transport: "openclaw" } });
+          publishConversation(conversationId, { type: "activity", runId: run.id, label: "OpenClaw session bound" });
+        }
+        if (event.type === "delta") {
+          streamed = (streamed + event.text).slice(0, 200000);
+          if (Date.now() - lastPersisted > 500) {
+            conversationStore.updateMessage(reply.id, { content: streamed, metadata: { status: "streaming" } });
+            lastPersisted = Date.now();
+          }
+          publishConversation(conversationId, { type: "delta", runId: run.id, text: event.text });
+        }
+        if (event.type === "activity") {
+          activity.push({ label: event.label, at: nowIso() });
+          if (activity.length > 30) activity.shift();
+          const current = conversationStore.getRun(run.id);
+          conversationStore.updateRun(run.id, { metadata: { ...current.metadata, activity } });
+          publishConversation(conversationId, { type: "activity", runId: run.id, label: event.label });
+        }
+        if (event.type === "approval") publishConversation(conversationId, { type: "approval_required", runId: run.id });
+      } });
+    activeProviderRuns.get(conversationId).runtime = runtime;
+    if (activeProviderRuns.get(conversationId).cancelled) runtime.stop().catch(() => {});
+    conversationStore.updateRun(run.id, { metadata: { ...conversationStore.getRun(run.id).metadata, pid: runtime.pid, backupId: checkpoint.id, sqliteCheckpoint: checkpoint.sqlitePath } });
+    publishConversation(conversationId, { type: "status", runId: run.id, status: "running", provider });
+    runtime.done.then(async (result) => {
+      const active = activeProviderRuns.get(conversationId);
+      const cancelled = active?.cancelled || false;
+      const status = result.retainLease ? "blocked" : cancelled ? "cancelled" : result.status;
+      const repo = await repositoryState(conversation.workspace);
+      conversationStore.updateMessage(reply.id, { content: result.output || streamed || (result.error ? `Run failed: ${result.error}` : ""),
+        providerSessionId: result.nativeSessionId, metadata: { status, errorCategory: result.errorCategory } });
+      if (result.nativeSessionId && status === "completed") conversationStore.setProviderSession(conversationId, provider, result.nativeSessionId);
+      conversationStore.updateRun(run.id, { status, errorCategory: result.retainLease ? "REMOTE_STATE_UNKNOWN" : cancelled ? "USER_CANCELLED" : result.errorCategory,
+        usage: result.usage, providerSessionId: result.nativeSessionId, filesChanged: result.filesChanged || [], finishedAt: nowIso(),
+        metadata: { ...conversationStore.getRun(run.id).metadata, actual: result.actual || null, rpcDiagnostics: result.rpcDiagnostics || null, repositoryDirtyFiles: repo.changedFiles, remoteStateUnknown: Boolean(result.retainLease) } });
+      if (!result.retainLease) conversationStore.releaseLease("workspace-write", conversation.workspace, run.id);
+      activeProviderRuns.delete(conversationId);
+      conversationStore.updateConversation(conversationId, { status: status === "completed" ? "ready" : "blocked" });
+      addEvent(status === "completed" ? "run.completed" : "run.failed", "provider_run", run.id, conversation.projectSlug, `${provider} ${status}`);
+      publishConversation(conversationId, { type: "status", runId: run.id, status, provider, errorCategory: result.errorCategory });
+    }).catch((error) => {
+      conversationStore.updateRun(run.id, { status: "failed", errorCategory: "UNKNOWN", finishedAt: nowIso() });
+      conversationStore.updateMessage(reply.id, { content: `Run finalization failed: ${error.message}`, metadata: { status: "failed" } });
+      // Keep the lease if finalization cannot prove the process stopped.
+      activeProviderRuns.delete(conversationId);
+    });
+    return conversationStore.getRun(run.id);
+  } catch (error) {
+    const pendingRuntime = activeProviderRuns.get(conversationId)?.runtime;
+    let safelyStopped = !pendingRuntime;
+    if (pendingRuntime) {
+      try { safelyStopped = await pendingRuntime.stop(); } catch { safelyStopped = false; }
+    }
+    conversationStore.updateRun(run.id, { status: safelyStopped ? "failed" : "blocked", errorCategory: safelyStopped ? "TOOL_ERROR" : "REMOTE_STATE_UNKNOWN", finishedAt: nowIso() });
+    conversationStore.updateMessage(reply.id, { content: `Run not started: ${error.message}`, metadata: { status: "failed" } });
+    if (safelyStopped) conversationStore.releaseLease("workspace-write", conversation.workspace, run.id);
+    activeProviderRuns.delete(conversationId);
+    conversationStore.updateConversation(conversationId, { status: "blocked" });
+    throw error;
+  }
+}
+
 const server = http.createServer(async (req, res) => {
   try {
     if (req.method === "OPTIONS") {
@@ -3033,6 +3198,175 @@ const server = http.createServer(async (req, res) => {
 
     if (url.pathname === "/api/projects") {
       sendJson(res, 200, { projects: await loadProjects() });
+      return;
+    }
+
+    if (url.pathname === "/api/conversations" && req.method === "GET") {
+      const projectSlug = String(url.searchParams.get("projectSlug") || "").trim();
+      if (!(await findProjectBySlug(projectSlug))) { sendJson(res, 404, { error: "Project not found" }); return; }
+      sendJson(res, 200, { conversations: conversationStore.listConversations(projectSlug) });
+      return;
+    }
+
+    if (url.pathname === "/api/conversations" && req.method === "POST") {
+      const body = await readJsonBody(req);
+      const project = await findProjectBySlug(String(body.projectSlug || "").trim());
+      if (!project) { sendJson(res, 404, { error: "Project not found" }); return; }
+      const taskId = String(body.taskId || "").trim();
+      const task = taskId ? db.prepare("SELECT * FROM tasks WHERE id=? AND project_slug=?").get(taskId, project.slug) : null;
+      if (taskId && !task) { sendJson(res, 400, { error: "Task belongs to another project or does not exist" }); return; }
+      const title = String(body.title || task?.title || "Conversație nouă").trim().slice(0, 160);
+      const conversation = conversationStore.createConversation({ projectSlug: project.slug, title, workspace: project.path,
+        taskId, objective: String(body.objective || task?.goal || "").slice(0, 8000), preferredProvider: "auto" });
+      addEvent("conversation.created", "conversation", conversation.id, project.slug, `Conversation created for ${taskId || project.slug}`);
+      sendJson(res, 201, { conversation });
+      return;
+    }
+
+    const conversationMatch = url.pathname.match(/^\/api\/conversations\/([^/]+)$/);
+    const conversationId = conversationMatch ? decodeURIComponent(conversationMatch[1]) : "";
+    if (conversationMatch && req.method === "GET") {
+      const conversation = conversationStore.getConversation(conversationId);
+      if (!conversation) { sendJson(res, 404, { error: "Conversation not found" }); return; }
+      sendJson(res, 200, { conversation, messages: conversationStore.listMessages(conversationId), messageCount: conversationStore.countMessages(conversationId),
+        taskState: conversationStore.getTaskState(conversationId), decisions: conversationStore.listDecisions(conversationId),
+        runs: conversationStore.listRuns(conversationId), providerSessions: conversationStore.listProviderSessions(conversationId),
+        leases: conversationStore.listLeases(conversationId), checkpoint: (() => {
+          const checkpoint = conversationStore.getLatestCheckpoint(conversationId);
+          return checkpoint ? { id: checkpoint.id, createdAt: checkpoint.createdAt } : null;
+        })() });
+      return;
+    }
+
+    const streamMatch = url.pathname.match(/^\/api\/conversations\/([^/]+)\/events$/);
+    if (streamMatch && req.method === "GET") {
+      const id = decodeURIComponent(streamMatch[1]);
+      if (!conversationStore.getConversation(id)) { sendJson(res, 404, { error: "Conversation not found" }); return; }
+      res.writeHead(200, { "Content-Type": "text/event-stream; charset=utf-8", "Cache-Control": "no-store",
+        Connection: "keep-alive", "Access-Control-Allow-Origin": process.env.HUB_FRONTEND_ORIGIN || "http://127.0.0.1:3004" });
+      res.write(": connected\n\n");
+      if (!conversationStreams.has(id)) conversationStreams.set(id, new Set());
+      conversationStreams.get(id).add(res);
+      const heartbeat = setInterval(() => res.write(": heartbeat\n\n"), 15000);
+      req.on("close", () => { clearInterval(heartbeat); conversationStreams.get(id)?.delete(res); });
+      return;
+    }
+
+    const executeConversationMatch = url.pathname.match(/^\/api\/conversations\/([^/]+)\/execute$/);
+    if (executeConversationMatch && req.method === "POST") {
+      const body = await readJsonBody(req);
+      if (body.confirm !== "RUN_APPROVED_PROVIDER") { sendJson(res, 400, { error: "Explicit run confirmation required" }); return; }
+      const run = await launchConversationRun(decodeURIComponent(executeConversationMatch[1]), String(body.provider || "auto"),
+        { model: body.model, reasoning: body.reasoning, accessMode: body.accessMode });
+      sendJson(res, 202, { run });
+      return;
+    }
+
+    const stopConversationMatch = url.pathname.match(/^\/api\/conversations\/([^/]+)\/stop$/);
+    if (stopConversationMatch && req.method === "POST") {
+      const id = decodeURIComponent(stopConversationMatch[1]);
+      const active = activeProviderRuns.get(id);
+      if (!active) { sendJson(res, 409, { error: "No stoppable provider run in this API instance" }); return; }
+      active.cancelled = true;
+      if (!active.runtime) { sendJson(res, 202, { stopped: false, cancellationRequested: true, runId: active.runId }); return; }
+      const stopped = await active.runtime.stop();
+      sendJson(res, stopped ? 200 : 409, { stopped, runId: active.runId });
+      return;
+    }
+
+    const routeConversationMatch = url.pathname.match(/^\/api\/conversations\/([^/]+)\/route$/);
+    if (routeConversationMatch && req.method === "POST") {
+      const conversation = conversationStore.getConversation(decodeURIComponent(routeConversationMatch[1]));
+      if (!conversation) { sendJson(res, 404, { error: "Conversation not found" }); return; }
+      const body = await readJsonBody(req);
+      const route = conversationRoute(conversation, String(body.provider || "auto"), { model: body.model, reasoning: body.reasoning, accessMode: body.accessMode }, String(body.message || "").slice(0, 40000));
+      let preflight = { ready: false, blocker: testMode ? "Provider execution disabled in test mode" : "Provider execution is approved only for Ifrim Agent Hub" };
+      if (!testMode && conversation.projectSlug === "ifrim-agent-hub") {
+        try { preflight = await previewSubscriptionGate({ ...route, cwd: conversation.workspace, conversationId: conversation.id }); }
+        catch (error) { preflight = { ready: false, blocker: error.message }; }
+      }
+      sendJson(res, 200, { route, preflight, execution: "not_started" });
+      return;
+    }
+
+    const messageMatch = url.pathname.match(/^\/api\/conversations\/([^/]+)\/messages$/);
+    if (messageMatch && req.method === "GET") {
+      const id = decodeURIComponent(messageMatch[1]);
+      if (!conversationStore.getConversation(id)) { sendJson(res, 404, { error: "Conversation not found" }); return; }
+      const limit = Math.max(1, Math.min(500, Number(url.searchParams.get("limit")) || 100));
+      const offset = Math.max(0, Math.floor(Number(url.searchParams.get("offset")) || 0));
+      sendJson(res, 200, { messages: conversationStore.listMessages(id, limit, offset), total: conversationStore.countMessages(id), limit, offset });
+      return;
+    }
+    if (messageMatch && req.method === "POST") {
+      const id = decodeURIComponent(messageMatch[1]);
+      const conversation = conversationStore.getConversation(id);
+      if (!conversation) { sendJson(res, 404, { error: "Conversation not found" }); return; }
+      const body = await readJsonBody(req);
+      const content = String(body.content || "").trim();
+      if (!content || content.length > 40000) { sendJson(res, 400, { error: "Message must contain 1-40000 characters" }); return; }
+      const message = conversationStore.addMessage({ conversationId: id, taskId: conversation.activeTaskId, role: "user", content });
+      sendJson(res, 201, { message, execution: "not_started" });
+      return;
+    }
+
+    const decisionMatch = url.pathname.match(/^\/api\/conversations\/([^/]+)\/decisions$/);
+    if (decisionMatch && req.method === "POST") {
+      const id = decodeURIComponent(decisionMatch[1]);
+      const conversation = conversationStore.getConversation(id);
+      if (!conversation) { sendJson(res, 404, { error: "Conversation not found" }); return; }
+      const body = await readJsonBody(req);
+      const content = String(body.content || "").trim();
+      if (!content || content.length > 4000) { sendJson(res, 400, { error: "Decision must contain 1-4000 characters" }); return; }
+      conversationStore.addDecision({ conversationId: id, taskId: conversation.activeTaskId, content });
+      sendJson(res, 201, { decisions: conversationStore.listDecisions(id) });
+      return;
+    }
+
+    const stateMatch = url.pathname.match(/^\/api\/conversations\/([^/]+)\/task-state$/);
+    if (stateMatch && req.method === "PATCH") {
+      const id = decodeURIComponent(stateMatch[1]);
+      if (!conversationStore.getConversation(id)) { sendJson(res, 404, { error: "Conversation not found" }); return; }
+      const body = await readJsonBody(req);
+      const permitted = ["objective", "requirements", "acceptanceCriteria", "currentPlan", "completedSteps", "remainingSteps", "blockers", "relevantFiles", "tests", "summary"];
+      const patch = {};
+      for (const key of permitted) {
+        if (!(key in body)) continue;
+        if (key === "objective" || key === "summary") {
+          if (typeof body[key] !== "string" || body[key].length > 12000) { sendJson(res, 400, { error: `Invalid ${key}` }); return; }
+          patch[key] = body[key];
+        } else {
+          if (!Array.isArray(body[key]) || body[key].length > 100 || body[key].some((item) => typeof item !== "string" || item.length > 2000)) {
+            sendJson(res, 400, { error: `Invalid ${key}` }); return;
+          }
+          patch[key] = body[key];
+        }
+      }
+      sendJson(res, 200, { taskState: conversationStore.updateTaskState(id, patch) });
+      return;
+    }
+
+    const handoffMatch = url.pathname.match(/^\/api\/conversations\/([^/]+)\/handoff$/);
+    if (handoffMatch && req.method === "POST") {
+      const id = decodeURIComponent(handoffMatch[1]);
+      const conversation = conversationStore.getConversation(id);
+      if (!conversation) { sendJson(res, 404, { error: "Conversation not found" }); return; }
+      const body = await readJsonBody(req);
+      const provider = String(body.provider || "").toLowerCase();
+      if (!["codex", "claude"].includes(provider)) { sendJson(res, 400, { error: "Provider must be codex or claude" }); return; }
+      const leases = conversationStore.listLeases(id);
+      if (leases.length || conversationStore.listRuns(id).some((run) => run.status === "running")) {
+        sendJson(res, 409, { error: "Active or recovery lease blocks handoff" }); return;
+      }
+      const project = await findProjectBySlug(conversation.projectSlug);
+      const runs = conversationStore.listRuns(id);
+      const envelope = await createContextEnvelope({ store: conversationStore, conversation, project, previousRun: runs.at(-1) });
+      const checkpointId = conversationStore.addCheckpoint(id, runs.at(-1)?.id || "", envelope);
+      conversationStore.updateConversation(id, { preferredProvider: provider, status: "handoff_ready" });
+      conversationStore.addMessage({ conversationId: id, taskId: conversation.activeTaskId, role: "system",
+        content: `Handoff pregătit pentru ${provider}. Execuția nu a fost pornită.`, metadata: { checkpointId } });
+      addEvent("context.envelope.created", "conversation", id, conversation.projectSlug, `Local handoff checkpoint for ${provider}`);
+      sendJson(res, 200, { checkpointId, provider, execution: "not_started" });
       return;
     }
 

@@ -9,6 +9,7 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
+throw "Claude is disabled for Ifrim Agent Hub by the OpenAI-only policy. Use the OpenAI reviewer route."
 $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $projectRoot = Split-Path -Parent $scriptDir
 Set-Location $projectRoot

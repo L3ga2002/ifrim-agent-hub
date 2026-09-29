@@ -1,5 +1,17 @@
 # IfrimDigital Ifrim Agent Hub - Claude Code Context
 
+## Current Handoff - 2026-09-29
+
+Read `.ifrim/OPUS_HANDOFF.md` first, then the project memory and current Git/SQLite state. HUB-018 remains in progress: native Codex passed, but Claude acceptance and cancellation did not. The last Claude request failed before model admission at the backup gate; the execution gate is suspended. A backup-filter correction is in the local source but requires final review, an idle-API reload and a complete real backup before any new execution. Treat the older notes below as historical when they conflict with current evidence. This handoff alone does not authorize a model launch, data deletion, commit, push or deployment.
+
+## Active Override - 2026-09-27
+
+Catalin approved Claude Code as a local worker in the Agent Hub unified conversation runtime. The 2026-09-26 disabled note below is historical for the existing OpenClaw packet route. Work only in the selected Agent Hub workspace after Hub backup/lease checks. Never read or send secrets, modify another project, commit, push, deploy, delete important data, or send external messages without a separate explicit request. On handoff, inspect current Git state and continue rather than restarting.
+
+## Disabled - 2026-09-26
+
+Catalin selected OpenAI-only operation for this project. Do not invoke Claude. This file is retained as historical context; active routing is in `.ifrim/MODEL_POLICY.md`.
+
 You are assisting Codex as an external senior engineering specialist for the IfrimDigital Ifrim Agent Hub project.
 
 Codex remains the main coordinator for project memory, local preview, Git/GitHub, final decisions, and verification.

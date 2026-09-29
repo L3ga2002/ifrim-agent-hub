@@ -1,5 +1,13 @@
 # Agent Workflow - Ifrim Agent Hub
 
+## Active Override - 2026-09-27
+
+Catalin approved the Agent Hub multi-provider Codex + Claude implementation and local worker execution for the selected project after a verified backup. This supersedes the OpenAI-only restriction below for the new unified conversation runtime only. The existing OpenClaw packet policy remains unchanged. No automatic API-key billing, broad system access, commit, push, deploy or external messages. Codex coordinates; owner, reviewer and QA remain separate.
+
+## Active Override - 2026-09-26
+
+Read `.ifrim/MODEL_POLICY.md`. Use OpenAI only, normally GPT-6 Luna at Max for implementation/review/QA; Sol/Astra handle complexity/risk. Luna does not support Ultra. Claude is disabled. Older model guidance below is historical. Keep owner, reviewer and QA separate; Codex remains coordinator.
+
 Codex is the coordinator.
 OpenClaw agents are IfrimDigital specialist engineers.
 Claude Code is an external specialist for independent review, deep audits, and selected implementation.

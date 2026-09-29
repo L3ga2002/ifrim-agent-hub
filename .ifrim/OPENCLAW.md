@@ -1,5 +1,9 @@
 # OpenClaw - Ifrim Agent Hub
 
+## Active Override - 2026-09-26
+
+Read `.ifrim/MODEL_POLICY.md`. New Hub packets use explicit GPT-6 model/reasoning overrides and OpenAI OAuth through Codex. Luna defaults to Max, not Ultra. Global defaults are unchanged. Do not reuse GPT-5.6 entitlement probes as GPT-6 proof. GPT-6 bridge execution remains unverified until a separately approved live probe succeeds. No automatic launch or external delivery is allowed.
+
 OpenClaw is the local IfrimDigital specialist-agent runtime.
 
 Codex remains the coordinator. Use OpenClaw for focused specialist review, QA, backend/frontend/devops/security checks, and narrow implementation tasks when useful.

@@ -1,5 +1,37 @@
 # Changelog - Ifrim Agent Hub
 
+## 2026-09-28 - HUB-018 final local safety closeout
+
+- Added read-only pre-start credential auditing that blocks unsafe Gateway startup without deleting stored profiles.
+- Bound legacy launch and Prompt Architect to the verified Node/entrypoint/environment; suspended gate prevents both routes before prompt writes.
+- Reviewer GO source-only; owner 107/107 and independent QA 22/22 pure PASS; build/diff PASS. API reloaded with zero active runs/leases. Operational acceptance remains BLOCKED; scheduled-task disable was not completed.
+
+
+## 2026-09-28 - HUB-018 activation and hardening
+
+- Applied the approved GPT-6 role-based OpenClaw configuration through the official RPC while preserving accounts, workspaces, channels and history.
+- Added subscription-only native authentication checks, controlled environment/process receipts, exact profile pinning and restart/config/source invalidation. API-key fallback is prohibited.
+- Corrected the native Claude Windows executable path, Codex authentication-owner refresh persistence and Gateway-environment lookup. OAuth refresh 401 requires user reauthentication.
+- Fixed conversation isolation on project change and separated repository dirty files from provider-attributed edits.
+- Local tests/build passed; native execution/visibility/cancellation acceptance is not yet complete. See HUB-018 report for exact attempts and independent reviewer/QA evidence.
+
+## 2026-09-27
+
+- Configured HUB-016 GPT-6 OpenAI-only routing inside this Hub. Luna defaults to max; Sol/Astra use adaptive low/medium/high/xhigh, with max/ultra only on explicit task request.
+- Separated role defaults from global runtime configuration in the 23-agent directory. Disabled Claude locally and preserved OAuth, shared configuration, other projects and historical records.
+- Bound packet commands to exact agent/model/effort selections, validated returned execution metadata, and made obsolete workflow refresh additive and approval-gated.
+- Fixed backup traversal of dependency/cache and .env* directories. Generic partial-backup acceptance remains a documented pre-existing P2; separate source and consistent SQLite checkpoints protect this change.
+- Verified 81 tests, production build, live read-only API contracts and desktop/mobile browser checks. No GPT-6 OpenClaw model call was launched; live bridge acceptance remains pending.
+- Details: `.ifrim/LOOP_REPORTS/2026-09-27-0032-hub-016-gpt6-openai-adaptive.md`.
+
+## 2026-07-15
+
+- Implemented HUB-015 continuation reconciliation. The continuation endpoint now derives selection from task rows, agent runs and workflow transitions rather than old project-memory text.
+- Continuation selects a current actionable task only when it is newer than the latest completed workflow or has a live run; otherwise it selects the latest completed task and proposes defining the next task.
+- Added the continuation selection metadata to the dashboard so users can see whether the panel shows an active task, the latest completed task, or no tasks.
+- Added five Node tests covering active selection, latest completed fallback, stale blocked/incomplete tasks, no-task projects and the read-only API contract.
+- Verified the updated panel at desktop and 390px mobile width with no browser console errors.
+
 ## 2026-07-14
 
 - Promoted OpenClaw from `2026.7.1-beta.2` to stable `2026.7.1` after local recovery backups.

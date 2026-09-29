@@ -10,3 +10,7 @@ test-results/
 .ifrim/private/
 .ifrim/tmp/
 npm-debug.log*
+AGENTS.md
+IDENTITY.md
+SOUL.md
+USER.md

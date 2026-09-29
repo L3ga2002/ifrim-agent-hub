@@ -12,6 +12,7 @@ import {
   FileText,
   HardDriveDownload,
   ListChecks,
+  MessageSquare,
   LockKeyhole,
   Palette,
   Plus,
@@ -26,8 +27,9 @@ import {
   Workflow,
 } from "lucide-react";
 import "./styles.css";
+import { openClawSessionLink } from "./openclaw-session-link.mjs";
 
-const API_BASE = "http://127.0.0.1:8004/api";
+const API_BASE = import.meta.env.VITE_API_BASE || "http://127.0.0.1:8004/api";
 const TASK_STATUSES = ["draft", "backlog", "ready", "in_progress", "blocked", "review", "qa", "done", "cancelled"];
 const LOCK_TYPES = ["advisory", "exclusive"];
 
@@ -1053,6 +1055,8 @@ function ControlledExecutionPanel({ run, approvals, attempts, onReload }) {
     return () => window.clearInterval(timer);
   }, [prior?.status, onReload]);
   if (!run) return null;
+  const obsoletePacket = run.status === "packet_ready" && run.modelPolicyCurrent === false;
+  const canRetry = obsoletePacket || new Set(["failed", "timed_out", "workflow_error"]).has(run.status);
   const preflight = async () => {
     if (busy) return;
     setBusy(true); setMessage("");
@@ -1097,7 +1101,7 @@ function ControlledExecutionPanel({ run, approvals, attempts, onReload }) {
     finally { setBusy(false); }
   };
   const retryStage = async () => {
-    if (busy || !new Set(["failed", "timed_out", "workflow_error"]).has(run.status)) return;
+    if (busy || !canRetry) return;
     setBusy(true); setMessage("");
     try {
       const data = await apiRequest(`/agent-runs/${encodeURIComponent(run.id)}/retry`, { method: "POST", body: JSON.stringify({ confirmRetry: true }) });
@@ -1110,7 +1114,7 @@ function ControlledExecutionPanel({ run, approvals, attempts, onReload }) {
     <article className="panel wide execution-panel">
       <div className="panel-heading split-heading"><div><Terminal size={18} /><h3>Runner controlat</h3></div><StatusPill value={`${stage} · ciclu ${run.workflowCycle || 0}`} tone="warning" /></div>
       <p className="execution-safety">Preflight-ul nu consumă usage. Etapa {stageLabel} pornește numai manual, după aprobare validă și verificarea de siguranță. Următorul pachet poate fi pregătit automat, dar nu este lansat automat.</p>
-      {modelSelection ? <div className="execution-model-route"><span>Model</span><strong>{modelSelection.effectiveModel}</strong><span>Raționament</span><strong>{modelSelection.thinking}</strong>{modelSelection.fallbackReason ? <small>{modelSelection.fallbackReason}</small> : null}</div> : null}
+      {modelSelection ? <div className="execution-model-route"><span>Model</span><strong>{modelSelection.effectiveModel}</strong><span>Raționament</span><strong>{modelSelection.thinking}</strong>{modelSelection.reasoningNote || modelSelection.fallbackReason ? <small>{modelSelection.reasoningNote || modelSelection.fallbackReason}</small> : null}</div> : null}
       <button className="icon-button primary" type="button" disabled={busy} onClick={preflight}><ShieldCheck size={16} />{busy ? "Verific..." : "Rulează preflight"}</button>
       {prior ? <section className={`preflight-result ${prior.status}`}><div><strong>{prior.status === "passed" ? "Condiții trecute" : "Condiții blocate"}</strong><small>{new Date(prior.createdAt).toLocaleString("ro-RO")}</small></div>
         <ul>{prior.checks.map((check) => <li key={check.name} className={check.passed ? "pass" : "fail"}><strong>{check.name}</strong><span>{check.detail}</span></li>)}</ul>
@@ -1128,10 +1132,10 @@ function ControlledExecutionPanel({ run, approvals, attempts, onReload }) {
         <textarea rows={3} maxLength={4000} value={verdictNote} onChange={(event) => setVerdictNote(event.target.value)} placeholder="Dovada pentru PASS sau problemele care justifică FAIL" />
         <div><button className="icon-button approval-yes" type="button" disabled={busy || verdictNote.trim().length < 4} onClick={() => confirmVerdict("pass")}>Confirmă PASS</button><button className="icon-button danger" type="button" disabled={busy || verdictNote.trim().length < 4} onClick={() => confirmVerdict("fail")}>Confirmă FAIL</button></div>
       </section> : null}
-      {new Set(["failed", "timed_out", "workflow_error"]).has(run.status) ? <section className="workflow-verdict-gate">
-        <strong>Etapa s-a oprit înainte de verdict</strong>
-        <p>Poți pregăti un retry al aceleiași etape. Se creează un pachet și o aprobare noi; ownerul nu este reluat.</p>
-        <div><button className="icon-button primary" type="button" disabled={busy} onClick={retryStage}><RefreshCcw size={16} />{busy ? "Pregătesc..." : `Reîncearcă ${stageLabel}`}</button></div>
+      {canRetry ? <section className="workflow-verdict-gate">
+        <strong>{obsoletePacket ? "Politica packetului este veche" : "Etapa s-a oprit înainte de verdict"}</strong>
+        <p>Etapa: {stageLabel}. Aprobare noua obligatorie.</p>
+        <div><button className="icon-button primary" type="button" disabled={busy} onClick={retryStage}><RefreshCcw size={16} />{busy ? "Pregătesc..." : obsoletePacket ? "Actualizeaza packetul" : `Reîncearcă ${stageLabel}`}</button></div>
       </section> : null}
       {message ? <p className="form-message">{message}</p> : null}
     </article>
@@ -1390,7 +1394,6 @@ function BridgeDiagnosticsPanel({ project }) {
 
 function AgentDirectoryPanel() {
   const { directory, status, error, reload } = useAgentDirectory();
-  const lunaLabel = directory?.lunaStatus === "disabled_until_live_probe_passes" ? "Dezactivat" : (directory?.lunaStatus || "Necunoscut");
 
   return (
     <article className="panel wide agent-directory-panel">
@@ -1399,9 +1402,8 @@ function AgentDirectoryPanel() {
           <Bot size={18} />
           <h3>Echipa de agenti si rutarea modelelor</h3>
         </div>
-        <button className="icon-button" type="button" onClick={reload} disabled={status === "loading"}>
+        <button className="icon-button" type="button" onClick={reload} disabled={status === "loading"} title="Actualizeaza directorul" aria-label="Actualizeaza directorul">
           <RefreshCcw size={16} />
-          {status === "loading" ? "Verific..." : "Refresh"}
         </button>
       </div>
 
@@ -1411,15 +1413,13 @@ function AgentDirectoryPanel() {
       {directory ? (
         <>
           <p className="bridge-note">
-            Sol si Terra: verificate live fara fallback
-            {directory.liveVerification?.verifiedAt ? ` la ${new Date(directory.liveVerification.verifiedAt).toLocaleString("ro-RO")}` : ""}.
-            Directorul nu consuma usage pentru o proba noua.
+            GPT-6 · OpenClaw: {directory.entitlementStatus === "not_verified" ? "executie GPT-6 neverificata" : directory.entitlementStatus} · Claude: conversatii coordonate.
           </p>
           <div className="agent-directory-summary">
             <div><span>Agenti</span><strong>{directory.totalAgents}</strong></div>
             <div><span>Configurati</span><strong>{directory.configuredAgents}</strong></div>
-            <div><span>Drift</span><strong>{directory.driftCount}</strong></div>
-            <div title={directory.lunaStatus}><span>Luna</span><strong>{lunaLabel}</strong></div>
+            <div><span>Diferente runtime</span><strong>{directory.driftCount}</strong></div>
+            <div><span>Rutare task</span><strong>Adaptiva</strong></div>
           </div>
           <div className="agent-table-wrap">
             <table className="agent-table">
@@ -1427,10 +1427,10 @@ function AgentDirectoryPanel() {
                 <tr>
                   <th>Agent</th>
                   <th>Rol</th>
-                  <th>Model</th>
-                  <th>Reasoning</th>
+                  <th>Model implicit rol</th>
+                  <th>Raționament rol</th>
                   <th>Fallback</th>
-                  <th>Config</th>
+                  <th>Runtime implicit</th>
                 </tr>
               </thead>
               <tbody>
@@ -1440,14 +1440,14 @@ function AgentDirectoryPanel() {
                     <td>{agent.kind}</td>
                     <td>{agent.model.replace("openai/", "")}</td>
                     <td>{agent.reasoning}</td>
-                    <td>{agent.failClosed ? "fail-closed" : agent.fallbacks.map((item) => item.replace("openai/", "")).join(", ")}</td>
-                    <td><StatusPill value={agent.drift.length ? "drift" : "sync"} tone={agent.drift.length ? "danger" : "success"} /></td>
+                    <td>{agent.failClosed ? "Fara fallback" : agent.fallbacks.map((item) => item.replace("openai/", "")).join(", ")}</td>
+                    <td><span>{agent.runtimeModel?.replace("openai/", "") || "Lipsa"}</span><small>{agent.runtimeReasoning || "Necunoscut"}</small><StatusPill value={agent.drift.length ? "drift" : "sync"} tone={agent.drift.length ? "warning" : "success"} /></td>
                   </tr>
                 ))}
               </tbody>
             </table>
           </div>
-          <small className="registry-version">Registry: {directory.registryVersion} · entitlement: {directory.entitlementStatus}</small>
+          <small className="registry-version">Politica: {directory.policyVersion} · Registru roluri: {directory.registryVersion}</small>
         </>
       ) : null}
     </article>
@@ -1552,9 +1552,11 @@ function ContinuationPanel({ project, continuationState }) {
         <>
           <div className="task-line">
             <strong>{continuation.task?.id || "Fara task activ"}</strong>
+            <StatusPill value={continuation.selection?.label || "Stare neclasificata"} tone={continuation.selection?.kind === "active_task" ? "warning" : "success"} />
             <span>{continuation.nextAction.label}</span>
             <StatusPill value={continuation.nextAction.code} tone={continuation.nextAction.approvalRequired ? "warning" : "success"} />
           </div>
+          {continuation.selection?.reason ? <p className="muted continuation-selection-reason">{continuation.selection.reason}</p> : null}
           <dl className="task-meta compact">
             <div><dt>Owner</dt><dd>{continuation.routing?.owner || "De alocat"}</dd></div>
             <div><dt>Reviewer</dt><dd>{continuation.routing?.reviewer || "De alocat"}</dd></div>
@@ -1586,6 +1588,192 @@ function ContinuationPanel({ project, continuationState }) {
       ) : null}
     </article>
   );
+}
+
+function UnifiedConversationPanel({ project, tasks }) {
+  const [conversations, setConversations] = useState([]);
+  const [activeId, setActiveId] = useState("");
+  const [detail, setDetail] = useState(null);
+  const [draft, setDraft] = useState("");
+  const [provider, setProvider] = useState("codex");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const [notice, setNotice] = useState("");
+  const [liveText, setLiveText] = useState("");
+  const [model, setModel] = useState("");
+  const [reasoning, setReasoning] = useState("");
+  const [accessMode, setAccessMode] = useState("read-only");
+  const [route, setRoute] = useState(null);
+  const [routeError, setRouteError] = useState("");
+  const [routeGate, setRouteGate] = useState(null);
+  const selectedProvider = provider === "auto" ? (detail?.conversation?.preferredProvider === "auto" ? "codex" : detail?.conversation?.preferredProvider || "codex") : provider;
+
+  const reload = async (id = activeId) => {
+    const data = await apiRequest(`/conversations?projectSlug=${encodeURIComponent(project.slug)}`);
+    setConversations(data.conversations || []);
+    const selectedId = id || data.conversations?.[0]?.id || "";
+    setActiveId(selectedId);
+    if (selectedId) {
+      const selected = await apiRequest(`/conversations/${encodeURIComponent(selectedId)}`);
+      setDetail(selected);
+      if (selectedId !== activeId) setProvider(selected.conversation.preferredProvider);
+    } else setDetail(null);
+  };
+
+  useEffect(() => { reload("").catch((err) => setError(err.message)); }, [project.slug]);
+  useEffect(() => {
+    if (!activeId) { setRoute(null); return undefined; }
+    let active = true;
+    setRoute(null); setRouteGate(null); setRouteError("");
+    const timer = setTimeout(() => {
+      apiRequest(`/conversations/${encodeURIComponent(activeId)}/route`, { method: "POST", body: JSON.stringify({ provider,
+        model: selectedProvider === "claude" ? "" : model, reasoning, accessMode, message: draft }) })
+        .then((data) => { if (active) { setRoute(data.route); setRouteGate(data.preflight); } })
+        .catch((err) => { if (active) setRouteError(err.message); });
+    }, 250);
+    return () => { active = false; clearTimeout(timer); };
+  }, [activeId, provider, model, reasoning, accessMode, draft, detail?.conversation?.preferredProvider]);
+  useEffect(() => {
+    if (!activeId) return undefined;
+    const stream = new EventSource(`${API_BASE}/conversations/${encodeURIComponent(activeId)}/events`);
+    stream.onmessage = (event) => {
+      try {
+        const update = JSON.parse(event.data);
+        if (update.type === "delta") setLiveText((current) => (current + update.text).slice(-30000));
+        if (update.type === "status" || update.type === "activity") {
+          if (update.type === "status" && ["completed", "failed", "cancelled"].includes(update.status)) setLiveText("");
+          reload(activeId).catch((err) => setError(err.message));
+        }
+      } catch { /* Ignore malformed streaming events; persisted transcript remains canonical. */ }
+    };
+    return () => stream.close();
+  }, [activeId]);
+
+  const create = async () => {
+    if (busy) return;
+    setBusy(true); setError(""); setNotice("");
+    try {
+      const task = tasks.find((item) => ["in_progress", "ready", "blocked"].includes(item.status));
+      const data = await apiRequest("/conversations", { method: "POST", body: JSON.stringify({ projectSlug: project.slug, taskId: task?.id || "", title: task?.title || "Conversație nouă" }) });
+      await reload(data.conversation.id);
+    } catch (err) { setError(err.message); } finally { setBusy(false); }
+  };
+
+  const saveMessage = async (event) => {
+    event.preventDefault();
+    if (!activeId || !draft.trim() || busy) return;
+    setBusy(true); setError(""); setNotice("");
+    try {
+      await apiRequest(`/conversations/${encodeURIComponent(activeId)}/messages`, { method: "POST", body: JSON.stringify({ content: draft }) });
+      setDraft("");
+      setNotice("Mesaj salvat în Agent Hub. Execuția modelului nu a fost pornită.");
+      await reload(activeId);
+    } catch (err) { setError(err.message); } finally { setBusy(false); }
+  };
+
+  const prepareHandoff = async () => {
+    if (!activeId || busy) return;
+    setBusy(true); setError(""); setNotice("");
+    try {
+      await apiRequest(`/conversations/${encodeURIComponent(activeId)}/handoff`, { method: "POST", body: JSON.stringify({ provider }) });
+      setNotice(`Contextul pentru ${provider === "codex" ? "Codex" : "Claude"} a fost salvat local. Worker-ul nu a fost lansat.`);
+      await reload(activeId);
+    } catch (err) { setError(err.message); } finally { setBusy(false); }
+  };
+
+  const runProvider = async (message = "") => {
+    if (!activeId || busy || !route || !routeGate?.eligible) return;
+    setBusy(true); setError(""); setNotice(""); setLiveText("");
+    try {
+      if (message.trim()) {
+        await apiRequest(`/conversations/${encodeURIComponent(activeId)}/messages`, { method: "POST", body: JSON.stringify({ content: message }) });
+        setDraft("");
+      }
+      const data = await apiRequest(`/conversations/${encodeURIComponent(activeId)}/execute`, {
+        method: "POST", body: JSON.stringify({ provider, model: selectedProvider === "claude" ? "" : model, reasoning, accessMode, confirm: "RUN_APPROVED_PROVIDER" }),
+      });
+      setNotice(`${data.run.provider} · ${data.run.model} · ${data.run.reasoningLevel} · OpenClaw · ${data.run.status}`);
+      await reload(activeId);
+    } catch (err) { setError(err.message); await reload(activeId).catch(() => {}); } finally { setBusy(false); }
+  };
+
+  const stopProvider = async () => {
+    if (!activeId || busy) return;
+    setBusy(true); setError("");
+    try {
+      await apiRequest(`/conversations/${encodeURIComponent(activeId)}/stop`, { method: "POST", body: "{}" });
+      setNotice("Oprirea a fost cerută; așteaptă confirmarea stării run-ului.");
+      await reload(activeId);
+    } catch (err) { setError(err.message); } finally { setBusy(false); }
+  };
+
+  const running = detail?.runs?.some((item) => item.status === "running");
+  const latestRun = detail?.runs?.at(-1);
+  const runAllowed = project.slug === "ifrim-agent-hub";
+
+  return <article className="panel wide unified-conversation" aria-label="Conversație coordonată">
+    <div className="panel-heading panel-heading-actions">
+      <div className="panel-heading-title"><MessageSquare size={18} /><h3>Conversație coordonată</h3></div>
+      <button type="button" className="icon-button" onClick={create} disabled={busy} title="Creează o conversație în proiect"><Plus size={16} /> Nouă</button>
+    </div>
+    <div className="conversation-toolbar">
+      <label>Conversație
+        <select value={activeId} onChange={(event) => reload(event.target.value).catch((err) => setError(err.message))}>
+          {!conversations.length ? <option value="">Nicio conversație</option> : null}
+          {conversations.map((item) => <option key={item.id} value={item.id}>{item.title}</option>)}
+        </select>
+      </label>
+      <label>Provider
+        <select value={provider} onChange={(event) => setProvider(event.target.value)} disabled={!activeId}>
+          <option value="auto">Auto</option><option value="codex">Codex</option><option value="claude">Claude</option>
+        </select>
+      </label>
+      <button type="button" className="icon-button" disabled={!activeId || busy || running || provider === "auto"} onClick={prepareHandoff} title="Salvează contextul fără a porni modelul"><Save size={16} /> Pregătește handoff</button>
+      <label>Model<select value={model} disabled={!activeId || running || selectedProvider === "claude"} onChange={(event) => { setModel(event.target.value); setReasoning(""); }}>
+        <option value="">Adaptiv</option><option value="openai/gpt-6-luna">GPT-6 Luna</option><option value="openai/gpt-6-sol">GPT-6 Sol</option><option value="openai/gpt-6-astra">GPT-6 Astra</option>
+      </select></label>
+      <label>Raționament<select value={reasoning} disabled={!activeId || running} onChange={(event) => setReasoning(event.target.value)}>
+        <option value="">Adaptiv</option><option value="low">Ușor</option><option value="medium">Mediu</option><option value="high">Ridicat</option><option value="xhigh">Foarte ridicat</option><option value="max">Maxim</option>
+        {selectedProvider !== "claude" && model !== "openai/gpt-6-luna" ? <option value="ultra">Ultra</option> : null}
+      </select></label>
+      <label>Acces<select value={accessMode} disabled={!activeId || running} onChange={(event) => setAccessMode(event.target.value)}><option value="read-only">Doar citire</option><option value="workspace">Modificări în proiect</option></select></label>
+      <button type="button" className="icon-button" disabled={!activeId || busy || running || !runAllowed || !route || !routeGate?.eligible} onClick={() => runProvider()} title={routeGate?.blocker || "Continuă prin OpenClaw"}><Bot size={16} /> Reia / Rulează</button>
+      <button type="button" className="icon-button danger" disabled={!running || busy} onClick={stopProvider} title="Oprește providerul activ"><ShieldCheck size={16} /> Oprește</button>
+    </div>
+    {detail ? <>
+      <div className="conversation-meta"><span>Task: {detail.conversation.activeTaskId || "nealocat"}</span><span>Workspace: {detail.conversation.workspace}</span><span>Stare: {detail.conversation.status}</span></div>
+      <div className="conversation-run-meta" aria-label="Execuție provider">
+        <span>Următoarea rută: <strong>{route ? `${route.provider} · ${route.model} · ${route.reasoning} · OpenClaw` : routeError || "Se verifică..."}</strong></span>
+        {routeGate?.eligible && routeGate.verification === "runtime_pending" && !running ? <span>Validare runtime: <strong>în așteptare</strong></span> : null}
+        {latestRun ? <><span>Ultima rulare: <strong>{latestRun.provider} · {latestRun.model} · {latestRun.reasoningLevel}</strong></span><span>Stare: <strong>{latestRun.status}</strong></span>
+          <span>{latestRun.metadata?.actual?.verified ? "Verificat" : "Raportat, neverificat"}: <strong>{latestRun.metadata?.actual ? `${latestRun.metadata.actual.provider || "necunoscut"} · ${latestRun.metadata.actual.model || "necunoscut"} · ${latestRun.metadata.actual.reasoning || "raționament neraportat"}` : "încă neconfirmat"}</strong></span>
+          <span>Execuție: <strong>{latestRun.metadata?.transport === "openclaw" ? "OpenClaw" : latestRun.metadata?.pid ? `proces local · PID ${latestRun.metadata.pid}` : "neconfirmată"}</strong></span>
+          {openClawSessionLink(latestRun.metadata) ? <a className="icon-button" href={openClawSessionLink(latestRun.metadata)} target="_blank" rel="noreferrer" title="Deschide sesiunea OpenClaw"><ExternalLink size={16} /> OpenClaw</a> : null}
+          {latestRun.metadata?.remoteStateUnknown ? <span role="alert">Stare remote neconfirmată; lease păstrat.</span> : null}
+        </> : null}
+      </div>
+      {runAllowed && routeGate?.blocker ? <p className="inline-error" role="status">{routeGate.blocker}</p> : null}
+      {latestRun?.metadata?.activity?.length ? <div className="conversation-activity"><strong>Activitate recentă</strong><ul>{latestRun.metadata.activity.slice(-8).map((item, index) => <li key={`${item.at}-${index}`}>{item.label} <time>{new Date(item.at).toLocaleTimeString("ro-RO")}</time></li>)}</ul></div> : null}
+      {!runAllowed ? <p className="conversation-scope" role="status">Execuția directă este momentan aprobată doar pentru Ifrim Agent Hub. În acest proiect poți păstra conversația, dar lansarea unui worker necesită o poartă de aprobare separată.</p> : null}
+      <div className="conversation-timeline" role="log" aria-live="polite">
+        {(detail.messages || []).length ? detail.messages.map((item) => <div className={`conversation-message ${item.role}`} key={item.id}>
+          <strong>{item.role === "user" ? "Eu" : item.role === "system" ? "Agent Hub" : item.provider || "Agent"}</strong>
+          <p>{item.content}</p>
+          <time>{new Date(item.timestamp).toLocaleString("ro-RO")}</time>
+        </div>) : <p className="muted">Niciun mesaj.</p>}
+      </div>
+      {liveText ? <pre className="conversation-live" aria-live="polite">{liveText}</pre> : null}
+      <form className="conversation-compose" onSubmit={saveMessage}>
+        <textarea value={draft} onChange={(event) => setDraft(event.target.value)} maxLength={40000} rows={3} placeholder="Mesaj pentru task..." aria-label="Mesaj" />
+        <div className="conversation-actions">
+          <button type="submit" className="icon-button" disabled={busy || !draft.trim()}><Save size={16} /> Salvează mesaj</button>
+          <button type="button" className="icon-button primary" disabled={busy || running || !draft.trim() || !runAllowed || !route || !routeGate?.eligible} onClick={() => runProvider(draft)}><Bot size={16} /> Trimite și rulează</button>
+        </div>
+      </form>
+    </> : <p className="muted">Creează o conversație pentru a păstra transcriptul și starea taskului.</p>}
+    {notice ? <p className="muted" role="status">{notice}</p> : null}
+    {error ? <p className="inline-error" role="alert">{error}</p> : null}
+  </article>;
 }
 
 function ProjectDetail({ project, projects, hubState }) {
@@ -1671,6 +1859,7 @@ function ProjectDetail({ project, projects, hubState }) {
       </section>
 
       <section className="panel-grid">
+        <UnifiedConversationPanel key={`conversation:${project.slug}`} project={project} tasks={projectTasks} />
         <article className="panel wide">
           <div className="panel-heading">
             <ClipboardList size={18} />
