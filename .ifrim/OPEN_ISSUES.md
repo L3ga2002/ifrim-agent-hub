@@ -5,7 +5,7 @@
 - HUB-018 P1: automatic Hub backup timed out before Claude admission. Local exclusion/reparse-point source fix requires final focused/full QA, independent review, exact idle-API reload and a valid complete real backup; preserve the failed partial ZIP.
 - HUB-018 P1: native Claude turn and actual cancellation/browser acceptance remain unverified. Keep the execution gate suspended and do not retry until backup evidence and approval are current.
 - HUB-018 P2: continuation API contract timed out at30s in a full serial run; it passed separately in24.5s. Investigate latency without masking the timeout.
-- GitHub handoff: local source/tests/reports must be scanned, committed and pushed to the private Agent Hub repository; never include `.ifrim/private`, backups, `.env`, output or credentials. Verify remote state after push.
+- GitHub handoff was pushed as a WIP snapshot to the private Agent Hub `main`; this does not close HUB-018 or authorize a release. Continue excluding `.ifrim/private`, backups, `.env`, output and credentials from future commits.
 - Dependency audit: `nanoid` and `postcss` each have `high` advisories reported by `npm audit --audit-level=moderate`. This handoff is WIP, not a release. Assess supported updates and verify tests before release.
 
 

@@ -1,6 +1,6 @@
 # Next Session - Ifrim Agent Hub
 
-## Latest Handoff - 2026-09-29, GitHub Preparation
+## Latest Handoff - 2026-09-29, GitHub WIP Sync
 
 - Read `.ifrim/OPUS_HANDOFF.md` for the exact workspace/source map and current evidence. This paragraph supersedes older pending/blocked timestamps below.
 - HUB-018 remains `in_progress`; owner lock `LOCK-mumsn13e-2kew8n` retained; execution gate suspended. Codex native run eb17 succeeded with Luna/max/no fallback, but Claude run a681 failed before model admission at the automatic backup gate. No duplicate retry or lease remains.
@@ -8,6 +8,7 @@
 - Backup failure `backup-mun1k141-oaysqi` exceeded120s; partial ZIP preserved. Source now normalizes exclusions for BACKUPS/Hub private/.env and ignores reparse points. Real ZIP fixture passed before final reparse-point guard; run it again, perform full QA, then one complete Hub backup with manifest and entry inspection before any new Claude acceptance.
 - Latest broad serial test run:551tests/549PASS/1FAIL continuationAPI30s timeout/1SKIP. The continuation test passed alone in24.5s; latency remains open. Backup ZIP fixture passed after the reparse-point guard, but Windows denied the file-symlink canary. Build passed. Do not call this a fully green regression.
 - Pre-GitHub local source backup `2026-09-29T19-28-50-080Z-pre-github-handoff.zip`:153files,0skipped,0private entries. No production deployment or external send occurred.
+- The source/tests/reports and Opus handoff were committed and pushed to the private Agent Hub `main`. This is a WIP synchronization only, not HUB-018 completion or deployment. Revalidate `git status` and remote SHA on resume.
 
 ## Current Resume - 2026-09-29, Native Codex Accepted; Gateway Recovery
 

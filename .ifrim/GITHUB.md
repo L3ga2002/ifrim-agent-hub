@@ -5,6 +5,7 @@
 - Visibility: private
 - Default branch: `main`
 - Created for this local Agent Hub project on 2026-07-13.
+- 2026-09-29: repository privacy and `main` were verified through GitHub CLI; current local source was synchronized as a WIP handoff, not a release.
 - Rule: push only this project to this repository. Do not reuse or overwrite another IfrimDigital repository.
 
 ## Protection

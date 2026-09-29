@@ -34,7 +34,7 @@ Updated: 2026-09-29. This is a source and state handoff, not a claim that HUB-01
 
 ## Git And Safety
 
-- Baseline local `main`/`origin/main` was `5e9025c` before this handoff. A large working tree of source, tests and reports has not yet been proven pushed. Check `git status`, `git log` and the remote; do not assume a clone has these files until the push succeeds.
+- The WIP source, tests and reports were committed and pushed to the private repository's `main` after the baseline `5e9025c`. Verify `git status`, `git log` and the remote at the start of work; a GitHub sync does not imply a release or HUB-018 acceptance.
 - The repo is private. `.ifrim/private/`, `.ifrim/BACKUPS/`, `.ifrim/tmp/`, `.env*`, generated output and dependencies are ignored. Root OpenClaw bootstrap templates are local artifacts, not project policy; use `.ifrim/AGENTS.md` and `CLAUDE.md`.
 - Before changing behavior: checkpoint, task lock, owner separate from reviewer, QA, tests/build/API/browser checks. Preserve all project/client data and other repositories. No API billing, external sends, unattended model launch, destructive cleanup, Git history rewrite or deploy.
 
