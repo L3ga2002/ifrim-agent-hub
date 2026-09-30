@@ -411,7 +411,7 @@ function ReadyView({ onStart, disabled }) {
           <span className="small">Modul LIVE_VALIDATION, poarta și grantul „Lega (voce)” se setează în Integrări → Validare live.</span>
         </Notice>
       ) : <Notice tone="info" title="Gata de pornire">Sesiune de maxim {d.settings.maxSessionMinutes} min; se oprește singură după {d.settings.idleTimeoutS} s de liniște (nu cât timp agentul lucrează).</Notice>}
-      <button className="btn primary" disabled={disabled || failed.length > 0} onClick={onStart}><Mic size={15} />Pornește Lega</button>
+      <button className="btn primary" disabled={disabled || failed.length > 0} onClick={async () => { await Promise.resolve(status.reload?.()); onStart(); }}><Mic size={15} />Pornește Lega</button>
     </div>
   );
 }

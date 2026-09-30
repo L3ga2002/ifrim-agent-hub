@@ -108,7 +108,10 @@ rl.on("line", async (line) => {
       // Servers disabled per process arrive as `-c mcp_servers.<name>.enabled=false`; lega-mcp-active keeps one running
       // (what an empty `mcp_servers={}` override really does: Codex deep-merges layers, so nothing is removed).
       const disabled = args.map((a) => (a.match(/^mcp_servers\.([A-Za-z0-9_-]+)\.enabled=false$/) || [])[1]).filter(Boolean);
-      const data = [...disabled.map((name) => ({ name, runtimeStatus: "disabled" })), ...(scenario === "lega-mcp-active" ? [{ name: "fs", runtimeStatus: "connected" }] : [])];
+      // A plugin-provided server (like Computer Use's cua_repl) stays up unless plugins are disabled for the process.
+      const pluginsOff = args.includes("features.plugins=false");
+      const data = [...disabled.map((name) => ({ name, runtimeStatus: "disabled" })), ...(scenario === "lega-mcp-active" ? [{ name: "fs", runtimeStatus: "connected" }] : []),
+        ...(pluginsOff ? [] : [{ name: "cua_repl", runtimeStatus: "connected" }])];
       return send({ id: msg.id, result: { data, nextCursor: null } });
     }
     case "turn/interrupt":

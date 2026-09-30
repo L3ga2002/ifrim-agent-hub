@@ -83,9 +83,11 @@ export function createLega({ bus, live, clock, settings, gate, grants, projects,
     try {
       current.handle = await current.startPromise;
     } catch (error) {
+      // No GPT-Live call was created: the session never happened, so its grant attempt is given back.
+      if (!error.realtimeRequested) { try { bus.transaction(() => grants.refundAttempt(grantId, "hub", `Lega start failed before voice: ${String(error.message).slice(0, 120)}`)); } catch { /* reported below */ } }
       if (current.status !== "ended" && !current.stopping) {
         finalize(current, error.category === "cancelled" ? "cancelled" : `failed: ${String(error.message).slice(0, 200)}`);
-        bus.emit({ type: "lega.session.failed", scopeType: "system", scopeId: id, source: "hub", payload: { category: error.category || "transport", message: String(error.message).slice(0, 300), preInference: true } });
+        bus.emit({ type: "lega.session.failed", scopeType: "system", scopeId: id, source: "hub", payload: { category: error.category || "transport", message: String(error.message).slice(0, 300), preInference: !error.realtimeRequested, grantRefunded: !error.realtimeRequested } });
       }
       const category = ["quota", "billing", "policy", "authentication"].includes(error.category) ? error.category : error.category === "cancelled" ? "conflict" : "transport";
       throw new HubError(category, `Lega nu a pornit: ${String(error.message).slice(0, 300)}`);

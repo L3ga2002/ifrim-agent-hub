@@ -69,6 +69,19 @@ export function createGrants({ db, bus, clock }) {
     return get(id);
   }
 
+  /**
+   * Gives back one attempt taken by a start that failed before any model/voice call existed (e.g. a Lega pre-flight
+   * refusal). Never revives a revoked or expired grant.
+   */
+  function refundAttempt(id, actor = "hub", reason = "") {
+    const now = clock().toISOString();
+    const result = db.prepare(`UPDATE live_grants SET attempts_used = attempts_used - 1,
+      status = CASE WHEN status = 'exhausted' AND expires_at > ? THEN 'active' ELSE status END
+      WHERE id = ? AND attempts_used > 0 AND status IN ('active', 'exhausted')`).run(now, id);
+    if (result.changes === 1) bus.append({ type: "grant.refunded", scopeType: "grant", scopeId: id, source: actor, payload: { reason: String(reason).slice(0, 200) } });
+    return get(id);
+  }
+
   function revoke(id, actor) {
     db.prepare("UPDATE live_grants SET status = 'revoked' WHERE id = ? AND status = 'active'").run(id);
     bus.append({ type: "grant.revoked", scopeType: "grant", scopeId: id, source: actor, payload: {} });
@@ -83,7 +96,7 @@ export function createGrants({ db, bus, clock }) {
   }
 
   const list = () => db.prepare("SELECT * FROM live_grants ORDER BY created_at DESC LIMIT 50").all().map(rowTo);
-  return { create, get, findUsable, problem, consumeAttempt, revoke, revokeAll, list };
+  return { create, get, findUsable, problem, consumeAttempt, refundAttempt, revoke, revokeAll, list };
 }
 
 /** Latest provider inspections (installation + probe). Stored without identities or secrets. */

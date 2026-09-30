@@ -28,6 +28,9 @@ export const CODEX_VOICE_ALLOWED_METHODS = new Set([
 export const CODEX_VOICE_EXTRA_ARGS = Object.freeze([
   "-c", 'experimental_realtime_ws_backend_prompt=""', // a config prompt would replace the Lega persona
   "-c", "agents.enabled=false", // no subagents behind Lega (they would escape the Hub's accounting)
+  // Plugins bring their own MCP servers (e.g. Computer Use's cua_repl, seen live on 2026-09-30); none are allowed behind Lega.
+  "-c", "features.plugins=false",
+  "-c", "features.remote_plugin=false",
 ]);
 
 /** Per-process args that disable each named MCP server (only names addressable as a dotted path; others fail the gate). */
@@ -56,6 +59,7 @@ export function createCodexRealtime({ codex, supervisor }) {
     let threadId = "";
     let stopped = false;
     let stopping = null;
+    let realtimeRequested = false;
     const activeTurns = new Set();
     const turnText = new Map(); // turnId -> streamed agent text
     const deferred = () => { let resolve; let reject; const promise = new Promise((a, b) => { resolve = a; reject = b; }); promise.catch(() => {}); return { promise, resolve, reject }; };
@@ -203,6 +207,7 @@ export function createCodexRealtime({ codex, supervisor }) {
       }
 
       check();
+      realtimeRequested = true; // from here a GPT-Live call may exist; earlier failures created none
       await session.peer.request("thread/realtime/start", { threadId, outputModality: "audio", transport: { type: "webrtc", sdp: offerSdp }, version: "v3", voice,
         prompt: legaVoicePrompt({ ownerName }), clientManagedHandoffs: true, includeStartupContext: false, flushTranscriptTailOnSessionEnd: false, backendReasoningStatus: false }, 30000);
       const info = await withTimeout(startedD.promise, 20000, "thread/realtime/started");
@@ -218,8 +223,8 @@ export function createCodexRealtime({ codex, supervisor }) {
     } catch (error) {
       signal?.removeEventListener("abort", onAbort);
       await stop().catch(() => {});
-      if (signal?.aborted) throw cancelled();
-      throw Object.assign(error, { category: error.category || classifyText(error.message) });
+      if (signal?.aborted) throw Object.assign(cancelled(), { realtimeRequested });
+      throw Object.assign(error, { category: error.category || classifyText(error.message), realtimeRequested });
     }
   }
 

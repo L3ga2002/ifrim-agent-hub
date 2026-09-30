@@ -27,6 +27,8 @@ test("M03-LEGA-13 MCP: owner servers are disabled by name and verified inactive;
     await enableLega(t.hub);
     const s = await startLega(t.hub);
     const launch = t.readLog("codex").filter((l) => l.launchArgs).at(-1).launchArgs;
+    // Plugin-provided MCP servers (Computer Use's cua_repl) are off because plugins are off for the Lega process.
+    assert.ok(launch.includes("features.plugins=false") && launch.includes("features.remote_plugin=false"));
     assert.ok(launch.includes("mcp_servers.fs.enabled=false"));
     assert.ok(launch.includes("mcp_servers.git_tools.enabled=false"));
     await dispatch(t.hub, "lega.session.stop", { sessionId: s.sessionId });
@@ -37,6 +39,10 @@ test("M03-LEGA-13 MCP: owner servers are disabled by name and verified inactive;
     await enableLega(t.hub);
     await assert.rejects(startLega(t.hub), (e) => e.category === "policy" && /MCP/.test(e.message));
     assert.equal(t.readLog("codex").some((l) => l.method === "thread/realtime/start"), false, "voice never starts while an MCP server is active");
+    // No GPT-Live call was created, so the session's grant attempt is given back (live finding 2026-09-30).
+    const voiceGrant = t.hub.grants.list().find((g) => g.kind === "voice");
+    assert.deepEqual([voiceGrant.attemptsUsed, voiceGrant.status], [0, "active"]);
+    assert.ok(t.hub.bus.query({ limit: 80 }).some((e) => e.type === "grant.refunded"));
   } finally { await t.cleanup(); }
 
   t = await makeTestHub({ codex: "lega-ok" });

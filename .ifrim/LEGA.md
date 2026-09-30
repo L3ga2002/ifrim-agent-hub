@@ -148,6 +148,14 @@ Au fost 4 dimensiuni (securitate, protocol, client browser, ciclu de viață), c
 
 Teste: `m03-lega.test.mjs` (12) + `m03-lega-hardening.test.mjs` (5), toate trecute. Suita V2: 214 teste, 213 trecute + 1 omis de mediu.
 
+## Primul test live (2026-09-30, proprietarul)
+
+- Ambele încercări au fost oprite de verificarea MCP, înainte de orice apel vocal: serverul `cua_repl` (pluginul Computer Use) era activ. Nu era în `mcp_servers`, ci venea dintr-un plugin.
+- **Corectat:**
+  - procesul Lega rulează cu `features.plugins=false` și `features.remote_plugin=false`;
+  - o pornire care eșuează înainte de apelul vocal returnează încercarea din grant (`grant.refunded`).
+- Pre-flight fără model (`node v2/tests/manual/lega-mcp-preflight.mjs`): PASS_LOCAL. Cele 6 servere din config (5 Cloudflare + `node_repl`) sunt dezactivate pe nume, iar niciun server de plugin nu mai e prezent.
+
 ## Riscuri cunoscute
 
 - Metodele `thread/realtime/*` sunt **experimentale** și nedocumentate public: o actualizare Codex le poate schimba. Testele de contract rulează pe fixture; la fiecare actualizare Codex trebuie regenerată schema și refăcut testul live.
