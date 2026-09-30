@@ -1,0 +1,38 @@
+{
+  "version": 1,
+  "verifiedOn": "2026-09-30",
+  "note": "Computer Runtime: medii de calcul și unealta principală per caz de utilizare. Ordinea preferată: connector/API structurat → DOM în browser → control vizual. status: available (Hub-ul îl poate folosi), assisted (îl operezi tu sau vendorul; Hub-ul ține lock-ul și înregistrează rezultatul), blocked, planned.",
+  "environments": [
+    { "id": "hub.preview_http", "kind": "hub_http", "name": "Verificare HTTP locală (Hub)", "provider": "hub", "ownerSurfaceId": "hub.local", "isolation": "none", "controlMode": "structured_api",
+      "status": "available", "statusReason": "GET pe 127.0.0.1/localhost, fără browser", "useCases": ["local-preview-check"], "safety": ["Doar URL-uri locale"] },
+    { "id": "hub.playwright", "kind": "playwright", "name": "Playwright local (Hub)", "provider": "hub", "ownerSurfaceId": "hub.local", "isolation": "browser_profile", "controlMode": "dom",
+      "status": "blocked", "statusReason": "Neinstalat; instalarea descarcă browsere (~150 MB+) și cere aprobarea ta", "useCases": ["web-app-e2e-test"], "safety": ["Profil izolat, fără conturile tale"] },
+    { "id": "hub.desktop_bridge", "kind": "desktop_bridge", "name": "Punte desktop Windows (Hub)", "provider": "hub", "ownerSurfaceId": "hub.local", "isolation": "none", "controlMode": "visual",
+      "status": "planned", "statusReason": "Nu se construiește cât timp computer use nativ acoperă nevoia (decizia Agent Zero / computer use)", "useCases": ["desktop-app-task"], "safety": ["computer.visual_control ALWAYS_ASK"] },
+    { "id": "anthropic.claude_builtin_browser", "kind": "claude_desktop_browser", "name": "Browser integrat Claude desktop", "provider": "anthropic", "ownerSurfaceId": "anthropic.claude_desktop_browser", "isolation": "browser_profile", "controlMode": "dom",
+      "status": "assisted", "statusReason": "Disponibil în sesiunile Claude desktop; profil separat de Chrome", "useCases": ["web-app-e2e-test", "public-web-research"], "safety": ["Profil persistent propriu", "Aprobări de site"] },
+    { "id": "anthropic.claude_in_chrome", "kind": "claude_in_chrome", "name": "Claude in Chrome", "provider": "anthropic", "ownerSurfaceId": "anthropic.claude_in_chrome", "isolation": "none", "controlMode": "dom",
+      "status": "assisted", "statusReason": "Chrome-ul tău cu autentificările tale → browser.native ALWAYS_ASK", "useCases": ["authenticated-web-task"], "safety": ["Conturi reale", "Nicio parolă introdusă de agent"] },
+    { "id": "anthropic.claude_computer_use", "kind": "claude_computer_use", "name": "Claude computer use (desktop)", "provider": "anthropic", "ownerSurfaceId": "anthropic.claude_computer_use", "isolation": "none", "controlMode": "visual",
+      "status": "assisted", "statusReason": "Control vizual prin aplicația Claude; pornit de tine", "useCases": ["desktop-app-task"], "safety": ["Un singur controller pe fereastră", "Stop vizibil"] },
+    { "id": "openai.codex_browser", "kind": "codex_in_app_browser", "name": "Browser Codex (in-app / plugin browser)", "provider": "openai", "ownerSurfaceId": "openai.codex_desktop", "isolation": "browser_profile", "controlMode": "dom",
+      "status": "assisted", "statusReason": "Plugin browser activ în Codex (local); operat din Codex", "useCases": ["web-app-e2e-test", "public-web-research", "authenticated-web-task"], "safety": ["Lock de controller unic"] },
+    { "id": "openai.codex_computer_use", "kind": "codex_computer_use", "name": "Codex computer use (plugin)", "provider": "openai", "ownerSurfaceId": "openai.codex_desktop", "isolation": "none", "controlMode": "visual",
+      "status": "assisted", "statusReason": "Plugin computer-use activ în Codex (local); operat din Codex", "useCases": ["desktop-app-task"], "safety": ["computer.visual_control ALWAYS_ASK"] },
+    { "id": "openai.dots_cloud_computer", "kind": "openai_cloud_computer", "name": "Computer cloud dots", "provider": "openai", "ownerSurfaceId": "openai.dots", "isolation": "cloud", "controlMode": "visual",
+      "status": "planned", "statusReason": "Eligibilitatea planului neconfirmată; fără interfață programatică", "useCases": ["desktop-app-task"], "safety": ["Acces la laptop doar dacă îl conectezi tu"] },
+    { "id": "agent_zero.docker", "kind": "agent_zero", "name": "Agent Zero (container)", "provider": "third_party", "ownerSurfaceId": null, "isolation": "container", "controlMode": "visual",
+      "status": "blocked", "statusReason": "Referință; cere chei API plătite pentru modele (vezi V2_FRAMEWORK_EVALUATION)", "useCases": ["desktop-app-task"], "safety": ["Izolare Docker"] }
+  ],
+  "useCases": [
+    { "id": "local-preview-check", "label": "Verificare preview local", "preference": ["hub.preview_http", "hub.playwright", "anthropic.claude_builtin_browser"] },
+    { "id": "web-app-e2e-test", "label": "Test end-to-end al aplicației locale", "preference": ["hub.playwright", "anthropic.claude_builtin_browser", "openai.codex_browser"],
+      "note": "Playwright este unealta principală structurată odată aprobată; până atunci, browserele native asistate." },
+    { "id": "authenticated-web-task", "label": "Task pe un site unde ești autentificat", "preference": ["anthropic.claude_in_chrome", "openai.codex_browser"],
+      "note": "Mai întâi un connector/API oficial dacă există; browserul real doar asistat." },
+    { "id": "public-web-research", "label": "Cercetare pe web public", "preference": ["anthropic.claude_builtin_browser", "openai.codex_browser"],
+      "note": "Cercetarea nativă (Claude Research / ChatGPT) este preferată; browserul doar pentru verificări punctuale." },
+    { "id": "desktop-app-task", "label": "Aplicație desktop", "preference": ["anthropic.claude_computer_use", "openai.codex_computer_use", "hub.desktop_bridge", "openai.dots_cloud_computer", "agent_zero.docker"],
+      "note": "Control vizual doar când nu există API sau DOM." }
+  ]
+}

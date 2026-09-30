@@ -1,5 +1,78 @@
 # Next Session - Ifrim Agent Hub
 
+## MILESTONE 01 — 2026-09-30 (current; supersedes the V2 REBUILD notes below where they overlap)
+
+- Scope delivered: Dual-Ecosystem Intelligence + Company Runtime + AI Runtime + Core Foundation, version `2.1.0-m01`, schema 2, V2 on http://127.0.0.1:8011/ (BUILD_SAFE, gate suspended). Start checkpoint: `.ifrim/CHECKPOINTS/2026-09-30-milestone-01-start.json`; end checkpoint: `.ifrim/CHECKPOINTS/2026-09-30-milestone-01-done.md`.
+- Audit: `.ifrim/V2_OPENAI_CAPABILITY_AUDIT.md`, `V2_ANTHROPIC_CAPABILITY_AUDIT.md`, `V2_STANDARDS_AUDIT.md`, `V2_AI_ECOSYSTEM_MATRIX.md`, `V2_FRAMEWORK_EVALUATION.md`, `V2_EXECUTION_SURFACES.md` are GENERATED from `v2/config/ecosystem/*.json` by `node v2/scripts/gen-ecosystem-docs.mjs` — edit the JSON, not the Markdown.
+- Other M01 docs: `V2_OWNERSHIP_MAP`, `V2_ARCHITECTURE`, `V2_DATA_MODEL`, `V2_PROVIDER_ARCHITECTURE`, `V2_HANDOFF_PROTOCOL`, `V2_MEMORY_AND_SKILLS`, `V2_SCHEDULING`, `V2_COMPUTER_RUNTIME`, `V2_SUBSCRIPTION_POLICY`, `V2_SECURITY_MODEL`, `V2_TELEMETRY`, `V2_ROUTING`, `V2_BACKUP_RESTORE`, `V2_TEST_REPORT`, `IMPLEMENTATION_STATUS`.
+- Tests: see `V2_TEST_REPORT.md` → Milestone 01 (§70 traceability). V1 suite 551/552 pass on an idle machine (1 symlink skip). `npm audit` 0.
+- Billing/control hardening from the audit (all per process, nothing global):
+  - Claude `-p` refuses `fable`/`best`/`[1m]` models and loads only user settings (`--setting-sources user`).
+  - Claude gets `--no-chrome` plus `CLAUDE_GUARD_ENV`: advisor, fast mode, 1M context, workflows, auto memory, background tasks, cron and auto-updater off; usage-credit, upgrade, login and logout commands hidden.
+  - Claude stops at `init` if `apiKeySource ≠ none` or the model is refused.
+  - Codex refuses a positive/unlimited credit balance and starts every app-server with 12 overrides: fast mode, image generation, skill installs, apps, computer/browser use, memories and multi_agent off, and web search disabled.
+  - Codex pins `approvalsReviewer: "user"` and stops before the turn on another reviewer or a substituted model.
+  - The router picks the newest non-hidden model matching the hint as a whole token.
+- **Nothing was committed, pushed or deployed; no model was started through the Hub; no attestation was recorded for you.** The PC restarted during the work (2026-09-30); the Hub was restarted afterwards (BUILD_SAFE).
+
+### Stare 2026-09-30 (după aprobarea ta)
+
+- Tu ai înregistrat ambele atestări și ai rulat „Verifică contul”:
+  - Codex: `prolite`, fără sold de credite, cea mai încărcată fereastră 70% (plafon 80%), GPT-6.1-Sol raportat;
+  - Claude: `max`.
+- Ai aprobat testul live. Clasificatorul de permisiuni al Claude Code (auto mode) a refuzat ca sesiunea să-l ruleze, considerându-l o acțiune de tip „production deploy”. Refuzul nu a fost ocolit, iar testul **nu a rulat**. Hub-ul a rămas în BUILD_SAFE, cu poarta suspendată.
+- Înainte de test a fost reparată o regresie: regulile de refuz la citire ale proiectului (`.ifrim/private`, `.env`) nu se mai aplicau rulărilor Claude după `--setting-sources user`; acum sunt transmise prin `--disallowedTools`.
+
+### Aprobare LIVE_VALIDATION propusă pentru Milestone 01 (nimic nu a fost pornit)
+
+Precondiții (acțiunile tale, în Integrări): atestarea Codex (sold credite 0 + automatic reload oprit) și atestarea Claude (usage credits + auto-reload oprite); `LIVE_VALIDATION`; grant-urile; `OPEN GATE`.
+
+1. **Codex — verificare cont** (fără inferență): `account/read`, `account/rateLimits/read` (plan, sold de credite), `model/list` (GPT-6.x disponibile). Efect: citire la OpenAI.
+2. **Codex — 2 turnuri read-only** (sandbox read-only, fără rețea, fast mode oprit), grant 2 încercări / 30 min: rezumatul `v2/server/policy/gate.mjs`, apoi același prompt cu întrerupere (`turn/interrupt`).
+3. **Claude Code — 2 turnuri read-only** (Read/Glob/Grep, `dontAsk`), model **explicit** `sonnet` (pe 2.1.175 = Sonnet 4.6; `[1m]` și Fable refuzate), grant 2 încercări / 30 min: același prompt, apoi întrerupere.
+4. **Handoff** Codex → Claude în aceeași conversație (linia `HANDOFF_ACK`), cu checkpoint Hub și referințele native.
+5. **Oglindire nativă**: `native.mirror` după turnuri (sesiunea Claude apare read-only).
+
+Maximum 4 turnuri model. Efecte: consum din allowance; sesiuni noi în `~/.codex` și `~/.claude/projects`; un backup verificat nou. Opțional și separat: actualizarea Claude Code la ≥ 2.1.284 (schimbare globală) pentru Opus 5.5 / Sonnet 5.5.
+
+### Next safe actions
+
+1. Revizuiește `V2_AI_ECOSYSTEM_MATRIX.md`, `V2_FRAMEWORK_EVALUATION.md`, `V2_OWNERSHIP_MAP.md` și ecranele Companie / Ecosisteme / Sistem pe 8011.
+2. Înregistrează atestările și decide aprobarea live de mai sus.
+3. Milestone 02 (JARVIS experience) pornește de la datele și evenimentele M01 (envelope v2, company/mission/task/run, suprafețe, telemetrie) fără redesign structural.
+4. Decide commit-ul (nimic nu a fost commis), instalarea Playwright, cutover-ul V1 și taskul OpenClaw.
+
+## V2 REBUILD — 2026-09-30 (supersedes the operational notes below; history kept)
+
+- V2 lives in `v2/` (server Node 24 + `node:sqlite`, UI React/Vite), runs on **http://127.0.0.1:8011/** next to V1 (3004/8004 untouched). Start/stop: `npm run v2`, `npm run v2:stop`, `npm run v2:status`. Runbook: `.ifrim/RUNBOOK.md`.
+- Level: **BUILD_READY**. `npm run test:v2`: 50 tests, 49 PASS, 0 FAIL, 1 NOT_RUN (Windows file symlink EPERM). `npm run build:v2` PASS; V1 `npm run build` PASS; `npm audit` 0 vulnerabilities (postcss 8.5.28, nanoid 3.3.19; lockfile only).
+- **No model was started, no commit/push/deploy, no external message.** Mode BUILD_SAFE, execution gate suspended. Git: `main` at e9ab563 plus uncommitted V2 work (see `git status`).
+- Real evidence: verified V2 backup `bkp_mun7qdb3_88891aba89` (245 files, 0 skipped, V1+V2 SQLite integrity ok, restore 245/245); real Codex app-server handshake with an empty CODEX_HOME PASS_LOCAL (2.2 s); real `claude auth status` through the Hub: claude.ai / firstParty / max.
+- V1 data imported into V2 (reversible batch; V1 DB untouched): 5 conversations, 38 messages, 26 tasks (open ones BLOCKED with the V1 status in the reason), 20 runs, 81 backup records, 40 historical approvals, 514 events.
+- OpenClaw is retired from the V2 runtime. Gateway PID 23596 on 18790 and the Windows scheduled task are untouched; stopping them is your decision.
+- HUB-018 is **not** closed: its V1 acceptance criteria (native Claude turn via V1, cancellation, browser visibility) were not met. Successor: V2 live validation below. The V1 backup-filter fix was never reloaded into V1 API PID 28392 (V1 retired; V2 backup replaces it).
+
+### Aprobare live propusă (nimic nu a fost pornit)
+
+Scop: LIVE_VALIDATED pentru V2. Proiect: doar Ifrim Agent Hub. Acces: **doar citire** (Codex sandbox readOnly, fără rețea; Claude doar Read/Glob/Grep, `dontAsk`). Fără scrieri de fișiere, commit, push sau mesaje externe.
+
+1. **Codex — verificare cont** (fără inferență): `account/read`, `account/rateLimits/read`, `model/list` pe contul tău ChatGPT. Efect: citire la OpenAI.
+2. **Codex — 2 turnuri**, grant cu 2 încercări, 30 min, model implicit raportat de `model/list`, efort implicit:
+   a. „Citește v2/server/policy/gate.mjs și rezumă verificările porții în 5 puncte. Nu modifica nimic.”
+   b. același prompt cu întrerupere manuală după primul text (testează `turn/interrupt`).
+3. **Claude Code — 2 turnuri**, grant cu 2 încercări, 30 min, model implicit din setări (proiectul are `fallbackModel` [opus, haiku]; modelul real se înregistrează): același prompt, apoi întrerupere.
+4. **Handoff** Codex → Claude în aceeași conversație (folosește turnurile de la 2–3). Se verifică linia `HANDOFF_ACK`.
+
+Efecte posibile: consum din allowance-ul planurilor; sesiuni noi în `~/.codex` și `~/.claude/projects`; un backup verificat nou în `.ifrim/BACKUPS/v2`. Maximum 4 turnuri model în total.
+Precondiții (acțiuni ale tale): confirmarea din Integrări că extra usage Claude și consumul automat de credite Codex sunt oprite; `LIVE_VALIDATION`, grant-urile, `OPEN GATE`.
+
+### Next safe actions
+
+1. Revizuiește `.ifrim/REBUILD_DECISIONS.md`, `.ifrim/V2_TEST_REPORT.md`, `.ifrim/IMPLEMENTATION_STATUS.md` și UI-ul pe 8011.
+2. Decide aprobarea live de mai sus (sau o variantă mai strictă).
+3. Decide soarta V1 (tray/autostart, porturi 3004/8004) și a OpenClaw Gateway 23596 + taskul programat.
+4. Decide commit-ul muncii V2 (nimic nu a fost commis). Diff-ul și fișierele noi sunt în `v2/`, `.ifrim/*.md`, `package.json`, `package-lock.json`.
+
 ## Latest Handoff - 2026-09-29, GitHub WIP Sync
 
 - Read `.ifrim/OPUS_HANDOFF.md` for the exact workspace/source map and current evidence. This paragraph supersedes older pending/blocked timestamps below.

@@ -1,0 +1,46 @@
+import { redactDeep, redactText } from "../security/redact.mjs";
+import { parse } from "../storage/db.mjs";
+
+const MAX_TRANSCRIPT_CHARS = 24000;
+const MAX_MESSAGE_CHARS = 4000;
+
+/**
+ * Builds the turn input from the canonical Hub conversation: rules, pending handoff package (if this
+ * provider is the handoff target), decisions, bounded recent transcript and the latest request.
+ * Hidden model reasoning is never requested or transferred.
+ */
+export function buildTurnPrompt({ db, conversation, project, git, provider, runId }) {
+  const handoff = db.prepare("SELECT * FROM handoffs WHERE conversation_id = ? AND to_provider = ? AND status = 'ready' ORDER BY created_at DESC LIMIT 1").get(conversation.id, provider);
+  const decisions = db.prepare("SELECT title, decision, source_ref FROM decisions WHERE (conversation_id = ? OR project_id = ?) AND status = 'active' ORDER BY created_at DESC LIMIT 15").all(conversation.id, project.id);
+  const summary = db.prepare("SELECT content, covers_until_position FROM summaries WHERE conversation_id = ? ORDER BY covers_until_position DESC LIMIT 1").get(conversation.id);
+  const rows = db.prepare("SELECT role, provider, content, position FROM messages WHERE conversation_id = ? AND status IN ('final','interrupted') ORDER BY position DESC LIMIT 40").all(conversation.id).reverse();
+  const latestUser = [...rows].reverse().find((m) => m.role === "user");
+
+  const transcript = [];
+  let used = 0;
+  for (const message of [...rows].reverse()) {
+    if (message === latestUser) continue;
+    const text = redactText(message.content).slice(0, MAX_MESSAGE_CHARS);
+    if (used + text.length > MAX_TRANSCRIPT_CHARS) break;
+    used += text.length;
+    transcript.unshift(`[#${message.position} ${message.role}${message.provider ? `/${message.provider}` : ""}] ${text}`);
+  }
+
+  const sections = [
+    "You are continuing work inside Ifrim Agent Hub. The Hub conversation is canonical; this turn is one step of it.",
+    `Project: ${project.name} at ${project.path}. Branch ${git.branch || "?"} @ ${git.head ? git.head.slice(0, 12) : "?"}; ${git.dirty.length} modified, ${git.untracked.length} untracked files.`,
+    "Rules: do not commit, push, tag, deploy, send messages, delete data, change credentials or billing, or start other agents. Stay inside the project directory. Never read .ifrim/private, .ifrim/BACKUPS, .ifrim/tmp, .env files or any credential file. If a step needs one of these, stop and describe the exact action for the user to approve.",
+    "Report what you verified (commands and results) separately from assumptions. Do not claim tests passed unless you ran them in this turn.",
+  ];
+  if (handoff) {
+    const pkg = redactDeep(parse(handoff.package_json, {}));
+    const bounded = JSON.stringify({ ...pkg, dirty_diff: pkg.dirty_diff ? `${String(pkg.dirty_diff).slice(0, 12000)}${String(pkg.dirty_diff).length > 12000 ? "\n[diff truncated; inspect git diff locally]" : ""}` : "" }, null, 2);
+    sections.push(`HANDOFF from ${handoff.from_provider}. Start your reply with exactly: HANDOFF_ACK ${handoff.id} ${handoff.package_sha256.slice(0, 12)}\nThen restate the objective and constraints in one short paragraph, inspect the repository state yourself and continue with next_safe_action.\nHandoffPackage:\n${bounded}`);
+  }
+  if (decisions.length) sections.push(`Decisions (with sources):\n${decisions.map((d) => `- ${d.title}: ${redactText(d.decision)}${d.source_ref ? ` [${d.source_ref}]` : ""}`).join("\n")}`);
+  if (summary) sections.push(`Summary of messages up to #${summary.covers_until_position} (originals remain in the Hub):\n${redactText(summary.content).slice(0, 6000)}`);
+  if (transcript.length) sections.push(`Recent conversation:\n${transcript.join("\n")}`);
+  sections.push(`Current request (#${latestUser?.position ?? "?"}):\n${redactText(latestUser?.content || "")}`);
+
+  return { text: sections.join("\n\n"), packageRef: handoff ? { handoffId: handoff.id, sha256: handoff.package_sha256 } : null, runId };
+}

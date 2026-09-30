@@ -1,0 +1,69 @@
+/* Ifrim Agent Hub V2 design tokens. Carbon/graphite layers, cold light, amber reserved for approvals. */
+:root {
+  --bg: #080b10;
+  --bg-rail: #0a0f15;
+  --surface: #101722;
+  --surface-2: #131c29;
+  --raised: #172231;
+  --raised-2: #1d2a3b;
+  --line: rgba(168, 183, 199, 0.13);
+  --line-strong: rgba(168, 183, 199, 0.26);
+
+  --text: #eaf2fa;
+  --text-2: #a8b7c7;
+  --text-3: #8797a9;
+
+  --accent: #65d9ff;
+  --accent-strong: #8fe4ff;
+  --accent-soft: rgba(101, 217, 255, 0.12);
+  --accent-ink: #03202b;
+  --approval: #e9b56d;
+  --approval-soft: rgba(233, 181, 109, 0.14);
+  --approval-ink: #2b1b05;
+  --danger: #ff8f85;
+  --danger-soft: rgba(255, 143, 133, 0.12);
+  --ok: #86dcbb;
+  --ok-soft: rgba(134, 220, 187, 0.12);
+  --info: #b7c6ff;
+
+  --font: "Segoe UI Variable Text", "Segoe UI", system-ui, -apple-system, Roboto, "Helvetica Neue", Arial, sans-serif;
+  --font-display: "Segoe UI Variable Display", "Segoe UI", system-ui, -apple-system, Roboto, Arial, sans-serif;
+  --mono: "Cascadia Code", "Cascadia Mono", Consolas, ui-monospace, monospace;
+
+  --fs-xs: 12px;
+  --fs-s: 13px;
+  --fs-m: 14px;
+  --fs-l: 16px;
+  --fs-xl: 19px;
+  --fs-2xl: 24px;
+  --lh: 1.5;
+
+  --sp-1: 4px;
+  --sp-2: 8px;
+  --sp-3: 12px;
+  --sp-4: 16px;
+  --sp-5: 20px;
+  --sp-6: 24px;
+  --sp-8: 32px;
+
+  --r-s: 4px;
+  --r: 6px;
+  --r-l: 8px;
+
+  --ease: cubic-bezier(0.2, 0.7, 0.2, 1);
+  --d-1: 120ms;
+  --d-2: 200ms;
+  --d-3: 320ms;
+
+  --focus-ring: 0 0 0 2px var(--bg), 0 0 0 4px var(--accent);
+  --shadow: 0 1px 0 rgba(255, 255, 255, 0.03) inset, 0 12px 32px rgba(0, 0, 0, 0.38);
+  --shadow-pop: 0 20px 60px rgba(0, 0, 0, 0.55), 0 0 0 1px var(--line-strong);
+
+  --rail-w: 84px;
+  --top-h: 56px;
+  --bottom-h: 62px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  :root { --d-1: 0ms; --d-2: 0ms; --d-3: 0ms; }
+}

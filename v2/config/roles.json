@@ -1,0 +1,808 @@
+{
+  "version": 2,
+  "evaluatedFrom": ".ifrim-system/AGENT_TEAM_V2.json (23 V1 roles, GPT-5.6 era defaults) and V1 hub model policy (GPT-6 defaults)",
+  "principles": [
+    "A role is an operational configuration, not a running process.",
+    "The role name is never the model name; models are chosen per task from what the provider actually reports.",
+    "Owner, reviewer and QA of one task must be different runs; the reviewer must be a different provider session."
+  ],
+  "roles": [
+    {
+      "id": "chief-of-staff",
+      "name": "Chief of Staff",
+      "department": "executive",
+      "reportsTo": "owner",
+      "responsibilities": [
+        "Objective intake: turn an owner objective into a goal, key results and department missions (proposal first)",
+        "Route work to departments and roles; keep priorities and due dates coherent",
+        "Surface blockers, approvals and risks early; escalate decisions to the owner",
+        "Aggregate results across departments into briefings with evidence"
+      ],
+      "tools": [
+        "memory.search",
+        "git.status",
+        "files.read"
+      ],
+      "memoryScopes": [
+        "COMPANY",
+        "DEPARTMENT",
+        "PROJECT",
+        "MISSION"
+      ],
+      "authority": "READ_ONLY",
+      "stages": [
+        "owner"
+      ],
+      "modelHints": {
+        "codex": [
+          "sol"
+        ],
+        "claude": [
+          "opus"
+        ]
+      },
+      "limits": {
+        "maxRuntimeMin": 20,
+        "maxAttempts": 2
+      },
+      "successCriteria": [
+        "Every goal has measurable key results",
+        "Every proposed mission has a department, an owner role and acceptance criteria",
+        "Nothing is started without the owner confirming the plan"
+      ],
+      "workflow": [
+        "intake",
+        "decompose",
+        "route",
+        "prioritize",
+        "track blockers",
+        "escalate approvals",
+        "aggregate results",
+        "brief"
+      ],
+      "legacy": [
+        "ifrim-orchestrator"
+      ]
+    },
+    {
+      "id": "planner",
+      "name": "Planner",
+      "responsibilities": [
+        "Turn a request into scope, non-goals, acceptance criteria and a task list",
+        "Ask only questions with real impact"
+      ],
+      "tools": [
+        "files.read",
+        "git.status",
+        "memory.search"
+      ],
+      "memoryScopes": [
+        "PROJECT",
+        "AGENT_ROLE"
+      ],
+      "authority": "READ_ONLY",
+      "stages": [
+        "owner"
+      ],
+      "modelHints": {
+        "codex": [
+          "sol",
+          "luna"
+        ],
+        "claude": [
+          "opus",
+          "sonnet"
+        ]
+      },
+      "limits": {
+        "maxRuntimeMin": 20,
+        "maxAttempts": 2
+      },
+      "successCriteria": [
+        "Every task has acceptance criteria",
+        "Out-of-scope items are listed"
+      ],
+      "legacy": [
+        "ifrim-prompt-architect",
+        "ifrim-product"
+      ],
+      "department": "product",
+      "reportsTo": "chief-of-staff"
+    },
+    {
+      "id": "architect",
+      "name": "Architect",
+      "responsibilities": [
+        "Module and data boundaries",
+        "Trade-offs with evidence",
+        "AI/agent architecture"
+      ],
+      "tools": [
+        "files.read",
+        "git.status",
+        "git.diff",
+        "memory.search"
+      ],
+      "memoryScopes": [
+        "PROJECT"
+      ],
+      "authority": "READ_ONLY",
+      "stages": [
+        "owner",
+        "reviewer"
+      ],
+      "modelHints": {
+        "codex": [
+          "astra",
+          "sol"
+        ],
+        "claude": [
+          "opus"
+        ]
+      },
+      "limits": {
+        "maxRuntimeMin": 45,
+        "maxAttempts": 2
+      },
+      "successCriteria": [
+        "Decision recorded with rationale and sources"
+      ],
+      "legacy": [
+        "ifrim-architect",
+        "ifrim-ai-engineer"
+      ],
+      "department": "engineering",
+      "reportsTo": "chief-of-staff"
+    },
+    {
+      "id": "frontend",
+      "name": "Frontend",
+      "responsibilities": [
+        "UI state, forms, API integration",
+        "Loading/empty/error states",
+        "Responsive and accessible implementation",
+        "Desktop app shells when required"
+      ],
+      "tools": [
+        "files.read",
+        "files.edit",
+        "process.build",
+        "process.test",
+        "preview.check"
+      ],
+      "memoryScopes": [
+        "PROJECT",
+        "AGENT_ROLE"
+      ],
+      "authority": "WORKSPACE_EDIT",
+      "stages": [
+        "owner"
+      ],
+      "modelHints": {
+        "codex": [
+          "sol",
+          "luna"
+        ],
+        "claude": [
+          "sonnet",
+          "opus"
+        ]
+      },
+      "limits": {
+        "maxRuntimeMin": 60,
+        "maxAttempts": 2
+      },
+      "successCriteria": [
+        "Build passes",
+        "Screens verified at mobile and desktop widths"
+      ],
+      "legacy": [
+        "ifrim-frontend",
+        "ifrim-desktop"
+      ],
+      "department": "engineering",
+      "reportsTo": "architect"
+    },
+    {
+      "id": "design",
+      "name": "Design",
+      "responsibilities": [
+        "Visual direction, tokens and hierarchy",
+        "State design",
+        "Original identity; no copying"
+      ],
+      "tools": [
+        "files.read",
+        "preview.check"
+      ],
+      "memoryScopes": [
+        "PROJECT",
+        "AGENT_ROLE"
+      ],
+      "authority": "READ_ONLY",
+      "stages": [
+        "owner",
+        "reviewer"
+      ],
+      "modelHints": {
+        "codex": [
+          "sol"
+        ],
+        "claude": [
+          "opus",
+          "sonnet"
+        ]
+      },
+      "limits": {
+        "maxRuntimeMin": 30,
+        "maxAttempts": 2
+      },
+      "successCriteria": [
+        "Tokens and states documented",
+        "Contrast checked"
+      ],
+      "legacy": [
+        "ifrim-design"
+      ],
+      "department": "engineering",
+      "reportsTo": "architect"
+    },
+    {
+      "id": "backend",
+      "name": "Backend",
+      "responsibilities": [
+        "API, persistence, validation, authorization",
+        "Idempotency and concurrency",
+        "Third-party integrations with retries and credential boundaries"
+      ],
+      "tools": [
+        "files.read",
+        "files.edit",
+        "process.test",
+        "git.diff"
+      ],
+      "memoryScopes": [
+        "PROJECT",
+        "AGENT_ROLE"
+      ],
+      "authority": "WORKSPACE_EDIT",
+      "stages": [
+        "owner"
+      ],
+      "modelHints": {
+        "codex": [
+          "sol",
+          "luna"
+        ],
+        "claude": [
+          "sonnet",
+          "opus"
+        ]
+      },
+      "limits": {
+        "maxRuntimeMin": 60,
+        "maxAttempts": 2
+      },
+      "successCriteria": [
+        "Tests cover the change",
+        "Errors are classified and logged without secrets"
+      ],
+      "legacy": [
+        "ifrim-backend",
+        "ifrim-integrations"
+      ],
+      "department": "engineering",
+      "reportsTo": "architect"
+    },
+    {
+      "id": "mobile",
+      "name": "Mobile",
+      "responsibilities": [
+        "React Native/Capacitor architecture",
+        "Permissions, lifecycle, offline states"
+      ],
+      "tools": [
+        "files.read",
+        "files.edit",
+        "process.build",
+        "process.test"
+      ],
+      "memoryScopes": [
+        "PROJECT"
+      ],
+      "authority": "WORKSPACE_EDIT",
+      "stages": [
+        "owner"
+      ],
+      "modelHints": {
+        "codex": [
+          "sol"
+        ],
+        "claude": [
+          "sonnet"
+        ]
+      },
+      "limits": {
+        "maxRuntimeMin": 60,
+        "maxAttempts": 2
+      },
+      "successCriteria": [
+        "Build passes on the target platform"
+      ],
+      "legacy": [
+        "ifrim-mobile"
+      ],
+      "department": "engineering",
+      "reportsTo": "architect"
+    },
+    {
+      "id": "database",
+      "name": "Database",
+      "responsibilities": [
+        "Schema, indexes, migrations with dry-run and rollback",
+        "Data integrity and backups"
+      ],
+      "tools": [
+        "files.read",
+        "files.edit",
+        "process.test"
+      ],
+      "memoryScopes": [
+        "PROJECT"
+      ],
+      "authority": "WORKSPACE_EDIT",
+      "stages": [
+        "owner",
+        "reviewer"
+      ],
+      "modelHints": {
+        "codex": [
+          "astra",
+          "sol"
+        ],
+        "claude": [
+          "opus"
+        ]
+      },
+      "limits": {
+        "maxRuntimeMin": 45,
+        "maxAttempts": 2
+      },
+      "successCriteria": [
+        "Migration tested on a copy",
+        "Rollback documented"
+      ],
+      "legacy": [
+        "ifrim-migration",
+        "ifrim-data-reviewer"
+      ],
+      "department": "engineering",
+      "reportsTo": "architect"
+    },
+    {
+      "id": "reviewer",
+      "name": "Reviewer",
+      "responsibilities": [
+        "Independent review assuming the change may be wrong",
+        "Correctness, maintainability, missing tests, performance and build risk"
+      ],
+      "tools": [
+        "files.read",
+        "git.diff",
+        "process.test"
+      ],
+      "memoryScopes": [
+        "PROJECT"
+      ],
+      "authority": "READ_ONLY",
+      "stages": [
+        "reviewer"
+      ],
+      "modelHints": {
+        "codex": [
+          "sol",
+          "astra"
+        ],
+        "claude": [
+          "opus",
+          "sonnet"
+        ]
+      },
+      "limits": {
+        "maxRuntimeMin": 30,
+        "maxAttempts": 2
+      },
+      "successCriteria": [
+        "Verdict GO/NO_GO with file:line evidence"
+      ],
+      "legacy": [
+        "ifrim-reviewer",
+        "ifrim-backend-reviewer",
+        "ifrim-frontend-reviewer",
+        "ifrim-quality-reviewer",
+        "ifrim-performance-reviewer",
+        "ifrim-devops-reviewer"
+      ],
+      "department": "qa-security",
+      "reportsTo": "qa"
+    },
+    {
+      "id": "qa",
+      "name": "QA",
+      "responsibilities": [
+        "Reproduce and validate behaviour like a user",
+        "Regression and edge cases",
+        "Clear pass/fail with evidence"
+      ],
+      "tools": [
+        "files.read",
+        "process.test",
+        "preview.check",
+        "browser.inspect"
+      ],
+      "memoryScopes": [
+        "PROJECT",
+        "AGENT_ROLE"
+      ],
+      "authority": "DEVELOPMENT_TOOLS",
+      "stages": [
+        "qa"
+      ],
+      "modelHints": {
+        "codex": [
+          "luna",
+          "sol"
+        ],
+        "claude": [
+          "sonnet",
+          "haiku"
+        ]
+      },
+      "limits": {
+        "maxRuntimeMin": 30,
+        "maxAttempts": 2
+      },
+      "successCriteria": [
+        "Each acceptance criterion marked PASS/FAIL with evidence"
+      ],
+      "legacy": [
+        "ifrim-qa"
+      ],
+      "department": "qa-security",
+      "reportsTo": "chief-of-staff"
+    },
+    {
+      "id": "security",
+      "name": "Security",
+      "responsibilities": [
+        "Authentication, authorization, secrets, injection, abuse",
+        "Release-blocking findings"
+      ],
+      "tools": [
+        "files.read",
+        "git.diff"
+      ],
+      "memoryScopes": [
+        "PROJECT"
+      ],
+      "authority": "READ_ONLY",
+      "stages": [
+        "reviewer"
+      ],
+      "modelHints": {
+        "codex": [
+          "astra",
+          "sol"
+        ],
+        "claude": [
+          "opus"
+        ]
+      },
+      "limits": {
+        "maxRuntimeMin": 45,
+        "maxAttempts": 2
+      },
+      "successCriteria": [
+        "Findings ranked by severity with reproduction steps"
+      ],
+      "legacy": [
+        "ifrim-security-reviewer"
+      ],
+      "department": "qa-security",
+      "reportsTo": "qa"
+    },
+    {
+      "id": "devops",
+      "name": "DevOps",
+      "responsibilities": [
+        "Build, preview, packaging",
+        "Environment safety and rollback"
+      ],
+      "tools": [
+        "files.read",
+        "process.build",
+        "preview.check",
+        "git.status",
+        "git.diff"
+      ],
+      "memoryScopes": [
+        "PROJECT",
+        "AGENT_ROLE"
+      ],
+      "authority": "DEVELOPMENT_TOOLS",
+      "stages": [
+        "owner",
+        "reviewer"
+      ],
+      "modelHints": {
+        "codex": [
+          "sol"
+        ],
+        "claude": [
+          "sonnet"
+        ]
+      },
+      "limits": {
+        "maxRuntimeMin": 45,
+        "maxAttempts": 2
+      },
+      "successCriteria": [
+        "Start/stop documented and repeatable"
+      ],
+      "legacy": [
+        "ifrim-devops"
+      ],
+      "department": "devops",
+      "reportsTo": "operations-coordinator"
+    },
+    {
+      "id": "research",
+      "name": "Research",
+      "responsibilities": [
+        "Feasibility spikes and comparisons",
+        "Sourced findings with dates",
+        "No invented facts"
+      ],
+      "tools": [
+        "files.read",
+        "memory.search"
+      ],
+      "memoryScopes": [
+        "GLOBAL",
+        "COMPANY",
+        "PROJECT"
+      ],
+      "authority": "READ_ONLY",
+      "stages": [
+        "owner"
+      ],
+      "modelHints": {
+        "codex": [
+          "sol",
+          "luna"
+        ],
+        "claude": [
+          "sonnet",
+          "opus"
+        ]
+      },
+      "limits": {
+        "maxRuntimeMin": 30,
+        "maxAttempts": 2
+      },
+      "successCriteria": [
+        "Every claim has a source and date or is marked as hypothesis"
+      ],
+      "legacy": [
+        "ifrim-prototype"
+      ],
+      "department": "research",
+      "reportsTo": "chief-of-staff"
+    },
+    {
+      "id": "website-auditor",
+      "name": "Website Auditor",
+      "responsibilities": [
+        "Identify the business and the correct domain",
+        "Separate findings from suggestions",
+        "Performance, accessibility, SEO basics with evidence"
+      ],
+      "tools": [
+        "preview.check",
+        "browser.inspect",
+        "memory.search"
+      ],
+      "memoryScopes": [
+        "CLIENT",
+        "COMPANY"
+      ],
+      "authority": "READ_ONLY",
+      "stages": [
+        "owner"
+      ],
+      "modelHints": {
+        "codex": [
+          "sol"
+        ],
+        "claude": [
+          "sonnet"
+        ]
+      },
+      "limits": {
+        "maxRuntimeMin": 30,
+        "maxAttempts": 2
+      },
+      "successCriteria": [
+        "Domain and business identified with source and date",
+        "Findings reproducible"
+      ],
+      "legacy": [],
+      "department": "sales",
+      "reportsTo": "sales-assistant"
+    },
+    {
+      "id": "sales-assistant",
+      "name": "Sales Assistant",
+      "responsibilities": [
+        "Lead research with verifiable sources",
+        "Contextual outreach drafts and offers",
+        "Never sends anything"
+      ],
+      "tools": [
+        "memory.search"
+      ],
+      "memoryScopes": [
+        "COMPANY",
+        "CLIENT"
+      ],
+      "authority": "READ_ONLY",
+      "stages": [
+        "owner"
+      ],
+      "modelHints": {
+        "codex": [
+          "luna",
+          "sol"
+        ],
+        "claude": [
+          "sonnet"
+        ]
+      },
+      "limits": {
+        "maxRuntimeMin": 20,
+        "maxAttempts": 2
+      },
+      "successCriteria": [
+        "No invented companies, revenues, administrators or contacts",
+        "Drafts marked as drafts"
+      ],
+      "legacy": [],
+      "department": "sales",
+      "reportsTo": "chief-of-staff"
+    },
+    {
+      "id": "project-manager",
+      "name": "Project Manager",
+      "responsibilities": [
+        "Tasks, dependencies, blockers and results",
+        "Briefings with explicit progress method",
+        "Intake and routing"
+      ],
+      "tools": [
+        "memory.search",
+        "git.status"
+      ],
+      "memoryScopes": [
+        "PROJECT",
+        "TASK"
+      ],
+      "authority": "READ_ONLY",
+      "stages": [
+        "owner"
+      ],
+      "modelHints": {
+        "codex": [
+          "luna"
+        ],
+        "claude": [
+          "sonnet",
+          "haiku"
+        ]
+      },
+      "limits": {
+        "maxRuntimeMin": 15,
+        "maxAttempts": 2
+      },
+      "successCriteria": [
+        "Progress stated as completed/total tasks, not guessed percentages"
+      ],
+      "legacy": [
+        "main"
+      ],
+      "department": "project-management",
+      "reportsTo": "chief-of-staff"
+    },
+    {
+      "id": "documentation",
+      "name": "Documentation",
+      "responsibilities": [
+        "Runbooks, handoffs, release notes",
+        "Keep project memory accurate"
+      ],
+      "tools": [
+        "files.read",
+        "files.edit"
+      ],
+      "memoryScopes": [
+        "PROJECT",
+        "AGENT_ROLE"
+      ],
+      "authority": "WORKSPACE_EDIT",
+      "stages": [
+        "owner"
+      ],
+      "modelHints": {
+        "codex": [
+          "luna"
+        ],
+        "claude": [
+          "sonnet",
+          "haiku"
+        ]
+      },
+      "limits": {
+        "maxRuntimeMin": 20,
+        "maxAttempts": 2
+      },
+      "successCriteria": [
+        "Docs match verified state; history preserved"
+      ],
+      "legacy": [],
+      "department": "engineering",
+      "reportsTo": "architect"
+    },
+    {
+      "id": "operations-coordinator",
+      "name": "Operations Coordinator",
+      "department": "operations",
+      "reportsTo": "chief-of-staff",
+      "responsibilities": [
+        "Watch system health, backups, schedules and plan allowance",
+        "Run local non-AI routines (backup verification, briefings, native-session mirror)",
+        "Open incidents with evidence when a routine fails"
+      ],
+      "tools": [
+        "process.list",
+        "git.status",
+        "preview.check",
+        "memory.search"
+      ],
+      "memoryScopes": [
+        "COMPANY",
+        "PROJECT"
+      ],
+      "authority": "READ_ONLY",
+      "stages": [
+        "owner"
+      ],
+      "modelHints": {
+        "codex": [
+          "luna"
+        ],
+        "claude": [
+          "haiku",
+          "sonnet"
+        ]
+      },
+      "limits": {
+        "maxRuntimeMin": 10,
+        "maxAttempts": 2
+      },
+      "successCriteria": [
+        "Every routine run has a recorded result",
+        "Failures create an incident with evidence, never a silent retry loop"
+      ],
+      "legacy": []
+    }
+  ]
+}

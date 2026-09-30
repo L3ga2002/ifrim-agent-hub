@@ -1,0 +1,995 @@
+{
+  "version": 1,
+  "verifiedOn": "2026-09-30",
+  "note": "Registrul suprafețelor de execuție. availability este linia de bază documentată; Hub-ul o suprascrie doar cu verificări locale (account probe, claude agents --json). Operațiile ExecutionSurfaceAdapter: SUPPORTED (Hub-ul o execută), ASSISTED (Hub-ul pregătește, tu rulezi în aplicația vendorului), PLANNED (fără adaptor în acest build), UNSUPPORTED.",
+  "surfaces": [
+    {
+      "id": "hub.local",
+      "provider": "hub",
+      "surfaceType": "HubLocalTools",
+      "name": "Unelte locale Hub",
+      "description": "Fișiere, Git, preview HTTP local, scripturi npm aprobate; fără model.",
+      "capabilities": [
+        "files.read",
+        "git.status",
+        "git.diff",
+        "preview.check",
+        "process.run"
+      ],
+      "platform": "Windows (proces Hub)",
+      "planRequirement": "niciunul",
+      "authMode": "none",
+      "billingMode": "none",
+      "programmaticControl": "PROGRAMMATIC",
+      "location": "local",
+      "adapter": "hub_local",
+      "availability": "available",
+      "availabilityReason": "Parte din Hub",
+      "safetyConstraints": [
+        "Doar în proiecte activate",
+        "Scripturi npm doar cu aprobare legată de comandă",
+        "Fără shell universal"
+      ],
+      "hubDecision": "REIMPLEMENT",
+      "operations": {
+        "start": "SUPPORTED",
+        "resume": "UNSUPPORTED",
+        "sendInput": "UNSUPPORTED",
+        "streamEvents": "SUPPORTED",
+        "interrupt": "SUPPORTED",
+        "stop": "SUPPORTED",
+        "prepareHandoff": "UNSUPPORTED",
+        "getStatus": "SUPPORTED",
+        "getArtifacts": "SUPPORTED"
+      }
+    },
+    {
+      "id": "openai.codex_app_server",
+      "provider": "openai",
+      "surfaceType": "CodexAppServer",
+      "name": "Codex app-server (local)",
+      "description": "JSON-RPC pe stdio al binarului oficial Codex; turn-uri cu fir nativ, aprobări, rate limits.",
+      "capabilities": [
+        "coding",
+        "long_running_coding",
+        "architecture",
+        "code_review",
+        "security_review",
+        "local_development",
+        "testing_qa",
+        "documents"
+      ],
+      "platform": "Windows (codex.exe din Codex desktop)",
+      "planRequirement": "Plan ChatGPT cu Codex",
+      "authMode": "chatgpt",
+      "billingMode": "subscription",
+      "programmaticControl": "PROGRAMMATIC",
+      "location": "local",
+      "adapter": "codex_app_server",
+      "availability": "unknown",
+      "availabilityReason": "Se confirmă cu Verifică contul (account/read)",
+      "safetyConstraints": [
+        "Allowlist de metode JSON-RPC",
+        "Cont API key refuzat",
+        "Metodele de credite blocate",
+        "Aprobările de comenzi/fișiere trec prin politica Hub",
+        "Mediu controlat fără chei"
+      ],
+      "hubDecision": "WRAP",
+      "operations": {
+        "start": "SUPPORTED",
+        "resume": "SUPPORTED",
+        "sendInput": {
+          "support": "UNSUPPORTED",
+          "note": "turn/steer nu este în allowlist; mesajul următor devine turn nou"
+        },
+        "streamEvents": "SUPPORTED",
+        "interrupt": "SUPPORTED",
+        "stop": "SUPPORTED",
+        "prepareHandoff": "SUPPORTED",
+        "getStatus": "SUPPORTED",
+        "getArtifacts": {
+          "support": "SUPPORTED",
+          "note": "diff Git și mesaje; artefactele native nu sunt exportate"
+        }
+      }
+    },
+    {
+      "id": "openai.codex_cli",
+      "provider": "openai",
+      "surfaceType": "CodexCLI",
+      "name": "Codex CLI (TUI)",
+      "description": "CLI interactiv: voce, /agents, worktrees, resume/fork/queue.",
+      "capabilities": [
+        "coding",
+        "long_running_coding",
+        "subagents",
+        "worktrees",
+        "voice"
+      ],
+      "platform": "Terminal",
+      "planRequirement": "Plan ChatGPT",
+      "authMode": "chatgpt",
+      "billingMode": "subscription",
+      "programmaticControl": "ASSISTED",
+      "location": "local",
+      "adapter": "assisted",
+      "availability": "assisted",
+      "availabilityReason": "Folosit de tine direct; Hub-ul automatizează prin app-server, nu prin TUI",
+      "safetyConstraints": [
+        "Nu se dublează ownership-ul taskului cu Hub-ul"
+      ],
+      "hubDecision": "ASSISTED",
+      "operations": {
+        "start": "ASSISTED",
+        "getStatus": {
+          "support": "UNSUPPORTED",
+          "note": "„codex agents” este TUI, fără JSON"
+        }
+      }
+    },
+    {
+      "id": "openai.codex_desktop",
+      "provider": "openai",
+      "surfaceType": "CodexDesktop",
+      "name": "Codex desktop",
+      "description": "Aplicația Codex: browser integrat, computer use, automatizări locale, revizuire cod.",
+      "capabilities": [
+        "coding",
+        "browser",
+        "computer_use",
+        "code_review",
+        "documents",
+        "slides",
+        "spreadsheets"
+      ],
+      "platform": "Windows desktop",
+      "planRequirement": "Plan ChatGPT",
+      "authMode": "chatgpt",
+      "billingMode": "subscription",
+      "programmaticControl": "NATIVE_INTERACTIVE",
+      "location": "local",
+      "adapter": "assisted",
+      "availability": "assisted",
+      "availabilityReason": "Instalat local; controlat de tine",
+      "safetyConstraints": [
+        "Computer use și browser rulează pe desktopul tău: un singur controller"
+      ],
+      "hubDecision": "ASSISTED",
+      "operations": {
+        "start": "ASSISTED"
+      }
+    },
+    {
+      "id": "openai.codex_cloud",
+      "provider": "openai",
+      "surfaceType": "CodexCloud",
+      "name": "Codex Cloud",
+      "description": "Taskuri în medii cloud pe repository GitHub; codex cloud exec/list/status/diff/apply.",
+      "capabilities": [
+        "cloud_development",
+        "long_running_coding"
+      ],
+      "platform": "Cloud + GitHub",
+      "planRequirement": "Plan ChatGPT (vezi auditul)",
+      "authMode": "chatgpt",
+      "billingMode": "subscription",
+      "programmaticControl": "PROGRAMMATIC",
+      "location": "cloud",
+      "adapter": "none",
+      "availability": "needs_setup",
+      "availabilityReason": "Necesită mediu cloud și repository conectat; Hub-ul nu publică cod",
+      "safetyConstraints": [
+        "Pornire = cloud_task.start (ALWAYS_ASK)",
+        "Vede doar commituri publicate"
+      ],
+      "hubDecision": "ASSISTED",
+      "operations": {
+        "start": {
+          "support": "PLANNED",
+          "note": "comanda exactă se pregătește; o rulezi tu sau o aprobi explicit"
+        },
+        "getStatus": "PLANNED",
+        "getArtifacts": "PLANNED"
+      }
+    },
+    {
+      "id": "openai.codex_review",
+      "provider": "openai",
+      "surfaceType": "CodexReview",
+      "name": "Codex Code Review",
+      "description": "Revizuire în desktop + revizuiri automate în cloud (GitHub PR / GitLab MR).",
+      "capabilities": [
+        "code_review"
+      ],
+      "platform": "ChatGPT desktop / cloud",
+      "planRequirement": "Toate abonamentele (recap)",
+      "authMode": "chatgpt",
+      "billingMode": "subscription",
+      "programmaticControl": "ASSISTED",
+      "location": "hybrid",
+      "adapter": "assisted",
+      "availability": "assisted",
+      "availabilityReason": "Revizuirea locală o pornești tu; reviewer-ul Hub folosește app-server",
+      "safetyConstraints": [
+        "Doar citire"
+      ],
+      "hubDecision": "ASSISTED",
+      "operations": {
+        "start": "ASSISTED"
+      }
+    },
+    {
+      "id": "openai.codex_security",
+      "provider": "openai",
+      "surfaceType": "CodexSecurityCloud",
+      "name": "Codex Security Cloud",
+      "description": "Scanări de securitate ale repository-urilor GitHub (la cerere/programat), remedieri în cloud.",
+      "capabilities": [
+        "security_review"
+      ],
+      "platform": "Plugin Codex desktop/web",
+      "planRequirement": "Utilizatori Codex (recap)",
+      "authMode": "chatgpt",
+      "billingMode": "unknown",
+      "programmaticControl": "ASSISTED",
+      "location": "cloud",
+      "adapter": "assisted",
+      "availability": "needs_setup",
+      "availabilityReason": "Cere conectarea repository-ului privat (decizia ta)",
+      "safetyConstraints": [
+        "Lipsa constatărilor nu dovedește securitatea"
+      ],
+      "hubDecision": "ASSISTED",
+      "operations": {
+        "start": "ASSISTED"
+      }
+    },
+    {
+      "id": "openai.chatgpt_work",
+      "provider": "openai",
+      "surfaceType": "ChatGPTWork",
+      "name": "ChatGPT Work",
+      "description": "Taskuri agentice în ChatGPT (GPT-6.1 Sol disponibil în Work).",
+      "capabilities": [
+        "research",
+        "documents",
+        "slides",
+        "spreadsheets",
+        "workflow"
+      ],
+      "platform": "ChatGPT web/desktop",
+      "planRequirement": "Plus/Pro/Business/Enterprise/Edu",
+      "authMode": "chatgpt",
+      "billingMode": "subscription",
+      "programmaticControl": "NATIVE_INTERACTIVE",
+      "location": "cloud",
+      "adapter": "assisted",
+      "availability": "assisted",
+      "availabilityReason": "Folosit de tine în ChatGPT",
+      "safetyConstraints": [
+        "Rezultatele se înregistrează în Hub ca artefacte"
+      ],
+      "hubDecision": "ASSISTED",
+      "operations": {
+        "start": "ASSISTED",
+        "getArtifacts": "ASSISTED"
+      }
+    },
+    {
+      "id": "openai.chatgpt_chat",
+      "provider": "openai",
+      "surfaceType": "ChatGPTChat",
+      "name": "ChatGPT (chat)",
+      "description": "Conversații ChatGPT, memorie și proiecte ChatGPT.",
+      "capabilities": [
+        "research",
+        "memory",
+        "project_knowledge"
+      ],
+      "platform": "web/desktop/mobile",
+      "planRequirement": "Plan ChatGPT",
+      "authMode": "chatgpt",
+      "billingMode": "subscription",
+      "programmaticControl": "NATIVE_INTERACTIVE",
+      "location": "cloud",
+      "adapter": "assisted",
+      "availability": "assisted",
+      "availabilityReason": "Folosit de tine",
+      "safetyConstraints": [
+        "Memoria ChatGPT nu este memoria Hub"
+      ],
+      "hubDecision": "ASSISTED",
+      "operations": {
+        "start": "ASSISTED"
+      }
+    },
+    {
+      "id": "openai.dots",
+      "provider": "openai",
+      "surfaceType": "Dot",
+      "name": "dots (agenți mereu activi)",
+      "description": "Agent cu computer cloud propriu, aplicații conectate, lucru proactiv.",
+      "capabilities": [
+        "cloud_autonomous_work",
+        "computer_use",
+        "browser",
+        "scheduled"
+      ],
+      "platform": "ChatGPT",
+      "planRequirement": "Pro, Business Premium, Enterprise",
+      "authMode": "chatgpt",
+      "billingMode": "subscription",
+      "programmaticControl": "NATIVE_INTERACTIVE",
+      "location": "cloud",
+      "adapter": "none",
+      "availability": "unknown",
+      "availabilityReason": "Eligibilitatea planului tău nu este confirmată; fără API documentat",
+      "safetyConstraints": [
+        "Acces la laptop doar dacă îl conectezi tu",
+        "Hub-ul nu pornește dots"
+      ],
+      "hubDecision": "ASSISTED",
+      "operations": {
+        "start": "ASSISTED"
+      }
+    },
+    {
+      "id": "openai.plugins",
+      "provider": "openai",
+      "surfaceType": "ChatGPTPlugin",
+      "name": "Pluginuri / extensii ChatGPT",
+      "description": "Aplicații MCP în ChatGPT: bară laterală, panouri, vizualizatoare; MCP Events.",
+      "capabilities": [
+        "plugins",
+        "mcp",
+        "app_connectors"
+      ],
+      "platform": "ChatGPT",
+      "planRequirement": "Toate abonamentele (recap)",
+      "authMode": "chatgpt",
+      "billingMode": "subscription",
+      "programmaticControl": "NONE",
+      "location": "cloud",
+      "adapter": "none",
+      "availability": "blocked",
+      "availabilityReason": "Un companion ar cere endpoint public; expunerea în rețea nu este autorizată",
+      "safetyConstraints": [
+        "Publicarea cere aprobarea ta"
+      ],
+      "hubDecision": "REFERENCE",
+      "operations": {}
+    },
+    {
+      "id": "openai.space_pages",
+      "provider": "openai",
+      "surfaceType": "ChatGPTSpace",
+      "name": "Space / Pages / Slides",
+      "description": "Spațiu de echipă, pagini dinamice, prezentări colaborative.",
+      "capabilities": [
+        "documents",
+        "slides",
+        "team_collaboration",
+        "project_knowledge"
+      ],
+      "platform": "ChatGPT desktop/web",
+      "planRequirement": "Pro, Business, Enterprise",
+      "authMode": "chatgpt",
+      "billingMode": "subscription",
+      "programmaticControl": "NATIVE_INTERACTIVE",
+      "location": "cloud",
+      "adapter": "assisted",
+      "availability": "unknown",
+      "availabilityReason": "Depinde de planul ChatGPT (neconfirmat)",
+      "safetyConstraints": [
+        "Hub-ul rămâne sursa autoritativă"
+      ],
+      "hubDecision": "ASSISTED",
+      "operations": {
+        "start": "ASSISTED",
+        "getArtifacts": "ASSISTED"
+      }
+    },
+    {
+      "id": "openai.agents_api",
+      "provider": "openai",
+      "surfaceType": "AgentsAPI",
+      "name": "Agents API",
+      "description": "Harness Codex gestionat prin API (facturare API).",
+      "capabilities": [
+        "cloud_autonomous_work",
+        "computer_use",
+        "subagents"
+      ],
+      "platform": "API",
+      "planRequirement": "Cont API",
+      "authMode": "api_key",
+      "billingMode": "api",
+      "programmaticControl": "PROGRAMMATIC",
+      "location": "cloud",
+      "adapter": "none",
+      "availability": "blocked",
+      "availabilityReason": "Facturare API: refuzată de BillingPolicy",
+      "safetyConstraints": [
+        "paid_api_inference: deny"
+      ],
+      "hubDecision": "REJECT",
+      "operations": {}
+    },
+    {
+      "id": "openai.decisions_api",
+      "provider": "openai",
+      "surfaceType": "DecisionsAPI",
+      "name": "Decisions API",
+      "description": "Clasificare/decizii cu răspunsuri finite (preview, API).",
+      "capabilities": [
+        "routing"
+      ],
+      "platform": "API",
+      "planRequirement": "Cont API (preview)",
+      "authMode": "api_key",
+      "billingMode": "api",
+      "programmaticControl": "PROGRAMMATIC",
+      "location": "cloud",
+      "adapter": "none",
+      "availability": "blocked",
+      "availabilityReason": "Facturare API: refuzată; routerul Hub este determinist",
+      "safetyConstraints": [
+        "paid_api_inference: deny"
+      ],
+      "hubDecision": "REJECT",
+      "operations": {}
+    },
+    {
+      "id": "anthropic.claude_code_headless",
+      "provider": "anthropic",
+      "surfaceType": "ClaudeCode",
+      "name": "Claude Code headless (-p)",
+      "description": "Binarul oficial Claude Code în mod print cu stream-json; sesiune reluabilă.",
+      "capabilities": [
+        "coding",
+        "long_running_coding",
+        "architecture",
+        "code_review",
+        "security_review",
+        "local_development",
+        "testing_qa",
+        "documents",
+        "design_ui"
+      ],
+      "platform": "Windows (Claude Code CLI)",
+      "planRequirement": "Pro/Max",
+      "authMode": "claude.ai",
+      "billingMode": "subscription",
+      "programmaticControl": "PROGRAMMATIC",
+      "location": "local",
+      "adapter": "claude_headless",
+      "availability": "unknown",
+      "availabilityReason": "Se confirmă cu Verifică contul (claude auth status)",
+      "safetyConstraints": [
+        "Fără --bare/--fallback-model/--max-budget-usd/--dangerously-skip-permissions",
+        "Mediu controlat fără ANTHROPIC_*",
+        "--strict-mcp-config",
+        "Unelte limitate per acces"
+      ],
+      "hubDecision": "WRAP",
+      "operations": {
+        "start": "SUPPORTED",
+        "resume": "SUPPORTED",
+        "sendInput": {
+          "support": "PLANNED",
+          "note": "--input-format stream-json permite input în timpul sesiunii; neimplementat în acest build"
+        },
+        "streamEvents": "SUPPORTED",
+        "interrupt": "SUPPORTED",
+        "stop": "SUPPORTED",
+        "prepareHandoff": "SUPPORTED",
+        "getStatus": "SUPPORTED",
+        "getArtifacts": {
+          "support": "SUPPORTED",
+          "note": "diff Git și mesaje"
+        }
+      }
+    },
+    {
+      "id": "anthropic.claude_code_interactive",
+      "provider": "anthropic",
+      "surfaceType": "ClaudeCodeInteractive",
+      "name": "Claude Code interactiv (terminal/IDE/desktop)",
+      "description": "Sesiuni conduse de tine: subagenți, hooks, checkpoints/rewind, skills, pluginuri, worktrees.",
+      "capabilities": [
+        "coding",
+        "subagents",
+        "hooks",
+        "checkpoints",
+        "background_tasks",
+        "worktrees"
+      ],
+      "platform": "Terminal, VS Code, JetBrains, Claude desktop",
+      "planRequirement": "Pro/Max",
+      "authMode": "claude.ai",
+      "billingMode": "subscription",
+      "programmaticControl": "ASSISTED",
+      "location": "local",
+      "adapter": "assisted",
+      "availability": "assisted",
+      "availabilityReason": "Folosit de tine; Hub-ul oglindește sesiunile prin claude agents --json",
+      "safetyConstraints": [
+        "Orchestrarea nativă (subagenți) aparține sesiunii Claude; Hub-ul nu dublează ownership-ul"
+      ],
+      "hubDecision": "REUSE_NATIVE",
+      "operations": {
+        "start": "ASSISTED"
+      }
+    },
+    {
+      "id": "anthropic.claude_code_background",
+      "provider": "anthropic",
+      "surfaceType": "ClaudeCodeSessions",
+      "name": "Sesiuni Claude Code (oglindă)",
+      "description": "Listă read-only a sesiunilor locale prin „claude agents --json”.",
+      "capabilities": [
+        "background_tasks",
+        "mobile_control"
+      ],
+      "platform": "Claude Code CLI",
+      "planRequirement": "Pro/Max",
+      "authMode": "claude.ai",
+      "billingMode": "none",
+      "programmaticControl": "MIRROR",
+      "location": "local",
+      "adapter": "claude_agents_mirror",
+      "availability": "unknown",
+      "availabilityReason": "Se confirmă la prima oglindire",
+      "safetyConstraints": [
+        "Doar citire",
+        "Sesiunile din afara proiectelor înregistrate sunt doar numărate"
+      ],
+      "hubDecision": "MIRROR_STATE",
+      "operations": {
+        "getStatus": "SUPPORTED",
+        "streamEvents": {
+          "support": "SUPPORTED",
+          "note": "evenimente provider.native_task_* la fiecare oglindire"
+        }
+      }
+    },
+    {
+      "id": "anthropic.claude_code_web",
+      "provider": "anthropic",
+      "surfaceType": "ClaudeCodeWeb",
+      "name": "Claude Code în cloud (web)",
+      "description": "Sesiuni Claude Code în cloud / pe web.",
+      "capabilities": [
+        "cloud_development",
+        "long_running_coding"
+      ],
+      "platform": "claude.ai",
+      "planRequirement": "vezi auditul Anthropic",
+      "authMode": "claude.ai",
+      "billingMode": "subscription",
+      "programmaticControl": "ASSISTED",
+      "location": "cloud",
+      "adapter": "assisted",
+      "availability": "unknown",
+      "availabilityReason": "Necesită repository conectat; nepornit de Hub",
+      "safetyConstraints": [
+        "cloud_task.start: ALWAYS_ASK"
+      ],
+      "hubDecision": "ASSISTED",
+      "operations": {
+        "start": "ASSISTED"
+      }
+    },
+    {
+      "id": "anthropic.claude_chat",
+      "provider": "anthropic",
+      "surfaceType": "ClaudeChat",
+      "name": "Claude (chat web/desktop/mobil)",
+      "description": "Chat Claude cu memorie, proiecte, artefacte, fișiere.",
+      "capabilities": [
+        "research",
+        "documents",
+        "memory",
+        "project_knowledge"
+      ],
+      "platform": "web/desktop/mobile",
+      "planRequirement": "Pro/Max",
+      "authMode": "claude.ai",
+      "billingMode": "subscription",
+      "programmaticControl": "NATIVE_INTERACTIVE",
+      "location": "cloud",
+      "adapter": "assisted",
+      "availability": "assisted",
+      "availabilityReason": "Plan Max verificat; folosit de tine",
+      "safetyConstraints": [
+        "Memoria Claude nu este memoria Hub"
+      ],
+      "hubDecision": "ASSISTED",
+      "operations": {
+        "start": "ASSISTED",
+        "getArtifacts": "ASSISTED"
+      }
+    },
+    {
+      "id": "anthropic.claude_cowork",
+      "provider": "anthropic",
+      "surfaceType": "ClaudeCowork",
+      "name": "Claude Cowork / taskuri agentice",
+      "description": "Taskuri agentice lungi pe fișiere și aplicații, în experiența Claude unificată.",
+      "capabilities": [
+        "workflow",
+        "documents",
+        "cloud_autonomous_work"
+      ],
+      "platform": "Claude desktop",
+      "planRequirement": "vezi auditul Anthropic",
+      "authMode": "claude.ai",
+      "billingMode": "subscription",
+      "programmaticControl": "NATIVE_INTERACTIVE",
+      "location": "hybrid",
+      "adapter": "assisted",
+      "availability": "unknown",
+      "availabilityReason": "Confirmare în auditul Anthropic",
+      "safetyConstraints": [
+        "Fără control programatic oficial presupus"
+      ],
+      "hubDecision": "ASSISTED",
+      "operations": {
+        "start": "ASSISTED",
+        "getArtifacts": "ASSISTED"
+      }
+    },
+    {
+      "id": "anthropic.claude_research",
+      "provider": "anthropic",
+      "surfaceType": "ClaudeResearch",
+      "name": "Claude Research",
+      "description": "Cercetare agentică multi-sursă cu citări.",
+      "capabilities": [
+        "research",
+        "lead_research",
+        "site_audit"
+      ],
+      "platform": "claude.ai",
+      "planRequirement": "Pro/Max",
+      "authMode": "claude.ai",
+      "billingMode": "subscription",
+      "programmaticControl": "NATIVE_INTERACTIVE",
+      "location": "cloud",
+      "adapter": "assisted",
+      "availability": "assisted",
+      "availabilityReason": "Plan Max; rulezi tu, rezultatul se înregistrează cu surse",
+      "safetyConstraints": [
+        "Proveniența se păstrează în Hub"
+      ],
+      "hubDecision": "ASSISTED",
+      "operations": {
+        "start": "ASSISTED",
+        "getArtifacts": "ASSISTED"
+      }
+    },
+    {
+      "id": "anthropic.claude_computer_use",
+      "provider": "anthropic",
+      "surfaceType": "ClaudeComputerUse",
+      "name": "Claude computer use (desktop)",
+      "description": "Control al desktopului prin aplicația Claude.",
+      "capabilities": [
+        "computer_use"
+      ],
+      "platform": "Claude desktop",
+      "planRequirement": "vezi auditul Anthropic",
+      "authMode": "claude.ai",
+      "billingMode": "subscription",
+      "programmaticControl": "NATIVE_INTERACTIVE",
+      "location": "local",
+      "adapter": "assisted",
+      "availability": "needs_setup",
+      "availabilityReason": "Research preview în Claude Desktop pe Windows: îl activezi tu în Settings; controlat de tine (ASSISTED). Nu există în -p.",
+      "safetyConstraints": [
+        "computer.visual_control: ALWAYS_ASK",
+        "Un singur controller pe fereastră"
+      ],
+      "hubDecision": "ASSISTED",
+      "operations": {
+        "start": "ASSISTED"
+      }
+    },
+    {
+      "id": "anthropic.claude_in_chrome",
+      "provider": "anthropic",
+      "surfaceType": "ClaudeInChrome",
+      "name": "Claude in Chrome",
+      "description": "Extensie care acționează în Chrome-ul tău (cu autentificările tale).",
+      "capabilities": [
+        "browser",
+        "authenticated_web"
+      ],
+      "platform": "Chrome",
+      "planRequirement": "vezi auditul Anthropic",
+      "authMode": "claude.ai",
+      "billingMode": "subscription",
+      "programmaticControl": "NATIVE_INTERACTIVE",
+      "location": "local",
+      "adapter": "assisted",
+      "availability": "needs_setup",
+      "availabilityReason": "Cere extensia Claude in Chrome instalată și conectată de tine; conturile reale → browser.native ALWAYS_ASK. Rulările Hub folosesc --no-chrome.",
+      "safetyConstraints": [
+        "Date de autentificare reale",
+        "Protecții prompt-injection ale vendorului + politica Hub"
+      ],
+      "hubDecision": "ASSISTED",
+      "operations": {
+        "start": "ASSISTED"
+      }
+    },
+    {
+      "id": "anthropic.claude_desktop_browser",
+      "provider": "anthropic",
+      "surfaceType": "ClaudeDesktopBrowser",
+      "name": "Browser integrat Claude desktop",
+      "description": "Panou browser izolat în aplicația Claude.",
+      "capabilities": [
+        "browser"
+      ],
+      "platform": "Claude desktop",
+      "planRequirement": "Plan Claude",
+      "authMode": "claude.ai",
+      "billingMode": "subscription",
+      "programmaticControl": "NATIVE_INTERACTIVE",
+      "location": "local",
+      "adapter": "assisted",
+      "availability": "assisted",
+      "availabilityReason": "Disponibil în sesiunile Claude desktop",
+      "safetyConstraints": [
+        "Profil separat de Chrome"
+      ],
+      "hubDecision": "ASSISTED",
+      "operations": {
+        "start": "ASSISTED"
+      }
+    },
+    {
+      "id": "anthropic.claude_projects",
+      "provider": "anthropic",
+      "surfaceType": "ClaudeProject",
+      "name": "Claude Projects",
+      "description": "Instrucțiuni, fișiere și cunoștințe de proiect (RAG pe planurile plătite).",
+      "capabilities": [
+        "project_knowledge"
+      ],
+      "platform": "claude.ai",
+      "planRequirement": "Pro/Max",
+      "authMode": "claude.ai",
+      "billingMode": "subscription",
+      "programmaticControl": "NATIVE_INTERACTIVE",
+      "location": "cloud",
+      "adapter": "assisted",
+      "availability": "assisted",
+      "availabilityReason": "Asociere HubProject ↔ ClaudeProject doar ca referință",
+      "safetyConstraints": [
+        "Fără sincronizare bidirecțională presupusă"
+      ],
+      "hubDecision": "ASSISTED",
+      "operations": {
+        "start": "ASSISTED"
+      }
+    },
+    {
+      "id": "anthropic.claude_scheduled_desktop",
+      "provider": "anthropic",
+      "surfaceType": "ClaudeScheduledTask",
+      "name": "Taskuri programate Claude (desktop)",
+      "description": "Taskuri recurente în aplicația Claude desktop.",
+      "capabilities": [
+        "scheduled"
+      ],
+      "platform": "Claude desktop",
+      "planRequirement": "Plan Claude",
+      "authMode": "claude.ai",
+      "billingMode": "subscription",
+      "programmaticControl": "NATIVE_INTERACTIVE",
+      "location": "local",
+      "adapter": "assisted",
+      "availability": "assisted",
+      "availabilityReason": "Disponibil (0 taskuri); creezi tu, Hub-ul le referențiază",
+      "safetyConstraints": [
+        "native_schedule.create: ALWAYS_ASK",
+        "Consumă allowance la rulare"
+      ],
+      "hubDecision": "MIRROR_STATE",
+      "operations": {
+        "start": "ASSISTED"
+      }
+    },
+    {
+      "id": "anthropic.claude_routines_cloud",
+      "provider": "anthropic",
+      "surfaceType": "ClaudeRoutine",
+      "name": "Rutine Claude Code (cloud)",
+      "description": "Agenți programați în cloud (/schedule).",
+      "capabilities": [
+        "scheduled",
+        "cloud_autonomous_work"
+      ],
+      "platform": "Claude Code / claude.ai",
+      "planRequirement": "vezi auditul Anthropic",
+      "authMode": "claude.ai",
+      "billingMode": "subscription",
+      "programmaticControl": "NATIVE_INTERACTIVE",
+      "location": "cloud",
+      "adapter": "assisted",
+      "availability": "unknown",
+      "availabilityReason": "Nu se creează în BUILD_SAFE",
+      "safetyConstraints": [
+        "native_schedule.create: ALWAYS_ASK"
+      ],
+      "hubDecision": "ASSISTED",
+      "operations": {
+        "start": "ASSISTED"
+      }
+    },
+    {
+      "id": "anthropic.claude_artifacts",
+      "provider": "anthropic",
+      "surfaceType": "ClaudeArtifacts",
+      "name": "Artefacte Claude",
+      "description": "Documente, pagini, prezentări, instrumente interactive.",
+      "capabilities": [
+        "documents",
+        "slides",
+        "spreadsheets"
+      ],
+      "platform": "claude.ai / desktop",
+      "planRequirement": "Plan Claude",
+      "authMode": "claude.ai",
+      "billingMode": "subscription",
+      "programmaticControl": "NATIVE_INTERACTIVE",
+      "location": "cloud",
+      "adapter": "assisted",
+      "availability": "assisted",
+      "availabilityReason": "Referințe înregistrate în Hub (ArtifactReference)",
+      "safetyConstraints": [
+        "Fără export automat pretins"
+      ],
+      "hubDecision": "ASSISTED",
+      "operations": {
+        "start": "ASSISTED",
+        "getArtifacts": "ASSISTED"
+      }
+    },
+    {
+      "id": "anthropic.claude_connectors",
+      "provider": "anthropic",
+      "surfaceType": "ClaudeConnectors",
+      "name": "Connectori Claude / MCP",
+      "description": "Connectori din director, MCP remote, extensii desktop.",
+      "capabilities": [
+        "app_connectors",
+        "mcp"
+      ],
+      "platform": "claude.ai / desktop",
+      "planRequirement": "Plan Claude",
+      "authMode": "claude.ai",
+      "billingMode": "subscription",
+      "programmaticControl": "NATIVE_INTERACTIVE",
+      "location": "hybrid",
+      "adapter": "assisted",
+      "availability": "assisted",
+      "availabilityReason": "Conectați: Claude Docs, visualize, scheduled-tasks",
+      "safetyConstraints": [
+        "connector.write: ALWAYS_ASK"
+      ],
+      "hubDecision": "REUSE_NATIVE",
+      "operations": {
+        "start": "ASSISTED"
+      }
+    },
+    {
+      "id": "anthropic.claude_plugins",
+      "provider": "anthropic",
+      "surfaceType": "ClaudePlugins",
+      "name": "Pluginuri Claude",
+      "description": "Pachete de skills, connectori, subagenți, hooks.",
+      "capabilities": [
+        "plugins",
+        "skills"
+      ],
+      "platform": "Claude Code / claude.ai",
+      "planRequirement": "Plan Claude",
+      "authMode": "claude.ai",
+      "billingMode": "subscription",
+      "programmaticControl": "ASSISTED",
+      "location": "local",
+      "adapter": "assisted",
+      "availability": "assisted",
+      "availabilityReason": "Hub-ul exportă un pachet local; instalarea o faci tu",
+      "safetyConstraints": [
+        "Fără publicare",
+        "Fără shell nerestricționat"
+      ],
+      "hubDecision": "WRAP",
+      "operations": {
+        "start": "ASSISTED"
+      }
+    },
+    {
+      "id": "anthropic.claude_skills",
+      "provider": "anthropic",
+      "surfaceType": "ClaudeSkills",
+      "name": "Claude Skills",
+      "description": "Skills în format Agent Skills (claude.ai și Claude Code).",
+      "capabilities": [
+        "skills"
+      ],
+      "platform": "claude.ai / Claude Code",
+      "planRequirement": "Plan Claude",
+      "authMode": "claude.ai",
+      "billingMode": "subscription",
+      "programmaticControl": "ASSISTED",
+      "location": "hybrid",
+      "adapter": "assisted",
+      "availability": "assisted",
+      "availabilityReason": "13 skills active pe claude.ai; Hub-ul folosește același format",
+      "safetyConstraints": [
+        "Un skill nu acordă permisiuni"
+      ],
+      "hubDecision": "REUSE_NATIVE",
+      "operations": {
+        "start": "ASSISTED"
+      }
+    },
+    {
+      "id": "anthropic.claude_mobile_remote",
+      "provider": "anthropic",
+      "surfaceType": "ClaudeRemote",
+      "name": "Claude mobil / Remote Control",
+      "description": "Continuarea și controlul sesiunilor desktop de pe telefon.",
+      "capabilities": [
+        "mobile_control"
+      ],
+      "platform": "Claude mobile + desktop",
+      "planRequirement": "vezi auditul Anthropic",
+      "authMode": "claude.ai",
+      "billingMode": "subscription",
+      "programmaticControl": "NATIVE_INTERACTIVE",
+      "location": "hybrid",
+      "adapter": "assisted",
+      "availability": "assisted",
+      "availabilityReason": "Pentru sesiunile Claude; statusul cross-provider și Stop All rămân în Hub",
+      "safetyConstraints": [
+        "Aprobările Hub nu se dau de pe mobil prin vendor"
+      ],
+      "hubDecision": "REUSE_NATIVE",
+      "operations": {
+        "start": "ASSISTED"
+      }
+    },
+    {
+      "id": "openclaw.gateway",
+      "provider": "openclaw",
+      "surfaceType": "OpenClawGateway",
+      "name": "OpenClaw gateway (V1)",
+      "description": "Gateway izolat folosit de V1 pentru Codex.",
+      "capabilities": [
+        "channels",
+        "scheduled"
+      ],
+      "platform": "Node (global npm) 127.0.0.1:18790",
+      "planRequirement": "n/a",
+      "authMode": "variază",
+      "billingMode": "unknown",
+      "programmaticControl": "NONE",
+      "location": "local",
+      "adapter": "none",
+      "availability": "blocked",
+      "availabilityReason": "Retras din runtime-ul V2 (probă ambientală spre API plătit în V1; al doilea orchestrator)",
+      "safetyConstraints": [
+        "Procesul rămâne neatins până la decizia ta"
+      ],
+      "hubDecision": "REJECT",
+      "operations": {}
+    }
+  ]
+}

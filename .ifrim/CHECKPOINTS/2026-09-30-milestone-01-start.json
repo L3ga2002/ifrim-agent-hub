@@ -1,0 +1,778 @@
+{
+  "kind": "milestone-01-start-checkpoint",
+  "createdAt": "2026-09-29T22:35:13.910Z",
+  "projectRoot": "C:\\Users\\mihai\\OneDrive\\Desktop\\Ifrim Digital Proiecte\\Ifrim Agent Hub",
+  "git": {
+    "branch": "main",
+    "head": "e9ab563d56e490915185331f6aa6ffeeed52391e",
+    "upstream": "e9ab563d56e490915185331f6aa6ffeeed52391e",
+    "statusPorcelain": [
+      "M .ifrim/NEXT_SESSION.md",
+      " M .ifrim/OPEN_ISSUES.md",
+      " M .ifrim/OPUS_HANDOFF.md",
+      " M .ifrim/PREVIEW.md",
+      " M .ifrim/PROJECT_STATE.md",
+      " M CLAUDE.md",
+      " M package-lock.json",
+      " M package.json",
+      "?? .ifrim/BACKUP_RESTORE.md",
+      "?? .ifrim/CAPABILITY_MATRIX.md",
+      "?? .ifrim/CHECKPOINTS/2026-09-29-v2-rebuild-start.json",
+      "?? .ifrim/CHECKPOINTS/2026-09-30-v2-build-ready.md",
+      "?? .ifrim/DESIGN_SYSTEM.md",
+      "?? .ifrim/HANDOFF_PROTOCOL.md",
+      "?? .ifrim/IMPLEMENTATION_STATUS.md",
+      "?? .ifrim/REBUILD_DECISIONS.md",
+      "?? .ifrim/RUNBOOK.md",
+      "?? .ifrim/SECURITY_MODEL.md",
+      "?? .ifrim/SUBSCRIPTION_POLICY.md",
+      "?? .ifrim/TEST_REPORT.md",
+      "?? .ifrim/THIRD_PARTY_NOTICES.md",
+      "?? .ifrim/V2_ARCHITECTURE.md",
+      "?? .ifrim/V2_SCHEMA_MIGRATIONS.md",
+      "?? .ifrim/V2_SPEC.md",
+      "?? v2/"
+    ],
+    "diffStat": [
+      ".ifrim/NEXT_SESSION.md  | 31 +++++++++++++++++++++++++++++++",
+      " .ifrim/OPEN_ISSUES.md   | 16 ++++++++++++++++",
+      " .ifrim/OPUS_HANDOFF.md  | 11 +++++++++++",
+      " .ifrim/PREVIEW.md       |  8 ++++++++",
+      " .ifrim/PROJECT_STATE.md |  7 +++++++",
+      " CLAUDE.md               |  4 ++++",
+      " package-lock.json       | 14 +++++++-------",
+      " package.json            |  9 ++++++++-",
+      " 8 files changed, 92 insertions(+), 8 deletions(-)"
+    ]
+  },
+  "uncommitted": [
+    {
+      "path": ".ifrim/NEXT_SESSION.md",
+      "state": "modified",
+      "size": 60412,
+      "sha256": "9abf5c83d9967f46e68f238c77a0a75459fa4e2a5538e9a53baeb2531e23f37e"
+    },
+    {
+      "path": ".ifrim/OPEN_ISSUES.md",
+      "state": "modified",
+      "size": 11890,
+      "sha256": "e43f8c749e2a5035270f83583d1c82a96f4b15816fc637d053635ba39ba1275a"
+    },
+    {
+      "path": ".ifrim/OPUS_HANDOFF.md",
+      "state": "modified",
+      "size": 6253,
+      "sha256": "bfd4a78e07f3fe4a896ef56424f4c6d8dcd7b90bc4bc918986ebf89cc5f03e2a"
+    },
+    {
+      "path": ".ifrim/PREVIEW.md",
+      "state": "modified",
+      "size": 5537,
+      "sha256": "24e4688223b2a07e0657a4d06f15077c44af88d3d0c76371fcac4017b95817f2"
+    },
+    {
+      "path": ".ifrim/PROJECT_STATE.md",
+      "state": "modified",
+      "size": 20540,
+      "sha256": "0c69bb9bc6e82c8d4b2d7ce23c09305f3991d94f0a77767f4b473ab1b875aae8"
+    },
+    {
+      "path": "CLAUDE.md",
+      "state": "modified",
+      "size": 3058,
+      "sha256": "97d5cca19236cb7d84c013ddd8c6f39903d6ffe3c7014903d6eb37c016244850"
+    },
+    {
+      "path": "package-lock.json",
+      "state": "modified",
+      "size": 31341,
+      "sha256": "2315d8039a4589b779ec0b7c4e73d21092d1731d5905c4c360f4d87eea091c29"
+    },
+    {
+      "path": "package.json",
+      "state": "modified",
+      "size": 1212,
+      "sha256": "09c26daa1e8098437399c6f3170709ba379325903d36610ebcfb23c591f027ab"
+    },
+    {
+      "path": ".ifrim/BACKUP_RESTORE.md",
+      "state": "untracked",
+      "size": 3514,
+      "sha256": "cc76c3d548fee90c87166757333c49c7807a0cd6fa55b698db812a73d1d3bdc2"
+    },
+    {
+      "path": ".ifrim/CAPABILITY_MATRIX.md",
+      "state": "untracked",
+      "size": 3537,
+      "sha256": "daf6a7392dea6c82019e130561084e40b919ee8a99f71aea5845ee9dee86efb8"
+    },
+    {
+      "path": ".ifrim/CHECKPOINTS/2026-09-29-v2-rebuild-start.json",
+      "state": "untracked",
+      "size": 2910,
+      "sha256": "3bc7da63f1dac12d9505cbf5223e167bce1470239d2d68217a538824415b6e29"
+    },
+    {
+      "path": ".ifrim/CHECKPOINTS/2026-09-30-v2-build-ready.md",
+      "state": "untracked",
+      "size": 2024,
+      "sha256": "6255489da3cd1be2e663f2442dc121e0334146b2cc2b58c21e77204a5cc6c6b4"
+    },
+    {
+      "path": ".ifrim/DESIGN_SYSTEM.md",
+      "state": "untracked",
+      "size": 3079,
+      "sha256": "885761873588d20df1c8911fbe1cd2035610b8d7bb31bf60caff143fefc8deaf"
+    },
+    {
+      "path": ".ifrim/HANDOFF_PROTOCOL.md",
+      "state": "untracked",
+      "size": 2944,
+      "sha256": "9914033e03966c27ef31fdb4dac94b1520b2d70e0dc4691cc598b80c7e9599e5"
+    },
+    {
+      "path": ".ifrim/IMPLEMENTATION_STATUS.md",
+      "state": "untracked",
+      "size": 3828,
+      "sha256": "9f793625d0ba97328e2a9d59e4b28f44fe99459a84961660bdd9793500d77ba5"
+    },
+    {
+      "path": ".ifrim/REBUILD_DECISIONS.md",
+      "state": "untracked",
+      "size": 6044,
+      "sha256": "8fd46f9104983fb171b3219fd4c517d3ff64853e1369eae4cd17dc419685d08c"
+    },
+    {
+      "path": ".ifrim/RUNBOOK.md",
+      "state": "untracked",
+      "size": 3266,
+      "sha256": "e1c0a47e6819a9e2e40fa95a524b6c9d816d295ff621adcc8ac6f946ae9f2f29"
+    },
+    {
+      "path": ".ifrim/SECURITY_MODEL.md",
+      "state": "untracked",
+      "size": 3668,
+      "sha256": "060c779dba38e44bd61e0e0b90b46eb8c45a45dab7178f26ccc74d8fb3192cd0"
+    },
+    {
+      "path": ".ifrim/SUBSCRIPTION_POLICY.md",
+      "state": "untracked",
+      "size": 3962,
+      "sha256": "b76084a3aff71a24237eb16f76884cdc667f3b687f6c5a223c8ed2386c3936a2"
+    },
+    {
+      "path": ".ifrim/TEST_REPORT.md",
+      "state": "untracked",
+      "size": 7318,
+      "sha256": "ade51a6f2670022bf9a4cbe1753db19b69044c9a3ae4895f367d768c0b3d672f"
+    },
+    {
+      "path": ".ifrim/THIRD_PARTY_NOTICES.md",
+      "state": "untracked",
+      "size": 1772,
+      "sha256": "c0ff560c1c1c883b84a665e7ad828d85516ce8881cbc07883b931fdd8ac60b34"
+    },
+    {
+      "path": ".ifrim/V2_ARCHITECTURE.md",
+      "state": "untracked",
+      "size": 6054,
+      "sha256": "eca0df0824fbf4aa94a8f90b84bfcbe231187f1f8589d50d3a12c28d2147f38e"
+    },
+    {
+      "path": ".ifrim/V2_SCHEMA_MIGRATIONS.md",
+      "state": "untracked",
+      "size": 4463,
+      "sha256": "c33d56b9b3de4bc12357da2425bd53a92d87910db78606d7cc222a1bd2ac4540"
+    },
+    {
+      "path": ".ifrim/V2_SPEC.md",
+      "state": "untracked",
+      "size": 3331,
+      "sha256": "d973f3bc053a1216630aae3178ac604dffa333df4a2e7fcaf441b5f6c890f106"
+    },
+    {
+      "path": "v2/config/capabilities.json",
+      "state": "untracked",
+      "size": 19505,
+      "sha256": "2b5458a9323c4f5929b23fa102ac5f1f2cebf3e90be7fbfde5857d0d2894ebd5"
+    },
+    {
+      "path": "v2/config/roles.json",
+      "state": "untracked",
+      "size": 10297,
+      "sha256": "7e265a8ee011e6ac1354aa2da5d01638eaf6547cca94c7eda3364a0132ab2818"
+    },
+    {
+      "path": "v2/config/skills.json",
+      "state": "untracked",
+      "size": 6009,
+      "sha256": "715be44b94dc943f1eed9e9a64cbf00f4e490e2677786bdc742afed42a2c8901"
+    },
+    {
+      "path": "v2/scripts/common.mjs",
+      "state": "untracked",
+      "size": 1763,
+      "sha256": "83d574f06a64cb18ea0f22f27c275b959a8591f220a17e2f04532a25deb3565d"
+    },
+    {
+      "path": "v2/scripts/start.mjs",
+      "state": "untracked",
+      "size": 1971,
+      "sha256": "a5580fd3bb9996bb62d70a62e8b73b6c7efe9d0cf2b9c3c078c37fdbd32a7129"
+    },
+    {
+      "path": "v2/scripts/status.mjs",
+      "state": "untracked",
+      "size": 467,
+      "sha256": "451710066d720cdba689c54fe5348e479047dfad49a5152138a602194556812c"
+    },
+    {
+      "path": "v2/scripts/stop.mjs",
+      "state": "untracked",
+      "size": 1394,
+      "sha256": "e62379cc208e622fa54853b5353069e9c0d4dd1b85abb2c9611c45e70fe6b784"
+    },
+    {
+      "path": "v2/server/backup/backup.mjs",
+      "state": "untracked",
+      "size": 13383,
+      "sha256": "6c7a047f52ef0f589bb674fbe76343e91313d50e4b667899428d53a5824cf401"
+    },
+    {
+      "path": "v2/server/backup/zip.mjs",
+      "state": "untracked",
+      "size": 5752,
+      "sha256": "973da2f2584dd041a70c2aa416311aec4fdf3b6d1c93df141b56abc5d127fefc"
+    },
+    {
+      "path": "v2/server/config.mjs",
+      "state": "untracked",
+      "size": 2660,
+      "sha256": "303e14a54229e2eea9dc2b28f84af61058cfd4b7c6fffc4cf652afe00c72348a"
+    },
+    {
+      "path": "v2/server/core/canonical.mjs",
+      "state": "untracked",
+      "size": 727,
+      "sha256": "9c25fedf1f8356dff9af321a996105bf9993cc492431318477381514e545abcc"
+    },
+    {
+      "path": "v2/server/core/errors.mjs",
+      "state": "untracked",
+      "size": 1609,
+      "sha256": "f8455b6aa5e68282fafa561fd25d94761930bd3c2853952b89bb5d641453b316"
+    },
+    {
+      "path": "v2/server/core/ids.mjs",
+      "state": "untracked",
+      "size": 376,
+      "sha256": "e25e61d3e1f22090b21b272907a3e701928563bad47ce3342e7f120d14dcde9e"
+    },
+    {
+      "path": "v2/server/core/validate.mjs",
+      "state": "untracked",
+      "size": 2788,
+      "sha256": "501d5eb5393b12ddfcaceaf6a87c873353fe4dabfec93caf7a30feeedbccf7bf"
+    },
+    {
+      "path": "v2/server/domain/backups.mjs",
+      "state": "untracked",
+      "size": 5628,
+      "sha256": "edd57ee188e217d2764496dbdf3d17d9f92a618c0a1c338000e7a699f3dffe2d"
+    },
+    {
+      "path": "v2/server/domain/briefing.mjs",
+      "state": "untracked",
+      "size": 3545,
+      "sha256": "81fad6be220f1c3a77e73248784b701f97aa0683b7c81a870d36d5ced50da9bd"
+    },
+    {
+      "path": "v2/server/domain/conversations.mjs",
+      "state": "untracked",
+      "size": 10456,
+      "sha256": "568b70e5e0123b75873ac55349b48335174248c7b423026fa7d399adb3e7fbc5"
+    },
+    {
+      "path": "v2/server/domain/grants.mjs",
+      "state": "untracked",
+      "size": 5569,
+      "sha256": "d1d4801d3f24acfa31fb4d36a992dd15c08b6f09f6424fcd7b9813f3c865b773"
+    },
+    {
+      "path": "v2/server/domain/leads.mjs",
+      "state": "untracked",
+      "size": 3901,
+      "sha256": "538484d5927525ee8346898b796fb1a33576e17b2a7293ab55e37f80b70f0f35"
+    },
+    {
+      "path": "v2/server/domain/memory.mjs",
+      "state": "untracked",
+      "size": 5695,
+      "sha256": "84e33cdf842b9f11ed26d41920b18c3795a38fc090e22b39faa92570286bf798"
+    },
+    {
+      "path": "v2/server/domain/missions.mjs",
+      "state": "untracked",
+      "size": 10229,
+      "sha256": "1b34ad12a1b929b094f753dcdacd0e3a0446266cc880f0ab39b9ec4b9f115e81"
+    },
+    {
+      "path": "v2/server/domain/projects.mjs",
+      "state": "untracked",
+      "size": 4416,
+      "sha256": "35677aadddbb1af9b6bff3785dc54f611e9aa4f2bf8eaab51a3afcddcc015768"
+    },
+    {
+      "path": "v2/server/domain/settings.mjs",
+      "state": "untracked",
+      "size": 1661,
+      "sha256": "08f94515c5b133ff42602e2c6c47e972443e82074f5c1d9ea2f83ab2f806fcba"
+    },
+    {
+      "path": "v2/server/domain/usage.mjs",
+      "state": "untracked",
+      "size": 2490,
+      "sha256": "8f0e699d0a7a052cca8aca49e4ca4452a6993e583b29174da5ad1db3145ec1f9"
+    },
+    {
+      "path": "v2/server/domain/voice.mjs",
+      "state": "untracked",
+      "size": 1550,
+      "sha256": "9b33eac59f7c329178c108c51afbac7b343537dd5e228081bcaada4815d6fab4"
+    },
+    {
+      "path": "v2/server/events/bus.mjs",
+      "state": "untracked",
+      "size": 3103,
+      "sha256": "b539c8b33b69a97f43a07d8822b4a02b12af028a751d6bd119c65d24692479f7"
+    },
+    {
+      "path": "v2/server/http/routes.mjs",
+      "state": "untracked",
+      "size": 30811,
+      "sha256": "2418656cecffa4fd537582bd11940755f664fbdfc97f25817c8ef6cba400a9ee"
+    },
+    {
+      "path": "v2/server/http/server.mjs",
+      "state": "untracked",
+      "size": 5791,
+      "sha256": "fc11540355207f12844ee040a1382f81bbc17e7836249a51a617a3c8da04f3b0"
+    },
+    {
+      "path": "v2/server/hub.mjs",
+      "state": "untracked",
+      "size": 5962,
+      "sha256": "d9e5472ffc0985d0edb8661d1664fe5396639ba7351492bcf342c5e23249e0c9"
+    },
+    {
+      "path": "v2/server/main.mjs",
+      "state": "untracked",
+      "size": 1871,
+      "sha256": "77cd5b1d73a340c363d84c5af666f524c7c30ef69025da2d79ee79aaad1695bc"
+    },
+    {
+      "path": "v2/server/policy/approvals.mjs",
+      "state": "untracked",
+      "size": 7147,
+      "sha256": "db163ec0246229cf8a52d1b4e04d4c5df3abdc51fbc99ef978126580d5391f22"
+    },
+    {
+      "path": "v2/server/policy/billing.mjs",
+      "state": "untracked",
+      "size": 9379,
+      "sha256": "7fcb1c99359132b0e54bb305bb702aeffdcf00f5966e7bb543a34f4ef26faf70"
+    },
+    {
+      "path": "v2/server/policy/gate.mjs",
+      "state": "untracked",
+      "size": 5351,
+      "sha256": "fe1e6e9581c9b6d9a6a0346121be8174bc512ae87b6858bd71946e29fb079ba9"
+    },
+    {
+      "path": "v2/server/providers/classify.mjs",
+      "state": "untracked",
+      "size": 2317,
+      "sha256": "e6c4b7ea9957d7e4aa644812583a9a955ba8cfc47f2a8923b2bf1f93f1a7b273"
+    },
+    {
+      "path": "v2/server/providers/claude.mjs",
+      "state": "untracked",
+      "size": 12107,
+      "sha256": "771f3557d80eb8925322d11d68e960c423e45428d9d2407453dc95c190d7afee"
+    },
+    {
+      "path": "v2/server/providers/codex.mjs",
+      "state": "untracked",
+      "size": 18299,
+      "sha256": "92eb9d3bd30c7e4b207b681bac091c78ff64400477967e4cfb8ca50a8f4bf4ec"
+    },
+    {
+      "path": "v2/server/providers/jsonrpc.mjs",
+      "state": "untracked",
+      "size": 2712,
+      "sha256": "e3cc157c942ba3245a6ddf73be91e6aaac5d4feee800813edd7f00a9c7640a81"
+    },
+    {
+      "path": "v2/server/runtime/handoff.mjs",
+      "state": "untracked",
+      "size": 13211,
+      "sha256": "b56df394626428c8f92173d1422590b58846423146e5e596f4ca64f72fe10ea8"
+    },
+    {
+      "path": "v2/server/runtime/leases.mjs",
+      "state": "untracked",
+      "size": 4164,
+      "sha256": "903487ce75a0b066bb81e7899d6b19eca3adf5300840a1e1d0b23051eb86106b"
+    },
+    {
+      "path": "v2/server/runtime/prompt.mjs",
+      "state": "untracked",
+      "size": 3902,
+      "sha256": "73cce901ea480d250cc696af77d491310beb2e5d7ab388f290ecab86116afe70"
+    },
+    {
+      "path": "v2/server/runtime/recovery.mjs",
+      "state": "untracked",
+      "size": 4277,
+      "sha256": "100ca15195669f18a8abe4a8fdcd8f714e8a32ad9041846a725b3f19a6764ab0"
+    },
+    {
+      "path": "v2/server/runtime/runs.mjs",
+      "state": "untracked",
+      "size": 20213,
+      "sha256": "b37eb9770172ed5fa54e9b9a3429c1da72601cd4beada1cf2cbd0c3bc3e01e79"
+    },
+    {
+      "path": "v2/server/runtime/state-machine.mjs",
+      "state": "untracked",
+      "size": 3401,
+      "sha256": "5208ef9c4311657ca2a56dcd0a00e86f12818b3205e2768a03472e10032ce707"
+    },
+    {
+      "path": "v2/server/runtime/supervisor.mjs",
+      "state": "untracked",
+      "size": 5299,
+      "sha256": "1cc75379005162e29af062ad1a3d89fd6e6833413b9fa3819ce0f6f72f5bfc85"
+    },
+    {
+      "path": "v2/server/security/paths.mjs",
+      "state": "untracked",
+      "size": 2142,
+      "sha256": "3888e555685e3491296f9bb4d1e698ac9d017c82f32bedf01839508ff6e01283"
+    },
+    {
+      "path": "v2/server/security/redact.mjs",
+      "state": "untracked",
+      "size": 2446,
+      "sha256": "4c591ec827ec849974875185e1c1f4dbcce94437ccf47aa9754f176907dd5b78"
+    },
+    {
+      "path": "v2/server/storage/db.mjs",
+      "state": "untracked",
+      "size": 1920,
+      "sha256": "c52ead2d27db07082336f0e2a0c1f9f88c6df8e5531295b73fb5af9cc9e9edff"
+    },
+    {
+      "path": "v2/server/storage/migrations.mjs",
+      "state": "untracked",
+      "size": 13557,
+      "sha256": "ab4fd3debc09c37296f311f1956a74ce96818b022f24d14d09e936072d342459"
+    },
+    {
+      "path": "v2/server/storage/v1-import.mjs",
+      "state": "untracked",
+      "size": 16520,
+      "sha256": "c9de80eb56f431bb6ee23dadc5252d9f7010c6eb60ac23463095b14bc4337255"
+    },
+    {
+      "path": "v2/server/tools/git.mjs",
+      "state": "untracked",
+      "size": 2968,
+      "sha256": "82de9c69fc82c548d9df60548d4c118a00ebc51b1ac94c1f10db03198db238b3"
+    },
+    {
+      "path": "v2/server/tools/registry.mjs",
+      "state": "untracked",
+      "size": 10587,
+      "sha256": "4894a41dbda425a2cef70cdf9aafe3c27147ab324f9ac86e9da7e7111f6b22a3"
+    },
+    {
+      "path": "v2/tests/approvals-state.test.mjs",
+      "state": "untracked",
+      "size": 6351,
+      "sha256": "f5dc6f9d37e74b2dac463cc3a579869cb9a673d54c1fd22878fd97e1e731587f"
+    },
+    {
+      "path": "v2/tests/backup.test.mjs",
+      "state": "untracked",
+      "size": 6992,
+      "sha256": "f5044fb509fb97f8fff9575db8ef487a66dc738b7aa854033fd7602f09e6a8dc"
+    },
+    {
+      "path": "v2/tests/data.test.mjs",
+      "state": "untracked",
+      "size": 12263,
+      "sha256": "ba95b21ed81a5ba990373b9291de4cf049e4c24cd7ad4202de17d24be9dec4b7"
+    },
+    {
+      "path": "v2/tests/fixtures/fake-claude.mjs",
+      "state": "untracked",
+      "size": 2991,
+      "sha256": "ccae3aa2a7d8ec469a4be8c3a47685c9b26acdf2d0350900f25d9e7dad119496"
+    },
+    {
+      "path": "v2/tests/fixtures/fake-codex.mjs",
+      "state": "untracked",
+      "size": 5175,
+      "sha256": "4b8b8e85dd311d4b970238aa84df24389d7841294918da61e3a89af0eff94674"
+    },
+    {
+      "path": "v2/tests/helpers.mjs",
+      "state": "untracked",
+      "size": 4607,
+      "sha256": "f27516294b5c7cf359732d3ab75539e355613ab1d1c30b525dc56756ea4b2904"
+    },
+    {
+      "path": "v2/tests/http.test.mjs",
+      "state": "untracked",
+      "size": 8704,
+      "sha256": "eaa6bcf40cdc071eaf8b6326cb62032aa5926caae7d1e8485f131a12a8571d2d"
+    },
+    {
+      "path": "v2/tests/manual/codex-handshake-fresh-home.mjs",
+      "state": "untracked",
+      "size": 2761,
+      "sha256": "6a41656d5cea411aaaafd95ece6f72a45b1bd30ce2521b94605df7dc874be15e"
+    },
+    {
+      "path": "v2/tests/policy.test.mjs",
+      "state": "untracked",
+      "size": 6654,
+      "sha256": "793084d0fba46deb932e822a61303fc9d23ea4a65e452a861f47e8974e5915f4"
+    },
+    {
+      "path": "v2/tests/providers.test.mjs",
+      "state": "untracked",
+      "size": 8831,
+      "sha256": "bc63409e2e23ba85e041ae4b1a1c53c6fe75e1c5ec5c2646f00190a8db7a9d94"
+    },
+    {
+      "path": "v2/tests/runs-handoff.test.mjs",
+      "state": "untracked",
+      "size": 12081,
+      "sha256": "9ba4bcd15d67c8fb864cd74120df8cea7c72cbc64d276beea7eccf0494752a66"
+    },
+    {
+      "path": "v2/web/index.html",
+      "state": "untracked",
+      "size": 542,
+      "sha256": "2ab16652aac5cc78497f222c797025c152ab6edaeee99b76f73933a43ca57ff0"
+    },
+    {
+      "path": "v2/web/public/favicon.svg",
+      "state": "untracked",
+      "size": 357,
+      "sha256": "14ec6b5e5eaa22fd99db3ded6cf132c882e3dbf5ac3b06b98fe30612264a2b18"
+    },
+    {
+      "path": "v2/web/src/api.js",
+      "state": "untracked",
+      "size": 4096,
+      "sha256": "70987851341364965979d89a1b1fa33f0146fc5f0845c5acdf9e09096ff0de02"
+    },
+    {
+      "path": "v2/web/src/components/Core.jsx",
+      "state": "untracked",
+      "size": 9311,
+      "sha256": "cf05a82c6f2d7cc8d1e71906585f7953684d4384ffee7d422bb7bf4743a55443"
+    },
+    {
+      "path": "v2/web/src/components/TaskGraph.jsx",
+      "state": "untracked",
+      "size": 3044,
+      "sha256": "42dbc85f7ec5bcb4388e458be894b1527f577f6b60af7db68eeac37106c7cd5b"
+    },
+    {
+      "path": "v2/web/src/components/ui.jsx",
+      "state": "untracked",
+      "size": 7557,
+      "sha256": "95a8998505e490fcaf27d07bafecaac1ffc8e645360db0df980ed4662c7dd93a"
+    },
+    {
+      "path": "v2/web/src/main.jsx",
+      "state": "untracked",
+      "size": 2573,
+      "sha256": "b109f096e8d3392d598f7e55dcb4887f6d5e8698458e928c174f8afe0ba9728c"
+    },
+    {
+      "path": "v2/web/src/nav.js",
+      "state": "untracked",
+      "size": 1317,
+      "sha256": "485bd9436277293b14d4e6b301b6556083e7206d4910bd9b23eb656a11707339"
+    },
+    {
+      "path": "v2/web/src/screens/Agents.jsx",
+      "state": "untracked",
+      "size": 5665,
+      "sha256": "1e3f6b1eff678b2b70967b0f4fc95fd48b37ca7cad52afa619645d7a16fb2fe4"
+    },
+    {
+      "path": "v2/web/src/screens/Approvals.jsx",
+      "state": "untracked",
+      "size": 5450,
+      "sha256": "4deb4d5db7f02d9cc7845ca5d2b32e14847406c59cadf2be0ff6273f65a609dc"
+    },
+    {
+      "path": "v2/web/src/screens/Company.jsx",
+      "state": "untracked",
+      "size": 7221,
+      "sha256": "6b98c0a787dad3d1462b8032284db20f393f1235d1a492ddd0e68df9c994a26b"
+    },
+    {
+      "path": "v2/web/src/screens/ControlRoom.jsx",
+      "state": "untracked",
+      "size": 10458,
+      "sha256": "d23b780526626146d83d97c10d5b368b1044d9160fc09080dd08264dc3da10a0"
+    },
+    {
+      "path": "v2/web/src/screens/Conversations.jsx",
+      "state": "untracked",
+      "size": 4556,
+      "sha256": "fb0af72ef8fa541915d8f243065593fa6cca0f93966a90e3f6aaa3a84ed62f60"
+    },
+    {
+      "path": "v2/web/src/screens/Focus.jsx",
+      "state": "untracked",
+      "size": 24820,
+      "sha256": "ec678dd5f00b40acc64791920f43ac5a91f2c694f4567982d23d70cfffac73e0"
+    },
+    {
+      "path": "v2/web/src/screens/Health.jsx",
+      "state": "untracked",
+      "size": 6312,
+      "sha256": "893be053dec2c9a81a86e4e0609bc42fe695debbc42ee0e24905ec25603ad01b"
+    },
+    {
+      "path": "v2/web/src/screens/Integrations.jsx",
+      "state": "untracked",
+      "size": 12161,
+      "sha256": "16180a657bc3dd5cc359334c4d2afaaf9c9e753167190c1821a875c482a2e5f5"
+    },
+    {
+      "path": "v2/web/src/screens/Memory.jsx",
+      "state": "untracked",
+      "size": 6793,
+      "sha256": "d9fc31ebbb1487380051a1fe7a887ed98e96e930331e8750e553229c4692ee76"
+    },
+    {
+      "path": "v2/web/src/screens/Missions.jsx",
+      "state": "untracked",
+      "size": 12601,
+      "sha256": "5089efc70686eadca738225d7168f068e4d34164aa7dbf52995af66538819e46"
+    },
+    {
+      "path": "v2/web/src/screens/Projects.jsx",
+      "state": "untracked",
+      "size": 5818,
+      "sha256": "e1afddfa59bcb0af044f16e79c72e5cf9b83e94ddefdc7e92ea01ab464d863cb"
+    },
+    {
+      "path": "v2/web/src/screens/Settings.jsx",
+      "state": "untracked",
+      "size": 11027,
+      "sha256": "5aed068fb1d05e58a921bc1c1508413620227fac5b6066d5e945eb92c3ea599f"
+    },
+    {
+      "path": "v2/web/src/screens/Tools.jsx",
+      "state": "untracked",
+      "size": 4141,
+      "sha256": "eacc63ad3d20d1d7978bb412b33e971e3ef23240d5a8694670244deadea0b702"
+    },
+    {
+      "path": "v2/web/src/shell/Shell.jsx",
+      "state": "untracked",
+      "size": 12177,
+      "sha256": "c8a07cd76fadb4333ebcd58c385156c27729ca9afcbac3e5267e1bdd72cabc51"
+    },
+    {
+      "path": "v2/web/src/shell/Voice.jsx",
+      "state": "untracked",
+      "size": 7461,
+      "sha256": "bdc2d9c2f11466784371b4717c29c50c435d554aad98beba5d0b5f118d4a763b"
+    },
+    {
+      "path": "v2/web/src/store.js",
+      "state": "untracked",
+      "size": 6159,
+      "sha256": "57e39659f2824edd6196e5cdc249a5d0789ee594e6fa2cbcd076cf2233f8abf9"
+    },
+    {
+      "path": "v2/web/src/styles/app.css",
+      "state": "untracked",
+      "size": 24613,
+      "sha256": "c8a2886ba9b33798ad4df4e89f7a7c3010465217005b5d782015fa1509324a81"
+    },
+    {
+      "path": "v2/web/src/styles/tokens.css",
+      "state": "untracked",
+      "size": 1789,
+      "sha256": "e62ac386215ebb3fefa2df3ac775a8735f31052722633eaf8b96486569e00b98"
+    },
+    {
+      "path": "v2/web/vite.config.js",
+      "state": "untracked",
+      "size": 555,
+      "sha256": "e1cc4a5d9f33ecbc75836186c4ea7124bdabc1360907b7521dcca9e0cea9f495"
+    }
+  ],
+  "listeners": [
+    {
+      "address": "127.0.0.1",
+      "port": 3004,
+      "pid": 18364
+    },
+    {
+      "address": "127.0.0.1",
+      "port": 8004,
+      "pid": 28392
+    },
+    {
+      "address": "127.0.0.1",
+      "port": 8011,
+      "pid": 25340
+    },
+    {
+      "address": "127.0.0.1",
+      "port": 18790,
+      "pid": 23596
+    }
+  ],
+  "hubBefore": {
+    "mode": "BUILD_SAFE",
+    "gate": "suspended",
+    "activeRuns": 0,
+    "leases": 0,
+    "pendingApprovals": 0,
+    "lastSeq": 1586
+  },
+  "backup": {
+    "httpStatus": 201,
+    "durationMs": 14904,
+    "id": "bkp_mun98kt4_4e90e12ab3",
+    "status": "verified",
+    "fileCount": 259,
+    "skipped": 0,
+    "archive": ".ifrim\\BACKUPS\\v2\\2026-09-29T22-35-20-161Z-bkp_mun98kt4_4e90e12ab3.zip",
+    "manifestSha256": "da3eec04a742239ba92ec5406bb9a52d046ffd8ef8906e7d591d125895149049",
+    "restore": {
+      "ok": true,
+      "restoredFiles": 259,
+      "databases": 2,
+      "problems": [],
+      "durationMs": 5215,
+      "verifiedAt": "2026-09-29T22:35:33.884Z"
+    },
+    "error": null
+  },
+  "policy": "Checkpoint = manifest + git state + hashes of uncommitted files + restore-verified backup (copy). No commit, tag, push, reset or deletion."
+}

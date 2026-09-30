@@ -1,0 +1,112 @@
+{
+  "version": 1,
+  "verifiedOn": "2026-09-30",
+  "method": "Sinteză din auditurile native (openai.json, anthropic.json, verificate adversarial) și din auditul V1 (REBUILD_DECISIONS.md, cod V1, rapoartele HUB-018). Evaluate înaintea frameworkurilor, pe aceleași câmpuri (§39 M01).",
+  "systems": [
+    {
+      "name": "OpenAI ecosystem (ChatGPT plan: Codex, ChatGPT)",
+      "repoUrl": "https://developers.openai.com/codex · https://learn.chatgpt.com · https://github.com/openai/codex",
+      "verifiedOfficial": true,
+      "purpose": "Ecosistem de prim rang: Codex CLI/app-server/desktop/Cloud/Review/Security, ChatGPT (Work, Space/Pages, dots, plugins, computer use), modele GPT-6.x.",
+      "versionDate": "Codex desktop/CLI 0.159.0 local (auto-actualizat 2026-09-30, înainte 0.158.0-alpha.2.1); recapitularea DevDay din 29.09.2026",
+      "license": "Codex CLI: Apache-2.0 (github.com/openai/codex); serviciile ChatGPT/Codex: termenii OpenAI",
+      "maturity": "Codex app-server și CLI: stabile, cu metode marcate experimental; GPT-6.1 Sol/Astra: DOCUMENTED pentru cont (neconfirmate prin model/list); ChatGPT Work și deep research: ELIGIBILITY_UNKNOWN",
+      "strengths": [
+        "Codex app-server: protocol JSON-RPC oficial, local, cu autentificare prin planul ChatGPT (fire, turnuri, aprobări server→client, întrerupere)",
+        "Citirea programatică a utilizării: account/rateLimits/read, account/usage/read, notificări rate limit în timpul turnului",
+        "Skill-uri în format Agent Skills, hooks, subagenți, worktrees, programări Codex desktop",
+        "Computer use și browser integrat în ChatGPT desktop (asistat)"
+      ],
+      "weaknesses": [
+        "După epuizarea alocării, un sold de credite existent se consumă automat, fără comutator; controlul real este sold 0 + auto-reload oprit",
+        "Fast mode activ implicit ca funcție; o selecție Fast salvată consumă ~2,5x",
+        "thread/list întoarce implicit doar sursele cli/vscode; oglindirea firelor desktop este parțială",
+        "Planul contului (prolite) nu este încă verificat în V2 (account/read cere acțiunea ta)"
+      ],
+      "security": "Hub-ul pornește doar binarul oficial, cu mediu allowlist (fără OPENAI_API_KEY/CODEX_API_KEY/proxy), metode JSON-RPC permise explicit (credite, login, config write, plugin install blocate), sandbox read-only implicit.",
+      "windowsSupport": "Da: Codex desktop + CLI pe Windows 11 (instalat local).",
+      "dependencies": "Codex desktop instalat de tine; cont ChatGPT autentificat în Codex.",
+      "billing": "Alocare inclusă în plan. Refuzate: API key, credite (sold > 0 blochează ruta), auto-reload, Ultrafast (Pro 500), Agents API, Decisions API.",
+      "operationalComplexity": "Mică: un proces app-server per execuție, pornit și oprit de supervisor.",
+      "reusableComponents": ["codex app-server (WRAP)", "account/rateLimits (MIRROR_STATE)", "skill-uri Agent Skills (REUSE_NATIVE)", "Codex desktop, Review, Security, Cloud (ASSISTED)"],
+      "nativeOpenaiOverlap": "—",
+      "nativeAnthropicOverlap": "Claude Code headless acoperă aceeași nevoie de coding local; diferența se decide prin rutare și istoric verificat.",
+      "uniqueValue": "Protocol app-server cu aprobări și telemetrie de utilizare citibile programatic; ecosistemul ChatGPT pentru documente, Space/Pages și computer use.",
+      "decision": "INTEGRATE",
+      "rationale": "Native-first: suprafețele programatice sunt WRAP prin clientul oficial, starea se oglindește read-only, restul (Work, Cloud, Review, Security, Space) este ASSISTED. Nimic din ecosistem nu primește ownership-ul taskurilor.",
+      "ownershipProposal": "Execută turnuri de coding/review în fire Codex; Hub-ul deține taskul, aprobarea, rutarea, memoria și checkpointul.",
+      "sourcesChecked": [".ifrim/V2_OPENAI_CAPABILITY_AUDIT.md", "v2/config/ecosystem/openai.json", "codex features list / app-server generate-json-schema (local, 0.159.0)"],
+      "confidence": "high"
+    },
+    {
+      "name": "Anthropic ecosystem (Claude Max: Claude Code, Claude apps)",
+      "repoUrl": "https://code.claude.com/docs · https://support.claude.com · https://claude.com/pricing",
+      "verifiedOfficial": true,
+      "purpose": "Ecosistem de prim rang: Claude Code (terminal, -p headless, sesiuni de fundal, hooks, subagenți, skills, plugins, MCP, checkpoints), Claude apps (Projects, Research, Artifacts, Cowork, Chrome, computer use, taskuri programate).",
+      "versionDate": "Claude Code 2.1.175 local (npm stable 2.1.280, latest 2.1.285 la 29.09.2026); plan Max verificat",
+      "license": "Claude Code: termenii comerciali Anthropic; binarul oficial folosit nemodificat",
+      "maturity": "Claude Code: matur; Opus 5.5 / Sonnet 5.5 / Fable 5.1 cer versiuni CLI mai noi decât cea instalată (NEEDS_SETUP); multe funcții din apps sunt ASSISTED_ONLY",
+      "strengths": [
+        "claude -p stream-json: execuție headless locală prin abonament, cu sesiuni reluabile (--session-id/--resume)",
+        "claude agents --json: listă read-only a sesiunilor native (oglindire)",
+        "Skill-uri Agent Skills, pluginuri, hooks, subagenți, checkpoints (/rewind) native",
+        "Claude apps: Research cu citări, Projects, Artifacts, Cowork, Claude in Chrome, computer use pe Windows"
+      ],
+      "weaknesses": [
+        "În -p, Fable și variantele [1m] pot factura usage credits fără dialog de consimțământ",
+        "În -p, env/apiKeyHelper din setările proiectului se aplică fără dialog de încredere",
+        "Utilizarea (ferestrele de 5 ore/săptămânale) nu este citibilă din CLI; doar din aplicație",
+        "Agent SDK cere API key (OAuth claude.ai permis doar binarului oficial)"
+      ],
+      "security": "Mediu allowlist (fără ANTHROPIC_API_KEY/BASE_URL/OAuth token/proxy), --setting-sources user, --strict-mcp-config gol, unelte read-only implicit, fără --bare/--dangerously-skip-permissions; oprire la init dacă apiKeySource ≠ none.",
+      "windowsSupport": "Da: Claude Code (npm) și Claude desktop pe Windows 11.",
+      "dependencies": "Claude Code instalat global de tine, autentificat prin claude.ai.",
+      "billing": "Alocare inclusă în Max (ferestre 5 h + săptămânală; Fable pe alocare săptămânală separată). Refuzate: usage credits, auto-reload, fast mode, Fable și [1m] în -p, API Console, Bedrock/Vertex/Foundry, Agent SDK.",
+      "operationalComplexity": "Mică: un proces -p per turn, pornit și oprit de supervisor.",
+      "reusableComponents": ["claude -p (WRAP)", "claude agents --json (MIRROR_STATE)", "skill-uri Agent Skills și pluginuri (REUSE_NATIVE)", "Research, Projects, Cowork, Chrome, computer use, taskuri programate (ASSISTED)"],
+      "nativeOpenaiOverlap": "Codex app-server acoperă aceeași nevoie de coding local; ChatGPT computer use acoperă controlul vizual.",
+      "nativeAnthropicOverlap": "—",
+      "uniqueValue": "Research cu citări, Cowork și computer use pe Windows, ecosistemul de skill-uri/pluginuri, checkpoints native de sesiune.",
+      "decision": "INTEGRATE",
+      "rationale": "Native-first: Claude Code headless este WRAP, sesiunile native sunt oglindite, funcțiile din apps sunt ASSISTED. Gărzile de facturare din adaptor sunt condiție de integrare.",
+      "ownershipProposal": "Execută turnuri de arhitectură/review/coding în sesiuni Claude Code; Hub-ul deține taskul, aprobarea, rutarea, memoria și checkpointul cross-provider.",
+      "sourcesChecked": [".ifrim/V2_ANTHROPIC_CAPABILITY_AUDIT.md", "v2/config/ecosystem/anthropic.json", "claude auth status (local)", "claude.ai usage (conector, doar citire)"],
+      "confidence": "high"
+    },
+    {
+      "name": "Agent Hub V1",
+      "repoUrl": "L3ga2002/ifrim-agent-hub (privat), commit e9ab563: src/, apps/api/, tools/, tests/",
+      "verifiedOfficial": true,
+      "purpose": "Prima versiune a Hub-ului: dashboard React, API Node monolit, conversații persistente, rutare prin gateway-ul OpenClaw, backup PowerShell, certificate de abonament.",
+      "versionDate": "e9ab563, 2026-09-29",
+      "license": "Proprietar (Ifrim Digital)",
+      "maturity": "Funcțional pe 3004/8004; criteriile HUB-018 (turn Claude nativ, anulare, vizibilitate) neîndeplinite; suita V1: 551/552 pass (2026-09-30, mașină liberă)",
+      "strengths": [
+        "Drumul direct către clienții oficiali (HUB-017: Codex → Claude → Codex într-o conversație) dovedit live",
+        "Envelope de context cu redactare; aprobări legate de revizia exactă",
+        "Garanția: nicio execuție fără backup verificat",
+        "Date reale (conversații, taskuri, aprobări, evenimente) importabile"
+      ],
+      "weaknesses": [
+        "server.mjs monolit (3,6k linii) cu 60 de rute, gate-uri, backup și execuție amestecate",
+        "Gateway OpenClaw: creare de sesiuni de la 80 s la 30 min, probă ambientală către API-ul plătit (403), scrieri bootstrap",
+        "Backup PowerShell > 120 s pe OneDrive",
+        "UI într-un singur fișier de 93 KB"
+      ],
+      "security": "Nicio cheie API în mediu, dar ruta OpenClaw a produs o probă către API-ul plătit; V2 elimină ruta.",
+      "windowsSupport": "Da (nativ, tray/autostart V1).",
+      "dependencies": "Node, React/Vite, OpenClaw 2026.9.6 (global), PowerShell.",
+      "billing": "Abonamente prin OpenClaw; certificate/receipt de abonament; risc: probe către API plătit.",
+      "operationalComplexity": "Mare: Hub → Gateway → client, 20+ unelte de mentenanță.",
+      "reusableComponents": ["provider-runtime.mjs startCodex/startClaude (ADAPT)", "context-engine.mjs (ADAPT)", "conceptul de aprobare legată de revizie (ADAPT)", "datele V1 (MIGRATE_DATA, importate reversibil)", "cele 23 de roluri (mapate în V2)"],
+      "nativeOpenaiOverlap": "Codex app-server înlocuiește ruta prin gateway pentru Codex.",
+      "nativeAnthropicOverlap": "claude -p și claude agents --json înlocuiesc ruta prin gateway pentru Claude.",
+      "uniqueValue": "Istoric de date și lecții (HUB-017/018) pe care V2 le păstrează ca teste de regresie.",
+      "decision": "REIMPLEMENT",
+      "rationale": "REIMPLEMENT pentru server, backup și UI; ADAPT pentru componentele enumerate; RETIRE pentru ruta OpenClaw și uneltele ei; datele sunt migrate reversibil. V1 rămâne pornit până decizi cutover-ul.",
+      "ownershipProposal": "Niciun ownership în runtime-ul V2; V1 rămâne sursă istorică și UI legacy până la cutover.",
+      "sourcesChecked": [".ifrim/REBUILD_DECISIONS.md", "apps/api/src/*.mjs", "tests/*.test.mjs", ".ifrim/LOOP_REPORTS/2026-09-2[89]-hub-018-*.md"],
+      "confidence": "high"
+    }
+  ]
+}

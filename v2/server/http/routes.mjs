@@ -1,0 +1,396 @@
+import fs from "node:fs";
+import path from "node:path";
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
+import { HubError } from "../core/errors.mjs";
+import { validate } from "../core/validate.mjs";
+import { redactDeep, redactText } from "../security/redact.mjs";
+import { evaluateRoute, scanEnvironment, ATTESTATION_TEXT, BILLING_POLICY } from "../policy/billing.mjs";
+import { TASK_STATES } from "../runtime/state-machine.mjs";
+import { describeLifecycles } from "../runtime/lifecycles.mjs";
+import { inspectionFromState } from "../policy/gate.mjs";
+import { MISSION_TEMPLATES } from "../domain/missions.mjs";
+import { MEMORY_SCOPES, MEMORY_TYPES, MEMORY_SOURCES } from "../domain/memory.mjs";
+import { LEAD_STATUSES } from "../domain/leads.mjs";
+import { SCHEDULE_BACKENDS } from "../domain/schedules.mjs";
+import { SCHEDULE_COMMANDS } from "../runtime/command-catalog.mjs";
+import { readEcosystemConfig } from "../domain/surfaces.mjs";
+import { buildBriefing, briefingMarkdown } from "../domain/briefing.mjs";
+import { planImport, readLegacyTable } from "../storage/v1-import.mjs";
+import { gitState } from "../tools/git.mjs";
+import { HUB_VERSION } from "../config.mjs";
+
+const execFileAsync = promisify(execFile);
+const redactMessage = (m) => ({ ...m, content: redactText(m.content) });
+const ECOSYSTEM_FILES = new Set(["openai", "anthropic", "standards", "matrix", "frameworks", "surfaces", "routing", "computer", "integrations", "ownership", "systems"]);
+
+/**
+ * HTTP adapter. Reads come straight from the modules; every state change is dispatched as a command
+ * (channel "ui") so it is validated, policy-checked, logged and evented in one place.
+ */
+export function registerRoutes(router, hub, { token }) {
+  const { db, bus, settings, projects, conversations, missions, approvals, leases, grants, providerState, usage, memory, leads, backups,
+    providers, gate, runs, handoffs, tools, supervisor, config, commands, company, chiefOfStaff, surfaces, schedules, computer, skills,
+    checkpoints, artifacts, integrations, nativeSessions, telemetry, policy } = hub;
+  const clock = config.now;
+  const get = (p, h) => router.add("GET", p, h);
+  const post = (p, h, o) => router.add("POST", p, h, o);
+  const patch = (p, h) => router.add("PATCH", p, h);
+  const del = (p, h) => router.add("DELETE", p, h);
+  const need = (value, what) => { if (!value) throw new HubError("not_found", `${what} not found`); return value; };
+
+  /** Dispatches a command from the UI; 202 when it waits for an approval, 201 for creations. */
+  async function dispatch(req, type, payload, { created = false } = {}) {
+    const result = await commands.dispatch({ type, payload, actor: "user", channel: "ui", idempotencyKey: req.headers["idempotency-key"] || null });
+    if (result.approvalRequired) return { __status: 202, body: { approvalRequired: true, approval: result.approval, commandId: result.command.id } };
+    return created ? { __status: 201, body: result.result } : result.result;
+  }
+  const cmd = (type, map = ({ body }) => body, options) => (ctx) => dispatch(ctx.req, type, map(ctx), options);
+
+  // ---------- session, health, state ----------
+  get("/api/health", () => ({ ok: true, version: HUB_VERSION, bootId: hub.bootId, mode: settings.get("mode"), gate: settings.get("executionGate").status, time: clock().toISOString() }));
+  get("/api/session", ({ req }) => {
+    const site = req.headers["sec-fetch-site"];
+    if (site && !["same-origin", "same-site", "none"].includes(site)) throw new HubError("policy", "Cross-site session request refused");
+    return { token, bootId: hub.bootId, version: HUB_VERSION };
+  });
+
+  get("/api/state", async () => {
+    const hubProject = projects.hub();
+    const pending = approvals.list("pending");
+    const activeMissions = missions.list().filter((m) => !["COMPLETED", "CANCELLED", "FAILED"].includes(m.status)).slice(0, 8)
+      .map((m) => ({ ...m, progress: missions.progress(m.id) }));
+    const blockedTasks = missions.allTasks().filter((t) => ["BLOCKED", "FAILED", "WAITING_PROVIDER", "WAITING_APPROVAL"].includes(t.status)).slice(0, 12);
+    const surfaceList = surfaces.list();
+    return {
+      version: HUB_VERSION, bootId: hub.bootId, mode: settings.get("mode"), executionGate: settings.get("executionGate"),
+      activeRuns: runs.activeRuns(), pendingApprovals: pending.length, approvals: pending.slice(0, 6),
+      missions: activeMissions, blockedTasks, leases: leases.list(),
+      providers: ["codex", "claude"].map((id) => providerSummary(id)),
+      usage: usage.overview(), backup: hubProject ? backups.freshVerified(hubProject.id) : null,
+      legacy: settings.get("legacyImport"), processes: supervisor.list(), boot: hub.getBootReport(),
+      breakers: { codex: hub.breakers.state("codex"), claude: hub.breakers.state("claude") },
+      lastSeq: bus.lastSeq(), voiceSettings: settings.get("voice"),
+      verifyingTasks: db.prepare("SELECT COUNT(*) AS n FROM tasks WHERE status = 'VERIFYING'").get().n,
+      backupRunning: db.prepare("SELECT COUNT(*) AS n FROM backups WHERE status = 'running'").get().n,
+      recentFailures: db.prepare("SELECT id, provider, error_category AS category, error_message AS message, pre_inference AS preInference, created_at AS createdAt FROM agent_runs WHERE (status IN ('failed','interrupted_unknown','orphaned') OR (status = 'blocked' AND COALESCE(error_category, '') <> 'gate')) AND created_at >= ? ORDER BY created_at DESC LIMIT 5")
+        .all(new Date(clock().getTime() - 30 * 60000).toISOString()),
+      company: { name: company.company()?.name, activeDepartments: company.departments().filter((d) => d.status === "active").length,
+        openGoals: db.prepare("SELECT COUNT(*) AS n FROM goals WHERE status NOT IN ('ACHIEVED','ABANDONED')").get().n },
+      surfaces: { total: surfaceList.length, available: surfaceList.filter((s) => s.availability === "available").length, assisted: surfaceList.filter((s) => s.availability === "assisted").length },
+      schedules: { active: db.prepare("SELECT COUNT(*) AS n FROM schedules WHERE status = 'ACTIVE'").get().n },
+      nativeSessions: db.prepare("SELECT COUNT(*) AS n FROM native_sessions WHERE status <> 'ended'").get().n,
+      counts: {
+        conversations: db.prepare("SELECT COUNT(*) AS n FROM conversations").get().n,
+        missions: db.prepare("SELECT COUNT(*) AS n FROM missions").get().n,
+        memory: db.prepare("SELECT COUNT(*) AS n FROM memory_items WHERE status = 'active'").get().n,
+      },
+    };
+  });
+
+  function providerSummary(id) {
+    const state = providerState.get(id);
+    const inspection = inspectionFromState(state, clock());
+    const route = evaluateRoute(id, inspection, { attestations: settings.get("billingAttestations"), now: clock(), usage: inspection?.usage || null, reservePercent: settings.get("usageReservePercent") });
+    return { id, displayName: providers[id].displayName, installation: state?.installation || null, auth: state?.auth || null, probedAt: state?.probedAt || null,
+      probeOk: state?.ok ?? null, probeError: state?.error || null, models: Array.isArray(state?.models) ? state.models : null, route };
+  }
+
+  // ---------- events: replay + SSE ----------
+  get("/api/events", ({ query }) => ({ events: bus.since(Number(query.after) || 0, Math.min(1000, Number(query.limit) || 300)), lastSeq: bus.lastSeq() }));
+  get("/api/events/query", ({ query }) => ({ events: bus.query({ typePrefix: query.type || null, taskId: query.taskId || null, correlationId: query.correlationId || null,
+    runId: query.runId || null, limit: Number(query.limit) || 300 }) }));
+
+  get("/api/stream", ({ req, res, query }) => {
+    res.writeHead(200, { "Content-Type": "text/event-stream; charset=utf-8", "Cache-Control": "no-store", Connection: "keep-alive", "X-Accel-Buffering": "no" });
+    let lastSent = Number(req.headers["last-event-id"] || query.after || 0);
+    let closed = false;
+    const write = (text) => {
+      if (closed) return;
+      if (!res.write(text)) {
+        // Backpressure: stop writing; the client reconnects with Last-Event-ID and replays from SQLite.
+        res.end();
+        closed = true;
+      }
+    };
+    const flushPersisted = () => {
+      for (const event of bus.since(lastSent, 500)) { write(`id: ${event.seq}\nevent: hub\ndata: ${JSON.stringify(event)}\n\n`); lastSent = event.seq; }
+    };
+    write(`retry: 2000\nevent: hello\ndata: ${JSON.stringify({ lastSeq: bus.lastSeq(), bootId: hub.bootId })}\n\n`);
+    flushPersisted();
+    const offBus = bus.subscribe((event) => { if (event.seq > lastSent) flushPersisted(); });
+    const offLive = hub.live.subscribe((event) => write(`event: live\ndata: ${JSON.stringify(event)}\n\n`));
+    const ping = setInterval(() => write(": ping\n\n"), 20000);
+    req.on("close", () => { closed = true; offBus(); offLive(); clearInterval(ping); });
+    return undefined;
+  });
+
+  // ---------- commands (generic) ----------
+  get("/api/commands", ({ query }) => ({ commands: commands.list({ limit: Number(query.limit) || 100, type: query.type || null, status: query.status || null }) }));
+  get("/api/commands/catalog", () => ({ commands: commands.catalog(), channels: ["ui", "voice", "automation", "schedule", "companion"], scheduleCommands: [...SCHEDULE_COMMANDS] }));
+  post("/api/commands", async ({ req, body }) => {
+    const input = validate(body, { type: { required: true, max: 80 }, payload: { type: "object", default: {} }, intentText: { max: 2000 } });
+    if (!commands.has(input.type)) throw new HubError("validation", `Unknown command ${input.type}`);
+    const result = await commands.dispatch({ type: input.type, payload: input.payload, intentText: input.intentText || "", actor: "user", channel: "ui", idempotencyKey: req.headers["idempotency-key"] || null });
+    return result.approvalRequired ? { __status: 202, body: result } : result;
+  });
+  post("/api/commands/:id/execute", async ({ params }) => commands.executeApproved(params.id, "user"));
+
+  // ---------- settings, mode, gate, stop ----------
+  get("/api/settings", () => ({ settings: settings.all(), billingPolicy: BILLING_POLICY, attestationText: ATTESTATION_TEXT, environment: scanEnvironment() }));
+  patch("/api/settings", async ({ req, body }) => {
+    const allowed = ["voice", "usageReservePercent", "ui", "maxConcurrentAiRuns", "routingPreferences"];
+    for (const key of Object.keys(body || {})) if (!allowed.includes(key)) throw new HubError("policy", `${key} cannot be changed here`);
+    return { settings: await dispatch(req, "settings.update", body) };
+  });
+  post("/api/mode", cmd("mode.set"));
+  post("/api/gate", cmd("gate.set"));
+  post("/api/stop-all", cmd("system.stop_all", ({ body }) => ({ reason: body?.reason })));
+  post("/api/system/shutdown", ({ body }) => {
+    const active = runs.activeRuns();
+    if (active.length && body?.force !== true) throw new HubError("conflict", `${active.length} run(s) active; stop them first or pass force`, { data: { active } });
+    if (typeof hub.shutdown !== "function") throw new HubError("conflict", "Shutdown is not available in this process");
+    setTimeout(() => hub.shutdown("api"), 100).unref?.();
+    return { stopping: true, activeRunsInterrupted: active.length };
+  });
+
+  // ---------- projects & tools ----------
+  get("/api/projects", () => ({ projects: projects.list() }));
+  post("/api/projects/sync", cmd("projects.sync", () => ({})));
+  get("/api/projects/:id", async ({ params }) => {
+    const project = need(projects.get(params.id), "Project");
+    const readable = fs.existsSync(project.path);
+    return { project, git: readable ? await gitState(project.path) : null, backups: backups.list(project.id, 10),
+      conversations: conversations.list(project.id).length, missions: missions.list(project.id).length, artifacts: artifacts.list({ projectId: project.id, limit: 30 }),
+      nativeSessions: nativeSessions.list().filter((s) => s.projectId === project.id),
+      instructions: readable ? ["CLAUDE.md", "AGENTS.md", ".ifrim/NEXT_SESSION.md", ".ifrim/PROJECT_STATE.md", ".ifrim/OPEN_ISSUES.md", ".ifrim/PREVIEW.md"].filter((f) => fs.existsSync(path.join(project.path, f))) : [] };
+  });
+  get("/api/tools", () => ({ tools: tools.definitions }));
+  post("/api/tools/:toolId", cmd("tool.invoke", ({ params, body }) => ({ toolId: params.toolId, projectId: body.projectId, args: body.args || {} })));
+
+  // ---------- conversations & runs ----------
+  get("/api/conversations", ({ query }) => ({ conversations: conversations.list(query.projectId || null) }));
+  post("/api/conversations", cmd("conversation.create", ({ body }) => body, { created: true }));
+  get("/api/conversations/:id", ({ params, query }) => {
+    const conversation = need(conversations.get(params.id), "Conversation");
+    return { conversation, messages: conversations.messages(conversation.id, { after: Number(query.after) || 0, limit: 1000 }).map(redactMessage),
+      sessions: conversations.providerSessions(conversation.id), runs: runs.listRuns({ conversationId: conversation.id, limit: 50 }),
+      attachments: conversations.attachments(conversation.id), handoffs: handoffs.list(conversation.id), project: projects.get(conversation.projectId) };
+  });
+  post("/api/conversations/:id/messages", async ({ req, params, body }) => {
+    const result = await dispatch(req, "conversation.message", { ...body, conversationId: params.id }, { created: true });
+    return result.__status ? { ...result, body: redactMessage(result.body) } : result;
+  });
+  post("/api/conversations/:id/attachments", cmd("conversation.attachment", ({ params, body }) => ({ ...body, conversationId: params.id }), { created: true }), { maxBytes: 15 * 1024 * 1024 });
+  post("/api/conversations/:id/runs", cmd("run.start", ({ params, body }) => ({ ...body, conversationId: params.id }), { created: true }));
+  get("/api/runs", ({ query }) => ({ runs: runs.listRuns({ status: query.status || null, conversationId: query.conversationId || null, taskId: query.taskId || null, limit: 200 }), active: runs.activeRuns() }));
+  get("/api/runs/:id", ({ params }) => ({ run: need(runs.getRun(params.id), "Run"), events: bus.query({ runId: params.id, limit: 300 }).reverse(), telemetry: telemetry.get(params.id) }));
+  post("/api/runs/:id/interrupt", cmd("run.interrupt", ({ params }) => ({ runId: params.id })));
+
+  // ---------- handoffs ----------
+  post("/api/conversations/:id/handoffs", cmd("handoff.begin", ({ params, body }) => ({ ...body, conversationId: params.id }), { created: true }));
+  post("/api/handoffs/:id/advance", cmd("handoff.advance", ({ params }) => ({ handoffId: params.id })));
+  post("/api/handoffs/:id/cancel", cmd("handoff.cancel", ({ params }) => ({ handoffId: params.id })));
+  get("/api/handoffs", () => ({ handoffs: db.prepare("SELECT id, conversation_id AS conversationId, from_provider AS fromProvider, to_provider AS toProvider, from_surface AS fromSurface, to_surface AS toSurface, status, step, package_sha256 AS packageSha256, checkpoint_id AS checkpointId, error, created_at AS createdAt, updated_at AS updatedAt FROM handoffs ORDER BY created_at DESC LIMIT 100").all() }));
+  get("/api/handoffs/:id", ({ params }) => need(handoffs.get(params.id), "Handoff"));
+
+  // ---------- missions & tasks ----------
+  get("/api/missions", ({ query }) => ({ missions: missions.list(query.projectId || null).map((m) => ({ ...m, progress: missions.progress(m.id) })), templates: MISSION_TEMPLATES, taskStates: TASK_STATES }));
+  post("/api/missions", cmd("mission.create", ({ body }) => body, { created: true }));
+  get("/api/missions/:id", ({ params }) => {
+    const mission = need(missions.get(params.id), "Mission");
+    const taskList = missions.tasks(mission.id);
+    return { mission, tasks: taskList.map((t) => ({ ...t, transitions: missions.transitions(t.id), runs: runs.listRuns({ taskId: t.id, limit: 20 }), dependenciesMet: missions.dependenciesMet(t),
+        dependencies: missions.dependencyIds(t.id), route: t.routeDecisionId ? hub.router.get(t.routeDecisionId) : null })),
+      progress: missions.progress(mission.id), department: mission.departmentId ? company.department(mission.departmentId) : null, goal: mission.goalId ? company.goal(mission.goalId) : null,
+      events: bus.since(0, 5000).filter((e) => e.missionId === mission.id || e.scopeId === mission.id || taskList.some((t) => t.id === e.scopeId)).slice(-200) };
+  });
+  get("/api/tasks", ({ query }) => ({ tasks: missions.allTasks({ status: query.status, projectId: query.projectId }) }));
+  post("/api/tasks/:id/command", cmd("task.command", ({ params, body }) => ({ ...body, taskId: params.id })));
+  post("/api/tasks/:id/dependencies", cmd("task.add_dependency", ({ params, body }) => ({ taskId: params.id, dependsOn: body.dependsOn })));
+  post("/api/tasks/:id/route", cmd("route.task", ({ params, body }) => ({ ...body, taskId: params.id })));
+  post("/api/tasks/:id/assisted", cmd("assisted.prepare", ({ params, body }) => ({ taskId: params.id, surfaceId: body.surfaceId })));
+
+  // ---------- company runtime & chief of staff ----------
+  get("/api/company", () => company.overview());
+  get("/api/company/org", () => company.orgChart());
+  post("/api/company/departments/:key/status", cmd("company.department_status", ({ params, body }) => ({ ...body, departmentKey: params.key })));
+  get("/api/goals", ({ query }) => ({ goals: company.goals({ status: query.status || null }).map((g) => ({ ...g, objectives: company.objectivesOf(g.id) })) }));
+  post("/api/goals", cmd("goal.create", ({ body }) => body, { created: true }));
+  get("/api/goals/:id", ({ params }) => chiefOfStaff.aggregate(params.id));
+  post("/api/goals/:id/transition", cmd("goal.transition", ({ params, body }) => ({ ...body, goalId: params.id })));
+  post("/api/goals/:id/objectives", cmd("objective.create", ({ params, body }) => ({ ...body, goalId: params.id }), { created: true }));
+  post("/api/objectives/:id", cmd("objective.update", ({ params, body }) => ({ ...body, objectiveId: params.id })));
+  post("/api/missions/:id/link", cmd("mission.link", ({ params, body }) => ({ ...body, missionId: params.id })));
+  get("/api/cos/analyze", ({ query }) => chiefOfStaff.analyze({ objective: String(query.objective || ""), departmentHint: query.department || null, projectId: query.projectId || null }));
+  post("/api/cos/intake", cmd("cos.intake", ({ body }) => body, { created: true }));
+  post("/api/cos/apply", cmd("cos.apply_plan", ({ body }) => body, { created: true }));
+  get("/api/cos/overview", () => ({ priorities: chiefOfStaff.priorities(), blockers: chiefOfStaff.blockers(), escalations: chiefOfStaff.escalations() }));
+
+  // ---------- agents, skills ----------
+  get("/api/agents", () => ({ roles: hub.roleConfig.roles, principles: hub.roleConfig.principles, activeRuns: runs.activeRuns(),
+    recentRuns: runs.listRuns({ limit: 40 }), providers: ["codex", "claude"].map((id) => providerSummary(id)), org: company.orgChart() }));
+  get("/api/skills", () => ({ skills: skills.list(), directory: path.relative(config.hubRoot, skills.dir), format: "Agent Skills (SKILL.md)",
+    proposals: db.prepare("SELECT * FROM skill_proposals ORDER BY created_at DESC LIMIT 50").all() }));
+  get("/api/skills/:id/versions", ({ params }) => ({ versions: skills.versions(params.id) }));
+  post("/api/skills/import", cmd("skill.import", () => ({})));
+  post("/api/skills/export", cmd("skill.export", ({ body }) => body));
+
+  // ---------- approvals & policies ----------
+  get("/api/approvals", ({ query }) => ({ approvals: approvals.list(query.status || null) }));
+  post("/api/approvals/:id/decide", cmd("approval.decide", ({ params, body }) => ({ ...body, approvalId: params.id })));
+  post("/api/approvals/:id/execute", cmd("approval.execute_script", ({ params }) => ({ approvalId: params.id })));
+  get("/api/policies", () => policy.list());
+  get("/api/policies/evaluate", ({ query }) => policy.evaluate({ actionKind: String(query.actionKind || ""), surfaceId: query.surfaceId || "*", projectId: query.projectId || "*", taskId: query.taskId || null, target: query.target || "" }));
+  post("/api/policies", cmd("policy.set_rule", ({ body }) => body, { created: true }));
+  del("/api/policies/:id", cmd("policy.remove_rule", ({ params }) => ({ ruleId: params.id })));
+
+  // ---------- providers, surfaces, capabilities, billing, grants, usage ----------
+  get("/api/integrations", () => ({ capabilities: hub.capabilityConfig, providers: ["codex", "claude"].map((id) => providerSummary(id)),
+    billingPolicy: BILLING_POLICY, attestationText: ATTESTATION_TEXT, environment: scanEnvironment(), grants: grants.list() }));
+  get("/api/integrations/registry", ({ query }) => ({ integrations: integrations.list({ kind: query.kind || null }) }));
+  post("/api/providers/:id/inspect", async ({ req, params }) => { await dispatch(req, "provider.inspect", { provider: params.id }); return providerSummary(params.id); });
+  post("/api/providers/:id/probe", async ({ req, params, body }) => { await dispatch(req, "provider.probe", { provider: params.id, withModels: Boolean(body?.withModels) }); return providerSummary(params.id); });
+  post("/api/billing/attest", cmd("billing.attest"));
+  get("/api/grants", () => ({ grants: grants.list() }));
+  post("/api/grants", cmd("grant.create", ({ body }) => body, { created: true }));
+  post("/api/grants/:id/revoke", cmd("grant.revoke", ({ params }) => ({ grantId: params.id })));
+  get("/api/gate/preview", ({ query }) => {
+    const project = need(projects.get(query.projectId || "ifrim-agent-hub"), "Project");
+    return gate.evaluate({ provider: query.provider || "codex", projectId: project.id, access: query.access || "read-only", workspaceResource: `workspace:${path.resolve(project.path).toLowerCase()}` });
+  });
+  get("/api/usage", () => ({ overview: usage.overview(), reservePercent: settings.get("usageReservePercent"),
+    note: "Only provider-reported numbers are shown. Allowances of different providers are never summed." }));
+  get("/api/surfaces", ({ query }) => ({ surfaces: surfaces.list({ provider: query.provider || null }) }));
+  get("/api/surfaces/:id", ({ params }) => ({ surface: need(surfaces.get(params.id), "Surface"), verifications: surfaces.verifications({ surfaceId: params.id, limit: 50 }),
+    capabilities: surfaces.capabilities().filter((c) => c.surfaceId === params.id), artifacts: artifacts.list({ surfaceId: params.id, limit: 20 }) }));
+  post("/api/surfaces/refresh", cmd("surface.refresh", () => ({})));
+  get("/api/capabilities", ({ query }) => ({ capabilities: surfaces.capabilities({ provider: query.provider || null, category: query.category || null }) }));
+  get("/api/capabilities/verifications", ({ query }) => ({ verifications: surfaces.verifications({ capabilityId: query.capabilityId || null, surfaceId: query.surfaceId || null }) }));
+  post("/api/capabilities/verify", cmd("capability.verify", ({ body }) => body, { created: true }));
+  get("/api/ecosystem/:name", ({ params }) => {
+    if (!ECOSYSTEM_FILES.has(params.name)) throw new HubError("not_found", "Unknown ecosystem document");
+    return readEcosystemConfig(config.v2Root, params.name) || { missing: true };
+  });
+  get("/api/native-sessions", ({ query }) => ({ sessions: nativeSessions.list({ includeEnded: query.all === "1" }), last: nativeSessions.last(), codex: nativeSessions.codex }));
+  post("/api/native-sessions/refresh", cmd("native.mirror", () => ({})));
+
+  // ---------- routing, telemetry, lifecycles ----------
+  get("/api/routes", ({ query }) => ({ decisions: hub.router.list({ subjectId: query.subjectId || null }), taskTypes: hub.router.taskTypes() }));
+  post("/api/routes/explain", cmd("route.adhoc"));
+  get("/api/telemetry", () => ({ runs: telemetry.list({ limit: 200 }), outcomes: telemetry.outcomes(), sources: ["MEASURED", "PROVIDER_REPORTED", "DERIVED", "UNKNOWN"] }));
+  get("/api/lifecycles", () => ({ lifecycles: describeLifecycles() }));
+
+  // ---------- schedules, computer, checkpoints, artifacts ----------
+  get("/api/schedules", () => ({ schedules: schedules.list(), backends: SCHEDULE_BACKENDS, localCommands: [...SCHEDULE_COMMANDS] }));
+  get("/api/schedules/:id", ({ params }) => ({ schedule: need(schedules.get(params.id), "Schedule"), refs: schedules.refsOf(params.id), runs: schedules.runs(params.id), setup: schedules.nativeSetupInstructions(params.id) }));
+  post("/api/schedules", cmd("schedule.create", ({ body }) => body, { created: true }));
+  post("/api/schedules/:id/transition", cmd("schedule.transition", ({ params, body }) => ({ ...body, scheduleId: params.id })));
+  post("/api/schedules/:id/link", cmd("schedule.link_native", ({ params, body }) => ({ ...body, scheduleId: params.id })));
+  get("/api/computer", () => ({ environments: computer.list(), useCases: computer.useCases(), locks: computer.locks() }));
+  get("/api/computer/plan/:useCase", ({ params }) => computer.plan(params.useCase));
+  post("/api/computer/acquire", cmd("computer.acquire", ({ body }) => body, { created: true }));
+  post("/api/computer/release", cmd("computer.release"));
+  get("/api/checkpoints", () => ({ checkpoints: checkpoints.list({ limit: 50 }) }));
+  get("/api/checkpoints/:id", ({ params }) => need(checkpoints.get(params.id), "Checkpoint"));
+  post("/api/checkpoints", cmd("checkpoint.create", ({ body }) => body, { created: true }));
+  get("/api/artifacts", ({ query }) => ({ artifacts: artifacts.list({ projectId: query.projectId || null, taskId: query.taskId || null, surfaceId: query.surfaceId || null }) }));
+  post("/api/artifacts", cmd("artifact.register", ({ body }) => body, { created: true }));
+
+  // ---------- backups ----------
+  get("/api/backups", ({ query }) => ({ backups: backups.list(query.projectId || null, 50) }));
+  post("/api/backups", cmd("backup.run", ({ body }) => ({ projectId: body.projectId }), { created: true }));
+
+  // ---------- memory, decisions, leads ----------
+  get("/api/memory", ({ query }) => ({ items: memory.search(query.q || "", { scope: query.scope || null, scopeRef: query.scopeRef || null, includeInactive: query.all === "1" }), scopes: MEMORY_SCOPES, types: MEMORY_TYPES,
+    sources: MEMORY_SOURCES, contradictions: memory.contradictions() }));
+  post("/api/memory", cmd("memory.add", ({ body }) => body, { created: true }));
+  post("/api/memory/:id/revise", cmd("memory.revise", ({ params, body }) => ({ ...body, memoryId: params.id })));
+  del("/api/memory/:id", cmd("memory.delete", ({ params }) => ({ memoryId: params.id })));
+  post("/api/memory/import", cmd("memory.import"));
+  get("/api/memory/export", () => ({ __raw: true, contentType: "application/json; charset=utf-8", body: JSON.stringify(redactDeep(memory.exportAll()), null, 2) }));
+  get("/api/memory/export/:provider", ({ params, query }) => memory.exportForProvider(params.provider, { scope: query.scope || null, scopeRef: query.scopeRef || null }));
+  get("/api/decisions", ({ query }) => ({ decisions: db.prepare(`SELECT * FROM decisions ${query.projectId ? "WHERE project_id = ?" : ""} ORDER BY created_at DESC LIMIT 200`).all(...(query.projectId ? [query.projectId] : [])) }));
+  post("/api/decisions", cmd("decision.record", ({ body }) => body, { created: true }));
+  get("/api/leads", () => ({ leads: leads.list(), statuses: LEAD_STATUSES }));
+  post("/api/leads/import", cmd("lead.import"));
+  post("/api/leads/:id/evidence", cmd("lead.evidence", ({ params, body }) => ({ ...body, leadId: params.id })));
+  post("/api/leads/:id/status", cmd("lead.status", ({ params, body }) => ({ ...body, leadId: params.id })));
+
+  // ---------- briefing, voice ----------
+  get("/api/briefing", ({ query }) => {
+    const briefing = buildBriefing({ db, settings, missions, backups, projects, clock, sinceHours: Number(query.hours) || 24 });
+    return query.format === "md" ? { __raw: true, contentType: "text/markdown; charset=utf-8", body: briefingMarkdown(briefing) } : briefing;
+  });
+  post("/api/briefing/generate", cmd("briefing.generate"));
+  post("/api/voice/command", async ({ body }) => (await commands.dispatch({ type: "voice.command", payload: body, actor: "voice", channel: "voice" })).result);
+
+  // ---------- legacy V1 ----------
+  const legacyDir = path.join(config.hubRoot, ".ifrim", "BACKUPS", "v2-rebuild");
+  const assertSnapshot = (file) => {
+    const resolved = path.resolve(String(file || ""));
+    if (!resolved.startsWith(path.resolve(legacyDir)) || !resolved.endsWith(".sqlite") || !fs.existsSync(resolved)) throw new HubError("validation", "Snapshot must be a V1 snapshot in .ifrim/BACKUPS/v2-rebuild");
+    return resolved;
+  };
+  get("/api/legacy", () => ({ import: settings.get("legacyImport"), snapshots: fs.existsSync(legacyDir) ? fs.readdirSync(legacyDir).filter((f) => f.endsWith(".sqlite")).sort().reverse().map((f) => path.join(legacyDir, f)) : [],
+    batches: db.prepare("SELECT id, source, source_sha256, status, created_at, reverted_at FROM import_batches ORDER BY created_at DESC").all() }));
+  post("/api/legacy/snapshot", cmd("legacy.snapshot", () => ({}), { created: true }));
+  post("/api/legacy/plan", ({ body }) => planImport(assertSnapshot(body.snapshotPath), db, projects));
+  post("/api/legacy/apply", cmd("legacy.apply", ({ body }) => ({ snapshotPath: body.snapshotPath, sha256: String(body.sha256 || "") })));
+  post("/api/legacy/revert", cmd("legacy.revert", ({ body }) => ({ batchId: String(body.batchId || "") })));
+  get("/api/legacy/table/:name", ({ params, query }) => {
+    const result = readLegacyTable(assertSnapshot(query.snapshot), params.name, { limit: Number(query.limit) || 100, offset: Number(query.offset) || 0 });
+    return { ...result, rows: redactDeep(result.rows).map((row) => Object.fromEntries(Object.entries(row).map(([k, v]) => [k, typeof v === "string" && v.length > 4000 ? `${v.slice(0, 4000)}… [${v.length} chars]` : v]))) };
+  });
+
+  // ---------- health, diagnostics, audit, export ----------
+  get("/api/health/processes", async () => {
+    let listeners = [];
+    if (process.platform === "win32") {
+      try {
+        const { stdout } = await execFileAsync("netstat", ["-ano", "-p", "TCP"], { windowsHide: true, timeout: 8000 });
+        listeners = stdout.split(/\r?\n/).map((line) => line.match(/TCP\s+(127\.0\.0\.1|0\.0\.0\.0):(\d+)\s+\S+\s+LISTENING\s+(\d+)/))
+          .filter(Boolean).map((m) => ({ address: m[1], port: Number(m[2]), pid: Number(m[3]) }))
+          .filter((l) => [3004, 8004, 3011, 8011, 18789, 18790].includes(l.port))
+          .map((l) => ({ ...l, role: { 3004: "V1 UI (Vite)", 8004: "V1 API", 3011: "V2 dev UI", 8011: "V2 Hub", 18789: "OpenClaw global gateway", 18790: "OpenClaw isolated gateway (V1)" }[l.port] }));
+      } catch { listeners = []; }
+    }
+    return { hubPid: process.pid, uptimeS: Math.round(process.uptime()), memoryMb: Math.round(process.memoryUsage().rss / 1048576), supervised: supervisor.list(), listeners,
+      note: "Listeners are observed, not controlled. V2 never stops processes it did not start." };
+  });
+  get("/api/diagnostics", () => {
+    const count = (sql, ...args) => db.prepare(sql).get(...args).n;
+    return {
+      generatedAt: clock().toISOString(),
+      company: { departments: count("SELECT COUNT(*) AS n FROM departments"), activeDepartments: count("SELECT COUNT(*) AS n FROM departments WHERE status = 'active'"),
+        goals: count("SELECT COUNT(*) AS n FROM goals"), objectives: count("SELECT COUNT(*) AS n FROM objectives"), roles: hub.roleConfig.roles.length,
+        managerRelationships: count("SELECT COUNT(*) AS n FROM manager_relationships"), clients: count("SELECT COUNT(*) AS n FROM clients") },
+      work: { projects: count("SELECT COUNT(*) AS n FROM projects"), conversations: count("SELECT COUNT(*) AS n FROM conversations"), missions: count("SELECT COUNT(*) AS n FROM missions"),
+        tasks: count("SELECT COUNT(*) AS n FROM tasks"), dependencies: count("SELECT COUNT(*) AS n FROM task_dependencies"), runs: count("SELECT COUNT(*) AS n FROM agent_runs"),
+        activeRuns: runs.activeRuns().length, handoffs: count("SELECT COUNT(*) AS n FROM handoffs"), checkpoints: count("SELECT COUNT(*) AS n FROM checkpoints"),
+        artifacts: count("SELECT COUNT(*) AS n FROM artifacts"), routeDecisions: count("SELECT COUNT(*) AS n FROM route_decisions") },
+      control: { pendingApprovals: approvals.list("pending").length, policyRules: count("SELECT COUNT(*) AS n FROM approval_policies"),
+        taskScopes: count("SELECT COUNT(*) AS n FROM task_approval_scopes WHERE status = 'active'"), locks: leases.list().length,
+        retainedLocks: leases.list().filter((l) => l.status === "retained").length, grantsActive: grants.list().filter((g) => g.status === "active").length, commands: count("SELECT COUNT(*) AS n FROM commands") },
+      ecosystem: { surfaces: count("SELECT COUNT(*) AS n FROM execution_surfaces"), capabilities: count("SELECT COUNT(*) AS n FROM capability_registry"),
+        verifications: count("SELECT COUNT(*) AS n FROM capability_verifications"), integrations: count("SELECT COUNT(*) AS n FROM integrations"),
+        computerEnvironments: count("SELECT COUNT(*) AS n FROM computer_environments"), nativeSessions: count("SELECT COUNT(*) AS n FROM native_sessions WHERE status <> 'ended'") },
+      knowledge: { memory: count("SELECT COUNT(*) AS n FROM memory_items WHERE status = 'active'"), skills: count("SELECT COUNT(*) AS n FROM skills"),
+        skillVersions: count("SELECT COUNT(*) AS n FROM skill_versions"), decisions: count("SELECT COUNT(*) AS n FROM decisions"), leads: count("SELECT COUNT(*) AS n FROM leads") },
+      operations: { schedules: count("SELECT COUNT(*) AS n FROM schedules"), activeSchedules: count("SELECT COUNT(*) AS n FROM schedules WHERE status = 'ACTIVE'"),
+        backups: count("SELECT COUNT(*) AS n FROM backups"), verifiedBackups: count("SELECT COUNT(*) AS n FROM backups WHERE status = 'verified'"),
+        telemetry: count("SELECT COUNT(*) AS n FROM execution_telemetry"), events: bus.lastSeq(),
+        schemaVersion: db.prepare("SELECT MAX(version) AS v FROM schema_migrations").get().v },
+      backupGate: projects.hub() ? backups.freshVerified(projects.hub().id) : null,
+      mode: settings.get("mode"), gate: settings.get("executionGate"),
+    };
+  });
+  get("/api/audit", ({ query }) => ({ events: bus.since(Math.max(0, bus.lastSeq() - (Number(query.limit) || 300)), 1000).reverse() }));
+  get("/api/export", () => ({ __raw: true, contentType: "application/json; charset=utf-8", body: JSON.stringify(redactDeep({
+    exportedAt: clock().toISOString(), version: HUB_VERSION,
+    company: company.overview(),
+    conversations: conversations.list().map((c) => ({ ...c, messages: conversations.messages(c.id, { limit: 5000 }) })),
+    decisions: db.prepare("SELECT * FROM decisions").all(), missions: missions.list().map((m) => ({ ...m, tasks: missions.tasks(m.id) })),
+    memory: memory.exportAll(), skills: skills.list(), schedules: schedules.list(),
+  }), null, 2) }));
+}

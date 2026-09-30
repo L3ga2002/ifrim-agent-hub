@@ -1,5 +1,13 @@
 # Preview - Ifrim Agent Hub
 
+## V2 Preview - 2026-09-30
+
+- V2 UI + API: http://127.0.0.1:8011/ (built UI served by the Hub). Dev UI: http://127.0.0.1:3011/ (`npm run dev:v2:web`, proxy to 8011).
+- Start/stop: `npm run v2` / `npm run v2:stop` / `npm run v2:status`. Log `.ifrim/private/v2-hub.log`.
+- Pair 3011/8011 was free on 2026-09-29 and is not in the global `PORTS.md` (global file not edited). After a cutover, V2 can take 3004/8004.
+- Observed at the checkpoint (not controlled by V2): V1 Vite PID 18364 on 3004, V1 API PID 28392 on 8004, OpenClaw gateway PID 23596 on 18790.
+- Visual QA on real captures: 360, 390, 768, 1024, 1440, 1920 px without horizontal overflow; static core fallback checked.
+
 ## Authoritative Runtime Checkpoint - 2026-09-29
 
 - Frontend127.0.0.1:3004 is Vite dev/PID18364. API127.0.0.1:8004 is now PID22828, identity-controlled reload via existing supervisor4852 after zero SQLite provider runs/leases; health HTTP200. Connection classification helper is loaded.

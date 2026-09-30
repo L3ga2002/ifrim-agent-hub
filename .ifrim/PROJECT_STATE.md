@@ -1,5 +1,30 @@
 # Project State - Ifrim Agent Hub
 
+## Current State - 2026-09-30 (Milestone 01 built, BUILD_READY)
+
+Milestone 01 turned V2 into the foundation of an AI company operating system with OpenAI and Anthropic as equal first-class ecosystems and the Hub as the one control plane. Native capabilities were audited first (OpenAI, Anthropic, open standards; research plus adversarial verification, no inference on your accounts), then V1 and the frameworks (Paperclip, Hermes, Agent Zero, JARVIS UI, OpenJarvis REFERENCE; OpenClaw RETIRE; Playwright REUSE; Playwright MCP INTEGRATE later). Built:
+- company runtime: 12 departments, 4 active; goals/objectives; Chief of Staff;
+- execution surfaces with real UNSUPPORTED values;
+- lifecycle state machines and event envelope v2;
+- command bus → approval policy → router → surface;
+- checkpoints with native references;
+- tool/connector registry;
+- memory scopes;
+- Agent Skills;
+- schedules with one owner per intent;
+- computer runtime contract;
+- labelled telemetry;
+- diagnostic UI (Companie / Ecosisteme / Sistem).
+
+Billing guards were hardened from audit findings. Version `2.1.0-m01`, schema 2, BUILD_SAFE, gate suspended. No model was started through the Hub, nothing was committed or pushed. Evidence: `.ifrim/V2_TEST_REPORT.md` (Milestone 01), `.ifrim/IMPLEMENTATION_STATUS.md`, `.ifrim/REBUILD_DECISIONS.md` (Milestone 01 decisions). Next: attestations + LIVE_VALIDATION approval (NEXT_SESSION), then Milestone 02 (JARVIS experience).
+
+## Current State - 2026-09-30 (V2 rebuild, BUILD_READY)
+
+Ifrim Agent Hub V2 was rebuilt in `v2/`: a single-coordinator local control plane that runs the unmodified official Codex app-server and Claude Code clients directly. OpenClaw is no longer on the execution path. The single source of truth is `.ifrim/private/hub-v2.sqlite` with an append-only event log. BillingPolicy, the execution gate, action-bound approvals, single-writer leases and a verified backup gate are enforced in the backend. V2 runs on 127.0.0.1:8011 (UI + API) in BUILD_SAFE with the gate suspended. V1 keeps running on 3004/8004 and was not modified; its data was imported into V2 through a reversible batch. No model was started in this rebuild and nothing was committed or pushed. Evidence: `.ifrim/V2_TEST_REPORT.md`, `.ifrim/IMPLEMENTATION_STATUS.md`, `.ifrim/REBUILD_DECISIONS.md`, `.ifrim/V2_ARCHITECTURE.md`. Next: your approval for live validation (see NEXT_SESSION).
+
+- V2 ports: 8011 (API+UI), 3011 (dev UI). V1: 3004/8004. OpenClaw isolated gateway: 18790 (untouched).
+- Stack V2: Node 24 built-ins only on the server; React 18 + Vite 8 + lucide-react for the UI; no new dependencies.
+
 ## Current State - 2026-09-29
 
 HUB-018 is in progress, not accepted. Native Codex Luna/max produced the expected marker with no fallback. The isolated Gateway and both subscriptions/all23 roles were recertified, but the latest Claude attempt failed before model admission because the backup gate timed out. Gate is suspended; no general execution activation. Backup filter and reparse-point protections have a reviewed local source fix and passing ZIP fixture, but still need an idle-API reload and complete real backup. The latest broad regression had 549 pass, one continuation API timeout and one Windows privilege skip; build passed. See `.ifrim/OPUS_HANDOFF.md` and the newest HUB-018 report for exact evidence. Older sections below are historical.

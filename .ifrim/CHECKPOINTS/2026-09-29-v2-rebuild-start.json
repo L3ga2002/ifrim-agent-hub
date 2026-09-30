@@ -1,0 +1,125 @@
+{
+  "kind": "v2-rebuild-start-checkpoint",
+  "createdAt": "2026-09-29T20:41:58.181Z",
+  "projectRoot": "C:\\Users\\mihai\\OneDrive\\Desktop\\Ifrim Digital Proiecte\\Ifrim Agent Hub",
+  "git": {
+    "branch": "main",
+    "head": "e9ab563d56e490915185331f6aa6ffeeed52391e",
+    "headTree": "bb7ea5393f20ffd590453bbb48c5725e8c00bcc6",
+    "upstream": "e9ab563d56e490915185331f6aa6ffeeed52391e",
+    "statusPorcelain": "",
+    "trackedFiles": 143,
+    "remote": "https://github.com/L3ga2002/ifrim-agent-hub.git"
+  },
+  "listeners": [
+    {
+      "address": "127.0.0.1",
+      "port": 3004,
+      "pid": 18364,
+      "image": "node.exe"
+    },
+    {
+      "address": "127.0.0.1",
+      "port": 8004,
+      "pid": 28392,
+      "image": "node.exe"
+    },
+    {
+      "address": "127.0.0.1",
+      "port": 18790,
+      "pid": 23596,
+      "image": "node.exe"
+    }
+  ],
+  "sqlite": {
+    "source": ".ifrim\\private\\agent-hub.sqlite",
+    "snapshot": ".ifrim\\BACKUPS\\v2-rebuild\\agent-hub-v1-2026-09-29T20-41-58-179Z.sqlite",
+    "method": "node:sqlite backup() online backup API, read-only source connection",
+    "pagesCopied": 995,
+    "bytes": 4075520,
+    "sha256": "ff086f5aeb0d1ac16e3f83650702a7655da012dc7c8736ebfb0920adae8bab18",
+    "integrity": "ok",
+    "tableCounts": {
+      "agent_runs": 53,
+      "backups": 81,
+      "execution_approvals": 40,
+      "execution_attempts": 81,
+      "hub_checkpoints": 23,
+      "hub_conversations": 5,
+      "hub_decisions": 0,
+      "hub_events": 514,
+      "hub_leases": 0,
+      "hub_messages": 38,
+      "hub_provider_runs": 20,
+      "hub_provider_sessions": 4,
+      "hub_task_state": 5,
+      "locks": 13,
+      "snapshots": 2,
+      "task_drafts": 2,
+      "tasks": 26,
+      "workflow_transitions": 34
+    }
+  },
+  "preservedIgnored": [
+    {
+      "path": "AGENTS.md",
+      "type": "file",
+      "size": 6306
+    },
+    {
+      "path": "IDENTITY.md",
+      "type": "file",
+      "size": 1401
+    },
+    {
+      "path": "SOUL.md",
+      "type": "file",
+      "size": 1570
+    },
+    {
+      "path": "USER.md",
+      "type": "file",
+      "size": 1137
+    },
+    {
+      "path": ".ifrim/private",
+      "type": "dir",
+      "size": null
+    },
+    {
+      "path": ".ifrim/BACKUPS",
+      "type": "dir",
+      "size": null
+    },
+    {
+      "path": ".ifrim/tmp",
+      "type": "dir",
+      "size": null
+    },
+    {
+      "path": "output",
+      "type": "dir",
+      "size": null
+    },
+    {
+      "path": "test-results",
+      "type": "dir",
+      "size": null
+    },
+    {
+      "path": ".playwright-cli",
+      "type": "dir",
+      "size": null
+    },
+    {
+      "path": "dist",
+      "type": "dir",
+      "size": null
+    },
+    {
+      "path": ".env.hub016-* (test fixture dirs, contents not read)",
+      "count": 11
+    }
+  ],
+  "policy": "Checkpoint = manifest + git state + consistent SQLite snapshot. No commit, tag, push, reset or deletion."
+}

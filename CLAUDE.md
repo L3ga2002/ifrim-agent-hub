@@ -1,5 +1,9 @@
 # IfrimDigital Ifrim Agent Hub - Claude Code Context
 
+## V2 - 2026-09-30
+
+V2 is in `v2/` (see `.ifrim/OPUS_HANDOFF.md` → V2 section and `.ifrim/RUNBOOK.md`). It runs on 127.0.0.1:8011 in BUILD_SAFE. Tests: `npm run test:v2` (no models). Milestone 01 (2026-09-30, version `2.1.0-m01`) added the company runtime, execution surfaces, command bus, approval policy, router, schedules, skills and the OpenAI/Anthropic audit (`v2/config/ecosystem/*.json` → `node v2/scripts/gen-ecosystem-docs.mjs` → `.ifrim/V2_*`). Hub runs of Claude Code refuse Fable models and load only user settings (`--setting-sources user`); do not loosen the billing guards in `v2/server/policy/billing.mjs` or `v2/server/providers/claude.mjs`. Never start a model, open the execution gate, create live grants, commit, push or deploy without the user's explicit approval for that exact action. V1 files (`src/`, `apps/api/`, `tools/`, `tests/`) are kept and still serve V1 on 3004/8004; do not delete them without approval.
+
 ## Current Handoff - 2026-09-29
 
 Read `.ifrim/OPUS_HANDOFF.md` first, then the project memory and current Git/SQLite state. HUB-018 remains in progress: native Codex passed, but Claude acceptance and cancellation did not. The last Claude request failed before model admission at the backup gate; the execution gate is suspended. A backup-filter correction is in the local source but requires final review, an idle-API reload and a complete real backup before any new execution. Treat the older notes below as historical when they conflict with current evidence. This handoff alone does not authorize a model launch, data deletion, commit, push or deployment.

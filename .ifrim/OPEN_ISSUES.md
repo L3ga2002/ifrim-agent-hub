@@ -1,5 +1,35 @@
 # Open Issues - Ifrim Agent Hub
 
+## Milestone 01 Open Items - 2026-09-30 (supersede the V2 items below where they overlap)
+
+- V2-LIVE (P1, blocked by a local permission): on 2026-09-30 the owner approved the live validation, recorded both billing attestations and ran the account checks. The Claude Code auto-mode permission classifier refused to let the session drive it (classified as a production deploy); it was not worked around. No PASS_LIVE label exists yet; see NEXT_SESSION for how to run it.
+- Codex read access to private paths (P2): Codex has no per-path read denial; `.ifrim/private` and `.ifrim/BACKUPS` are protected for Codex only by the prompt rule. Evaluate permission profiles or a work tree without these directories during LIVE_VALIDATION.
+- Billing attestations (P1, user action): Codex — credit balance 0 and automatic reload off (ChatGPT Settings → Usage); Claude — usage credits (formerly extra usage) off and auto-reload off. The claude.ai usage page read on 2026-09-30 showed Max plan with usage credits disabled; the formal attestation is still yours to record in Integrations.
+- Codex account check not run (P1, user action): `account/read` + `account/rateLimits/read` + `model/list` contact OpenAI with your account (no inference). Needed to verify the plan (V1 reported `prolite`, unverified in V2), the credit balance and the GPT-6.x models available.
+- Claude Code CLI 2.1.175 is older than the audited models (P2, your decision, global change): Opus 5.5 needs ≥ 2.1.280, Sonnet 5.5 ≥ 2.1.284, Fable 5.1 ≥ 2.1.257. On 2.1.175 `opus` = Opus 4.8 and `sonnet` = Sonnet 4.6. The Hub does not update global tools.
+- Codex desktop auto-updated to 0.159.0 after the PC restart (P3, informative): the protocol schema was regenerated locally and the 9 allowlisted methods exist; fast mode is disabled per Hub process.
+- `.claude/settings.json` `fallbackModel` (P3, downgraded): no longer applies to Hub runs (`--setting-sources user`); it still applies to your interactive sessions.
+- OpenClaw gateway (P3, decision): not listening after the PC restart (18790 free), while V1 came back on 3004/8004. V2 does not start it; whether its scheduled task stays is your decision.
+- Playwright (P2, approval): REUSE decided; installation needs approval. Computer runtime visual control stays native/assisted.
+- Temporary local artifacts (P3, cleanup on your OK): `.ifrim/tmp/migration-check/` (coherent copy of the Hub DB used for the migration test, private data), `.ifrim/tmp/v2-tests/hub-*` left by a test agent, `.ifrim/tmp/regression/*.log`. All git-ignored.
+- Uncommitted work (decision): V2 + Milestone 01 are not committed or pushed.
+
+## V2 Open Items - 2026-09-30
+
+- V2-LIVE (P1, blocked on approval): no live Codex/Claude turn, interruption or handoff executed yet. Proposal in NEXT_SESSION. Successor of HUB-018's acceptance criteria.
+- HUB-018 (P1, historical, kept open): V1 criteria not met; V1 retired from execution in V2. Do not close without your decision. Open V1 locks imported as information only: `LOCK-mumsn13e-2kew8n` (HUB-018, exclusive) and `LOCK-PD-RESTAURANT-PANEL` (advisory).
+- Billing attestations (P1, user action): extra usage (Claude) and automatic credit consumption (Codex) cannot be read by the Hub; routes stay blocked until you confirm in Integrations.
+- Codex account check not run (P2, user action): contacts OpenAI with your account (no inference).
+- `.claude/settings.json` of this project sets `fallbackModel: ["opus","haiku"]` (P2): automatic in-plan fallback; V2 records the actual model per turn. Remove it if you want to forbid fallback.
+- `ANTHROPIC_BASE_URL` present in the Hub process environment when started from the Claude session (P3): stripped from all provider children; check your user environment if it is unexpected.
+- Windows file-symlink test NOT_RUN (P3): EPERM without Developer Mode/admin; the junction branch is tested for real.
+- V1 continuation latency (P3, historical): 3.3 s cold / 0.16 s warm in isolation; the 30 s timeout appears only under concurrent full-suite load. V2 equivalents respond in 35–45 ms.
+- Browser automation (Playwright) and desktop control (P2): blocked until you approve installation/bridge.
+- Voice (P3): transcription locality depends on the browser engine (labelled in UI); Romanian local TTS voices not verified on this machine.
+- Plugin companion / MCP Events (P3): need a public HTTPS endpoint; not authorized.
+- Cutover (decision): V1 tray/autostart and ports 3004/8004; OpenClaw gateway 23596 and the scheduled task.
+- Uncommitted V2 work (decision): nothing committed or pushed.
+
 ## Current Open Items - 2026-09-29
 
 - HUB-018 P1: automatic Hub backup timed out before Claude admission. Local exclusion/reparse-point source fix requires final focused/full QA, independent review, exact idle-API reload and a valid complete real backup; preserve the failed partial ZIP.
