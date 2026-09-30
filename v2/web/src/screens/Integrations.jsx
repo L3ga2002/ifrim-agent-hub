@@ -87,10 +87,18 @@ function IsolationPanel() {
 function LivePanel({ integrations, onChange }) {
   const hub = useHub((s) => s.hub);
   const [confirm, setConfirm] = useState("");
-  const [form, setForm] = useState({ provider: "codex", access: "read-only", maxAttempts: 1, ttlMinutes: 30, maxDurationS: 900, note: "" });
+  const [form, setForm] = useState({ kind: "run", projectId: "ifrim-agent-hub", provider: "codex", access: "read-only", maxAttempts: 1, ttlMinutes: 30, maxDurationS: 900, note: "" });
+  const projectList = useResource("/api/projects", { reloadOn: (e) => e.type.startsWith("project.") });
+  const executable = (projectList.data?.projects || []).filter((p) => p.executionAllowed);
   const mode = useAction(async (next) => { await api("/api/mode", { method: "POST", body: { mode: next, confirm } }); setConfirm(""); refresh(); onChange(); });
   const gate = useAction(async (action) => { await api("/api/gate", { method: "POST", body: { action, confirm, reason: action === "open" ? "Deschisă pentru validare live" : "Suspendată de utilizator" } }); setConfirm(""); refresh(); });
-  const grant = useAction(async () => { await api("/api/grants", { method: "POST", body: { ...form, projectId: "ifrim-agent-hub", maxAttempts: Number(form.maxAttempts), ttlMinutes: Number(form.ttlMinutes), maxDurationS: Number(form.maxDurationS) } }); onChange(); });
+  // A Lega (voice) grant is always Codex, read-only, on the Hub project; attempts = voice sessions, duration = session cap.
+  const grant = useAction(async () => {
+    const voice = form.kind === "voice";
+    await api("/api/grants", { method: "POST", body: { ...form, projectId: voice ? "ifrim-agent-hub" : form.projectId, provider: voice ? "codex" : form.provider, access: voice ? "read-only" : form.access,
+      maxAttempts: Number(form.maxAttempts), ttlMinutes: Number(form.ttlMinutes), maxDurationS: voice ? Math.min(1800, Number(form.maxDurationS)) : Number(form.maxDurationS) } });
+    onChange();
+  });
   const revoke = useAction(async (id) => { await api(`/api/grants/${id}/revoke`, { method: "POST", body: {} }); onChange(); });
   const set = (k) => (e) => setForm((f) => ({ ...f, [k]: e.target.value }));
   return (
@@ -107,11 +115,16 @@ function LivePanel({ integrations, onChange }) {
         </div>
         {hub?.mode === "LIVE_VALIDATION" && (
           <div className="stack tight">
-            <div className="section-title">Grant nou (Agent Hub)</div>
+            <div className="section-title">Grant nou</div>
             <div className="grid two">
-              <label className="field"><span>Provider</span><select className="select" value={form.provider} onChange={set("provider")}><option value="codex">Codex</option><option value="claude">Claude Code</option></select></label>
-              <label className="field"><span>Acces</span><select className="select" value={form.access} onChange={set("access")}><option value="read-only">doar citire</option><option value="workspace-write">scriere în workspace</option></select></label>
-              <label className="field"><span>Încercări (1–5)</span><input className="input" type="number" min={1} max={5} value={form.maxAttempts} onChange={set("maxAttempts")} /></label>
+              <label className="field"><span>Tip</span><select className="select" value={form.kind} onChange={(e) => setForm((f) => ({ ...f, kind: e.target.value, maxDurationS: e.target.value === "voice" ? 1200 : 900 }))}>
+                <option value="run">Execuție agent</option><option value="voice">Lega (voce)</option></select></label>
+              {form.kind === "run" ? <>
+                <label className="field"><span>Proiect</span><select className="select" value={form.projectId} onChange={set("projectId")}>{(executable.length ? executable : [{ id: "ifrim-agent-hub", slug: "ifrim-agent-hub", name: "Ifrim Agent Hub" }]).map((p) => <option key={p.id} value={p.slug || p.id}>{p.name}</option>)}</select></label>
+                <label className="field"><span>Provider</span><select className="select" value={form.provider} onChange={set("provider")}><option value="codex">Codex</option><option value="claude">Claude Code</option></select></label>
+                <label className="field"><span>Acces</span><select className="select" value={form.access} onChange={set("access")}><option value="read-only">doar citire</option><option value="workspace-write">scriere în workspace</option></select></label>
+              </> : <label className="field"><span>Durată maximă sesiune (secunde, ≤1800)</span><input className="input" type="number" min={60} max={1800} value={form.maxDurationS} onChange={set("maxDurationS")} /></label>}
+              <label className="field"><span>{form.kind === "voice" ? "Sesiuni (1–5)" : "Încercări (1–5)"}</span><input className="input" type="number" min={1} max={5} value={form.maxAttempts} onChange={set("maxAttempts")} /></label>
               <label className="field"><span>Valabil (minute)</span><input className="input" type="number" min={5} max={480} value={form.ttlMinutes} onChange={set("ttlMinutes")} /></label>
             </div>
             <label className="field"><span>Scop / notă</span><input className="input" value={form.note} onChange={set("note")} placeholder="Ex.: HUB-018 un turn read-only de acceptanță" /></label>
@@ -120,7 +133,7 @@ function LivePanel({ integrations, onChange }) {
         )}
         {integrations.grants.length > 0 && (
           <ul className="list">{integrations.grants.slice(0, 8).map((g) => (
-            <li key={g.id}><div className="list-row"><div className="grow"><div className="title">{g.provider} · {g.access}</div><div className="sub">{g.attemptsUsed}/{g.maxAttempts} încercări · expiră {fmt.dateTime(g.expiresAt)}{g.note ? ` · ${g.note}` : ""}</div></div><StatusChip status={g.status} />{g.status === "active" && <button className="btn sm ghost" onClick={() => revoke.run(g.id)}>Revocă</button>}</div></li>
+            <li key={g.id}><div className="list-row"><div className="grow"><div className="title">{g.kind === "voice" ? "Lega (voce)" : `${g.provider} · ${g.access}`}</div><div className="sub">{g.attemptsUsed}/{g.maxAttempts} încercări · expiră {fmt.dateTime(g.expiresAt)}{g.note ? ` · ${g.note}` : ""}</div></div><StatusChip status={g.status} />{g.status === "active" && <button className="btn sm ghost" onClick={() => revoke.run(g.id)}>Revocă</button>}</div></li>
           ))}</ul>
         )}
         <ErrorNotice error={mode.error || gate.error || grant.error || revoke.error} />

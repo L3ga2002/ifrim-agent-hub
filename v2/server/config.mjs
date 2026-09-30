@@ -48,6 +48,8 @@ export function loadConfig(overrides = {}, env = process.env) {
     // Test mode refuses to spawn any executable outside this directory (fake providers only).
     allowedTestBinaryDir: path.join(V2_ROOT, "tests", "fixtures"),
     providerBinaries: overrides.providerBinaries || {},
+    // Test mode only: shrinks Lega's idle/max/negotiation timers so they can be exercised quickly.
+    legaTimeScale: testMode && Number(overrides.legaTimeScale) > 0 ? Number(overrides.legaTimeScale) : 1,
     registryPath: overrides.registryPath || path.join(PROJECTS_ROOT, "PROJECTS.md"),
     roleRegistryPath: overrides.roleRegistryPath || path.join(PROJECTS_ROOT, ".ifrim-system", "AGENT_TEAM_V2.json"),
     now: overrides.now || (() => new Date()),

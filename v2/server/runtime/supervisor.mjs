@@ -36,6 +36,8 @@ export function createSupervisor({ config, onEvent = () => {} }) {
       cwd, env: buildChildEnv(env), windowsHide: true, shell: false, stdio: ["pipe", "pipe", "pipe"],
     });
     const record = { key, label, pid: child.pid, startedAt: new Date().toISOString(), child, stderrTail: [], exited: false, exitCode: null };
+    // A write racing the child's death emits 'error' on the pipe; unhandled, it would crash the whole Hub.
+    for (const stream of [child.stdin, child.stdout, child.stderr]) stream?.on("error", (error) => { record.pipeError = error.code || error.message; });
     children.set(key, record);
     splitLines(child.stdout, onStdoutLine);
     splitLines(child.stderr, (line) => {

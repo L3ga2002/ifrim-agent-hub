@@ -238,7 +238,8 @@ export default function FocusScreen({ id, go }) {
   const hub = useHub((s) => s.hub);
   const connection = useHub((s) => s.connection);
   const voicePhase = useHub((s) => s.voicePhase);
-  const core = deriveCoreState({ hub, connection, voicePhase });
+  const legaPhase = useHub((s) => s.legaPhase);
+  const core = deriveCoreState({ hub, connection, voicePhase, legaPhase });
   const set = useCallback((patch) => setStored((s) => ({ ...DEFAULT_LAYOUT, ...s, ...patch })), [setStored]);
   const { data, error, loading, reload } = useResource(id ? `/api/conversations/${id}` : null, {
     reloadOn: (e) => e.scopeId === id && (e.type.startsWith("message.") || e.type.startsWith("run.") || e.type.startsWith("handoff.") || e.type.startsWith("conversation.") || e.type === "attachment.added"), deps: [id],
@@ -250,7 +251,7 @@ export default function FocusScreen({ id, go }) {
       <button className="btn sm icon ghost" onClick={() => (layout.compact ? setDrawer(drawer === "left" ? null : "left") : set({ showLeft: !layout.showLeft }))} aria-pressed={layout.compact ? drawer === "left" : layout.showLeft} aria-label="Lista de conversații"><PanelLeft size={16} /></button>
       <button className="btn sm icon ghost hide-mobile" onClick={() => set({ showBottom: !stored.showBottom })} aria-pressed={Boolean(stored.showBottom)} aria-label="Panoul de output și procese"><PanelBottom size={16} /></button>
       <button className="btn sm icon ghost" onClick={() => (layout.compact ? setDrawer(drawer === "right" ? null : "right") : set({ showRight: !layout.showRight }))} aria-pressed={layout.compact ? drawer === "right" : layout.showRight} aria-label="Inspector"><PanelRight size={16} /></button>
-      <span className="focus-core" title={`${CORE_VISUALS[core.state].label}: ${core.reason}`}><Core3D state={core.state} compact /><span className="sr-only">{CORE_VISUALS[core.state].label}</span></span>
+      <span className="focus-core" title={`${core.label}: ${core.reason}`}><Core3D state={core.state} compact /><span className="sr-only">{core.label}</span></span>
     </>
   );
 

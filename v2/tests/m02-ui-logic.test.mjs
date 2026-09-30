@@ -28,6 +28,14 @@ test("M02-UI-01 core state: every one of the 10 states comes from a real signal,
   assert.equal(s({ mode: "LIVE_VALIDATION", executionGate: { status: "open" } }).state, "IDLE");
   // Approvals outrank running work: the owner must see what needs a decision.
   assert.equal(s({ pendingApprovals: 1, activeRuns: [{ runId: "r", phase: "streaming" }] }).state, "WAITING_APPROVAL");
+  // ...and outrank voice (M03): a long Lega session never hides a pending approval.
+  assert.equal(s({ pendingApprovals: 1 }, { voicePhase: "listening" }).state, "WAITING_APPROVAL");
+  assert.equal(s({ pendingApprovals: 1 }, { legaPhase: "speaking" }).state, "WAITING_APPROVAL");
+  // Lega phases map onto the same 10 states, with their own honest labels.
+  assert.deepEqual([s({}, { legaPhase: "connecting" }), s({}, { legaPhase: "listening" }), s({}, { legaPhase: "user-speaking" }), s({}, { legaPhase: "speaking" }), s({}, { legaPhase: "delegating" })]
+    .map((c) => [c.state, c.label]), [["WAITING_PROVIDER", "Lega se conectează"], ["LISTENING", "Lega ascultă"], ["LISTENING", "Lega te ascultă"], ["TRANSCRIBING", "Lega vorbește"], ["EXECUTING", "Lega lucrează"]]);
+  assert.match(s({}, { legaPhase: "connecting" }).reason, /nu este progres măsurat/);
+  assert.equal(s({}).label, CORE_VISUALS.IDLE.label, "without Lega the label is the state's own");
 });
 
 test("M02-UI-02 markdown: tokens only (no HTML pass-through), unsafe links degrade to text, code fences keep their language", () => {

@@ -37,6 +37,10 @@ export const CODEX_ALLOWED_METHODS = new Set([
  * - memories: Hub memory is canonical; vendor memories stay the owner's (the owner's config may enable them);
  * - multi_agent: subagents multiply plan usage beyond the Hub concurrency limit.
  * web_search is a hosted tool that bypasses the sandbox network setting (web-search): disabled.
+ * project_doc_max_bytes=0 + project_root_markers=[]: no AGENTS.md discovery at thread/start. With deny-read entries in the
+ * Hub profile every discovery probe runs through the Windows sandbox (setup refresh + ACL sync per probe, no timeout), which
+ * pushed the first live thread/start past 120 s (codex-rs 0.159.2 core/src/agents_md.rs). The Hub sends its own context
+ * package, so project-controlled AGENTS.md text no longer reaches the model implicitly either.
  */
 export const CODEX_APP_SERVER_OVERRIDES = Object.freeze([
   "-c", "features.fast_mode=false",
@@ -51,9 +55,11 @@ export const CODEX_APP_SERVER_OVERRIDES = Object.freeze([
   "-c", "features.memories=false",
   "-c", "features.multi_agent=false",
   "-c", 'web_search="disabled"',
+  "-c", "project_doc_max_bytes=0",
+  "-c", "project_root_markers=[]",
 ]);
 
-const ACTIVITY_ITEMS = new Set(["commandExecution", "fileChange", "mcpToolCall", "webSearch", "imageView", "collabToolCall"]);
+const ACTIVITY_ITEMS = new Set(["commandExecution", "fileChange", "mcpToolCall", "webSearch", "imageView", "imageGeneration", "collabAgentToolCall", "subAgentActivity"]);
 
 export function resolveCodexBinary(config) {
   if (config.providerBinaries.codex) return config.providerBinaries.codex;
@@ -72,17 +78,37 @@ export function resolveCodexBinary(config) {
 /** Reads ~/.codex/config.toml and reports only billing-relevant booleans (no values, no secrets). */
 export function inspectCodexConfig(homeDir) {
   const file = path.join(homeDir, ".codex", "config.toml");
-  if (!fs.existsSync(file)) return { present: false, customProvider: null, apiKeyAuthPreferred: false };
+  if (!fs.existsSync(file)) return { present: false, customProvider: null, apiKeyAuthPreferred: false, realtime: inspectRealtimeKeys({}) };
   try {
     const data = parseToml(fs.readFileSync(file, "utf8"));
     const provider = typeof data.model_provider === "string" && data.model_provider !== "openai" ? data.model_provider : null;
     const prefersKey = [data.preferred_auth_method, data.forced_login_method].some((v) => typeof v === "string" && /api/i.test(v));
     // Informative: Hub app-servers override it per process (CODEX_APP_SERVER_OVERRIDES).
     const fastTierPersisted = typeof data.service_tier === "string" && /fast|priority/i.test(data.service_tier);
-    return { present: true, customProvider: provider, apiKeyAuthPreferred: prefersKey, definesProviders: Boolean(data.model_providers), fastTierPersisted };
+    return { present: true, customProvider: provider, apiKeyAuthPreferred: prefersKey, definesProviders: Boolean(data.model_providers), fastTierPersisted, realtime: inspectRealtimeKeys(data) };
   } catch (error) {
     return { present: true, unreadable: true, customProvider: null, apiKeyAuthPreferred: false, error: "config.toml could not be parsed" };
   }
+}
+
+/**
+ * Realtime/voice-relevant config keys, by NAME only (values are never returned). Base-URL overrides could send the Lega
+ * call to another (possibly API-billed) endpoint; a non-conversational session type breaks WebRTC; MCP servers stay reachable
+ * from delegated turns unless neutralized per process.
+ */
+export const REALTIME_RISKY_KEYS = Object.freeze(["experimental_realtime_ws_base_url", "experimental_realtime_webrtc_call_base_url", "openai_base_url", "chatgpt_base_url",
+  "experimental_realtime_ws_model", "experimental_realtime_start_instructions"]);
+/** MCP server names Lega can disable per process with -c mcp_servers.<name>.enabled=false (a dotted path cannot address others). */
+export const MCP_NAME_ADDRESSABLE = /^[A-Za-z0-9_-]{1,64}$/;
+export function inspectRealtimeKeys(data = {}) {
+  const risky = REALTIME_RISKY_KEYS.filter((k) => data[k] !== undefined);
+  const rt = data.realtime && typeof data.realtime === "object" ? data.realtime : {};
+  // The real key is realtime.type (codex-rs 0.159.2); only a conversational session works over WebRTC.
+  if (rt.type !== undefined && String(rt.type) !== "conversational") risky.push("realtime.type");
+  const overriddenPerProcess = ["experimental_realtime_ws_backend_prompt", "experimental_realtime_ws_startup_context"].filter((k) => data[k] !== undefined);
+  const mcpServerNames = data.mcp_servers && typeof data.mcp_servers === "object" ? Object.keys(data.mcp_servers) : [];
+  for (const name of mcpServerNames) if (!MCP_NAME_ADDRESSABLE.test(name)) risky.push("mcp_servers.<nume neadresabil>");
+  return { riskyKeys: [...new Set(risky)], overriddenPerProcess, mcpServers: mcpServerNames.length, mcpServerNames: mcpServerNames.filter((n) => MCP_NAME_ADDRESSABLE.test(n)) };
 }
 
 export function createCodexAdapter({ config, supervisor, homeDir = os.homedir() }) {
@@ -100,24 +126,32 @@ export function createCodexAdapter({ config, supervisor, homeDir = os.homedir() 
   }
 
   /** Starts an app-server, performs the initialize handshake and returns a session object. */
-  function openSession({ cwd, key, access = "read-only", onNotification, onServerRequest, onExit }) {
+  /**
+   * `experimentalApi`, `allowedMethods` and `extraArgs` exist for the Lega voice process only (codex-realtime.mjs): it is a
+   * separate app-server with its own narrow allowlist. Every run/probe process keeps experimentalApi=false and the run allowlist.
+   */
+  function openSession({ cwd, key, access = "read-only", onNotification, onServerRequest, onExit, experimentalApi = false, allowedMethods = CODEX_ALLOWED_METHODS, extraArgs = [], label = "codex app-server" }) {
     const binary = resolveCodexBinary(config);
     if (!binary) throw Object.assign(new Error("Codex client not installed"), { category: "transport", preInference: true });
     let peer;
     const record = supervisor.start({
-      key, label: "codex app-server", executable: binary.executable, args: [...binary.prefixArgs, ...CODEX_APP_SERVER_OVERRIDES, ...codexIsolationArgs(access, { homeDir, extra: [config.dataDir, config.backupDir] }), "app-server"], cwd,
+      key, label, executable: binary.executable, args: [...binary.prefixArgs, ...CODEX_APP_SERVER_OVERRIDES, ...extraArgs, ...codexIsolationArgs(access, { homeDir, extra: [config.dataDir, config.backupDir] }), "app-server"], cwd,
       onStdoutLine: (line) => peer.handleLine(line),
     });
     peer = createJsonRpcPeer({
-      write: (text) => { try { record.child.stdin.write(`${text}\n`); } catch { /* process gone */ } },
-      allowedMethods: CODEX_ALLOWED_METHODS, onNotification, onServerRequest,
+      write: (text) => {
+        const stdin = record.child.stdin;
+        if (record.exited || !stdin || stdin.destroyed || stdin.writableEnded) return; // never write into a dead pipe
+        try { stdin.write(`${text}\n`); } catch { /* process gone */ }
+      },
+      allowedMethods, onNotification, onServerRequest,
     });
     record.exit.then((exit) => {
       peer.failAll(Object.assign(new Error(`codex app-server exited (${exit.code})${record.stderrTail.length ? `: ${record.stderrTail.slice(-3).join(" | ")}` : ""}`), { category: "transport" }));
       onExit?.(exit);
     });
     const ready = (async () => {
-      const init = await peer.request("initialize", { clientInfo: { name: "ifrim_agent_hub", title: "Ifrim Agent Hub", version: HUB_VERSION }, capabilities: { experimentalApi: false } }, 30000);
+      const init = await peer.request("initialize", { clientInfo: { name: "ifrim_agent_hub", title: "Ifrim Agent Hub", version: HUB_VERSION }, capabilities: { experimentalApi: Boolean(experimentalApi) } }, 30000);
       peer.notify("initialized", {});
       return init;
     })();
@@ -222,14 +256,16 @@ export function createCodexAdapter({ config, supervisor, homeDir = os.homedir() 
     };
 
     const onServerRequest = async (method, params) => {
+      // v2 item/* requests answer accept|decline; the legacy requests answer a ReviewDecision (approved | denied{rejection}).
+      const legacy = method === "execCommandApproval" || method === "applyPatchApproval";
+      const reply = (decision) => ({ result: { decision: legacy ? (decision === "accept" ? "approved" : { denied: { rejection: "Ifrim Agent Hub: refuzat" } }) : (decision === "accept" ? "accept" : "decline") } });
       if (method === "item/commandExecution/requestApproval" || method === "execCommandApproval") {
-        const decision = await requestApproval({ kind: "command", command: params.command || params.parsedCmd || params, cwd: params.cwd || cwd, reason: params.reason || "" });
-        return { result: { decision: decision === "accept" ? "accept" : "decline" } };
+        return reply(await requestApproval({ kind: "command", command: params.command || params.parsedCmd || params, cwd: params.cwd || cwd, reason: params.reason || "" }));
       }
       if (method === "item/fileChange/requestApproval" || method === "applyPatchApproval") {
-        const decision = await requestApproval({ kind: "fileChange", changes: params.changes || params.fileChanges || params, reason: params.reason || "" });
-        return { result: { decision: decision === "accept" ? "accept" : "decline" } };
+        return reply(await requestApproval({ kind: "fileChange", changes: params.changes || params.fileChanges || params, reason: params.reason || "" }));
       }
+      if (method === "item/permissions/requestApproval") return { result: { permissions: {}, scope: "turn" } };
       if (method === "mcpServer/elicitation/request") return { result: { action: "decline" } };
       if (method === "item/tool/requestUserInput") return { result: { answers: {} } };
       // Permission escalations (network/filesystem), token refresh, attestation and dynamic tools are refused.
@@ -321,7 +357,7 @@ export function createCodexAdapter({ config, supervisor, homeDir = os.homedir() 
     return { key, pid: session.record.pid, done, interrupt };
   }
 
-  return { id, displayName: "Codex (ChatGPT plan)", inspectInstallation, probe, startTurn, inspectConfig: () => inspectCodexConfig(homeDir) };
+  return { id, displayName: "Codex (ChatGPT plan)", inspectInstallation, probe, startTurn, openSession, inspectConfig: () => inspectCodexConfig(homeDir) };
 }
 
 export function normalizeAccount(response) {

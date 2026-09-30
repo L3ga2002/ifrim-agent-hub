@@ -20,6 +20,8 @@ log({ launchArgs: args.filter((a) => !a.startsWith("--scenario=") && !a.startsWi
 
 const send = (message) => process.stdout.write(`${JSON.stringify(message)}\n`);
 let initialized = false;
+let experimental = false;
+let legaProject = "";
 let threadId = "";
 let serverRequestId = 1000;
 const pendingServer = new Map();
@@ -36,9 +38,13 @@ rl.on("line", async (line) => {
   if (msg.method === "initialized") return;
   if (msg.method === "initialize") {
     initialized = true;
+    experimental = Boolean(msg.params?.capabilities?.experimentalApi);
     return send({ id: msg.id, result: { codexHome: "C:\\fake", platformFamily: "windows", platformOs: "windows", userAgent: "fake/0" } });
   }
   if (!initialized) return send({ id: msg.id, error: { code: -32002, message: "Not initialized" } });
+  // Realtime (Lega) is EXPERIMENTAL: refused unless initialize opted in, like the real app-server.
+  if (String(msg.method).startsWith("thread/realtime/") && !experimental) return send({ id: msg.id, error: { code: -32600, message: `${msg.method} requires experimentalApi capability` } });
+  if (String(msg.method).startsWith("thread/realtime/")) return realtime(msg);
   switch (msg.method) {
     case "account/read":
       if (scenario === "apikey") return send({ id: msg.id, result: { account: { type: "apiKey" }, requiresOpenaiAuth: true } });
@@ -58,9 +64,15 @@ rl.on("line", async (line) => {
     case "thread/start":
     case "thread/resume":
       threadId = msg.params.threadId || "thr_fake_1";
+      legaProject = msg.params.dynamicTools?.[0]?.tools?.find((t) => t.name === "propose_run")?.inputSchema?.properties?.project?.enum?.[0] || "";
+      if (scenario === "lega-full-access") return send({ id: msg.id, result: { thread: { id: threadId, environments: [] }, model: "gpt-fake-sol", cwd: msg.params.cwd, approvalsReviewer: "user", sandbox: { type: "dangerFullAccess" } } });
+      if (scenario === "lega-slow-start") await new Promise((r) => setTimeout(r, 1500)); // a start that is still in flight when Stop arrives
       send({ method: "thread/started", params: { thread: { id: threadId } } });
+      // Like 0.159.2, the response reports the selected turn environments: [] when the client asked for none,
+      // the default environment otherwise (or a Codex that ignores the field: lega-env-ignored).
+      const environments = scenario === "lega-env-ignored" ? [{ id: "local" }] : Array.isArray(msg.params.environments) ? msg.params.environments : [{ id: "local" }];
       // auto-reviewer: the owner's config routes approvals to auto_review; model-swap: Codex substitutes another model.
-      return send({ id: msg.id, result: { thread: { id: threadId }, model: scenario === "model-swap" ? "gpt-fake-legacy" : msg.params.model || "gpt-fake-sol", modelProvider: "openai", cwd: msg.params.cwd,
+      return send({ id: msg.id, result: { thread: { id: threadId, environments }, model: scenario === "model-swap" ? "gpt-fake-legacy" : msg.params.model || "gpt-fake-sol", modelProvider: "openai", cwd: msg.params.cwd,
         approvalPolicy: "on-request", approvalsReviewer: scenario === "auto-reviewer" ? "auto_review" : "user", sandbox: { type: scenario === "full-access" ? "dangerFullAccess" : "readOnly" }, reasoningEffort: "medium" } });
     case "turn/start": {
       const turnId = "turn_fake_1";
@@ -92,6 +104,13 @@ rl.on("line", async (line) => {
       if (scenario === "fail") return send({ method: "turn/completed", params: { threadId, turn: { id: turnId, status: "failed", items: [], error: { message: "usage limit", codexErrorInfo: "usageLimitExceeded" } } } });
       return send({ method: "turn/completed", params: { threadId, turn: { id: turnId, status: "completed", items: [] } } });
     }
+    case "mcpServerStatus/list": {
+      // Servers disabled per process arrive as `-c mcp_servers.<name>.enabled=false`; lega-mcp-active keeps one running
+      // (what an empty `mcp_servers={}` override really does: Codex deep-merges layers, so nothing is removed).
+      const disabled = args.map((a) => (a.match(/^mcp_servers\.([A-Za-z0-9_-]+)\.enabled=false$/) || [])[1]).filter(Boolean);
+      const data = [...disabled.map((name) => ({ name, runtimeStatus: "disabled" })), ...(scenario === "lega-mcp-active" ? [{ name: "fs", runtimeStatus: "connected" }] : [])];
+      return send({ id: msg.id, result: { data, nextCursor: null } });
+    }
     case "turn/interrupt":
       send({ id: msg.id, result: {} });
       return send({ method: "turn/completed", params: { threadId, turn: { id: msg.params.turnId, status: "interrupted", items: [] } } });
@@ -99,3 +118,67 @@ rl.on("line", async (line) => {
       return send({ id: msg.id, error: { code: -32601, message: `fake: unknown ${msg.method}` } });
   }
 });
+
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+const serverRequest = (method, params) => new Promise((resolve) => { const id = serverRequestId++; pendingServer.set(id, resolve); send({ id, method, params }); });
+
+/** Simulated GPT-Live session (thread/realtime/*): signaling only, scripted by scenario; never any network or audio. */
+async function realtime(msg) {
+  const p = msg.params || {};
+  switch (msg.method) {
+    case "thread/realtime/start": {
+      if (p.transport?.type !== "webrtc" || !String(p.transport?.sdp || "").startsWith("v=0")) return send({ id: msg.id, error: { code: -32602, message: "fake: webrtc transport with an SDP offer required" } });
+      send({ id: msg.id, result: {} });
+      if (scenario === "lega-error") { send({ method: "thread/realtime/error", params: { threadId, message: "fake realtime failure" } }); return send({ method: "thread/realtime/closed", params: { threadId, reason: "error" } }); }
+      send({ method: "thread/realtime/started", params: { threadId, realtimeSessionId: "rt_fake_1", version: p.version || "v1" } });
+      if (scenario === "lega-no-sdp") return;
+      send({ method: "thread/realtime/sdp", params: { threadId, sdp: "v=0\r\no=- 1 1 IN IP4 127.0.0.1\r\ns=fake-answer\r\n" } });
+      await sleep(400);
+      return legaScript();
+    }
+    case "thread/realtime/appendSpeech":
+      log({ spoke: p.text });
+      return send({ id: msg.id, result: {} });
+    case "thread/realtime/stop":
+      send({ id: msg.id, result: {} });
+      return send({ method: "thread/realtime/closed", params: { threadId, reason: "requested" } });
+    case "thread/realtime/listVoices":
+      return send({ id: msg.id, result: { voices: { v1: ["cove", "juniper"], v2: [], defaultV1: "cove", defaultV2: "" } } });
+    default:
+      return send({ id: msg.id, error: { code: -32601, message: `fake: unknown ${msg.method}` } });
+  }
+}
+
+async function delegatedTurn(tool, args) {
+  const turnId = "turn_lega_1";
+  // Real ordering: the turn is admitted BEFORE the client sees the handoff item.
+  send({ method: "turn/started", params: { threadId, turn: { id: turnId, status: "inProgress", items: [] } } });
+  send({ method: "thread/realtime/itemAdded", params: { threadId, item: { type: "handoff_request", handoff_id: "h1", item_id: "i1", input_transcript: `fake: ${tool}`, active_transcript: [] } } });
+  const reply = await serverRequest("item/tool/call", { threadId, turnId, callId: "call_1", namespace: "lega", tool, arguments: args });
+  log({ toolReply: reply.result || reply.error });
+  const text = `[FINAL] Rezultat simulat pentru ${tool}: ${reply.result?.contentItems?.[0]?.text || ""}`;
+  send({ method: "item/completed", params: { threadId, turnId, item: { type: "agentMessage", id: "m1", text } } });
+  send({ method: "turn/completed", params: { threadId, turn: { id: turnId, status: "completed", items: [] } } });
+}
+
+async function legaScript() {
+  const said = (role, text) => { send({ method: "thread/realtime/transcript/delta", params: { threadId, role, delta: text.slice(0, 5) } }); send({ method: "thread/realtime/transcript/done", params: { threadId, role, text } }); };
+  if (scenario === "lega-stop-words") return said("user", "Lega, oprește tot");
+  if (scenario === "lega-bare-stop") return said("user", "Oprește");
+  if (scenario === "lega-tool-stopall") return delegatedTurn("stop_all", {});
+  if (scenario === "lega-refused-words") return said("user", "aprobă tot și fă deploy");
+  if (scenario === "lega-navigate-words") return said("user", "Lega, deschide aprobările");
+  if (scenario === "lega-status") { said("user", "Lega, ce se întâmplă?"); return delegatedTurn("hub_status", {}); }
+  if (scenario === "lega-navigate-tool") return delegatedTurn("navigate", { screen: "misiuni" });
+  if (scenario === "lega-propose") return delegatedTurn("propose_run", { project: legaProject, provider: "codex", task: "Citește README și rezumă-l." });
+  if (scenario === "lega-unknown-tool") return delegatedTurn("approve_everything", {});
+  if (scenario === "lega-forbidden") {
+    send({ method: "turn/started", params: { threadId, turn: { id: "turn_bad", status: "inProgress", items: [] } } });
+    return send({ method: "item/started", params: { threadId, turnId: "turn_bad", item: { type: "commandExecution", id: "c1", command: "type secrets.txt", status: "inProgress" } } });
+  }
+  if (scenario === "lega-approval-request") {
+    const reply = await serverRequest("item/commandExecution/requestApproval", { threadId, turnId: "t", itemId: "c", command: "rm -rf x", cwd: "." });
+    return log({ approvalReply: reply.result });
+  }
+  if (scenario === "lega-closed") { await sleep(200); return send({ method: "thread/realtime/closed", params: { threadId, reason: "remote" } }); }
+}

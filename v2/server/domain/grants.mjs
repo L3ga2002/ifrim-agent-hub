@@ -2,16 +2,30 @@ import { HubError } from "../core/errors.mjs";
 import { newId } from "../core/ids.mjs";
 import { json, parse } from "../storage/db.mjs";
 
+/** Marker in tools_json that makes a grant a Lega VOICE grant (sessions, not runs). No schema change needed. */
+export const VOICE_GRANT_TOOL = "voice.lega";
+export const grantKind = (tools = []) => (Array.isArray(tools) && tools.includes(VOICE_GRANT_TOOL) ? "voice" : "run");
+
 /**
  * LIVE_VALIDATION grants: the only way a model can run while validating. Each grant names the
  * provider, project, access level, tools, number of attempts and expiry — never "anything".
+ * Kind "run" admits agent runs; kind "voice" admits Lega voice sessions (attempts = sessions,
+ * maxDurationS = session cap). A grant of one kind never admits the other.
  */
 export function createGrants({ db, bus, clock }) {
   const rowTo = (row) => row && ({ id: row.id, provider: row.provider, projectId: row.project_id, maxAttempts: row.max_attempts,
-    attemptsUsed: row.attempts_used, tools: parse(row.tools_json, []), access: row.access, maxDurationS: row.max_duration_s,
+    attemptsUsed: row.attempts_used, tools: parse(row.tools_json, []), kind: grantKind(parse(row.tools_json, [])), access: row.access, maxDurationS: row.max_duration_s,
     expiresAt: row.expires_at, status: row.status, note: row.note, createdAt: row.created_at });
 
-  function create({ provider, projectId, access, maxAttempts, maxDurationS, ttlMinutes, tools = [], note = "" }, actor) {
+  function create({ provider, projectId, access, maxAttempts, maxDurationS, ttlMinutes, tools = [], note = "", kind = "run" }, actor) {
+    if (!["run", "voice"].includes(kind)) throw new HubError("validation", "kind must be run or voice");
+    if (kind === "voice") {
+      // Lega runs on Codex with the read-only profile; sessions are capped at 30 minutes.
+      if (provider !== "codex") throw new HubError("validation", "A voice grant is for Codex (Lega uses GPT-Live through Codex)");
+      if (access !== "read-only") throw new HubError("validation", "A voice grant is read-only");
+      if (!(maxDurationS >= 60 && maxDurationS <= 1800)) throw new HubError("validation", "A voice session cap must be 60..1800 s");
+      tools = [VOICE_GRANT_TOOL];
+    } else tools = (tools || []).filter((t) => t !== VOICE_GRANT_TOOL);
     if (!["codex", "claude"].includes(provider)) throw new HubError("validation", "Unknown provider");
     if (!["read-only", "workspace-write"].includes(access)) throw new HubError("validation", "access must be read-only or workspace-write");
     if (!(maxAttempts >= 1 && maxAttempts <= 5)) throw new HubError("validation", "maxAttempts must be 1..5");
@@ -22,19 +36,21 @@ export function createGrants({ db, bus, clock }) {
     db.prepare(`INSERT INTO live_grants (id, provider, project_id, max_attempts, tools_json, access, max_duration_s, expires_at, status, note, created_at)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?)`).run(id, provider, projectId, maxAttempts, json(tools), access, maxDurationS,
       new Date(now.getTime() + ttlMinutes * 60000).toISOString(), note, now.toISOString());
-    bus.append({ type: "grant.created", scopeType: "project", scopeId: projectId, projectId, source: actor, payload: { grantId: id, provider, access, maxAttempts, ttlMinutes } });
+    bus.append({ type: "grant.created", scopeType: "project", scopeId: projectId, projectId, source: actor, payload: { grantId: id, provider, access, maxAttempts, ttlMinutes, kind } });
     return get(id);
   }
 
   const get = (id) => rowTo(db.prepare("SELECT * FROM live_grants WHERE id = ?").get(id));
 
-  function findUsable(provider, projectId, access) {
-    const rows = db.prepare("SELECT * FROM live_grants WHERE provider = ? AND project_id = ? AND status = 'active' ORDER BY created_at DESC").all(provider, projectId);
-    return rows.map(rowTo).find((g) => !problem(g, { provider, projectId, access, now: clock() })) || rows.map(rowTo)[0] || null;
+  function findUsable(provider, projectId, access, kind = "run") {
+    const rows = db.prepare("SELECT * FROM live_grants WHERE provider = ? AND project_id = ? AND status = 'active' ORDER BY created_at DESC").all(provider, projectId)
+      .map(rowTo).filter((g) => g.kind === kind);
+    return rows.find((g) => !problem(g, { provider, projectId, access, now: clock(), kind })) || rows[0] || null;
   }
 
-  function problem(grant, { provider, projectId, access, now }) {
-    if (!grant) return "Niciun grant de validare live pentru acest provider și proiect";
+  function problem(grant, { provider, projectId, access, now, kind = "run" }) {
+    if (!grant) return kind === "voice" ? "Niciun grant de voce (Lega) activ" : "Niciun grant de validare live pentru acest provider și proiect";
+    if (grant.kind !== kind) return kind === "voice" ? "Grantul este pentru execuții, nu pentru Lega" : "Grantul este pentru Lega (voce), nu pentru execuții";
     if (grant.status !== "active") return `Grantul este ${grant.status}`;
     if (grant.provider !== provider) return `Grantul este pentru ${grant.provider}`;
     if (grant.projectId !== projectId) return "Grantul este pentru alt proiect";

@@ -3,6 +3,7 @@ import { HubError } from "../core/errors.mjs";
 import { newId } from "../core/ids.mjs";
 import { ATTESTATION_TEXT } from "../policy/billing.mjs";
 import { CODEX_ACL_CONSENT_TEXT } from "../policy/isolation.mjs";
+import { LEGA_CONSENT_TEXT, LEGA_CONSENT_VERSION, LEGA_VOICES, LEGA_TASK_MAX } from "../policy/lega-policy.mjs";
 import { APPROVAL_POLICIES } from "../policy/approval-policy.mjs";
 import { MISSION_TEMPLATES } from "../domain/missions.mjs";
 import { MEMORY_SCOPES, MEMORY_TYPES } from "../domain/memory.mjs";
@@ -120,7 +121,7 @@ export function registerCommands(commands, hub) {
 
   // ---------- settings, mode, gate, grants, billing ----------
   reg("settings.update", { describe: "Setări (voce, rezervă, UI, concurență, preferințe de rutare)", schema: { voice: { type: "object" }, usageReservePercent: { type: "number" }, ui: { type: "object" },
-    maxConcurrentAiRuns: { type: "integer" }, routingPreferences: { type: "object" } },
+    maxConcurrentAiRuns: { type: "integer" }, routingPreferences: { type: "object" }, lega: { type: "object" } },
     execute: (input, ctx) => {
       for (const [key, value] of Object.entries(input)) {
         if (value === undefined) continue;
@@ -133,6 +134,14 @@ export function registerCommands(commands, hub) {
           if (value.language !== undefined && !/^[a-z]{2}-[A-Z]{2}$/.test(String(value.language))) throw new HubError("validation", "Language must look like ro-RO");
         }
         if (key === "routingPreferences") validateRoutingPreferences(value, router);
+        if (key === "lega") {
+          const merged = { ...settings.get("lega"), ...value };
+          if (!LEGA_VOICES.includes(merged.voice)) throw new HubError("validation", "Unknown Lega voice");
+          if (!(Number.isInteger(merged.maxSessionMinutes) && merged.maxSessionMinutes >= 1 && merged.maxSessionMinutes <= 30)) throw new HubError("validation", "Lega session cap must be 1..30 minutes");
+          if (!(Number.isInteger(merged.idleTimeoutS) && merged.idleTimeoutS >= 30 && merged.idleTimeoutS <= 600)) throw new HubError("validation", "Lega idle timeout must be 30..600 s");
+          settings.set("lega", { voice: merged.voice, maxSessionMinutes: merged.maxSessionMinutes, idleTimeoutS: merged.idleTimeoutS }, ctx.actor);
+          continue;
+        }
         settings.set(key, value, ctx.actor);
       }
       return settings.all();
@@ -159,7 +168,7 @@ export function registerCommands(commands, hub) {
     } });
   reg("grant.create", { describe: "Grant de validare live (provider, proiect, încercări, durată)", schema: { provider: { enum: ["codex", "claude"], required: true }, projectId: { required: true },
     access: { enum: ["read-only", "workspace-write"], required: true }, maxAttempts: { type: "integer", required: true, min: 1, max: 5 }, maxDurationS: { type: "integer", default: 900, min: 60, max: 7200 },
-    ttlMinutes: { type: "integer", default: 60, min: 5, max: 480 }, note: { max: 500, default: "" } },
+    ttlMinutes: { type: "integer", default: 60, min: 5, max: 480 }, note: { max: 500, default: "" }, kind: { enum: ["run", "voice"], default: "run" } },
     execute: (input, ctx) => {
       if (settings.get("mode") !== "LIVE_VALIDATION") throw new HubError("policy", "Grants can only be created in LIVE_VALIDATION mode");
       const project = need(projects.get(input.projectId), "Project");
@@ -374,6 +383,49 @@ export function registerCommands(commands, hub) {
   reg("legacy.apply", { describe: "Aplică importul V1 (legat de SHA-256 al snapshotului)", async: true, schema: { snapshotPath: { required: true, max: 600 }, sha256: { required: true, max: 64 } },
     execute: (input) => applyImport({ snapshotPath: assertSnapshot(config, input.snapshotPath), expectedSha256: input.sha256, v2db: db, bus, projects, clock }) });
   reg("legacy.revert", { describe: "Revert al unui lot de import", async: true, schema: { batchId: { required: true, max: 80 } }, execute: (input) => revertImport({ batchId: input.batchId, v2db: db, bus }) });
+  // ---------- Lega (voice assistant: GPT-Live through Codex) ----------
+  reg("lega.consent", { describe: "Acordul tău pentru Lega: audio la OpenAI, consum din plan, doar transcriere text păstrată", schema: { confirmText: { required: true, max: 600 } },
+    execute: (input, ctx) => {
+      if (input.confirmText !== LEGA_CONSENT_TEXT) throw new HubError("validation", "Confirmation text does not match");
+      const value = { version: LEGA_CONSENT_VERSION, confirmedAt: clock().toISOString(), text: LEGA_CONSENT_TEXT };
+      settings.set("legaConsent", value, ctx.actor, "Lega consent recorded");
+      return value;
+    } });
+  reg("lega.consent_revoke", { describe: "Retrage acordul pentru Lega (oprește și sesiunea activă)", async: true, schema: {}, channels: ["ui", "test", "voice", "companion"],
+    execute: async (input, ctx) => {
+      bus.transaction(() => settings.set("legaConsent", {}, ctx.actor, "Lega consent revoked"));
+      await hub.lega.stopAll("consent-revoked");
+      return { revoked: true };
+    } });
+  reg("lega.session.start", { describe: "Pornește o sesiune Lega (voce GPT-Live prin Codex); oferta SDP a browserului nu este jurnalizată", async: true,
+    schema: { sdp: { required: true, max: 65536, trim: false }, voice: { enum: [...LEGA_VOICES] } }, logPayload: (i) => ({ sdpLength: String(i.sdp || "").length, voice: i.voice || null }),
+    // The SDP answer (remote candidates, DTLS fingerprint) goes back to the browser only; the command log keeps its length.
+    logResult: (r) => ({ sessionId: r?.sessionId, voice: r?.voice, maxDurationS: r?.maxDurationS, idleTimeoutS: r?.idleTimeoutS, answerSdpLength: String(r?.answerSdp || "").length }),
+    execute: async (input, ctx) => hub.lega.start({ sdp: input.sdp, voice: input.voice, actor: ctx.actor }) });
+  reg("lega.session.connected", { describe: "Browserul confirmă conexiunea audio (pornește cronometrul sesiunii)", schema: { sessionId: { required: true, max: 80 } },
+    execute: (input) => hub.lega.connected(input.sessionId) });
+  reg("lega.session.stop", { describe: "Oprește sesiunea Lega", async: true, schema: { sessionId: { max: 80 }, reason: { max: 80, default: "user" } }, channels: ["ui", "test", "voice", "companion"],
+    // "current" stops whatever session is live (the browser may not know the id yet while a start is in flight).
+    execute: async (input, ctx) => (hub.lega.active() ? hub.lega.stop(input.sessionId && input.sessionId !== "current" ? input.sessionId : undefined, input.reason || "user", ctx.actor) : hub.lega.state()) });
+  reg("lega.propose_run", { describe: "Execuție propusă de Lega: pornește doar după aprobarea ta prin click, apoi trece prin poarta de execuție", async: true,
+    schema: { projectId: { required: true, max: 80 }, provider: { enum: ["codex", "claude"], required: true }, access: { enum: ["read-only", "workspace-write"], default: "read-only" },
+      task: { required: true, min: 3, max: LEGA_TASK_MAX }, legaSessionId: { max: 80 } },
+    channels: ["voice", "test"],
+    action: (input) => ({ actionKind: "lega.run_request", target: `${input.provider}:${input.projectId}:${input.access}` }),
+    execute: async (input, ctx) => {
+      const project = need(projects.get(input.projectId), "Project");
+      if (!project.executionAllowed) throw new HubError("policy", `${project.name} nu este activat pentru execuții`);
+      const conversation = bus.transaction(() => conversations.create({ projectId: project.id, title: `Lega · ${input.task.replace(/\s+/g, " ").slice(0, 60)}` }, "lega"));
+      bus.transaction(() => conversations.addMessage({ conversationId: conversation.id, role: "user", content: input.task }, "lega"));
+      try {
+        const started = await runs.start({ conversationId: conversation.id, provider: input.provider, access: input.access, actor: "lega", correlationId: ctx.correlationId });
+        if (input.legaSessionId) hub.lega.trackRun(started.run.id, { sessionId: input.legaSessionId, task: input.task });
+        return { conversationId: conversation.id, runId: started.run.id };
+      } catch (error) {
+        if (input.legaSessionId) hub.lega.proposalFailed(input.legaSessionId, String(error.message).slice(0, 200)).catch(() => {});
+        throw error;
+      }
+    } });
   reg("voice.command", { describe: "Comandă vocală (transcrierea nu poate aproba nimic)", async: true, schema: { transcript: { required: true, max: 2000 } }, channels: ["ui", "test", "voice"],
     execute: async (input) => {
       const parsed = parseVoiceCommand(input.transcript);

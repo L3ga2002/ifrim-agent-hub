@@ -118,14 +118,14 @@ export function createCommandBus({ db, bus, clock, policy, approvals }) {
       if (handler.async) {
         const result = await handler.execute(input, runCtx);
         bus.transaction(() => {
-          finish(id, "executed", { result });
+          finish(id, "executed", { result: handler.logResult ? handler.logResult(result) : result });
           bus.append({ type: "command.executed", scopeType: "command", scopeId: id, source: ctx.actor, correlationId: ctx.correlationId, payload: { type } });
         });
         return { command: get(id), result };
       }
       const result = bus.transaction(() => {
         const out = handler.execute(input, runCtx);
-        finish(id, "executed", { result: out });
+        finish(id, "executed", { result: handler.logResult ? handler.logResult(out) : out });
         bus.append({ type: "command.executed", scopeType: "command", scopeId: id, source: ctx.actor, correlationId: ctx.correlationId, payload: { type } });
         return out;
       });

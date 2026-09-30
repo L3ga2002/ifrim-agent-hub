@@ -1,5 +1,6 @@
 import { evaluateRoute } from "./billing.mjs";
 import { evaluateIsolation } from "./isolation.mjs";
+import { LEGA_CONSENT_VERSION } from "./lega-policy.mjs";
 
 const INSPECTION_MAX_AGE_H = 24;
 
@@ -74,7 +75,45 @@ export function createGate({ db, settings, projects, backups, leases, grants, br
     return { allowed: checks.every((c) => c.ok), checks, evaluatedAt: now.toISOString() };
   }
 
-  return { evaluate };
+  /**
+   * Lega voice session admission. A voice session is a live model session (GPT-Live + the Codex agent behind it), so it
+   * needs the same mode/gate/billing/isolation/breaker checks as a run, plus a VOICE grant, the owner's Lega consent and a
+   * clean realtime config. No workspace lease or backup: the Lega thread has no environment and an empty scratch cwd, so
+   * no project file is reachable from it; project work is proposed and then admitted as a normal run.
+   */
+  function evaluateVoice({ voiceActive = false } = {}) {
+    const checks = [];
+    const add = (id, ok, detail, extra = {}) => checks.push({ id, ok, detail, ...extra });
+    const now = clock();
+    const gateState = settings.get("executionGate");
+    add("execution_gate", gateState.status === "open", gateState.status === "open" ? "Deschisă" : `Suspendată: ${gateState.reason}`);
+    const mode = settings.get("mode");
+    add("mode", mode === "LIVE_VALIDATION", mode === "LIVE_VALIDATION" ? "LIVE_VALIDATION" : `${mode}: Lega este un model și nu pornește în acest mod`);
+    const hubProject = projects.hub();
+    const grant = hubProject ? grants.findUsable("codex", hubProject.id, "read-only", "voice") : null;
+    const reason = grants.problem(grant, { provider: "codex", projectId: hubProject?.id, access: "read-only", now, kind: "voice" });
+    add("voice_grant", !reason, reason || `Grant ${grant.id}: ${grant.maxAttempts - grant.attemptsUsed} sesiuni rămase, maxim ${Math.round(grant.maxDurationS / 60)} min, expiră ${grant.expiresAt}`, { grantId: grant?.id || null });
+    const consent = settings.get("legaConsent") || {};
+    add("lega_consent", consent.version === LEGA_CONSENT_VERSION, consent.version === LEGA_CONSENT_VERSION ? `Acord înregistrat ${consent.confirmedAt}` : "Acordul pentru Lega (audio la OpenAI, consum din plan) nu este înregistrat");
+    const inspection = inspectionFromState(providerState.get("codex"), now);
+    const route = evaluateRoute("codex", inspection, { attestations: settings.get("billingAttestations"), now, usage: inspection?.usage || null, reservePercent: settings.get("usageReservePercent") });
+    add("billing_route", route.allowed, route.allowed ? "Rută inclusă în abonament verificată" : route.blockingReasons.join(" · "), { route });
+    const realtime = inspection?.config?.realtime;
+    const risky = realtime?.riskyKeys || [];
+    add("realtime_config", Boolean(realtime) && risky.length === 0, !realtime ? "Configurația Codex nu a fost inspectată (Integrări → Inspectează instalarea)" : risky.length ? `Chei care ar redirecționa vocea: ${risky.join(", ")}` : `Fără redirecționări de voce${realtime.mcpServers ? `; ${realtime.mcpServers} servere MCP dezactivate per proces (enabled=false), verificate la pornire` : ""}`);
+    const isolation = evaluateIsolation({ provider: "codex", access: "read-only", sandbox: inspection?.sandbox || null,
+      consent: settings.get("isolationConsent")?.codex || null, fingerprint: codexIsolation ? codexIsolation().fingerprint : null });
+    add("isolation", isolation.ok, isolation.detail, { level: isolation.level });
+    const breaker = breakers.state("codex");
+    add("circuit_breaker", breaker.state !== "open", breaker.state === "open" ? `Deschis până la ${breaker.until}` : "Închis");
+    add("single_session", !voiceActive, voiceActive ? "O sesiune Lega este deja activă" : "Nicio sesiune Lega activă");
+    const running = activeRunCount();
+    const limit = settings.get("maxConcurrentAiRuns");
+    add("concurrency", running < limit, `${running}/${limit} execuții AI active`);
+    return { allowed: checks.every((c) => c.ok), checks, evaluatedAt: now.toISOString() };
+  }
+
+  return { evaluate, evaluateVoice };
 }
 
 /** Consecutive infrastructure failures (transport/authentication) open the breaker for a cool-down. */

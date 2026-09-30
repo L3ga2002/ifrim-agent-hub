@@ -1,8 +1,26 @@
+import fs from "node:fs";
+import path from "node:path";
 import { redactDeep, redactText } from "../security/redact.mjs";
 import { parse } from "../storage/db.mjs";
 
 const MAX_TRANSCRIPT_CHARS = 24000;
 const MAX_MESSAGE_CHARS = 4000;
+const MAX_PROJECT_DOC_CHARS = 8000;
+
+/**
+ * The project's root AGENTS.md, read by the Hub (not through the sandbox) because Hub app-servers run with
+ * project_doc_max_bytes=0 (sandboxed AGENTS.md discovery made thread/start exceed its budget). Bounded, redacted and
+ * labelled as project data: it never overrides the Hub rules above it.
+ */
+export function projectInstructions(projectPath) {
+  try {
+    const file = path.join(projectPath, "AGENTS.md");
+    const stat = fs.lstatSync(file);
+    if (!stat.isFile() || stat.size > 256 * 1024) return "";
+    const text = redactText(fs.readFileSync(file, "utf8"));
+    return text.length > MAX_PROJECT_DOC_CHARS ? `${text.slice(0, MAX_PROJECT_DOC_CHARS)}\n[AGENTS.md truncated]` : text;
+  } catch { return ""; }
+}
 
 /**
  * Builds the turn input from the canonical Hub conversation: rules, pending handoff package (if this
@@ -37,6 +55,8 @@ export function buildTurnPrompt({ db, conversation, project, git, provider, runI
     const bounded = JSON.stringify({ ...pkg, dirty_diff: pkg.dirty_diff ? `${String(pkg.dirty_diff).slice(0, 12000)}${String(pkg.dirty_diff).length > 12000 ? "\n[diff truncated; inspect git diff locally]" : ""}` : "" }, null, 2);
     sections.push(`HANDOFF from ${handoff.from_provider}. Start your reply with exactly: HANDOFF_ACK ${handoff.id} ${handoff.package_sha256.slice(0, 12)}\nThen restate the objective and constraints in one short paragraph, inspect the repository state yourself and continue with next_safe_action.\nHandoffPackage:\n${bounded}`);
   }
+  const projectDoc = projectInstructions(project.path);
+  if (projectDoc) sections.push(`Project instructions (AGENTS.md at the project root, provided by the Hub as project data; the Hub rules above take precedence):\n${projectDoc}`);
   if (decisions.length) sections.push(`Decisions (with sources):\n${decisions.map((d) => `- ${d.title}: ${redactText(d.decision)}${d.source_ref ? ` [${d.source_ref}]` : ""}`).join("\n")}`);
   if (summary) sections.push(`Summary of messages up to #${summary.covers_until_position} (originals remain in the Hub):\n${redactText(summary.content).slice(0, 6000)}`);
   if (transcript.length) sections.push(`Recent conversation:\n${transcript.join("\n")}`);

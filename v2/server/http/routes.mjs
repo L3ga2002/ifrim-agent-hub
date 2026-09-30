@@ -10,6 +10,7 @@ import { TASK_STATES } from "../runtime/state-machine.mjs";
 import { describeLifecycles } from "../runtime/lifecycles.mjs";
 import { inspectionFromState } from "../policy/gate.mjs";
 import { evaluateIsolation, CODEX_ACL_CONSENT_TEXT, CODEX_PROFILE_BY_ACCESS } from "../policy/isolation.mjs";
+import { LEGA_CONSENT_TEXT, LEGA_CONSENT_VERSION, LEGA_VOICES, LEGA_COST_PER_MINUTE_USD, LEGA_DEFAULTS } from "../policy/lega-policy.mjs";
 import { MISSION_TEMPLATES } from "../domain/missions.mjs";
 import { MEMORY_SCOPES, MEMORY_TYPES, MEMORY_SOURCES } from "../domain/memory.mjs";
 import { LEAD_STATUSES } from "../domain/leads.mjs";
@@ -84,7 +85,7 @@ export function registerRoutes(router, hub, { token }) {
       usage: usage.overview(), backup: hubProject ? backups.freshVerified(hubProject.id) : null,
       legacy: settings.get("legacyImport"), processes: supervisor.list(), boot: hub.getBootReport(),
       breakers: { codex: hub.breakers.state("codex"), claude: hub.breakers.state("claude") },
-      lastSeq: bus.lastSeq(), voiceSettings: settings.get("voice"),
+      lastSeq: bus.lastSeq(), voiceSettings: settings.get("voice"), lega: hub.lega.state(),
       verifyingTasks: db.prepare("SELECT COUNT(*) AS n FROM tasks WHERE status = 'VERIFYING'").get().n,
       backupRunning: db.prepare("SELECT COUNT(*) AS n FROM backups WHERE status = 'running'").get().n,
       recentFailures: db.prepare("SELECT id, provider, error_category AS category, error_message AS message, pre_inference AS preInference, created_at AS createdAt FROM agent_runs WHERE (status IN ('failed','interrupted_unknown','orphaned') OR (status = 'blocked' AND COALESCE(error_category, '') <> 'gate')) AND created_at >= ? ORDER BY created_at DESC LIMIT 5")
@@ -163,7 +164,7 @@ export function registerRoutes(router, hub, { token }) {
   // ---------- settings, mode, gate, stop ----------
   get("/api/settings", () => ({ settings: settings.all(), billingPolicy: BILLING_POLICY, attestationText: ATTESTATION_TEXT, environment: scanEnvironment() }));
   patch("/api/settings", async ({ req, body }) => {
-    const allowed = ["voice", "usageReservePercent", "ui", "maxConcurrentAiRuns", "routingPreferences"];
+    const allowed = ["voice", "usageReservePercent", "ui", "maxConcurrentAiRuns", "routingPreferences", "lega"];
     for (const key of Object.keys(body || {})) if (!allowed.includes(key)) throw new HubError("policy", `${key} cannot be changed here`);
     return { settings: await dispatch(req, "settings.update", body) };
   });
@@ -315,6 +316,20 @@ export function registerRoutes(router, hub, { token }) {
       claude: { readOnly: evaluate("claude", "read-only"), workspaceWrite: evaluate("claude", "workspace-write") },
     };
   });
+  // ---------- Lega (voice assistant) ----------
+  // Status + gate preview for the Lega panel (the Codex config is re-read locally, key names only).
+  get("/api/lega", () => {
+    hub.refreshCodexConfig();
+    const consent = settings.get("legaConsent") || {};
+    return { session: hub.lega.state(), consent: { recorded: consent.version === LEGA_CONSENT_VERSION, confirmedAt: consent.confirmedAt || null, version: LEGA_CONSENT_VERSION },
+      consentText: LEGA_CONSENT_TEXT, settings: { ...LEGA_DEFAULTS, ...(settings.get("lega") || {}) }, voices: LEGA_VOICES, costPerMinuteUsd: LEGA_COST_PER_MINUTE_USD,
+      preview: gate.evaluateVoice({ voiceActive: hub.lega.active() }) };
+  });
+  post("/api/lega/sessions", cmd("lega.session.start", ({ body }) => body, { created: true }), { maxBytes: 80 * 1024 });
+  post("/api/lega/sessions/:id/connected", cmd("lega.session.connected", ({ params }) => ({ sessionId: params.id })));
+  post("/api/lega/sessions/:id/stop", cmd("lega.session.stop", ({ params, body }) => ({ sessionId: params.id, reason: body?.reason || "user" })));
+  post("/api/lega/consent", cmd("lega.consent"));
+  post("/api/lega/consent/revoke", cmd("lega.consent_revoke", () => ({})));
   post("/api/isolation/consent", cmd("isolation.consent"));
   post("/api/isolation/revoke", cmd("isolation.revoke"));
   get("/api/grants", () => ({ grants: grants.list() }));

@@ -24,6 +24,8 @@ import { createApprovals } from "./policy/approvals.mjs";
 import { createApprovalPolicy } from "./policy/approval-policy.mjs";
 import { createGate, createBreakers } from "./policy/gate.mjs";
 import { codexDeniedPaths, denyListFingerprint } from "./policy/isolation.mjs";
+import { createCodexRealtime } from "./providers/codex-realtime.mjs";
+import { createLega } from "./runtime/lega.mjs";
 import { createLeases } from "./runtime/leases.mjs";
 import { createSupervisor } from "./runtime/supervisor.mjs";
 import { createRunManager } from "./runtime/runs.mjs";
@@ -93,9 +95,10 @@ export function createHub(config, { providerOverrides = {}, homeDir } = {}) {
   };
   const telemetry = createTelemetry({ db, bus, clock });
   let runs;
+  let lega = null;
   // The exact paths the Codex profile denies on this machine; a recorded consent is valid only for this list.
   const codexIsolation = () => { const paths = codexDeniedPaths({ homeDir: homeDir || os.homedir(), extra: [config.dataDir, config.backupDir] }); return { paths, fingerprint: denyListFingerprint(paths) }; };
-  const gate = createGate({ db, settings, projects, backups, leases, grants, breakers, providerState, clock, activeRunCount: () => runs.activeCount(), codexIsolation });
+  const gate = createGate({ db, settings, projects, backups, leases, grants, breakers, providerState, clock, activeRunCount: () => runs.activeCount() + (lega?.active() ? 1 : 0), codexIsolation });
   runs = createRunManager({ db, bus, clock, settings, projects, conversations, missions, gate, leases, grants, backups, approvals, providers, breakers, usage, live, policy, skills,
     supervisorRecord: (key) => supervisor.get(key) });
   const checkpoints = createCheckpoints({ db, bus, clock, projects, conversations, missions, approvals, leases, backups });
@@ -104,10 +107,20 @@ export function createHub(config, { providerOverrides = {}, homeDir } = {}) {
   const integrations = createIntegrations({ db, bus, clock, config, toolDefinitions: tools.definitions });
   const router = createRouter({ db, bus, clock, config, settings, surfaces, providerState, usage, projects, telemetry, computer, company, roleConfig });
   const commands = createCommandBus({ db, bus, clock, policy, approvals });
+  // Lega (voice): a separate Codex app-server with GPT-Live; admitted by gate.evaluateVoice, stopped by Stop All.
+  const refreshCodexConfig = () => {
+    try { const current = providerState.get("codex") || {}; if (providers.codex.inspectConfig) providerState.set("codex", { ...current, config: providers.codex.inspectConfig() }); } catch { /* reported by the gate */ }
+  };
+  lega = createLega({ config, bus, live, clock, settings, gate, grants, projects, approvals,
+    runsApi: { activeRuns: () => runs.activeRuns(), getRun: (id) => runs.getRun(id), admitCodexUsage: (snapshot) => usage.admit("codex", snapshot),
+      messageText: (id) => db.prepare("SELECT content FROM messages WHERE id = ?").get(id)?.content || "" },
+    commandsApi: { dispatch: (request) => commands.dispatch(request) },
+    codexRealtime: createCodexRealtime({ codex: providers.codex, supervisor }), refreshCodexConfig, codexConfig: () => providerState.get("codex")?.config || null, timeScale: config.legaTimeScale });
+  runs.attachVoice(lega);
 
   const hub = { config, db, bus, live, settings, projects, conversations, missions, approvals, policy, leases, grants, providerState, usage, memory, leads,
     company, chiefOfStaff, surfaces, schedules, computer, skills, artifacts, integrations, nativeSessions, telemetry, router, commands, checkpoints,
-    breakers, supervisor, backups, providers, gate, runs, handoffs, tools, roleConfig, skillConfig, capabilityConfig, codexIsolation };
+    breakers, supervisor, backups, providers, gate, runs, handoffs, tools, roleConfig, skillConfig, capabilityConfig, codexIsolation, lega, refreshCodexConfig };
   registerCommands(commands, hub);
 
   const scheduler = createScheduler({ db, bus, clock, approvals, leases, runs,
@@ -155,6 +168,7 @@ export function createHub(config, { providerOverrides = {}, homeDir } = {}) {
 
   async function close() {
     scheduler.stop();
+    await lega.stopAll("shutdown").catch(() => {});
     await supervisor.stopAll();
     db.close();
   }

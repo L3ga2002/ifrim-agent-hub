@@ -2,6 +2,10 @@
 
 ## Milestone 02 Open Items - 2026-09-30 (supersede the items below where they overlap)
 
+- LEGA (P1, owner test): the voice assistant is built (GPT-Live via Codex, ChatGPT plan), with 17 simulated tests and 40 adversarial-review findings fixed; see `.ifrim/LEGA.md`. The first live session is started by the owner (microphone). Unverified until then: ChatGPT backend accepts the browser WebRTC offer, Romanian quality, plan usage visibility, MCP disabled in practice.
+- V1 flaky test (P3): `tests/ordered-fingerprint-io.test.mjs` "inverse completion" failed once under full-suite load on 2026-09-30 and passed 3/3 alone; V1 code untouched.
+- CODEX-THREAD-START fix (P1): `project_doc_max_bytes=0` + `project_root_markers=[]` remove sandboxed AGENTS.md discovery from thread/start (root cause per codex-rs 0.159.2); the Hub now sends the project AGENTS.md itself. It needs one owner-started Codex run to confirm.
+- CODEX-THREAD-START (P1, history): the first live Codex run (14:41Z) failed pre-inference with `thread/start timed out after 120000 ms` under the elevated sandbox + Hub profile. The DENY ACEs are now present on all protected paths. Diagnosis is in progress (ACL propagation on large trees vs. other causes). There was no retry and nothing was consumed. The gate is suspended; BUILD_SAFE.
 - M02-LIVE (P1): Claude read-only PASS_LIVE on the sanitized test project (2026-09-30, run `run_muo6i9og_50c329673c`). Codex pending: the Claude Code auto-mode permission classifier refused the real ACL pre-flight (not worked around), so the owner runs the pre-flight in their own terminal and starts the prepared Codex run from the UI (grant `grant_muo6lo5l_7d6f521584`, 1 attempt, expires 16:09Z). The gate stays open in LIVE_VALIDATION until that test; afterwards return to BUILD_SAFE.
 - Leftover (P3): an empty conversation titled with a broken character ("Validare live M02 � Claude") was created when curl sent non-UTF-8 text; there is no delete/rename command, it is harmless.
 - Codex ACL consent (P1, your decision). Details: `M02_SECURITY_READINESS.md` F2–F4.

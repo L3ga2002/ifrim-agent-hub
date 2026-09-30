@@ -3,7 +3,7 @@ import { api, openStream } from "./api.js";
 
 // Global Hub state: the /api/state projection, refreshed on relevant events (debounced).
 const listeners = new Set();
-let state = { hub: null, loading: true, error: null, connection: "connecting", toasts: [], voicePhase: "idle", lastUpdate: null };
+let state = { hub: null, loading: true, error: null, connection: "connecting", toasts: [], voicePhase: "idle", legaPhase: "off", lastUpdate: null };
 const emit = () => { for (const l of listeners) l(); };
 export const setState = (patch) => { state = { ...state, ...(typeof patch === "function" ? patch(state) : patch) }; emit(); };
 export const useHub = (selector = (s) => s) => useSyncExternalStore((l) => { listeners.add(l); return () => listeners.delete(l); }, () => selector(state));

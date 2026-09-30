@@ -26,6 +26,7 @@ export function createRunManager(deps) {
   const active = new Map(); // runId -> { handle, conversationId, provider, leaseId, taskId }
   const approvalWaiters = new Map(); // approvalId -> resolve
   const starting = new Set(); // conversationId currently being admitted
+  let voice = null; // Lega session manager (late-bound): Stop All must end the voice session too
 
   const rowToRun = (row) => row && ({ id: row.id, taskId: row.task_id, conversationId: row.conversation_id, roleId: row.role_id, stage: row.stage,
     provider: row.provider, model: row.model, effort: row.effort, access: row.access, status: row.status, providerSessionId: row.provider_session_id,
@@ -286,6 +287,9 @@ export function createRunManager(deps) {
 
   /** Stop All: no new work (gate suspended, grants revoked), interrupt every controllable run. */
   async function stopAll(actor = "user", reason = "Stop All") {
+    // The voice session ends first (the browser is told to close its microphone at once), in parallel with the run
+    // interrupts; starting it before the grant revocation keeps "stop-all" as its recorded reason.
+    const voicePromise = voice ? voice.stopAll("stop-all").catch((error) => ({ error: error.message })) : null;
     bus.transaction(() => {
       settings.set("executionGate", { status: "suspended", reason, changedAt: clock().toISOString(), changedBy: actor }, actor, reason);
       grants.revokeAll(actor, reason);
@@ -297,12 +301,13 @@ export function createRunManager(deps) {
       interrupted.push({ runId, provider: entry.provider, ...result });
     }
     for (const [approvalId, resolve] of approvalWaiters) { approvalWaiters.delete(approvalId); resolve("decline"); }
-    bus.emit({ type: "system.stop_all", scopeType: "system", scopeId: "hub", source: actor, payload: { reason, interrupted: interrupted.length } });
-    return { gate: "suspended", interrupted, cloudTasksUnconfirmed: [], irreversibleEffects: [],
+    const voiceSession = voicePromise ? await voicePromise : null;
+    bus.emit({ type: "system.stop_all", scopeType: "system", scopeId: "hub", source: actor, payload: { reason, interrupted: interrupted.length, voiceStopped: Boolean(voiceSession) } });
+    return { gate: "suspended", interrupted, voiceSession, cloudTasksUnconfirmed: [], irreversibleEffects: [],
       note: "No cloud tasks or external effects are started by this Hub build; only local provider processes were interrupted." };
   }
 
   const activeRuns = () => [...active.entries()].map(([runId, entry]) => ({ runId, provider: entry.provider, conversationId: entry.conversationId, pid: entry.handle.pid, taskId: entry.taskId || null,
     startedAt: entry.startedAt || null, lastEventAt: entry.lastEventAt || null, firstOutputAt: entry.firstOutputAt || null, phase: entry.firstOutputAt ? "streaming" : "waiting_provider" }));
-  return { start, interrupt, stopAll, resolveApproval, getRun, listRuns, activeRuns, activeCount: () => active.size + starting.size, rowToRun };
+  return { start, interrupt, stopAll, resolveApproval, getRun, listRuns, activeRuns, activeCount: () => active.size + starting.size, rowToRun, attachVoice: (v) => { voice = v; } };
 }

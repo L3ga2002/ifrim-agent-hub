@@ -24,15 +24,31 @@ const plural = (n, one, many) => `${n} ${n === 1 ? one : many}`;
  * @param {object} input
  * @param {object|null} input.hub  /api/state projection
  * @param {string} input.connection  "live" | "connecting" | "reconnecting"
- * @param {string} input.voicePhase  "idle" | "listening" | "transcribing"
- * @returns {{ state: string, reason: string }}
+ * @param {string} input.voicePhase  "idle" | "listening" | "transcribing" (local push-to-talk)
+ * @param {string} input.legaPhase  "off" | "connecting" | "listening" | "user-speaking" | "speaking" | "delegating" (Lega session)
+ * @returns {{ state: string, reason: string, label: string }}
  */
-export function deriveCoreState({ hub, connection = "live", voicePhase = "idle" } = {}) {
+export function deriveCoreState({ hub, connection = "live", voicePhase = "idle", legaPhase = "off" } = {}) {
+  const out = pickCoreState({ hub, connection, voicePhase, legaPhase });
+  return { ...out, label: out.label || CORE_VISUALS[out.state].label };
+}
+
+function pickCoreState({ hub, connection, voicePhase, legaPhase }) {
   if (!hub) return { state: connection === "live" ? "IDLE" : "OFFLINE", reason: connection === "live" ? "Se încarcă starea Hub-ului" : "Hub-ul nu răspunde; interfața se reconectează" };
   if (connection !== "live") return { state: "OFFLINE", reason: "Fluxul de evenimente este întrerupt; reconectare și reluare fără pierderi (Last-Event-ID)" };
+  // A decision you owe always wins: a long voice session must never hide a pending approval.
+  if (hub.pendingApprovals > 0) return { state: "WAITING_APPROVAL", reason: `${plural(hub.pendingApprovals, "aprobare așteaptă", "aprobări așteaptă")} decizia ta` };
   if (voicePhase === "listening") return { state: "LISTENING", reason: "Microfonul este activ cât ții apăsat butonul" };
   if (voicePhase === "transcribing") return { state: "TRANSCRIBING", reason: "Se transcrie ce ai spus; textul rămâne editabil" };
-  if (hub.pendingApprovals > 0) return { state: "WAITING_APPROVAL", reason: `${plural(hub.pendingApprovals, "aprobare așteaptă", "aprobări așteaptă")} decizia ta` };
+  if (legaPhase === "connecting") return { state: "WAITING_PROVIDER", label: "Lega se conectează", reason: "Aștept confirmarea sesiunii vocale (nu este progres măsurat)" };
+  if (legaPhase === "user-speaking") return { state: "LISTENING", label: "Lega te ascultă", reason: "Vorbești cu Lega (GPT-Live, audio trimis la OpenAI)" };
+  if (legaPhase === "speaking") return { state: "TRANSCRIBING", label: "Lega vorbește", reason: "Lega îți răspunde; vorbește peste ea ca s-o întrerupi" };
+  if (legaPhase === "delegating") return { state: "EXECUTING", label: "Lega lucrează", reason: "Lega a predat cererea agentului din spate; tot ce are efecte cere click-ul tău" };
+  if (legaPhase === "listening") return { state: "LISTENING", label: "Lega ascultă", reason: "Sesiune Lega activă; spune „Lega, oprește tot” sau apasă Oprește" };
+  return pickWork(hub);
+}
+
+function pickWork(hub) {
   const runs = hub.activeRuns || [];
   const streaming = runs.filter((r) => r.phase === "streaming");
   if (streaming.length) return { state: "EXECUTING", reason: `${plural(streaming.length, "execuție primește", "execuții primesc")} răspuns de la provider` };

@@ -9,7 +9,7 @@ Statusurile rămân separate. **Omisiunile nu se adună la „trecute”.**
 | Provider | Rezultat | Detalii |
 |---|---|---|
 | Claude Code (read-only, `sonnet`) | **PASS_LIVE** | run `run_muo6i9og_50c329673c`: poarta a admis (grant 1 încercare), backup verificat automat înainte, 15 s, răspuns corect (a găsit cazul lipsă: nume format doar din spații), proiectul de test nemodificat (`git status` curat în afară de backupul Hub), cost: estimare client 0,028 USD — nu taxare, ruta e abonamentul |
-| Codex (read-only) | **PENDING — pornit de utilizator** | preflight-ul real (ACL) a fost refuzat de clasificatorul de permisiuni al Claude Code; nu a fost ocolit. Grant `grant_muo6lo5l_7d6f521584` (1 încercare, expiră 16:09Z) și conversația „Validare live M02 — Codex (read-only)” sunt pregătite |
+| Codex (read-only) | **FAIL (transport, înainte de inferență)** | pornit de utilizator din UI la 14:41Z (run `run_muo7r9bp_d1b50893f7`, efort low): autentificare OK (ChatGPT, `prolite`), backup verificat, apoi `thread/start timed out after 120000 ms`. Niciun turn, nicio inferență, nimic consumat. După eșec, ACE-urile DENY aprobate există pe toate căile protejate, iar `~/.codex/.sandbox-bin` nu are niciunul. Cauza e în diagnostic (ipoteză: aplicarea inițială a ACL-urilor pe arbori mari din OneDrive și din `~/.claude`). Grant epuizat, poarta suspendată, înapoi în BUILD_SAFE. Fără retry automat |
 
 Proiectul de test: `Ifrim Digital Proiecte/ifrim-hub-live-test` (validator de formular, 4 teste, git propriu), creat cu `npm run v2:test-project` și înregistrat prin comanda nouă `project.register_test` (M02-SEC-13).
 

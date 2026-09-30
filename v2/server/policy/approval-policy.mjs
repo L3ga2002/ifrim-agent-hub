@@ -20,6 +20,7 @@ export const ACTION_CATALOG = Object.freeze([
   { actionKind: "provider.fileChange", tier: "WORKSPACE_EDIT", effects: "local", policy: "ALWAYS_ASK", loosest: "ASK_ONCE_FOR_TASK", label: "Modificare de fișiere propusă de un model" },
   { actionKind: "provider.command", tier: "DEVELOPMENT_TOOLS", effects: "local", policy: "ALWAYS_ASK", loosest: "ASK_ONCE_FOR_TASK", label: "Comandă propusă de un model" },
   { actionKind: "process.run", tier: "DEVELOPMENT_TOOLS", effects: "local", policy: "ALWAYS_ASK", loosest: "ASK_ONCE_FOR_TASK", label: "Script npm al proiectului" },
+  { actionKind: "lega.run_request", tier: "DEVELOPMENT_TOOLS", effects: "local", policy: "ALWAYS_ASK", loosest: "ALWAYS_ASK", label: "Execuție propusă de Lega (voce)" },
   { actionKind: "browser.inspect", tier: "DEVELOPMENT_TOOLS", effects: "local", policy: "ALWAYS_ASK", loosest: "ASK_ONCE_FOR_TASK", label: "Browser local structurat (Playwright)" },
   { actionKind: "browser.native", tier: "SENSITIVE_ACTIONS", effects: "external", policy: "ALWAYS_ASK", loosest: "ALWAYS_ASK", label: "Browser nativ (Claude in Chrome / Codex browser) pe conturile tale" },
   { actionKind: "computer.visual_control", tier: "SENSITIVE_ACTIONS", effects: "local", policy: "ALWAYS_ASK", loosest: "ALWAYS_ASK", label: "Control vizual al desktopului" },

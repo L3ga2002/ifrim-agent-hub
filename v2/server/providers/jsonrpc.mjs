@@ -5,10 +5,12 @@
  */
 export function createJsonRpcPeer({ write, allowedMethods, onNotification = () => {}, onServerRequest = async () => ({ error: { code: -32601, message: "Not supported by Ifrim Agent Hub" } }), onProtocolError = () => {} }) {
   let nextId = 1;
+  let closed = null; // set by failAll(): the peer is gone, new requests fail at once instead of waiting for a timeout
   const pending = new Map();
 
   function request(method, params = {}, timeoutMs = 30000) {
     if (!allowedMethods.has(method)) return Promise.reject(Object.assign(new Error(`Method ${method} is not allowed by Hub policy`), { category: "policy" }));
+    if (closed) return Promise.reject(Object.assign(new Error(`${method}: ${closed.message}`), { category: "transport", method }));
     const id = nextId++;
     return new Promise((resolve, reject) => {
       const timer = setTimeout(() => {
@@ -47,8 +49,9 @@ export function createJsonRpcPeer({ write, allowedMethods, onNotification = () =
   }
 
   function failAll(error) {
+    closed = error;
     for (const [id, entry] of pending) { clearTimeout(entry.timer); entry.reject(error); pending.delete(id); }
   }
 
-  return { request, notify, handleLine, failAll, pendingCount: () => pending.size };
+  return { request, notify, handleLine, failAll, pendingCount: () => pending.size, isClosed: () => Boolean(closed) };
 }

@@ -6,6 +6,7 @@ import { api, fmt } from "../api.js";
 import { Chip, Dialog, Notice } from "../components/ui.jsx";
 import { ErrorBoundary } from "../components/ErrorBoundary.jsx";
 import { VoiceControl } from "./Voice.jsx";
+import { Lega } from "./Lega.jsx";
 import { Core3D } from "../components/core/Core3D.jsx";
 import { deriveCoreState, CORE_VISUALS } from "../lib/coreState.js";
 
@@ -172,13 +173,14 @@ function MiniAssistant({ go, onClose }) {
   const hub = useHub((s) => s.hub);
   const connection = useHub((s) => s.connection);
   const voicePhase = useHub((s) => s.voicePhase);
-  const core = deriveCoreState({ hub, connection, voicePhase });
+  const legaPhase = useHub((s) => s.legaPhase);
+  const core = deriveCoreState({ hub, connection, voicePhase, legaPhase });
   const mission = hub?.missions?.[0];
   return (
     <aside className="mini-assistant" aria-label="Mini-asistent">
       <div className="mini-core"><Core3D state={core.state} compact /></div>
       <div className="mini-body">
-        <div className="row between"><strong>{CORE_VISUALS[core.state].label}</strong><button className="btn sm icon ghost" onClick={onClose} aria-label="Închide mini-asistentul"><X size={14} /></button></div>
+        <div className="row between"><strong>{core.label}</strong><button className="btn sm icon ghost" onClick={onClose} aria-label="Închide mini-asistentul"><X size={14} /></button></div>
         <div className="faint small mini-reason">{core.reason}</div>
         {mission && <a className="mini-link ellipsis" href={`#/missions/${mission.id}`}><Target size={12} aria-hidden="true" />{mission.title}</a>}
         <div className="row wrap">
@@ -258,6 +260,7 @@ export function Shell({ route, go, children }) {
         <div className="spacer" />
         <button className="btn sm ghost" onClick={() => setPalette(true)} aria-label="Căutare și comenzi (Ctrl+K)"><Search size={15} /><span className="hide-mobile">Caută</span><span className="kbd hide-mobile">Ctrl K</span></button>
         <button className="btn sm ghost hide-mobile" onClick={() => setMini((m) => !m)} aria-pressed={mini} aria-label="Mini-asistent (Alt+M)"><Minimize2 size={15} /></button>
+        <ErrorBoundary label="lega" fallback={() => <span className="chip error" title="Lega a întâmpinat o eroare; sesiunea a fost oprită">Lega: eroare</span>}><Lega go={go} /></ErrorBoundary>
         <VoiceControl go={go} />
         <StopAllButton />
       </header>

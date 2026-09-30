@@ -31,7 +31,7 @@ export function makeProject(dir) {
   return dir;
 }
 
-export async function makeTestHub({ codex = "ok", claude = "ok", port = 0, clock } = {}) {
+export async function makeTestHub({ codex = "ok", claude = "ok", port = 0, clock, configOverrides = {} } = {}) {
   const dataDir = tempDir("hub");
   const projectDir = makeProject(path.join(dataDir, "project"));
   const homeDir = path.join(dataDir, "home");
@@ -46,6 +46,7 @@ export async function makeTestHub({ codex = "ok", claude = "ok", port = 0, clock
       claude: { executable: process.execPath, prefixArgs: [path.join(FIXTURES, "fake-claude.mjs"), `--fake-scenario=${claude}`, `--fake-log=${logs.claude}`] },
     },
     ...(clock ? { now: clock } : {}),
+    ...configOverrides,
   });
   const hub = createHub(config, { homeDir });
   await hub.boot();

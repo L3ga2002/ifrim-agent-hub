@@ -24,6 +24,8 @@ export function ApprovalCard({ approval, onDone }) {
     onDone();
   });
   const execute = useAction(async () => { setResult(await api(`/api/approvals/${approval.id}/execute`, { method: "POST", body: {} })); onDone(); });
+  // Command-scoped approvals (e.g. a run Lega proposed) execute the exact stored command after your click.
+  const runCommand = useAction(async () => { await api(`/api/commands/${approval.scopeId}/execute`, { method: "POST", body: {} }); onDone(); });
   const expired = new Date(approval.expiresAt) <= new Date();
   return (
     <Panel className={approval.status === "pending" ? "accent-approval" : ""} title={approval.actionKind} icon={ShieldCheck} actions={<StatusChip status={expired && approval.status === "pending" ? "expired" : approval.status} />}>
@@ -52,8 +54,11 @@ export function ApprovalCard({ approval, onDone }) {
         {approval.status === "approved" && approval.actionKind === "process.run" && (
           <div className="row"><button className="btn primary" disabled={execute.pending} onClick={execute.run}><Play size={14} />{execute.pending ? "Rulează…" : "Rulează comanda aprobată"}</button></div>
         )}
+        {approval.status === "approved" && approval.scopeType === "command" && approval.actionKind !== "process.run" && (
+          <div className="row"><button className="btn primary" disabled={runCommand.pending} onClick={runCommand.run}><Play size={14} />{runCommand.pending ? "Pornește…" : "Execută acțiunea aprobată"}</button></div>
+        )}
         {result && <Notice tone={result.exitCode === 0 ? "info" : "error"} title={`Cod ieșire ${result.exitCode}, ${Math.round(result.durationMs / 1000)} s`}><pre className="pre">{(result.outputTail || []).slice(-40).join("\n")}</pre></Notice>}
-        <ErrorNotice error={decide.error || execute.error} />
+        <ErrorNotice error={decide.error || execute.error || runCommand.error} />
       </div>
     </Panel>
   );

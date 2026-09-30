@@ -261,3 +261,29 @@
 .sim-action { font: inherit; font-weight: 600; font-size: 11px; padding: 1px 8px; border-radius: 3px; border: 1px solid currentColor; background: transparent; color: inherit; cursor: pointer; }
 .sim-action:disabled { opacity: 0.5; cursor: default; }
 .sim-action:focus-visible { outline: 2px solid currentColor; outline-offset: 1px; }
+
+/* ---------- Lega (voice assistant, GPT-Live) ---------- */
+.lega-btn { gap: 6px; }
+.lega-btn.on { color: var(--accent); border-color: rgba(101, 217, 255, 0.45); background: var(--accent-soft); }
+.lega-clock { font-size: 11px; }
+.lega-stop { gap: 4px; }
+.lega-panel { position: fixed; top: calc(var(--top-h) + 8px); right: 16px; width: min(420px, calc(100vw - 32px)); max-height: calc(100vh - var(--top-h) - 32px);
+  overflow: auto; z-index: var(--z-overlay); display: flex; flex-direction: column; gap: 10px; padding: 14px; background: var(--raised);
+  border: 1px solid var(--line-strong); border-radius: var(--r-l); box-shadow: var(--shadow-pop); }
+.app.is-sim .lega-panel { top: calc(var(--top-h) + 36px); }
+.lega-meters { gap: 10px; align-items: center; }
+.lega-meter { display: inline-flex; align-items: center; gap: 5px; color: var(--text-2); }
+.lega-meter i { display: block; width: 64px; height: 6px; border-radius: 3px; background: var(--surface-2); overflow: hidden; }
+.lega-meter b { display: block; height: 100%; background: var(--accent); transform: scaleX(0); transform-origin: left; transition: transform 80ms linear; }
+.lega-lines { list-style: none; margin: 0; padding: 8px; max-height: 260px; overflow: auto; background: var(--bg); border: 1px solid var(--line); border-radius: var(--r); display: flex; flex-direction: column; gap: 6px; }
+.lega-line { font-size: var(--fs-s); line-height: 1.45; }
+.lega-line .who { font-weight: 600; color: var(--text-2); }
+.lega-line.assistant .who { color: var(--accent); }
+.lega-line.system { color: var(--text-3); font-size: var(--fs-xs); }
+.lega-line.partial { color: var(--text-2); font-style: italic; }
+.lega-proposal { border: 1px solid rgba(233, 181, 109, 0.45); background: var(--approval-soft); border-radius: var(--r); padding: 10px; display: flex; flex-direction: column; gap: 8px; }
+@media (max-width: 767px) {
+  .lega-panel { left: 8px; right: 8px; width: auto; top: auto; bottom: calc(var(--bottom-h) + 8px + env(safe-area-inset-bottom)); max-height: 70vh; }
+  .app.is-sim .lega-panel { top: auto; }
+}
+@media (prefers-reduced-motion: reduce) { .lega-meter b { transition: none; } }

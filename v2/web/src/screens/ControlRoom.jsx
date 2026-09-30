@@ -138,9 +138,10 @@ export default function ControlRoom({ go }) {
   const error = useHub((s) => s.error);
   const connection = useHub((s) => s.connection);
   const voicePhase = useHub((s) => s.voicePhase);
+  const legaPhase = useHub((s) => s.legaPhase);
   const [coreOn] = usePref("core3d", true);
   const [renderer, setRenderer] = useState("webgl");
-  const core = useMemo(() => deriveCoreState({ hub, connection, voicePhase }), [hub, connection, voicePhase]);
+  const core = useMemo(() => deriveCoreState({ hub, connection, voicePhase, legaPhase }), [hub, connection, voicePhase, legaPhase]);
   if (!hub) return <div className="page"><ErrorNotice error={error ? { message: error, status: 0 } : null} /></div>;
   const v = CORE_VISUALS[core.state];
   return (
@@ -151,7 +152,7 @@ export default function ControlRoom({ go }) {
         </div>
         <div className="cr-status">
           <div className="cr-kicker"><CircleDot size={13} aria-hidden="true" />IFRIM DIGITAL AGENT HUB</div>
-          <h1 className="cr-state" aria-live="polite">{v.label}</h1>
+          <h1 className="cr-state" aria-live="polite">{core.label}</h1>
           <p className="cr-reason">{core.reason}</p>
           <div className="row wrap cr-chips">
             <Chip tone={hub.mode === "BUILD_SAFE" ? "info" : "warn"}>{hub.mode}</Chip>
