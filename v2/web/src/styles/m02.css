@@ -287,3 +287,34 @@
   .app.is-sim .lega-panel { top: auto; }
 }
 @media (prefers-reduced-motion: reduce) { .lega-meter b { transition: none; } }
+
+/* ---------- Lega stage (full-screen "JARVIS" view of the company) ---------- */
+.lega-stage { position: fixed; inset: 0; z-index: calc(var(--z-toast) + 10); background: radial-gradient(ellipse at center, #0b1622 0%, #05080c 70%);
+  display: grid; grid-template-columns: minmax(200px, 260px) 1fr minmax(200px, 280px); grid-template-rows: auto 1fr auto; grid-template-areas: "top top top" "left center right" "bottom bottom bottom";
+  color: var(--text); overflow: hidden; }
+.lega-stage-canvas { position: absolute; inset: 0; width: 100%; height: 100%; }
+.stage-top { grid-area: top; position: relative; display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 14px 18px; }
+.stage-brand { display: inline-flex; align-items: center; gap: 8px; font-family: var(--font-display); letter-spacing: 0.18em; font-size: 12px; color: var(--accent); }
+.stage-chips { display: flex; gap: 8px; flex-wrap: wrap; justify-content: center; }
+.stage-chip { font-size: 11px; padding: 3px 10px; border: 1px solid rgba(101, 217, 255, 0.28); border-radius: 999px; color: var(--text-2); background: rgba(8, 11, 16, 0.55); backdrop-filter: blur(6px); }
+.stage-chip.ok { color: var(--ok); border-color: rgba(134, 220, 187, 0.4); }
+.stage-actions { display: flex; gap: 8px; align-items: center; }
+.stage-col { position: relative; margin: 8px 16px; align-self: center; padding: 12px; border: 1px solid rgba(101, 217, 255, 0.16); border-radius: var(--r-l); background: rgba(8, 11, 16, 0.55); backdrop-filter: blur(8px); max-height: 60vh; overflow: auto; }
+.stage-col.left { grid-area: left; } .stage-col.right { grid-area: right; }
+.stage-col ul { list-style: none; margin: 6px 0 10px; padding: 0; display: flex; flex-direction: column; gap: 4px; }
+.stage-col li { display: flex; justify-content: space-between; gap: 8px; font-size: var(--fs-s); color: var(--text-2); }
+.stage-col li.on { color: var(--text); }
+.stage-col li.amber, .stage-col li.amber .link-btn { color: var(--approval); }
+.stage-title { display: flex; align-items: center; gap: 6px; font-size: 11px; letter-spacing: 0.12em; text-transform: uppercase; color: var(--accent); margin-top: 4px; }
+.stage-captions { grid-area: center; position: relative; align-self: end; justify-self: center; text-align: center; max-width: min(820px, 90vw); padding: 0 16px 28px; pointer-events: none; }
+.stage-user { margin: 0 0 6px; color: var(--text-2); font-size: var(--fs-s); }
+.stage-lega { margin: 0; font-size: clamp(18px, 2.2vw, 26px); line-height: 1.35; color: var(--text); text-shadow: 0 0 18px rgba(101, 217, 255, 0.35); }
+.stage-word { margin: 10px 0 0; font-family: var(--font-display); font-weight: 700; font-size: clamp(34px, 5vw, 64px); letter-spacing: 0.04em; color: #fff; text-shadow: 0 0 24px rgba(101, 217, 255, 0.6); }
+.stage-hint { margin: 0; color: var(--text-2); font-size: var(--fs-m); }
+.stage-bottom { grid-area: bottom; position: relative; display: flex; flex-direction: column; align-items: center; gap: 6px; padding: 12px 16px 22px; }
+.stage-mic { min-height: 44px; padding: 0 22px; border-radius: 999px; }
+@media (max-width: 900px) {
+  .lega-stage { grid-template-columns: 1fr; grid-template-areas: "top" "center" "bottom"; }
+  .stage-col { display: none; }
+}
+@media (prefers-reduced-motion: reduce) { .stage-lega, .stage-word { text-shadow: none; } }

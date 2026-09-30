@@ -7,6 +7,7 @@ import { Chip, Dialog, Notice } from "../components/ui.jsx";
 import { ErrorBoundary } from "../components/ErrorBoundary.jsx";
 import { VoiceControl } from "./Voice.jsx";
 import { Lega } from "./Lega.jsx";
+import { LegaStage, useStageToggle } from "../screens/stage/LegaStage.jsx";
 import { Core3D } from "../components/core/Core3D.jsx";
 import { deriveCoreState, CORE_VISUALS } from "../lib/coreState.js";
 
@@ -238,6 +239,7 @@ export function Shell({ route, go, children }) {
   // The floating run indicator must never cover the end of a page: main gets extra bottom room while it shows.
   const activeRunCount = useHub((s) => s.hub?.activeRuns?.length || 0);
   const mainRef = useRef(null);
+  const [stageOpen, setStageOpen] = useStageToggle();
   useEffect(() => {
     const onKey = (e) => {
       if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "k") { e.preventDefault(); setPalette(true); }
@@ -272,6 +274,7 @@ export function Shell({ route, go, children }) {
           </a>
         ))}
       </nav>
+      {stageOpen && <ErrorBoundary label="stage" fallback={() => null}><LegaStage onClose={() => setStageOpen(false)} go={go} /></ErrorBoundary>}
       <main className={`main${activeRunCount ? " has-indicator" : ""}`} id="main" tabIndex={-1} ref={mainRef}>
         {/* A failing screen never takes the shell down: navigation, Stop All and the connection state keep working. */}
         <ErrorBoundary label="screen" resetKey={`${route.name}:${route.id || ""}`} fallback={(error, reset) => (

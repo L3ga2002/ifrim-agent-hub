@@ -1,6 +1,6 @@
 import { useMemo, useState } from "react";
-import { Target, ShieldCheck, AlertTriangle, ArrowRight, MessageSquare, Plus, Building2, HardDrive, Plug, Activity, Network, Layers, Square, CircleDot, Clock } from "lucide-react";
-import { useHub, useResource, usePref } from "../store.js";
+import { Target, ShieldCheck, AlertTriangle, ArrowRight, MessageSquare, Plus, Building2, HardDrive, Plug, Activity, Network, Layers, Square, CircleDot, Clock, Maximize2 } from "lucide-react";
+import { useHub, useResource, usePref, setState } from "../store.js";
 import { fmt } from "../api.js";
 import { Core3D } from "../components/core/Core3D.jsx";
 import { Panel, StatusChip, Empty, Chip, ErrorNotice } from "../components/ui.jsx";
@@ -159,6 +159,7 @@ export default function ControlRoom({ go }) {
             <Chip tone={hub.executionGate.status === "open" ? "ok" : "neutral"}>poartă {hub.executionGate.status === "open" ? "deschisă" : "suspendată"}</Chip>
             {hub.pendingApprovals > 0 && <Chip tone="approval">{hub.pendingApprovals} aprobări</Chip>}
             <span className="faint small">nucleu: {renderer === "webgl" ? "3D (WebGL2)" : "2D (SVG)"}{coreOn ? "" : " · dezactivat din setări"}</span>
+            <button className="btn sm stage-open" onClick={() => setState({ stageOpen: true })} title="Compania ca rețea vie, controlată prin Lega (Alt+J)"><Maximize2 size={13} />Modul Lega</button>
           </div>
           <HappeningPanel hub={hub} core={core} go={go} />
         </div>

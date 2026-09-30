@@ -43,6 +43,25 @@ Textul din fișiere sau din rezultatele agenților este tratat ca **date**. Come
 
   Stop All, retragerea acordului, durata maximă, liniștea prelungită, pierderea fluxului SSE timp de 10 s și închiderea paginii opresc toate sesiunea.
 
+## Modul Lega (ecran complet, „JARVIS”)
+
+Se deschide cu **Alt+J**, cu butonul **Modul Lega** din Control Room sau cu **Ecran complet** din panoul Lega. Se închide cu Esc.
+
+- **Rețeaua vie** e desenată din starea reală a Hub-ului (`lib/stageGraph.js`, testat în `m03-stage.test.mjs`):
+  - Lega în centru;
+  - departamentele și rolurile lor (cele planificate apar estompate);
+  - misiunile (ambră dacă cer atenție);
+  - execuțiile active (luminoase);
+  - aprobările în așteptare (ambră).
+
+  Particulele ambientale sunt decorative și nu au etichete: nu inventează agenți care lucrează.
+- **Reacții:** energia rețelei urmează nivelurile audio reale (microfonul tău și vocea Lega) și starea (execuție, aprobare).
+- **Subtitrări:** subtitrări mari cu ce spui tu și ce spune Lega, plus ultimul cuvânt mare, ca în video.
+- **Panouri:** în stânga compania; în dreapta deciziile și execuțiile, cu click spre ecranele lor. Jos: pornire/oprire Lega; sus: Stop All.
+- **Motion:** reduced motion înseamnă cadre calme, fără rotație. Randarea se oprește când tab-ul e ascuns.
+
+Capturi în `.ifrim/LEGA_EVIDENCE/`.
+
 ## Poarta pentru o sesiune (`gate.evaluateVoice`)
 
 O sesiune pornește doar dacă toate verificările trec:

@@ -1,8 +1,9 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { AudioLines, Mic, MicOff, Square, X, Check, Ban, ShieldCheck, Volume2, VolumeX } from "lucide-react";
+import { AudioLines, Mic, MicOff, Square, X, Check, Ban, ShieldCheck, Volume2, VolumeX, Maximize2 } from "lucide-react";
 import { api, ensureToken } from "../api.js";
 import { useHub, setState, onLive, pushToast, useResource, useAction, refresh } from "../store.js";
 import { Chip, Notice, Checks, ErrorNotice } from "../components/ui.jsx";
+import { legaLevels } from "../lib/legaLevels.js";
 
 /**
  * Lega — the Hub's voice assistant (GPT-Live via Codex, ChatGPT plan).
@@ -28,7 +29,7 @@ function waitIceComplete(pc) {
 }
 
 /** Level meter driven by the real audio signal (RMS), written straight to the DOM (no re-render per frame). */
-function attachMeter(stream, barRef) {
+function attachMeter(stream, barRef, channel) {
   try {
     const ctx = new (window.AudioContext || window.webkitAudioContext)();
     const src = ctx.createMediaStreamSource(stream);
@@ -41,10 +42,11 @@ function attachMeter(stream, barRef) {
       let sum = 0; for (const v of data) { const x = (v - 128) / 128; sum += x * x; }
       const level = Math.min(1, Math.sqrt(sum / data.length) * 4);
       if (barRef.current) barRef.current.style.transform = `scaleX(${level.toFixed(3)})`;
+      if (channel) { legaLevels[channel] = level; legaLevels.updatedAt = performance.now(); }
       raf = requestAnimationFrame(tick);
     };
     raf = requestAnimationFrame(tick);
-    return () => { cancelAnimationFrame(raf); try { src.disconnect(); ctx.close(); } catch { /* closed */ } };
+    return () => { cancelAnimationFrame(raf); if (channel) legaLevels[channel] = 0; try { src.disconnect(); ctx.close(); } catch { /* closed */ } };
   } catch { return () => {}; }
 }
 
@@ -126,7 +128,7 @@ export function Lega({ go }) {
         if (!alive() || !r.audio) return;
         r.audio.srcObject = event.streams[0];
         r.audio.play().catch(() => {});
-        r.meters.push(attachMeter(event.streams[0], legaBar));
+        r.meters.push(attachMeter(event.streams[0], legaBar, "lega"));
       };
       const offer = await pc.createOffer();
       await pc.setLocalDescription(offer);
@@ -142,7 +144,7 @@ export function Lega({ go }) {
       if (!alive()) { dispose(); await stopRequest(result.sessionId, "cancelled-during-start"); return; }
       // The attempt is committed: from here the refs own the microphone and the peer.
       r.mic = mic; r.pc = pc; r.sessionId = result.sessionId; r.pendingId = null; r.committedAt = Date.now();
-      r.meters.push(attachMeter(mic, micBar));
+      r.meters.push(attachMeter(mic, micBar, "mic"));
       setSession({ id: result.sessionId, maxDurationS: result.maxDurationS, voice: result.voice });
       setStatus("connecting");
       let reported = false;
@@ -270,6 +272,14 @@ export function Lega({ go }) {
     setLegaMuted(next);
   };
 
+  // The stage (full-screen view) reads the status and sends start/stop without owning the session.
+  useEffect(() => { setState({ legaStatus: status }); }, [status]);
+  useEffect(() => {
+    const onCommand = (e) => { if (e.detail === "start") { if (statusRef.current === "off") start(); } else if (e.detail === "stop") stop("user"); else if (e.detail === "open") setOpen(true); };
+    window.addEventListener("lega:command", onCommand);
+    return () => window.removeEventListener("lega:command", onCommand);
+  }, [start, stop]);
+
   const running = status === "active" || status === "connecting" || status === "preparing";
   return (
     <>
@@ -288,7 +298,10 @@ export function Lega({ go }) {
           <div className="row between">
             <div className="row"><AudioLines size={16} aria-hidden="true" /><strong>Lega</strong>
               <Chip tone={status === "active" ? "ok" : running ? "info" : "neutral"}>{status === "active" ? "activă" : status === "connecting" || status === "preparing" ? "se conectează" : status === "stopping" ? "se oprește" : "oprită"}</Chip></div>
-            <button className="btn sm icon ghost" onClick={() => setOpen(false)} aria-label="Închide panoul Lega"><X size={14} /></button>
+            <div className="row">
+              <button className="btn sm ghost" onClick={() => setState({ stageOpen: true })} title="Ecran complet (Alt+J)"><Maximize2 size={13} />Ecran complet</button>
+              <button className="btn sm icon ghost" onClick={() => setOpen(false)} aria-label="Închide panoul Lega"><X size={14} /></button>
+            </div>
           </div>
           {legaProposals.map((a) => <ProposalCard key={a.id} approval={a} onDone={() => proposals.reload()} />)}
           {running ? (
