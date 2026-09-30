@@ -1,9 +1,10 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { AudioLines, Mic, MicOff, Square, X, Check, Ban, ShieldCheck, Volume2, VolumeX, Maximize2 } from "lucide-react";
+import { AudioLines, Mic, MicOff, Square, X, Check, Ban, ShieldCheck, Volume2, VolumeX, Maximize2, Globe } from "lucide-react";
 import { api, ensureToken } from "../api.js";
 import { useHub, setState, onLive, pushToast, useResource, useAction, refresh } from "../store.js";
 import { Chip, Notice, Checks, ErrorNotice } from "../components/ui.jsx";
 import { legaLevels } from "../lib/legaLevels.js";
+import { offerGrantPrefill, pointAt } from "../lib/legaBridge.js";
 
 /**
  * Lega — the Hub's voice assistant (GPT-Live via Codex, ChatGPT plan).
@@ -179,7 +180,7 @@ export function Lega({ go }) {
 
   // Pending Lega proposals are approvals: they survive the session, a reload and an SSE drop.
   const proposals = useResource("/api/approvals?status=pending", { reloadOn: (e) => e.type.startsWith("approval.") || e.type.startsWith("command.") || e.type === "lega.proposal" });
-  const legaProposals = (proposals.data?.approvals || []).filter((a) => a.actionKind === "lega.run_request");
+  const legaProposals = (proposals.data?.approvals || []).filter((a) => a.actionKind === "lega.run_request" || a.actionKind === "lega.mission_request");
   const reloadProposals = useRef(proposals.reload); reloadProposals.current = proposals.reload;
 
   // Live events from the Hub, for THIS tab's session only.
@@ -214,8 +215,16 @@ export function Lega({ go }) {
     }
     else if (e.type === "lega.delegation") setLines((ls) => [...ls.slice(-60), { id: `d-${Date.now()}`, role: "system", text: `→ Predat agentului: „${e.text}”`, final: true }]);
     else if (e.type === "lega.navigate" && e.path) go(e.path);
+    // "Arată-mi unde…": open the screen, then the arrow finds the marked element once it is rendered.
+    else if (e.type === "lega.point" && e.target) { if (e.path) go(e.path); pointAt(e.target, e.label); setAnnounce(`Lega arată: ${e.label || e.target}`); }
+    // The grant form is only filled in; creating the grant stays the owner's click on "Creează grant".
+    else if (e.type === "lega.prefill" && e.form) {
+      go(e.path || "/integrations"); offerGrantPrefill(e.form); pointAt(e.target || "grant-create", e.label);
+      setAnnounce("Lega a completat formularul de grant: verifică valorile și apasă tu Creează grant.");
+    }
+    else if (e.type === "lega.web") setLines((ls) => [...ls.slice(-60), { id: `w-${Date.now()}-${ls.length}`, role: "system", text: `Caut pe internet${e.text ? `: „${e.text}”` : "…"}`, final: true }]);
     else if (e.type === "lega.silence") { if (r.audio) r.audio.muted = true; setLegaMuted(true); }
-    else if (e.type === "lega.proposal") { reloadProposals.current(); setOpen(true); setAnnounce("Lega propune o execuție: verifică și aprobă sau refuză pe ecran."); }
+    else if (e.type === "lega.proposal") { reloadProposals.current(); setOpen(true); setAnnounce(e.kind === "mission" ? "Lega propune o misiune: verifică și aprobă sau refuză pe ecran." : "Lega propune o execuție: verifică și aprobă sau refuză pe ecran."); }
     else if (e.type === "lega.notice") pushToast(`lega-notice-${Date.now()}`, e.level === "error" ? "error" : "warning", e.text);
   }), [closeLocal, go]);
 
@@ -283,7 +292,7 @@ export function Lega({ go }) {
   const running = status === "active" || status === "connecting" || status === "preparing";
   return (
     <>
-      <button className={`btn sm lega-btn ${running ? "on" : ""}`} onClick={() => setOpen((o) => !o)} aria-expanded={open} {...(open ? { "aria-controls": "lega-panel" } : {})} title="Lega — asistentul vocal (Alt+L)">
+      <button className={`btn sm lega-btn ${running ? "on" : ""}`} data-lega-target="lega-button" onClick={() => setOpen((o) => !o)} aria-expanded={open} {...(open ? { "aria-controls": "lega-panel" } : {})} title="Lega — asistentul vocal (Alt+L)">
         <AudioLines size={15} aria-hidden="true" />
         <span className="hide-mobile">Lega</span>
         {status === "active" && <span className="mono lega-clock">{fmtClock(elapsed)}</span>}
@@ -354,6 +363,8 @@ function ActiveView({ status, elapsed, session, micMuted, legaMuted, onMic, onSo
  */
 function ProposalCard({ approval, onDone }) {
   const p = approval.payload || {};
+  const projectList = useResource("/api/projects", { reloadOn: (e) => e.type.startsWith("project.") });
+  const projectLabel = (id) => (projectList.data?.projects || []).find((x) => x.id === id)?.name || id;
   const expired = new Date(approval.expiresAt) <= new Date();
   const run = useAction(async () => {
     if (approval.status === "pending") await api(`/api/approvals/${approval.id}/decide`, { method: "POST", body: { decision: "approved", displayedHash: approval.payloadHash } });
@@ -364,16 +375,31 @@ function ProposalCard({ approval, onDone }) {
     await api(`/api/approvals/${approval.id}/decide`, { method: "POST", body: { decision: "rejected", displayedHash: approval.payloadHash, note: "Refuzat din panoul Lega" } });
     onDone(); refresh();
   });
+  const mission = approval.actionKind === "lega.mission_request";
   return (
     <div className="lega-proposal" role="alert">
-      <div className="row between"><strong>Lega propune o execuție</strong><Chip tone="approval">{expired ? "expirată" : "așteaptă click-ul tău"}</Chip></div>
-      <dl className="kv small">
-        <dt>Agent</dt><dd>{p.provider === "claude" ? "Claude Code" : "Codex"} · {p.access === "workspace-write" ? <strong>scriere în workspace</strong> : "doar citire"}</dd>
-        <dt>Proiect</dt><dd className="mono">{p.projectId}</dd>
-      </dl>
-      <pre className="pre" style={{ maxHeight: 180 }}>{p.task}</pre>
+      <div className="row between"><strong>{mission ? "Lega propune o misiune" : "Lega propune o execuție"}</strong><Chip tone="approval">{expired ? "expirată" : "așteaptă click-ul tău"}</Chip></div>
+      {mission ? (
+        <>
+          <dl className="kv small">
+            <dt>Misiune</dt><dd><strong>{p.title}</strong> · {p.kind}</dd>
+            <dt>Proiect</dt><dd className="mono">{projectLabel(p.projectId)}</dd>
+          </dl>
+          <pre className="pre" style={{ maxHeight: 150 }}>{p.objective}</pre>
+          {p.acceptance?.length > 0 && <ul className="small" style={{ margin: 0, paddingLeft: 18 }}>{p.acceptance.map((a, i) => <li key={i}>{a}</li>)}</ul>}
+          <p className="faint small" style={{ margin: 0 }}>Se creează ca ciornă: nicio execuție nu pornește din ea fără pașii tăi.</p>
+        </>
+      ) : (
+        <>
+          <dl className="kv small">
+            <dt>Agent</dt><dd>{p.provider === "claude" ? "Claude Code" : "Codex"} · {p.access === "workspace-write" ? <strong>scriere în workspace</strong> : "doar citire"}</dd>
+            <dt>Proiect</dt><dd className="mono">{projectLabel(p.projectId)}</dd>
+          </dl>
+          <pre className="pre" style={{ maxHeight: 180 }}>{p.task}</pre>
+        </>
+      )}
       <div className="row">
-        <button className="btn sm primary" disabled={expired || run.pending || reject.pending} onClick={run.run}><Check size={14} />Aprobă și pornește</button>
+        <button className="btn sm primary" disabled={expired || run.pending || reject.pending} onClick={run.run}><Check size={14} />{mission ? "Aprobă și creează" : "Aprobă și pornește"}</button>
         <button className="btn sm ghost" disabled={expired || run.pending || reject.pending} onClick={reject.run}><Ban size={14} />Refuză</button>
       </div>
       <ErrorNotice error={run.error || reject.error} />
@@ -387,6 +413,7 @@ function ReadyView({ onStart, disabled }) {
   const [text, setText] = useState("");
   const consent = useAction(async () => { await api("/api/lega/consent", { method: "POST", body: { confirmText: text } }); setText(""); status.reload(); });
   const saveVoice = useAction(async (voice) => { await api("/api/settings", { method: "PATCH", body: { lega: { voice } } }); status.reload(); });
+  const saveWeb = useAction(async (webSearch) => { await api("/api/settings", { method: "PATCH", body: { lega: { webSearch } } }); status.reload(); });
   if (status.loading) return <p className="faint small">Verific dacă Lega poate porni…</p>;
   if (status.error) return <ErrorNotice error={status.error} onRetry={status.reload} />;
   const d = status.data;
@@ -405,6 +432,15 @@ function ReadyView({ onStart, disabled }) {
       <label className="field"><span>Vocea Lega</span>
         <select className="select" value={d.settings.voice} onChange={(e) => saveVoice.run(e.target.value)}>{d.voices.map((v) => <option key={v} value={v}>{v}</option>)}</select>
       </label>
+      <label className="field"><span><Globe size={13} aria-hidden="true" /> Căutare pe internet</span>
+        <select className="select" value={d.settings.webSearch || "disabled"} disabled={saveWeb.pending} onChange={(e) => saveWeb.run(e.target.value)}>
+          <option value="cached">Pornită: indexul OpenAI (recomandat)</option><option value="indexed">Pornită: căutare actuală, pagini doar din index</option>
+          <option value="live">Pornită: orice pagină, live (risc mai mare)</option><option value="disabled">Oprită</option>
+        </select>
+      </label>
+      {d.settings.webSearch === "live" && <Notice tone="warn" title="Căutare live">Lega poate deschide orice pagină. O pagină sau o notiță de proiect cu instrucțiuni ascunse l-ar putea face să trimită text din Hub spre acea pagină. Nimic nu se execută fără click-ul tău, dar pentru lucru zilnic alege indexul OpenAI.</Notice>}
+      <p className="faint small" style={{ margin: 0 }}>Se aplică la următoarea pornire. Căutările apar în transcriere; ce vine de pe internet e tratat ca informație, nu ca instrucțiuni.</p>
+      <ErrorNotice error={saveVoice.error || saveWeb.error} />
       {failed.length > 0 ? (
         <Notice tone="warn" title="Lega nu poate porni încă">
           <Checks checks={failed} />

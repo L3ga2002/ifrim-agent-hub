@@ -3,7 +3,7 @@ import { HubError } from "../core/errors.mjs";
 import { newId } from "../core/ids.mjs";
 import { ATTESTATION_TEXT } from "../policy/billing.mjs";
 import { CODEX_ACL_CONSENT_TEXT } from "../policy/isolation.mjs";
-import { LEGA_CONSENT_TEXT, LEGA_CONSENT_VERSION, LEGA_VOICES, LEGA_TASK_MAX } from "../policy/lega-policy.mjs";
+import { LEGA_CONSENT_TEXT, LEGA_CONSENT_VERSION, LEGA_VOICES, LEGA_TASK_MAX, LEGA_WEB_SEARCH_MODES, LEGA_DEFAULTS } from "../policy/lega-policy.mjs";
 import { APPROVAL_POLICIES } from "../policy/approval-policy.mjs";
 import { MISSION_TEMPLATES } from "../domain/missions.mjs";
 import { MEMORY_SCOPES, MEMORY_TYPES } from "../domain/memory.mjs";
@@ -34,6 +34,19 @@ export function registerCommands(commands, hub) {
   const need = (value, what) => { if (!value) throw new HubError("not_found", `${what} not found`); return value; };
   const reg = (type, def) => commands.register(type, def);
 
+  /** Mission from a template + its canonical conversation + company links. Shared by mission.create and Lega's approved proposals. */
+  function createMission(input, actor) {
+    // Accepts the project id or slug; everything is stored under the canonical project id.
+    const project = need(projects.get(input.projectId), "Project");
+    if (input.departmentKey) need(company.department(input.departmentKey), "Department");
+    const conversation = conversations.create({ projectId: project.id, title: input.title }, actor);
+    const mission = missions.create({ ...input, projectId: project.id, conversationId: conversation.id }, actor);
+    conversations.update(conversation.id, { activeMissionId: mission.id }, actor);
+    const deptKey = input.departmentKey || MISSION_TEMPLATES[input.kind].department || departmentForRole(hub, MISSION_TEMPLATES[input.kind].tasks[0].role);
+    company.linkMission(mission.id, { departmentId: deptKey ? company.department(deptKey)?.id || null : null, goalId: input.goalId || null, objectiveId: input.objectiveId || null }, actor);
+    return missions.get(mission.id);
+  }
+
   // ---------- projects ----------
   reg("projects.sync", { describe: "Resincronizează proiectele din PROJECTS.md (citire; scrie doar registrul Hub)", async: true, schema: {},
     execute: async () => ({ projects: projects.syncFromRegistry() }) });
@@ -42,6 +55,17 @@ export function registerCommands(commands, hub) {
     execute: (input, ctx) => projects.registerTest(input, ctx.actor) });
   reg("project.retire_test", { describe: "Retrage execuția unui proiect de test (fișierele și istoricul rămân)", schema: { projectId: { required: true, max: 80 } },
     channels: ["ui", "test", "voice", "companion"], execute: (input, ctx) => projects.retireTest(input.projectId, ctx.actor) });
+  // Enabling runs on a company project is the owner's decision: UI only, with the project's exact name typed. Withdrawing
+  // is fail-safe, so voice and companion may do it too; it also revokes that project's active run grants.
+  reg("project.execution.enable", { describe: "Permite execuții de agenți pe un proiect al companiei (tastezi numele exact)", schema: { projectId: { required: true, max: 80 }, confirmName: { required: true, max: 200 } },
+    execute: (input, ctx) => projects.setExecution(input.projectId, true, { confirmName: input.confirmName, actor: ctx.actor }) });
+  reg("project.execution.disable", { describe: "Retrage execuțiile de pe un proiect (revocă și grant-urile lui active)", schema: { projectId: { required: true, max: 80 }, reason: { max: 300, default: "" } },
+    channels: ["ui", "test", "voice", "companion"],
+    execute: (input, ctx) => {
+      const project = projects.setExecution(input.projectId, false, { actor: ctx.actor, reason: input.reason });
+      const revoked = grants.activeForProject(project.id).filter((g) => g.kind !== "voice").map((g) => grants.revoke(g.id, ctx.actor).id);
+      return { ...project, revokedGrants: revoked };
+    } });
 
   // ---------- conversations & runs ----------
   reg("conversation.create", { describe: "Conversație nouă într-un proiect", schema: { projectId: { required: true }, title: { required: true, min: 2, max: 160 } },
@@ -78,17 +102,7 @@ export function registerCommands(commands, hub) {
   reg("mission.create", { describe: "Misiune din șablon (+ conversație canonică)", schema: { projectId: { required: true }, kind: { enum: Object.keys(MISSION_TEMPLATES), required: true },
     title: { required: true, min: 3, max: 160 }, objective: { required: true, min: 5, max: 4000 }, acceptance: { type: "array", max: 30, items: "string" }, constraints: { type: "array", max: 30, items: "string" },
     priority: { type: "integer", min: 1, max: 3 }, departmentKey: { max: 40 }, goalId: { max: 80 }, objectiveId: { max: 80 } },
-    execute: (input, ctx) => {
-      // Accepts the project id or slug; everything is stored under the canonical project id.
-      const project = need(projects.get(input.projectId), "Project");
-      const conversation = conversations.create({ projectId: project.id, title: input.title }, ctx.actor);
-      const mission = missions.create({ ...input, projectId: project.id, conversationId: conversation.id }, ctx.actor);
-      conversations.update(conversation.id, { activeMissionId: mission.id }, ctx.actor);
-      if (input.departmentKey) need(company.department(input.departmentKey), "Department");
-      const deptKey = input.departmentKey || MISSION_TEMPLATES[input.kind].department || departmentForRole(hub, MISSION_TEMPLATES[input.kind].tasks[0].role);
-      company.linkMission(mission.id, { departmentId: deptKey ? company.department(deptKey)?.id || null : null, goalId: input.goalId || null, objectiveId: input.objectiveId || null }, ctx.actor);
-      return missions.get(mission.id);
-    } });
+    execute: (input, ctx) => createMission(input, ctx.actor) });
   reg("task.command", { describe: "Comandă pe task (coadă, pauză, verificare…)", schema: { taskId: { required: true }, action: { enum: ["queue", "pause", "resume", "cancel", "block", "retry", "verify", "reject"], required: true },
     reason: { max: 500 }, evidence: { type: "object" } }, channels: ["ui", "test", "companion"],
     execute: (input, ctx) => {
@@ -139,7 +153,9 @@ export function registerCommands(commands, hub) {
           if (!LEGA_VOICES.includes(merged.voice)) throw new HubError("validation", "Unknown Lega voice");
           if (!(Number.isInteger(merged.maxSessionMinutes) && merged.maxSessionMinutes >= 1 && merged.maxSessionMinutes <= 30)) throw new HubError("validation", "Lega session cap must be 1..30 minutes");
           if (!(Number.isInteger(merged.idleTimeoutS) && merged.idleTimeoutS >= 30 && merged.idleTimeoutS <= 600)) throw new HubError("validation", "Lega idle timeout must be 30..600 s");
-          settings.set("lega", { voice: merged.voice, maxSessionMinutes: merged.maxSessionMinutes, idleTimeoutS: merged.idleTimeoutS }, ctx.actor);
+          const webSearch = merged.webSearch ?? LEGA_DEFAULTS.webSearch;
+          if (!LEGA_WEB_SEARCH_MODES.includes(webSearch)) throw new HubError("validation", `Lega web search must be one of ${LEGA_WEB_SEARCH_MODES.join(", ")}`);
+          settings.set("lega", { voice: merged.voice, maxSessionMinutes: merged.maxSessionMinutes, idleTimeoutS: merged.idleTimeoutS, webSearch }, ctx.actor);
           continue;
         }
         settings.set(key, value, ctx.actor);
@@ -425,6 +441,17 @@ export function registerCommands(commands, hub) {
         if (input.legaSessionId) hub.lega.proposalFailed(input.legaSessionId, String(error.message).slice(0, 200)).catch(() => {});
         throw error;
       }
+    } });
+  reg("lega.propose_mission", { describe: "Misiune propusă de Lega: se creează (ciornă, fără execuții) doar după aprobarea ta prin click",
+    schema: { projectId: { required: true, max: 80 }, kind: { enum: Object.keys(MISSION_TEMPLATES), required: true }, title: { required: true, min: 3, max: 160 },
+      objective: { required: true, min: 5, max: LEGA_TASK_MAX }, acceptance: { type: "array", max: 10, items: "string" }, legaSessionId: { max: 80 } },
+    channels: ["voice", "test"],
+    action: (input) => ({ actionKind: "lega.mission_request", target: `${input.projectId}:${input.kind}` }),
+    execute: (input, ctx) => {
+      const acceptance = (input.acceptance || []).map((a) => String(a).slice(0, 300));
+      const mission = createMission({ projectId: input.projectId, kind: input.kind, title: input.title, objective: input.objective, acceptance }, ctx.actor);
+      if (input.legaSessionId) hub.lega.announce(input.legaSessionId, `Misiunea „${input.title.slice(0, 60)}” a fost creată, ca ciornă.`).catch(() => {});
+      return mission;
     } });
   reg("voice.command", { describe: "Comandă vocală (transcrierea nu poate aproba nimic)", async: true, schema: { transcript: { required: true, max: 2000 } }, channels: ["ui", "test", "voice"],
     execute: async (input) => {

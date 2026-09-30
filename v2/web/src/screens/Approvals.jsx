@@ -76,9 +76,11 @@ export default function Approvals() {
           {[["pending", "În așteptare"], ["approved", "Aprobate"], ["all", "Toate"]].map(([k, v]) => <button key={k} aria-pressed={filter === k} onClick={() => setFilter(k)}>{v}</button>)}
         </div>
       </div>
-      {loading ? <Loading lines={4} /> : error ? <ErrorNotice error={error} onRetry={reload} /> : list.length ? (
-        <div className="grid two">{list.map((a) => <ApprovalCard key={a.id} approval={a} onDone={reload} />)}</div>
-      ) : <Panel><Empty title={filter === "pending" ? "Nimic nu așteaptă aprobarea ta" : "Nicio aprobare"}>Cererile apar când un provider cere o comandă sau o modificare, sau când pregătești o comandă locală.</Empty></Panel>}
+      <div data-lega-target="approvals-list">
+        {loading ? <Loading lines={4} /> : error ? <ErrorNotice error={error} onRetry={reload} /> : list.length ? (
+          <div className="grid two">{list.map((a) => <ApprovalCard key={a.id} approval={a} onDone={reload} />)}</div>
+        ) : <Panel><Empty title={filter === "pending" ? "Nimic nu așteaptă aprobarea ta" : "Nicio aprobare"}>Cererile apar când un provider cere o comandă sau o modificare, sau când pregătești o comandă locală.</Empty></Panel>}
+      </div>
     </div>
   );
 }

@@ -40,7 +40,9 @@ export function createGate({ db, settings, projects, backups, leases, grants, br
     add("mode", mode === "LIVE_VALIDATION" || mode === "OPERATIONAL", mode === "BUILD_SAFE" ? "BUILD_SAFE: fără inferență și fără efecte externe" : mode);
 
     const project = projects.get(projectId);
-    add("project_scope", Boolean(project?.executionAllowed), project ? (project.executionAllowed ? project.name : `${project.name} nu este activat pentru execuție V2`) : "Proiect necunoscut");
+    // The folder is checked again at every run: a link or junction swapped in after the owner enabled it is refused.
+    const folder = project?.executionAllowed && projects.executionProblem ? projects.executionProblem(project) : null;
+    add("project_scope", Boolean(project?.executionAllowed) && !folder, project ? (!project.executionAllowed ? `${project.name} nu este activat pentru execuție V2` : folder ? `${project.name}: ${folder}` : project.name) : "Proiect necunoscut");
 
     if (mode === "LIVE_VALIDATION") {
       const grant = grantId ? grants.get(grantId) : grants.findUsable(provider, projectId, access);

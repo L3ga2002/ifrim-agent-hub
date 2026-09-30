@@ -96,7 +96,9 @@ export function createGrants({ db, bus, clock }) {
   }
 
   const list = () => db.prepare("SELECT * FROM live_grants ORDER BY created_at DESC LIMIT 50").all().map(rowTo);
-  return { create, get, findUsable, problem, consumeAttempt, refundAttempt, revoke, revokeAll, list };
+  /** Every active grant of one project (not only the latest 50), e.g. to revoke them when its runs are withdrawn. */
+  const activeForProject = (projectId) => db.prepare("SELECT * FROM live_grants WHERE project_id = ? AND status = 'active'").all(projectId).map(rowTo);
+  return { create, get, findUsable, problem, consumeAttempt, refundAttempt, revoke, revokeAll, list, activeForProject };
 }
 
 /** Latest provider inspections (installation + probe). Stored without identities or secrets. */

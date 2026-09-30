@@ -119,7 +119,7 @@ export function Composer({ conversation, project, handoffReady, onSent }) {
         </ul>
       )}
       <label className="sr-only" htmlFor="composer-text">Mesaj</label>
-      <textarea id="composer-text" className="textarea" value={draft} onChange={(e) => setDraft(e.target.value)}
+      <textarea id="composer-text" className="textarea" data-lega-target="focus-composer" value={draft} onChange={(e) => setDraft(e.target.value)}
         placeholder={buildSafe ? "Scrie și salvează. În BUILD_SAFE nu pornește niciun model; ciorna rămâne locală până o trimiți." : "Scrie cererea. Ciorna se păstrează local până o trimiți."}
         onKeyDown={(e) => { if ((e.ctrlKey || e.metaKey) && e.key === "Enter") { e.preventDefault(); send.run(false); } }} />
       <div className="composer-bar">

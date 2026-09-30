@@ -7,6 +7,7 @@ import { Chip, Dialog, Notice } from "../components/ui.jsx";
 import { ErrorBoundary } from "../components/ErrorBoundary.jsx";
 import { VoiceControl } from "./Voice.jsx";
 import { Lega } from "./Lega.jsx";
+import { Spotlight } from "./Spotlight.jsx";
 import { LegaStage, useStageToggle } from "../screens/stage/LegaStage.jsx";
 import { Core3D } from "../components/core/Core3D.jsx";
 import { deriveCoreState, CORE_VISUALS } from "../lib/coreState.js";
@@ -25,7 +26,7 @@ export function StopAllButton({ compact = false, className = "" }) {
   };
   return (
     <>
-      <button className={`btn danger sm ${className}`} onClick={() => { setResult(null); setOpen(true); }} title="Oprește lucrul nou și întrerupe execuțiile controlabile" aria-label="Stop All">
+      <button className={`btn danger sm ${className}`} data-lega-target="stop-all" onClick={() => { setResult(null); setOpen(true); }} title="Oprește lucrul nou și întrerupe execuțiile controlabile" aria-label="Stop All">
         <Square size={14} fill="currentColor" aria-hidden="true" />{!compact && <span className="hide-mobile">Stop All</span>}
       </button>
       {open && (
@@ -275,6 +276,7 @@ export function Shell({ route, go, children }) {
         ))}
       </nav>
       {stageOpen && <ErrorBoundary label="stage" fallback={() => null}><LegaStage onClose={() => setStageOpen(false)} go={go} /></ErrorBoundary>}
+      <ErrorBoundary label="spotlight" fallback={() => null}><Spotlight /></ErrorBoundary>
       <main className={`main${activeRunCount ? " has-indicator" : ""}`} id="main" tabIndex={-1} ref={mainRef}>
         {/* A failing screen never takes the shell down: navigation, Stop All and the connection state keep working. */}
         <ErrorBoundary label="screen" resetKey={`${route.name}:${route.id || ""}`} fallback={(error, reset) => (

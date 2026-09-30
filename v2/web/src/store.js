@@ -6,6 +6,8 @@ const listeners = new Set();
 let state = { hub: null, loading: true, error: null, connection: "connecting", toasts: [], voicePhase: "idle", legaPhase: "off", lastUpdate: null };
 const emit = () => { for (const l of listeners) l(); };
 export const setState = (patch) => { state = { ...state, ...(typeof patch === "function" ? patch(state) : patch) }; emit(); };
+/** Current store snapshot for non-React code (e.g. an error boundary deciding whether a reload is safe). */
+export const getState = () => state;
 export const useHub = (selector = (s) => s) => useSyncExternalStore((l) => { listeners.add(l); return () => listeners.delete(l); }, () => selector(state));
 
 const eventListeners = new Set();

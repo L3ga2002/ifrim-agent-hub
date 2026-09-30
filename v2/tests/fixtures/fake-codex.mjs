@@ -152,13 +152,13 @@ async function realtime(msg) {
   }
 }
 
-async function delegatedTurn(tool, args) {
-  const turnId = "turn_lega_1";
+async function delegatedTurn(tool, args, n = 1) {
+  const turnId = `turn_lega_${n}`;
   // Real ordering: the turn is admitted BEFORE the client sees the handoff item.
   send({ method: "turn/started", params: { threadId, turn: { id: turnId, status: "inProgress", items: [] } } });
   send({ method: "thread/realtime/itemAdded", params: { threadId, item: { type: "handoff_request", handoff_id: "h1", item_id: "i1", input_transcript: `fake: ${tool}`, active_transcript: [] } } });
-  const reply = await serverRequest("item/tool/call", { threadId, turnId, callId: "call_1", namespace: "lega", tool, arguments: args });
-  log({ toolReply: reply.result || reply.error });
+  const reply = await serverRequest("item/tool/call", { threadId, turnId, callId: `call_${n}`, namespace: "lega", tool, arguments: args });
+  log({ toolReply: reply.result || reply.error, tool });
   const text = `[FINAL] Rezultat simulat pentru ${tool}: ${reply.result?.contentItems?.[0]?.text || ""}`;
   send({ method: "item/completed", params: { threadId, turnId, item: { type: "agentMessage", id: "m1", text } } });
   send({ method: "turn/completed", params: { threadId, turn: { id: turnId, status: "completed", items: [] } } });
@@ -175,6 +175,20 @@ async function legaScript() {
   if (scenario === "lega-navigate-tool") return delegatedTurn("navigate", { screen: "misiuni" });
   if (scenario === "lega-propose") return delegatedTurn("propose_run", { project: legaProject, provider: "codex", task: "Citește README și rezumă-l." });
   if (scenario === "lega-unknown-tool") return delegatedTurn("approve_everything", {});
+  // `lega-calls:<base64url JSON [{tool, args}]>`: one delegated turn per call, in order (each reply is logged with its tool).
+  if (scenario.startsWith("lega-calls:")) {
+    const calls = JSON.parse(Buffer.from(scenario.slice("lega-calls:".length), "base64url").toString("utf8"));
+    for (let i = 0; i < calls.length; i += 1) { await delegatedTurn(calls[i].tool, calls[i].args || {}, i + 1); await sleep(50); }
+    return log({ callsDone: calls.length });
+  }
+  if (scenario === "lega-web") {
+    const turnId = "turn_web";
+    send({ method: "turn/started", params: { threadId, turn: { id: turnId, status: "inProgress", items: [] } } });
+    send({ method: "item/started", params: { threadId, turnId, item: { type: "webSearch", id: "ws1", query: "" } } });
+    send({ method: "item/completed", params: { threadId, turnId, item: { type: "webSearch", id: "ws1", query: "curs euro azi token sk-proj-FAKEFAKEFAKEFAKEFAKEFAKE1234", action: { type: "search", query: "curs euro azi" } } } });
+    send({ method: "item/completed", params: { threadId, turnId, item: { type: "agentMessage", id: "m1", text: "[FINAL] Cursul simulat este 5 lei." } } });
+    return send({ method: "turn/completed", params: { threadId, turn: { id: turnId, status: "completed", items: [] } } });
+  }
   if (scenario === "lega-forbidden") {
     send({ method: "turn/started", params: { threadId, turn: { id: "turn_bad", status: "inProgress", items: [] } } });
     return send({ method: "item/started", params: { threadId, turnId: "turn_bad", item: { type: "commandExecution", id: "c1", command: "type secrets.txt", status: "inProgress" } } });

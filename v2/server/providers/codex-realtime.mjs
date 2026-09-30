@@ -17,8 +17,9 @@ import { legaDynamicTools, legaAgentInstructions, legaVoicePrompt, LEGA_VOICES }
  *   no active server before voice starts; subagents are off (`agents.enabled=false`);
  * - transport is always WebRTC v3 (the default websocket transport needs an API key); the browser owns the peer connection
  *   and the audio never passes through the Hub.
- * Anything other than messages, reasoning, plans and `lega` tool calls on the Lega thread (or any activity on another
- * thread) is a violation: the process is killed at once.
+ * - web search (hosted, no local reach) only when the owner has it on for Lega; every search is shown and logged.
+ * Anything other than messages, reasoning, plans, `lega` tool calls and allowed web searches on the Lega thread (or any
+ * activity on another thread) is a violation: the process is killed at once.
  */
 export const CODEX_VOICE_ALLOWED_METHODS = new Set([
   "initialize", "account/read", "account/rateLimits/read", "thread/start", "mcpServerStatus/list",
@@ -38,11 +39,21 @@ export function mcpDisableArgs(names = []) {
   return names.filter((n) => MCP_NAME_ADDRESSABLE.test(n)).flatMap((n) => ["-c", `mcp_servers.${n}.enabled=false`]);
 }
 
-/** Item types allowed on the Lega thread; every other type (commands, files, MCP, web, images, subagents, review) ends the session. */
+/**
+ * Item types allowed on the Lega thread; every other type (commands, files, MCP, images, subagents, review) ends the session.
+ * `webSearch` is added only while the owner has web search on for Lega (a hosted tool that reaches no local file).
+ */
 export const LEGA_ALLOWED_ITEMS = new Set(["agentMessage", "reasoning", "dynamicToolCall", "userMessage", "plan", "contextCompaction", "functionCallOutput", "hookPrompt", "sleep"]);
+export const legaAllowedItems = (webSearch = "disabled") => (webSearch === "disabled" ? LEGA_ALLOWED_ITEMS : new Set([...LEGA_ALLOWED_ITEMS, "webSearch"]));
+const webSearchText = (item) => {
+  const action = item.action || {};
+  const text = action.type === "openPage" ? `deschide ${action.url || ""}` : action.type === "findInPage" ? `caută „${action.pattern || ""}” în ${action.url || "pagină"}` : item.query || action.query || (action.queries || []).join(" · ");
+  return redactText(String(text || "")).replace(/\s+/g, " ").trim().slice(0, 300);
+};
 const V2_APPROVALS = new Set(["item/commandExecution/requestApproval", "item/fileChange/requestApproval"]);
 const LEGACY_APPROVALS = new Set(["execCommandApproval", "applyPatchApproval"]);
 const TOOL_REPLY_TIMEOUT_MS = 5000;
+const TOOL_REPLY_MAX = 6000;
 
 const withTimeout = (promise, ms, label) => Promise.race([promise, new Promise((_, reject) => setTimeout(() => reject(Object.assign(new Error(`${label} timed out after ${ms} ms`), { category: "transport", timeout: true })), ms))]);
 const cancelled = () => Object.assign(new Error("Pornirea Lega a fost anulată"), { category: "cancelled", preInference: true });
@@ -53,8 +64,9 @@ export function createCodexRealtime({ codex, supervisor }) {
    * answers `lega.*` tool calls ({ok, text}); `admitUsage` applies the plan-reserve ceiling; `signal` cancels a start in
    * flight (the process is killed and no realtime call is created after the abort).
    */
-  async function openVoice({ sessionId, cwd, offerSdp, voice = "cove", projects = [], ownerName = "", mcpServerNames = [], signal, onEvent = () => {}, onToolCall, admitUsage }) {
+  async function openVoice({ sessionId, cwd, offerSdp, voice = "cove", projects = [], context = {}, webSearch = "disabled", ownerName = "", mcpServerNames = [], signal, onEvent = () => {}, onToolCall, admitUsage }) {
     if (!LEGA_VOICES.includes(voice)) throw Object.assign(new Error(`Unsupported voice ${voice}`), { category: "validation", preInference: true });
+    const allowedItems = legaAllowedItems(webSearch);
     const key = `voice-${sessionId}`;
     let threadId = "";
     let stopped = false;
@@ -96,7 +108,8 @@ export function createCodexRealtime({ codex, supervisor }) {
         case "item/agentMessage/delta": if (params.turnId) turnText.set(params.turnId, (turnText.get(params.turnId) || "") + String(params.delta || "")); break;
         case "item/started":
         case "item/completed":
-          if (params.item?.type && !LEGA_ALLOWED_ITEMS.has(params.item.type)) { violation(params.item.type); break; }
+          if (params.item?.type && !allowedItems.has(params.item.type)) { violation(params.item.type); break; }
+          if (method === "item/completed" && params.item?.type === "webSearch") onEvent({ type: "web.search", text: webSearchText(params.item) });
           if (method === "item/completed" && params.item?.type === "agentMessage" && typeof params.item.text === "string" && params.turnId) turnText.set(params.turnId, params.item.text);
           break;
         case "turn/completed": {
@@ -120,7 +133,7 @@ export function createCodexRealtime({ codex, supervisor }) {
         if (params.namespace !== "lega" || !onToolCall) return { result: { contentItems: [{ type: "inputText", text: "Unealtă necunoscută pentru Lega." }], success: false } };
         try {
           const reply = await withTimeout(Promise.resolve(onToolCall({ tool: String(params.tool || ""), args: params.arguments || {}, turnId: params.turnId, callId: params.callId })), TOOL_REPLY_TIMEOUT_MS, "lega tool");
-          return { result: { contentItems: [{ type: "inputText", text: String(reply?.text || "").slice(0, 4000) }], success: Boolean(reply?.ok) } };
+          return { result: { contentItems: [{ type: "inputText", text: String(reply?.text || "").slice(0, TOOL_REPLY_MAX) }], success: Boolean(reply?.ok) } };
         } catch (error) {
           return { result: { contentItems: [{ type: "inputText", text: `Eroare Hub: ${String(error.message).slice(0, 300)}` }], success: false } };
         }
@@ -137,7 +150,7 @@ export function createCodexRealtime({ codex, supervisor }) {
 
     if (signal?.aborted) throw cancelled();
     const session = codex.openSession({ cwd, key, access: "read-only", experimentalApi: true, allowedMethods: CODEX_VOICE_ALLOWED_METHODS,
-      extraArgs: [...CODEX_VOICE_EXTRA_ARGS, ...mcpDisableArgs(mcpServerNames)], label: "codex app-server (Lega)", onNotification, onServerRequest,
+      extraArgs: [...CODEX_VOICE_EXTRA_ARGS, ...mcpDisableArgs(mcpServerNames)], webSearch, label: "codex app-server (Lega)", onNotification, onServerRequest,
       onExit: (exit) => { rejectStart(Object.assign(new Error(`codex app-server (Lega) exited (${exit.code})`), { category: "transport" })); if (!stopped) onEvent({ type: "closed", reason: `process exited (${exit.code})` }); } });
     const alive = () => !session.record.exited && !session.peer.isClosed?.();
 
@@ -184,7 +197,7 @@ export function createCodexRealtime({ codex, supervisor }) {
       if (!verdict.ok) throw Object.assign(new Error(verdict.reason), { category: "quota", preInference: true });
 
       const thread = await session.peer.request("thread/start", { cwd, approvalPolicy: "on-request", approvalsReviewer: "user", serviceName: "ifrim_agent_hub_lega",
-        ephemeral: true, environments: [], dynamicTools: legaDynamicTools({ projects }), developerInstructions: legaAgentInstructions({ projects }) }, 60000);
+        ephemeral: true, environments: [], dynamicTools: legaDynamicTools({ projects, ...context }), developerInstructions: legaAgentInstructions({ projects, ...context, webSearch }) }, 60000);
       check();
       threadId = thread?.thread?.id || "";
       if (!threadId) throw Object.assign(new Error("Codex did not return a thread id"), { category: "transport", preInference: true });
@@ -209,7 +222,7 @@ export function createCodexRealtime({ codex, supervisor }) {
       check();
       realtimeRequested = true; // from here a GPT-Live call may exist; earlier failures created none
       await session.peer.request("thread/realtime/start", { threadId, outputModality: "audio", transport: { type: "webrtc", sdp: offerSdp }, version: "v3", voice,
-        prompt: legaVoicePrompt({ ownerName }), clientManagedHandoffs: true, includeStartupContext: false, flushTranscriptTailOnSessionEnd: false, backendReasoningStatus: false }, 30000);
+        prompt: legaVoicePrompt({ ownerName, webSearch }), clientManagedHandoffs: true, includeStartupContext: false, flushTranscriptTailOnSessionEnd: false, backendReasoningStatus: false }, 30000);
       const info = await withTimeout(startedD.promise, 20000, "thread/realtime/started");
       const answerSdp = await withTimeout(sdpD.promise, 20000, "thread/realtime/sdp");
       check();

@@ -1,8 +1,23 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Plug, ShieldCheck, KeyRound, Search as SearchIcon, ExternalLink, Lock } from "lucide-react";
 import { api, fmt } from "../api.js";
 import { useResource, useAction, useHub, refresh } from "../store.js";
 import { Panel, Loading, ErrorNotice, Chip, Checks, Notice, StatusChip, Empty } from "../components/ui.jsx";
+import { takeGrantPrefill } from "../lib/legaBridge.js";
+
+/** Only known grant fields with values the form can show; anything else Lega sends is ignored. */
+const clampInt = (v, min, max) => (Number.isInteger(v) ? Math.min(max, Math.max(min, v)) : undefined);
+function pickGrantFields(v) {
+  const out = {
+    kind: v.kind === "voice" ? "voice" : "run",
+    projectId: typeof v.projectId === "string" ? v.projectId.slice(0, 80) : undefined,
+    provider: v.provider === "claude" ? "claude" : v.provider === "codex" ? "codex" : undefined,
+    access: v.access === "workspace-write" ? "workspace-write" : v.access === "read-only" ? "read-only" : undefined,
+    maxAttempts: clampInt(v.maxAttempts, 1, 5), ttlMinutes: clampInt(v.ttlMinutes, 5, 480), maxDurationS: clampInt(v.maxDurationS, 60, 7200),
+    note: typeof v.note === "string" ? v.note.slice(0, 500) : undefined,
+  };
+  return Object.fromEntries(Object.entries(out).filter(([, value]) => value !== undefined));
+}
 
 const STATUS_TONE = { DOCUMENTED: "neutral", ACCOUNT_ELIGIBLE: "info", AUTHENTICATED: "info", IMPLEMENTED: "info", TESTED_LIVE: "ok", TESTED_SIMULATED: "info", ASSISTED_ONLY: "warn", BLOCKED: "error" };
 
@@ -13,7 +28,7 @@ function ProviderCard({ provider, attestationText, onChange }) {
   const attest = useAction(async () => { await api("/api/billing/attest", { method: "POST", body: { provider: provider.id, confirmText } }); setConfirmText(""); onChange(); });
   const attestationCheck = provider.route.checks.find((c) => c.id === "provider_side_overage_setting");
   return (
-    <Panel title={provider.displayName} icon={Plug} actions={<Chip tone={provider.route.allowed ? "ok" : "warn"}>{provider.route.allowed ? "rută inclusă verificată" : "blocat"}</Chip>}>
+    <Panel title={provider.displayName} icon={Plug} data-lega-target="billing" actions={<Chip tone={provider.route.allowed ? "ok" : "warn"}>{provider.route.allowed ? "rută inclusă verificată" : "blocat"}</Chip>}>
       <div className="stack">
         <dl className="kv">
           <dt>Instalare</dt><dd>{provider.installation ? (provider.installation.installed ? `${provider.installation.version} · ${provider.installation.source || ""}` : provider.installation.reason) : "neinspectat"}</dd>
@@ -56,7 +71,7 @@ function IsolationPanel() {
   const { codex, claude } = iso.data;
   const Row = ({ label, v }) => <li><div className="list-row"><div className="grow"><div className="title">{label}</div><div className="sub">{v.detail}</div></div><Chip tone={v.ok ? "ok" : /NEEDS_/.test(v.detail) ? "warn" : "error"}>{v.ok ? `permis · ${v.level === "os" ? "limită OS" : "limită unealtă"}` : /NEEDS_/.test(v.detail) ? "necesită aprobare" : "blocat"}</Chip></div></li>;
   return (
-    <Panel title="Izolare workspace (ce nu pot citi uneltele modelului)" icon={Lock}>
+    <Panel title="Izolare workspace (ce nu pot citi uneltele modelului)" icon={Lock} data-lega-target="isolation">
       <div className="stack">
         <ul className="list">
           <Row label="Codex · doar citire" v={codex.readOnly} /><Row label="Codex · scriere în workspace" v={codex.workspaceWrite} />
@@ -88,34 +103,50 @@ function LivePanel({ integrations, onChange }) {
   const hub = useHub((s) => s.hub);
   const [confirm, setConfirm] = useState("");
   const [form, setForm] = useState({ kind: "run", projectId: "ifrim-agent-hub", provider: "codex", access: "read-only", maxAttempts: 1, ttlMinutes: 30, maxDurationS: 900, note: "" });
+  const [prefilled, setPrefilled] = useState(false); // true while the form holds values Lega filled in and the owner has not edited
   const projectList = useResource("/api/projects", { reloadOn: (e) => e.type.startsWith("project.") });
   const executable = (projectList.data?.projects || []).filter((p) => p.executionAllowed);
   const mode = useAction(async (next) => { await api("/api/mode", { method: "POST", body: { mode: next, confirm } }); setConfirm(""); refresh(); onChange(); });
   const gate = useAction(async (action) => { await api("/api/gate", { method: "POST", body: { action, confirm, reason: action === "open" ? "Deschisă pentru validare live" : "Suspendată de utilizator" } }); setConfirm(""); refresh(); });
   // A Lega (voice) grant is always Codex, read-only, on the Hub project; attempts = voice sessions, duration = session cap.
   const grant = useAction(async () => {
+    setPrefilled(false);
     const voice = form.kind === "voice";
     await api("/api/grants", { method: "POST", body: { ...form, projectId: voice ? "ifrim-agent-hub" : form.projectId, provider: voice ? "codex" : form.provider, access: voice ? "read-only" : form.access,
       maxAttempts: Number(form.maxAttempts), ttlMinutes: Number(form.ttlMinutes), maxDurationS: voice ? Math.min(1800, Number(form.maxDurationS)) : Number(form.maxDurationS) } });
     onChange();
   });
   const revoke = useAction(async (id) => { await api(`/api/grants/${id}/revoke`, { method: "POST", body: {} }); onChange(); });
-  const set = (k) => (e) => setForm((f) => ({ ...f, [k]: e.target.value }));
+  const set = (k) => (e) => { setPrefilled(false); setForm((f) => ({ ...f, [k]: e.target.value })); };
+  // Lega can fill this form in (values only); the grant is created only when the owner presses "Creează grant".
+  useEffect(() => {
+    const apply = () => {
+      const values = takeGrantPrefill();
+      if (!values) return;
+      setForm((f) => ({ ...f, ...pickGrantFields(values) }));
+      setPrefilled(true);
+    };
+    apply();
+    window.addEventListener("lega:prefill-grant", apply);
+    return () => window.removeEventListener("lega:prefill-grant", apply);
+  }, []);
   return (
     <Panel title="Validare live (strict delimitată)" icon={ShieldCheck}>
       <div className="stack">
         <dl className="kv"><dt>Mod</dt><dd>{hub?.mode}</dd><dt>Poartă</dt><dd><StatusChip status={hub?.executionGate?.status} /> {hub?.executionGate?.reason}</dd></dl>
         <p className="muted" style={{ margin: 0 }}>O execuție cu model cere toate condițiile: modul LIVE_VALIDATION, poarta deschisă, un grant pentru provider/proiect/acces/încercări/expirare, rută de abonament verificată și backup verificat.</p>
-        <label className="field"><span>Confirmare (tastează LIVE_VALIDATION sau OPEN GATE)</span><input className="input" value={confirm} onChange={(e) => setConfirm(e.target.value)} /></label>
-        <div className="row wrap">
-          {hub?.mode === "BUILD_SAFE" ? <button className="btn sm" disabled={confirm !== "LIVE_VALIDATION" || mode.pending} onClick={() => mode.run("LIVE_VALIDATION")}>Activează LIVE_VALIDATION</button>
-            : <button className="btn sm" onClick={() => mode.run("BUILD_SAFE")}>Revino la BUILD_SAFE</button>}
-          {hub?.executionGate?.status !== "open" ? <button className="btn sm" disabled={confirm !== "OPEN GATE" || gate.pending} onClick={() => gate.run("open")}>Deschide poarta</button>
-            : <button className="btn sm danger" onClick={() => gate.run("suspend")}>Suspendă poarta</button>}
+        <div className="stack tight" data-lega-target="live-mode">
+          <label className="field"><span>Confirmare (tastează LIVE_VALIDATION sau OPEN GATE)</span><input className="input" value={confirm} onChange={(e) => setConfirm(e.target.value)} /></label>
+          <div className="row wrap">
+            {hub?.mode === "BUILD_SAFE" ? <button className="btn sm" disabled={confirm !== "LIVE_VALIDATION" || mode.pending} onClick={() => mode.run("LIVE_VALIDATION")}>Activează LIVE_VALIDATION</button>
+              : <button className="btn sm" onClick={() => mode.run("BUILD_SAFE")}>Revino la BUILD_SAFE</button>}
+            <span data-lega-target="gate">{hub?.executionGate?.status !== "open" ? <button className="btn sm" disabled={confirm !== "OPEN GATE" || gate.pending} onClick={() => gate.run("open")}>Deschide poarta</button>
+              : <button className="btn sm danger" onClick={() => gate.run("suspend")}>Suspendă poarta</button>}</span>
+          </div>
         </div>
         {hub?.mode === "LIVE_VALIDATION" && (
-          <div className="stack tight">
-            <div className="section-title">Grant nou</div>
+          <div className="stack tight" data-lega-target="grant-form">
+            <div className="section-title">Grant nou{prefilled && <Chip tone="approval">completat de Lega · verifică</Chip>}</div>
             <div className="grid two">
               <label className="field"><span>Tip</span><select className="select" value={form.kind} onChange={(e) => setForm((f) => ({ ...f, kind: e.target.value, maxDurationS: e.target.value === "voice" ? 1200 : 900 }))}>
                 <option value="run">Execuție agent</option><option value="voice">Lega (voce)</option></select></label>
@@ -128,11 +159,11 @@ function LivePanel({ integrations, onChange }) {
               <label className="field"><span>Valabil (minute)</span><input className="input" type="number" min={5} max={480} value={form.ttlMinutes} onChange={set("ttlMinutes")} /></label>
             </div>
             <label className="field"><span>Scop / notă</span><input className="input" value={form.note} onChange={set("note")} placeholder="Ex.: HUB-018 un turn read-only de acceptanță" /></label>
-            <button className="btn sm primary" disabled={grant.pending} onClick={grant.run}>Creează grant</button>
+            <button className="btn sm primary" data-lega-target="grant-create" disabled={grant.pending} onClick={grant.run}>Creează grant</button>
           </div>
         )}
         {integrations.grants.length > 0 && (
-          <ul className="list">{integrations.grants.slice(0, 8).map((g) => (
+          <ul className="list" data-lega-target="grants-list">{integrations.grants.slice(0, 8).map((g) => (
             <li key={g.id}><div className="list-row"><div className="grow"><div className="title">{g.kind === "voice" ? "Lega (voce)" : `${g.provider} · ${g.access}`}</div><div className="sub">{g.attemptsUsed}/{g.maxAttempts} încercări · expiră {fmt.dateTime(g.expiresAt)}{g.note ? ` · ${g.note}` : ""}</div></div><StatusChip status={g.status} />{g.status === "active" && <button className="btn sm ghost" onClick={() => revoke.run(g.id)}>Revocă</button>}</div></li>
           ))}</ul>
         )}

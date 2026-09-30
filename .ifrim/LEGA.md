@@ -1,8 +1,8 @@
 # Lega — asistentul vocal al Hub-ului
 
 Stare la 2026-09-30:
-- **Implementat și testat simulat** (fixture, fără rețea): 17 teste `M03-LEGA-*`, toate trecute, după revizia adversarială de mai jos.
-- **Test live: nerulat.** Îl pornește proprietarul, pentru că doar el poate vorbi în microfon.
+- **Implementat și testat simulat** (fixture, fără rețea): 17 teste `M03-LEGA-*` + 8 teste `M03-ACCESS-*` (acces complet sub control, căutare web), toate trecute.
+- **Test live: sesiune reușită** (proprietarul, 2026-09-30): română în ambele sensuri, `hub_status` și `navigate` au mers. Accesul complet și căutarea web de mai jos sunt noi și încă netestate live.
 
 Lega folosește **GPT-Live** (vocea ChatGPT) prin **abonamentul ChatGPT**, trecând prin Codex-ul instalat (`codex app-server`, metodele `thread/realtime/*`). Nu folosește cheie API și nici OpenAI Realtime API plătit.
 
@@ -11,11 +11,23 @@ Lega folosește **GPT-Live** (vocea ChatGPT) prin **abonamentul ChatGPT**, trec�
 | Cum | Ce | Unde e aplicat |
 |---|---|---|
 | Vorbă directă (deterministic, doar cuvintele tale finale) | „Lega, oprește tot” → Stop All (se oprește și Lega). „Lega, pauză” → poarta suspendată. „Lega, deschide aprobările / misiunile / camera de control”, „intră în Focus” → navigare. „Taci” → microfon oprit. | `runtime/lega.mjs` `onOwnerWords` → magistrala de comenzi, canalul `voice` |
-| Prin agentul din spate (Codex, fără shell și fără fișiere) | Unelte `lega.*`: `hub_status`, `navigate`, `pause`, `stop_all`, `propose_run` | `policy/lega-policy.mjs` `legaDynamicTools` + `lega.mjs` `onToolCall` |
+| Prin agentul din spate (Codex, fără shell și fără fișiere) | Unelte `lega.*` — VEDE: `hub_status`, `company_briefing`, `list_projects`, `project_brief`, `list_missions`, `mission_detail`, `pending_approvals`, `recent_runs`; ARATĂ: `navigate`, `point`, `how_to`; PREGĂTEȘTE: `propose_run`, `propose_mission`, `prepare_grant`; SIGURANȚĂ: `pause`, `stop_all` | `policy/lega-policy.mjs` `legaDynamicTools` + `lega.mjs` `onToolCall` |
 | Muncă reală (cod, teste, analiză) | `propose_run` → card „Lega propune o execuție” → **Aprobă și pornește** (click) → execuția trece prin poarta normală (grant de execuție, lease, backup) → rezultatul e spus cu voce | comanda `lega.propose_run` (ALWAYS_ASK, aprobare legată de hash), `runs.start` |
 | Niciodată din voce | Aprobări, deschiderea porții, granturi, facturare, deploy, push, ștergeri, mesaje externe, acordul de izolare | canale în `command-catalog.mjs`, `DECISION_CHANNELS = ui`, catalogul de politici |
 
 Textul din fișiere sau din rezultatele agenților este tratat ca **date**. Comenzi pot declanșa doar cuvintele tale finale, trecute prin parserul determinist.
+
+## Acces complet, sub controlul tău (2026-09-30)
+
+Cerința proprietarului: „încă nu are acces complet… va trebui să îi dăm”, apoi „nu are acces la căutare pe internet”. Lega vede acum toată compania și arată unde e fiecare lucru. Tot ce are efecte rămâne la click-ul tău.
+
+| Ce | Cum | Limită |
+|---|---|---|
+| **Vede** | Briefing zilnic (terminate, blocate, aprobări, misiuni, eșecuri, backup), lista proiectelor, notițele unui proiect, misiuni și sarcini, aprobări în așteptare, ultimele execuții | Doar citire. Notițele proiectului sunt 4 fișiere fixe (`README.md`, `.ifrim/PROJECT_STATE.md`, `NEXT_SESSION.md`, `OPEN_ISSUES.md`), citite prin `resolveInScope`: niciun link sau junction care iese din proiect, niciodată `.ifrim/private`. Maximum 64 KB citiți din fiecare fișier și 5000 de caractere trimise, redactate și prezentate ca informație, nu ca instrucțiuni (`domain/project-notes.mjs`). |
+| **Arată** | `point` deschide ecranul potrivit și desenează un contur, o săgeată și eticheta „Lega arată” pe buton sau panou. `how_to` dă pașii exacți dintr-o hartă fixă (`LEGA_HOWTO`). | Ținte doar din `LEGA_TARGETS` (fiecare are `data-lega-target` în UI; un test verifică). Săgeata doar desenează: nu primește click-uri și dispare după 12 s, la Esc sau la următorul click. |
+| **Pregătește** | `propose_mission` → card „Lega propune o misiune” → **Aprobă și creează**. Misiunea se creează ca ciornă, fără nicio execuție. `prepare_grant` completează formularul „Grant nou” și arată butonul. `propose_run` rămâne ca înainte. | Misiunea: aprobare `lega.mission_request` (ALWAYS_ASK, legată de hash). Vocea nu poate aproba. Grantul **nu e creat niciodată de Lega**: doar valorile ajung în formular, iar tu apeși „Creează grant”. |
+| **Proiecte noi pentru agenți** | Pe pagina proiectului, panoul „Execuții pe acest proiect”: tastezi numele exact și apeși „Permite execuții”. „Retrage execuțiile” e un singur click (merge și din voce) și revocă grant-urile de execuție ale proiectului. | Activarea se face doar din UI (comanda `project.execution.enable`). Proiectul trebuie să fie un folder real în folderul de proiecte, fără link sau junction pe drum și în afara Hub-ului. Hub-ul nu se comută. Fiecare execuție cere în continuare grant, poarta deschisă și backup verificat (scris în `.ifrim/BACKUPS/v2` al proiectului). |
+| **Căutare pe internet** | Setarea „Căutare pe internet” din panoul Lega. `cached` (implicit, recomandat) dă rezultate din indexul întreținut de OpenAI, fără să deschidă pagini live. `indexed` face căutare actuală, dar accesul la pagini trece doar prin index. `live` deschide orice pagină și e cu risc mai mare, deci panoul afișează un avertisment. A patra opțiune e `Oprită`. Setarea se aplică la următoarea pornire. | Doar procesul Lega primește `web_search="cached|indexed|live"` (`codexBaseOverrides`). Execuțiile agenților rămân cu `web_search="disabled"`. Agentul Lega nu are fișiere și nici shell, deci căutarea nu atinge nimic local. Fiecare căutare apare în transcriere („Caut pe internet: …”), redactată, și e jurnalizată (`lega.web_search`). Cu setarea oprită, o căutare e o încălcare și oprește sesiunea. Instrucțiunile îi interzic agentului să pună conținut de proiect sau date private în interogări (regulă de prompt, nu de cod). |
 
 ## Arhitectură
 
@@ -158,5 +170,20 @@ Teste: `m03-lega.test.mjs` (12) + `m03-lega-hardening.test.mjs` (5), toate trecu
 
 ## Riscuri cunoscute
 
+- Căutarea web aduce text de pe internet în contextul agentului Lega, iar o pagină poate încerca să-i dea instrucțiuni. Efectele posibile rămân cele de mai sus: propuneri pe care le aprobi tu, săgeți și ecrane. Nimic nu se execută fără click.
+- În modul `live` rămâne o cale de scurgere: agentul citește notițele proiectelor și poate deschide orice adresă. O instrucțiune ascunsă l-ar putea face să pună text din Hub într-o adresă web. Secretele sunt redactate, dar textul obișnuit nu. Hub-ul vede căutarea abia după ce s-a făcut. De aceea implicit e `cached`, care nu deschide pagini live (documentația Codex: „returns pre-indexed results instead of fetching live pages”).
+
+## Revizia accesului complet (2026-09-30)
+
+Două revizii independente (securitate, apoi corectitudine și UI) nu au găsit nicio cale de a ocoli click-ul proprietarului. Constatările corectate, toate cu teste (`M03-ACCESS-06..08`):
+- Căutarea web era `live` implicit: acum e `cached`, iar `live` e opțiune explicită, cu avertisment.
+- Unele texte ale companiei ajungeau la model neredactate: motive de blocare, titluri, stack, motivul porții. Acum tot textul trimis modelului trece prin `redactText` și nu mai conține caractere de control.
+- Un proiect activat rămânea activat dacă PROJECTS.md îi schimba calea. Acum sincronizarea retrage execuțiile, iar poarta verifică din nou folderul (folder real, fără link sau junction, în afara Hub-ului) la fiecare execuție.
+- `how_to` răspundea la o cheie de prototip (`__proto__`): acum folosește `Object.hasOwn`.
+- Argumentele uneltelor nu aveau limită pe server: acum sunt limitate la 1500 de caractere și 20 de elemente într-o listă. Numele de proiect din instrucțiuni sunt curățate.
+- Cererile de la Lega nu aveau limită: acum sunt cel mult 5 propuneri Lega în așteptare.
+- Briefing-ul număra și aprobările expirate: acum le exclude.
+- Retragerea execuțiilor vedea doar ultimele 50 de grant-uri: acum revocă toate grant-urile active ale proiectului.
+- Săgeata putea marca o clipă elementul de pe ecranul vechi: acum prima căutare așteaptă 150 ms.
 - Metodele `thread/realtime/*` sunt **experimentale** și nedocumentate public: o actualizare Codex le poate schimba. Testele de contract rulează pe fixture; la fiecare actualizare Codex trebuie regenerată schema și refăcut testul live.
 - Delegarea pornește un turn Codex înainte ca Hub-ul s-o vadă. Turnul nu are însă unelte de execuție, doar `lega.*`, iar tot ce are efecte cere click.

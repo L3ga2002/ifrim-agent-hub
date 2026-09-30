@@ -63,6 +63,12 @@ export function createProjects({ db, bus, config, clock }) {
         } else if (existing.path !== project.path || existing.stack !== project.stack || existing.status !== project.status) {
           db.prepare("UPDATE projects SET path = ?, stack = ?, status = ?, frontend_url = ?, backend_url = ?, repo = ?, updated_at = ?, version = version + 1 WHERE id = ?")
             .run(project.path, project.stack, project.status, project.frontendUrl, project.backendUrl, project.repo, now, existing.id);
+          // Runs were enabled for the folder the owner checked; a new path from the registry needs a new decision.
+          if (existing.path !== project.path && existing.execution_allowed && !isHub) {
+            db.prepare("UPDATE projects SET execution_allowed = 0 WHERE id = ?").run(existing.id);
+            bus.append({ type: "project.execution_disabled", scopeType: "project", scopeId: existing.id, projectId: existing.id, source: "registry",
+              payload: { slug: existing.slug, name: existing.name, reason: "Calea din registru s-a schimbat; permite din nou execuțiile dacă vrei" } });
+          }
         }
       }
     });
@@ -122,7 +128,59 @@ export function createProjects({ db, bus, config, clock }) {
     return get(row.id);
   }
 
-  return { syncFromRegistry, list, get, hub, registerTest, retireTest };
+  /**
+   * Why a project folder may not host agent runs, or null: it must be a real directory inside the projects root, outside
+   * the Hub, with no link or junction on the way (checked on the real path too). Used when the owner enables runs and
+   * again by the gate before every run, so a folder swapped afterwards is caught.
+   */
+  function folderProblem(projectPath) {
+    const dir = path.resolve(String(projectPath || ""));
+    if (!isInside(config.projectsRoot, dir) || isSame(dir, config.projectsRoot)) return { category: "policy", message: "Proiectul trebuie să fie în folderul de proiecte" };
+    if (isInside(dir, config.hubRoot) || isInside(config.hubRoot, dir)) return { category: "policy", message: "Un proiect din Hub (sau care conține Hub-ul) nu poate fi activat separat" };
+    let stat;
+    try { stat = fs.lstatSync(dir); } catch { return { category: "not_found", message: "Folderul proiectului nu există" }; }
+    if (!stat.isDirectory() || stat.isSymbolicLink()) return { category: "policy", message: "Proiectul trebuie să fie un folder real (fără link sau junction)" };
+    let real;
+    try { real = fs.realpathSync.native(dir); } catch { return { category: "not_found", message: "Folderul proiectului nu poate fi citit" }; }
+    let root;
+    try { root = fs.realpathSync.native(config.projectsRoot); } catch { return { category: "not_found", message: "Folderul de proiecte nu poate fi citit" }; }
+    if (!isInside(root, real) || isInside(real, config.hubRoot)) return { category: "policy", message: "Un link sau junction pe drum duce proiectul în afara folderului de proiecte" };
+    return null;
+  }
+
+  /** For the gate: null for the Hub (always enabled) or a sound folder; otherwise the reason runs must not start there. */
+  const executionProblem = (project) => {
+    if (!project || project.slug === "ifrim-agent-hub" || isSame(project.path, config.hubRoot)) return null;
+    return folderProblem(project.path)?.message || null;
+  };
+
+  /**
+   * Enables or withdraws agent runs on a company project (the owner's decision; the command layer keeps enabling UI-only
+   * with the exact project name typed). Enabling requires a real directory directly under the projects root's tree,
+   * outside the Hub (no link or junction on the way), and not a retired test project. The Hub itself cannot be toggled:
+   * Stop All and the execution gate halt it. Idempotent: the same state returns the project unchanged.
+   */
+  function setExecution(projectRef, enabled, { confirmName = "", actor = "user", reason = "" } = {}) {
+    const row = db.prepare("SELECT * FROM projects WHERE id = ? OR slug = ?").get(projectRef, projectRef);
+    if (!row) throw new HubError("not_found", "Project not found");
+    if (row.slug === "ifrim-agent-hub" || isSame(row.path, config.hubRoot)) throw new HubError("policy", "Hub-ul rămâne activat; oprește-l cu Stop All sau suspendă poarta");
+    if (Boolean(row.execution_allowed) === Boolean(enabled)) return rowToProject(row);
+    if (enabled) {
+      if (String(confirmName) !== row.name) throw new HubError("validation", "Tastează numele exact al proiectului ca să permiți execuții pe el");
+      if (row.source === "hub-test" && row.status === "retired") throw new HubError("policy", "Proiectul de test a fost retras; creează unul nou cu scriptul de test");
+      const problem = folderProblem(row.path);
+      if (problem) throw new HubError(problem.category, problem.message);
+    }
+    const now = clock().toISOString();
+    bus.transaction(() => {
+      db.prepare("UPDATE projects SET execution_allowed = ?, updated_at = ?, version = version + 1 WHERE id = ?").run(enabled ? 1 : 0, now, row.id);
+      bus.append({ type: enabled ? "project.execution_enabled" : "project.execution_disabled", scopeType: "project", scopeId: row.id, projectId: row.id, source: actor,
+        payload: { slug: row.slug, name: row.name, reason: String(reason || "").slice(0, 300) } });
+    });
+    return get(row.id);
+  }
+
+  return { syncFromRegistry, list, get, hub, registerTest, retireTest, setExecution, executionProblem };
 }
 
 /** Marker file written by v2/scripts/create-test-project.mjs; its presence is what makes a directory a test project. */

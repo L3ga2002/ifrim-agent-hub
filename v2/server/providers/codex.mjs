@@ -59,6 +59,16 @@ export const CODEX_APP_SERVER_OVERRIDES = Object.freeze([
   "-c", "project_root_markers=[]",
 ]);
 
+/**
+ * The Hub overrides for one app-server process. Only Lega's voice process may turn web search on (cached/indexed/live): its
+ * agent has no shell and no file tools, so the hosted search reaches no local file. Run processes always keep it disabled.
+ */
+export function codexBaseOverrides({ webSearch = "disabled" } = {}) {
+  if (webSearch === "disabled") return CODEX_APP_SERVER_OVERRIDES;
+  if (!["cached", "indexed", "live"].includes(webSearch)) throw Object.assign(new Error(`Unsupported web search mode ${webSearch}`), { category: "validation", preInference: true });
+  return CODEX_APP_SERVER_OVERRIDES.map((arg) => (arg === 'web_search="disabled"' ? `web_search="${webSearch}"` : arg));
+}
+
 const ACTIVITY_ITEMS = new Set(["commandExecution", "fileChange", "mcpToolCall", "webSearch", "imageView", "imageGeneration", "collabAgentToolCall", "subAgentActivity"]);
 
 export function resolveCodexBinary(config) {
@@ -130,12 +140,13 @@ export function createCodexAdapter({ config, supervisor, homeDir = os.homedir() 
    * `experimentalApi`, `allowedMethods` and `extraArgs` exist for the Lega voice process only (codex-realtime.mjs): it is a
    * separate app-server with its own narrow allowlist. Every run/probe process keeps experimentalApi=false and the run allowlist.
    */
-  function openSession({ cwd, key, access = "read-only", onNotification, onServerRequest, onExit, experimentalApi = false, allowedMethods = CODEX_ALLOWED_METHODS, extraArgs = [], label = "codex app-server" }) {
+  function openSession({ cwd, key, access = "read-only", onNotification, onServerRequest, onExit, experimentalApi = false, allowedMethods = CODEX_ALLOWED_METHODS, extraArgs = [], webSearch = "disabled", label = "codex app-server" }) {
     const binary = resolveCodexBinary(config);
     if (!binary) throw Object.assign(new Error("Codex client not installed"), { category: "transport", preInference: true });
+    const base = codexBaseOverrides({ webSearch });
     let peer;
     const record = supervisor.start({
-      key, label, executable: binary.executable, args: [...binary.prefixArgs, ...CODEX_APP_SERVER_OVERRIDES, ...extraArgs, ...codexIsolationArgs(access, { homeDir, extra: [config.dataDir, config.backupDir] }), "app-server"], cwd,
+      key, label, executable: binary.executable, args: [...binary.prefixArgs, ...base, ...extraArgs, ...codexIsolationArgs(access, { homeDir, extra: [config.dataDir, config.backupDir] }), "app-server"], cwd,
       onStdoutLine: (line) => peer.handleLine(line),
     });
     peer = createJsonRpcPeer({

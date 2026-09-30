@@ -184,6 +184,8 @@ export function registerRoutes(router, hub, { token }) {
   post("/api/projects/sync", cmd("projects.sync", () => ({})));
   post("/api/projects/test", cmd("project.register_test", ({ body }) => body, { created: true }));
   post("/api/projects/:id/retire-test", cmd("project.retire_test", ({ params }) => ({ projectId: params.id })));
+  post("/api/projects/:id/execution/enable", cmd("project.execution.enable", ({ params, body }) => ({ projectId: params.id, confirmName: body?.confirmName })));
+  post("/api/projects/:id/execution/disable", cmd("project.execution.disable", ({ params, body }) => ({ projectId: params.id, reason: body?.reason })));
   get("/api/projects/:id", async ({ params }) => {
     const project = need(projects.get(params.id), "Project");
     const readable = fs.existsSync(project.path);

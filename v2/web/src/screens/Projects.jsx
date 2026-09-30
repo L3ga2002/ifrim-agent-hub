@@ -1,10 +1,42 @@
-import { FolderGit2, HardDrive, ChevronLeft, FileText } from "lucide-react";
+import { useState } from "react";
+import { FolderGit2, HardDrive, ChevronLeft, FileText, PlayCircle, PauseCircle } from "lucide-react";
 import { api, fmt } from "../api.js";
-import { useResource, useAction } from "../store.js";
-import { Panel, Empty, Loading, ErrorNotice, StatusChip, Chip, Notice } from "../components/ui.jsx";
+import { useResource, useAction, refresh } from "../store.js";
+import { Panel, Empty, Loading, ErrorNotice, StatusChip, Chip } from "../components/ui.jsx";
+
+/**
+ * Agent runs on this project: the owner's decision. Enabling needs the project's exact name typed (the Hub checks it
+ * again); withdrawing is one click and also revokes this project's active run grants. The Hub project itself is fixed.
+ */
+function ExecutionPanel({ project, onChange }) {
+  const [name, setName] = useState("");
+  const enable = useAction(async () => { await api(`/api/projects/${project.id}/execution/enable`, { method: "POST", body: { confirmName: name } }); setName(""); onChange(); refresh(); });
+  const disable = useAction(async () => { await api(`/api/projects/${project.id}/execution/disable`, { method: "POST", body: { reason: "Retras din ecranul Proiecte" } }); onChange(); refresh(); });
+  const isHub = project.slug === "ifrim-agent-hub";
+  return (
+    <Panel title="Execuții pe acest proiect" icon={PlayCircle} data-lega-target="project-execution"
+      actions={<Chip tone={project.executionAllowed ? "ok" : "neutral"}>{project.executionAllowed ? "permise" : "oprite"}</Chip>}>
+      {isHub ? <p className="muted" style={{ margin: 0 }}>Hub-ul rămâne mereu activat; îl oprești cu Stop All sau suspendând poarta de execuție.</p>
+        : project.executionAllowed ? (
+          <div className="stack tight">
+            <p className="muted" style={{ margin: 0 }}>Agenții (Codex, Claude Code) pot lucra aici prin poarta de execuție: mod LIVE_VALIDATION, grant pentru acest proiect și backup verificat făcut automat în <span className="mono">.ifrim/BACKUPS/v2</span> înainte de prima execuție. Retragerea oprește execuțiile noi și revocă grant-urile proiectului; o execuție deja pornită o oprești cu Întrerupe sau Stop All.</p>
+            <div className="row"><button className="btn sm danger" disabled={disable.pending} onClick={disable.run}><PauseCircle size={14} />{disable.pending ? "Se retrag…" : "Retrage execuțiile"}</button></div>
+            <ErrorNotice error={disable.error} />
+          </div>
+        ) : (
+          <div className="stack tight">
+            <p className="muted" style={{ margin: 0 }}>Acum proiectul e doar context: Lega și agenții îl pot citi, dar nu lucrează în el. Dacă permiți execuții, fiecare rulare cere în continuare grant, poarta deschisă și un backup verificat, care se scrie în proiect (<span className="mono">.ifrim/BACKUPS/v2</span>). Fișierele .env, .ifrim/private și credențialele rămân blocate pentru agenți.</p>
+            <label className="field"><span>Tastează numele exact: <strong>{project.name}</strong></span><input className="input" value={name} onChange={(e) => setName(e.target.value)} autoComplete="off" /></label>
+            <div className="row"><button className="btn sm primary" disabled={name !== project.name || enable.pending} onClick={enable.run}><PlayCircle size={14} />{enable.pending ? "Se activează…" : "Permite execuții"}</button></div>
+            <ErrorNotice error={enable.error} />
+          </div>
+        )}
+    </Panel>
+  );
+}
 
 function ProjectDetail({ id }) {
-  const { data, error, loading, reload } = useResource(`/api/projects/${id}`, { reloadOn: (e) => e.type.startsWith("backup.") });
+  const { data, error, loading, reload } = useResource(`/api/projects/${id}`, { reloadOn: (e) => e.type.startsWith("backup.") || e.type.startsWith("project.") });
   const backup = useAction(async () => { await api("/api/backups", { method: "POST", body: { projectId: id } }); reload(); });
   if (loading) return <div className="page"><Loading lines={6} /></div>;
   if (error) return <div className="page"><ErrorNotice error={error} onRetry={reload} /></div>;
@@ -19,6 +51,7 @@ function ProjectDetail({ id }) {
         </div>
       </div>
       <ErrorNotice error={backup.error} />
+      <div style={{ marginBottom: 16 }}><ExecutionPanel project={project} onChange={reload} /></div>
       <div className="grid two">
         <Panel title="Repository" icon={FolderGit2}>
           {git?.isRepo ? (
@@ -36,7 +69,7 @@ function ProjectDetail({ id }) {
         </Panel>
       </div>
       <div style={{ marginTop: 16 }}>
-        <Panel title="Backup-uri" icon={HardDrive} flush>
+        <Panel title="Backup-uri" icon={HardDrive} flush data-lega-target="project-backup">
           {backups.length ? (
             <div className="table-wrap"><table className="table table-mobile-cards">
               <thead><tr><th>Creat</th><th>Stare</th><th>Fișiere</th><th>Arhivă</th><th>Durată</th><th>Restaurare verificată</th><th>Motiv</th></tr></thead>
@@ -47,20 +80,19 @@ function ProjectDetail({ id }) {
           ) : <Empty title="Niciun backup V2">{project.executionAllowed ? "Primul backup se creează înainte de prima execuție sau manual." : "Backup-urile se scriu în proiect; sunt activate doar pentru proiectele cu execuție V2."}</Empty>}
         </Panel>
       </div>
-      {!project.executionAllowed && <div style={{ marginTop: 16 }}><Notice tone="info">Acest proiect este vizibil pentru context. Activarea execuției pentru alte proiecte este o decizie separată și nu se face în această fază.</Notice></div>}
     </div>
   );
 }
 
 export default function Projects({ id }) {
-  const { data, error, loading, reload } = useResource(id ? null : "/api/projects");
+  const { data, error, loading, reload } = useResource(id ? null : "/api/projects", { reloadOn: (e) => e.type.startsWith("project.") });
   const sync = useAction(async () => { await api("/api/projects/sync", { method: "POST", body: {} }); reload(); });
   if (id) return <ProjectDetail id={id} />;
   return (
     <div className="page">
-      <div className="page-head"><div><h1>Proiecte</h1><p>Din registrul central PROJECTS.md (citit, nemodificat). Doar Ifrim Agent Hub este activat pentru execuție V2.</p></div><button className="btn" onClick={sync.run} disabled={sync.pending}>Resincronizează registrul</button></div>
+      <div className="page-head"><div><h1>Proiecte</h1><p>Din registrul central PROJECTS.md (citit, nemodificat). Execuțiile de agenți le permiți tu, pe fiecare proiect, din pagina lui.</p></div><button className="btn" onClick={sync.run} disabled={sync.pending}>Resincronizează registrul</button></div>
       <ErrorNotice error={sync.error} />
-      <Panel title="Proiecte" icon={FolderGit2} flush>
+      <Panel title="Proiecte" icon={FolderGit2} flush data-lega-target="projects-list">
         {loading ? <div className="panel-body"><Loading /></div> : error ? <div className="panel-body"><ErrorNotice error={error} onRetry={reload} /></div> : data.projects.length ? (
           <ul className="list">{data.projects.map((p) => (
             <li key={p.id}><a className="list-row" href={`#/projects/${p.id}`}><FolderGit2 size={16} color="var(--text-2)" aria-hidden="true" />

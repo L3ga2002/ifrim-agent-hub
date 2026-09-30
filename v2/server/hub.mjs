@@ -6,7 +6,8 @@ import { createEventBus } from "./events/bus.mjs";
 import { createSettings } from "./domain/settings.mjs";
 import { createProjects } from "./domain/projects.mjs";
 import { createConversations } from "./domain/conversations.mjs";
-import { createMissions } from "./domain/missions.mjs";
+import { createMissions, MISSION_TEMPLATES } from "./domain/missions.mjs";
+import { buildBriefing } from "./domain/briefing.mjs";
 import { createBackupService } from "./domain/backups.mjs";
 import { createGrants, createProviderState } from "./domain/grants.mjs";
 import { createUsage } from "./domain/usage.mjs";
@@ -111,7 +112,13 @@ export function createHub(config, { providerOverrides = {}, homeDir } = {}) {
   const refreshCodexConfig = () => {
     try { const current = providerState.get("codex") || {}; if (providers.codex.inspectConfig) providerState.set("codex", { ...current, config: providers.codex.inspectConfig() }); } catch { /* reported by the gate */ }
   };
-  lega = createLega({ config, bus, live, clock, settings, gate, grants, projects, approvals,
+  lega = createLega({ config, bus, live, clock, settings, gate, grants, projects, approvals, missions, missionKinds: Object.keys(MISSION_TEMPLATES),
+    readApi: {
+      briefing: () => buildBriefing({ db, settings, missions, backups, projects, clock }),
+      recentRuns: (limit) => db.prepare(`SELECT r.provider, r.status, r.access, r.error_category, r.created_at, r.output_message_id, p.name AS project_name
+        FROM agent_runs r LEFT JOIN conversations c ON c.id = r.conversation_id LEFT JOIN projects p ON p.id = c.project_id ORDER BY r.created_at DESC LIMIT ?`).all(limit)
+        .map((r) => ({ provider: r.provider, status: r.status, access: r.access, errorCategory: r.error_category, createdAt: r.created_at, outputMessageId: r.output_message_id, projectName: r.project_name })),
+    },
     runsApi: { activeRuns: () => runs.activeRuns(), getRun: (id) => runs.getRun(id), admitCodexUsage: (snapshot) => usage.admit("codex", snapshot),
       messageText: (id) => db.prepare("SELECT content FROM messages WHERE id = ?").get(id)?.content || "" },
     commandsApi: { dispatch: (request) => commands.dispatch(request) },

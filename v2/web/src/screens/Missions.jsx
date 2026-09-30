@@ -141,9 +141,9 @@ export default function Missions({ id, go, query }) {
     <div className="page">
       <div className="page-head">
         <div><h1>Misiuni</h1><p>Fluxuri utilizabile pentru Ifrim Digital, fiecare cu criterii, dependențe și dovezi. Progresul se calculează din taskuri finalizate.</p></div>
-        <button className="btn primary" onClick={() => setCreating(true)}><Plus size={16} />Misiune nouă</button>
+        <button className="btn primary" data-lega-target="mission-new" onClick={() => setCreating(true)}><Plus size={16} />Misiune nouă</button>
       </div>
-      <Panel title="Toate misiunile" icon={Target} flush>
+      <Panel title="Toate misiunile" icon={Target} flush data-lega-target="missions-list">
         {loading ? <div className="panel-body"><Loading /></div> : error ? <div className="panel-body"><ErrorNotice error={error} onRetry={reload} /></div> : data.missions.length ? (
           <ul className="list">{data.missions.map((m) => (
             <li key={m.id}><a className="list-row" href={`#/missions/${m.id}`}>

@@ -67,9 +67,11 @@ export function Loading({ lines = 3 }) {
   return <div className="stack tight" aria-busy="true" aria-label="Se încarcă">{Array.from({ length: lines }, (_, i) => <div key={i} className="skeleton" style={{ width: `${90 - i * 18}%` }} />)}</div>;
 }
 
-export function Panel({ title, icon: Icon, actions, children, flush, className = "", id }) {
+export function Panel({ title, icon: Icon, actions, children, flush, className = "", id, ...rest }) {
+  // `rest` carries data-* attributes only (e.g. data-lega-target, the anchor Lega's arrow points at).
+  const data = Object.fromEntries(Object.entries(rest).filter(([k]) => k.startsWith("data-")));
   return (
-    <section className={`panel ${className}`} aria-labelledby={id ? `${id}-h` : undefined}>
+    <section className={`panel ${className}`} aria-labelledby={id ? `${id}-h` : undefined} {...data}>
       {(title || actions) && (
         <header className="panel-head">
           <h2 id={id ? `${id}-h` : undefined}>{Icon && <Icon size={16} aria-hidden="true" />}{title}</h2>
