@@ -9,6 +9,7 @@ import { evaluateRoute, scanEnvironment, ATTESTATION_TEXT, BILLING_POLICY } from
 import { TASK_STATES } from "../runtime/state-machine.mjs";
 import { describeLifecycles } from "../runtime/lifecycles.mjs";
 import { inspectionFromState } from "../policy/gate.mjs";
+import { evaluateIsolation, CODEX_ACL_CONSENT_TEXT, CODEX_PROFILE_BY_ACCESS } from "../policy/isolation.mjs";
 import { MISSION_TEMPLATES } from "../domain/missions.mjs";
 import { MEMORY_SCOPES, MEMORY_TYPES, MEMORY_SOURCES } from "../domain/memory.mjs";
 import { LEAD_STATUSES } from "../domain/leads.mjs";
@@ -29,6 +30,9 @@ const ECOSYSTEM_FILES = new Set(["openai", "anthropic", "standards", "matrix", "
  * (channel "ui") so it is validated, policy-checked, logged and evented in one place.
  */
 export function registerRoutes(router, hub, { token }) {
+  // Open SSE responses: the simulator can drop them to demonstrate reconnect + replay (Last-Event-ID).
+  const openStreams = new Set();
+  hub.dropStreams = () => { const n = openStreams.size; for (const res of openStreams) { try { res.end(); } catch { /* gone */ } } openStreams.clear(); return n; };
   const { db, bus, settings, projects, conversations, missions, approvals, leases, grants, providerState, usage, memory, leads, backups,
     providers, gate, runs, handoffs, tools, supervisor, config, commands, company, chiefOfStaff, surfaces, schedules, computer, skills,
     checkpoints, artifacts, integrations, nativeSessions, telemetry, policy } = hub;
@@ -48,7 +52,17 @@ export function registerRoutes(router, hub, { token }) {
   const cmd = (type, map = ({ body }) => body, options) => (ctx) => dispatch(ctx.req, type, map(ctx), options);
 
   // ---------- session, health, state ----------
-  get("/api/health", () => ({ ok: true, version: HUB_VERSION, bootId: hub.bootId, mode: settings.get("mode"), gate: settings.get("executionGate").status, time: clock().toISOString() }));
+  get("/api/health", () => ({ ok: true, version: HUB_VERSION, bootId: hub.bootId, mode: settings.get("mode"), gate: settings.get("executionGate").status, time: clock().toISOString(), simulation: Boolean(config.simulation) }));
+
+  // ---------- simulator (only inside a simulation process; the real Hub answers 404) ----------
+  get("/api/sim", () => {
+    if (!config.simulation || !hub.simulation) throw new HubError("not_found", "Not a simulation process");
+    return { banner: hub.simulation.banner, actions: hub.simulation.actions };
+  });
+  post("/api/sim/:action", async ({ params }) => {
+    if (!config.simulation || !hub.simulation) throw new HubError("not_found", "Not a simulation process");
+    return hub.simulation.action(params.action);
+  });
   get("/api/session", ({ req }) => {
     const site = req.headers["sec-fetch-site"];
     if (site && !["same-origin", "same-site", "none"].includes(site)) throw new HubError("policy", "Cross-site session request refused");
@@ -76,7 +90,16 @@ export function registerRoutes(router, hub, { token }) {
       recentFailures: db.prepare("SELECT id, provider, error_category AS category, error_message AS message, pre_inference AS preInference, created_at AS createdAt FROM agent_runs WHERE (status IN ('failed','interrupted_unknown','orphaned') OR (status = 'blocked' AND COALESCE(error_category, '') <> 'gate')) AND created_at >= ? ORDER BY created_at DESC LIMIT 5")
         .all(new Date(clock().getTime() - 30 * 60000).toISOString()),
       company: { name: company.company()?.name, activeDepartments: company.departments().filter((d) => d.status === "active").length,
-        openGoals: db.prepare("SELECT COUNT(*) AS n FROM goals WHERE status NOT IN ('ACHIEVED','ABANDONED')").get().n },
+        openGoals: db.prepare("SELECT COUNT(*) AS n FROM goals WHERE status NOT IN ('ACHIEVED','ABANDONED')").get().n,
+        // Configured structure (not work done): departments and roles; runs are counted separately.
+        departments: company.departments().map((d) => ({ key: d.key, name: d.name, status: d.status, roles: hub.roleConfig.roles.filter((r) => r.department === d.key).length })),
+        roles: hub.roleConfig.roles.length },
+      simulation: Boolean(config.simulation), serverTime: clock().toISOString(),
+      // "Unde continui?": latest conversations and the latest finished runs (results), newest first.
+      recentConversations: db.prepare(`SELECT c.id, c.title, c.status, c.writer_provider AS writerProvider, c.active_mission_id AS missionId, c.updated_at AS updatedAt, p.name AS projectName
+        FROM conversations c LEFT JOIN projects p ON p.id = c.project_id ORDER BY c.updated_at DESC LIMIT 6`).all(),
+      recentResults: db.prepare(`SELECT id, provider, status, stage, model, conversation_id AS conversationId, task_id AS taskId, error_category AS errorCategory, pre_inference AS preInference,
+        finished_at AS finishedAt, created_at AS createdAt FROM agent_runs WHERE status IN ('completed','failed','interrupted','blocked') ORDER BY COALESCE(finished_at, created_at) DESC LIMIT 6`).all(),
       surfaces: { total: surfaceList.length, available: surfaceList.filter((s) => s.availability === "available").length, assisted: surfaceList.filter((s) => s.availability === "assisted").length },
       schedules: { active: db.prepare("SELECT COUNT(*) AS n FROM schedules WHERE status = 'ACTIVE'").get().n },
       nativeSessions: db.prepare("SELECT COUNT(*) AS n FROM native_sessions WHERE status <> 'ended'").get().n,
@@ -104,6 +127,7 @@ export function registerRoutes(router, hub, { token }) {
   get("/api/stream", ({ req, res, query }) => {
     res.writeHead(200, { "Content-Type": "text/event-stream; charset=utf-8", "Cache-Control": "no-store", Connection: "keep-alive", "X-Accel-Buffering": "no" });
     let lastSent = Number(req.headers["last-event-id"] || query.after || 0);
+    openStreams.add(res);
     let closed = false;
     const write = (text) => {
       if (closed) return;
@@ -121,7 +145,7 @@ export function registerRoutes(router, hub, { token }) {
     const offBus = bus.subscribe((event) => { if (event.seq > lastSent) flushPersisted(); });
     const offLive = hub.live.subscribe((event) => write(`event: live\ndata: ${JSON.stringify(event)}\n\n`));
     const ping = setInterval(() => write(": ping\n\n"), 20000);
-    req.on("close", () => { closed = true; offBus(); offLive(); clearInterval(ping); });
+    req.on("close", () => { closed = true; openStreams.delete(res); offBus(); offLive(); clearInterval(ping); });
     return undefined;
   });
 
@@ -157,6 +181,8 @@ export function registerRoutes(router, hub, { token }) {
   // ---------- projects & tools ----------
   get("/api/projects", () => ({ projects: projects.list() }));
   post("/api/projects/sync", cmd("projects.sync", () => ({})));
+  post("/api/projects/test", cmd("project.register_test", ({ body }) => body, { created: true }));
+  post("/api/projects/:id/retire-test", cmd("project.retire_test", ({ params }) => ({ projectId: params.id })));
   get("/api/projects/:id", async ({ params }) => {
     const project = need(projects.get(params.id), "Project");
     const readable = fs.existsSync(project.path);
@@ -166,10 +192,28 @@ export function registerRoutes(router, hub, { token }) {
       instructions: readable ? ["CLAUDE.md", "AGENTS.md", ".ifrim/NEXT_SESSION.md", ".ifrim/PROJECT_STATE.md", ".ifrim/OPEN_ISSUES.md", ".ifrim/PREVIEW.md"].filter((f) => fs.existsSync(path.join(project.path, f))) : [] };
   });
   get("/api/tools", () => ({ tools: tools.definitions }));
+  get("/api/browser/status", () => tools.browserStatus());
+  post("/api/browser/:approvalId/execute", cmd("approval.execute_browser", ({ params }) => ({ approvalId: params.approvalId })));
+  get("/api/browser/evidence/:file", ({ params }) => {
+    if (!/^shot_[a-z0-9_]+\.png$/i.test(params.file)) throw new HubError("validation", "Invalid evidence name");
+    const file = path.join(config.dataDir, "browser-evidence", params.file);
+    if (!fs.existsSync(file)) throw new HubError("not_found", "Screenshot not found");
+    return { __raw: true, contentType: "image/png", body: fs.readFileSync(file) };
+  });
+  // Tool call history (e.g. process.run = test/build runs): time, command, exit code, duration, redacted output tail.
+  get("/api/tool-calls", ({ query }) => {
+    const limit = Math.min(100, Number(query.limit) || 20);
+    const rows = db.prepare(`SELECT id, run_id AS runId, tool, args_json AS args, effects, status, result_json AS result, started_at AS startedAt, finished_at AS finishedAt
+      FROM tool_calls WHERE (? IS NULL OR tool = ?) ORDER BY started_at DESC LIMIT ?`).all(query.tool || null, query.tool || null, limit);
+    return { calls: rows.map((r) => redactDeep({ ...r, args: JSON.parse(r.args || "{}"), result: JSON.parse(r.result || "{}") })) };
+  });
   post("/api/tools/:toolId", cmd("tool.invoke", ({ params, body }) => ({ toolId: params.toolId, projectId: body.projectId, args: body.args || {} })));
 
   // ---------- conversations & runs ----------
-  get("/api/conversations", ({ query }) => ({ conversations: conversations.list(query.projectId || null) }));
+  get("/api/conversations", ({ query }) => {
+    const names = new Map(projects.list().map((pr) => [pr.id, pr.name]));
+    return { conversations: conversations.list(query.projectId || null).map((c) => ({ ...c, projectName: names.get(c.projectId) || null })) };
+  });
   post("/api/conversations", cmd("conversation.create", ({ body }) => body, { created: true }));
   get("/api/conversations/:id", ({ params, query }) => {
     const conversation = need(conversations.get(params.id), "Conversation");
@@ -239,7 +283,13 @@ export function registerRoutes(router, hub, { token }) {
   // ---------- approvals & policies ----------
   get("/api/approvals", ({ query }) => ({ approvals: approvals.list(query.status || null) }));
   post("/api/approvals/:id/decide", cmd("approval.decide", ({ params, body }) => ({ ...body, approvalId: params.id })));
-  post("/api/approvals/:id/execute", cmd("approval.execute_script", ({ params }) => ({ approvalId: params.id })));
+  // Executes an approved local action; the command is chosen by the approval's action kind (script or browser check).
+  post("/api/approvals/:id/execute", ({ req, params }) => {
+    const approval = approvals.get(params.id);
+    if (!approval) throw new HubError("not_found", "Approval not found");
+    const type = approval.actionKind === "browser.inspect" ? "approval.execute_browser" : "approval.execute_script";
+    return dispatch(req, type, { approvalId: params.id });
+  });
   get("/api/policies", () => policy.list());
   get("/api/policies/evaluate", ({ query }) => policy.evaluate({ actionKind: String(query.actionKind || ""), surfaceId: query.surfaceId || "*", projectId: query.projectId || "*", taskId: query.taskId || null, target: query.target || "" }));
   post("/api/policies", cmd("policy.set_rule", ({ body }) => body, { created: true }));
@@ -252,6 +302,21 @@ export function registerRoutes(router, hub, { token }) {
   post("/api/providers/:id/inspect", async ({ req, params }) => { await dispatch(req, "provider.inspect", { provider: params.id }); return providerSummary(params.id); });
   post("/api/providers/:id/probe", async ({ req, params, body }) => { await dispatch(req, "provider.probe", { provider: params.id, withModels: Boolean(body?.withModels) }); return providerSummary(params.id); });
   post("/api/billing/attest", cmd("billing.attest"));
+  // Workspace isolation (M02 §05): what each provider's model tools are denied, and the Codex ACL consent state.
+  get("/api/isolation", () => {
+    const codex = hub.codexIsolation();
+    const consent = settings.get("isolationConsent") || {};
+    const sandbox = inspectionFromState(providerState.get("codex"), clock())?.sandbox || null;
+    const evaluate = (provider, access) => evaluateIsolation({ provider, access, sandbox: provider === "codex" ? sandbox : null, consent: consent[provider] || null, fingerprint: provider === "codex" ? codex.fingerprint : null });
+    return {
+      codex: { profiles: CODEX_PROFILE_BY_ACCESS, paths: codex.paths, fingerprint: codex.fingerprint, consent: consent.codex || null, consentText: CODEX_ACL_CONSENT_TEXT,
+        consentCurrent: Boolean(consent.codex && consent.codex.fingerprint === codex.fingerprint), sandbox,
+        reversal: 'icacls "<cale>" /remove:d CodexSandboxUsers', readOnly: evaluate("codex", "read-only"), workspaceWrite: evaluate("codex", "workspace-write") },
+      claude: { readOnly: evaluate("claude", "read-only"), workspaceWrite: evaluate("claude", "workspace-write") },
+    };
+  });
+  post("/api/isolation/consent", cmd("isolation.consent"));
+  post("/api/isolation/revoke", cmd("isolation.revoke"));
   get("/api/grants", () => ({ grants: grants.list() }));
   post("/api/grants", cmd("grant.create", ({ body }) => body, { created: true }));
   post("/api/grants/:id/revoke", cmd("grant.revoke", ({ params }) => ({ grantId: params.id })));

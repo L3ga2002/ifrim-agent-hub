@@ -1,7 +1,8 @@
 import { useState, useEffect } from "react";
 import { Target, Plus, MessageSquare, ChevronLeft } from "lucide-react";
 import { api, fmt } from "../api.js";
-import { useResource, useAction } from "../store.js";
+import { useResource, useAction, usePref } from "../store.js";
+import { missionProgress } from "../lib/uiLogic.js";
 import { Panel, Empty, Loading, ErrorNotice, StatusChip, Dialog, Notice } from "../components/ui.jsx";
 import { TaskGraph } from "../components/TaskGraph.jsx";
 
@@ -59,9 +60,10 @@ function TaskActions({ task, onDone }) {
   );
 }
 
-function MissionDetail({ id, go }) {
+function MissionDetail({ id, go, query }) {
   const { data, error, loading, reload } = useResource(`/api/missions/${id}`, { reloadOn: (e) => e.type.startsWith("task.") || e.scopeId === id || e.type.startsWith("run.") });
-  const [selected, setSelected] = useState(null);
+  const [selected, setSelected] = useState(query?.task || null);
+  const [view, setView] = usePref("missions.view", "graph");
   if (loading) return <div className="page"><Loading lines={6} /></div>;
   if (error) return <div className="page"><ErrorNotice error={error} onRetry={reload} /></div>;
   const { mission, tasks, progress, events } = data;
@@ -78,9 +80,11 @@ function MissionDetail({ id, go }) {
       </div>
       <div className="split-main">
         <div className="stack">
-          <Panel title={`Taskuri · ${progress.completed}/${progress.total} finalizate`} icon={Target}>
-            <TaskGraph tasks={tasks} onOpen={(t) => setSelected(t.id)} />
-            <div className="table-wrap" style={{ marginTop: 12 }}>
+          <Panel title={`Taskuri · ${progress.completed}/${progress.total} finalizate`} icon={Target}
+            actions={<div className="seg" role="group" aria-label="Vedere"><button aria-pressed={view === "graph"} onClick={() => setView("graph")}>Graf</button><button aria-pressed={view === "list"} onClick={() => setView("list")}>Listă</button></div>}>
+            {(() => { const p = missionProgress(tasks); return <div className="counts small" style={{ marginBottom: 8 }}><span>{p.completed}/{p.total} finalizate</span>{p.blocked > 0 && <span className="warn">{p.blocked} blocate</span>}{p.waitingApproval > 0 && <span className="approval">{p.waitingApproval} așteaptă aprobare</span>}{p.verifying > 0 && <span>{p.verifying} în verificare</span>}<span className="faint">({p.method})</span></div>; })()}
+            {view === "graph" && <div className="hide-phone"><TaskGraph tasks={tasks} onOpen={(t) => setSelected(t.id)} /></div>}
+            <div className={`table-wrap ${view === "graph" ? "show-phone" : ""}`} style={{ marginTop: 12 }}>
               <table className="table table-mobile-cards">
                 <thead><tr><th>Task</th><th>Rol</th><th>Etapă</th><th>Acces</th><th>Stare</th><th>Încercări</th></tr></thead>
                 <tbody>{tasks.map((t) => (
@@ -111,7 +115,11 @@ function MissionDetail({ id, go }) {
                 <dl className="kv">
                   <dt>Stare</dt><dd><StatusChip status={task.status} /></dd><dt>Motiv</dt><dd>{task.statusReason || "—"}</dd>
                   <dt>Rol · etapă</dt><dd>{task.roleId} · {task.stage}</dd><dt>Dependențe</dt><dd>{task.dependsOn.length ? (task.dependenciesMet ? "finalizate" : "în așteptare") : "niciuna"}</dd>
+                  <dt>Owner → Reviewer → QA</dt><dd>{["owner", "reviewer", "qa"].map((st) => tasks.filter((x) => x.stage === st).map((x) => x.roleId).join(", ") || "—").join(" → ")}</dd>
+                  <dt>Ultima activitate</dt><dd>{task.lastActivityAt ? fmt.dateTime(task.lastActivityAt) : "nicio activitate înregistrată"}</dd>
+                  {task.evidence && Object.keys(task.evidence).length > 0 && <><dt>Dovezi</dt><dd>{task.evidence.manualVerification || JSON.stringify(task.evidence).slice(0, 300)}</dd></>}
                 </dl>
+                {task.acceptance?.length > 0 && <div><div className="section-title">Criterii</div><ul className="plain-list">{task.acceptance.map((a) => <li key={a}>{a}</li>)}</ul></div>}
                 <TaskActions task={task} onDone={reload} />
                 {task.runs.length > 0 && <div><div className="section-title">Execuții (dovezi separate)</div><ul className="list">{task.runs.map((r) => <li key={r.id}><div className="list-row" style={{ padding: "6px 0" }}><span className="grow">{r.provider} · {r.stage} · {fmt.dateTime(r.createdAt)}</span><StatusChip status={r.status} /></div></li>)}</ul></div>}
                 <div><div className="section-title">Tranziții</div><ul className="list">{task.transitions.map((tr) => <li key={tr.id}><div className="list-row" style={{ padding: "6px 0", flexWrap: "wrap" }}><span className="mono nowrap">{tr.from_status} → {tr.to_status}</span><span className="faint grow">{tr.reason}</span></div></li>)}</ul></div>
@@ -128,7 +136,7 @@ function MissionDetail({ id, go }) {
 export default function Missions({ id, go, query }) {
   const { data, error, loading, reload } = useResource(id ? null : "/api/missions", { reloadOn: (e) => e.type.startsWith("mission.") || e.type.startsWith("task.") });
   const [creating, setCreating] = useState(Boolean(query?.new));
-  if (id) return <MissionDetail id={id} go={go} />;
+  if (id) return <MissionDetail id={id} go={go} query={query} />;
   return (
     <div className="page">
       <div className="page-head">

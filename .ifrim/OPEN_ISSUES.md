@@ -1,5 +1,27 @@
 # Open Issues - Ifrim Agent Hub
 
+## Milestone 02 Open Items - 2026-09-30 (supersede the items below where they overlap)
+
+- M02-LIVE (P1): Claude read-only PASS_LIVE on the sanitized test project (2026-09-30, run `run_muo6i9og_50c329673c`). Codex pending: the Claude Code auto-mode permission classifier refused the real ACL pre-flight (not worked around), so the owner runs the pre-flight in their own terminal and starts the prepared Codex run from the UI (grant `grant_muo6lo5l_7d6f521584`, 1 attempt, expires 16:09Z). The gate stays open in LIVE_VALIDATION until that test; afterwards return to BUILD_SAFE.
+- Leftover (P3): an empty conversation titled with a broken character ("Validare live M02 � Claude") was created when curl sent non-UTF-8 text; there is no delete/rename command, it is harmless.
+- Codex ACL consent (P1, your decision). Details: `M02_SECURITY_READINESS.md` F2–F4.
+  - The Windows elevated sandbox enforces the Hub deny list by writing persistent DENY-read ACEs for `CodexSandboxUsers`; they also apply to Codex desktop sessions.
+  - The gate blocks Codex on Windows until you record consent for the exact list: Integrations → Izolare, 16 paths, fingerprint `9cab02fd58238507`.
+  - Then run the real pre-flight (no model).
+  - Reversal per path: `icacls "<path>" /remove:d CodexSandboxUsers`.
+- Codex account check after M02 (P1, your action). The last check (13:01) predates the sandbox readiness read, so the gate reports "neverificat" until a new "Verifică contul" (contacts OpenAI, no inference).
+- Other projects under `Ifrim Digital Proiecte` (P2, decision).
+  - With `:root = read`, Codex can read non-protected files of other projects by absolute path.
+  - Absolute `**` globs work (F5) but would write ACEs into other projects, so they are prepared, not enabled.
+- `~/.codex/config.toml*` (P2): readable by the sandbox and may hold MCP env values. Verify the runner with it denied during the pre-flight before extending the list (new fingerprint, new consent).
+- Claude Code with shell/write on native Windows (P2, platform): SECURITY_BLOCKER (no OS sandbox). Read-only is tool-level only.
+- Playwright (P2, NEEDS_INSTALL_APPROVAL): devDependency with `PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1`, reusing Chromium 1223/1228 from `%LOCALAPPDATA%\ms-playwright`. Browser Workspace E2E is not run.
+- Local Romanian speech engine (P3, NEEDS_INSTALL_APPROVAL): strict local mode shows NEEDS_SETUP; the browser engine sends audio online and is not used.
+- Not measurable in the test pane (P3): real FPS, OS reduced-motion emulation, long sessions, screen reader. Measured instead: GPU cost per frame, short-session heap, DOM audit.
+- File symlink test (P3, SKIPPED_ENV): unchanged; Developer Mode not enabled.
+- Uncommitted work (decision): M02 on branch `v2-milestone-01`; proposed commit message in `.ifrim/CHECKPOINTS/2026-09-30-milestone-02-done.md` (not executed).
+
+
 ## Milestone 01 Open Items - 2026-09-30 (supersede the V2 items below where they overlap)
 
 - V2-LIVE (P1, blocked by a local permission): on 2026-09-30 the owner approved the live validation, recorded both billing attestations and ran the account checks. The Claude Code auto-mode permission classifier refused to let the session drive it (classified as a production deploy); it was not worked around. No PASS_LIVE label exists yet; see NEXT_SESSION for how to run it.

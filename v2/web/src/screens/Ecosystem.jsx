@@ -1,10 +1,12 @@
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Orbit, Sparkles, Scale, Table2, Layers, Boxes, Route, Plug, ChevronDown, ChevronRight, RefreshCw, Radar, Check, Hand, Clock, Minus, Search, ShieldCheck } from "lucide-react";
+import { LayoutGrid, Orbit, Sparkles, Scale, Table2, Layers, Boxes, Route, Plug, ChevronDown, ChevronRight, RefreshCw, Radar, Check, Hand, Clock, Minus, Search, ShieldCheck } from "lucide-react";
 import { api, fmt } from "../api.js";
 import { useResource, useAction, usePref } from "../store.js";
 import { Panel, Loading, ErrorNotice, Empty, Chip, StatusChip, Notice } from "../components/ui.jsx";
+import { CatalogTab } from "./ecosystem/Catalog.jsx";
 
 const TABS = [
+  { id: "catalog", label: "Catalog", icon: LayoutGrid },
   { id: "openai", label: "Audit OpenAI", icon: Orbit },
   { id: "anthropic", label: "Audit Anthropic", icon: Sparkles },
   { id: "standards", label: "Standarde", icon: Scale },
@@ -780,6 +782,7 @@ function IntegrationsTab() {
 // ---------------------------------------------------------------- screen
 
 const PANELS = {
+  catalog: CatalogTab,
   openai: () => <AuditTab name="openai" label="Audit OpenAI" icon={Orbit} />,
   anthropic: () => <AuditTab name="anthropic" label="Audit Anthropic" icon={Sparkles} />,
   standards: () => <AuditTab name="standards" label="Standarde deschise" icon={Scale} />,

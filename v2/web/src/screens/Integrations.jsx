@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { Plug, ShieldCheck, KeyRound, Search as SearchIcon, ExternalLink } from "lucide-react";
+import { Plug, ShieldCheck, KeyRound, Search as SearchIcon, ExternalLink, Lock } from "lucide-react";
 import { api, fmt } from "../api.js";
 import { useResource, useAction, useHub, refresh } from "../store.js";
 import { Panel, Loading, ErrorNotice, Chip, Checks, Notice, StatusChip, Empty } from "../components/ui.jsx";
@@ -40,6 +40,45 @@ function ProviderCard({ provider, attestationText, onChange }) {
           </div>
         )}
         <ErrorNotice error={inspect.error || probe.error || attest.error} />
+      </div>
+    </Panel>
+  );
+}
+
+/** Workspace isolation (M02 §05): what the model's tools cannot read, and the owner's consent to the Codex ACEs. */
+function IsolationPanel() {
+  const iso = useResource("/api/isolation", { reloadOn: (e) => e.type === "settings.changed" || e.type.startsWith("provider.") });
+  const [text, setText] = useState("");
+  const consent = useAction(async () => { await api("/api/isolation/consent", { method: "POST", body: { provider: "codex", confirmText: text, fingerprint: iso.data.codex.fingerprint } }); setText(""); iso.reload(); refresh(); });
+  const revoke = useAction(async () => { await api("/api/isolation/revoke", { method: "POST", body: { provider: "codex" } }); iso.reload(); refresh(); });
+  if (iso.loading) return <Loading lines={3} />;
+  if (iso.error) return <ErrorNotice error={iso.error} onRetry={iso.reload} />;
+  const { codex, claude } = iso.data;
+  const Row = ({ label, v }) => <li><div className="list-row"><div className="grow"><div className="title">{label}</div><div className="sub">{v.detail}</div></div><Chip tone={v.ok ? "ok" : /NEEDS_/.test(v.detail) ? "warn" : "error"}>{v.ok ? `permis · ${v.level === "os" ? "limită OS" : "limită unealtă"}` : /NEEDS_/.test(v.detail) ? "necesită aprobare" : "blocat"}</Chip></div></li>;
+  return (
+    <Panel title="Izolare workspace (ce nu pot citi uneltele modelului)" icon={Lock}>
+      <div className="stack">
+        <ul className="list">
+          <Row label="Codex · doar citire" v={codex.readOnly} /><Row label="Codex · scriere în workspace" v={codex.workspaceWrite} />
+          <Row label="Claude Code · doar citire" v={claude.readOnly} /><Row label="Claude Code · scriere/shell" v={claude.workspaceWrite} />
+        </ul>
+        <details>
+          <summary className="link-btn" style={{ cursor: "pointer" }}>Căile negate pentru Codex pe acest calculator ({codex.paths.length} + .env oriunde în workspace) · amprentă {codex.fingerprint}</summary>
+          <pre className="pre" style={{ maxHeight: 220, marginTop: 8 }}>{codex.paths.join("\n")}</pre>
+        </details>
+        <p className="muted small" style={{ margin: 0 }}>Sandbox-ul Windows al Codex aplică refuzul scriind reguli ACL DENY pentru grupul CodexSandboxUsers. Regulile rămân după rulare și se aplică și în Codex desktop; contul tău nu este afectat. Revenire: <span className="mono">{codex.reversal}</span>. ~/.codex nu este negat întreg (acolo rulează sandbox-ul), doar autentificarea și istoricul.</p>
+        {codex.consentCurrent ? (
+          <div className="row wrap"><Chip tone="ok">acord înregistrat {fmt.dateTime(codex.consent.confirmedAt)}</Chip><button className="btn sm ghost" disabled={revoke.pending} onClick={revoke.run}>Retrage acordul</button></div>
+        ) : (
+          <div className="stack tight">
+            {codex.consent && <Notice tone="warn" title="Lista s-a schimbat">Acordul anterior era pentru amprenta {codex.consent.fingerprint}; revizuiește lista și confirmă din nou.</Notice>}
+            <p className="muted" style={{ margin: 0 }}>Nicio execuție Codex nu pornește pe Windows fără acest acord. Tastează exact:</p>
+            <pre className="pre" style={{ maxHeight: 120 }}>{codex.consentText}</pre>
+            <textarea className="textarea" rows={3} value={text} onChange={(e) => setText(e.target.value)} aria-label="Text de acord pentru izolarea Codex" />
+            <button className="btn sm" disabled={text !== codex.consentText || consent.pending} onClick={consent.run}>Înregistrează acordul pentru această listă</button>
+          </div>
+        )}
+        <ErrorNotice error={consent.error || revoke.error} />
       </div>
     </Panel>
   );
@@ -104,6 +143,7 @@ export default function Integrations() {
       <div className="grid two" style={{ marginTop: 16 }}>
         {data.providers.map((p) => <ProviderCard key={p.id} provider={p} attestationText={data.attestationText[p.id]} onChange={() => { reload(); refresh(); }} />)}
       </div>
+      <div style={{ marginTop: 16 }}><IsolationPanel /></div>
       <div style={{ marginTop: 16 }}><LivePanel integrations={data} onChange={reload} /></div>
       <div style={{ marginTop: 16 }}>
         <Panel title={`Registru capabilități · verificat ${data.capabilities.verifiedOn}`} icon={Plug} actions={

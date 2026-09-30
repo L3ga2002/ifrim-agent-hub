@@ -1,6 +1,7 @@
 import { StrictMode, Suspense, lazy, useEffect, useState, useCallback } from "react";
 import { createRoot } from "react-dom/client";
 import "./styles/app.css";
+import "./styles/m02.css";
 import { startHubConnection, useHub } from "./store.js";
 import { Shell } from "./shell/Shell.jsx";
 import { Loading } from "./components/ui.jsx";
@@ -29,7 +30,8 @@ export function parseRoute(hash) {
   const parts = pathPart.split("/").filter(Boolean).map(decodeURIComponent);
   const [name = "control", id = null] = parts;
   const query = Object.fromEntries(new URLSearchParams(queryPart));
-  if (name === "conversations" && id) return { name: "focus", id, query };
+  // Focus is the conversation workspace: /conversations (list + empty center) and /conversations/:id.
+  if (name === "conversations") return { name: "focus", id, query };
   return { name: screens[name] ? name : "control", id, query };
 }
 

@@ -58,12 +58,13 @@ export async function makeTestHub({ codex = "ok", claude = "ok", port = 0, clock
 }
 
 /** Puts a test hub into a state where a run is admissible (all through public module APIs). */
-export async function enableLive(hub, { provider = "codex", access = "read-only", attempts = 3 } = {}) {
+export async function enableLive(hub, { provider = "codex", access = "read-only", attempts = 3, isolationConsent = true } = {}) {
   const project = hub.projects.hub();
   hub.bus.transaction(() => {
     hub.settings.set("mode", "LIVE_VALIDATION", "test");
     hub.settings.set("executionGate", { status: "open", reason: "test", changedAt: new Date().toISOString(), changedBy: "test" }, "test");
     hub.settings.set("billingAttestations", { codex: { confirmedAt: new Date().toISOString(), text: ATTESTATION_TEXT.codex }, claude: { confirmedAt: new Date().toISOString(), text: ATTESTATION_TEXT.claude } }, "test");
+    if (isolationConsent) hub.settings.set("isolationConsent", { codex: { confirmedAt: new Date().toISOString(), fingerprint: hub.codexIsolation().fingerprint } }, "test");
   });
   for (const id of ["codex", "claude"]) {
     const installation = await hub.providers[id].inspectInstallation();

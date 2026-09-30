@@ -3,7 +3,7 @@ import path from "node:path";
 import crypto from "node:crypto";
 import { HubError } from "../core/errors.mjs";
 import { newId } from "../core/ids.mjs";
-import { isInside, isSecretLikeName } from "../security/paths.mjs";
+import { isInside, isSecretLikeName, isProtectedRelative } from "../security/paths.mjs";
 
 export const ARTIFACT_SOURCES = Object.freeze(["hub", "local_file", "claude_artifact", "claude_project", "claude_research", "claude_cowork", "openai_page",
   "openai_slides", "openai_space", "codex_cloud", "codex_review", "other"]);
@@ -32,7 +32,14 @@ export function createArtifacts({ db, bus, clock, projects }) {
     if (filePath) {
       const abs = path.resolve(project.path, filePath);
       if (!isInside(project.path, abs)) throw new HubError("policy", "Artifact file must be inside the project");
-      if (isSecretLikeName(path.basename(abs)) || /[\\/]\.ifrim[\\/]private[\\/]/i.test(abs)) throw new HubError("policy", "Secret-like files are not registered as artifacts");
+      // Protected locations are judged relative to the project (and again on the real path, so a junction cannot hide them).
+      const protectedHere = (root, target) => isProtectedRelative(path.relative(root, target));
+      if (isSecretLikeName(path.basename(abs)) || protectedHere(project.path, abs)) throw new HubError("policy", "Secret-like files are not registered as artifacts");
+      if (fs.existsSync(abs)) {
+        const realRoot = fs.realpathSync.native(project.path); const realAbs = fs.realpathSync.native(abs);
+        if (!isInside(realRoot, realAbs)) throw new HubError("policy", "Artifact file must be inside the project");
+        if (protectedHere(realRoot, realAbs)) throw new HubError("policy", "Secret-like files are not registered as artifacts");
+      }
       if (!fs.existsSync(abs) || !fs.statSync(abs).isFile()) throw new HubError("validation", "Artifact file not found");
       const stat = fs.statSync(abs);
       size = stat.size;

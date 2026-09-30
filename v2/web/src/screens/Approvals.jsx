@@ -16,7 +16,7 @@ function ActionView({ approval }) {
   return <pre className="pre">{JSON.stringify(p, null, 2)}</pre>;
 }
 
-function ApprovalCard({ approval, onDone }) {
+export function ApprovalCard({ approval, onDone }) {
   const [note, setNote] = useState("");
   const [result, setResult] = useState(null);
   const decide = useAction(async (decision) => {

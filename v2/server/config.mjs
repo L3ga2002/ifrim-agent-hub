@@ -6,7 +6,7 @@ export const V2_ROOT = path.resolve(here, "..");
 export const HUB_ROOT = path.resolve(V2_ROOT, "..");
 export const PROJECTS_ROOT = path.resolve(HUB_ROOT, "..");
 
-export const HUB_VERSION = "2.1.0-m01";
+export const HUB_VERSION = "2.2.0-m02";
 export const DEFAULT_PORT = 8011;
 export const DEFAULT_HOST = "127.0.0.1";
 
@@ -27,6 +27,9 @@ export function loadConfig(overrides = {}, env = process.env) {
   const port = Number(overrides.port ?? env.HUB_V2_PORT ?? DEFAULT_PORT);
   const config = {
     testMode,
+    // Simulator process (M02 §23): test mode + synthetic demo project + fixture providers only.
+    simulation: Boolean(overrides.simulation) && testMode,
+    hubProjectName: overrides.hubProjectName || "Ifrim Agent Hub",
     hubRoot: overrides.hubRoot || HUB_ROOT,
     projectsRoot: overrides.projectsRoot || PROJECTS_ROOT,
     v2Root: V2_ROOT,

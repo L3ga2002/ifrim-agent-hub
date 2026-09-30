@@ -6,6 +6,7 @@ import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { classifyClaudeRetry, classifyText } from "./classify.mjs";
 import { buildChildEnv, BILLING_RISK_ENV } from "../policy/billing.mjs";
+import { claudeDeniedReads } from "../policy/isolation.mjs";
 
 const execFileAsync = promisify(execFile);
 
@@ -50,13 +51,11 @@ export const CLAUDE_GUARD_ENV = Object.freeze({
 
 /**
  * Hard read denials for every Hub run. With --setting-sources user the project's own deny rules
- * (.claude/settings.json) are not loaded, so the Hub passes the protection itself. Read rules also
- * apply to Grep/Glob. Paths are relative to the run's cwd (the project root).
+ * (.claude/settings.json) are not loaded, so the Hub passes the protection itself: relative AND absolute
+ * (//c/... form on Windows) rules for the protected project paths, .env anywhere, and credential directories
+ * in the home folder. Claude Code applies Read rules to Grep/Glob and through symlinks/junctions.
  */
-export const CLAUDE_DENIED_READS = Object.freeze([
-  "Read(./.ifrim/private/**)", "Read(./.ifrim/BACKUPS/**)", "Read(./.ifrim/tmp/**)",
-  "Read(./.env)", "Read(./.env.*)", "Read(./**/.env)", "Read(./**/.env.*)",
-]);
+export const CLAUDE_DENIED_READS = Object.freeze(claudeDeniedReads(null));
 
 const READ_ONLY_TOOLS = ["Read", "Glob", "Grep"];
 const WRITE_TOOLS = ["Read", "Glob", "Grep", "Edit", "Write", "Bash"];
@@ -177,7 +176,7 @@ export function createClaudeAdapter({ config, supervisor, homeDir = os.homedir()
       "--strict-mcp-config", "--mcp-config", JSON.stringify({ mcpServers: {} }),
       "--setting-sources", "user",
       "--no-chrome", // Claude in Chrome acts in the owner's browser: never from a Hub run (computer runtime policy)
-      "--disallowedTools", ...CLAUDE_DENIED_READS,
+      "--disallowedTools", ...claudeDeniedReads(cwd, { homeDir, extra: [config.dataDir, config.backupDir] }),
       ...(access === "workspace-write" ? ["--allowedTools", ...SAFE_BASH] : []),
       ...(newSession ? ["--session-id", nativeSessionId] : ["--resume", nativeSessionId]),
       ...(model ? ["--model", model] : []), ...(effort ? ["--effort", effort] : [])];

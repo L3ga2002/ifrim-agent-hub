@@ -18,7 +18,10 @@
     "v2:server": "node v2/server/main.mjs",
     "dev:v2:web": "vite --config v2/web/vite.config.js",
     "build:v2": "vite build --config v2/web/vite.config.js",
-    "test:v2": "node --test --test-concurrency=1 \"v2/tests/*.test.mjs\""
+    "test:v2": "node --test --test-concurrency=1 \"v2/tests/*.test.mjs\"",
+    "v2:sim": "node v2/scripts/sim.mjs",
+    "v2:sim:stop": "node v2/scripts/sim-stop.mjs --force",
+    "v2:test-project": "node v2/scripts/create-test-project.mjs"
   },
   "dependencies": {
     "@vitejs/plugin-react": "^6.0.3",

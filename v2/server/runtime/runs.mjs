@@ -139,7 +139,7 @@ export function createRunManager(deps) {
           if (Date.now() - lastPersist > PERSIST_INTERVAL_MS) { conversations.updateStreaming(outputMessage.id, content); lastPersist = Date.now(); }
         }),
       });
-      active.set(runId, { handle, conversationId, provider, leaseId: lease.id, taskId, outputMessageId: outputMessage.id, promptPackage: prompt.packageRef });
+      active.set(runId, { handle, conversationId, provider, leaseId: lease.id, taskId, outputMessageId: outputMessage.id, promptPackage: prompt.packageRef, startedAt: clock().toISOString(), lastEventAt: null, firstOutputAt: null });
       db.prepare("UPDATE agent_runs SET pid = ?, pid_started_at = ? WHERE id = ?").run(handle.pid || null, clock().toISOString(), runId);
       handle.done.then((result) => finalize(runId, result, () => content)).catch((error) => finalize(runId, { status: "failed", errorCategory: "internal", error: error.message, output: content }, () => content));
       return { run: getRun(runId), gate: decision };
@@ -157,6 +157,9 @@ export function createRunManager(deps) {
   function onProviderEvent(runId, conversationId, event, appendText) {
     const now = clock().toISOString();
     db.prepare("UPDATE agent_runs SET last_event_at = ? WHERE id = ?").run(now, runId);
+    // Observable phase only (no progress is inferred): waiting for the provider until the first output arrives.
+    const entry = active.get(runId);
+    if (entry) { entry.lastEventAt = now; if (event.type === "delta" && !entry.firstOutputAt) entry.firstOutputAt = now; }
     if (event.type === "delta") {
       appendText(event.text);
       live.publish({ type: "run.delta", conversationId, runId, text: event.text });
@@ -299,6 +302,7 @@ export function createRunManager(deps) {
       note: "No cloud tasks or external effects are started by this Hub build; only local provider processes were interrupted." };
   }
 
-  const activeRuns = () => [...active.entries()].map(([runId, entry]) => ({ runId, provider: entry.provider, conversationId: entry.conversationId, pid: entry.handle.pid }));
+  const activeRuns = () => [...active.entries()].map(([runId, entry]) => ({ runId, provider: entry.provider, conversationId: entry.conversationId, pid: entry.handle.pid, taskId: entry.taskId || null,
+    startedAt: entry.startedAt || null, lastEventAt: entry.lastEventAt || null, firstOutputAt: entry.firstOutputAt || null, phase: entry.firstOutputAt ? "streaming" : "waiting_provider" }));
   return { start, interrupt, stopAll, resolveApproval, getRun, listRuns, activeRuns, activeCount: () => active.size + starting.size, rowToRun };
 }

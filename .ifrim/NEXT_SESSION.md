@@ -1,5 +1,24 @@
 # Next Session - Ifrim Agent Hub
 
+## MILESTONE 02 — 2026-09-30 (current; supersedes Milestone 01 notes below where they overlap)
+
+- **Delivered:** JARVIS experience + security readiness on the M01 foundation, version `2.2.0-m02`.
+  - Real Hub: http://127.0.0.1:8011/ (BUILD_SAFE, gate suspended).
+  - Simulator: http://127.0.0.1:8012/ (`npm run v2:sim`, labelled "SIMULARE — FĂRĂ MODELE REALE").
+- **Start checkpoint:** `.ifrim/CHECKPOINTS/2026-09-30-milestone-02-start.json`. End: `.ifrim/CHECKPOINTS/2026-09-30-milestone-02-done.md`.
+- **Read first:** `M02_IMPLEMENTATION_STATUS` (categories + inventory), `M02_SECURITY_READINESS` (Codex ACL findings), `M02_LIVE_VALIDATION_PLAN`, `M02_TEST_REPORT`, `M02_VISUAL_REVIEW`, `M02_DESIGN_SYSTEM`, `RUNBOOK` (M02 section). Evidence: `.ifrim/M02_EVIDENCE/`.
+- **Tests:** V2 197 (196 pass, 1 SKIPPED_ENV), V1 552 (551 pass, 1 SKIPPED_ENV), build OK, `npm audit` 0. Codex canary 46/46 PASS_LOCAL (fictive files, no model).
+- **Nothing was committed, pushed or deployed. No model was started. No real ACL was changed** (0 DENY ACEs verified on the real paths).
+- **Next, in order, each only with your explicit approval:**
+  1. Codex ACL consent in Integrations → Izolare.
+  2. Real pre-flight: `node v2/tests/manual/codex-real-profile-preflight.mjs --consent-fingerprint=9cab02fd58238507`.
+  3. "Verifică contul" for both providers.
+  4. One read-only live turn per provider on a sanitized project.
+  5. Optional separate handoff test.
+  6. Back to BUILD_SAFE.
+- Installs, separately: Playwright; local speech engine; Claude Code CLI update (global).
+
+
 ## MILESTONE 01 — 2026-09-30 (current; supersedes the V2 REBUILD notes below where they overlap)
 
 - Scope delivered: Dual-Ecosystem Intelligence + Company Runtime + AI Runtime + Core Foundation, version `2.1.0-m01`, schema 2, V2 on http://127.0.0.1:8011/ (BUILD_SAFE, gate suspended). Start checkpoint: `.ifrim/CHECKPOINTS/2026-09-30-milestone-01-start.json`; end checkpoint: `.ifrim/CHECKPOINTS/2026-09-30-milestone-01-done.md`.

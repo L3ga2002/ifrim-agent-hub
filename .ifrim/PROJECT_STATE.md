@@ -1,5 +1,28 @@
 # Project State - Ifrim Agent Hub
 
+## Current State - 2026-09-30 (Milestone 02 built, local version ready for visual evaluation)
+
+Milestone 02 put the JARVIS work experience on the V2 foundation:
+- shell with palette, mini-assistant and phone navigation;
+- Control Room answering "what is happening / what must I decide / where do I continue";
+- an original WebGL2 procedural core with 10 state-driven visuals, SVG fallback, context-loss handling and adaptive quality;
+- a resizable Focus workspace with inspector, bottom panel and composer;
+- missions list/graph;
+- the OpenAI/Anthropic catalog with separate facts;
+- Browser Workspace and Computer panel in their verified states;
+- strict-local voice (NEEDS_SETUP);
+- a separate labelled simulator.
+
+Security readiness replaced the prompt-only protection for Codex with OS-enforced permission profiles:
+- verified on fictive canaries, 46/46;
+- the gate requires your consent to the persistent sandbox ACEs;
+- Claude is limited to read-only tools with absolute denials.
+
+Version `2.2.0-m02`, BUILD_SAFE, gate suspended. No model started; nothing committed or pushed.
+
+Live validation is pending your approvals (`M02_LIVE_VALIDATION_PLAN.md`). This is not a version ready for autonomous work on real data.
+
+
 ## Current State - 2026-09-30 (Milestone 01 built, BUILD_READY)
 
 Milestone 01 turned V2 into the foundation of an AI company operating system with OpenAI and Anthropic as equal first-class ecosystems and the Hub as the one control plane. Native capabilities were audited first (OpenAI, Anthropic, open standards; research plus adversarial verification, no inference on your accounts), then V1 and the frameworks (Paperclip, Hermes, Agent Zero, JARVIS UI, OpenJarvis REFERENCE; OpenClaw RETIRE; Playwright REUSE; Playwright MCP INTEGRATE later). Built:

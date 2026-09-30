@@ -2,7 +2,7 @@
 let token = null;
 let tokenPromise = null;
 
-async function ensureToken() {
+export async function ensureToken() {
   if (token) return token;
   if (!tokenPromise) {
     tokenPromise = fetch("/api/session", { credentials: "same-origin" })
@@ -95,3 +95,25 @@ export const fmt = {
   bytes(n) { if (!n && n !== 0) return "—"; if (n < 1024) return `${n} B`; if (n < 1048576) return `${(n / 1024).toFixed(1)} KB`; return `${(n / 1048576).toFixed(1)} MB`; },
   short(id) { return id ? String(id).split("_").slice(-1)[0].slice(0, 8) : "—"; },
 };
+
+/**
+ * Upload with progress and cancel (XHR; fetch has no upload progress). Returns { promise, abort }.
+ * The file only goes to the local Hub; attaching never sends anything to a provider.
+ */
+export function uploadWithProgress(path, body, onProgress) {
+  const xhr = new XMLHttpRequest();
+  const promise = ensureToken().then((tok) => new Promise((resolve, reject) => {
+    xhr.open("POST", path);
+    xhr.setRequestHeader("Content-Type", "application/json");
+    xhr.setRequestHeader("X-Hub-Token", tok);
+    xhr.upload.onprogress = (e) => { if (e.lengthComputable) onProgress?.(e.loaded / e.total); };
+    xhr.onload = () => {
+      let data = null; try { data = JSON.parse(xhr.responseText); } catch { /* not json */ }
+      if (xhr.status >= 200 && xhr.status < 300) resolve(data); else reject(new ApiError(xhr.status, data));
+    };
+    xhr.onerror = () => reject(new ApiError(0, { error: { message: "Hub server is not reachable (offline)", category: "transport" } }));
+    xhr.onabort = () => reject(Object.assign(new Error("Încărcare anulată"), { name: "AbortError" }));
+    xhr.send(JSON.stringify(body));
+  }));
+  return { promise, abort: () => xhr.abort() };
+}

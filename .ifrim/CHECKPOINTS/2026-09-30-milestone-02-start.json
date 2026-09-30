@@ -1,0 +1,63 @@
+{
+  "kind": "milestone-02-start-checkpoint",
+  "createdAt": "2026-09-30T10:34:39.393Z",
+  "projectRoot": "C:\\Users\\mihai\\OneDrive\\Desktop\\Ifrim Digital Proiecte\\Ifrim Agent Hub",
+  "git": {
+    "branch": "v2-milestone-01",
+    "head": "f31240b68f73b98c81d1c87c0c4772271aea085e",
+    "upstream": "f31240b68f73b98c81d1c87c0c4772271aea085e",
+    "statusPorcelain": [],
+    "diffStat": []
+  },
+  "uncommitted": [],
+  "listeners": [
+    {
+      "address": "127.0.0.1",
+      "port": 3004,
+      "pid": 6684
+    },
+    {
+      "address": "127.0.0.1",
+      "port": 8004,
+      "pid": 1900
+    },
+    {
+      "address": "127.0.0.1",
+      "port": 8011,
+      "pid": 26760
+    },
+    {
+      "address": "127.0.0.1",
+      "port": 18789,
+      "pid": 17276
+    }
+  ],
+  "hubBefore": {
+    "mode": "BUILD_SAFE",
+    "gate": "suspended",
+    "activeRuns": 0,
+    "leases": 0,
+    "pendingApprovals": 0,
+    "lastSeq": 1689
+  },
+  "backup": {
+    "httpStatus": 201,
+    "durationMs": 7704,
+    "id": "bkp_munyxosz_fd43fa0595",
+    "status": "verified",
+    "fileCount": 324,
+    "skipped": 0,
+    "archive": ".ifrim\\BACKUPS\\v2\\2026-09-30T10-34-41-425Z-bkp_munyxosz_fd43fa0595.zip",
+    "manifestSha256": "f7d14709a93ab5774e590f122fea52f3da06abc1e61916be6b56d9e78390a56a",
+    "restore": {
+      "ok": true,
+      "restoredFiles": 324,
+      "databases": 2,
+      "problems": [],
+      "durationMs": 1999,
+      "verifiedAt": "2026-09-30T10:34:48.661Z"
+    },
+    "error": null
+  },
+  "policy": "Checkpoint = manifest + git state + hashes of uncommitted files + restore-verified backup (copy). No commit, tag, push, reset or deletion."
+}

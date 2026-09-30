@@ -13,6 +13,13 @@ export const INTEGRATION_KINDS = Object.freeze(["hub_tool", "mcp_server", "mcp_t
  * and the surface that owns it. Discovery is config snapshot + Hub tool definitions; the Hub never
  * installs or connects an integration by itself.
  */
+/** Hub tool status → registry status; a tool that still needs an install approval is never reported as available. */
+export function hubToolStatus(status) {
+  if (status === "blocked") return "blocked";
+  if (status === "NEEDS_INSTALL_APPROVAL") return "needs_setup";
+  return "available";
+}
+
 export function createIntegrations({ db, bus, clock, config, toolDefinitions }) {
   const rowTo = (r) => r && ({ id: r.id, kind: r.kind, source: r.source, name: r.name, description: r.description, schema: parse(r.schema_json, {}),
     permissions: parse(r.permissions_json, []), sideEffects: r.side_effects, scope: r.scope, permissionTier: r.permission_tier, capabilityId: r.capability_id,
@@ -47,7 +54,7 @@ export function createIntegrations({ db, bus, clock, config, toolDefinitions }) 
     bus.transaction(() => {
       for (const t of toolDefinitions) {
         upsert({ id: `hub.${t.id}`, kind: "hub_tool", source: "hub", name: t.id, description: t.result, schema: t.schema, sideEffects: t.effects === "none" || t.effects.startsWith("none") ? "none" : t.effects.includes("local") ? "local" : "local",
-          scope: "project", permissionTier: t.tier, ownerSurfaceId: "hub.local", status: t.status === "blocked" ? "blocked" : "available", statusReason: t.reason || "",
+          scope: "project", permissionTier: t.tier, ownerSurfaceId: "hub.local", status: hubToolStatus(t.status), statusReason: t.reason || "",
           data: { actionKind: t.id, timeoutMs: t.timeoutMs } }, "hub-tools", now);
         count += 1;
       }

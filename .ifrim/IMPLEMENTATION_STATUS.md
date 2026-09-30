@@ -1,5 +1,7 @@
 # Stadiul implementării V2 — 2026-09-30
 
+> Milestone 02 (2026-09-30): categoriile §31 și inventarul cerință → implementare → test → dovadă → status sunt în `M02_IMPLEMENTATION_STATUS.md`. Conținutul de mai jos este istoricul Milestone 01 / V2.
+
 Nivel global: **BUILD_READY** (versiunea `2.1.0-m01`, schema 2). Nu LIVE_VALIDATED (niciun model pornit), nu RELEASE_CANDIDATE, nu RELEASED (niciun commit/push/deploy).
 
 ## Milestone 01 — Dual-Ecosystem Intelligence + Company Runtime + AI Runtime + Core Foundation

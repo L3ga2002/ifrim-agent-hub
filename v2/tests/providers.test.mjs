@@ -19,8 +19,13 @@ test("T08 Codex adapter (simulated): handshake, account check, thread, streamed 
     const methods = t.readLog("codex").map((e) => e.method).filter(Boolean);
     assert.deepEqual(methods.slice(0, 5), ["initialize", "initialized", "account/read", "account/rateLimits/read", "thread/start"]);
     const turn = t.readLog("codex").find((e) => e.method === "turn/start");
-    assert.equal(turn.params.sandboxPolicy.type, "readOnly");
-    assert.equal(turn.params.sandboxPolicy.networkAccess, false);
+    // M02: access comes from the Hub permission profile selected per process, not from legacy sandbox params.
+    assert.equal(turn.params.sandboxPolicy, undefined);
+    const start = t.readLog("codex").find((e) => e.method === "thread/start");
+    assert.equal(start.params.sandbox, undefined);
+    const launch = t.readLog("codex").find((e) => Array.isArray(e.launchArgs)).launchArgs;
+    assert.ok(launch.includes('default_permissions="ifrim_hub_ro"'), launch.join(" "));
+    assert.ok(launch.some((a) => a.startsWith("permissions.ifrim_hub_ro=") && a.includes('".ifrim/private"="deny"') && a.includes("network={enabled=false}")));
     assert.ok(events.some((e) => e.type === "delta"));
     assert.ok(events.some((e) => e.type === "auth" && e.auth.accountType === "chatgpt"));
     assert.ok(!JSON.stringify(events).includes("someone@example.com"), "identity email never leaves the adapter");

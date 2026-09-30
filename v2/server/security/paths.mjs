@@ -9,6 +9,17 @@ export const isSecretLikeName = (name) => SECRET_NAME.test(name);
 const normalize = (p) => path.resolve(p).replace(/[\\/]+$/, "");
 const lower = (p) => (process.platform === "win32" ? p.toLowerCase() : p);
 
+/** Project-relative directories the Hub never exposes (lowercase, "/"-separated). Same list as the model isolation. */
+export const PROTECTED_DIRS = Object.freeze([".ifrim/private", ".ifrim/backups", ".ifrim/tmp", ".git"]);
+
+/** True when a project-relative path ("/" or "\\") is a protected directory or inside one, or has a secret-like part. */
+export function isProtectedRelative(relative) {
+  const parts = String(relative).split(/[\\/]+/).filter((p) => p && p !== ".");
+  const rel = parts.join("/").toLowerCase();
+  if (PROTECTED_DIRS.some((d) => rel === d || rel.startsWith(`${d}/`))) return true;
+  return parts.some((part) => isSecretLikeName(part));
+}
+
 /** Pure prefix containment (case-insensitive on Windows). */
 export function isInside(root, candidate) {
   const r = lower(normalize(root));
@@ -25,14 +36,7 @@ export function resolveInScope(root, relative, { allowMissing = false, denyPriva
   const rootReal = fs.realpathSync.native(root);
   const target = path.resolve(rootReal, relative);
   if (!isInside(rootReal, target)) throw new HubError("policy", "Path escapes the project scope");
-  const parts = path.relative(rootReal, target).split(path.sep);
-  if (denyPrivate) {
-    const rel = parts.join("/").toLowerCase();
-    if (rel === ".ifrim/private" || rel.startsWith(".ifrim/private/") || rel.startsWith(".git/") || rel === ".git") {
-      throw new HubError("policy", "Path is in a protected directory");
-    }
-    if (parts.some((part) => isSecretLikeName(part))) throw new HubError("policy", "Secret-like file names are not exposed");
-  }
+  if (denyPrivate && isProtectedRelative(path.relative(rootReal, target))) throw new HubError("policy", "Path is protected (private data, backups, scratch, Git internals or a secret-like file)");
   let real;
   try { real = fs.realpathSync.native(target); }
   catch (error) {
@@ -40,5 +44,7 @@ export function resolveInScope(root, relative, { allowMissing = false, denyPriva
     throw new HubError("not_found", "Path not found");
   }
   if (!isInside(rootReal, real)) throw new HubError("policy", "Symlink or junction escapes the project scope");
+  // The requested path may be harmless while a junction/symlink on it leads into a protected directory.
+  if (denyPrivate && isProtectedRelative(path.relative(rootReal, real))) throw new HubError("policy", "Path resolves into a protected location");
   return real;
 }

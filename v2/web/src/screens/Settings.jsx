@@ -3,7 +3,7 @@ import { Settings as Cog, Mic, Database, HardDrive, Monitor } from "lucide-react
 import { api, fmt } from "../api.js";
 import { useResource, useAction, usePref, refresh } from "../store.js";
 import { Panel, Loading, ErrorNotice, Notice, StatusChip, Chip } from "../components/ui.jsx";
-import { detectSpeechEngine, speak } from "../shell/Voice.jsx";
+import { detectSpeechEngine, speak, LOCAL_STT_STEPS } from "../shell/Voice.jsx";
 
 function VoiceSettings({ settings, onSaved }) {
   const [voice, setVoice] = useState(settings.voice);
@@ -25,8 +25,9 @@ function VoiceSettings({ settings, onSaved }) {
       <div className="stack">
         <label className="check"><input type="checkbox" checked={voice.enabled} onChange={(e) => save.run({ ...voice, enabled: e.target.checked })} />Activează microfonul (push-to-talk)</label>
         <p className="faint" style={{ margin: 0, fontSize: 12 }}>Dezactivat implicit. Wake word: neimplementat, rămâne oprit. Audio-ul nu este arhivat de Hub.</p>
+        <label className="check"><input type="checkbox" checked={voice.strictLocal !== false} onChange={(e) => save.run({ ...voice, strictLocal: e.target.checked })} />Mod local strict: nu folosi servicii de recunoaștere care trimit audio online</label>
         <dl className="kv">
-          <dt>Recunoaștere</dt><dd>{engine ? engine.label : "…"}</dd>
+          <dt>Recunoaștere</dt><dd>{engine ? engine.label : "…"}{engine && voice.strictLocal !== false && !engine.local ? " — NEEDS_SETUP în mod local strict" : ""}</dd>
           <dt>Sinteză</dt><dd>{roVoices.length ? `${roVoices.length} voci românești (${roVoices.filter((v) => v.localService).length} locale)` : "Nicio voce românească instalată; se pot folosi voci engleze sau instala pachetul de limbă Windows."}</dd>
         </dl>
         {devices.length > 0 && (
@@ -44,7 +45,17 @@ function VoiceSettings({ settings, onSaved }) {
             </select>
           </label>
         )}
-        {voice.ttsEnabled && <button className="btn sm" style={{ alignSelf: "flex-start" }} onClick={() => speak("Sistemul este pregătit. Nicio execuție nu este activă.", { voiceURI: voice.voiceURI })}>Testează vocea</button>}
+        {voice.ttsEnabled && (
+          <div className="grid two">
+            <label className="field"><span>Viteză ({Number(voice.rate ?? 1).toFixed(1)})</span><input type="range" min="0.5" max="2" step="0.1" value={voice.rate ?? 1} onChange={(e) => setVoice({ ...voice, rate: Number(e.target.value) })} onMouseUp={() => save.run(voice)} onKeyUp={() => save.run(voice)} /></label>
+            <label className="field"><span>Volum ({Math.round((voice.volume ?? 1) * 100)}%)</span><input type="range" min="0" max="1" step="0.05" value={voice.volume ?? 1} onChange={(e) => setVoice({ ...voice, volume: Number(e.target.value) })} onMouseUp={() => save.run(voice)} onKeyUp={() => save.run(voice)} /></label>
+          </div>
+        )}
+        {voice.ttsEnabled && <button className="btn sm" style={{ alignSelf: "flex-start" }} onClick={() => speak("Sistemul este pregătit. Nicio execuție nu este activă.", { voiceURI: voice.voiceURI, rate: voice.rate ?? 1, volume: voice.volume ?? 1 })}>Testează vocea</button>}
+        {engine && voice.strictLocal !== false && !engine.local && (
+          <Notice tone="warn" title="Recunoaștere vocală: NEEDS_SETUP (mod local strict)"><ol className="plain-list small">{LOCAL_STT_STEPS.map((x) => <li key={x}>{x}</li>)}</ol></Notice>
+        )}
+        <p className="faint small" style={{ margin: 0 }}>Vocea citește doar rezumate scurte existente; nu citește cod, loguri, tokenuri sau secrete. Rezumarea nouă printr-un model cere autorizarea de inferență.</p>
         <ErrorNotice error={save.error} />
       </div>
     </Panel>

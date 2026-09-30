@@ -15,7 +15,7 @@ const TASK_SCOPE_TTL_HOURS = 8;
  * permission dialog is an additional layer and never replaces the Hub decision.
  */
 export const ACTION_CATALOG = Object.freeze([
-  ...["files.list", "files.read", "git.status", "git.diff", "git.log", "git.prepareCommit", "preview.check", "process.list", "surface.inspect", "native.mirror", "memory.search"]
+  ...["files.list", "files.read", "files.search", "git.status", "git.diff", "git.log", "git.prepareCommit", "preview.check", "process.list", "surface.inspect", "native.mirror", "memory.search"]
     .map((actionKind) => ({ actionKind, tier: "READ_ONLY", effects: "none", policy: "AUTO_ALLOWED", loosest: "AUTO_ALLOWED", label: "Citire locală" })),
   { actionKind: "provider.fileChange", tier: "WORKSPACE_EDIT", effects: "local", policy: "ALWAYS_ASK", loosest: "ASK_ONCE_FOR_TASK", label: "Modificare de fișiere propusă de un model" },
   { actionKind: "provider.command", tier: "DEVELOPMENT_TOOLS", effects: "local", policy: "ALWAYS_ASK", loosest: "ASK_ONCE_FOR_TASK", label: "Comandă propusă de un model" },

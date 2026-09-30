@@ -6,8 +6,11 @@ export const DEFAULT_SETTINGS = Object.freeze({
   operationalEnabled: false,
   usageReservePercent: 20,
   maxConcurrentAiRuns: 2,
-  voice: { enabled: false, wakeWord: false, pushToTalk: true, ttsEnabled: false, voiceURI: "", language: "ro-RO" },
+  // strictLocal: never use a browser speech service that may send audio online (no hidden cloud fallback).
+  voice: { enabled: false, wakeWord: false, pushToTalk: true, ttsEnabled: false, voiceURI: "", language: "ro-RO", strictLocal: true, rate: 1, volume: 1 },
   billingAttestations: {},
+  // Owner consent to the persistent DENY ACEs the Codex Windows sandbox writes for the Hub profile (M02 §05).
+  isolationConsent: {},
   ui: { reducedMotion: "system" },
   legacyImport: null,
   routingPreferences: {},

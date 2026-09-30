@@ -7,19 +7,22 @@ import { parse as parseToml } from "smol-toml";
 import { createJsonRpcPeer } from "./jsonrpc.mjs";
 import { classifyCodexTurnError, classifyText } from "./classify.mjs";
 import { buildChildEnv } from "../policy/billing.mjs";
+import { codexIsolationArgs, CODEX_PROFILE_BY_ACCESS } from "../policy/isolation.mjs";
 import { HUB_VERSION } from "../config.mjs";
 
 const execFileAsync = promisify(execFile);
 
 /**
  * Methods the Hub may call on the Codex app-server (schema verified against codex-cli
- * 0.158.0-alpha.2.1 `generate-json-schema`). Everything else — including
+ * 0.158.0-alpha.2.1 and regenerated on 0.159.x `generate-json-schema`). windowsSandbox/readiness and
+ * permissionProfile/list are read-only inspections used by the isolation check (Milestone 02). Everything else — including
  * account/rateLimitResetCredit/consume, account/sendAddCreditsNudgeEmail, login/logout, config
  * writes, plugin/marketplace installs and thread deletion — is refused client-side.
  */
 export const CODEX_ALLOWED_METHODS = new Set([
   "initialize", "thread/start", "thread/resume", "thread/read", "turn/start", "turn/interrupt",
   "model/list", "account/read", "account/rateLimits/read",
+  "windowsSandbox/readiness", "permissionProfile/list",
 ]);
 
 /**
@@ -97,12 +100,12 @@ export function createCodexAdapter({ config, supervisor, homeDir = os.homedir() 
   }
 
   /** Starts an app-server, performs the initialize handshake and returns a session object. */
-  function openSession({ cwd, key, onNotification, onServerRequest, onExit }) {
+  function openSession({ cwd, key, access = "read-only", onNotification, onServerRequest, onExit }) {
     const binary = resolveCodexBinary(config);
     if (!binary) throw Object.assign(new Error("Codex client not installed"), { category: "transport", preInference: true });
     let peer;
     const record = supervisor.start({
-      key, label: "codex app-server", executable: binary.executable, args: [...binary.prefixArgs, ...CODEX_APP_SERVER_OVERRIDES, "app-server"], cwd,
+      key, label: "codex app-server", executable: binary.executable, args: [...binary.prefixArgs, ...CODEX_APP_SERVER_OVERRIDES, ...codexIsolationArgs(access, { homeDir, extra: [config.dataDir, config.backupDir] }), "app-server"], cwd,
       onStdoutLine: (line) => peer.handleLine(line),
     });
     peer = createJsonRpcPeer({
@@ -138,6 +141,14 @@ export function createCodexAdapter({ config, supervisor, homeDir = os.homedir() 
         try { out.usage = normalizeRateLimits(await session.peer.request("account/rateLimits/read", {}, 30000)); }
         catch (error) { out.usage = { error: error.message }; }
       }
+      // Isolation facts (no inference): is the elevated Windows sandbox ready and is the Hub profile selectable?
+      out.sandbox = { profileId: CODEX_PROFILE_BY_ACCESS["read-only"] };
+      try { out.sandbox.readiness = (await session.peer.request("windowsSandbox/readiness", null, 30000))?.status || null; }
+      catch (error) { out.sandbox.readiness = process.platform === "win32" ? `error: ${error.message}` : "not_applicable"; }
+      try {
+        const listed = await session.peer.request("permissionProfile/list", { cwd }, 30000);
+        out.sandbox.profiles = (listed?.data || []).map((p) => ({ id: p.id, allowed: Boolean(p.allowed) }));
+      } catch (error) { out.sandbox.profiles = []; out.sandbox.profilesError = error.message; }
       if (withModels) {
         try {
           const models = await session.peer.request("model/list", { includeHidden: false }, 30000);
@@ -226,7 +237,7 @@ export function createCodexAdapter({ config, supervisor, homeDir = os.homedir() 
     };
 
     let interruptReason = null;
-    const session = openSession({ cwd, key, onNotification, onServerRequest,
+    const session = openSession({ cwd, key, access, onNotification, onServerRequest,
       onExit: (exit) => finish(interruptReason
         ? { status: "interrupted", output, usage, threadId: currentThread, turnId, errorCategory: null, error: `interrupted (${interruptReason})`, preInference: !turnId }
         : { status: "failed", output, usage, threadId: currentThread, turnId, errorCategory: "transport", error: `app-server exited (${exit.code})`, preInference: !turnId }) });
@@ -262,7 +273,9 @@ export function createCodexAdapter({ config, supervisor, homeDir = os.homedir() 
 
         // approvalsReviewer "user": approvals come to the Hub as server requests, never to an auto_review subagent
         // selected in the owner's config (schema 0.159.0: user | auto_review | guardian_subagent).
-        const threadParams = { cwd, approvalPolicy: "on-request", approvalsReviewer: "user", sandbox: access === "workspace-write" ? "workspace-write" : "read-only", serviceName: "ifrim_agent_hub", ...(model ? { model } : {}) };
+        // No legacy `sandbox`: the Hub permission profile (default_permissions, set per process) decides access, and
+        // Codex does not compose profiles with sandbox_mode (learn.chatgpt.com/docs/permissions).
+        const threadParams = { cwd, approvalPolicy: "on-request", approvalsReviewer: "user", serviceName: "ifrim_agent_hub", ...(model ? { model } : {}) };
         let thread = null;
         if (currentThread) {
           thread = await session.peer.request("thread/resume", { threadId: currentThread, ...threadParams }, 60000).catch((error) => {
@@ -279,16 +292,18 @@ export function createCodexAdapter({ config, supervisor, homeDir = os.homedir() 
           return { status: "failed", errorCategory: "policy", preInference: true, output, usage, threadId: currentThread,
             error: `Codex a raportat approvalsReviewer=${thread.approvalsReviewer}: aprobările nu ar mai ajunge la Hub; oprit înainte de turn` };
         }
+        const projected = thread.sandbox?.type || "";
+        if (projected === "dangerFullAccess" || (access !== "workspace-write" && projected === "workspaceWrite")) {
+          return { status: "failed", errorCategory: "policy", preInference: true, output, usage, threadId: currentThread,
+            error: `Codex a raportat sandbox ${projected} pentru acces ${access}: profilul Hub nu este activ; oprit înainte de turn` };
+        }
         if (model && thread.model && !String(thread.model).toLowerCase().startsWith(String(model).toLowerCase())) {
           return { status: "failed", errorCategory: "policy", preInference: true, output, usage, threadId: currentThread,
             error: `Codex a ales modelul ${thread.model} în loc de ${model}; oprit înainte de turn (fără substituire tăcută)` };
         }
 
-        const sandboxPolicy = access === "workspace-write"
-          ? { type: "workspaceWrite", writableRoots: [cwd], networkAccess: false }
-          : { type: "readOnly", networkAccess: false };
         const turn = await session.peer.request("turn/start", { threadId: currentThread, input: [{ type: "text", text: prompt }], cwd,
-          approvalPolicy: "on-request", approvalsReviewer: "user", sandboxPolicy, ...(model ? { model } : {}), ...(effort ? { effort } : {}) }, 60000);
+          approvalPolicy: "on-request", approvalsReviewer: "user", ...(model ? { model } : {}), ...(effort ? { effort } : {}) }, 60000);
         turnId = turn?.turn?.id || "";
         onEvent({ type: "turn", turnId });
         return await completion;

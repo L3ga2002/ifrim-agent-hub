@@ -1,4 +1,5 @@
 import { evaluateRoute } from "./billing.mjs";
+import { evaluateIsolation } from "./isolation.mjs";
 
 const INSPECTION_MAX_AGE_H = 24;
 
@@ -17,6 +18,7 @@ export function inspectionFromState(state, now) {
     auth: probeFresh ? state.auth : null,
     config: state.config || null,
     usage: probeFresh && state.usage && !state.usage.error ? state.usage : null,
+    sandbox: probeFresh ? state.sandbox || null : null,
   };
 }
 
@@ -24,7 +26,7 @@ export function inspectionFromState(state, now) {
  * Execution gate: every check is evaluated and reported, the run is admitted only when all pass.
  * The gate is the single place that decides; UI, companion, voice and automations all go through it.
  */
-export function createGate({ db, settings, projects, backups, leases, grants, breakers, providerState, clock, activeRunCount }) {
+export function createGate({ db, settings, projects, backups, leases, grants, breakers, providerState, clock, activeRunCount, codexIsolation = null }) {
   function evaluate({ provider, projectId, access = "read-only", grantId = null, workspaceResource }) {
     const checks = [];
     const add = (id, ok, detail, extra = {}) => checks.push({ id, ok, detail, ...extra });
@@ -50,6 +52,11 @@ export function createGate({ db, settings, projects, backups, leases, grants, br
     const inspection = inspectionFromState(providerState.get(provider), now);
     const route = evaluateRoute(provider, inspection, { attestations: settings.get("billingAttestations"), now, usage: inspection?.usage || null, reservePercent: settings.get("usageReservePercent") });
     add("billing_route", route.allowed, route.allowed ? "Rută inclusă în abonament verificată" : route.blockingReasons.join(" · "), { route });
+
+    // Workspace isolation (M02 §05): the model's tools must not reach .ifrim/private, backups, .env or credentials.
+    const isolation = evaluateIsolation({ provider, access, sandbox: inspection?.sandbox || null,
+      consent: settings.get("isolationConsent")?.[provider] || null, fingerprint: provider === "codex" && codexIsolation ? codexIsolation().fingerprint : null });
+    add("isolation", isolation.ok, isolation.detail, { level: isolation.level });
 
     const breaker = breakers.state(provider);
     add("circuit_breaker", breaker.state !== "open", breaker.state === "open" ? `Deschis până la ${breaker.until} după ${breaker.failures} eșecuri de infrastructură` : "Închis");

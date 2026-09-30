@@ -1,5 +1,7 @@
 # Raport de testare V2 — 2026-09-30
 
+> Milestone 02 (2026-09-30): vezi `M02_TEST_REPORT.md`. Totaluri actuale: V2 197 teste (196 PASS, 1 SKIPPED_ENV), V1 552 (551 PASS, 1 SKIPPED_ENV). Conținutul de mai jos este istoricul Milestone 01 / V2.
+
 Etichete: PASS_LIVE (model/provider real), PASS_LOCAL (componente reale locale, fără inferență), PASS_SIMULATED (provider simulat prin fixture), FAIL, BLOCKED, NOT_RUN. Un mock nu validează abonamentul real; un test sărit nu este trecut.
 
 ## Milestone 01 (2026-09-30)

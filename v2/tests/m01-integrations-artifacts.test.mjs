@@ -26,7 +26,12 @@ test("M01-INT-01 tool/connector registry: Hub tools + observed integrations, eac
       assert.ok(["ALWAYS_ASK", "DENIED"].includes(i.approvalPolicy.policy), `${i.id} → ${i.approvalPolicy.policy}`);
     }
     const blocked = hubTools.filter((i) => i.status === "blocked").map((i) => i.name).sort();
-    assert.deepEqual(blocked, ["browser.inspect", "desktop.control", "screen.capture"]);
+    assert.deepEqual(blocked, ["desktop.control", "screen.capture"]);
+    // M02: browser.inspect is dynamic — needs_setup until Playwright is installed with approval, then approval per exact URL; never AUTO.
+    const browser = hubTools.find((i) => i.name === "browser.inspect");
+    const installed = hub.tools.browserStatus().installed;
+    assert.equal(browser.status, installed ? "available" : "needs_setup", browser.statusReason);
+    assert.equal(browser.approvalPolicy.policy, "ALWAYS_ASK");
     const openclaw = all.find((i) => i.kind === "openclaw_integration");
     assert.equal(openclaw.status, "blocked", "OpenClaw is retired from the V2 runtime");
     assert.equal(catalogEntry("connector.write").loosest, "ALWAYS_ASK");

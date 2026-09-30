@@ -1,5 +1,47 @@
 # Runbook — Ifrim Agent Hub V2
 
+## Milestone 02 (2026-09-30)
+
+### Comenzi
+
+```bash
+npm run build:v2       # după orice modificare de UI
+npm run v2             # Hub real: http://127.0.0.1:8011/ (BUILD_SAFE, poartă suspendată)
+npm run v2:status
+npm run v2:stop
+npm run v2:sim         # SIMULATOR: http://127.0.0.1:8012/ — „SIMULARE — FĂRĂ MODELE REALE”
+npm run v2:sim:stop
+npm run test:v2        # teste V2, fără modele (~4 min)
+npm run v2:test-project # creează și înregistrează proiectul de TEST sanitizat (Ifrim Digital Proiecte/ifrim-hub-live-test)
+node v2/tests/manual/codex-sandbox-canary.mjs   # izolarea Codex pe fișiere fictive din %TEMP% (fără model)
+```
+
+### Simulatorul
+
+- Proces separat, cu date recreate la fiecare pornire în `.ifrim/tmp/v2-sim/data`.
+- Rulează pe un proiect demo git sintetic, creat de `v2/scripts/sim-demo.mjs`.
+- Folosește doar fixture-uri Codex/Claude: nu poate porni un model real și nu atinge DB-ul, poarta sau grant-urile Hub-ului real.
+- Scenarii: butoanele din bannerul simulatorului (Execuție, Aprobare, Cotă, Eroare auth, Handoff, Deconectare; pe desktop). Echivalent în API: `POST /api/sim/{execute|approval|quota|error|handoff|drop-stream}`, cu token-ul sesiunii.
+
+### Izolare
+
+- Integrări → „Izolare workspace” arată ce nu pot citi uneltele modelului și starea fiecărui traseu.
+- Codex pe Windows cere acordul pentru ACL-urile persistente scrise de sandbox. Detalii în `M02_SECURITY_READINESS.md`.
+- Revenire pentru o cale: `icacls "<cale>" /remove:d CodexSandboxUsers`.
+- Validarea live urmează strict `M02_LIVE_VALIDATION_PLAN.md`: preflight real → verificare cont → un turn read-only per provider.
+
+### Scurtături UI
+
+| Scurtătură | Acțiune |
+|---|---|
+| Ctrl+K | paletă |
+| Alt+M | mini-asistent |
+| Alt+1…9 | navigare (cifra apare în tooltip și în paletă) |
+| Ctrl+Enter | trimite din compozitor |
+| Esc | închide dialogul sau paleta |
+
+Scurtăturile nu sunt interceptate cât scrii într-un câmp.
+
 ## Cerințe
 
 Node 24 (testat 24.14.0), dependențele din repo (`npm install` deja făcut). Codex desktop (pentru `codex.exe`) și Claude Code npm sunt opționale; fără ele, rutele respective apar „neinstalat”.

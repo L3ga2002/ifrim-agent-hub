@@ -2,6 +2,7 @@ import path from "node:path";
 import { HubError } from "../core/errors.mjs";
 import { newId } from "../core/ids.mjs";
 import { ATTESTATION_TEXT } from "../policy/billing.mjs";
+import { CODEX_ACL_CONSENT_TEXT } from "../policy/isolation.mjs";
 import { APPROVAL_POLICIES } from "../policy/approval-policy.mjs";
 import { MISSION_TEMPLATES } from "../domain/missions.mjs";
 import { MEMORY_SCOPES, MEMORY_TYPES } from "../domain/memory.mjs";
@@ -35,6 +36,11 @@ export function registerCommands(commands, hub) {
   // ---------- projects ----------
   reg("projects.sync", { describe: "Resincronizează proiectele din PROJECTS.md (citire; scrie doar registrul Hub)", async: true, schema: {},
     execute: async () => ({ projects: projects.syncFromRegistry() }) });
+  // Sanitized test projects for live validation (created by v2/scripts/create-test-project.mjs). UI/test channels only.
+  reg("project.register_test", { describe: "Înregistrează un proiect de TEST sanitizat (creat de scriptul Hub) pentru validarea live", schema: { path: { required: true, max: 500 }, name: { min: 2, max: 80 } },
+    execute: (input, ctx) => projects.registerTest(input, ctx.actor) });
+  reg("project.retire_test", { describe: "Retrage execuția unui proiect de test (fișierele și istoricul rămân)", schema: { projectId: { required: true, max: 80 } },
+    channels: ["ui", "test", "voice", "companion"], execute: (input, ctx) => projects.retireTest(input.projectId, ctx.actor) });
 
   // ---------- conversations & runs ----------
   reg("conversation.create", { describe: "Conversație nouă într-un proiect", schema: { projectId: { required: true }, title: { required: true, min: 2, max: 160 } },
@@ -106,6 +112,7 @@ export function registerCommands(commands, hub) {
       return approval;
     } });
   reg("approval.execute_script", { describe: "Rulează scriptul npm aprobat", async: true, schema: { approvalId: { required: true } }, execute: (input) => tools.executeApprovedScript(input.approvalId) });
+  reg("approval.execute_browser", { describe: "Rulează inspecția de browser aprobată (URL local exact)", async: true, schema: { approvalId: { required: true } }, execute: (input) => tools.executeApprovedBrowser(input.approvalId) });
   reg("policy.set_rule", { describe: "Regulă de aprobare (poate fi doar cel mult atât de permisivă cât permite catalogul)", schema: { actionKind: { required: true, max: 80 },
     surfaceId: { max: 80, default: "*" }, projectId: { max: 80, default: "*" }, policy: { enum: APPROVAL_POLICIES, required: true }, reason: { required: true, min: 3, max: 300 } },
     execute: (input, ctx) => policy.setRule(input, ctx.actor) });
@@ -119,7 +126,12 @@ export function registerCommands(commands, hub) {
         if (value === undefined) continue;
         if (key === "usageReservePercent" && !(value >= 5 && value <= 80)) throw new HubError("validation", "Reserve must be 5..80%");
         if (key === "maxConcurrentAiRuns" && !(value >= 1 && value <= 2)) throw new HubError("validation", "Concurrency is limited to 1..2 in this build");
-        if (key === "voice" && value.wakeWord) throw new HubError("policy", "Wake word is not implemented; push-to-talk only");
+        if (key === "voice") {
+          if (value.wakeWord) throw new HubError("policy", "Wake word is not implemented; push-to-talk only");
+          if (value.rate !== undefined && !(value.rate >= 0.5 && value.rate <= 2)) throw new HubError("validation", "Voice rate must be 0.5..2");
+          if (value.volume !== undefined && !(value.volume >= 0 && value.volume <= 1)) throw new HubError("validation", "Voice volume must be 0..1");
+          if (value.language !== undefined && !/^[a-z]{2}-[A-Z]{2}$/.test(String(value.language))) throw new HubError("validation", "Language must look like ro-RO");
+        }
         if (key === "routingPreferences") validateRoutingPreferences(value, router);
         settings.set(key, value, ctx.actor);
       }
@@ -160,6 +172,22 @@ export function registerCommands(commands, hub) {
       const value = { ...settings.get("billingAttestations"), [input.provider]: { confirmedAt: clock().toISOString(), text: ATTESTATION_TEXT[input.provider] } };
       settings.set("billingAttestations", value, ctx.actor, `Manual billing check recorded for ${input.provider}`);
       return { attestations: value };
+    } });
+  reg("isolation.consent", { describe: "Acordul tău pentru ACL-urile DENY persistente scrise de sandbox-ul Codex pe căile protejate", schema: { provider: { enum: ["codex"], required: true }, confirmText: { required: true, max: 600 }, fingerprint: { required: true, max: 64 } },
+    execute: (input, ctx) => {
+      if (input.confirmText !== CODEX_ACL_CONSENT_TEXT) throw new HubError("validation", "Confirmation text does not match");
+      const current = hub.codexIsolation();
+      // The consent names the exact list the owner saw; a stale page cannot approve a different list.
+      if (input.fingerprint !== current.fingerprint) throw new HubError("conflict", "The protected path list changed; reload and review it again");
+      const value = { ...settings.get("isolationConsent"), codex: { confirmedAt: clock().toISOString(), text: CODEX_ACL_CONSENT_TEXT, fingerprint: current.fingerprint, paths: current.paths } };
+      settings.set("isolationConsent", value, ctx.actor, "Consent to persistent Codex sandbox DENY ACEs recorded");
+      return { consent: value.codex };
+    } });
+  reg("isolation.revoke", { describe: "Retrage acordul pentru ACL-urile Codex (nu elimină ACE-urile deja scrise)", schema: { provider: { enum: ["codex"], required: true } }, channels: ["ui", "test", "voice", "companion"],
+    execute: (input, ctx) => {
+      const value = { ...settings.get("isolationConsent") }; delete value[input.provider];
+      settings.set("isolationConsent", value, ctx.actor, `Isolation consent revoked for ${input.provider}`);
+      return { revoked: input.provider };
     } });
   reg("provider.inspect", { describe: "Inspectează instalarea providerului (fără inferență)", async: true, schema: { provider: { enum: ["codex", "claude"], required: true } },
     execute: async (input, ctx) => {

@@ -3,7 +3,7 @@ import { api, openStream } from "./api.js";
 
 // Global Hub state: the /api/state projection, refreshed on relevant events (debounced).
 const listeners = new Set();
-let state = { hub: null, loading: true, error: null, connection: "connecting", toasts: [], voicePhase: "idle" };
+let state = { hub: null, loading: true, error: null, connection: "connecting", toasts: [], voicePhase: "idle", lastUpdate: null };
 const emit = () => { for (const l of listeners) l(); };
 export const setState = (patch) => { state = { ...state, ...(typeof patch === "function" ? patch(state) : patch) }; emit(); };
 export const useHub = (selector = (s) => s) => useSyncExternalStore((l) => { listeners.add(l); return () => listeners.delete(l); }, () => selector(state));
@@ -17,7 +17,7 @@ let refreshTimer = null;
 export async function refresh() {
   try {
     const hub = await api("/api/state");
-    setState({ hub, loading: false, error: null });
+    setState({ hub, loading: false, error: null, lastUpdate: Date.now() });
   } catch (error) {
     setState({ loading: false, error: error.message });
   }
@@ -54,6 +54,7 @@ function connect(after) {
   return openStream({
     after,
     onEvent(event) {
+      setState({ lastUpdate: Date.now() });
       for (const fn of eventListeners) fn(event);
       if (!event.type.startsWith("run.activity") && !event.type.startsWith("backup.progress")) scheduleRefresh();
       const toast = TOAST_TYPES[event.type];

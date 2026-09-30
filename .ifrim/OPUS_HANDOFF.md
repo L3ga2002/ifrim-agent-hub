@@ -1,5 +1,33 @@
 # Ifrim Agent Hub - Opus Handoff
 
+## Milestone 02 handoff — 2026-09-30 (current)
+
+- **Built by:** Claude Opus 5.5, in BUILD_SAFE. No model through the Hub, no subagent/team, no install, commit, push or deploy. No real ACL changed.
+- **Read first:**
+  - `.ifrim/M02_IMPLEMENTATION_STATUS.md`
+  - `.ifrim/M02_SECURITY_READINESS.md`
+  - `.ifrim/M02_LIVE_VALIDATION_PLAN.md`
+  - `.ifrim/CHECKPOINTS/2026-09-30-milestone-02-done.md` (file list and proposed commit message)
+- **New source map:**
+  - `v2/server/policy/isolation.mjs` (Codex/Claude isolation, consent and fingerprint)
+  - `v2/server/sim/` + `v2/scripts/sim*.mjs` (simulator)
+  - `v2/server/tools/browser.mjs` (Browser Workspace)
+  - `v2/web/src/{lib,components/core,screens/focus,screens/ecosystem}`
+  - `v2/web/src/styles/m02.css`
+  - tests `v2/tests/m02-*.test.mjs`, manual `v2/tests/manual/codex-*.mjs`
+- **Do not loosen:**
+  - `~/.codex` must never be denied as a directory: the sandbox runner lives in `.sandbox-bin`, and a child cannot re-allow it.
+  - The Codex consent fingerprint.
+  - The simulator's fixture-only supervisor.
+  - `v2/server` must never run mutating git (M01-NG1).
+  - Claude write/shell blocked on native Windows.
+  - All M01 billing guards.
+- **Key facts** (fictive trees, no model):
+  - elevated sandbox denies = persistent inheritable DENY-read ACEs for `CodexSandboxUsers`;
+  - they survive later runs;
+  - absolute `**` globs work.
+
+
 ## Milestone 01 handoff — 2026-09-30 (current)
 
 - Built by Claude Opus 5.5, BUILD_SAFE: no model through the Hub, no cloud/scheduled task, commit, push, deploy, install or external message. Read-only research ran as Workflow subagents inside the Claude Code session (the user invoked workflow-authoring with Ultracode on).

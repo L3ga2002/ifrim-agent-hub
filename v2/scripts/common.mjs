@@ -4,7 +4,8 @@ import http from "node:http";
 import { fileURLToPath } from "node:url";
 
 export const HUB_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
-export const DATA_DIR = path.join(HUB_ROOT, ".ifrim", "private");
+// HUB_V2_DATA_DIR lets the simulator (npm run v2:sim) keep its own pid/log inside .ifrim/tmp.
+export const DATA_DIR = process.env.HUB_V2_DATA_DIR ? path.resolve(process.env.HUB_V2_DATA_DIR) : path.join(HUB_ROOT, ".ifrim", "private");
 export const PID_FILE = path.join(DATA_DIR, "v2-hub.pid.json");
 export const LOG_FILE = path.join(DATA_DIR, "v2-hub.log");
 export const PORT = Number(process.env.HUB_V2_PORT || 8011);
