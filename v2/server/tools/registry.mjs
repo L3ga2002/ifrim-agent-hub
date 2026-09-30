@@ -15,7 +15,7 @@ import { browserStatus, validateBrowserUrl, inspectPage } from "./browser.mjs";
  * no universal shell or desktop endpoint.
  */
 export const TOOL_DEFINITIONS = Object.freeze([
-  { id: "files.list", tier: "READ_ONLY", effects: "none", timeoutMs: 5000, schema: { path: "string (relative)" }, result: "directory entries (secret-like names hidden)", status: "available" },
+  { id: "files.list", tier: "READ_ONLY", effects: "none", timeoutMs: 5000, schema: { path: "string (relative)" }, result: "directory entries (secret-like names, protected paths and links leading out of scope hidden)", status: "available" },
   { id: "files.read", tier: "READ_ONLY", effects: "none", timeoutMs: 5000, schema: { path: "string (relative)", offset: "integer (bytes, default 0)", limit: "integer (bytes, ≤ 256 KB)" }, result: "one page of text (redacted), size, nextOffset", status: "available" },
   { id: "files.search", tier: "READ_ONLY", effects: "none", timeoutMs: 15000, schema: { query: "literal text (2–200 chars)", path: "string (relative, default .)", maxResults: "integer ≤ 200" }, result: "matching lines (redacted); protected paths, binaries and files > 1 MB are skipped", status: "available" },
   { id: "git.status", tier: "READ_ONLY", effects: "none", timeoutMs: 10000, schema: {}, result: "branch, head, dirty, untracked", status: "available" },
@@ -25,7 +25,7 @@ export const TOOL_DEFINITIONS = Object.freeze([
   { id: "preview.check", tier: "READ_ONLY", effects: "local HTTP GET", timeoutMs: 8000, schema: { url: "http://127.0.0.1|localhost URL" }, result: "status code, latency, <title>", status: "available" },
   { id: "process.run", tier: "DEVELOPMENT_TOOLS", effects: "runs an npm script of the project locally", timeoutMs: 600000, schema: { script: "test | build | test:v2" }, result: "exit code, duration, output tail", status: "available (approval per exact command)" },
   { id: "process.list", tier: "READ_ONLY", effects: "none", timeoutMs: 1000, schema: {}, result: "Hub-owned child processes", status: "available" },
-  { id: "browser.inspect", tier: "DEVELOPMENT_TOOLS", effects: "runs a headless local browser in a fresh isolated context", timeoutMs: 120000, schema: { url: "local URL with port (not the Hub)" }, result: "HTTP status, title, console errors, one screenshot", status: "dynamic" },
+  { id: "browser.inspect", tier: "DEVELOPMENT_TOOLS", effects: "runs a headless local browser in a fresh isolated context", timeoutMs: 120000, schema: { url: "local URL with port (not the Hub)" }, result: "HTTP status, title, console errors, one screenshot, requests blocked outside the local origin", status: "dynamic" },
   { id: "desktop.control", tier: "SENSITIVE_ACTIONS", effects: "mouse/keyboard on the shared desktop", timeoutMs: 0, schema: {}, result: "n/a", status: "blocked", reason: "A Windows desktop bridge is not built. It needs a native component, a single-controller lock and your approval." },
   { id: "screen.capture", tier: "SENSITIVE_ACTIONS", effects: "captures the screen", timeoutMs: 0, schema: {}, result: "n/a", status: "blocked", reason: "Screen capture is off; recording the screen needs explicit consent and retention rules." },
 ]);
@@ -77,6 +77,32 @@ export function searchFiles(rootPath, { query, path: start = ".", maxResults = 1
   return { query: needle, matches, scanned, skipped, truncated };
 }
 
+/**
+ * One directory level of a project. Secret-like names and protected paths are hidden by name; a symlink/junction is judged
+ * by where it really leads (resolved with resolveInScope, never opened or read): one into a protected location, outside the
+ * project or dangling is hidden too, so even its name does not leak. A link that stays in scope is listed with its target's
+ * type and `link: true`, and can be opened because resolveInScope accepts it.
+ */
+export function listDirectory(rootPath, relative = ".") {
+  const root = fs.realpathSync.native(rootPath);
+  const dir = resolveInScope(root, relative);
+  if (!fs.statSync(dir).isDirectory()) throw new HubError("validation", "Not a directory");
+  const entries = [];
+  for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+    const rel = path.relative(root, path.join(dir, entry.name));
+    if (isSecretLikeName(entry.name) || isProtectedRelative(rel)) continue;
+    if (entry.isSymbolicLink()) {
+      let target;
+      try { target = fs.statSync(resolveInScope(root, rel)); } catch { continue; }
+      entries.push({ name: entry.name, type: target.isDirectory() ? "dir" : target.isFile() ? "file" : "other", link: true });
+      continue;
+    }
+    entries.push({ name: entry.name, type: entry.isDirectory() ? "dir" : entry.isFile() ? "file" : "other" });
+  }
+  entries.sort((a, b) => (a.type === b.type ? a.name.localeCompare(b.name) : a.type === "dir" ? -1 : 1));
+  return { path: relative, entries: entries.slice(0, 1000) };
+}
+
 export function createTools({ db, bus, clock, projects, approvals, supervisor, config }) {
   function record(tool, args, runId, effects, fn) {
     const id = newId("tool");
@@ -103,14 +129,7 @@ export function createTools({ db, bus, clock, projects, approvals, supervisor, c
     const p = project(projectId);
     switch (toolId) {
       case "browser.inspect": return requestBrowserRun(p, args.url);
-      case "files.list": return record(toolId, args, runId, def.effects, () => {
-        const dir = resolveInScope(p.path, args.path || ".");
-        const entries = fs.readdirSync(dir, { withFileTypes: true })
-          .filter((e) => !isSecretLikeName(e.name) && !isProtectedRelative(path.relative(fs.realpathSync.native(p.path), path.join(dir, e.name))))
-          .map((e) => ({ name: e.name, type: e.isDirectory() ? "dir" : e.isFile() ? "file" : "other" }))
-          .sort((a, b) => (a.type === b.type ? a.name.localeCompare(b.name) : a.type === "dir" ? -1 : 1));
-        return { path: args.path || ".", entries: entries.slice(0, 1000) };
-      });
+      case "files.list": return record(toolId, args, runId, def.effects, () => listDirectory(p.path, args.path || "."));
       case "files.read": return record(toolId, args, runId, def.effects, () => {
         const file = resolveInScope(p.path, args.path || "");
         const stat = fs.statSync(file);
@@ -201,7 +220,7 @@ export function createTools({ db, bus, clock, projects, approvals, supervisor, c
     if (!approval || approval.actionKind !== "browser.inspect") throw new HubError("not_found", "Approval not found");
     const url = validateBrowserUrl(approval.payload.url, { hubPorts: hubPorts() });
     approvals.consume(approvalId, { actionKind: "browser.inspect", target: url, payload: { url }, codeVersion: "n/a", permissionTier: "DEVELOPMENT_TOOLS", scopeType: "project", scopeId: approval.scopeId });
-    return record("browser.inspect", { url }, null, "local headless browser", () => inspectPage({ url, hubRoot: config.hubRoot, evidenceDir: path.join(config.dataDir, "browser-evidence") }));
+    return record("browser.inspect", { url }, null, "local headless browser", () => inspectPage({ url, hubRoot: config.hubRoot, hubPorts: hubPorts(), evidenceDir: path.join(config.dataDir, "browser-evidence") }));
   }
 
   return { get definitions() { return definitions(); }, invoke, executeApprovedScript, executeApprovedBrowser, browserStatus: () => browserStatus({ hubRoot: config.hubRoot }) };

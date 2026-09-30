@@ -6,7 +6,7 @@ export const V2_ROOT = path.resolve(here, "..");
 export const HUB_ROOT = path.resolve(V2_ROOT, "..");
 export const PROJECTS_ROOT = path.resolve(HUB_ROOT, "..");
 
-export const HUB_VERSION = "2.2.0-m02";
+export const HUB_VERSION = "2.3.0-m03"; // M02 + Lega (voice, stage, full access, web search) and the M02 verification fixes
 export const DEFAULT_PORT = 8011;
 export const DEFAULT_HOST = "127.0.0.1";
 

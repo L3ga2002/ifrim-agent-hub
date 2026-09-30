@@ -13,7 +13,7 @@ Fișiere:
 ## Direcție
 
 - Suprafețe carbon/grafit și lumină rece, controlată.
-- **Ambra e rezervată aprobărilor** (singura culoare caldă, ca decizia ta să iasă în evidență).
+- **Ambra (`--approval`) nu e rezervată aprobărilor și, alături de roșul pentru eroare/Stop, este una dintre cele două culori calde.** O folosesc aprobările (butonul „Aprobă”, carduri, insigne, starea WAITING_APPROVAL), dar și: cipul „Reconectare” al conexiunii, butoanele de configurare (`.btn.setup`), evidențierea rezultatelor căutării, bannerul simulatorului, avertismentele (`.notice.warn`, `.chip.warn`, toast-uri) și accentul stării LISTENING din nucleu. Ambra înseamnă deci „atenție”, iar aprobarea se recunoaște după text și buton, nu doar după culoare.
 - Roșu pentru eroare/Stop, verde pentru verificat.
 - Fără neon, scanlines sau „glitch”.
 - Culoarea nu e niciodată singurul semnal: fiecare stare are și text sau icon.

@@ -3,12 +3,9 @@ import { Send, Paperclip, Play, ShieldCheck, X, Lock, FileText, Target, ArrowRig
 import { api, fmt, uploadWithProgress } from "../../api.js";
 import { useAction, usePref, useHub } from "../../store.js";
 import { ErrorNotice, Checks, Notice, Chip } from "../../components/ui.jsx";
-import { validateAttachment } from "../../lib/uiLogic.js";
+import { validateAttachment, composerOptions } from "../../lib/uiLogic.js";
 
 const PROVIDERS = [{ id: "codex", label: "Codex" }, { id: "claude", label: "Claude Code" }];
-const EFFORTS = ["", "low", "medium", "high", "xhigh"];
-// Claude aliases the Hub may send (resolved by the installed CLI); fable/best/[1m] are refused by the adapter.
-const CLAUDE_ALIASES = [{ id: "sonnet", label: "sonnet (alias CLI)" }, { id: "opus", label: "opus (alias CLI)" }, { id: "haiku", label: "haiku (alias CLI)" }];
 const TOOLS_BY_ACCESS = {
   "read-only": { claude: "Read · Glob · Grep (fără shell)", codex: "comenzi în sandbox read-only (profil ifrim_hub_ro)" },
   "workspace-write": { claude: "Edit · Write · Bash limitat — blocat pe Windows nativ (SECURITY_BLOCKER)", codex: "scriere în proiect (profil ifrim_hub_rw)" },
@@ -34,7 +31,10 @@ export function Composer({ conversation, project, handoffReady, onSent }) {
   const [dragOver, setDragOver] = useState(false);
   const fileRef = useRef(null);
   const providerState = hub?.providers?.find((p) => p.id === provider);
-  const models = provider === "codex" ? (Array.isArray(providerState?.models) ? providerState.models : null) : CLAUDE_ALIASES;
+  // Model/effort choices with their source: Codex from model/list (verified), Claude aliases labelled unverified.
+  // `options.effort` is the stored choice only when this provider/model offers it; otherwise nothing is sent.
+  const options = composerOptions({ provider, providerState, model, effort });
+  const models = options.models;
   const buildSafe = hub?.mode === "BUILD_SAFE";
 
   useEffect(() => {
@@ -50,7 +50,7 @@ export function Composer({ conversation, project, handoffReady, onSent }) {
       if (!verdict.ok) { setUploads((u) => [...u, { id, name: file.name, progress: 0, error: verdict.reason }]); continue; }
       setUploads((u) => [...u, { id, name: file.name, progress: 0 }]);
       readAsBase64(file).then((base64) => {
-        const { promise, abort } = uploadWithProgress(`/api/conversations/${conversation.id}/attachments`, { filename: file.name, mime: file.type || "text/plain", base64 },
+        const { promise, abort } = uploadWithProgress(`/api/conversations/${conversation.id}/attachments`, { filename: file.name, mime: verdict.mime, base64 },
           (p) => setUploads((u) => u.map((x) => (x.id === id ? { ...x, progress: p } : x))));
         setUploads((u) => u.map((x) => (x.id === id ? { ...x, abort } : x)));
         return promise;
@@ -74,7 +74,7 @@ export function Composer({ conversation, project, handoffReady, onSent }) {
         setPreview(await api(`/api/gate/preview?provider=${provider}&access=${access}&projectId=${project.id}`));
       } else {
         try {
-          await api(`/api/conversations/${conversation.id}/runs`, { method: "POST", body: { provider, access, ...(model ? { model } : {}), ...(effort ? { effort } : {}), ...(conversation.activeTaskId ? { taskId: conversation.activeTaskId } : {}) } });
+          await api(`/api/conversations/${conversation.id}/runs`, { method: "POST", body: { provider, access, ...(model ? { model } : {}), ...(options.effort ? { effort: options.effort } : {}), ...(conversation.activeTaskId ? { taskId: conversation.activeTaskId } : {}) } });
         } catch (error) {
           if (error.category === "gate") setRefusal(error.details?.checks || [{ id: "gate", ok: false, detail: error.message }]);
           else throw error;
@@ -133,12 +133,14 @@ export function Composer({ conversation, project, handoffReady, onSent }) {
           <button aria-pressed={access === "read-only"} onClick={() => setAccess("read-only")}>Doar citire</button>
           <button aria-pressed={access === "workspace-write"} onClick={() => setAccess("workspace-write")}>Scriere</button>
         </div>
-        <select className="select compact composer-opt" value={model} onChange={(e) => setModel(e.target.value)} aria-label="Model">
-          <option value="">{provider === "codex" && !models ? "Model implicit (listă necitită)" : "Model implicit"}</option>
-          {(models || []).map((m) => <option key={m.id} value={m.id}>{m.displayName || m.label || m.id}</option>)}
+        <select className="select compact composer-opt" value={model} onChange={(e) => setModel(e.target.value)} aria-label="Model" title={options.modelNote}>
+          <option value="">{options.modelSource === "unread" ? "Model implicit (listă necitită)" : options.modelSource === "unverified" ? "Model implicit (CLI)" : "Model implicit"}</option>
+          {(models || []).map((m) => <option key={m.id} value={m.id}>{m.label}</option>)}
         </select>
-        <select className="select compact composer-opt" value={effort} onChange={(e) => setEffort(e.target.value)} aria-label="Efort">
-          {EFFORTS.map((x) => <option key={x} value={x}>{x ? `efort ${x}` : "efort implicit"}</option>)}
+        <select className="select compact composer-opt" value={options.effort} onChange={(e) => setEffort(e.target.value)} aria-label="Efort" title={options.effortNote}
+          disabled={!options.efforts.length}>
+          <option value="">{options.effortSource === "unsupported" ? "efort indisponibil" : options.defaultEffort ? `efort implicit (${options.defaultEffort})` : "efort implicit"}</option>
+          {options.efforts.map((x) => <option key={x} value={x}>{options.effortSource === "verified" ? `efort ${x}` : `efort ${x} (nevalidat)`}</option>)}
         </select>
         <div className="grow" />
         <button className="btn sm ghost composer-opt" onClick={checkGate.run} disabled={checkGate.pending}><ShieldCheck size={14} />Verifică poarta</button>

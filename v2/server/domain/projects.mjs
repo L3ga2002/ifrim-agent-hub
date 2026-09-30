@@ -82,8 +82,9 @@ export function createProjects({ db, bus, config, clock }) {
   /**
    * Registers a sanitized TEST project for live validation (M02 §29). Only a directory created by
    * `v2/scripts/create-test-project.mjs` qualifies: it carries the TEST_PROJECT_MARKER, lives directly in the
-   * projects root (never inside the Hub or another project), and holds no secret-like files. Real client projects
-   * stay read-only context; this never edits PROJECTS.md. Idempotent for the same path.
+   * projects root (never inside the Hub or another project), and holds no secret-like files, links/junctions or
+   * .ifrim/private anywhere in its tree (see testProjectTreeProblem). Real client projects stay read-only context; this
+   * never edits PROJECTS.md. Idempotent for the same path.
    */
   function registerTest({ path: requested, name }, actor = "user") {
     const dir = path.resolve(String(requested || ""));
@@ -95,8 +96,8 @@ export function createProjects({ db, bus, config, clock }) {
     if (!stat.isDirectory() || stat.isSymbolicLink()) throw new HubError("policy", "The test project must be a real directory (no link or junction)");
     const marker = readMarker(dir);
     if (!marker) throw new HubError("policy", `Missing ${TEST_PROJECT_MARKER}: only projects created by the Hub test script can be registered`);
-    const secret = fs.readdirSync(dir).find((entry) => isSecretLikeName(entry));
-    if (secret || fs.existsSync(path.join(dir, ".ifrim", "private"))) throw new HubError("policy", "A test project must not contain secret-like files or .ifrim/private");
+    const problem = testProjectTreeProblem(dir);
+    if (problem) throw new HubError("policy", problem);
     const existing = db.prepare("SELECT * FROM projects WHERE lower(path) = lower(?)").get(dir);
     if (existing) {
       if (existing.source !== "hub-test") throw new HubError("conflict", "This directory is already registered as a regular project");
@@ -188,9 +189,45 @@ export const TEST_PROJECT_MARKER = ".ifrim-hub-test.json";
 
 function readMarker(dir) {
   try {
-    const data = JSON.parse(fs.readFileSync(path.join(dir, TEST_PROJECT_MARKER), "utf8"));
+    const file = path.join(dir, TEST_PROJECT_MARKER);
+    // A marker that is a link would be read from wherever it points; only a real file written by the script counts.
+    if (!fs.lstatSync(file).isFile()) return null;
+    const data = JSON.parse(fs.readFileSync(file, "utf8"));
     return data && data.createdBy === "ifrim-agent-hub" && data.purpose === "live-validation" ? data : null;
   } catch { return null; }
+}
+
+/** Bounds of the tree walk: a sanitized test project is a small repository, so anything bigger is refused, never sampled. */
+export const TEST_PROJECT_LIMITS = Object.freeze({ maxDepth: 8, maxEntries: 5000 });
+
+/**
+ * Why a candidate test project's tree is not sanitized, or null. The whole tree is walked breadth-first (.git and Hub
+ * backups included, nothing skipped) without ever following a link: a symlink/junction anywhere, a secret-like name
+ * anywhere (src/.env, config/id_rsa…), .ifrim/private, an unreadable folder or an entry that is neither file nor folder
+ * refuses it. A tree with entries deeper than maxDepth levels or more than maxEntries entries is refused as too large
+ * instead of being checked only in part.
+ */
+export function testProjectTreeProblem(root, { maxDepth = TEST_PROJECT_LIMITS.maxDepth, maxEntries = TEST_PROJECT_LIMITS.maxEntries } = {}) {
+  const tooLarge = `Too large for a sanitized test project (over ${maxEntries} entries or ${maxDepth} folder levels); remove dependencies and build output, or create a fresh one with the script`;
+  const queue = [{ dir: root, rel: "", depth: 0 }];
+  let seen = 0;
+  for (let i = 0; i < queue.length; i += 1) {
+    const { dir, rel, depth } = queue[i];
+    let entries;
+    try { entries = fs.readdirSync(dir, { withFileTypes: true }); } catch { return `Cannot read ${rel || "the project folder"}; every folder of a test project must be readable to be checked`; }
+    if (entries.length && depth >= maxDepth) return tooLarge;
+    for (const entry of entries) {
+      seen += 1;
+      if (seen > maxEntries) return tooLarge;
+      const childRel = rel ? `${rel}/${entry.name}` : entry.name;
+      if (entry.isSymbolicLink()) return `A test project must not contain links or junctions (${childRel})`;
+      if (isSecretLikeName(entry.name)) return `A test project must not contain secret-like files (${childRel})`;
+      if (/(?:^|\/)\.ifrim\/private$/i.test(childRel)) return `A test project must not contain .ifrim/private (${childRel})`;
+      if (entry.isDirectory()) queue.push({ dir: path.join(dir, entry.name), rel: childRel, depth: depth + 1 });
+      else if (!entry.isFile()) return `A test project may contain only files and folders (${childRel})`;
+    }
+  }
+  return null;
 }
 
 const isSame = (a, b) => path.resolve(a).toLowerCase() === path.resolve(b).toLowerCase();

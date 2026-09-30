@@ -44,7 +44,8 @@ process.stdin.on("end", async () => {
   log({ args, promptLength: prompt.length, promptHead: prompt.slice(0, 200) });
   // init-apikey: the session reports an API key source; init-fable: the session resolved to a Fable model.
   out({ type: "system", subtype: "init", session_id: sessionArg, model: scenario === "init-fable" ? "claude-fable-5" : "claude-fake",
-    apiKeySource: scenario === "init-apikey" ? "ANTHROPIC_API_KEY" : "none", tools: ["Read"], mcp_servers: [], capabilities: [] });
+    apiKeySource: scenario === "init-apikey" ? "ANTHROPIC_API_KEY" : "none", tools: scenario === "init-mcp" ? ["Read", "mcp__cua__click"] : ["Read"],
+    mcp_servers: scenario === "init-mcp" ? [{ name: "cua", status: "connected" }] : [], capabilities: [] });
   if (scenario === "billing") {
     out({ type: "system", subtype: "api_retry", attempt: 1, max_retries: 3, retry_delay_ms: 1000, error_status: 402, error: "billing_error", session_id: sessionArg });
     await new Promise((r) => setTimeout(r, 5000));

@@ -54,7 +54,7 @@ Remedierea lasă însă o urmă persistentă, așa că ruta live Codex rămâne 
 | F4 | O intrare „read” pe un subdirector **nu** anulează negarea părintelui | `~/.codex` nu se neagă întreg: runner-ul sandbox-ului rulează din `~/.codex/.sandbox-bin` |
 | F5 | Glob-urile absolute funcționează (`<rădăcină>/**/.env`, `<rădăcină>/**/.ifrim/private`), inclusiv imbricat | opțiune pregătită pentru protecția altor proiecte (vezi Rezidual R2) |
 | F6 | Căile absolute ale Hub-ului sunt negate și când workspace-ul este un proiect separat | închide golul pentru proiectul de test sanitizat |
-| F7 | Pe căile reale (`~/.codex`, `~/.ssh`, `.ifrim/private` etc.) există azi **0 ACE-uri DENY**; ACE-urile `CodexSandbox` existente sunt drepturile de lucru acordate de Codex desktop în folosirea ta normală | nimic din M02 nu a modificat ACL-uri reale; azi sandbox-ul Codex desktop poate citi `.ifrim/private` (riscul inițial) |
+| F7 | Pe căile reale (`~/.codex`, `~/.ssh`, `.ifrim/private` etc.) existau la 2026-09-30, înainte de acord, **0 ACE-uri DENY**; după acordul înregistrat, ACE-urile DENY aprobate există pe căile protejate (actualizat 2026-10-01); ACE-urile `CodexSandbox` existente sunt drepturile de lucru acordate de Codex desktop în folosirea ta normală | nimic din M02 nu a modificat ACL-uri reale; azi sandbox-ul Codex desktop poate citi `.ifrim/private` (riscul inițial) |
 
 **Revenire pentru orice cale**, după o validare live:
 
@@ -120,7 +120,7 @@ Detalii de funcționare:
 ## Suprafețe UI noi (§24)
 
 - **Markdown**: parser de tokeni, fără HTML brut; linkurile nesigure (`javascript:`, `data:`) devin text.
-- **Aprobări**: acțiune exactă, argumente, țintă, versiune, expirare și amprentă. Execuția se face doar prin rutele backend (`/api/approvals/:id/execute`); butoanele dezactivate nu sunt singura protecție.
+- **Aprobări**: acțiune exactă, argumente, țintă, versiune, expirare și amprentă. Execuția se face doar prin rute backend care verifică aprobarea: `/api/approvals/:id/execute` (scripturi npm, verificarea de browser), `/api/commands/:id/execute` (comenzi propuse, de exemplu de Lega) și `/api/browser/:approvalId/execute`; butoanele dezactivate nu sunt singura protecție. Din 2026-10-01, pentru o comandă propusă, „Aprobă și pornește” decide și pornește într-un singur click.
 - **Acordul de izolare**: text exact + amprenta listei curente. O pagină veche nu poate aproba altă listă (`conflict`). Vocea nu poate da acordul (canal refuzat). Retragerea e posibilă și din voce.
 - **Rețea**: server doar pe `127.0.0.1`, origini permise explicit, fără CORS wildcard, fără port nou, fără service worker.
 - **Simulatorul**:

@@ -1,25 +1,45 @@
 # Next Session - Ifrim Agent Hub
 
-## MILESTONE 02 — 2026-09-30 (current; supersedes Milestone 01 notes below where they overlap)
+## AFTER M02 + LEGA — 2026-10-01 (current; supersedes the sections below where they overlap)
 
-- **Delivered:** JARVIS experience + security readiness on the M01 foundation, version `2.2.0-m02`.
-  - Real Hub: http://127.0.0.1:8011/ (BUILD_SAFE, gate suspended).
+- **Version `2.3.0-m03`** (was `2.2.0-m02`). Read first: `OPEN_ISSUES.md` (2026-10-01 section), `LEGA.md`, `M02_IMPLEMENTATION_STATUS.md` („După M02”), `M02_TEST_REPORT.md`, `RUNBOOK.md` (Lega + approvals sections).
+- **Git:** branch `v2-milestone-01` pushed up to `bbe8757` (M01 `f31240b`, M02 `0fb71d2`, then Lega `30bfbef` voice + Codex thread/start fix, `dac2db4` stage, `ce819b9` plugins off for voice + grant refund, `bbe8757` full access + web search for Lega). `main` is still `e9ab563`. Nothing merged or deployed. In the commit after `bbe8757` (local until the owner pushes): M02 verification fixes, MCP isolation for every Hub Codex process and for Claude, one-click approvals, expired grants shown as expired, version `2.3.0-m03`, these docs.
+- **Live validation (2026-09-30, sanitized test project „Ifrim Hub Test”, UTC):**
+  - 14:06 Claude Code read-only (`sonnet` on CLI 2.1.175), `run_muo6i9og_50c329673c`: PASS_LIVE.
+  - 14:41 Codex read-only, `run_muo7r9bp_d1b50893f7`: FAIL (transport, thread/start timeout 120 s, before inference); fixed in `30bfbef`.
+  - 18:18–19:49 Lega voice sessions (Romanian both ways), incl. the full-access build (`lega_muoic63s_69b4539e26`, 11.4 min): PASS_LIVE. Owner verdict: „pare să fie bine pentru început”.
+  - 20:14–20:27 Codex workspace-write, proposed by Lega and approved by the owner, `run_muojnivb_b113ce0591`: PASS_LIVE (`npm test` 4/4; contact form checked in the browser). Finding: 3 calls to the MCP server `cua_repl/js` (outside the Codex sandbox) → fixed.
+  - 21:39–21:48 Codex read-only after the MCP fix (Hub `2.3.0-m03`), `run_muomogfu_f3b3dcccd7`: PASS_LIVE, no MCP call, no escalation request; ~8 min before the first sandboxed command.
+- **Live bugs fixed:** one-click approvals („Aprobă și pornește”, „Aprobate, încă nepornite”, toast on start failure, Lega mentions approved-but-not-started items); MCP isolation (plugins off, config servers disabled by name, refusal before start, `mcpServerStatus/list` fail-closed, MCP call stops the run; Claude stops before the model on any MCP server or `mcp__` tool).
+- **Tests:** V2 249 (248 pass, 0 fail, 1 SKIPPED_ENV). V1 552 (549 pass, 1 skipped, 2 time out at 30 s only inside the full suite because they call the live V1 API on 8004; alone they pass). `npm run build:v2` OK, `npm audit` 0.
+- **Hub now:** 127.0.0.1:8011, `2.3.0-m03`, BUILD_SAFE, execution gate open (as the owner left it for Lega), 0 active grants, no active run or Lega session. Simulator 8012 separate. Any restart returns to BUILD_SAFE.
+- **Next, each only with your explicit approval:**
+  1. Decide R2 (Codex can read other projects' non-protected files, including `.env`, by absolute path) before enabling runs on real projects such as ProDelivery; decide R3 (`~/.codex/config.toml*` readable by the sandbox).
+  2. Decide the merge of `v2-milestone-01` into `main` (PR) and whether HUB-018 is closed as superseded.
+  3. Optional live checks not done yet: Lega web search and `propose_mission`; Codex ↔ Claude handoff; live Stop/interrupt of a running turn.
+  4. Installs, separately: Playwright; local Romanian speech engine; Claude Code CLI 2.1.175 → ≥ 2.1.284.
+  5. Optional, in your own terminal: the real Codex ACL pre-flight (`node v2/tests/manual/codex-real-profile-preflight.mjs`).
+
+## MILESTONE 02 — 2026-09-30 (superseded by the 2026-10-01 section above where they overlap)
+
+- **Delivered:** JARVIS experience + security readiness on the M01 foundation, version `2.2.0-m02` (now `2.3.0-m03`).
+  - Real Hub: http://127.0.0.1:8011/ (starts in BUILD_SAFE).
   - Simulator: http://127.0.0.1:8012/ (`npm run v2:sim`, labelled "SIMULARE — FĂRĂ MODELE REALE").
 - **Start checkpoint:** `.ifrim/CHECKPOINTS/2026-09-30-milestone-02-start.json`. End: `.ifrim/CHECKPOINTS/2026-09-30-milestone-02-done.md`.
 - **Read first:** `M02_IMPLEMENTATION_STATUS` (categories + inventory), `M02_SECURITY_READINESS` (Codex ACL findings), `M02_LIVE_VALIDATION_PLAN`, `M02_TEST_REPORT`, `M02_VISUAL_REVIEW`, `M02_DESIGN_SYSTEM`, `RUNBOOK` (M02 section). Evidence: `.ifrim/M02_EVIDENCE/`.
-- **Tests:** V2 197 (196 pass, 1 SKIPPED_ENV), V1 552 (551 pass, 1 SKIPPED_ENV), build OK, `npm audit` 0. Codex canary 46/46 PASS_LOCAL (fictive files, no model).
-- **Nothing was committed, pushed or deployed. No model was started. No real ACL was changed** (0 DENY ACEs verified on the real paths).
-- **Next, in order, each only with your explicit approval:**
-  1. Codex ACL consent in Integrations → Izolare.
-  2. Real pre-flight: `node v2/tests/manual/codex-real-profile-preflight.mjs --consent-fingerprint=9cab02fd58238507`.
-  3. "Verifică contul" for both providers.
-  4. One read-only live turn per provider on a sanitized project.
-  5. Optional separate handoff test.
-  6. Back to BUILD_SAFE.
+- **Tests at M02 delivery:** V2 197 (196 pass, 1 SKIPPED_ENV), V1 552 (551 pass, 1 SKIPPED_ENV), build OK, `npm audit` 0. Codex canary 46/46 PASS_LOCAL (fictive files, no model). Now: see the 2026-10-01 section.
+- **At M02 delivery** nothing was committed, pushed or deployed, no model was started and no real ACL was changed. Since then: M02 is commit `0fb71d2`, pushed on `v2-milestone-01`; models ran live with the owner's approval; the Codex ACL consent was recorded and the DENY ACEs now exist on the protected paths.
+- **Next steps from M02, with their outcome:**
+  1. Codex ACL consent in Integrations → Izolare: DONE.
+  2. Real pre-flight (`node v2/tests/manual/codex-real-profile-preflight.mjs --consent-fingerprint=9cab02fd58238507`): NOT_RUN. The local permission layer refused it for Claude; optional owner action in your own terminal.
+  3. "Verifică contul": DONE (the gate admitted the Codex runs).
+  4. One read-only live turn per provider on a sanitized project: DONE. Claude PASS_LIVE; Codex FAIL at 14:41 (fixed), then PASS_LIVE twice.
+  5. Optional separate handoff test: NOT_RUN.
+  6. Back to BUILD_SAFE: the Hub is in BUILD_SAFE with the execution gate open, as the owner left it for Lega (see the 2026-10-01 section).
 - Installs, separately: Playwright; local speech engine; Claude Code CLI update (global).
 
 
-## MILESTONE 01 — 2026-09-30 (current; supersedes the V2 REBUILD notes below where they overlap)
+## MILESTONE 01 — 2026-09-30 (historical; supersedes the V2 REBUILD notes below where they overlap)
 
 - Scope delivered: Dual-Ecosystem Intelligence + Company Runtime + AI Runtime + Core Foundation, version `2.1.0-m01`, schema 2, V2 on http://127.0.0.1:8011/ (BUILD_SAFE, gate suspended). Start checkpoint: `.ifrim/CHECKPOINTS/2026-09-30-milestone-01-start.json`; end checkpoint: `.ifrim/CHECKPOINTS/2026-09-30-milestone-01-done.md`.
 - Audit: `.ifrim/V2_OPENAI_CAPABILITY_AUDIT.md`, `V2_ANTHROPIC_CAPABILITY_AUDIT.md`, `V2_STANDARDS_AUDIT.md`, `V2_AI_ECOSYSTEM_MATRIX.md`, `V2_FRAMEWORK_EVALUATION.md`, `V2_EXECUTION_SURFACES.md` are GENERATED from `v2/config/ecosystem/*.json` by `node v2/scripts/gen-ecosystem-docs.mjs` — edit the JSON, not the Markdown.
@@ -29,10 +49,10 @@
   - Claude `-p` refuses `fable`/`best`/`[1m]` models and loads only user settings (`--setting-sources user`).
   - Claude gets `--no-chrome` plus `CLAUDE_GUARD_ENV`: advisor, fast mode, 1M context, workflows, auto memory, background tasks, cron and auto-updater off; usage-credit, upgrade, login and logout commands hidden.
   - Claude stops at `init` if `apiKeySource ≠ none` or the model is refused.
-  - Codex refuses a positive/unlimited credit balance and starts every app-server with 12 overrides: fast mode, image generation, skill installs, apps, computer/browser use, memories and multi_agent off, and web search disabled.
+  - Codex refuses a positive/unlimited credit balance and starts every app-server with 12 overrides: fast mode, image generation, skill installs, apps, computer/browser use, memories and multi_agent off, and web search disabled. Update 2026-10-01: now 16 per process = these 12 + `project_doc_max_bytes=0` and `project_root_markers=[]` (thread/start fix, `30bfbef`) + `features.plugins=false` and `features.remote_plugin=false` (MCP isolation). Only Lega's voice process may turn web search on (`cached` by default); runs keep it disabled.
   - Codex pins `approvalsReviewer: "user"` and stops before the turn on another reviewer or a substituted model.
   - The router picks the newest non-hidden model matching the hint as a whole token.
-- **Nothing was committed, pushed or deployed; no model was started through the Hub; no attestation was recorded for you.** The PC restarted during the work (2026-09-30); the Hub was restarted afterwards (BUILD_SAFE).
+- **At M01 delivery nothing was committed, pushed or deployed; no model was started through the Hub; no attestation was recorded for you.** Since then M01 is commit `f31240b`, pushed on `v2-milestone-01` (`main` still `e9ab563`, nothing deployed). The PC restarted during the work (2026-09-30); the Hub was restarted afterwards (BUILD_SAFE).
 
 ### Stare 2026-09-30 (după aprobarea ta)
 

@@ -1,6 +1,6 @@
 # M02 — Plan de validare live (§29)
 
-Stare: **LIVE_VALIDATION_PENDING**. Nimic din acest plan nu a fost executat.
+Stare (actualizat 2026-10-01): **executat pe 2026-09-30**, pe proiectul de test „Ifrim Hub Test”. Acordul ACL: făcut. Preflight-ul real: NOT_RUN (refuzat pentru Claude de stratul local de permisiuni; opțional, în terminalul tău). „Verifică contul”: făcut. Claude read-only: PASS_LIVE. Codex read-only: FAIL la 14:41 (corectat în `30bfbef`), apoi PASS_LIVE. Handoff: NOT_RUN. Detalii în `M02_TEST_REPORT.md`.
 
 Aprobările istorice din Milestone 01 nu se reutilizează. Fiecare pas marcat „aprobare” cere un „da” explicit pentru acea acțiune exactă.
 

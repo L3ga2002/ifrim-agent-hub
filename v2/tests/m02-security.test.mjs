@@ -2,6 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import path from "node:path";
+import { execFileSync } from "node:child_process";
 import { makeTestHub, enableLive, waitFor } from "./helpers.mjs";
 import { codexIsolationArgs, codexProfileToml, claudeDeniedReads, claudeAbsolute, evaluateIsolation, CODEX_PROFILE_BY_ACCESS, PROTECTED_PROJECT_PATHS, PROTECTED_HOME_PATHS,
   PROTECTED_CODEX_HOME_ENTRIES, CODEX_ACL_CONSENT_TEXT, hubProtectedPaths, codexDeniedPaths, denyListFingerprint } from "../server/policy/isolation.mjs";
@@ -171,8 +172,15 @@ test("M02-SEC-09 Hub file routes: protected dirs, secret names and junctions int
     put(".ifrim/tmp/canary.txt", "CANARY-TMP-FICTIVE");
     put(".env", "CANARY_ENV=fictive");
     put("docs/notes.md", "public");
-    let junction = false;
-    try { fs.symlinkSync(path.join(dir, ".ifrim", "private"), path.join(dir, "linked"), "junction"); junction = true; } catch { /* platform without junctions */ }
+    const outside = path.join(path.dirname(dir), `outside-${Date.now()}`);
+    fs.mkdirSync(outside, { recursive: true }); fs.writeFileSync(path.join(outside, "x.md"), "CANARY-OUTSIDE-FICTIVE");
+    // Junctions need no privilege on Windows (symlinks elsewhere); a test is skipped only when creation itself throws.
+    const link = (target, rel) => { try { fs.symlinkSync(target, path.join(dir, ...rel.split("/")), "junction"); return true; } catch { return false; } };
+    const junction = link(path.join(dir, ".ifrim", "private"), "linked");
+    const outLink = link(outside, "out-link");
+    const innerLink = link(path.join(dir, ".ifrim", "private"), "docs/inner-link");
+    const dangling = link(path.join(dir, "gone"), "dangling-link");
+    const docsLink = link(path.join(dir, "docs"), "docs-link");
     for (const rel of [".ifrim/private/canary.txt", ".ifrim/BACKUPS/canary.txt", ".ifrim/tmp/canary.txt", ".env", ".IFRIM\\Private\\canary.txt", "docs/../.ifrim/private/canary.txt", ...(junction ? ["linked/canary.txt"] : [])]) {
       assert.throws(() => resolveInScope(dir, rel), /protected|Secret/i, rel);
     }
@@ -181,8 +189,19 @@ test("M02-SEC-09 Hub file routes: protected dirs, secret names and junctions int
     await assert.rejects(invoke("files.read", { path: ".ifrim/private/canary.txt" }), /protected/);
     if (junction) await assert.rejects(invoke("files.read", { path: "linked/canary.txt" }), /protected/);
     const root = await invoke("files.list", { path: "." });
-    const names = (root.result || root).entries.map((e) => e.name);
-    assert.ok(!names.includes(".env") && !names.includes(".git") && !(junction && names.includes("linked") && false));
+    const listed = (root.result || root).entries;
+    const names = listed.map((e) => e.name);
+    assert.ok(!names.includes(".env") && !names.includes(".git"));
+    // A link is judged by where it really leads: into a protected location, out of the project or nowhere, even its name is hidden.
+    if (junction) assert.ok(!names.includes("linked"), "a junction into .ifrim/private is not listed");
+    if (outLink) assert.ok(!names.includes("out-link"), "a junction out of the project is not listed");
+    if (dangling) assert.ok(!names.includes("dangling-link"), "a dangling junction is not listed");
+    if (innerLink) assert.ok(!(await invoke("files.list", { path: "docs" })).entries.some((e) => e.name === "inner-link"), "the check applies in subfolders too");
+    if (docsLink) {
+      assert.deepEqual(listed.find((e) => e.name === "docs-link"), { name: "docs-link", type: "dir", link: true }, "a link that stays in scope is listed as what it leads to");
+      assert.deepEqual((await invoke("files.list", { path: "docs-link" })).entries.map((e) => e.name).filter((n) => n === "notes.md"), ["notes.md"]);
+    }
+    await assert.rejects(invoke("files.list", { path: "docs/notes.md" }), (e) => e.category === "validation", "a file is not listed as a folder");
     const ifrim = await invoke("files.list", { path: ".ifrim" });
     assert.deepEqual((ifrim.result || ifrim).entries.map((e) => e.name).filter((n) => ["private", "BACKUPS", "tmp"].includes(n)), [], "protected directories are not even listed");
     for (const rel of [".ifrim/private", ".ifrim/BACKUPS/x.zip", "a/.env.local", ".git"]) assert.ok(isProtectedRelative(rel), rel);
@@ -285,5 +304,60 @@ test("M02-SEC-13 test projects: only a marked, direct child of the projects root
     assert.equal((await run("project.retire_test", { projectId: p.id })).executionAllowed, false);
     assert.equal(hub.gate.evaluate({ provider: "claude", projectId: p.id, access: "read-only" }).checks.find((c) => c.id === "project_scope").ok, false);
     await assert.rejects(run("project.retire_test", { projectId: hub.projects.hub().id }), (e) => e.category === "policy", "regular projects cannot be retired here");
+  } finally { await t.cleanup(); }
+});
+
+test("M02-SEC-14 test projects: the whole tree is checked (nested secrets, inner junctions, .ifrim/private, size bounds); the script's own shape is still accepted", async () => {
+  const { TEST_PROJECT_MARKER, TEST_PROJECT_LIMITS, testProjectTreeProblem } = await import("../server/domain/projects.mjs");
+  const t = await makeTestHub();
+  try {
+    const { hub, config } = t;
+    const put = (dir, rel, text = "x") => { const file = path.join(dir, ...rel.split("/")); fs.mkdirSync(path.dirname(file), { recursive: true }); fs.writeFileSync(file, text); };
+    const mk = (name, files = {}) => {
+      const dir = path.join(config.projectsRoot, name);
+      put(dir, TEST_PROJECT_MARKER, JSON.stringify({ createdBy: "ifrim-agent-hub", purpose: "live-validation", name, stack: "Node.js (node:test)" }));
+      for (const [rel, text] of Object.entries(files)) put(dir, rel, text);
+      return dir;
+    };
+    const register = async (dir, name) => (await hub.commands.dispatch({ type: "project.register_test", payload: { path: dir, name }, actor: "user", channel: "ui" })).result;
+    const refused = (dir, pattern, label) => assert.rejects(register(dir, `Refused ${label}`), (e) => e.category === "policy" && pattern.test(e.message), label);
+    await refused(mk("nested-env", { "src/.env": "CANARY=fictive" }), /secret-like files \(src\/\.env\)/, "nested .env");
+    await refused(mk("deep-key", { "config/keys/server.pem": "fictive" }), /secret-like files \(config\/keys\/server\.pem\)/, "deep key file");
+    await refused(mk("with-private", { ".ifrim/private/x.json": "{}" }), /\.ifrim\/private/, ".ifrim/private");
+    await refused(mk("nested-private", { "tools/.IFRIM/Private/x.json": "{}" }), /\.ifrim\/private/i, "nested .ifrim/private, any case");
+    const inner = mk("inner-link", { "src/app.js": "export {};\n", "shared/util.js": "export {};\n" });
+    let junction = false;
+    try { fs.symlinkSync(path.join(inner, "shared"), path.join(inner, "src", "shared-link"), "junction"); junction = true; } catch { /* platform without junctions */ }
+    if (junction) await refused(inner, /links or junctions \(src\/shared-link\)/, "an inner junction, even to a harmless folder");
+    const levels = (n) => Array.from({ length: n }, (_, i) => `d${i}`).join("/");
+    await refused(mk("too-deep", { [`${levels(TEST_PROJECT_LIMITS.maxDepth)}/file.txt`]: "x" }), /Too large/, "deeper than the walk limit");
+    assert.equal(testProjectTreeProblem(mk("deep-enough", { [`${levels(TEST_PROJECT_LIMITS.maxDepth - 1)}/file.txt`]: "x" })), null, "exactly at the depth limit is accepted");
+    const counted = mk("counted", { "a.txt": "1", "b.txt": "2", "src/c.txt": "3" }); // marker + a + b + src + src/c = 5 entries
+    assert.equal(testProjectTreeProblem(counted, { maxEntries: 5 }), null);
+    assert.match(testProjectTreeProblem(counted, { maxEntries: 4 }), /Too large.*over 4 entries/, "more entries than the bound are refused, never sampled");
+    assert.equal(TEST_PROJECT_LIMITS.maxEntries, 5000);
+    assert.equal(hub.projects.list().filter((p) => p.source === "hub-test").length, 0, "no refused project was registered");
+
+    // Same shape as v2/scripts/create-test-project.mjs (plus the Hub backups the gate writes into it), with its own git repo.
+    const shaped = mk("ifrim-hub-live-test", {
+      "README.md": "# Ifrim Hub Test\n", ".gitignore": "node_modules/\n.env\n.env.*\n.ifrim/BACKUPS/\n.ifrim/private/\n.ifrim/tmp/\n",
+      "package.json": JSON.stringify({ name: "ifrim-hub-live-test", version: "0.1.0", private: true, type: "module", scripts: { test: "node --test" } }, null, 2),
+      "src/validate.js": "export function validateContact() { return { ok: true, errors: {} }; }\n",
+      "test/validate.test.js": "import test from \"node:test\";\ntest(\"ok\", () => {});\n",
+      ".ifrim/BACKUPS/v2/bkp_fixture.zip": "fictive", ".ifrim/BACKUPS/v2/bkp_fixture.manifest.json": "{}",
+    });
+    const git = (...args) => execFileSync("git", ["-C", shaped, "-c", "user.name=Test", "-c", "user.email=test@example.invalid", "-c", "commit.gpgsign=false", ...args], { stdio: "pipe" });
+    git("init", "-q"); git("add", "."); git("commit", "-q", "-m", "fixture");
+    const p = await register(shaped, "Ifrim Hub Test");
+    assert.equal(p.source, "hub-test");
+    assert.equal(p.executionAllowed, true);
+    assert.equal((await register(shaped, "Ifrim Hub Test")).alreadyRegistered, true);
+
+    // A marker that is a link would be read from elsewhere; only a real marker file counts.
+    const linkedMarker = path.join(config.projectsRoot, "linked-marker");
+    fs.mkdirSync(linkedMarker, { recursive: true });
+    let fileLink = false;
+    try { fs.symlinkSync(path.join(shaped, TEST_PROJECT_MARKER), path.join(linkedMarker, TEST_PROJECT_MARKER), "file"); fileLink = true; } catch { /* file symlinks need a privilege on Windows */ }
+    if (fileLink) await refused(linkedMarker, /Missing/, "a linked marker");
   } finally { await t.cleanup(); }
 });

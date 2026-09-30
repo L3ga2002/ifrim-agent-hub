@@ -1,8 +1,15 @@
 import { useState } from "react";
 import { ShieldCheck, Play } from "lucide-react";
 import { api, fmt } from "../api.js";
-import { useResource, useAction } from "../store.js";
+import { useResource, useAction, pushToast } from "../store.js";
 import { Panel, Empty, Loading, ErrorNotice, StatusChip, DiffView, Notice } from "../components/ui.jsx";
+import { isCommandApproval, approvedNotStarted, LOCAL_TOOL_APPROVALS } from "../lib/uiLogic.js";
+
+/** Starts an approved command; a failure is also a toast, because the card may already have left the list (SSE reload). */
+async function startApproved(approval) {
+  try { return await api(`/api/commands/${approval.scopeId}/execute`, { method: "POST", body: {} }); }
+  catch (error) { pushToast(`start-${approval.id}`, "error", `Aprobată, dar nu a pornit: ${error.message}. O găsești în „Aprobate, încă nepornite”.`); throw error; }
+}
 
 const TIER_RO = { READ_ONLY: "doar citire", WORKSPACE_EDIT: "editare workspace", DEVELOPMENT_TOOLS: "unelte de dezvoltare", EXTERNAL_ACTIONS: "acțiuni externe", SENSITIVE_ACTIONS: "acțiuni sensibile" };
 
@@ -19,13 +26,16 @@ function ActionView({ approval }) {
 export function ApprovalCard({ approval, onDone }) {
   const [note, setNote] = useState("");
   const [result, setResult] = useState(null);
+  const commandScoped = isCommandApproval(approval);
+  // For a proposed command, approving IS the order to run it: one click decides and starts it (found live on 2026-09-30:
+  // after "Aprobă" the card left the pending list, the separate start button was never seen and nothing ran).
   const decide = useAction(async (decision) => {
     await api(`/api/approvals/${approval.id}/decide`, { method: "POST", body: { decision, displayedHash: approval.payloadHash, note } });
+    if (decision === "approved" && commandScoped) await startApproved(approval);
     onDone();
   });
   const execute = useAction(async () => { setResult(await api(`/api/approvals/${approval.id}/execute`, { method: "POST", body: {} })); onDone(); });
-  // Command-scoped approvals (e.g. a run Lega proposed) execute the exact stored command after your click.
-  const runCommand = useAction(async () => { await api(`/api/commands/${approval.scopeId}/execute`, { method: "POST", body: {} }); onDone(); });
+  const runCommand = useAction(async () => { await startApproved(approval); onDone(); });
   const expired = new Date(approval.expiresAt) <= new Date();
   return (
     <Panel className={approval.status === "pending" ? "accent-approval" : ""} title={approval.actionKind} icon={ShieldCheck} actions={<StatusChip status={expired && approval.status === "pending" ? "expired" : approval.status} />}>
@@ -45,19 +55,20 @@ export function ApprovalCard({ approval, onDone }) {
           <>
             <label className="field"><span>Notă (obligatorie la respingere)</span><input className="input" value={note} onChange={(e) => setNote(e.target.value)} maxLength={500} /></label>
             <div className="row wrap">
-              <button className="btn approve" disabled={decide.pending} onClick={() => decide.run("approved")}>Aprobă exact această acțiune</button>
+              <button className="btn approve" disabled={decide.pending} onClick={() => decide.run("approved")}>{decide.pending ? "Se pornește…" : commandScoped ? "Aprobă și pornește" : "Aprobă exact această acțiune"}</button>
               <button className="btn danger" disabled={decide.pending || note.trim().length < 3} onClick={() => decide.run("rejected")}>Respinge</button>
             </div>
             <p className="faint" style={{ margin: 0, fontSize: 12 }}>Aprobarea este legată de amprenta de mai sus. Dacă acțiunea, ținta, versiunea sau scope-ul se schimbă, aprobarea devine invalidă.</p>
           </>
         )}
-        {approval.status === "approved" && approval.actionKind === "process.run" && (
-          <div className="row"><button className="btn primary" disabled={execute.pending} onClick={execute.run}><Play size={14} />{execute.pending ? "Rulează…" : "Rulează comanda aprobată"}</button></div>
+        {approval.status === "approved" && LOCAL_TOOL_APPROVALS.includes(approval.actionKind) && !expired && (
+          <div className="row"><button className="btn primary" disabled={execute.pending} onClick={execute.run}><Play size={14} />{execute.pending ? "Rulează…" : approval.actionKind === "browser.inspect" ? "Rulează verificarea aprobată" : "Rulează comanda aprobată"}</button></div>
         )}
-        {approval.status === "approved" && approval.scopeType === "command" && approval.actionKind !== "process.run" && (
-          <div className="row"><button className="btn primary" disabled={runCommand.pending} onClick={runCommand.run}><Play size={14} />{runCommand.pending ? "Pornește…" : "Execută acțiunea aprobată"}</button></div>
+        {approval.status === "approved" && commandScoped && !expired && (
+          <div className="row"><button className="btn primary" disabled={runCommand.pending} onClick={runCommand.run}><Play size={14} />{runCommand.pending ? "Pornește…" : "Pornește acum"}</button></div>
         )}
-        {result && <Notice tone={result.exitCode === 0 ? "info" : "error"} title={`Cod ieșire ${result.exitCode}, ${Math.round(result.durationMs / 1000)} s`}><pre className="pre">{(result.outputTail || []).slice(-40).join("\n")}</pre></Notice>}
+        {result && result.exitCode !== undefined && <Notice tone={result.exitCode === 0 ? "info" : "error"} title={`Cod ieșire ${result.exitCode}, ${Math.round(result.durationMs / 1000)} s`}><pre className="pre">{(result.outputTail || []).slice(-40).join("\n")}</pre></Notice>}
+        {result && result.exitCode === undefined && <Notice tone="info" title={`Pagina a răspuns ${result.status ?? "?"} în ${Math.round((result.durationMs || 0) / 1000)} s`}>{result.title || result.url}{result.network?.blockedCount ? ` · ${result.network.blockedCount} cereri blocate` : ""}</Notice>}
         <ErrorNotice error={decide.error || execute.error || runCommand.error} />
       </div>
     </Panel>
@@ -68,6 +79,11 @@ export default function Approvals() {
   const [filter, setFilter] = useState("pending");
   const { data, error, loading, reload } = useResource(`/api/approvals${filter === "all" ? "" : `?status=${filter}`}`, { reloadOn: (e) => e.type.startsWith("approval."), deps: [filter] });
   const list = data?.approvals || [];
+  // Approved but never started (e.g. approved before one-click start existed, or the start failed): shown next to the
+  // pending ones, so an approved action can never silently stay unexecuted.
+  const approvedRes = useResource(filter === "pending" ? "/api/approvals?status=approved" : null, { reloadOn: (e) => e.type.startsWith("approval.") || e.type.startsWith("command."), deps: [filter] });
+  const waitingStart = filter === "pending" ? approvedNotStarted(approvedRes.data?.approvals || []) : [];
+  const reloadAll = () => { reload(); approvedRes.reload(); };
   return (
     <div className="page">
       <div className="page-head">
@@ -77,8 +93,14 @@ export default function Approvals() {
         </div>
       </div>
       <div data-lega-target="approvals-list">
+        {waitingStart.length > 0 && (
+          <div className="stack" style={{ marginBottom: 16 }}>
+            <Notice tone="warn" title="Aprobate, încă nepornite">Le-ai aprobat, dar nu au pornit. Apasă „Pornește acum” sau lasă-le să expire.</Notice>
+            <div className="grid two">{waitingStart.map((a) => <ApprovalCard key={a.id} approval={a} onDone={reloadAll} />)}</div>
+          </div>
+        )}
         {loading ? <Loading lines={4} /> : error ? <ErrorNotice error={error} onRetry={reload} /> : list.length ? (
-          <div className="grid two">{list.map((a) => <ApprovalCard key={a.id} approval={a} onDone={reload} />)}</div>
+          <div className="grid two">{list.map((a) => <ApprovalCard key={a.id} approval={a} onDone={reloadAll} />)}</div>
         ) : <Panel><Empty title={filter === "pending" ? "Nimic nu așteaptă aprobarea ta" : "Nicio aprobare"}>Cererile apar când un provider cere o comandă sau o modificare, sau când pregătești o comandă locală.</Empty></Panel>}
       </div>
     </div>

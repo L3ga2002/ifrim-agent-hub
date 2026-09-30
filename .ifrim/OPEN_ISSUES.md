@@ -1,20 +1,79 @@
 # Open Issues - Ifrim Agent Hub
 
-## Milestone 02 Open Items - 2026-09-30 (supersede the items below where they overlap)
+## 2026-10-01 - Open items after M02 + Lega (version `2.3.0-m03`; supersede every section below where they overlap)
+
+State: branch `v2-milestone-01` pushed up to `bbe8757` (M01 `f31240b`, M02 `0fb71d2`, Lega `30bfbef`, `dac2db4`, `ce819b9`, `bbe8757`); `main` still `e9ab563`; nothing merged or deployed. The M02 verification fixes, MCP isolation, one-click approvals, expired-grant display, version `2.3.0-m03` and these docs are in the commit after `bbe8757` (local until the owner pushes). Hub on 127.0.0.1:8011 runs `2.3.0-m03`, BUILD_SAFE, execution gate open (as the owner left it for Lega), 0 active grants, no active run or Lega session; simulator 8012 separate.
+
+Owner decisions:
+- R2 (P1, decision before real projects): Codex can read non-protected files of other projects (including their `.env`) by absolute path. Decide before enabling runs on real projects such as ProDelivery.
+- R3 (P2, decision): `~/.codex/config.toml*` stays readable by the Codex sandbox and may contain MCP env values.
+- Merge (decision): merge `v2-milestone-01` into `main` through a PR. Nothing is merged or deployed.
+- HUB-018 (decision): close it as superseded by the V2 live validation, or keep it open.
+
+Owner actions (optional):
+- Real Codex ACL pre-flight in your own terminal (`node v2/tests/manual/codex-real-profile-preflight.mjs`). The local permission layer refused it for Claude. The DENY ACEs already exist on the protected paths.
+
+Install approvals (NEEDS_INSTALL_APPROVAL):
+- Playwright (Browser Workspace E2E).
+- Local Romanian speech engine.
+- Claude Code CLI update 2.1.175 → ≥ 2.1.284 (global change).
+
+Not live-verified (NOT_RUN):
+- Lega web search and `propose_mission` (also `mission_detail` was not used live).
+- Codex ↔ Claude handoff.
+- Live Stop/interrupt of a running model turn.
+- Codex workspace-write through the rw profile beyond the one run `run_muojnivb_b113ce0591`.
+
+Performance (P2):
+- The Windows Codex sandbox takes ~8 minutes before the first command of a run (ACL setup).
+- Runs used reasoning effort `max` from the owner's Codex config, which uses more of the plan.
+
+Known limitations:
+- Live stream: a database reset whose new log already grew past the client's mark is not detected (`hello` has no stable log identity).
+- Lega uses experimental `codex thread/realtime` methods: a Codex update can break it. Real plan consumption of voice is not measured (NEVERIFICAT).
+- V1 live-API tests time out inside the full V1 suite (`tests/continuation-api-contract.test.mjs`, `tests/model-policy-api.test.mjs` call the live V1 API on 8004, which answers slowly); alone they pass (16 s and 0.2 s). V1 code was not changed.
+- Platform limits: real interactive terminal, always-on-top overlay, desktop control, phone access (binding stays 127.0.0.1).
+- Not implemented on purpose: wake word, PWA/service worker, sounds, historical replay, log virtualization.
+- Unmeasured: real FPS, OS reduced motion, multi-hour session, real screen reader.
+
+Leftovers (P3):
+- Empty conversation with a broken title from an earlier curl (harmless; there is no delete/rename command).
+- The Ifrim Hub Test project has uncommitted files created by Codex (the contact form); kept for the owner.
+
+Outside V2:
+- The OpenClaw scheduled Windows task is still Ready (not disabled).
+
+Risks:
+- Not ready for autonomy: every live action needs LIVE_VALIDATION + OPEN GATE + a grant; every restart returns to BUILD_SAFE.
+- Codex isolation on Windows rests on persistent DENY ACEs that also affect Codex desktop sessions.
+- Claude read-only is limited at tool level only (no OS sandbox on native Windows); Claude shell/write stays blocked.
+- Prompt injection: project notes and (when on) web pages reach Lega's agent. Effects still need the owner's click. Web search `live` keeps a leak path, so the default is `cached`.
+
+Resolved on 2026-09-30 / 2026-10-01 (details in the marked items below):
+- Codex thread/start timeout: fixed in `30bfbef`; confirmed by two Codex PASS_LIVE runs.
+- Codex live validation: PASS_LIVE twice (`run_muojnivb_b113ce0591` workspace-write, `run_muomogfu_f3b3dcccd7` read-only).
+- LEGA-ACCESS: the full-access build was used live by the owner (session `lega_muoic63s_69b4539e26`).
+- One-click approvals (live bug: two approved Lega proposals did not run): fixed with "Aprobă și pornește", the "Aprobate, încă nepornite" section (also for npm scripts and browser checks), a toast when the start fails, and Lega mentioning approved-but-not-started items.
+- MCP outside the sandbox (live finding: a run called `cua_repl/js` 3 times): fixed for every Hub Codex process (plugins off, config servers disabled by name, refusal before start, `mcpServerStatus/list` fail-closed over every page, MCP call during a turn stops the run) and for Claude (stop before the model if init reports an MCP server or `mcp__` tool).
+- Codex ACL consent recorded; Codex account check done (the gate admitted the Codex runs).
+- Uncommitted M01/M02/Lega work: committed and pushed on `v2-milestone-01` (the latest fixes are in the commit after `bbe8757`, see State).
+- Expired grants are shown and judged as expired.
+
+## Milestone 02 Open Items - 2026-09-30 (superseded by the 2026-10-01 section above where they overlap)
 
 - LEGA (P1): live session PASSED on 2026-09-30 (Romanian ASR/TTS, hub_status, navigate). See `.ifrim/LEGA.md`.
-- LEGA-ACCESS (P1, owner test): "full access under control" is new and verified only in simulation (8 `M03-ACCESS-*` tests, two independent reviews fixed). It covers the read tools, the arrow (`point`), the grant prefill, missions by approval, per-project run enablement and web search for Lega (default `cached` = OpenAI index, no live page fetch; `indexed`/`live` selectable in the Lega panel). It needs a Hub restart (the running process predates it), then one live session: ask for the briefing, "arată-mi unde fac un grant", a web question. A restart ends any Lega session and returns the Hub to BUILD_SAFE.
+- RESOLVED 2026-09-30 (live): LEGA-ACCESS. The owner used the full-access build live (session `lega_muoic63s_69b4539e26`, 11.4 min, web search `cached`): hub_status 6, how_to 5, recent_runs 5, propose_run 4, point 3, navigate 3, project_brief 3, company_briefing 2, pending_approvals 2, prepare_grant 1, list_missions 1, list_projects 1. Still not used live: web search, propose_mission, mission_detail (see top). History: "full access under control" was first verified only in simulation (8 `M03-ACCESS-*` tests, two independent reviews fixed). It covers the read tools, the arrow (`point`), the grant prefill, missions by approval, per-project run enablement and web search for Lega (default `cached` = OpenAI index, no live page fetch; `indexed`/`live` selectable in the Lega panel).
 - V1 flaky test (P3): `tests/ordered-fingerprint-io.test.mjs` "inverse completion" failed once under full-suite load on 2026-09-30 and passed 3/3 alone; V1 code untouched.
-- CODEX-THREAD-START fix (P1): `project_doc_max_bytes=0` + `project_root_markers=[]` remove sandboxed AGENTS.md discovery from thread/start (root cause per codex-rs 0.159.2); the Hub now sends the project AGENTS.md itself. It needs one owner-started Codex run to confirm.
-- CODEX-THREAD-START (P1, history): the first live Codex run (14:41Z) failed pre-inference with `thread/start timed out after 120000 ms` under the elevated sandbox + Hub profile. The DENY ACEs are now present on all protected paths. Diagnosis is in progress (ACL propagation on large trees vs. other causes). There was no retry and nothing was consumed. The gate is suspended; BUILD_SAFE.
-- M02-LIVE (P1): Claude read-only PASS_LIVE on the sanitized test project (2026-09-30, run `run_muo6i9og_50c329673c`). Codex pending: the Claude Code auto-mode permission classifier refused the real ACL pre-flight (not worked around), so the owner runs the pre-flight in their own terminal and starts the prepared Codex run from the UI (grant `grant_muo6lo5l_7d6f521584`, 1 attempt, expires 16:09Z). The gate stays open in LIVE_VALIDATION until that test; afterwards return to BUILD_SAFE.
+- RESOLVED 2026-09-30: CODEX-THREAD-START fix. `project_doc_max_bytes=0` + `project_root_markers=[]` remove sandboxed AGENTS.md discovery from thread/start (root cause per codex-rs 0.159.2); the Hub now sends the project AGENTS.md itself. Confirmed by two owner-approved Codex runs: `run_muojnivb_b113ce0591` (workspace-write, PASS_LIVE) and `run_muomogfu_f3b3dcccd7` (read-only, PASS_LIVE).
+- RESOLVED 2026-09-30 (history): CODEX-THREAD-START. The first live Codex run (14:41Z) failed pre-inference with `thread/start timed out after 120000 ms` under the elevated sandbox + Hub profile. The DENY ACEs are present on all protected paths. The root cause was the AGENTS.md discovery at thread/start: with the Hub deny entries every discovery probe ran through the Windows sandbox (setup refresh + ACL sync per probe, no timeout); fixed above. There was no retry and nothing was consumed.
+- RESOLVED 2026-09-30: M02-LIVE. Claude read-only PASS_LIVE on the sanitized test project (run `run_muo6i9og_50c329673c`). Codex: FAIL at 14:41 (fixed), then PASS_LIVE twice (see above). The real ACL pre-flight was refused for Claude by the Claude Code auto-mode permission classifier (not worked around) and was not run; it stays an optional owner action. The Hub gate is now open as the owner left it for Lega (see top), not in the per-test state described earlier.
 - Leftover (P3): an empty conversation titled with a broken character ("Validare live M02 � Claude") was created when curl sent non-UTF-8 text; there is no delete/rename command, it is harmless.
-- Codex ACL consent (P1, your decision). Details: `M02_SECURITY_READINESS.md` F2–F4.
-  - The Windows elevated sandbox enforces the Hub deny list by writing persistent DENY-read ACEs for `CodexSandboxUsers`; they also apply to Codex desktop sessions.
-  - The gate blocks Codex on Windows until you record consent for the exact list: Integrations → Izolare, 16 paths, fingerprint `9cab02fd58238507`.
-  - Then run the real pre-flight (no model).
+- RESOLVED 2026-09-30: Codex ACL consent recorded. Details: `M02_SECURITY_READINESS.md` F2–F4.
+  - The Windows elevated sandbox enforces the Hub deny list by writing persistent DENY-read ACEs for `CodexSandboxUsers`; they also apply to Codex desktop sessions (still a risk, see top).
+  - The gate blocks Codex on Windows without consent for the exact list (Integrations → Izolare, 16 paths, fingerprint `9cab02fd58238507` at the time). Consent was recorded and the DENY ACEs now exist on the protected paths.
+  - The real pre-flight (no model) was not run; it is optional (see top).
   - Reversal per path: `icacls "<path>" /remove:d CodexSandboxUsers`.
-- Codex account check after M02 (P1, your action). The last check (13:01) predates the sandbox readiness read, so the gate reports "neverificat" until a new "Verifică contul" (contacts OpenAI, no inference).
+- RESOLVED 2026-09-30: Codex account check after M02. The gate admitted the Codex runs, so the sandbox readiness was read after a new "Verifică contul".
 - Other projects under `Ifrim Digital Proiecte` (P2, decision).
   - With `:root = read`, Codex can read non-protected files of other projects by absolute path.
   - Absolute `**` globs work (F5) but would write ACEs into other projects, so they are prepared, not enabled.
@@ -24,12 +83,12 @@
 - Local Romanian speech engine (P3, NEEDS_INSTALL_APPROVAL): strict local mode shows NEEDS_SETUP; the browser engine sends audio online and is not used.
 - Not measurable in the test pane (P3): real FPS, OS reduced-motion emulation, long sessions, screen reader. Measured instead: GPU cost per frame, short-session heap, DOM audit.
 - File symlink test (P3, SKIPPED_ENV): unchanged; Developer Mode not enabled.
-- Uncommitted work (decision): M02 on branch `v2-milestone-01`; proposed commit message in `.ifrim/CHECKPOINTS/2026-09-30-milestone-02-done.md` (not executed).
+- RESOLVED: uncommitted M02 work. M02 is commit `0fb71d2` on `v2-milestone-01`, pushed (branch now up to `bbe8757`); `main` is still `e9ab563`. The merge is an open decision (see top).
 
 
 ## Milestone 01 Open Items - 2026-09-30 (supersede the V2 items below where they overlap)
 
-- V2-LIVE (P1, blocked by a local permission): on 2026-09-30 the owner approved the live validation, recorded both billing attestations and ran the account checks. The Claude Code auto-mode permission classifier refused to let the session drive it (classified as a production deploy); it was not worked around. No PASS_LIVE label exists yet; see NEXT_SESSION for how to run it.
+- RESOLVED 2026-09-30 (see top: Claude and Codex PASS_LIVE on the test project). V2-LIVE (P1, blocked by a local permission): on 2026-09-30 the owner approved the live validation, recorded both billing attestations and ran the account checks. The Claude Code auto-mode permission classifier refused to let the session drive it (classified as a production deploy); it was not worked around. No PASS_LIVE label exists yet; see NEXT_SESSION for how to run it.
 - Codex read access to private paths (P2): Codex has no per-path read denial; `.ifrim/private` and `.ifrim/BACKUPS` are protected for Codex only by the prompt rule. Evaluate permission profiles or a work tree without these directories during LIVE_VALIDATION.
 - Billing attestations (P1, user action): Codex — credit balance 0 and automatic reload off (ChatGPT Settings → Usage); Claude — usage credits (formerly extra usage) off and auto-reload off. The claude.ai usage page read on 2026-09-30 showed Max plan with usage credits disabled; the formal attestation is still yours to record in Integrations.
 - Codex account check not run (P1, user action): `account/read` + `account/rateLimits/read` + `model/list` contact OpenAI with your account (no inference). Needed to verify the plan (V1 reported `prolite`, unverified in V2), the credit balance and the GPT-6.x models available.
@@ -39,11 +98,11 @@
 - OpenClaw gateway (P3, decision): not listening after the PC restart (18790 free), while V1 came back on 3004/8004. V2 does not start it; whether its scheduled task stays is your decision.
 - Playwright (P2, approval): REUSE decided; installation needs approval. Computer runtime visual control stays native/assisted.
 - Temporary local artifacts (P3, cleanup on your OK): `.ifrim/tmp/migration-check/` (coherent copy of the Hub DB used for the migration test, private data), `.ifrim/tmp/v2-tests/hub-*` left by a test agent, `.ifrim/tmp/regression/*.log`. All git-ignored.
-- Uncommitted work (decision): V2 + Milestone 01 are not committed or pushed.
+- RESOLVED: uncommitted V2 + Milestone 01 work. Committed as `f31240b` and pushed on `v2-milestone-01`; `main` is still `e9ab563` (merge decision at the top).
 
 ## V2 Open Items - 2026-09-30
 
-- V2-LIVE (P1, blocked on approval): no live Codex/Claude turn, interruption or handoff executed yet. Proposal in NEXT_SESSION. Successor of HUB-018's acceptance criteria.
+- PARTLY RESOLVED 2026-09-30: live Codex and Claude turns PASS_LIVE (see top); live interruption and handoff are still NOT_RUN. V2-LIVE (P1, blocked on approval): no live Codex/Claude turn, interruption or handoff executed yet. Proposal in NEXT_SESSION. Successor of HUB-018's acceptance criteria.
 - HUB-018 (P1, historical, kept open): V1 criteria not met; V1 retired from execution in V2. Do not close without your decision. Open V1 locks imported as information only: `LOCK-mumsn13e-2kew8n` (HUB-018, exclusive) and `LOCK-PD-RESTAURANT-PANEL` (advisory).
 - Billing attestations (P1, user action): extra usage (Claude) and automatic credit consumption (Codex) cannot be read by the Hub; routes stay blocked until you confirm in Integrations.
 - Codex account check not run (P2, user action): contacts OpenAI with your account (no inference).
@@ -55,7 +114,7 @@
 - Voice (P3): transcription locality depends on the browser engine (labelled in UI); Romanian local TTS voices not verified on this machine.
 - Plugin companion / MCP Events (P3): need a public HTTPS endpoint; not authorized.
 - Cutover (decision): V1 tray/autostart and ports 3004/8004; OpenClaw gateway 23596 and the scheduled task.
-- Uncommitted V2 work (decision): nothing committed or pushed.
+- RESOLVED: uncommitted V2 work. V2 is committed and pushed on `v2-milestone-01` (up to `bbe8757`); `main` is still `e9ab563`; nothing merged or deployed.
 
 ## Current Open Items - 2026-09-29
 

@@ -127,3 +127,31 @@ test("T19 local voice commands: stop works locally and suspends the gate", async
     assert.equal(message.json.kind, "message");
   } finally { await s.stop(); }
 });
+
+test("T17b SSE drains a backlog larger than one batch (500) without waiting for a new event", async () => {
+  const s = await startServer();
+  try {
+    s.hub.bus.transaction(() => { for (let i = 0; i < 1200; i += 1) s.hub.bus.append({ type: "test.backlog", scopeType: "system", scopeId: "sse", source: "test", payload: { i } }); });
+    const last = s.hub.bus.lastSeq();
+    const received = await new Promise((resolve, reject) => {
+      const seqs = [];
+      let req = null;
+      const timer = setTimeout(() => { req?.destroy(); reject(new Error(`stalled at ${seqs.length} events (last ${seqs.at(-1)} of ${last})`)); }, 10000);
+      req = http.get({ host: "127.0.0.1", port: s.port, path: "/api/stream?after=0", headers: { Host: `127.0.0.1:${s.port}` } }, (res) => {
+        res.setEncoding("utf8");
+        let buffer = "";
+        res.on("data", (chunk) => {
+          buffer += chunk;
+          // Complete event blocks only: a socket read can split an event in the middle of its id line.
+          for (let end = buffer.indexOf("\n\n"); end >= 0; end = buffer.indexOf("\n\n")) {
+            const block = buffer.slice(0, end); buffer = buffer.slice(end + 2);
+            const id = /^id: (\d+)$/m.exec(block);
+            if (id) seqs.push(Number(id[1]));
+          }
+          if (seqs.at(-1) === last) { clearTimeout(timer); req.destroy(); resolve(seqs); }
+        });
+      });
+    });
+    assert.deepEqual(received, s.hub.bus.since(0, 100000).map((e) => e.seq), "the whole log, in order, no gap and no duplicate");
+  } finally { await s.stop(); }
+});

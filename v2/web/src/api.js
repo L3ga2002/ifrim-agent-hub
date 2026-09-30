@@ -1,4 +1,6 @@
 // API client: per-boot session token on every mutating request, typed errors, SSE with replay.
+import { createEventGate } from "./lib/uiLogic.js";
+
 let token = null;
 let tokenPromise = null;
 
@@ -46,39 +48,68 @@ export async function api(path, { method = "GET", body, signal } = {}) {
   return payload;
 }
 
+const parseData = (message) => { try { return JSON.parse(message?.data); } catch { return null; } };
+
 /**
- * Event stream with automatic reconnect. Persisted events carry `seq`; the browser's EventSource sends
- * Last-Event-ID on reconnect and the server replays from SQLite, so nothing is lost or duplicated.
- * `onEvent` receives persisted events; `onLive` receives transient deltas.
+ * Event stream with reconnect and replay. Persisted events carry `seq` (also their SSE id). Every (re)connect is a NEW
+ * EventSource opened with `?after=<last accepted seq>`: a new object never sends Last-Event-ID (only the browser's own
+ * retry of the same object would, and that retry is cancelled here to own the backoff), so `?after` is what makes the
+ * server replay the gap from SQLite. One tested gate (createEventGate, lib/uiLogic.js) decides what reaches `onEvent`:
+ * duplicates, stale and out-of-order sequences are dropped, and a `hello` showing the server's log behind our mark
+ * (reset database, or an unknown start) moves the mark there and reopens the stream from it.
+ * `onEvent` receives persisted events in order; `onLive` receives transient deltas; `onStatus` gets "live" / "reconnecting".
+ * `EventSourceImpl` and `timers` are injectable so M02-UI-10 drives this exact code without a browser.
  */
-export function openStream({ after = 0, onEvent, onLive, onStatus }) {
+export function openStream({ after = null, onEvent, onLive, onStatus, EventSourceImpl = globalThis.EventSource, timers = globalThis }) {
+  const gate = createEventGate({ after });
   let source = null;
   let closed = false;
-  let lastSeq = after;
   let retry = 1000;
-  const seen = new Set();
+  let timer = null;
+  let resyncs = 0; // consecutive resyncs without a usable hello: past 3 they wait for the backoff instead of looping
+  // Handlers ignore anything from a source that is no longer current (a message queued before close()).
+  const current = (es) => es === source && !closed;
+  function scheduleReconnect() {
+    onStatus?.("reconnecting");
+    timer = timers.setTimeout(connect, retry);
+    retry = Math.min(retry * 2, 15000);
+  }
+  function drop(es) { es.close(); if (source === es) source = null; }
   function connect() {
+    timer = null;
     if (closed) return;
-    source = new EventSource(`/api/stream?after=${lastSeq}`);
-    source.addEventListener("hello", () => { retry = 1000; onStatus?.("live"); });
-    source.addEventListener("hub", (message) => {
-      const event = JSON.parse(message.data);
-      if (seen.has(event.seq)) return;
-      seen.add(event.seq);
-      if (seen.size > 5000) seen.delete(seen.values().next().value);
-      lastSeq = Math.max(lastSeq, event.seq);
-      onEvent(event);
+    const es = new EventSourceImpl(`/api/stream?after=${gate.lastSeq}`);
+    source = es;
+    es.addEventListener("hello", (message) => {
+      if (!current(es)) return;
+      const hello = gate.hello(parseData(message));
+      if (hello.resync) { drop(es); if (++resyncs > 3) scheduleReconnect(); else connect(); return; }
+      if (!gate.known) { drop(es); scheduleReconnect(); return; } // a hello without the server's lastSeq: retry with backoff
+      retry = 1000; resyncs = 0;
+      onStatus?.("live");
     });
-    source.addEventListener("live", (message) => onLive?.(JSON.parse(message.data)));
-    source.onerror = () => {
-      onStatus?.("reconnecting");
-      source.close();
-      if (!closed) setTimeout(connect, retry);
-      retry = Math.min(retry * 2, 15000);
+    es.addEventListener("hub", (message) => {
+      if (!current(es)) return;
+      const event = parseData(message);
+      if (gate.accept(event)) onEvent(event);
+    });
+    es.addEventListener("live", (message) => {
+      if (!current(es)) return;
+      const event = parseData(message);
+      if (event && typeof event === "object") onLive?.(event);
+    });
+    es.onerror = () => {
+      if (!current(es)) return;
+      drop(es);
+      scheduleReconnect();
     };
   }
   connect();
-  return { close() { closed = true; source?.close(); } };
+  return {
+    close() { closed = true; if (timer !== null) timers.clearTimeout(timer); timer = null; source?.close(); source = null; },
+    /** Last sequence accepted (diagnostics). */
+    get lastSeq() { return gate.known ? gate.lastSeq : null; },
+  };
 }
 
 export const fmt = {

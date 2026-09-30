@@ -197,6 +197,13 @@ export function createClaudeAdapter({ config, supervisor, homeDir = os.homedir()
           // Last check before any model call: the session must use the subscription and a non-Fable model.
           if (event.apiKeySource && event.apiKeySource !== "none") initStop = { category: "billing", message: `Claude Code a raportat apiKeySource=${event.apiKeySource}: rută API refuzată înainte de model` };
           else if (event.model && CLAUDE_REFUSED_MODELS.test(String(event.model))) initStop = { category: "billing", message: `Claude Code a selectat modelul ${event.model}: oprit înainte de model (${refusedModelReason(event.model)})` };
+          else {
+            // --strict-mcp-config with an empty config should leave no MCP server; a plugin or connector server that still
+            // shows up would run outside any sandbox (native Windows has none for Claude Code), so the run stops here.
+            const servers = (Array.isArray(event.mcp_servers) ? event.mcp_servers : []).map((s) => String(s?.name || s || "?").slice(0, 60));
+            const mcpTools = (Array.isArray(event.tools) ? event.tools : []).filter((t) => String(t).startsWith("mcp__"));
+            if (servers.length || mcpTools.length) initStop = { category: "policy", message: `Claude Code a pornit cu servere MCP (${[...servers, ...mcpTools].slice(0, 5).join(", ")}); rulează în afara sandbox-ului; oprit înainte de model` };
+          }
           if (initStop) {
             supervisor.stop(key, { graceMs: 100 }).catch(() => {});
             return;

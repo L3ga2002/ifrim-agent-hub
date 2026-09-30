@@ -1,20 +1,43 @@
 // Pure UI helpers (no DOM, no React) — covered by v2/tests/m02-ui-logic.test.mjs.
 
 /* ---------------- attachments ---------------- */
-export const ATTACHMENT_MAX_BYTES = 15 * 1024 * 1024; // matches the server route limit
+/**
+ * Decoded file size the Hub stores (server/domain/conversations.mjs ATTACHMENT_MAX_BYTES). The 15 MB on the upload route
+ * is the base64 JSON body, not the file: a 10-15 MB file passed here and was refused by the server after the full upload.
+ * M02-UI-13 reads both server values so this cannot drift again.
+ */
+export const ATTACHMENT_MAX_BYTES = 10 * 1024 * 1024;
 export const ATTACHMENT_TYPES = Object.freeze({ "text/plain": ".txt", "text/markdown": ".md", "application/json": ".json", "text/csv": ".csv",
   "image/png": ".png", "image/jpeg": ".jpg", "image/webp": ".webp", "application/pdf": ".pdf" });
-const EXT_OK = /\.(txt|md|json|csv|png|jpe?g|webp|pdf|log)$/i;
+/** Extension → the MIME the Hub accepts; browsers often report "" (.md on Windows) or a foreign type (.csv as application/vnd.ms-excel). */
+const MIME_BY_EXT = Object.freeze({ txt: "text/plain", log: "text/plain", md: "text/markdown", json: "application/json", csv: "text/csv",
+  png: "image/png", jpg: "image/jpeg", jpeg: "image/jpeg", webp: "image/webp", pdf: "application/pdf" });
 const SECRET_NAME = /^(?:\.env(?!\.example$).*|.*\.(?:pem|key|pfx|p12|kdbx)|id_(?:rsa|ed25519|ecdsa)(?:\.pub)?|\.npmrc|credentials(?:\.json)?|auth\.json)$/i;
+/** Longest file name the Hub accepts (conversation.attachment schema, filename max); M02-UI-13 reads the server value. */
+export const ATTACHMENT_NAME_MAX = 200;
+/** Megabytes rounded UP to one decimal (Romanian comma), so a file 1 byte over the limit never reads as "10 MB". */
+const mb = (bytes) => `${String(Math.ceil((bytes / 1048576) * 10) / 10).replace(".", ",")} MB`;
+
+/**
+ * The MIME to send for a file, or null when the Hub would refuse it. A declared type the Hub accepts wins; otherwise the
+ * extension decides, so a .csv reported as application/vnd.ms-excel is not accepted here and then refused by the server.
+ */
+export function attachmentMime({ name = "", type = "" } = {}) {
+  if (typeof type === "string" && Object.hasOwn(ATTACHMENT_TYPES, type)) return type; // own keys only: "toString" is not a MIME
+  const ext = String(name).match(/\.([a-z0-9]+)$/i)?.[1]?.toLowerCase();
+  return (ext && MIME_BY_EXT[ext]) || null;
+}
 
 /** Client-side check before upload; the server validates again. Attaching never sends anything to a provider. */
 export function validateAttachment({ name = "", size = 0, type = "" } = {}) {
   if (!name) return { ok: false, reason: "Fișier fără nume" };
+  if (String(name).trim().length > ATTACHMENT_NAME_MAX) return { ok: false, reason: `Numele fișierului depășește ${ATTACHMENT_NAME_MAX} de caractere` };
   if (SECRET_NAME.test(name)) return { ok: false, reason: "Fișierele de tip secret (.env, chei, credențiale) nu se atașează" };
   if (!size) return { ok: false, reason: "Fișier gol" };
-  if (size > ATTACHMENT_MAX_BYTES) return { ok: false, reason: `Mai mare de ${ATTACHMENT_MAX_BYTES / 1048576} MB` };
-  if (!(type in ATTACHMENT_TYPES) && !EXT_OK.test(name)) return { ok: false, reason: "Tip neacceptat (text, JSON, CSV, imagini PNG/JPG/WebP, PDF)" };
-  return { ok: true };
+  if (size > ATTACHMENT_MAX_BYTES) return { ok: false, reason: `Fișierul are ${mb(size)}; limita Hub-ului este ${mb(ATTACHMENT_MAX_BYTES)} pe fișier` };
+  const mime = attachmentMime({ name, type });
+  if (!mime) return { ok: false, reason: "Tip neacceptat (text, JSON, CSV, imagini PNG/JPG/WebP, PDF)" };
+  return { ok: true, mime };
 }
 
 /* ---------------- errors ---------------- */
@@ -114,11 +137,135 @@ export function parseLocalCommand(transcript, { projects = [] } = {}) {
 }
 
 /* ---------------- live stream bookkeeping ---------------- */
-/** Applies persisted events in order: drops duplicates and events at or below the last seen sequence. */
+/**
+ * High-water mark of a stream whose start is unknown (no /api/state yet): nothing is accepted, the stream asks for
+ * nothing (`?after=` this value), learns the server's lastSeq from `hello` and reopens from there, instead of
+ * replaying the whole history as new notifications.
+ */
+export const STREAM_UNKNOWN_SEQ = Number.MAX_SAFE_INTEGER;
+
+/**
+ * Pure gate step for one persisted event. The Hub's log is totally ordered by `seq`, so a single high-water mark is the
+ * dedup: anything at or below it (a replay overlapping what already arrived, a late or out-of-order copy) is dropped.
+ * No separate seen-set: it would outlive a log reset and silently drop the new log's reused numbers.
+ * An event without a numeric seq or a string type is dropped too (listeners read `event.type`).
+ */
 export function acceptEvent(state, event) {
-  if (!event || typeof event.seq !== "number") return { accept: false, state };
-  if (event.seq <= state.lastSeq || state.seen.has(event.seq)) return { accept: false, state };
-  const seen = new Set(state.seen); seen.add(event.seq);
-  if (seen.size > 5000) seen.delete(seen.values().next().value);
-  return { accept: true, state: { lastSeq: event.seq, seen, lastEventAt: event.createdAt || state.lastEventAt } };
+  if (!event || typeof event !== "object" || !Number.isSafeInteger(event.seq) || event.seq < 1 || typeof event.type !== "string") return { accept: false, state };
+  if (!Number.isSafeInteger(state.lastSeq) || event.seq <= state.lastSeq) return { accept: false, state };
+  return { accept: true, state: { ...state, lastSeq: event.seq, lastEventAt: event.createdAt || state.lastEventAt || null } };
+}
+
+/**
+ * Pure handshake step (`hello` = the server's { lastSeq, bootId } at connect time). The log only grows, so a server mark
+ * below ours means a reset or different database (or an unknown start): the mark drops to the server's and the caller
+ * must reopen the stream from there (`resync`), otherwise every new event up to the old mark would be dropped as stale.
+ * A new bootId over the same log keeps the mark (`restarted`): `?after` replays exactly what was missed meanwhile.
+ */
+export function acceptHello(state, hello) {
+  const serverSeq = hello && Number.isSafeInteger(hello.lastSeq) && hello.lastSeq >= 0 ? hello.lastSeq : null;
+  const bootId = hello && typeof hello.bootId === "string" && hello.bootId ? hello.bootId : null;
+  const restarted = Boolean(state.bootId && bootId && bootId !== state.bootId);
+  const next = { ...state, bootId: bootId || state.bootId || null };
+  if (serverSeq !== null && serverSeq < state.lastSeq) return { valid: true, resync: true, restarted, state: { ...next, lastSeq: serverSeq } };
+  return { valid: serverSeq !== null, resync: false, restarted, state: next };
+}
+
+/**
+ * The one gate between the SSE connection and the app (used by openStream in api.js; M02-UI-09/10 test it and that
+ * client). `after` is the last sequence already reflected in the UI; anything else (null, NaN, negative) is an unknown start.
+ */
+/** Where the live stream starts: the snapshot's last event, or unknown (null) so the server's hello decides. Never 0. */
+export const streamStartSeq = (hub) => (Number.isSafeInteger(hub?.lastSeq) && hub.lastSeq >= 0 ? hub.lastSeq : null);
+
+/**
+ * A command-scoped approval (a run or mission Lega proposed, a browser check…) runs the exact stored command; npm scripts
+ * (process.run) keep their own "Rulează" button. For these, approving is the order to run: one click decides and starts.
+ */
+export const isCommandApproval = (approval) => approval?.scopeType === "command" && !["process.run", "browser.inspect"].includes(approval?.actionKind);
+/** Local tools approved on the Approvals screen and started there with their own button (npm script, browser check). */
+export const LOCAL_TOOL_APPROVALS = Object.freeze(["process.run", "browser.inspect"]);
+/** Anything the owner approves that the Hub then starts: a stored command, or a local tool run. */
+export const isExecutableApproval = (approval) => isCommandApproval(approval) || LOCAL_TOOL_APPROVALS.includes(approval?.actionKind);
+/** Approved, not consumed and not expired: approved but never started (the owner must see these, not lose them). */
+export const approvedNotStarted = (approvals = [], now = new Date()) => approvals.filter((a) => a?.status === "approved" && isExecutableApproval(a) && new Date(a.expiresAt) > now);
+
+export function createEventGate({ after = null } = {}) {
+  let state = { lastSeq: Number.isSafeInteger(after) && after >= 0 ? after : STREAM_UNKNOWN_SEQ, bootId: null, lastEventAt: null };
+  return {
+    get lastSeq() { return state.lastSeq; },
+    get known() { return state.lastSeq !== STREAM_UNKNOWN_SEQ; },
+    get bootId() { return state.bootId; },
+    get lastEventAt() { return state.lastEventAt; },
+    /** True when the event is new and in order; the mark advances. */
+    accept(event) { const r = acceptEvent(state, event); state = r.state; return r.accept; },
+    /** Applies `hello`; `resync` = close this connection and reopen from `after`. */
+    hello(info) { const r = acceptHello(state, info); state = r.state; return { valid: r.valid, resync: r.resync, restarted: r.restarted, after: state.lastSeq }; },
+  };
+}
+
+/* ---------------- keyboard ---------------- */
+/**
+ * The key of a global app shortcut (Alt+1..9, Alt+M, Alt+L, Alt+J), or null when the chord belongs to what is being typed.
+ * AltGr is not Alt: on Windows it arrives as ctrlKey+altKey and on the Romanian layout AltGr+key types characters, so
+ * honouring it switched screens mid-sentence. Alt+numpad digits are Windows Alt codes (Alt+0226 = â); IME composition
+ * belongs to the input method; auto-repeat must not flip a toggle back and forth. Only plain ASCII letters/digits qualify.
+ */
+export function appShortcutKey(e) {
+  if (!e || !e.altKey || e.ctrlKey || e.metaKey || e.shiftKey) return null;
+  if (e.isComposing || e.keyCode === 229 || e.repeat || e.defaultPrevented) return null;
+  if (typeof e.getModifierState === "function" && e.getModifierState("AltGraph")) return null;
+  if (e.location === 3 || String(e.code || "").startsWith("Numpad")) return null;
+  const key = typeof e.key === "string" ? e.key : "";
+  return /^[a-z0-9]$/i.test(key) ? key.toLowerCase() : null;
+}
+/** True when `e` is exactly the plain Alt+`key` app shortcut (see appShortcutKey). */
+export const isAppShortcut = (e, key) => appShortcutKey(e) === String(key).toLowerCase();
+
+/* ---------------- composer: model and effort ---------------- */
+/** Effort values run.start accepts (server/runtime/command-catalog.mjs); anything else is refused there, so it is never offered. */
+export const RUN_EFFORTS = Object.freeze(["low", "medium", "high", "xhigh", "max"]);
+/** Offered when nothing verified exists; labelled as unverified in the UI. */
+const FALLBACK_EFFORTS = Object.freeze(["low", "medium", "high", "xhigh"]);
+/**
+ * Claude Code aliases the Hub may pass to --model. Not verified by the Hub: the Claude probe reads only `auth status` and the
+ * `--help` flags, and what an alias resolves to depends on the installed CLI build. fable/best/[1m] are refused by the adapter.
+ */
+export const CLAUDE_MODEL_ALIASES = Object.freeze(["sonnet", "opus", "haiku"]);
+
+/**
+ * Model and effort choices for the composer, each with its source, so a guess is never shown as verified.
+ * Codex: models and per-model efforts from the probe's model/list ("verified"), limited to what run.start accepts.
+ * Claude: static aliases ("unverified"); effort only when the installed CLI's --help lists --effort ("unsupported" otherwise),
+ * with unverified levels. `effort` comes back as the value that may be sent: a stored choice the options lack becomes "".
+ */
+export function composerOptions({ provider, providerState = null, model = "", effort = "" } = {}) {
+  let models; let modelSource; let modelNote; let efforts; let effortSource; let effortNote; let defaultEffort = null;
+  if (provider === "claude") {
+    const flags = providerState?.installation?.flags;
+    const effortFlag = Array.isArray(flags) ? flags.includes("--effort") : null;
+    models = CLAUDE_MODEL_ALIASES.map((id) => ({ id, label: `${id} (alias CLI, nevalidat)` }));
+    modelSource = "unverified";
+    modelNote = "Aliasuri Claude Code fixe, nevalidate de Hub: verificarea Claude citește doar autentificarea și flag-urile CLI; modelul real depinde de versiunea instalată";
+    efforts = effortFlag === false ? [] : [...FALLBACK_EFFORTS];
+    effortSource = effortFlag === false ? "unsupported" : "unverified";
+    effortNote = effortFlag === false ? "CLI-ul Claude instalat nu listează --effort; efortul nu se trimite"
+      : effortFlag ? "CLI-ul Claude listează --effort; nivelurile nu sunt validate de Hub" : "Instalarea Claude nu a fost verificată; nivelurile de efort nu sunt validate de Hub";
+  } else {
+    const listed = Array.isArray(providerState?.models) ? providerState.models.filter((m) => m && typeof m.id === "string" && m.id) : null;
+    const current = listed ? listed.find((m) => m.id === model) || (!model ? listed.find((m) => m.isDefault) : null) : null;
+    const reported = Array.isArray(current?.efforts) ? current.efforts : [];
+    const accepted = reported.filter((x) => RUN_EFFORTS.includes(x));
+    models = listed ? listed.map((m) => ({ id: m.id, label: m.displayName || m.id })) : null;
+    modelSource = listed ? "verified" : "unread";
+    modelNote = listed ? "Modele citite din Codex (model/list) la ultima verificare a providerului" : "Lista de modele Codex nu a fost citită încă; rulează verificarea providerului";
+    // Reported but none accepted by run.start (e.g. only "minimal"): offer nothing rather than a level the model lacks.
+    efforts = reported.length ? accepted : [...FALLBACK_EFFORTS];
+    effortSource = reported.length ? (accepted.length ? "verified" : "unsupported") : "unverified";
+    effortNote = effortSource === "verified" ? "Niveluri de efort raportate de Codex pentru modelul ales"
+      : effortSource === "unsupported" ? "Modelul ales nu raportează niveluri de efort acceptate de Hub; efortul nu se trimite"
+        : "Niveluri de efort nevalidate de Hub (Codex nu le-a raportat pentru acest model)";
+    defaultEffort = accepted.includes(current?.defaultEffort) ? current.defaultEffort : null;
+  }
+  return { models, modelSource, modelNote, efforts, effortSource, effortNote, defaultEffort, effort: efforts.includes(effort) ? effort : "" };
 }

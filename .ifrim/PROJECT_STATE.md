@@ -1,6 +1,29 @@
 # Project State - Ifrim Agent Hub
 
-## Current State - 2026-09-30 (Milestone 02 built, local version ready for visual evaluation)
+## Current State - 2026-10-01 (M02 + Lega, version `2.3.0-m03`, live-validated on the test project)
+
+V2 now has the Lega voice assistant on top of Milestone 02:
+- GPT-Live voice through the ChatGPT subscription via the installed Codex (`codex app-server`, experimental `thread/realtime/*` methods), no API key;
+- Modul Lega, a full-screen living network of the company (Alt+J);
+- full access under the owner's control: read tools, the pointing arrow, `how_to`, grant prefill, missions and runs by approval, per-project „Permite execuții”, web search for Lega only (default `cached`).
+
+The M02 verification fixed the real gaps: one tested live-event gate, SSE backpressure, Alt shortcuts that ignore AltGr/IME/numpad, composer limits equal to the server's, safer file listing, a Browser Workspace network layer (code only, Playwright not installed), exact Codex model check, expired grants shown as expired, a real simulator auth error.
+
+Two bugs were found live and fixed:
+- approvals only decided and did not start anything → „Aprobă și pornește” in one click and a visible „Aprobate, încă nepornite” section;
+- a Codex run called a plugin MCP server (`cua_repl/js`) outside the sandbox → every Hub Codex process now runs with plugins off and every config MCP server disabled by name, checked fail-closed before the turn; Claude runs stop before the model if an MCP server is reported.
+
+Live validation on the sanitized test project (2026-09-30): Claude Code read-only PASS_LIVE; Codex FAIL at 14:41 (thread/start timeout, fixed in `30bfbef`), then PASS_LIVE twice (workspace-write `run_muojnivb_b113ce0591`, read-only `run_muomogfu_f3b3dcccd7`); Lega voice PASS_LIVE.
+
+Tests: V2 249 (248 pass, 1 SKIPPED_ENV); V1 552 (549 pass, 1 skipped, 2 live-API timeouts only inside the full suite); build OK; `npm audit` 0.
+
+Git: branch `v2-milestone-01` pushed up to `bbe8757` (M01 `f31240b`, M02 `0fb71d2`, Lega `30bfbef`, `dac2db4`, `ce819b9`, `bbe8757`); `main` still `e9ab563`; nothing merged or deployed. The latest fixes and version `2.3.0-m03` go into one commit after this doc update.
+
+Hub now: 127.0.0.1:8011, `2.3.0-m03`, BUILD_SAFE, execution gate open (as the owner left it for Lega), 0 active grants, no active run or Lega session; simulator 8012 separate.
+
+This is still not a version ready for autonomous work on real data: every live action needs LIVE_VALIDATION + OPEN GATE + a grant, and every restart returns to BUILD_SAFE. Open decisions and items: `.ifrim/OPEN_ISSUES.md` (2026-10-01).
+
+## State - 2026-09-30 (Milestone 02 built, local version ready for visual evaluation; superseded by 2026-10-01 above)
 
 Milestone 02 put the JARVIS work experience on the V2 foundation:
 - shell with palette, mini-assistant and phone navigation;
@@ -18,9 +41,9 @@ Security readiness replaced the prompt-only protection for Codex with OS-enforce
 - the gate requires your consent to the persistent sandbox ACEs;
 - Claude is limited to read-only tools with absolute denials.
 
-Version `2.2.0-m02`, BUILD_SAFE, gate suspended. No model started; nothing committed or pushed.
+At delivery: version `2.2.0-m02`, BUILD_SAFE, gate suspended, no model started, nothing committed or pushed. Since then: M02 is commit `0fb71d2`, pushed on `v2-milestone-01`; the version is `2.3.0-m03`.
 
-Live validation is pending your approvals (`M02_LIVE_VALIDATION_PLAN.md`). This is not a version ready for autonomous work on real data.
+Live validation (`M02_LIVE_VALIDATION_PLAN.md`) was done with your approvals on 2026-09-30 on the sanitized test project (see 2026-10-01 above). This is not a version ready for autonomous work on real data.
 
 
 ## Current State - 2026-09-30 (Milestone 01 built, BUILD_READY)
@@ -39,7 +62,7 @@ Milestone 01 turned V2 into the foundation of an AI company operating system wit
 - labelled telemetry;
 - diagnostic UI (Companie / Ecosisteme / Sistem).
 
-Billing guards were hardened from audit findings. Version `2.1.0-m01`, schema 2, BUILD_SAFE, gate suspended. No model was started through the Hub, nothing was committed or pushed. Evidence: `.ifrim/V2_TEST_REPORT.md` (Milestone 01), `.ifrim/IMPLEMENTATION_STATUS.md`, `.ifrim/REBUILD_DECISIONS.md` (Milestone 01 decisions). Next: attestations + LIVE_VALIDATION approval (NEXT_SESSION), then Milestone 02 (JARVIS experience).
+Billing guards were hardened from audit findings. Version `2.1.0-m01`, schema 2, BUILD_SAFE, gate suspended. At delivery no model was started through the Hub and nothing was committed or pushed; M01 was later committed as `f31240b` and pushed on `v2-milestone-01`. Evidence: `.ifrim/V2_TEST_REPORT.md` (Milestone 01), `.ifrim/IMPLEMENTATION_STATUS.md`, `.ifrim/REBUILD_DECISIONS.md` (Milestone 01 decisions). Next: attestations + LIVE_VALIDATION approval (NEXT_SESSION), then Milestone 02 (JARVIS experience).
 
 ## Current State - 2026-09-30 (V2 rebuild, BUILD_READY)
 

@@ -176,6 +176,9 @@ export function createCommandBus({ db, bus, clock, policy, approvals }) {
         throw error;
       }
       const action = handler.action(payload, ctx);
+      // Another click (second tab, double click) already consumed the approval and is running the command: this start is
+      // a conflict, not a failure of the command that is running.
+      if (approval.status === "consumed") throw new HubError("conflict", "Command is already starting");
       try {
         approvals.consume(command.approvalId, { actionKind: action.actionKind, target: action.target || command.type, payload,
           codeVersion: action.codeVersion || "hub", permissionTier: approval.permissionTier, scopeType: action.taskId ? "task" : "command", scopeId: action.taskId || commandId });

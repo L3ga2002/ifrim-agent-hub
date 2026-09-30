@@ -25,6 +25,8 @@ import { HUB_VERSION } from "../config.mjs";
 const execFileAsync = promisify(execFile);
 const redactMessage = (m) => ({ ...m, content: redactText(m.content) });
 const ECOSYSTEM_FILES = new Set(["openai", "anthropic", "standards", "matrix", "frameworks", "surfaces", "routing", "computer", "integrations", "ownership", "systems"]);
+/** A live-stream client that stops reading is cut off once this much waits in memory (it reconnects and replays). */
+const SSE_MAX_BUFFERED_BYTES = 4 * 1024 * 1024;
 
 /**
  * HTTP adapter. Reads come straight from the modules; every state change is dispatched as a command
@@ -130,16 +132,31 @@ export function registerRoutes(router, hub, { token }) {
     let lastSent = Number(req.headers["last-event-id"] || query.after || 0);
     openStreams.add(res);
     let closed = false;
+    let draining = false;
+    // Backpressure: persisted events pause until the socket drains and then continue (they stay in SQLite meanwhile).
+    // Only a client that stops reading altogether is cut off, once 4 MB wait in memory; it reconnects with ?after and
+    // replays. Closing at the first full buffer (~16 KB) made a client behind by a few hundred events crawl through
+    // reconnect backoffs (review 2026-09-30).
     const write = (text) => {
-      if (closed) return;
-      if (!res.write(text)) {
-        // Backpressure: stop writing; the client reconnects with Last-Event-ID and replays from SQLite.
-        res.end();
-        closed = true;
-      }
+      if (closed || res.writableEnded || res.destroyed) { closed = true; return false; }
+      res.write(text);
+      if (res.writableLength > SSE_MAX_BUFFERED_BYTES) { res.end(); closed = true; return false; }
+      return res.writableLength < res.writableHighWaterMark;
     };
+    // Drains the whole backlog in batches of 500, pausing on backpressure, so a reconnect far behind catches up at once
+    // instead of waiting for the next event to be appended.
     const flushPersisted = () => {
-      for (const event of bus.since(lastSent, 500)) { write(`id: ${event.seq}\nevent: hub\ndata: ${JSON.stringify(event)}\n\n`); lastSent = event.seq; }
+      if (draining || closed) return;
+      for (;;) {
+        const batch = bus.since(lastSent, 500);
+        for (const event of batch) {
+          const ok = write(`id: ${event.seq}\nevent: hub\ndata: ${JSON.stringify(event)}\n\n`);
+          if (closed) return;
+          lastSent = event.seq;
+          if (!ok) { draining = true; res.once("drain", () => { draining = false; flushPersisted(); }); return; }
+        }
+        if (batch.length < 500) return;
+      }
     };
     write(`retry: 2000\nevent: hello\ndata: ${JSON.stringify({ lastSeq: bus.lastSeq(), bootId: hub.bootId })}\n\n`);
     flushPersisted();

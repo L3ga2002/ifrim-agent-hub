@@ -5,6 +5,7 @@ import { useHub, setState, onLive, pushToast, useResource, useAction, refresh } 
 import { Chip, Notice, Checks, ErrorNotice } from "../components/ui.jsx";
 import { legaLevels } from "../lib/legaLevels.js";
 import { offerGrantPrefill, pointAt } from "../lib/legaBridge.js";
+import { isAppShortcut, approvedNotStarted } from "../lib/uiLogic.js";
 
 /**
  * Lega — the Hub's voice assistant (GPT-Live via Codex, ChatGPT plan).
@@ -180,7 +181,10 @@ export function Lega({ go }) {
 
   // Pending Lega proposals are approvals: they survive the session, a reload and an SSE drop.
   const proposals = useResource("/api/approvals?status=pending", { reloadOn: (e) => e.type.startsWith("approval.") || e.type.startsWith("command.") || e.type === "lega.proposal" });
-  const legaProposals = (proposals.data?.approvals || []).filter((a) => a.actionKind === "lega.run_request" || a.actionKind === "lega.mission_request");
+  const isLegaKind = (a) => a.actionKind === "lega.run_request" || a.actionKind === "lega.mission_request";
+  // Approved elsewhere (e.g. the Approvals screen) but never started: kept here with "Pornește acum" until they expire.
+  const approvedLega = useResource("/api/approvals?status=approved", { reloadOn: (e) => e.type.startsWith("approval.") || e.type.startsWith("command.") });
+  const legaProposals = [...(proposals.data?.approvals || []).filter(isLegaKind), ...approvedNotStarted(approvedLega.data?.approvals || []).filter(isLegaKind)];
   const reloadProposals = useRef(proposals.reload); reloadProposals.current = proposals.reload;
 
   // Live events from the Hub, for THIS tab's session only.
@@ -262,9 +266,9 @@ export function Lega({ go }) {
     return () => clearInterval(timer);
   }, [status]);
 
-  // Alt+L toggles the panel.
+  // Alt+L toggles the panel (plain Alt only: AltGr+L types a character on the Romanian layout).
   useEffect(() => {
-    const onKey = (e) => { if (e.altKey && e.key.toLowerCase() === "l") { e.preventDefault(); setOpen((o) => !o); } };
+    const onKey = (e) => { if (isAppShortcut(e, "l")) { e.preventDefault(); setOpen((o) => !o); } };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, []);
@@ -312,7 +316,7 @@ export function Lega({ go }) {
               <button className="btn sm icon ghost" onClick={() => setOpen(false)} aria-label="Închide panoul Lega"><X size={14} /></button>
             </div>
           </div>
-          {legaProposals.map((a) => <ProposalCard key={a.id} approval={a} onDone={() => proposals.reload()} />)}
+          {legaProposals.map((a) => <ProposalCard key={a.id} approval={a} onDone={() => { proposals.reload(); approvedLega.reload(); }} />)}
           {running ? (
             <ActiveView status={status} elapsed={elapsed} session={session} micMuted={micMuted} legaMuted={legaMuted} onMic={toggleMic} onSound={toggleLegaSound}
               onStop={() => stop("user")} micBar={micBar} legaBar={legaBar} lines={lines} />
@@ -368,7 +372,8 @@ function ProposalCard({ approval, onDone }) {
   const expired = new Date(approval.expiresAt) <= new Date();
   const run = useAction(async () => {
     if (approval.status === "pending") await api(`/api/approvals/${approval.id}/decide`, { method: "POST", body: { decision: "approved", displayedHash: approval.payloadHash } });
-    await api(`/api/commands/${approval.scopeId}/execute`, { method: "POST", body: {} });
+    try { await api(`/api/commands/${approval.scopeId}/execute`, { method: "POST", body: {} }); }
+    catch (error) { pushToast(`lega-start-${approval.id}`, "error", `Aprobată, dar nu a pornit: ${error.message}. Rămâne în panoul Lega și în Aprobări.`); throw error; }
     onDone(); refresh();
   });
   const reject = useAction(async () => {
@@ -378,7 +383,7 @@ function ProposalCard({ approval, onDone }) {
   const mission = approval.actionKind === "lega.mission_request";
   return (
     <div className="lega-proposal" role="alert">
-      <div className="row between"><strong>{mission ? "Lega propune o misiune" : "Lega propune o execuție"}</strong><Chip tone="approval">{expired ? "expirată" : "așteaptă click-ul tău"}</Chip></div>
+      <div className="row between"><strong>{mission ? "Lega propune o misiune" : "Lega propune o execuție"}</strong><Chip tone="approval">{expired ? "expirată" : approval.status === "approved" ? "aprobată, nepornită" : "așteaptă click-ul tău"}</Chip></div>
       {mission ? (
         <>
           <dl className="kv small">
@@ -399,8 +404,8 @@ function ProposalCard({ approval, onDone }) {
         </>
       )}
       <div className="row">
-        <button className="btn sm primary" disabled={expired || run.pending || reject.pending} onClick={run.run}><Check size={14} />{mission ? "Aprobă și creează" : "Aprobă și pornește"}</button>
-        <button className="btn sm ghost" disabled={expired || run.pending || reject.pending} onClick={reject.run}><Ban size={14} />Refuză</button>
+        <button className="btn sm primary" disabled={expired || run.pending || reject.pending} onClick={run.run}><Check size={14} />{approval.status === "approved" ? (mission ? "Creează acum" : "Pornește acum") : mission ? "Aprobă și creează" : "Aprobă și pornește"}</button>
+        {approval.status === "pending" && <button className="btn sm ghost" disabled={expired || run.pending || reject.pending} onClick={reject.run}><Ban size={14} />Refuză</button>}
       </div>
       <ErrorNotice error={run.error || reject.error} />
     </div>

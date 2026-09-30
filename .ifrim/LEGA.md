@@ -1,8 +1,10 @@
 # Lega — asistentul vocal al Hub-ului
 
-Stare la 2026-09-30:
-- **Implementat și testat simulat** (fixture, fără rețea): 17 teste `M03-LEGA-*` + 8 teste `M03-ACCESS-*` (acces complet sub control, căutare web), toate trecute.
-- **Test live: sesiune reușită** (proprietarul, 2026-09-30): română în ambele sensuri, `hub_status` și `navigate` au mers. Accesul complet și căutarea web de mai jos sunt noi și încă netestate live.
+Stare la 2026-10-01 (Hub `2.3.0-m03`):
+- **Implementat și testat simulat** (fixture, fără rețea): 17 teste `M03-LEGA-*` + 8 teste `M03-ACCESS-*` (acces complet sub control, căutare web) + 2 teste `m03-stage`, toate trecute.
+- **Test live: PASS_LIVE** (proprietarul, 2026-09-30, 18:18–19:49 UTC): mai multe sesiuni, română în ambele sensuri, inclusiv versiunea cu acces complet (sesiunea `lega_muoic63s_69b4539e26`, 11,4 min, vocea `sol`, căutare web `cached`). Detalii în „Sesiuni live” mai jos.
+- **Încă netestate live:** căutarea web, `propose_mission`, `mission_detail`.
+- Comis: `30bfbef` (voce), `dac2db4` (Modul Lega), `ce819b9` (pluginuri oprite, încercare returnată), `bbe8757` (acces complet, căutare web).
 
 Lega folosește **GPT-Live** (vocea ChatGPT) prin **abonamentul ChatGPT**, trecând prin Codex-ul instalat (`codex app-server`, metodele `thread/realtime/*`). Nu folosește cheie API și nici OpenAI Realtime API plătit.
 
@@ -36,7 +38,7 @@ Cerința proprietarului: „încă nu are acces complet… va trebui să îi dă
   - API experimental activat **doar aici**;
   - lista proprie de metode: fără `turn/start`, `thread/resume`, `appendText` sau `appendAudio`;
   - același profil de izolare read-only și același mediu fără chei API ca la rulări;
-  - fiecare server MCP din config-ul tău (6 azi) e dezactivat pe nume, iar lista activă e verificată înainte de voce;
+  - pluginurile sunt oprite (`features.plugins=false`, `features.remote_plugin=false`), fiecare server MCP din config-ul tău (6 azi) e dezactivat pe nume, iar lista activă e verificată înainte de voce (aceeași regulă se aplică acum oricărui proces Codex al Hub-ului);
   - `-c experimental_realtime_ws_backend_prompt=""` (config-ul nu poate înlocui persona).
 - **Thread-ul Lega:**
   - `ephemeral: true`;
@@ -91,7 +93,7 @@ O sesiune pornește doar dacă toate verificările trec:
 ## Cost
 
 - Documentat pentru vocea din desktop: 0,05 $/minut din bugetul Codex al abonamentului. Panoul afișează estimarea.
-- Cât consumă exact calea din app-server se verifică în testul live (**NEVERIFICAT**).
+- Cât consumă exact calea din app-server nu a fost măsurat nici în sesiunile live din 2026-09-30 (**NEVERIFICAT**).
 - Cu soldul de credite 0 (atestat), nu se poate taxa nimic peste abonament.
 
 ## Pornire (proprietarul)
@@ -104,17 +106,31 @@ O sesiune pornește doar dacă toate verificările trec:
    1. înregistrează acordul (textul exact);
    2. alege vocea;
    3. **Pornește Lega** și permite microfonul.
-3. Pentru execuții propuse de Lega mai trebuie un grant „Execuție agent” pe proiectul dorit, de exemplu „Ifrim Hub Test”.
+3. Pentru execuții propuse de Lega mai trebuie un grant „Execuție agent” pe proiectul dorit, de exemplu „Ifrim Hub Test”. Un proiect nou trebuie întâi activat pe pagina lui cu „Permite execuții”.
+4. O propunere de execuție pornește cu un singur click: **Aprobă și pornește** (pe card sau în ecranul Aprobări). Dacă o aprobare nu a pornit, o găsești în „Aprobate, încă nepornite”, cu butonul „Pornește acum”.
 
-## Ce se verifică în primul test live (NEVERIFICAT până atunci)
+## Ce s-a verificat live (2026-09-30)
 
-1. `thread/start` pornește repede cu noile setări (`project_doc_max_bytes=0`, `environments: []`).
-2. Serverul ChatGPT acceptă oferta WebRTC a browserului (Chrome/Edge, fără STUN).
-3. Calitatea recunoașterii și a vocii în română.
-4. Delegările ajung ca apeluri `lega.*`, iar pe thread-ul Lega nu apar comenzi sau fișiere.
-5. După Oprește, audio se oprește (conexiunea e închisă de browser).
-6. Consumul apare (sau nu) în limitele raportate de `account/rateLimits`.
-7. `-c mcp_servers={}` chiar neutralizează serverele MCP.
+Lista de dinainte de primul test, cu rezultatul:
+
+1. `thread/start` pornește cu noile setări (`project_doc_max_bytes=0`, `environments: []`): **PASS_LIVE** (sesiunile au pornit; pentru execuțiile Codex, corecția e confirmată de două execuții PASS_LIVE).
+2. Serverul ChatGPT acceptă oferta WebRTC a browserului: **PASS_LIVE**.
+3. Calitatea recunoașterii și a vocii în română: **PASS_LIVE** (română în ambele sensuri; verdictul tău: „pare să fie bine pentru început”).
+4. Delegările ajung ca apeluri `lega.*`: **PASS_LIVE** (vezi „Sesiuni live”). Lipsa comenzilor și a fișierelor pe thread-ul Lega nu a fost verificată separat în jurnal (NEVERIFICAT; o violare ar fi oprit sesiunea).
+5. După Oprește, audio se oprește: NEVERIFICAT separat.
+6. Consumul în limitele raportate de `account/rateLimits`: nemăsurat (NEVERIFICAT).
+7. `-c mcp_servers={}` neutralizează serverele MCP: **nu** (găsit în revizia adversarială). Înlocuit cu dezactivarea pe nume + pluginuri oprite; verificarea MCP a trecut în sesiunile live.
+
+## Sesiuni live (2026-09-30, proprietarul)
+
+- În sesiunea cu acces complet ai folosit: `hub_status` 6, `how_to` 5, `recent_runs` 5, `propose_run` 4, `point` 3, `navigate` 3, `project_brief` 3, `company_briefing` 2, `pending_approvals` 2, `prepare_grant` 1 (apoi ai creat grantul prin click), `list_missions` 1, `list_projects` 1.
+- Nefolosite live: căutarea web, `propose_mission`, `mission_detail`.
+- **Bug găsit live – aprobările nu porneau nimic:** la 19:45 și 19:46 ai aprobat două propuneri Lega în ecranul Aprobări și nu a rulat nimic. Aprobarea doar decidea, iar butonul de pornire apărea numai sub filtrul „Aprobate”. **Corectat:**
+  - „Aprobă și pornește” într-un singur click pentru comenzile propuse;
+  - secțiunea vizibilă „Aprobate, încă nepornite” (și pentru scripturi npm și verificări de browser);
+  - un toast dacă pornirea eșuează;
+  - Lega îți spune ce e aprobat, dar încă nepornit.
+- La instrucțiunea ta „fă tu tot”, Claude a pornit a doua propunere aprobată (cea mai recentă): execuția Codex `run_muojnivb_b113ce0591` (formular de contact pe „Ifrim Hub Test”), PASS_LIVE, `npm test` 4/4. Execuția a apelat de 3 ori serverul MCP `cua_repl/js` (pluginul Computer Use), care rulează în afara sandbox-ului Codex. **Corectat** pentru fiecare proces Codex al Hub-ului (pluginuri oprite, servere dezactivate pe nume, verificare înainte de turn, oprire la un apel MCP). O execuție read-only ulterioară (`run_muomogfu_f3b3dcccd7`) a trecut fără niciun apel MCP.
 
 ## Revizie adversarială (2026-09-30)
 
@@ -158,7 +174,7 @@ Au fost 4 dimensiuni (securitate, protocol, client browser, ciclu de viață), c
   - erorile se redactează.
 - **Execuții normale:** `AGENTS.md` din proiect intră din nou în context, citit de Hub (limitat, redactat), pentru că `project_doc_max_bytes=0` îl scotea.
 
-Teste: `m03-lega.test.mjs` (12) + `m03-lega-hardening.test.mjs` (5), toate trecute. Suita V2: 214 teste, 213 trecute + 1 omis de mediu.
+Teste: `m03-lega.test.mjs` (12) + `m03-lega-hardening.test.mjs` (5), toate trecute. Suita V2 la momentul reviziei: 214 teste, 213 trecute + 1 omis de mediu. Acum (2026-10-01): 249 de teste, 248 PASS, 0 FAIL, 1 SKIPPED_ENV.
 
 ## Primul test live (2026-09-30, proprietarul)
 

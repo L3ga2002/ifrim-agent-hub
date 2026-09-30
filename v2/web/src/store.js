@@ -1,4 +1,5 @@
 import { useSyncExternalStore, useEffect, useState, useCallback, useRef } from "react";
+import { streamStartSeq } from "./lib/uiLogic.js";
 import { api, openStream } from "./api.js";
 
 // Global Hub state: the /api/state projection, refreshed on relevant events (debounced).
@@ -42,11 +43,14 @@ export function startHubConnection() {
   let stream = null;
   let stopped = false;
   // Start the live stream at the current sequence so history is not replayed as new notifications;
-  // reconnects afterwards resume from the last received event (no gaps, no duplicates).
-  refresh().then(() => { if (!stopped) stream = connect(state.hub?.lastSeq || 0); });
+  // reconnects afterwards resume from the last received event (no gaps, no duplicates). Without a state snapshot
+  // the start is unknown (null), never 0: 0 would replay the whole log as fresh toasts; the stream learns the
+  // server's lastSeq from its hello instead.
+  const start = () => { if (!stopped && !stream) stream = connect(streamStartSeq(state.hub)); };
+  refresh().then(start);
   // Release the long-lived connection when the page is hidden in the back/forward cache.
   const onHide = () => { stream?.close(); stream = null; };
-  const onShow = (e) => { if (e.persisted && !stopped) refresh().then(() => { stream = connect(state.hub?.lastSeq || 0); }); };
+  const onShow = (e) => { if (e.persisted && !stopped) refresh().then(start); };
   window.addEventListener("pagehide", onHide);
   window.addEventListener("pageshow", onShow);
   return () => { stopped = true; stream?.close(); window.removeEventListener("pagehide", onHide); window.removeEventListener("pageshow", onShow); };

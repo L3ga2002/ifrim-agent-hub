@@ -15,7 +15,8 @@ export const grantKind = (tools = []) => (Array.isArray(tools) && tools.includes
 export function createGrants({ db, bus, clock }) {
   const rowTo = (row) => row && ({ id: row.id, provider: row.provider, projectId: row.project_id, maxAttempts: row.max_attempts,
     attemptsUsed: row.attempts_used, tools: parse(row.tools_json, []), kind: grantKind(parse(row.tools_json, [])), access: row.access, maxDurationS: row.max_duration_s,
-    expiresAt: row.expires_at, status: row.status, note: row.note, createdAt: row.created_at });
+    // An active grant past its expiry is shown and judged as expired (the row itself is not rewritten on read).
+    expiresAt: row.expires_at, status: row.status === "active" && new Date(row.expires_at) <= clock() ? "expired" : row.status, note: row.note, createdAt: row.created_at });
 
   function create({ provider, projectId, access, maxAttempts, maxDurationS, ttlMinutes, tools = [], note = "", kind = "run" }, actor) {
     if (!["run", "voice"].includes(kind)) throw new HubError("validation", "kind must be run or voice");
@@ -51,6 +52,7 @@ export function createGrants({ db, bus, clock }) {
   function problem(grant, { provider, projectId, access, now, kind = "run" }) {
     if (!grant) return kind === "voice" ? "Niciun grant de voce (Lega) activ" : "Niciun grant de validare live pentru acest provider și proiect";
     if (grant.kind !== kind) return kind === "voice" ? "Grantul este pentru execuții, nu pentru Lega" : "Grantul este pentru Lega (voce), nu pentru execuții";
+    if (grant.status === "expired" || (grant.status === "active" && new Date(grant.expiresAt) <= now)) return "Grantul a expirat";
     if (grant.status !== "active") return `Grantul este ${grant.status}`;
     if (grant.provider !== provider) return `Grantul este pentru ${grant.provider}`;
     if (grant.projectId !== projectId) return "Grantul este pentru alt proiect";

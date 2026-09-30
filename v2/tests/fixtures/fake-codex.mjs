@@ -66,14 +66,21 @@ rl.on("line", async (line) => {
       threadId = msg.params.threadId || "thr_fake_1";
       legaProject = msg.params.dynamicTools?.[0]?.tools?.find((t) => t.name === "propose_run")?.inputSchema?.properties?.project?.enum?.[0] || "";
       if (scenario === "lega-full-access") return send({ id: msg.id, result: { thread: { id: threadId, environments: [] }, model: "gpt-fake-sol", cwd: msg.params.cwd, approvalsReviewer: "user", sandbox: { type: "dangerFullAccess" } } });
-      if (scenario === "lega-slow-start") await new Promise((r) => setTimeout(r, 1500)); // a start that is still in flight when Stop arrives
+      if (scenario === "lega-slow-start" || scenario === "slow-thread") await new Promise((r) => setTimeout(r, 1500)); // a start that is still in flight when Stop arrives
       send({ method: "thread/started", params: { thread: { id: threadId } } });
       // Like 0.159.2, the response reports the selected turn environments: [] when the client asked for none,
       // the default environment otherwise (or a Codex that ignores the field: lega-env-ignored).
       const environments = scenario === "lega-env-ignored" ? [{ id: "local" }] : Array.isArray(msg.params.environments) ? msg.params.environments : [{ id: "local" }];
-      // auto-reviewer: the owner's config routes approvals to auto_review; model-swap: Codex substitutes another model.
-      return send({ id: msg.id, result: { thread: { id: threadId, environments }, model: scenario === "model-swap" ? "gpt-fake-legacy" : msg.params.model || "gpt-fake-sol", modelProvider: "openai", cwd: msg.params.cwd,
-        approvalPolicy: "on-request", approvalsReviewer: scenario === "auto-reviewer" ? "auto_review" : "user", sandbox: { type: scenario === "full-access" ? "dangerFullAccess" : "readOnly" }, reasoningEffort: "medium" } });
+      // auto-reviewer: the owner's config routes approvals to auto_review; model-swap: Codex substitutes another model;
+      // model-variant: a same-family model that only a prefix match would accept (requested "gpt-5" → "gpt-5-mini");
+      // model-case: the requested id echoed back in another case with surrounding spaces (the same model).
+      const requestedModel = msg.params.model || "gpt-fake-sol";
+      const reportedModel = scenario === "model-swap" ? "gpt-fake-legacy" : scenario === "model-variant" ? `${requestedModel}-mini` : scenario === "model-case" ? ` ${requestedModel.toUpperCase()} ` : requestedModel;
+      // sandbox-write: the thread projects workspaceWrite whatever access the Hub profile grants (a read-only run must stop).
+      // external-sandbox: Codex applies no sandbox of its own (the Hub provides no outer one, so the run must stop).
+      const sandboxType = scenario === "full-access" ? "dangerFullAccess" : scenario === "sandbox-write" ? "workspaceWrite" : scenario === "external-sandbox" ? "externalSandbox" : "readOnly";
+      return send({ id: msg.id, result: { thread: { id: threadId, environments }, model: reportedModel, modelProvider: "openai", cwd: msg.params.cwd,
+        approvalPolicy: "on-request", approvalsReviewer: scenario === "auto-reviewer" ? "auto_review" : "user", sandbox: { type: sandboxType }, reasoningEffort: "medium" } });
     case "turn/start": {
       const turnId = "turn_fake_1";
       send({ id: msg.id, result: { turn: { id: turnId, status: "inProgress", items: [] } } });
@@ -84,6 +91,21 @@ rl.on("line", async (line) => {
         log({ approvalReply: reply.result });
       }
       if (scenario === "hang") return; // waits for turn/interrupt
+      if (scenario === "mcp-tool-completed") {
+        // Only the completed item arrives (e.g. a call that failed at once): it must stop the run too.
+        return send({ method: "item/completed", params: { threadId, turnId, item: { type: "mcpToolCall", id: "mcp2", server: "node_repl", tool: "js", status: "failed", arguments: {} } } });
+      }
+      if (scenario === "mcp-tool") {
+        // A Codex that still calls an MCP tool during a run (the Hub must stop the turn at once).
+        return send({ method: "item/started", params: { threadId, turnId, item: { type: "mcpToolCall", id: "mcp1", server: "node_repl", tool: "js", status: "inProgress", arguments: {} } } });
+      }
+      if (scenario === "autherror") {
+        // An expired/revoked ChatGPT session: the model request answers 401 before any output; Codex sends an `error`
+        // notification (no retry) and fails the turn with codexErrorInfo "unauthorized" (TurnError shape, schema 0.159).
+        const error = { message: "unexpected status 401 Unauthorized: Provided authentication token is expired. Please try signing in again.", codexErrorInfo: "unauthorized", additionalDetails: null };
+        send({ method: "error", params: { error, willRetry: false, threadId, turnId } });
+        return send({ method: "turn/completed", params: { threadId, turn: { id: turnId, status: "failed", items: [], error } } });
+      }
       if (scenario === "slow") {
         // Simulator: a long, clearly labelled fixture answer streamed over ~40 s, with tool activity items.
         const lines = ["SIMULARE — răspuns generat de fixture-ul fake-codex, nu de un model.", "", "## Plan", "1. Citesc `src/app.js` și testele.",
@@ -110,7 +132,13 @@ rl.on("line", async (line) => {
       const disabled = args.map((a) => (a.match(/^mcp_servers\.([A-Za-z0-9_-]+)\.enabled=false$/) || [])[1]).filter(Boolean);
       // A plugin-provided server (like Computer Use's cua_repl) stays up unless plugins are disabled for the process.
       const pluginsOff = args.includes("features.plugins=false");
-      const data = [...disabled.map((name) => ({ name, runtimeStatus: "disabled" })), ...(scenario === "lega-mcp-active" ? [{ name: "fs", runtimeStatus: "connected" }] : []),
+      // mcp-paged: the list is paginated and the active server is on page 2; mcp-shape: an unknown response shape.
+      if (scenario === "mcp-shape") return send({ id: msg.id, result: { servers: [] } });
+      if (scenario === "mcp-paged") {
+        if (!msg.params?.cursor) return send({ id: msg.id, result: { data: disabled.map((name) => ({ name, runtimeStatus: "disabled" })), nextCursor: "page-2" } });
+        return send({ id: msg.id, result: { data: [{ name: "late_server", runtimeStatus: "connected" }], nextCursor: null } });
+      }
+      const data = [...disabled.map((name) => ({ name, runtimeStatus: "disabled" })), ...(scenario === "lega-mcp-active" || scenario === "mcp-active" ? [{ name: "fs", runtimeStatus: "connected" }] : []),
         ...(pluginsOff ? [] : [{ name: "cua_repl", runtimeStatus: "connected" }])];
       return send({ id: msg.id, result: { data, nextCursor: null } });
     }

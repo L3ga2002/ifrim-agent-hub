@@ -111,7 +111,7 @@ test("M01-BH-06 BillingPolicy: a positive or unlimited credit balance blocks Cod
 test("M01-BH-08 Codex: every Hub app-server disables fast mode, image generation, skill installs, apps, computer/browser use, memories, subagents and web search per process", async () => {
   const REQUIRED = ["features.fast_mode=false", "features.image_generation=false", "features.skill_mcp_dependency_install=false", "features.apps=false",
     "features.computer_use=false", "features.browser_use=false", "features.browser_use_external=false", "features.browser_use_full_cdp_access=false",
-    "features.in_app_browser=false", "features.memories=false", "features.multi_agent=false", 'web_search="disabled"',
+    "features.in_app_browser=false", "features.memories=false", "features.multi_agent=false", "features.plugins=false", "features.remote_plugin=false", 'web_search="disabled"',
     // M02 live finding: no sandboxed AGENTS.md discovery at thread/start (it exceeded the 120 s thread/start budget).
     "project_doc_max_bytes=0", "project_root_markers=[]"];
   assert.equal(CODEX_APP_SERVER_OVERRIDES.length, REQUIRED.length * 2);

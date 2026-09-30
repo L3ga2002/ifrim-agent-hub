@@ -363,17 +363,20 @@ export function createLega({ bus, live, clock, settings, gate, grants, projects,
   function approvalsText() {
     const now = clock();
     const pending = approvals.list("pending").filter((a) => new Date(a.expiresAt) > now);
-    if (!pending.length) return "Nicio aprobare în așteptare.";
     const detail = (a) => {
       const p = a.payload || {};
       if (a.actionKind === "lega.run_request") return `${p.provider === "claude" ? "Claude Code" : "Codex"} pe ${projectName(p.projectId)}, ${p.access === "workspace-write" ? "cu scriere" : "doar citire"}: „${clip(p.task, 150)}”`;
       if (a.actionKind === "lega.mission_request") return `misiunea „${clip(p.title, 80)}” (${p.kind}) pe ${projectName(p.projectId)}`;
       return clip(redactText(a.target), 120);
     };
+    // Approved but never started (the start click failed or was never made): the owner must hear about these too.
+    const notStarted = approvals.list("approved").filter((a) => LEGA_PROPOSAL_KINDS.has(a.actionKind) && new Date(a.expiresAt) > now);
+    if (!pending.length && !notStarted.length) return "Nicio aprobare în așteptare.";
     const lines = pending.slice(0, 10).map((a) => `${catalogEntry(a.actionKind)?.label || a.actionKind}: ${detail(a)} · expiră ${a.expiresAt}`);
     if (pending.length > 10) lines.push(`… și încă ${pending.length - 10}.`);
+    for (const a of notStarted.slice(0, 5)) lines.push(`Aprobată, dar nepornită: ${detail(a)} · se pornește din Aprobări cu „Pornește acum”, până la ${a.expiresAt}`);
     lines.push("Se aprobă doar prin click, în ecranul Aprobări sau în panoul Lega.");
-    return `${pending.length} aprobări în așteptare.\n${lines.join("\n")}`;
+    return `${pending.length} aprobări în așteptare${notStarted.length ? `, ${notStarted.length} aprobate și nepornite` : ""}.\n${lines.join("\n")}`;
   }
 
   function recentRunsText(args) {

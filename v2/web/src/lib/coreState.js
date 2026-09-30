@@ -35,7 +35,7 @@ export function deriveCoreState({ hub, connection = "live", voicePhase = "idle",
 
 function pickCoreState({ hub, connection, voicePhase, legaPhase }) {
   if (!hub) return { state: connection === "live" ? "IDLE" : "OFFLINE", reason: connection === "live" ? "Se încarcă starea Hub-ului" : "Hub-ul nu răspunde; interfața se reconectează" };
-  if (connection !== "live") return { state: "OFFLINE", reason: "Fluxul de evenimente este întrerupt; reconectare și reluare fără pierderi (Last-Event-ID)" };
+  if (connection !== "live") return { state: "OFFLINE", reason: "Fluxul de evenimente este întrerupt; reconectare și reluare fără pierderi de la ultimul eveniment primit" };
   // A decision you owe always wins: a long voice session must never hide a pending approval.
   if (hub.pendingApprovals > 0) return { state: "WAITING_APPROVAL", reason: `${plural(hub.pendingApprovals, "aprobare așteaptă", "aprobări așteaptă")} decizia ta` };
   if (voicePhase === "listening") return { state: "LISTENING", reason: "Microfonul este activ cât ții apăsat butonul" };

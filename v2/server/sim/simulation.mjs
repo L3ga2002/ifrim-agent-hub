@@ -178,9 +178,10 @@ export function createSimulation(hub) {
       const run = await startRun(conv.id, "codex", "Analiză (cotă epuizată).", "quota");
       return { conversationId: conv.id, runId: run?.id, status: run?.status };
     },
+    /** Banner "Eroare auth": an expired ChatGPT session (fixture turn fails with 401/unauthorized → category authentication). */
     async error() {
-      const conv = await cmd("conversation.create", { projectId: project().id, title: "Eroare simulată" });
-      const run = await startRun(conv.id, "codex", "Analiză (turn eșuat).", "fail");
+      const conv = await cmd("conversation.create", { projectId: project().id, title: "Eroare de autentificare simulată" });
+      const run = await startRun(conv.id, "codex", "Analiză (scenariu autentificare: sesiune expirată).", "autherror");
       return { conversationId: conv.id, runId: run?.id, status: run?.status };
     },
     async handoff() {

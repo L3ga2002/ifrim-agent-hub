@@ -11,6 +11,7 @@ import { Spotlight } from "./Spotlight.jsx";
 import { LegaStage, useStageToggle } from "../screens/stage/LegaStage.jsx";
 import { Core3D } from "../components/core/Core3D.jsx";
 import { deriveCoreState, CORE_VISUALS } from "../lib/coreState.js";
+import { appShortcutKey } from "../lib/uiLogic.js";
 
 /** Stop All: available in the top bar, the mini assistant and the mobile nav; shows only backend-confirmed results. */
 export function StopAllButton({ compact = false, className = "" }) {
@@ -56,7 +57,7 @@ function ConnectionChip() {
   useEffect(() => { const t = setInterval(() => tick((n) => n + 1), 15000); return () => clearInterval(t); }, []);
   const last = lastUpdate ? fmt.ago(new Date(lastUpdate).toISOString()) : "niciodată";
   if (connection === "live") return <span className="conn live" title={`Flux de evenimente conectat · ultima actualizare ${last}`}><Wifi size={13} aria-hidden="true" /><span className="hide-mobile">live · {last}</span><span className="sr-only">conectat</span></span>;
-  return <span className="conn down" role="status" title="Fluxul se reconectează și reia evenimentele lipsă (Last-Event-ID); indicatorul verde nu apare până la confirmare"><WifiOff size={13} aria-hidden="true" /><span>{connection === "reconnecting" ? "Reconectare…" : "Conectare…"}</span><span className="hide-mobile faint">ultima actualizare {last}</span></span>;
+  return <span className="conn down" role="status" title="Fluxul se reconectează și reia evenimentele lipsă de la ultimul eveniment primit; indicatorul verde nu apare până la confirmare"><WifiOff size={13} aria-hidden="true" /><span>{connection === "reconnecting" ? "Reconectare…" : "Conectare…"}</span><span className="hide-mobile faint">ultima actualizare {last}</span></span>;
 }
 
 function StatusChips() {
@@ -244,8 +245,10 @@ export function Shell({ route, go, children }) {
   useEffect(() => {
     const onKey = (e) => {
       if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "k") { e.preventDefault(); setPalette(true); }
-      if (e.altKey && /^[1-9]$/.test(e.key)) { const item = NAV.find((n) => n.key === e.key); if (item) { e.preventDefault(); go(`/${item.id}`); } }
-      if (e.altKey && e.key.toLowerCase() === "m") { e.preventDefault(); setMini((m) => !m); }
+      // Plain Alt only: AltGr (Ctrl+Alt on Windows) types characters on the Romanian layout and must not switch screens.
+      const key = appShortcutKey(e);
+      if (key && /^[1-9]$/.test(key)) { const item = NAV.find((n) => n.key === key); if (item) { e.preventDefault(); go(`/${item.id}`); } }
+      if (key === "m") { e.preventDefault(); setMini((m) => !m); }
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);

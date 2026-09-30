@@ -22,8 +22,54 @@ const execFileAsync = promisify(execFile);
 export const CODEX_ALLOWED_METHODS = new Set([
   "initialize", "thread/start", "thread/resume", "thread/read", "turn/start", "turn/interrupt",
   "model/list", "account/read", "account/rateLimits/read",
-  "windowsSandbox/readiness", "permissionProfile/list",
+  "windowsSandbox/readiness", "permissionProfile/list", "mcpServerStatus/list",
 ]);
+
+/** Per-process args that disable each named MCP server (only names addressable as a dotted path; any other stays active and is refused by the MCP check). */
+export function mcpDisableArgs(names = []) {
+  return names.filter((n) => MCP_NAME_ADDRESSABLE.test(n)).flatMap((n) => ["-c", `mcp_servers.${n}.enabled=false`]);
+}
+
+const MCP_LIST_MAX_PAGES = 20;
+const mcpUnverifiable = (why) => Object.assign(new Error(`Hub-ul nu poate confirma că niciun server MCP nu e activ (${why}); oprit înainte de model`), { category: "policy", preInference: true });
+
+/**
+ * The MCP servers still active for a thread (anything not reported "disabled"), over every page (the list is paginated
+ * with a server-defined page size, schema 0.159.2). Fails closed: an unknown response shape or too many pages throws a
+ * policy error, never "no servers". The Hub allows none for its processes: an MCP server runs outside the sandbox.
+ */
+export async function activeMcpServers(peer, threadId) {
+  const active = [];
+  let cursor = null;
+  for (let page = 0; page < MCP_LIST_MAX_PAGES; page += 1) {
+    const listed = await peer.request("mcpServerStatus/list", { threadId, detail: "toolsAndAuthOnly", ...(cursor ? { cursor } : {}) }, 20000);
+    if (!Array.isArray(listed?.data)) throw mcpUnverifiable("răspuns mcpServerStatus/list necunoscut");
+    for (const server of listed.data) if (server?.runtimeStatus !== "disabled") active.push(String(server?.name || "?").slice(0, 80));
+    cursor = typeof listed.nextCursor === "string" && listed.nextCursor ? listed.nextCursor : null;
+    if (!cursor) return active;
+  }
+  throw mcpUnverifiable(`peste ${MCP_LIST_MAX_PAGES} pagini de servere`);
+}
+
+/**
+ * MCP plan for one Codex process, decided BEFORE it starts (an MCP server runs outside the sandbox as soon as the thread
+ * exists, so refusing after thread/start would be too late). Returns { names, problem }: the owner's config servers to
+ * disable by name, or why the run must not start: an unreadable ~/.codex/config.toml, a server name that cannot be
+ * addressed per process, or a project .codex/config.toml (its MCP servers, hooks or providers are not under Hub control,
+ * and a workspace-write run could have written it for the next run).
+ */
+export function codexMcpLaunchPlan({ homeDir, cwd }) {
+  const user = inspectCodexConfig(homeDir);
+  if (user.unreadable) return { names: [], problem: "~/.codex/config.toml nu poate fi citit, deci serverele MCP din el nu pot fi oprite; oprit înainte de pornire" };
+  const rt = user.realtime || { mcpServers: 0, mcpServerNames: [] };
+  if ((rt.mcpServers || 0) !== (rt.mcpServerNames || []).length) {
+    return { names: [], problem: "Un server MCP din ~/.codex/config.toml are un nume care nu poate fi oprit per proces (doar litere, cifre, - și _); oprit înainte de pornire" };
+  }
+  if (cwd && fs.existsSync(path.join(cwd, ".codex", "config.toml"))) {
+    return { names: [], problem: "Proiectul are .codex/config.toml: Codex l-ar încărca (servere MCP, hook-uri sau alt provider, în afara controlului Hub-ului); mută-l din proiect înainte de execuție" };
+  }
+  return { names: [...rt.mcpServerNames], problem: null };
+}
 
 /**
  * Per-process config overrides for every Hub app-server (never written to ~/.codex/config.toml).
@@ -35,7 +81,11 @@ export const CODEX_ALLOWED_METHODS = new Set([
  * - computer_use, browser_use*, in_app_browser: visual/browser control belongs to the Hub computer runtime
  *   (computer.visual_control and browser.native are ALWAYS_ASK and locked);
  * - memories: Hub memory is canonical; vendor memories stay the owner's (the owner's config may enable them);
- * - multi_agent: subagents multiply plan usage beyond the Hub concurrency limit.
+ * - multi_agent: subagents multiply plan usage beyond the Hub concurrency limit;
+ * - plugins, remote_plugin: plugins bring their own MCP servers (Computer Use's cua_repl). MCP servers run OUTSIDE the
+ *   Codex sandbox, so none may serve a Hub process: plugins are off here and every MCP server of the owner's config is
+ *   disabled by name per process (mcpDisableArgs), then verified with mcpServerStatus/list before any turn. Found live on
+ *   2026-09-30: a workspace-write run called cua_repl/js three times; only runs had been left without this.
  * web_search is a hosted tool that bypasses the sandbox network setting (web-search): disabled.
  * project_doc_max_bytes=0 + project_root_markers=[]: no AGENTS.md discovery at thread/start. With deny-read entries in the
  * Hub profile every discovery probe runs through the Windows sandbox (setup refresh + ACL sync per probe, no timeout), which
@@ -54,6 +104,8 @@ export const CODEX_APP_SERVER_OVERRIDES = Object.freeze([
   "-c", "features.in_app_browser=false",
   "-c", "features.memories=false",
   "-c", "features.multi_agent=false",
+  "-c", "features.plugins=false",
+  "-c", "features.remote_plugin=false",
   "-c", 'web_search="disabled"',
   "-c", "project_doc_max_bytes=0",
   "-c", "project_root_markers=[]",
@@ -221,6 +273,14 @@ export function createCodexAdapter({ config, supervisor, homeDir = os.homedir() 
    */
   function startTurn({ runId, cwd, prompt, access = "read-only", model = "", effort = "", threadId = "", onEvent, requestApproval, admitUsage }) {
     const key = `run-${runId}`;
+    let policyStop = null; // set when the provider does something no Hub run may do; the run ends as a tool violation
+    let turnRequested = false; // until turn/start is sent, a Stop kills the process: no model call may follow it
+    // Decided before the process starts: an MCP server that is not disabled would already run outside the sandbox.
+    const mcpPlan = codexMcpLaunchPlan({ homeDir, cwd });
+    if (mcpPlan.problem) {
+      return { key, pid: null, interrupt: async () => ({ interrupted: false, graceful: true, reason: "not started" }),
+        done: Promise.resolve({ status: "failed", errorCategory: "policy", preInference: true, error: mcpPlan.problem, output: "", usage: {}, threadId }) };
+    }
     let turnId = "";
     let currentThread = threadId;
     let output = "";
@@ -234,6 +294,13 @@ export function createCodexAdapter({ config, supervisor, homeDir = os.homedir() 
       if (method === "item/agentMessage/delta" && typeof params.delta === "string") {
         output += params.delta;
         onEvent({ type: "delta", text: params.delta });
+      } else if ((method === "item/started" || method === "item/completed") && params.item?.type === "mcpToolCall") {
+        // Defense in depth: every MCP server is disabled and verified before the turn, so a call means one escaped.
+        if (!policyStop) {
+          policyStop = `Codex a apelat unealta MCP ${String(params.item.server || "?").slice(0, 60)}/${String(params.item.tool || "?").slice(0, 60)}: serverele MCP rulează în afara sandbox-ului și sunt oprite pentru execuțiile Hub; execuția s-a oprit`;
+          onEvent({ type: "notice", level: "error", text: policyStop });
+          interrupt("policy").catch(() => {});
+        }
       } else if (method === "item/started" && ACTIVITY_ITEMS.has(params.item?.type)) {
         onEvent({ type: "activity", label: describeItem(params.item) });
       } else if (method === "item/completed" && params.item?.type === "agentMessage" && !output && typeof params.item.text === "string") {
@@ -284,13 +351,21 @@ export function createCodexAdapter({ config, supervisor, homeDir = os.homedir() 
     };
 
     let interruptReason = null;
-    const session = openSession({ cwd, key, access, onNotification, onServerRequest,
+    // The owner's config MCP servers are disabled by name for this process (key names only are read from config.toml).
+    const session = openSession({ cwd, key, access, extraArgs: mcpDisableArgs(mcpPlan.names), onNotification, onServerRequest,
       onExit: (exit) => finish(interruptReason
         ? { status: "interrupted", output, usage, threadId: currentThread, turnId, errorCategory: null, error: `interrupted (${interruptReason})`, preInference: !turnId }
         : { status: "failed", output, usage, threadId: currentThread, turnId, errorCategory: "transport", error: `app-server exited (${exit.code})`, preInference: !turnId }) });
 
     async function interrupt(reason = "user") {
       interruptReason = reason;
+      // Before turn/start nothing reached the model: end the process now (the done flow also checks interruptReason
+      // right before turn/start), so a Stop can never be followed by a model call.
+      if (!turnRequested) {
+        const stopped = await supervisor.stop(key, { graceMs: 0 });
+        finish({ status: "interrupted", output, usage, threadId: currentThread, turnId: "", errorCategory: null, error: `interrupted (${reason})`, preInference: true });
+        return { interrupted: stopped.stopped, graceful: false, reason };
+      }
       // If turn/start is in flight, wait briefly for its id so the turn can be interrupted properly.
       for (let waited = 0; !turnId && !finished && waited < 3000; waited += 50) await new Promise((r) => setTimeout(r, 50));
       if (currentThread && turnId) {
@@ -340,20 +415,36 @@ export function createCodexAdapter({ config, supervisor, homeDir = os.homedir() 
             error: `Codex a raportat approvalsReviewer=${thread.approvalsReviewer}: aprobările nu ar mai ajunge la Hub; oprit înainte de turn` };
         }
         const projected = thread.sandbox?.type || "";
-        if (projected === "dangerFullAccess" || (access !== "workspace-write" && projected === "workspaceWrite")) {
+        // externalSandbox = Codex applies no sandbox of its own (it trusts an outer one the Hub does not provide).
+        if (projected === "dangerFullAccess" || projected === "externalSandbox" || (access !== "workspace-write" && projected === "workspaceWrite")) {
           return { status: "failed", errorCategory: "policy", preInference: true, output, usage, threadId: currentThread,
             error: `Codex a raportat sandbox ${projected} pentru acces ${access}: profilul Hub nu este activ; oprit înainte de turn` };
         }
-        if (model && thread.model && !String(thread.model).toLowerCase().startsWith(String(model).toLowerCase())) {
+        // Exact id, normalised only for case and surrounding spaces: a prefix match let a requested "gpt-5" run as "gpt-5-mini".
+        const modelId = (value) => String(value ?? "").trim().toLowerCase();
+        const [wantedModel, reportedModel] = [modelId(model), modelId(thread.model)];
+        if (wantedModel && reportedModel && reportedModel !== wantedModel) {
           return { status: "failed", errorCategory: "policy", preInference: true, output, usage, threadId: currentThread,
             error: `Codex a ales modelul ${thread.model} în loc de ${model}; oprit înainte de turn (fără substituire tăcută)` };
         }
+
+        // No MCP server may be active for a Hub run: they run outside the sandbox (plugins and config servers are disabled
+        // above; a name that cannot be addressed as a dotted path, or a Codex that ignores the override, stops here).
+        const activeMcp = await activeMcpServers(session.peer, currentThread);
+        if (activeMcp.length) {
+          return { status: "failed", errorCategory: "policy", preInference: true, output, usage, threadId: currentThread,
+            error: `Servere MCP încă active pentru execuție (${activeMcp.slice(0, 5).join(", ")}); rulează în afara sandbox-ului; oprit înainte de turn` };
+        }
+        if (interruptReason) return { status: "interrupted", errorCategory: null, preInference: true, error: `interrupted (${interruptReason})`, output, usage, threadId: currentThread, turnId: "" };
+        turnRequested = true;
 
         const turn = await session.peer.request("turn/start", { threadId: currentThread, input: [{ type: "text", text: prompt }], cwd,
           approvalPolicy: "on-request", approvalsReviewer: "user", ...(model ? { model } : {}), ...(effort ? { effort } : {}) }, 60000);
         turnId = turn?.turn?.id || "";
         onEvent({ type: "turn", turnId });
-        return await completion;
+        const result = await completion;
+        // "tool", not "policy": the model already ran (policy counts as a pre-inference stop in the run record).
+        return policyStop ? { ...result, status: "failed", errorCategory: "tool", preInference: false, error: policyStop } : result;
       } catch (error) {
         if (interruptReason) return { status: "interrupted", errorCategory: null, preInference: !turnId, error: `interrupted (${interruptReason})`, output, usage, threadId: currentThread, turnId };
         const category = error.category || classifyText(error.message);

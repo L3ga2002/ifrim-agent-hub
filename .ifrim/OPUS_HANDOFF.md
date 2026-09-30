@@ -1,13 +1,33 @@
 # Ifrim Agent Hub - Opus Handoff
 
-## Milestone 02 handoff — 2026-09-30 (current)
+## Post-M02 handoff: Lega + M02 verification — 2026-10-01 (current)
 
-- **Built by:** Claude Opus 5.5, in BUILD_SAFE. No model through the Hub, no subagent/team, no install, commit, push or deploy. No real ACL changed.
+- **State:** version `2.3.0-m03`. Branch `v2-milestone-01` pushed up to `bbe8757` (M01 `f31240b`, M02 `0fb71d2`, `30bfbef` Lega voice + Codex thread/start fix, `dac2db4` Lega stage, `ce819b9` plugins off for voice + grant refund, `bbe8757` Lega full access + web search). `main` still `e9ab563`; nothing merged or deployed. Uncommitted, going into one commit after this doc update: M02 verification fixes, MCP isolation for every Hub Codex process and Claude, one-click approvals, expired grants shown as expired, version bump, these docs.
+- **Live evidence (2026-09-30, sanitized test project, owner-approved):** Claude read-only PASS_LIVE (`run_muo6i9og_50c329673c`); Codex FAIL at 14:41 (`run_muo7r9bp_d1b50893f7`, thread/start timeout before inference, fixed in `30bfbef`), then PASS_LIVE workspace-write (`run_muojnivb_b113ce0591`) and read-only (`run_muomogfu_f3b3dcccd7`); Lega voice PASS_LIVE (incl. `lega_muoic63s_69b4539e26`). Codex ACL consent recorded; DENY ACEs exist on the protected paths.
+- **Hub now:** 127.0.0.1:8011, BUILD_SAFE, execution gate open (as the owner left it for Lega), 0 active grants, no active run or Lega session. Simulator 8012 separate.
+- **Tests:** V2 249 (248 pass, 1 SKIPPED_ENV); V1 552 (549 pass, 1 skipped, 2 live-API timeouts only inside the full suite); build OK; `npm audit` 0.
+- **Read first:** `.ifrim/OPEN_ISSUES.md` (2026-10-01), `.ifrim/LEGA.md`, `.ifrim/M02_IMPLEMENTATION_STATUS.md` („După M02”), `.ifrim/M02_TEST_REPORT.md`, `.ifrim/RUNBOOK.md`.
+- **New source map:**
+  - Lega: `v2/server/runtime/lega.mjs`, `v2/server/providers/codex-realtime.mjs`, `v2/server/policy/lega-policy.mjs`, `v2/server/domain/project-notes.mjs`, `v2/web/src/shell/Lega.jsx`, `v2/web/src/screens/stage/LegaStage.jsx`, `v2/web/src/lib/stageGraph.js`;
+  - per-project „Permite execuții”: `v2/web/src/screens/Projects.jsx` (command `project.execution.enable`);
+  - one-click approvals: `v2/web/src/screens/Approvals.jsx`;
+  - MCP isolation: `CODEX_APP_SERVER_OVERRIDES` and `codexMcpLaunchPlan` in `v2/server/providers/codex.mjs`, the init check in `v2/server/providers/claude.mjs`;
+  - tests `v2/tests/m03-*.test.mjs`, manual `v2/tests/manual/lega-mcp-preflight.mjs`.
+- **Do not loosen (in addition to the lists below):**
+  - the 16 per-process Codex overrides (the M01 12 + `project_doc_max_bytes=0`, `project_root_markers=[]`, `features.plugins=false`, `features.remote_plugin=false`);
+  - every config MCP server disabled by name, refusal before start (unaddressable name or project `.codex/config.toml`), `mcpServerStatus/list` fail-closed over every page, stop on any MCP call; Claude stop before the model on any MCP server or `mcp__` tool;
+  - web search only for Lega's process (default `cached`); runs keep `web_search="disabled"`;
+  - Lega's thread without environments (no shell, no files), voice never approves, every effect needs the owner's click.
+- **Open decisions:** R2 (Codex reads other projects' non-protected files by absolute path) before real projects; R3 (`~/.codex/config.toml*` readable); merge to `main`; HUB-018 close or keep. Full list: `OPEN_ISSUES.md`.
+
+## Milestone 02 handoff — 2026-09-30 (superseded by 2026-10-01 above where they overlap)
+
+- **Built by:** Claude Opus 5.5, in BUILD_SAFE. At delivery: no model through the Hub, no subagent/team, no install, commit, push or deploy, no real ACL changed. Since then: M02 is commit `0fb71d2`, pushed on `v2-milestone-01`; live runs happened with the owner's approval; the Codex ACL consent was recorded and the DENY ACEs exist on the protected paths.
 - **Read first:**
   - `.ifrim/M02_IMPLEMENTATION_STATUS.md`
   - `.ifrim/M02_SECURITY_READINESS.md`
   - `.ifrim/M02_LIVE_VALIDATION_PLAN.md`
-  - `.ifrim/CHECKPOINTS/2026-09-30-milestone-02-done.md` (file list and proposed commit message)
+  - `.ifrim/CHECKPOINTS/2026-09-30-milestone-02-done.md` (file list and the commit message proposed at the time; M02 is now commit `0fb71d2`)
 - **New source map:**
   - `v2/server/policy/isolation.mjs` (Codex/Claude isolation, consent and fingerprint)
   - `v2/server/sim/` + `v2/scripts/sim*.mjs` (simulator)
@@ -28,9 +48,9 @@
   - absolute `**` globs work.
 
 
-## Milestone 01 handoff — 2026-09-30 (current)
+## Milestone 01 handoff — 2026-09-30 (historical)
 
-- Built by Claude Opus 5.5, BUILD_SAFE: no model through the Hub, no cloud/scheduled task, commit, push, deploy, install or external message. Read-only research ran as Workflow subagents inside the Claude Code session (the user invoked workflow-authoring with Ultracode on).
+- Built by Claude Opus 5.5, BUILD_SAFE: no model through the Hub, no cloud/scheduled task, commit, push, deploy, install or external message at build time. M01 was later committed as `f31240b` and pushed on `v2-milestone-01`. Read-only research ran as Workflow subagents inside the Claude Code session (the user invoked workflow-authoring with Ultracode on).
 - Read first: `.ifrim/NEXT_SESSION.md` (Milestone 01 section + live proposal), `.ifrim/IMPLEMENTATION_STATUS.md`, `.ifrim/V2_TEST_REPORT.md`, `.ifrim/V2_OWNERSHIP_MAP.md`, `.ifrim/V2_AI_ECOSYSTEM_MATRIX.md`.
 - New source map (M01): `v2/server/runtime/{commands,command-catalog,lifecycles,router,telemetry,checkpoints}.mjs`, `v2/server/policy/approval-policy.mjs`, `v2/server/domain/{company,chief-of-staff,surfaces,schedules,computer,skills,artifacts,integrations}.mjs`, `v2/server/providers/native-sessions.mjs`, `v2/config/ecosystem/*.json` (audit data; docs generated by `v2/scripts/gen-ecosystem-docs.mjs`), `v2/skills/*/SKILL.md`, tests `v2/tests/m01-*.test.mjs`.
 - Storage: migration 2 (`m01-company-runtime-surfaces`) applied to the live DB after a verified copy test; backups `bkp_munfsdem_b334f5f4fd` (post-migration) and the M01 end checkpoint.
@@ -42,8 +62,8 @@
 - Read first: `.ifrim/NEXT_SESSION.md` (V2 section and the live-approval proposal), `.ifrim/RUNBOOK.md`, `.ifrim/REBUILD_DECISIONS.md`, `.ifrim/V2_ARCHITECTURE.md`, `.ifrim/V2_TEST_REPORT.md`, `.ifrim/IMPLEMENTATION_STATUS.md`.
 - Source map: `v2/server` (Hub, policies, runtime, providers, backup, storage, HTTP), `v2/web` (UI), `v2/config` (roles, skills, capabilities), `v2/tests` (node:test, fake providers), `v2/scripts` (start/stop/status).
 - Runtime: V2 on 127.0.0.1:8011, BUILD_SAFE, gate suspended; data in `.ifrim/private/hub-v2.sqlite`; backups in `.ifrim/BACKUPS/v2`; rebuild snapshots in `.ifrim/BACKUPS/v2-rebuild`; start checkpoint in `.ifrim/CHECKPOINTS/2026-09-29-v2-rebuild-start.json`.
-- Git: `main` at e9ab563 plus uncommitted V2 changes (new `v2/`, new `.ifrim/*.md`, updated memory files, `package.json` scripts, `package-lock.json` security update).
-- HUB-018 remains open historically. V2 live validation is its successor and needs your approval.
+- Git at that time: `main` at e9ab563 plus uncommitted V2 changes (new `v2/`, new `.ifrim/*.md`, updated memory files, `package.json` scripts, `package-lock.json` security update). Now: V2 is committed and pushed on `v2-milestone-01` (up to `bbe8757`); `main` is still `e9ab563`; nothing merged or deployed.
+- HUB-018 remains open historically. V2 live validation is its successor: it ran on 2026-09-30 (Claude and Codex PASS_LIVE on the test project). Closing HUB-018 as superseded is your decision.
 
 ## Historical handoff — 2026-09-29 (V1, HUB-018)
 

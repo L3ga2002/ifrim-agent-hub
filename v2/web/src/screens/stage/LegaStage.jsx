@@ -4,6 +4,7 @@ import { useHub, onLive, setState } from "../../store.js";
 import { buildStageGraph, project } from "../../lib/stageGraph.js";
 import { legaLevels, sendLegaCommand } from "../../lib/legaLevels.js";
 import { deriveCoreState } from "../../lib/coreState.js";
+import { isAppShortcut } from "../../lib/uiLogic.js";
 import { StopAllButton } from "../../shell/Shell.jsx";
 
 /**
@@ -187,11 +188,11 @@ export function LegaStage({ onClose, go }) {
   );
 }
 
-/** Opens/closes the stage (Alt+J); rendered by the Shell. */
+/** Opens/closes the stage (Alt+J, plain Alt only: AltGr+J types a character on the Romanian layout); rendered by the Shell. */
 export function useStageToggle() {
   const open = useHub((s) => Boolean(s.stageOpen));
   useEffect(() => {
-    const onKey = (e) => { if (e.altKey && e.key.toLowerCase() === "j") { e.preventDefault(); setState((s) => ({ stageOpen: !s.stageOpen })); } };
+    const onKey = (e) => { if (isAppShortcut(e, "j")) { e.preventDefault(); setState((s) => ({ stageOpen: !s.stageOpen })); } };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, []);

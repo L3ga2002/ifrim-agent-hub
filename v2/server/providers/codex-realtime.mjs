@@ -1,4 +1,6 @@
-import { normalizeAccount, normalizeRateLimits, MCP_NAME_ADDRESSABLE } from "./codex.mjs";
+import { normalizeAccount, normalizeRateLimits, mcpDisableArgs, activeMcpServers } from "./codex.mjs";
+
+export { mcpDisableArgs };
 import { classifyText } from "./classify.mjs";
 import { redactText } from "../security/redact.mjs";
 import { legaDynamicTools, legaAgentInstructions, legaVoicePrompt, LEGA_VOICES } from "../policy/lega-policy.mjs";
@@ -29,15 +31,9 @@ export const CODEX_VOICE_ALLOWED_METHODS = new Set([
 export const CODEX_VOICE_EXTRA_ARGS = Object.freeze([
   "-c", 'experimental_realtime_ws_backend_prompt=""', // a config prompt would replace the Lega persona
   "-c", "agents.enabled=false", // no subagents behind Lega (they would escape the Hub's accounting)
-  // Plugins bring their own MCP servers (e.g. Computer Use's cua_repl, seen live on 2026-09-30); none are allowed behind Lega.
-  "-c", "features.plugins=false",
-  "-c", "features.remote_plugin=false",
+  // Plugins (and their MCP servers, e.g. Computer Use's cua_repl) are off for every Hub process: CODEX_APP_SERVER_OVERRIDES.
 ]);
 
-/** Per-process args that disable each named MCP server (only names addressable as a dotted path; others fail the gate). */
-export function mcpDisableArgs(names = []) {
-  return names.filter((n) => MCP_NAME_ADDRESSABLE.test(n)).flatMap((n) => ["-c", `mcp_servers.${n}.enabled=false`]);
-}
 
 /**
  * Item types allowed on the Lega thread; every other type (commands, files, MCP, images, subagents, review) ends the session.
@@ -213,10 +209,10 @@ export function createCodexRealtime({ codex, supervisor }) {
       if (!Array.isArray(envs) || envs.length !== 0) {
         throw Object.assign(new Error(`Thread-ul Lega nu a confirmat „fără medii de execuție” (${Array.isArray(envs) ? `${envs.length} medii` : "câmp absent"})`), { category: "policy", preInference: true });
       }
-      const mcp = await session.peer.request("mcpServerStatus/list", { threadId, detail: "toolsAndAuthOnly" }, 20000); check();
-      const activeMcp = (mcp?.data || []).filter((s) => s.runtimeStatus !== "disabled");
+      // Every page, fail-closed (the shared check of every Hub Codex process).
+      const activeMcp = await activeMcpServers(session.peer, threadId); check();
       if (activeMcp.length) {
-        throw Object.assign(new Error(`Servere MCP încă active pentru Lega: ${activeMcp.map((s) => s.name).slice(0, 5).join(", ")}`), { category: "policy", preInference: true });
+        throw Object.assign(new Error(`Servere MCP încă active pentru Lega: ${activeMcp.slice(0, 5).join(", ")}`), { category: "policy", preInference: true });
       }
 
       check();
