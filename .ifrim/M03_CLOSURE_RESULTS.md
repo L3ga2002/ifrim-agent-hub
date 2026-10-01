@@ -45,8 +45,8 @@ Toate clicurile de pornire, oprire și aprobare au fost ale proprietarului. La f
 
 ## Proba 2.6 · Lega propune o misiune de engineering: **PASS_LIVE**
 
-- **Prima sesiune:** `lega_mupxxc76_fc90714b79` s-a închis cu **„closed: error”** la 5 s după conectare, pe grantul `grant_mupxocxc_09da3e4f19`, care s-a consumat.
-  - Cauza probabilă: sesiunea a pornit din panoul de browser al aplicației Claude (microfon). API-ul nu dă mai mult detaliu.
+- **Prima sesiune:** `lega_mupxxc76_fc90714b79` a transcris „Lega”, apoi s-a închis cu **„closed: error”** la ~7 s după conectare (5 s după prima replică), pe grantul `grant_mupxocxc_09da3e4f19`, care s-a consumat. Microfonul a funcționat.
+  - Cauza reală e necunoscută: API-ul nu dă detalii. Sesiunea pornise din panoul de browser al aplicației Claude.
   - S-a reluat cu un grant nou cu aceiași parametri, `grant_mupxz47i_b944ce8288`, din Chrome.
 - **Sesiunea a doua:** `lega_mupxz7vs_8cf23b8d0d` (1,51 min, estimat ~0,08 USD; consumul real din plan nu e raportat).
 - **Lanțul de evenimente (UTC):**
@@ -85,6 +85,30 @@ Toate clicurile de pornire, oprire și aprobare au fost ale proprietarului. La f
   - schimbarea porții `host_isolation`, cu acordul tău, legată de amprenta de mai sus;
   - o probă live pe un proiect hub-test prin `wsl-runner`.
 - **Revenire:** `wsl -d ifrim-runner -- codex logout`, apoi `wsl --unregister ifrim-runner`, care șterge definitiv distribuția.
+
+## Demo B (pachetul 2.3): verificare independentă
+
+Trei recenzori read-only (acceptanță, regresii, siguranță) și un pas de sinteză, rulați în conversația din 2026-10-01 seara, au dat toți **ACCEPT**, fără probleme blocante.
+
+- **Acceptanța:**
+  - criteriile AC-1…AC-7 sunt îndeplinite;
+  - în copii temporare: testele 8/8 (de 5 ori la rând), acceptanța 5/5, 29/29 cazuri limită HTTP (inclusiv persistența după repornire și fereastra de duplicat de 10 minute), 12/12 verificări în browser pe mobil (390×844).
+- **Integritatea:**
+  - working tree-ul Demo B are exact hash-urile „after” ale change set-ului 2 (`cs_mupwvokh_8677a4bdde`);
+  - testul protejat e neschimbat;
+  - dovezile CHECKING/QA/PREVIEW/E2E se referă la același change set.
+- **Siguranța:**
+  - SQL doar cu parametri `?`;
+  - interfața afișează textul cu `textContent`, fără HTML;
+  - corpul cererii limitat la 16 KB;
+  - fără dependențe noi;
+  - serverul ascultă doar pe 127.0.0.1.
+- **Constatările recenzorului Claude, încă OPEN pe pachet:**
+  - F-002 (low): un 413 fără drenarea corpului pe keep-alive. E teoretic și nu a fost reprodus prin fetch.
+  - F-003 (info): parțial greșit. Adresele cu două „@” sunt respinse, dar un TLD de un caracter (`a@b.c`) trece.
+- **Note neblocante:** testul nou lasă fișiere SQLite în `data/` (ignorat de git); GET-ul de listă nu are limită.
+
+Decizia (accept sau reject) e a proprietarului. Pachetul `bnd_mupwze7b_e03f70f2d7` era încă READY_FOR_OWNER_ACCEPTANCE la scrierea acestui document.
 
 ## Demo A
 

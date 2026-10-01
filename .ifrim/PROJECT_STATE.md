@@ -19,7 +19,7 @@
   - a live probe through it.
 - **Next:** the owner decides on the Demo B bundle; then the `wsl-runner` milestone; merge `v2-milestone-01` → `main` when the owner wants.
 
-## Current State - 2026-10-01 (Milestone 04, version `2.5.0-m04`, Sales simulated end to end, committed `2301dcd`, not pushed)
+## Current State - 2026-10-01 (Milestone 04, version `2.5.0-m04`, Sales simulated end to end, committed `2301dcd` and pushed by the owner)
 
 M04 adds the Sales department on the existing Hub. It reuses the command bus, approvals, events, the scheduler, missions, the Software Factory and Lega; there is no second orchestrator.
 
