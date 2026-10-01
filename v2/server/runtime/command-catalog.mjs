@@ -16,6 +16,7 @@ import { parseVoiceCommand } from "../domain/voice.mjs";
 import { buildBriefing, briefingMarkdown } from "../domain/briefing.mjs";
 import { snapshotLegacy, applyImport, revertImport } from "../storage/v1-import.mjs";
 import { transitionTask } from "./state-machine.mjs";
+import { registerSalesCommands } from "../sales/sales-commands.mjs";
 import fs from "node:fs";
 
 /** Commands a LOCAL_HUB schedule may run (non-AI, no external effects). */
@@ -353,6 +354,8 @@ export function registerCommands(commands, hub) {
     execute: async (input) => leads.addEvidence(input.leadId, { claim: input.claim, sourceUrl: input.sourceUrl, observedAt: input.observedAt }) });
   reg("lead.status", { describe: "Stare lead", async: true, schema: { leadId: { required: true }, status: { enum: LEAD_STATUSES, required: true }, notes: { max: 2000 } },
     execute: async (input) => leads.setStatus(input.leadId, input.status, input.notes ?? null) });
+  // ---------- Sales & Lead Generation (M04): the department's commands; the M01 registry above stays for compatibility ----------
+  registerSalesCommands(reg, hub, { createMission });
 
   // ---------- company runtime & chief of staff ----------
   reg("company.department_status", { describe: "Stare departament (active/planned/paused)", schema: { departmentKey: { required: true, max: 40 }, status: { enum: ["active", "planned", "paused"], required: true }, reason: { required: true, min: 3, max: 300 } },

@@ -13,6 +13,8 @@ export const DEFAULT_SETTINGS = Object.freeze({
   isolationConsent: {},
   // R2 still open, accepted by the owner per project (path-bound, time-limited); never a claim of isolation (M03 §05).
   r2Acceptance: {},
+  // M04: the owner's company profile used in proposals (name, signature, confirmed materials); nothing is invented.
+  salesOwner: { companyName: "Ifrim Digital", signatureName: "", materials: [] },
   // Lega (voice assistant, GPT-Live via Codex): owner consent (versioned) and session preferences.
   legaConsent: {},
   lega: { voice: "cove", maxSessionMinutes: 20, idleTimeoutS: 120 },

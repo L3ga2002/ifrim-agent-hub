@@ -1,0 +1,117 @@
+/* Milestone 04 — Sales & lead-uri. Built only on tokens.css and the existing component classes (panel, chip, table,
+   filters, page-tabs); nothing here restyles the shell. Amber stays reserved for approvals and attention; synthetic
+   data gets a striped marker so it is recognisable without relying on colour alone (it also carries text). */
+
+.sales-page { min-width: 0; }
+.sales-panel { min-width: 0; }
+/* Panel headers on this page carry filters/actions; they wrap instead of pushing past a 360 px screen. */
+.sales-page .panel-head { flex-wrap: wrap; row-gap: var(--sp-2); }
+.sales-page .panel-head > .row, .sales-page .panel-head .seg { flex-wrap: wrap; max-width: 100%; }
+.warn-text { color: var(--approval); }
+
+/* Header search (the first control on a phone). */
+.sales-search { display: flex; gap: var(--sp-2); align-items: center; flex: 1 1 320px; max-width: 460px; min-width: 0; }
+.sales-search .input { flex: 1 1 auto; min-width: 0; }
+
+/* Persistent synthetic-data banner. */
+.synthetic-banner { display: flex; gap: var(--sp-3); align-items: flex-start; margin: 0 0 var(--sp-4); padding: var(--sp-3) var(--sp-4) var(--sp-3) calc(var(--sp-4) + 6px);
+  border: 1px solid rgba(233, 181, 109, 0.45); border-radius: var(--r); color: var(--text); font-size: var(--fs-s);
+  background: repeating-linear-gradient(135deg, rgba(233, 181, 109, 0.75) 0 5px, transparent 5px 10px) left top / 6px 100% no-repeat, var(--approval-soft); }
+.synthetic-banner svg { flex: none; margin-top: 2px; color: var(--approval); }
+
+/* Counters as links (status → filtered list). */
+.sales-count-list { list-style: none; margin: 0; padding: 0; display: flex; flex-wrap: wrap; gap: var(--sp-2); }
+.sales-count-list a, .sales-count-list .row { display: inline-flex; align-items: center; gap: 8px; text-decoration: none; color: inherit; padding: 4px 6px 4px 4px; border-radius: var(--r); border: 1px solid var(--line); }
+.sales-count-list a:hover { border-color: var(--line-strong); background: var(--surface-2); }
+.sales-count-list .n { font-family: var(--font-display); font-weight: 600; font-variant-numeric: tabular-nums; }
+
+/* Forms and inline controls. */
+.sales-inline-form { display: flex; flex-wrap: wrap; align-items: flex-end; gap: var(--sp-2); min-width: 0; }
+.sales-inline-form > .field { flex: 0 1 200px; }
+.sales-inline-form > .field.grow, .sales-inline-form > .input.grow { flex: 1 1 220px; }
+.sales-inline-select { width: auto; max-width: 100%; min-height: 30px; padding-top: 4px; padding-bottom: 4px; font-size: var(--fs-xs); }
+.sales-filters { padding: var(--sp-3) var(--sp-4); border-bottom: 1px solid var(--line); }
+.sales-fieldset { border: 1px solid var(--line); border-radius: var(--r); padding: var(--sp-3); margin: 0; display: flex; flex-direction: column; gap: var(--sp-3); min-width: 0; }
+.sales-fieldset legend { padding: 0 6px; font-size: var(--fs-xs); font-weight: 650; color: var(--text-2); }
+.sales-pager { display: flex; align-items: center; justify-content: space-between; gap: var(--sp-2); flex-wrap: wrap; }
+
+/* Import: upload, progress, steps, mapping. */
+.sales-upload { display: flex; flex-wrap: wrap; align-items: flex-end; gap: var(--sp-3); }
+.sales-upload .input[type="file"] { padding: 6px; }
+.sales-progress { display: flex; align-items: center; gap: var(--sp-3); }
+.sales-progress .bar { flex: 1 1 auto; max-width: 360px; height: 6px; border-radius: 3px; background: var(--raised); overflow: hidden; }
+.sales-progress .bar i { display: block; height: 100%; background: var(--accent); border-radius: 3px; transition: width var(--d-2) var(--ease); }
+.sales-steps { list-style: none; margin: 0; padding: 0; display: flex; flex-wrap: wrap; gap: 6px; counter-reset: step; }
+.sales-steps li { counter-increment: step; display: inline-flex; align-items: center; gap: 6px; padding: 3px 10px; border-radius: var(--r-s); border: 1px solid var(--line); color: var(--text-3); font-size: var(--fs-xs); font-weight: 600; }
+.sales-steps li::before { content: counter(step) "."; }
+.sales-steps li.done::before { content: none; }
+.sales-steps li.current { color: var(--accent); border-color: rgba(101, 217, 255, 0.45); background: var(--accent-soft); }
+.sales-steps li.done { color: var(--ok); border-color: rgba(134, 220, 187, 0.35); }
+.sales-mapping .select { min-width: 180px; }
+.sales-batch-row .chips { justify-content: flex-end; }
+.sales-batch-row[aria-current="true"] { box-shadow: inset 3px 0 0 var(--accent); background: var(--surface-2); }
+
+/* Problems (errors / warnings) with icons. */
+.sales-problems { list-style: none; margin: 0; padding: 0; display: grid; gap: 3px; font-size: var(--fs-xs); }
+.sales-problems li { display: flex; gap: 6px; align-items: flex-start; overflow-wrap: anywhere; }
+.sales-problems li svg { flex: none; margin-top: 2px; }
+.sales-problems li.err { color: var(--danger); }
+.sales-problems li.warn { color: var(--approval); }
+
+/* Untrusted excerpts: plain text, mono, wrapped, never interpreted. */
+.sales-excerpt { margin: 4px 0 0; padding: 6px 10px; border-left: 2px solid var(--line-strong); background: var(--bg); color: var(--text-2);
+  font-family: var(--mono); font-size: 12px; white-space: pre-wrap; overflow-wrap: anywhere; max-height: 160px; overflow: auto; border-radius: 0 var(--r-s) var(--r-s) 0; }
+
+/* Organisation sheet. */
+.sales-sheet-head { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+.sales-back { align-self: flex-start; }
+.sales-contact { align-items: flex-start; flex-wrap: wrap; }
+.sales-contact > .faint { min-width: 64px; padding-top: 2px; }
+.sales-transition { flex-wrap: wrap; padding-left: 0; padding-right: 0; }
+.sales-checks { list-style: none; margin: 0; padding: 0; display: grid; gap: var(--sp-3); }
+.sales-checks > li { display: flex; flex-direction: column; gap: 4px; padding-bottom: var(--sp-3); border-bottom: 1px solid var(--line); min-width: 0; }
+.sales-checks > li:last-child { border-bottom: 0; padding-bottom: 0; }
+/* Superseded evidence stays visible as history, dimmed (the "Înlocuită" chip carries the meaning, not the opacity alone). */
+.sales-evidence-old > td { opacity: 0.62; }
+.sales-priority { font-family: var(--font-display); font-size: var(--fs-2xl); font-weight: 600; font-variant-numeric: tabular-nums; }
+.sales-components { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(200px, 100%), 1fr)); gap: var(--sp-3); }
+.sales-component { border: 1px solid var(--line); border-radius: var(--r); padding: var(--sp-3); display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+.sales-score { font-family: var(--font-display); font-size: var(--fs-l); font-weight: 600; }
+
+/* Pipeline board: columns wrap; nothing scrolls sideways. */
+.sales-board { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(240px, 100%), 1fr)); gap: var(--sp-3); align-items: start; }
+.sales-column { border: 1px solid var(--line); border-radius: var(--r-l); background: var(--bg-rail); padding: var(--sp-3); display: flex; flex-direction: column; gap: var(--sp-2); min-width: 0; }
+.sales-column-head { margin: 0; display: flex; align-items: center; justify-content: space-between; gap: var(--sp-2); font-size: var(--fs-s); }
+.sales-column-head .n { font-family: var(--font-display); font-variant-numeric: tabular-nums; color: var(--text-2); }
+.sales-cards { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: var(--sp-2); }
+.sales-card { display: flex; flex-direction: column; gap: 3px; padding: 10px 12px; border: 1px solid var(--line); border-radius: var(--r); background: var(--surface); color: var(--text); text-decoration: none; min-width: 0; }
+.sales-card:hover { border-color: var(--line-strong); background: var(--surface-2); }
+.sales-card .title { font-weight: 600; }
+.sales-card .sub { color: var(--text-2); font-size: var(--fs-xs); }
+
+/* Proposal and drafts. */
+.sales-section h4 { margin: 0 0 4px; font-size: var(--fs-s); font-weight: 650; }
+.sales-section + .sales-section { padding-top: var(--sp-2); border-top: 1px solid var(--line); }
+.sales-claims { border: 1px dashed rgba(233, 181, 109, 0.5); border-radius: var(--r); padding: var(--sp-2) var(--sp-3); }
+.sales-draft { display: flex; flex-direction: column; gap: var(--sp-2); padding: var(--sp-3); border: 1px solid var(--line); border-radius: var(--r-l); background: var(--surface-2); min-width: 0; }
+.sales-draft-subject { font-weight: 600; }
+.sales-draft-body { background: var(--bg); border: 1px solid var(--line); border-radius: var(--r); padding: var(--sp-3); line-height: 1.6; overflow-wrap: anywhere; max-height: 420px; overflow: auto; }
+.sales-send-reason { margin: 0; }
+
+/* Follow-ups and services. */
+.sales-followups > li { padding: var(--sp-3) var(--sp-4); }
+.sales-service { align-items: flex-start; flex-wrap: wrap; }
+
+@media (max-width: 767px) {
+  .sales-search { max-width: none; flex-basis: 100%; }
+  .sales-inline-form > .field, .sales-inline-form > .field.grow, .sales-inline-form > .input.grow { flex: 1 1 100%; }
+  .sales-inline-form > .btn { flex: 1 1 auto; }
+  .sales-mapping .select { min-width: 0; }
+  .sales-progress .bar { max-width: none; }
+  .sales-filters .check { flex: 1 1 100%; }
+  .sales-priority { font-size: var(--fs-xl); }
+  .sales-count-list a, .sales-count-list .row { max-width: 100%; }
+  .sales-column { padding: var(--sp-2); }
+  .sales-pager { justify-content: center; }
+  .sales-pager .faint { order: -1; flex-basis: 100%; text-align: center; }
+}

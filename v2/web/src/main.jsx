@@ -19,6 +19,7 @@ const screens = {
   tools: lazy(() => import("./screens/Tools.jsx")),
   integrations: lazy(() => import("./screens/Integrations.jsx")),
   health: lazy(() => import("./screens/Health.jsx")),
+  sales: lazy(() => import("./screens/Sales.jsx")),
   company: lazy(() => import("./screens/Company.jsx")),
   ecosystem: lazy(() => import("./screens/Ecosystem.jsx")),
   system: lazy(() => import("./screens/System.jsx")),

@@ -224,7 +224,65 @@ export function createSimulation(hub) {
       const dropped = hub.dropStreams?.() || 0;
       return { dropped };
     },
+    "sales": () => salesDemo(),
   };
+
+  /**
+   * Sales demo (M04): a synthetic catalog, a synthetic import (generated companies + the companies of the local fixture
+   * sites, all on .test domains), fixture audits, qualifications and one opportunity with a proposal waiting for your
+   * review. Outreach stays disabled (no transport in the simulator); nothing is sent, nothing runs.
+   */
+  async function salesDemo() {
+    const { generateSyntheticOrgs } = await import("../sales/synthetic.mjs");
+    const { toCsv } = await import("../sales/tabular.mjs");
+    const services = hub.sales.listServices();
+    let site = services.find((s) => s.tags.includes("responsive"));
+    if (!site) {
+      site = await cmd("sales.service.save", { name: "Site de prezentare responsive (SINTETIC)", description: "Serviciu de catalog sintetic pentru simulare.",
+        scope: ["Pagini de prezentare adaptate pentru telefon", "Formular de contact cu etichete", "Titluri și descrieri de pagină"], exclusions: ["Redactarea textelor", "Fotografii"],
+        tags: ["responsive", "website", "contact", "seo-basic"] });
+      await cmd("sales.service.save", { name: "Audit de accesibilitate (SINTETIC)", description: "Serviciu de catalog sintetic; prețul e configurat doar pentru simulare.",
+        scope: ["Verificarea textelor alternative", "Etichetele formularelor", "Limba paginii"], exclusions: ["Certificare"], tags: ["accessibility"],
+        price: { status: "CONFIGURED", amount: 1200, currency: "RON", unit: "proiect" } });
+    }
+    const fixtureOrgs = [
+      ["Atelierul Verde SRL", "https://atelierul-verde.test", "Cluj-Napoca", "Cluj"], ["Brutăria Aurora SRL", "https://aurora-panificatie.test", "Timișoara", "Timiș"],
+      ["Croitoria Ștefănescu SRL", "https://croitoria-stefanescu.test", "Iași", "Iași"], ["Instalații Delta Termo SRL", "https://delta-termo.test", "Constanța", "Constanța"],
+      ["Studio Lumen SRL", "https://lumen-foto.test", "Brașov", "Brașov"], ["Sala Fitness Ritm SRL", "https://ritm-fitness.test", "Oradea", "Bihor"],
+      ["Service Auto Boltul SRL", "https://service-auto-boltul.test", "Iași", "Iași"], ["Brutăria Spicul Auriu SRL", "https://spicul-auriu.test", "Sibiu", "Sibiu"],
+    ].map(([name, website, city, county]) => [name, "", website, `office@${website.replace("https://", "")}`, "", city, county, "", ""]);
+    const generated = generateSyntheticOrgs(60, { seed: 404, duplicateRate: 0.05, invalidRate: 0.03 })
+      .map((o) => [o.name, o.fiscalCode, o.website, o.email, o.phone, o.city, o.county, o.turnover, o.turnoverYear]);
+    const csv = toCsv(["Denumire firmă", "CUI", "Site web", "E-mail", "Telefon", "Localitate", "Județ", "Cifra de afaceri", "An"], [...fixtureOrgs, ...generated], { delimiter: ";" });
+    const batch = await cmd("sales.import.create", { fileName: `firme-sintetice-${Date.now().toString(36)}.csv`, contentBase64: Buffer.from(csv, "utf8").toString("base64"), synthetic: true });
+    // The same synthetic file again opens the same batch (dedupe by content): the demo is not imported twice.
+    if (batch.existing && !["UPLOADED", "MAPPED", "PREVIEWED", "IMPORTING"].includes(batch.status)) {
+      return { batchId: batch.id, existingBatch: true, status: batch.status, next: "Datele demo de vânzări sunt deja încărcate: deschide Vânzări" };
+    }
+    if (["UPLOADED", "MAPPED", "PREVIEWED"].includes(batch.status)) {
+      await cmd("sales.import.mapping", { batchId: batch.id, mapping: batch.suggestedMapping });
+      await cmd("sales.import.preview", { batchId: batch.id });
+    }
+    let done = await cmd("sales.import.confirm", { batchId: batch.id });
+    while (!done.done) done = await cmd("sales.import.confirm", { batchId: batch.id });
+    const audited = [];
+    for (const [name] of fixtureOrgs) {
+      const org = hub.db.prepare("SELECT id FROM sales_orgs WHERE display_name = ? AND archived_at IS NULL ORDER BY created_at DESC").get(name);
+      if (!org) continue;
+      try { await cmd("sales.org.audit", { orgId: org.id }); await cmd("sales.org.qualify", { orgId: org.id }); audited.push(org.id); } catch (error) { console.error(`[sim] sales audit ${name}: ${error.message}`); }
+    }
+    let opportunityId = null;
+    // The demo opportunity goes to the company whose audit found the most issues, and its need is stated from those issues.
+    const ranked = audited.map((orgId) => ({ orgId, found: hub.sales.getOrg(orgId).audits[0]?.opportunities || [] })).sort((a, b) => b.found.length - a.found.length);
+    if (ranked.length && ranked[0].found.length) {
+      const need = ranked[0].found.slice(0, 3).map((o) => o.observation).join(" ").slice(0, 1900);
+      const opp = await cmd("sales.opportunity.create", { orgId: ranked[0].orgId, title: "Site responsive cu formular de contact (SIMULARE)", need, serviceId: site.id });
+      opportunityId = opp.opportunity.id;
+      await cmd("sales.proposal.create", { opportunityId });
+      await cmd("sales.opportunity.transition", { opportunityId, to: "READY_FOR_OWNER_REVIEW", reason: "Propunere sintetică pregătită pentru revizia ta" });
+    }
+    return { batchId: batch.id, summary: done.summary, audited: audited.length, opportunityId, next: "Deschide Vânzări → Firme sau Pipeline; aprobarea propunerii o dai tu" };
+  }
 
   async function action(name) {
     const fn = ACTIONS[name];

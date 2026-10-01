@@ -1,0 +1,3 @@
+# Byte-exact fixtures: the XLSX is a ZIP and the cp1250 CSV keeps its CRLF line ends (v2/fixtures/** is otherwise eol=lf).
+*.xlsx binary
+firme-mici-cp1250.csv -text

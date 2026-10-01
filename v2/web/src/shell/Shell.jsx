@@ -213,7 +213,7 @@ function ActiveControl({ go }) {
 const NO_RUNS = [];
 
 const SIM_ACTIONS = [["execute", "Execuție"], ["approval", "Aprobare"], ["quota", "Cotă"], ["error", "Eroare auth"], ["handoff", "Handoff"], ["drop-stream", "Deconectare"],
-  ["factory-a", "Fabrica A (bug)"], ["factory-b", "Fabrica B (feature)"], ["factory-c", "Fabrica C (review)"]];
+  ["factory-a", "Fabrica A (bug)"], ["factory-b", "Fabrica B (feature)"], ["factory-c", "Fabrica C (review)"], ["sales", "Vânzări"]];
 
 /** Persistent simulator banner with scenario triggers (only in the simulator process; the real Hub answers 404). */
 function SimBanner() {
@@ -224,6 +224,7 @@ function SimBanner() {
       const result = await api(`/api/sim/${id}`, { method: "POST", body: {} });
       pushToast(`sim-${id}`, "info", result?.missionId ? `${label}: misiunea e pregătită; aprobă scope-ul în Misiuni` : `Scenariu simulat pornit: ${label}`);
       if (result?.missionId) window.location.hash = `#/missions/${result.missionId}`;
+      else if (id === "sales") window.location.hash = "#/sales";
     }
     catch (e) { pushToast(`sim-${id}`, "error", e.message); } finally { setBusy(""); }
   };

@@ -37,7 +37,7 @@ export const LEGA_COST_PER_MINUTE_USD = 0.05;
 export const LEGA_SCREENS = Object.freeze({
   control: "/control", conversatii: "/conversations", misiuni: "/missions", aprobari: "/approvals", agenti: "/agents", proiecte: "/projects",
   memorie: "/memory", instrumente: "/tools", integrari: "/integrations", sanatate: "/health", companie: "/company", ecosisteme: "/ecosystem",
-  sistem: "/system", setari: "/settings",
+  sistem: "/system", setari: "/settings", vanzari: "/sales",
 });
 
 /**
@@ -120,6 +120,7 @@ export function legaAgentInstructions({ projects = [], allProjects = [], webSear
     "SEE (read-only, answer at once): lega.hub_status, lega.company_briefing (daily overview), lega.list_projects, lega.project_brief (a project's README/state/next steps/open issues), lega.list_missions, lega.mission_detail, lega.pending_approvals, lega.recent_runs.",
     "SHOW: lega.navigate (open a screen), lega.point (open the right screen and highlight a button or panel with an arrow), lega.how_to (the exact steps for a Hub task; then call lega.point with its target).",
     "PREPARE (the owner confirms by click): lega.propose_run (an agent run on an enabled project), lega.propose_mission (a mission from a template, created as DRAFT), lega.prepare_grant (fills the grant form; the owner presses Creează grant).",
+    "SALES (read-only): lega.sales_overview (pipeline counts, what waits, top priorities), lega.sales_lead (one prospect: status, unknowns, evidence labels, audit issues, qualification explanation) and lega.sales_drafts (drafts waiting for the owner). Sales is DRAFT_ONLY: nothing is ever sent from the Hub in this version, research runs on synthetic fixtures, and a priority is an internal ranking, not a chance to sell. Never say a company was contacted, a message was sent or a client was won unless sales_lead shows a recorded contact or acceptance; say 'am pregătit ciorna' only when sales_drafts lists it. You cannot approve, send, import, merge or lift a do-not-contact: show the owner the Vânzări screen instead.",
     "ENGINEERING (Software Factory): to fix a bug, build a feature or refactor code, use lega.propose_mission with kind eng_bugfix, eng_feature or eng_refactor and put the owner's request in the objective. It creates the mission with spec v1 as a draft; the owner completes the spec, approves the scope and accepts the result by click. Use lega.mission_detail to report its stage and what it waits for. Never say code was written, reviewed or tested unless mission_detail shows it.",
     "SAFETY: lega.stop_all and lega.pause act only when the owner just said so.",
     "When the owner asks where or how to do something in the Hub, call lega.how_to and lega.point; never guess the UI.",
@@ -154,6 +155,10 @@ export function legaDynamicTools({ projects = [], allProjects = [], missionKinds
       fn("mission_detail", "One mission: objective, acceptance criteria and every task with its status. Accepts the mission id or its title.",
         { type: "object", properties: { mission: { type: "string", minLength: 2, maxLength: 160 } }, required: ["mission"], additionalProperties: false }),
       fn("pending_approvals", "Approvals waiting for the owner's click, with what each one would do."),
+      fn("sales_overview", "Sales pipeline: counts per status, opportunities, rows waiting for an identity decision, drafts, due follow-ups, top internal priorities. Synthetic data is marked."),
+      fn("sales_lead", "One prospect organization (id or name): status, unknown fields, evidence by label, audit issues, qualification explanation, opportunities, do-not-contact.",
+        { type: "object", properties: { lead: { type: "string", minLength: 2, maxLength: 160 } }, required: ["lead"], additionalProperties: false }),
+      fn("sales_drafts", "Contact drafts waiting for the owner (subject, status). Nothing has been sent."),
       fn("recent_runs", "The latest agent runs: provider, project, status, errors and a short summary of each result.",
         { type: "object", properties: { limit: { type: "integer", minimum: 1, maximum: 10 } }, additionalProperties: false }),
       fn("how_to", "Exact steps for a task in the Hub UI and the element to point at.",

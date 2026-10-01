@@ -1,0 +1,40 @@
+<!doctype html>
+<!-- Fixture M04: site fictiv cu formular de contact fără etichete (doar placeholder). Formularul de căutare e etichetat. -->
+<html lang="ro">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Instalații Delta Termo – Centrale termice și instalații sanitare</title>
+</head>
+<body>
+  <header>
+    <nav>
+      <a href="#ce-facem">Ce facem</a>
+      <a href="#cerere">Cere o ofertă</a>
+    </nav>
+    <form role="search" action="/cauta">
+      <input type="search" name="q" aria-label="Caută pe site">
+    </form>
+  </header>
+  <main>
+    <h1>Instalații Delta Termo</h1>
+    <section id="ce-facem">
+      <h2>Ce facem</h2>
+      <p>Montaj și revizii pentru centrale termice, instalații sanitare și încălzire în pardoseală.</p>
+    </section>
+    <section id="cerere">
+      <h2>Cere o ofertă</h2>
+      <p>Sună-ne la 0723 000 104 sau scrie-ne la <a href="mailto:contact@delta-termo.test">contact@delta-termo.test</a>.</p>
+      <p>Sediu: Strada Izvorului nr. 8, Brașov</p>
+      <form action="/oferta" method="post">
+        <input type="text" name="nume" placeholder="Nume și prenume">
+        <input type="tel" name="telefon" placeholder="Telefon">
+        <textarea name="detalii" placeholder="Ce lucrare aveți nevoie?"></textarea>
+        <input type="hidden" name="sursa" value="site">
+        <button type="submit">Trimite cererea</button>
+      </form>
+    </section>
+  </main>
+  <footer>Instalații Delta Termo · fixture de test</footer>
+</body>
+</html>

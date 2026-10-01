@@ -13,6 +13,7 @@ import { createGrants, createProviderState } from "./domain/grants.mjs";
 import { createUsage } from "./domain/usage.mjs";
 import { createMemory } from "./domain/memory.mjs";
 import { createLeads } from "./domain/leads.mjs";
+import { createSales } from "./sales/sales.mjs";
 import { createCompany } from "./domain/company.mjs";
 import { createChiefOfStaff } from "./domain/chief-of-staff.mjs";
 import { createSurfaces } from "./domain/surfaces.mjs";
@@ -81,6 +82,7 @@ export function createHub(config, { providerOverrides = {}, homeDir, browserLaun
   const usage = createUsage({ db, settings, clock });
   const memory = createMemory({ db, bus, clock });
   const leads = createLeads({ db, bus, clock });
+  const sales = createSales({ db, bus, clock, config, settings });
   const company = createCompany({ db, bus, clock, roleConfig });
   const chiefOfStaff = createChiefOfStaff({ db, company, missions, projects, approvals, clock });
   const surfaces = createSurfaces({ db, bus, clock, config, providerState });
@@ -136,15 +138,16 @@ export function createHub(config, { providerOverrides = {}, homeDir, browserLaun
   const factory = createFactory({ db, bus, clock, config, settings, projects, conversations, missions, runs, supervisor, runner: factoryRunner, leases, browserLaunch });
   runs.attachFactory(factory);
   legaRead.factorySummary = (missionId) => factory.summary(missionId);
+  legaRead.sales = sales;
   handoffs.attachFactory(factory);
 
-  const hub = { config, db, bus, live, settings, projects, conversations, missions, approvals, policy, leases, grants, providerState, usage, memory, leads,
+  const hub = { config, db, bus, live, settings, projects, conversations, missions, approvals, policy, leases, grants, providerState, usage, memory, leads, sales,
     company, chiefOfStaff, surfaces, schedules, computer, skills, artifacts, integrations, nativeSessions, telemetry, router, commands, checkpoints,
     breakers, supervisor, backups, providers, gate, runs, handoffs, tools, roleConfig, skillConfig, capabilityConfig, codexIsolation, lega, refreshCodexConfig, factory, factoryRunner };
   registerCommands(commands, hub);
 
   const scheduler = createScheduler({ db, bus, clock, approvals, leases, runs,
-    extraTick: () => Promise.all([schedules.tick((cmd) => commands.dispatch({ ...cmd, channel: "schedule", actor: "scheduler" }).then((r) => r.result)), factory.tick()]) });
+    extraTick: () => Promise.all([schedules.tick((cmd) => commands.dispatch({ ...cmd, channel: "schedule", actor: "scheduler" }).then((r) => r.result)), factory.tick(), Promise.resolve().then(() => sales.tick())]) });
   hub.scheduler = scheduler;
 
   // Post-commit reactions (each in its own transaction; never inside the writer's transaction).

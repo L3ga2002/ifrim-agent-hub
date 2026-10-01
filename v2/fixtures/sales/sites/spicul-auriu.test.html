@@ -1,0 +1,41 @@
+<!doctype html>
+<!-- Fixture M04: site fictiv fără meta viewport, servit prin HTTP. Date sintetice, domeniu .test. -->
+<html lang="ro">
+<head>
+  <meta charset="utf-8">
+  <meta name="fixture:scheme" content="http">
+  <title>Brutăria Spicul Auriu – Pâine și cozonaci în Sibiu</title>
+</head>
+<body>
+  <header>
+    <nav>
+      <a href="#produse">Produse</a>
+      <a href="#program">Program</a>
+      <a href="#contact">Contact</a>
+    </nav>
+  </header>
+  <h1>Brutăria Spicul Auriu</h1>
+  <section id="produse">
+    <h2>Produsele noastre</h2>
+    <p>Pâine cu maia, cozonaci, plăcinte și covrigi, coapte în fiecare dimineață.</p>
+    <img src="/poze/paine.jpg" alt="Pâine cu maia pe tava de copt">
+    <img src="/poze/decor.png" alt="">
+  </section>
+  <section id="program">
+    <h2>Program</h2>
+    <p>Luni – sâmbătă, 07:00 – 19:00.</p>
+  </section>
+  <section id="contact">
+    <h2>Contact</h2>
+    <p>Comenzi la <a href="tel:0722000102">0722 000 102</a> sau pe e-mail: comenzi@spicul-auriu.test</p>
+    <address>Bd. Morii nr. 3, Sibiu</address>
+    <form action="/comanda" method="post">
+      <label for="c-nume">Nume</label><input id="c-nume" name="nume">
+      <label for="c-tel">Telefon</label><input id="c-tel" name="telefon" type="tel">
+      <label for="c-mesaj">Comanda</label><textarea id="c-mesaj" name="mesaj"></textarea>
+      <input type="submit" value="Trimite comanda">
+    </form>
+  </section>
+  <footer>Brutăria Spicul Auriu · fixture de test</footer>
+</body>
+</html>

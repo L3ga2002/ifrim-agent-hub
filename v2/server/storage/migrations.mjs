@@ -465,4 +465,143 @@ export const MIGRATIONS = [
       `);
     },
   },
+  {
+    version: 4,
+    name: "m04-sales-lead-generation",
+    /**
+     * Milestone 04. Sales & Lead Generation around the existing control plane (commands, approvals, events, scheduler):
+     * prospect organizations with provenance, import batches with per-row results (idempotent, resumable, reversible),
+     * evidence with labels, website audits, explainable qualification, opportunities, versioned proposals and contact
+     * drafts (DRAFT_ONLY: the real transport is disabled), manual contact/acceptance records, follow-ups, suppression and the
+     * hand-off to a Software Factory draft. The M01 `leads` registry is left untouched. Additive only.
+     */
+    up(db) {
+      db.exec(`
+        CREATE TABLE sales_import_batches (
+          id TEXT PRIMARY KEY, file_name TEXT NOT NULL, file_sha256 TEXT NOT NULL, file_kind TEXT NOT NULL, size_bytes INTEGER NOT NULL,
+          encoding TEXT NOT NULL DEFAULT '', delimiter TEXT NOT NULL DEFAULT '', sheet TEXT NOT NULL DEFAULT '', sheets_json TEXT NOT NULL DEFAULT '[]',
+          headers_json TEXT NOT NULL DEFAULT '[]', suggested_json TEXT NOT NULL DEFAULT '{}', mapping_json TEXT NOT NULL DEFAULT '{}', mapping_hash TEXT NOT NULL DEFAULT '',
+          warnings_json TEXT NOT NULL DEFAULT '[]', status TEXT NOT NULL, synthetic INTEGER NOT NULL DEFAULT 0, row_count INTEGER NOT NULL DEFAULT 0,
+          counts_json TEXT NOT NULL DEFAULT '{}', stored_path TEXT NOT NULL DEFAULT '', created_by TEXT NOT NULL, created_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL, imported_at TEXT, rolled_back_at TEXT);
+        CREATE INDEX idx_sales_batches_file ON sales_import_batches(file_sha256);
+
+        CREATE TABLE sales_import_rows (
+          id TEXT PRIMARY KEY, batch_id TEXT NOT NULL REFERENCES sales_import_batches(id), row_index INTEGER NOT NULL, raw_json TEXT NOT NULL,
+          normalized_json TEXT NOT NULL DEFAULT '{}', status TEXT NOT NULL, org_id TEXT, errors_json TEXT NOT NULL DEFAULT '[]',
+          warnings_json TEXT NOT NULL DEFAULT '[]', match_json TEXT NOT NULL DEFAULT '[]', resolution_json TEXT NOT NULL DEFAULT '{}',
+          processed_at TEXT, UNIQUE(batch_id, row_index));
+        CREATE INDEX idx_sales_rows_status ON sales_import_rows(batch_id, status);
+        CREATE INDEX idx_sales_rows_org ON sales_import_rows(org_id);
+
+        CREATE TABLE sales_orgs (
+          id TEXT PRIMARY KEY, display_name TEXT NOT NULL, normalized_name TEXT NOT NULL, legal_form TEXT NOT NULL DEFAULT '',
+          fiscal_code TEXT NOT NULL DEFAULT '', fiscal_code_valid INTEGER, website TEXT NOT NULL DEFAULT '', domain TEXT NOT NULL DEFAULT '',
+          domain_kind TEXT NOT NULL DEFAULT '', city TEXT NOT NULL DEFAULT '', county TEXT NOT NULL DEFAULT '', address TEXT NOT NULL DEFAULT '',
+          caen TEXT NOT NULL DEFAULT '', status TEXT NOT NULL, synthetic INTEGER NOT NULL DEFAULT 0, created_batch_id TEXT, created_row_id TEXT,
+          version INTEGER NOT NULL DEFAULT 1, edited_after_import INTEGER NOT NULL DEFAULT 0, merged_into TEXT, archived_at TEXT, archive_reason TEXT,
+          created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
+        CREATE INDEX idx_sales_orgs_fiscal ON sales_orgs(fiscal_code);
+        CREATE INDEX idx_sales_orgs_domain ON sales_orgs(domain);
+        CREATE INDEX idx_sales_orgs_name ON sales_orgs(normalized_name);
+        CREATE INDEX idx_sales_orgs_status ON sales_orgs(status, updated_at);
+        CREATE INDEX idx_sales_orgs_batch ON sales_orgs(created_batch_id);
+        CREATE INDEX idx_sales_orgs_merged ON sales_orgs(merged_into);
+
+        CREATE TABLE sales_org_aliases (
+          id TEXT PRIMARY KEY, org_id TEXT NOT NULL REFERENCES sales_orgs(id), name TEXT NOT NULL, normalized TEXT NOT NULL,
+          source TEXT NOT NULL, created_at TEXT NOT NULL, UNIQUE(org_id, normalized));
+
+        CREATE TABLE sales_contacts (
+          id TEXT PRIMARY KEY, org_id TEXT NOT NULL REFERENCES sales_orgs(id), kind TEXT NOT NULL, value TEXT NOT NULL, raw TEXT NOT NULL DEFAULT '',
+          generic INTEGER NOT NULL DEFAULT 0, person_name TEXT NOT NULL DEFAULT '', role TEXT NOT NULL DEFAULT '', evidence_id TEXT,
+          warnings_json TEXT NOT NULL DEFAULT '[]', status TEXT NOT NULL DEFAULT 'ACTIVE', created_at TEXT NOT NULL, UNIQUE(org_id, kind, value));
+
+        CREATE TABLE sales_evidence (
+          id TEXT PRIMARY KEY, subject_type TEXT NOT NULL, subject_id TEXT NOT NULL, subject_version INTEGER NOT NULL DEFAULT 1,
+          claim TEXT NOT NULL, value_json TEXT NOT NULL DEFAULT 'null', label TEXT NOT NULL, source_kind TEXT NOT NULL, source_ref TEXT NOT NULL,
+          retrieved_at TEXT, excerpt TEXT NOT NULL DEFAULT '', method TEXT NOT NULL DEFAULT '', verified_at TEXT, recheck_after TEXT,
+          contradicts_json TEXT NOT NULL DEFAULT '[]', synthetic INTEGER NOT NULL DEFAULT 0, batch_id TEXT, created_by TEXT NOT NULL, created_at TEXT NOT NULL);
+        CREATE INDEX idx_sales_evidence_subject ON sales_evidence(subject_type, subject_id);
+        CREATE INDEX idx_sales_evidence_batch ON sales_evidence(batch_id);
+
+        CREATE TABLE sales_merges (
+          id TEXT PRIMARY KEY, survivor_id TEXT NOT NULL, merged_id TEXT NOT NULL, reason TEXT NOT NULL, before_json TEXT NOT NULL,
+          actor TEXT NOT NULL, created_at TEXT NOT NULL, reverted_at TEXT, reverted_by TEXT);
+
+        CREATE TABLE sales_audits (
+          id TEXT PRIMARY KEY, org_id TEXT NOT NULL REFERENCES sales_orgs(id), url TEXT NOT NULL, source_kind TEXT NOT NULL, fetched_at TEXT,
+          version TEXT NOT NULL, result_json TEXT NOT NULL, opportunities_json TEXT NOT NULL DEFAULT '[]', synthetic INTEGER NOT NULL DEFAULT 0,
+          created_by TEXT NOT NULL, created_at TEXT NOT NULL);
+        CREATE INDEX idx_sales_audits_org ON sales_audits(org_id, created_at);
+
+        CREATE TABLE sales_qualifications (
+          id TEXT PRIMARY KEY, org_id TEXT NOT NULL REFERENCES sales_orgs(id), formula_version TEXT NOT NULL, result_json TEXT NOT NULL,
+          priority REAL, override_json TEXT NOT NULL DEFAULT 'null', inputs_sha TEXT NOT NULL DEFAULT '', created_by TEXT NOT NULL, created_at TEXT NOT NULL);
+        CREATE INDEX idx_sales_qual_org ON sales_qualifications(org_id, created_at);
+
+        CREATE TABLE sales_services (
+          id TEXT PRIMARY KEY, name TEXT NOT NULL, description TEXT NOT NULL DEFAULT '', scope_json TEXT NOT NULL DEFAULT '[]',
+          exclusions_json TEXT NOT NULL DEFAULT '[]', tags_json TEXT NOT NULL DEFAULT '[]', price_json TEXT NOT NULL DEFAULT '{"status":"NOT_CONFIGURED"}',
+          lead_time_json TEXT NOT NULL DEFAULT '{"status":"NOT_CONFIGURED"}', materials_json TEXT NOT NULL DEFAULT '[]', synthetic INTEGER NOT NULL DEFAULT 0,
+          active INTEGER NOT NULL DEFAULT 1, version INTEGER NOT NULL DEFAULT 1, created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
+
+        CREATE TABLE sales_opportunities (
+          id TEXT PRIMARY KEY, org_id TEXT NOT NULL REFERENCES sales_orgs(id), title TEXT NOT NULL, need TEXT NOT NULL DEFAULT '',
+          service_id TEXT, status TEXT NOT NULL, owner TEXT NOT NULL DEFAULT 'proprietar', next_action TEXT NOT NULL DEFAULT '', next_action_at TEXT,
+          evidence_json TEXT NOT NULL DEFAULT '[]', synthetic INTEGER NOT NULL DEFAULT 0, version INTEGER NOT NULL DEFAULT 1,
+          created_by TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
+        CREATE INDEX idx_sales_opp_org ON sales_opportunities(org_id);
+        CREATE INDEX idx_sales_opp_status ON sales_opportunities(status, updated_at);
+
+        CREATE TABLE sales_transitions (
+          id TEXT PRIMARY KEY, subject_type TEXT NOT NULL, subject_id TEXT NOT NULL, from_status TEXT, to_status TEXT NOT NULL,
+          actor TEXT NOT NULL, reason TEXT NOT NULL DEFAULT '', evidence_json TEXT NOT NULL DEFAULT '[]', created_at TEXT NOT NULL);
+        CREATE INDEX idx_sales_transitions_subject ON sales_transitions(subject_type, subject_id, created_at);
+
+        CREATE TABLE sales_proposals (
+          id TEXT PRIMARY KEY, opportunity_id TEXT NOT NULL REFERENCES sales_opportunities(id), version INTEGER NOT NULL,
+          content_json TEXT NOT NULL, content_sha TEXT NOT NULL, status TEXT NOT NULL, approval_id TEXT, approved_sha TEXT,
+          approved_at TEXT, created_by TEXT NOT NULL, created_at TEXT NOT NULL, UNIQUE(opportunity_id, version));
+
+        CREATE TABLE sales_drafts (
+          id TEXT PRIMARY KEY, opportunity_id TEXT NOT NULL REFERENCES sales_opportunities(id), org_id TEXT NOT NULL, contact_id TEXT,
+          proposal_id TEXT, version INTEGER NOT NULL, channel TEXT NOT NULL, subject TEXT NOT NULL, body TEXT NOT NULL,
+          recipients_json TEXT NOT NULL DEFAULT '[]', meta_json TEXT NOT NULL DEFAULT '{}', content_sha TEXT NOT NULL, status TEXT NOT NULL,
+          approval_id TEXT, approved_sha TEXT, approved_at TEXT, created_by TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+          UNIQUE(opportunity_id, version));
+
+        CREATE TABLE sales_sends (
+          id TEXT PRIMARY KEY, draft_id TEXT NOT NULL REFERENCES sales_drafts(id), idempotency_key TEXT NOT NULL UNIQUE, transport TEXT NOT NULL,
+          status TEXT NOT NULL, detail_json TEXT NOT NULL DEFAULT '{}', created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
+        -- One open send per draft: two clicks with different keys can never deliver the same draft twice.
+        CREATE UNIQUE INDEX ux_sales_sends_open ON sales_sends(draft_id) WHERE status IN ('ATTEMPTED','DELIVERED');
+
+        CREATE TABLE sales_contact_events (
+          id TEXT PRIMARY KEY, org_id TEXT NOT NULL, opportunity_id TEXT, kind TEXT NOT NULL, occurred_at TEXT NOT NULL, channel TEXT NOT NULL DEFAULT '',
+          note TEXT NOT NULL DEFAULT '', evidence_json TEXT NOT NULL DEFAULT '{}', send_id TEXT, actor TEXT NOT NULL, created_at TEXT NOT NULL);
+        CREATE INDEX idx_sales_contact_events ON sales_contact_events(org_id, occurred_at);
+
+        CREATE TABLE sales_client_acceptances (
+          id TEXT PRIMARY KEY, opportunity_id TEXT NOT NULL REFERENCES sales_opportunities(id), proposal_id TEXT NOT NULL, proposal_sha TEXT NOT NULL,
+          accepted_at TEXT NOT NULL, note TEXT NOT NULL DEFAULT '', recorded_by TEXT NOT NULL, created_at TEXT NOT NULL);
+
+        CREATE TABLE sales_followups (
+          id TEXT PRIMARY KEY, opportunity_id TEXT NOT NULL REFERENCES sales_opportunities(id), org_id TEXT NOT NULL, due_at TEXT NOT NULL,
+          basis TEXT NOT NULL, basis_ref TEXT NOT NULL DEFAULT '', status TEXT NOT NULL, reason TEXT NOT NULL DEFAULT '', draft_id TEXT,
+          expires_at TEXT, created_by TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, UNIQUE(opportunity_id, due_at));
+        CREATE INDEX idx_sales_followups_due ON sales_followups(status, due_at);
+
+        CREATE TABLE sales_suppressions (
+          id TEXT PRIMARY KEY, kind TEXT NOT NULL, value TEXT NOT NULL, org_id TEXT, reason TEXT NOT NULL, source TEXT NOT NULL,
+          actor TEXT NOT NULL, created_at TEXT NOT NULL, lifted_at TEXT, lifted_by TEXT, lift_reason TEXT);
+        CREATE INDEX idx_sales_suppressions ON sales_suppressions(kind, value);
+
+        CREATE TABLE sales_handoffs (
+          id TEXT PRIMARY KEY, opportunity_id TEXT NOT NULL REFERENCES sales_opportunities(id), proposal_id TEXT NOT NULL, proposal_sha TEXT NOT NULL,
+          acceptance_id TEXT NOT NULL, package_json TEXT NOT NULL, package_sha TEXT NOT NULL, mission_id TEXT, status TEXT NOT NULL,
+          created_by TEXT NOT NULL, created_at TEXT NOT NULL);
+      `);
+    },
+  },
 ];

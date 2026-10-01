@@ -35,6 +35,9 @@ export function validate(body, spec, label = "request") {
       if (rule.items === "string" && value.some((item) => typeof item !== "string" || item.length > (rule.itemMax || 2000))) problems.push(`${key} must contain short strings`);
     } else if (type === "object") {
       if (typeof value !== "object" || Array.isArray(value)) { problems.push(`${key} must be an object`); continue; }
+    } else if (type === "any") {
+      // Any JSON value (e.g. the value of a piece of evidence), bounded in size.
+      if (JSON.stringify(value).length > (rule.max || 10000)) { problems.push(`${key} is too large`); continue; }
     }
     out[key] = value;
   }

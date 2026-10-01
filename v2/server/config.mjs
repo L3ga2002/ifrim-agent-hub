@@ -6,7 +6,7 @@ export const V2_ROOT = path.resolve(here, "..");
 export const HUB_ROOT = path.resolve(V2_ROOT, "..");
 export const PROJECTS_ROOT = path.resolve(HUB_ROOT, "..");
 
-export const HUB_VERSION = "2.4.0-m03"; // M03: runtime readiness (explicit model/effort, run timeline, R2/R3 gate) + Software Factory (spec → change set → review → QA → bundle)
+export const HUB_VERSION = "2.5.0-m04"; // M04: Sales & Lead Generation (import → identity → evidence → audit → qualification → proposal → draft → Engineering hand-off), DRAFT_ONLY // M03: runtime readiness (explicit model/effort, run timeline, R2/R3 gate) + Software Factory (spec → change set → review → QA → bundle)
 export const DEFAULT_PORT = 8011;
 export const DEFAULT_HOST = "127.0.0.1";
 
@@ -31,6 +31,9 @@ export function loadConfig(overrides = {}, env = process.env) {
     simulation: Boolean(overrides.simulation) && testMode,
     hubProjectName: overrides.hubProjectName || "Ifrim Agent Hub",
     hubRoot: overrides.hubRoot || HUB_ROOT,
+    // M04 Sales: a fake transport is accepted only in test mode (the real outreach transport does not exist in M04).
+    salesTransport: overrides.testMode && overrides.salesTransport ? overrides.salesTransport : null,
+    salesFixtureSites: overrides.salesFixtureSites || null,
     // Where Playwright is resolved from (Browser Workspace, factory E2E): the Hub itself; a test may point it elsewhere.
     browserRoot: overrides.browserRoot || overrides.hubRoot || HUB_ROOT,
     projectsRoot: overrides.projectsRoot || PROJECTS_ROOT,

@@ -1,6 +1,26 @@
 # Next Session - Ifrim Agent Hub
 
-## MILESTONE 03 — 2026-10-01 (current; supersedes the sections below where they overlap)
+## MILESTONE 04 — 2026-10-01 (current; supersedes the sections below where they overlap)
+
+- **Version `2.5.0-m04`.** M04 adds the Sales department: CSV/XLSX import → identity → provenance → fixture audit → qualification → opportunity → proposal → contact draft → human decision → Software Factory draft. Read `M04_REPORT.md` first.
+- **Git:** M04 is not committed (on `v2-milestone-01` over the pushed `3c5d202`). `main` is still `e9ab563`.
+- **Levels:** BUILD_READY + SIMULATED_SALES_FLOW_VERIFIED. No model ran; nothing was sent; nothing was collected from the internet.
+- **Live Hub:** restarted on `2.5.0-m04` (pid 22644, 16:57 UTC) after backup `bkp_mups0uoj_cd6d3f5269`; migration 4 applied; it booted in **BUILD_SAFE** (LIVE_VALIDATION is no longer set; set it again yourself before probe 2.3). Simulator running on 8012 with the Sales demo.
+- **Try it (simulator):**
+  1. `npm run v2:sim`, then click „Vânzări (date sintetice)” in the banner.
+  2. Or, on the Hub: Vânzări → Importuri → upload `v2/fixtures/sales/imports/firme-mici.csv` (synthetic), map, preview, confirm.
+  3. Fișa firmei → Audit (only `.test` fixture domains) → Calificare.
+  4. Oportunitate → Propunere → approve (approval card) → Ciornă (Send stays disabled).
+  5. Record the contact and the acceptance with the exact sentences → Hand-off (choose a project) → Misiuni (SPEC_DRAFT).
+- **Next, each only with the owner's decision:**
+  1. Fill the Sales catalog (services, scope, exclusions, prices only if you want them shown).
+  2. Commit M04 (exact approval; push stays yours).
+  3. Demo A bundle acceptance.
+  4. Probe 2.3 / 2.5 / 2.6 (packages in `M03_CLOSURE_PACKAGES.md`).
+  5. R2: choose an option from `M04_R2_ISOLATION_OPTIONS.md` (recommended: a dedicated WSL2 distro `ifrim-runner`); this needs install approval.
+  6. Future authorizations: Sales inference, live research (sources, volume, duration, stop conditions), real client data, outreach (channel + legal review).
+
+## MILESTONE 03 — 2026-10-01 (superseded by M04 above where they overlap)
 
 - **Version `2.4.0-m03`.** M03 = runtime readiness (explicit model/effort, run timeline, R2/R3 gate) + Software Factory (spec → plan → writer → checks → review → bounded repair → QA → preview → bundle).
 - **Read first:**

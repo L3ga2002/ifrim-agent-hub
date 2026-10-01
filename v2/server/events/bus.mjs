@@ -72,8 +72,12 @@ export function createEventBus(db, clock = () => new Date()) {
   }
 
   function transaction(fn) {
+    // A nested call joins the outer transaction: its events are published only by the outermost call, after COMMIT,
+    // so a listener never sees an event whose rows could still be rolled back.
+    const outermost = !db.isTransaction;
     try {
       const result = tx(db, fn);
+      if (!outermost) return result;
       const toPublish = pending;
       pending = [];
       for (const event of toPublish) for (const listener of listeners) {
@@ -81,7 +85,7 @@ export function createEventBus(db, clock = () => new Date()) {
       }
       return result;
     } catch (error) {
-      pending = [];
+      if (outermost) pending = [];
       throw error;
     }
   }

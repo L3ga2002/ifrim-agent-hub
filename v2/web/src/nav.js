@@ -1,4 +1,4 @@
-import { LayoutDashboard, MessageSquare, Target, Bot, FolderGit2, Brain, ShieldCheck, Wrench, Plug, Activity, Building2, Network, Cpu, Settings } from "lucide-react";
+import { LayoutDashboard, MessageSquare, Target, Bot, FolderGit2, Brain, ShieldCheck, Wrench, Plug, Activity, Building2, Network, Cpu, Settings, Briefcase } from "lucide-react";
 
 export const navigate = (path) => { window.location.hash = path; };
 
@@ -13,6 +13,7 @@ export const NAV = [
   { id: "tools", label: "Instrumente", long: "Instrumente & computer", icon: Wrench, key: "8" },
   { id: "integrations", label: "Integrări", long: "Integrări & abonamente", icon: Plug, key: "9" },
   { id: "health", label: "Sănătate", long: "Utilizare & sănătate", icon: Activity },
+  { id: "sales", label: "Vânzări", long: "Vânzări & lead-uri", icon: Briefcase },
   { id: "company", label: "Companie", long: "Companie & Chief of Staff", icon: Building2 },
   { id: "ecosystem", label: "Ecosisteme", long: "Ecosisteme AI: audit, suprafețe, rutare", icon: Network },
   { id: "system", label: "Sistem", long: "Sistem: diagnostic, programări, politici", icon: Cpu },

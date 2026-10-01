@@ -1,6 +1,38 @@
 # Ifrim Agent Hub - Opus Handoff
 
-## Milestone 03 handoff — 2026-10-01 (current)
+## Milestone 04 handoff — 2026-10-01 (current; Sales & lead generation, version `2.5.0-m04`)
+
+- **State:** M04 built in BUILD_SAFE terms with no model, no live collection and no external contact. **Not committed** (on `v2-milestone-01` over `3c5d202`, which the owner pushed). Levels: BUILD_READY + SIMULATED_SALES_FLOW_VERIFIED. LIVE_RESEARCH_VALIDATED, REAL_CLIENT_DATA_READY, OUTREACH_ENABLED and OWNER_ACCEPTED are not reached.
+- **Read first:** `M04_REPORT.md`, then:
+  - `M04_IMPLEMENTATION_STATUS.md`, `M04_SALES_ARCHITECTURE.md` (the contract);
+  - `M04_DATA_PROVENANCE.md`, `M04_CONTACT_POLICY.md`, `M04_TEST_REPORT.md`;
+  - `M04_R2_ISOLATION_OPTIONS.md`, `M03_CLOSURE_PACKAGES.md`.
+- **Source map:**
+  - `v2/server/sales/`:
+    - `sales.mjs`: service: import, identity, evidence, audit, qualification, CRM, proposals, drafts, contact, acceptance, hand-off, follow-ups, Lega summaries;
+    - `sales-commands.mjs`: command-bus registrations;
+    - pure modules `tabular`, `identity`, `synthetic`, `audit`, `research`, `qualify`, `proposal`.
+  - Migration 4 `m04-sales-lead-generation`: 20 additive `sales_*` tables.
+  - `/api/sales/*` in `routes.mjs`.
+  - ALWAYS_ASK entries in `approval-policy.mjs`: import rollback, proposal approve, draft content, suppression lift.
+  - Lega tools `sales_overview`, `sales_lead`, `sales_drafts`.
+  - `sales.tick` in the scheduler.
+  - Simulator action `sales`.
+  - UI `v2/web/src/screens/Sales.jsx` + `screens/sales/*`, `lib/salesLogic.js`, `styles/m04.css`.
+  - Fixtures `v2/fixtures/sales/{imports,sites}`.
+  - Tests `v2/tests/m04-*.test.mjs`.
+- **Do not loosen:**
+  - `OUTREACH_DISABLED` (a transport exists only in test hubs: `config.salesTransport` is honoured only with `testMode`);
+  - live collection refused (`LIVE_COLLECTION_DISABLED`, audits only on `.test` fixtures);
+  - APPROVED_INTERNAL / CONTACTED / WON reachable only through their events (approval, real send or the exact manual-contact sentence, the exact client-acceptance sentence);
+  - DO_NOT_CONTACT applied by org, fiscal code, domain and e-mail, also on re-import, lifted only with approval;
+  - the hand-off creates only a SPEC_DRAFT (no grant, no run);
+  - prices only when CONFIGURED;
+  - Lega gets summaries without contact values; from voice only `sales.org.suppress`.
+- **Live Hub:** restarted on `2.5.0-m04` on 2026-10-01 16:57 UTC (pid 22644) while idle, after the migration-4 dry-run on a copy (3 → 4, integrity ok, 0 FK violations, 20 new tables, no table lost rows) and the verified backup `bkp_mups0uoj_cd6d3f5269`. It booted in BUILD_SAFE (gate status kept "open"), so the owner must set LIVE_VALIDATION again for probe 2.3. Sales on the real Hub: 0 orgs, empty catalog, outreach DISABLED. Simulator left running on 8012 (pid 13792) with the Sales demo.
+- **Owner decisions still open:** Demo A bundle `bnd_mupj3diq_d386324921` (READY_FOR_OWNER_ACCEPTANCE), probe 2.3 (Demo B `mis_mupj3zl4_9970bdd58b`, BLOCKED at the gate since 15:24 UTC), 2.5, 2.6, R2, commit of M04, the Sales catalog (empty on purpose: no confirmed services in the project).
+
+## Milestone 03 handoff — 2026-10-01 (superseded by the M04 handoff above where they overlap)
 
 - **State:** version `2.4.0-m03`, committed on `v2-milestone-01` on 2026-10-01 at the owner's request (the commit right after `6432c5e`; push: see `git status`/GitHub). Built in BUILD_SAFE with fixture providers only:
   - no model run (read-only Claude Code subagents were used only for the pre-commit verification, at the owner's request);

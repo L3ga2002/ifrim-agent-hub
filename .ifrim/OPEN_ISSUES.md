@@ -1,5 +1,29 @@
 # Open Issues - Ifrim Agent Hub
 
+## 2026-10-01 (evening) - Open items after Milestone 04 (version `2.5.0-m04`; supersede every section below where they overlap)
+
+State: M04 Sales is built and verified on synthetic data (BUILD_READY + SIMULATED_SALES_FLOW_VERIFIED). It is not committed. Report: `M04_REPORT.md`.
+
+Owner decisions:
+- **M04 commit** (push stays the owner's).
+- **Sales catalog:** empty on purpose; no services, prices or lead times were invented. Fill it in Vânzări → Catalog.
+- **Real data:** the historical ~3,700-company list was not found in scope. Importing a real file is the owner's decision. Before any real data: retention/erasure rules and the legal basis (`M04_CONTACT_POLICY.md` §6).
+- **Live research:** needs a separate authorization (sources/domains, volume, duration, methods, kept data, stop conditions). `validateCollectorUrl` is ready; the live adapter refuses everything.
+- **Outreach:** OUTREACH_DISABLED. Enabling needs a configured channel, a legal review and an explicit authorization.
+- **Sales inference** (AI-written proposals/drafts): needs a future authorization and a route compatible with the subscription and isolation.
+- **Unchanged from M03:**
+  - Demo A bundle `bnd_mupj3diq_d386324921` awaiting acceptance;
+  - probe 2.3 (Demo B `mis_mupj3zl4_9970bdd58b`, BLOCKED at the gate since the 15:24 UTC attempt in BUILD_SAFE);
+  - 2.5 and 2.6 NOT_RUN (packages in `M03_CLOSURE_PACKAGES.md`);
+  - R2 open (options in `M04_R2_ISOLATION_OPTIONS.md`);
+  - `--real-profile` timing; merge to `main`; HUB-018.
+
+Known M04 limitations:
+- **Audit:** only static HTML of one fixture page. No speed, contrast, keyboard or full accessibility checks.
+- **XLSX:** dates come as serial numbers; merged cells are not expanded; ZIP64 / `.xls` / `.xlsb` / `.ods` are not supported. A 50,000-row workbook parses in ~1.7 s synchronously.
+- **Identity:** the same name in another city goes to owner review (it may be a branch); it is never auto-merged.
+- **Metrics:** reply/conversion rates and revenue are not computed (they need real events).
+
 ## 2026-10-01 (later) - Open items after Milestone 03 (version `2.4.0-m03`; supersede every section below where they overlap)
 
 State: M03 (runtime readiness + Software Factory) is built and tested with fixture providers. It is committed on `v2-milestone-01` on 2026-10-01 at the owner's request (the commit right after `6432c5e`; push: see `git status`/GitHub). `main` is still `e9ab563`. Report: `M03_REPORT.md`. Levels: BUILD_READY + SIMULATED_E2E_VERIFIED. LIVE_SANDBOX_VALIDATED is NOT_RUN; REAL_PROJECT_READY is not reached.

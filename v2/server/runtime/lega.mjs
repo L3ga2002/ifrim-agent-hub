@@ -340,6 +340,34 @@ export function createLega({ bus, live, clock, settings, gate, grants, projects,
     return { ok: true, text: lines.join("\n") };
   }
 
+  /** Sales reads for the voice (bounded summaries; never the CRM, never contact values). */
+  function salesTool(tool, args) {
+    const s = readApi.sales;
+    if (!s) return { ok: false, text: "Departamentul Sales nu e disponibil." };
+    if (tool === "sales_overview") {
+      const o = s.legaPipelineSummary();
+      const parts = [`${o.orgs} firme în pipeline${o.synthetic ? " (inclusiv date SINTETICE de test)" : ""}`,
+        `statusuri: ${Object.entries(o.byStatus).map(([k, v]) => `${k} ${v}`).join(", ") || "—"}`,
+        `oportunități: ${Object.entries(o.opportunities).map(([k, v]) => `${k} ${v}`).join(", ") || "niciuna"}`,
+        `rânduri care așteaptă decizia ta de identitate: ${o.needsReview}`, `ciorne: ${Object.entries(o.drafts).map(([k, v]) => `${k} ${v}`).join(", ") || "niciuna"}`,
+        `follow-up-uri scadente: ${o.followupsDue}`, `trimiterea: ${o.outreach === "DISABLED" ? "dezactivată (doar ciorne)" : o.outreach}`];
+      if (o.topPriority.length) parts.push(`prioritate internă (nu e șansă de vânzare): ${o.topPriority.map((t) => `${clip(t.name, 50)} ${Math.round(t.priority)}`).join(", ")}`);
+      return { ok: true, text: parts.join("; ") + "." };
+    }
+    if (tool === "sales_lead") {
+      const d = s.legaLeadDetail(String(args?.lead || ""));
+      if (!d.found) return { ok: false, text: "Nu am găsit firma în pipeline." };
+      return { ok: true, text: [`${clip(d.name, 80)}${d.synthetic ? " (date SINTETICE)" : ""}: status ${d.status}${d.doNotContact ? ", DO_NOT_CONTACT" : ""}`,
+        d.unknowns.length ? `necunoscute: ${d.unknowns.join(", ")}` : "",
+        `dovezi: ${Object.entries(d.evidenceByLabel).map(([k, v]) => `${k} ${v}`).join(", ") || "niciuna"}`,
+        d.auditIssues.length ? `observații din audit: ${d.auditIssues.map((t) => clip(t, 90)).join("; ")}` : "fără audit sau fără probleme observate",
+        d.qualification ? `prioritate internă ${d.qualification.priority ?? "necunoscută"} (formula ${d.qualification.version})` : "necalificată",
+        d.opportunities.length ? `oportunități: ${d.opportunities.map((p) => `${clip(p.title, 60)} (${p.status})`).join("; ")}` : "fără oportunități"].filter(Boolean).join("; ") + "." };
+    }
+    const drafts = s.legaDrafts();
+    return { ok: true, text: drafts.length ? `Ciorne care te așteaptă (nimic nu a fost trimis): ${drafts.map((d) => `${clip(d.org, 50)}: „${clip(d.subject, 70)}” (${d.status}, v${d.version})`).join("; ")}.` : "Nu există ciorne care să te aștepte." };
+  }
+
   function missionDetail(args) {
     const ref = String(args?.mission || "").trim();
     if (ref.length < 2) return { ok: false, text: "Spune-mi titlul sau id-ul misiunii." };
@@ -487,6 +515,7 @@ export function createLega({ bus, live, clock, settings, gate, grants, projects,
     if (tool === "project_brief") return projectBrief(args);
     if (tool === "list_missions") return missionsText(args);
     if (tool === "mission_detail") return missionDetail(args);
+    if (tool === "sales_overview" || tool === "sales_lead" || tool === "sales_drafts") return salesTool(tool, args);
     if (tool === "pending_approvals") return { ok: true, text: approvalsText() };
     if (tool === "recent_runs") return { ok: true, text: recentRunsText(args) };
     if (tool === "how_to") return howTo(args);

@@ -1,6 +1,30 @@
 # Project State - Ifrim Agent Hub
 
-## Current State - 2026-10-01 (Milestone 03, version `2.4.0-m03`, simulated end to end, not live-validated)
+## Current State - 2026-10-01 (Milestone 04, version `2.5.0-m04`, Sales simulated end to end, not committed)
+
+M04 adds the Sales department on the existing Hub. It reuses the command bus, approvals, events, the scheduler, missions, the Software Factory and Lega; there is no second orchestrator.
+
+- **Data:** 20 additive `sales_*` tables (migration 4):
+  - organizations, aliases, contacts;
+  - evidence with labels and freshness;
+  - import batches and rows;
+  - merges, audits, qualifications;
+  - services catalog;
+  - opportunities, transitions, versioned proposals and drafts, sends, contact events, client acceptances;
+  - follow-ups, suppressions, hand-offs.
+- **Import:** CSV (UTF-8/UTF-16/CP1250) and XLSX without new dependencies.
+  - Mapping, preview without writes, row report.
+  - Chunked idempotent import; same file → same batch.
+  - Controlled rollback that archives and keeps orgs edited since.
+- **Identity:** CUI checksum, domain classification, matching with reasons and conflicts, owner review for ambiguity, aliases, reversible merges. Different valid CUIs never merge.
+- **Research/audit:** live collection disabled. A static audit of local `.test` fixtures gives 14 checks with selector + excerpt; page text is untrusted.
+- **Qualification:** deterministic `q-v1` with contributions; unknown ≠ 0; override with a reason.
+- **CRM:** validated transitions with actor and reason. CONTACTED/WON come only from events. DO_NOT_CONTACT applies immediately and on re-import.
+- **Texts:** versioned proposals without invented prices; drafts with `claimsToVerify`. Approvals are bound to content hashes. Outreach is disabled (fake transport only in tests).
+- **Hand-off:** client acceptance (exact sentence) → Software Factory SPEC_DRAFT. No grant, no run. A later proposal marks the hand-off outdated.
+- **UI:** Vânzări screen in JARVIS (overview, imports, companies, sheet, pipeline, opportunity, follow-ups, catalog). Lega gets summaries only.
+
+## Previous State - 2026-10-01 (Milestone 03, version `2.4.0-m03`, simulated end to end, not live-validated)
 
 M03 adds the Engineering department on top of M02 + Lega. It reuses the existing missions, runs, grants, approvals, handoff and Lega; no parallel system.
 

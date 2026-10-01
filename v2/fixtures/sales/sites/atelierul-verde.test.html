@@ -1,0 +1,54 @@
+<!doctype html>
+<!-- Fixture M04: site fictiv „bun” (toate verificările trec). Date sintetice, domeniu .test. -->
+<html lang="ro">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Atelierul Verde – Mobilier la comandă în Cluj-Napoca</title>
+  <meta name="description" content="Atelier fictiv de mobilier la comandă, folosit doar pentru teste.">
+</head>
+<body>
+  <header>
+    <a href="#acasa" class="logo"><img src="/img/logo.svg" alt="Atelierul Verde"></a>
+    <nav aria-label="Meniu principal">
+      <a href="#servicii">Servicii</a>
+      <a href="#despre">Despre noi</a>
+      <a href="#contact">Contact</a>
+    </nav>
+  </header>
+  <main id="acasa">
+    <h1>Atelierul Verde</h1>
+    <p>Mobilier din lemn masiv, proiectat și executat în atelierul nostru din Cluj-Napoca.</p>
+    <section id="servicii">
+      <h2>Servicii</h2>
+      <ul>
+        <li>Bucătării la comandă</li>
+        <li>Dressinguri și dulapuri</li>
+        <li>Recondiționare mobilier</li>
+      </ul>
+      <img src="/img/bucatarie.jpg" alt="Bucătărie din stejar realizată în atelier">
+    </section>
+    <section id="despre">
+      <h2>Despre noi</h2>
+      <p>Lucrăm cu lemn certificat și finisaje pe bază de apă.</p>
+    </section>
+    <section id="contact">
+      <h2>Contact</h2>
+      <p>Telefon: <a href="tel:+40721000101">0721 000 101</a></p>
+      <p>E-mail: <a href="mailto:office@atelierul-verde.test">office@atelierul-verde.test</a></p>
+      <address>Str. Fagului nr. 12, Cluj-Napoca</address>
+      <form action="/trimite" method="post">
+        <label for="nume">Nume</label>
+        <input id="nume" name="nume" type="text">
+        <label for="email">E-mail</label>
+        <input id="email" name="email" type="email">
+        <label>Mesaj <textarea name="mesaj"></textarea></label>
+        <button type="submit">Trimite</button>
+      </form>
+    </section>
+  </main>
+  <footer>
+    <p>© 2026 Atelierul Verde SRL · Date fictive pentru teste.</p>
+  </footer>
+</body>
+</html>
