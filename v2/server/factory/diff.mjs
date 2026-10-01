@@ -48,10 +48,21 @@ function backtrack(trace, a, b, offset, dFinal) {
   return ops.reverse();
 }
 
-const splitLines = (text) => (text === "" ? [] : text.replace(/\r\n/g, "\n").split("\n"));
+const NO_EOL = "\n\\ No newline at end of file";
+/**
+ * Lines of a text as git counts them: a final "\n" ends the last line (it is not an extra empty line), and a last line
+ * without "\n" carries git's "No newline at end of file" marker, so the rendered diff applies byte-exact with `git apply`.
+ */
+function splitLines(text) {
+  if (text === "") return [];
+  const lines = text.replace(/\r\n/g, "\n").split("\n");
+  if (lines[lines.length - 1] === "") lines.pop();
+  else lines[lines.length - 1] += NO_EOL;
+  return lines;
+}
 
-/** Unified diff of two texts with `context` lines; `label` names the file. */
-export function unifiedDiff(before, after, { label = "file", context = 3 } = {}) {
+/** Unified diff of two texts with `context` lines; `label` names the file; `status` added/deleted uses /dev/null like git. */
+export function unifiedDiff(before, after, { label = "file", context = 3, status = "modified" } = {}) {
   const a = splitLines(before ?? "");
   const b = splitLines(after ?? "");
   let ops = myers(a, b);
@@ -60,7 +71,7 @@ export function unifiedDiff(before, after, { label = "file", context = 3 } = {})
     ops = [...a.map((line) => ({ op: "-", line })), ...b.map((line) => ({ op: "+", line }))];
     note = "# diff prea mare pentru calcul linie cu linie: fișier înlocuit integral\n";
   }
-  const header = `--- a/${label}\n+++ b/${label}\n${note}`;
+  const header = `--- ${status === "added" ? "/dev/null" : `a/${label}`}\n+++ ${status === "deleted" ? "/dev/null" : `b/${label}`}\n${note}`;
   const hunks = [];
   let aLine = 1;
   let bLine = 1;
@@ -95,10 +106,10 @@ export function renderChanges(changes, blobDir, { maxChars = 120000 } = {}) {
     const beforeText = change.before?.text ? readBlob(blobDir, change.before.sha256) : change.before ? null : "";
     const afterText = change.after?.text ? readBlob(blobDir, change.after.sha256) : change.after ? null : "";
     if (beforeText === null || afterText === null) { parts.push(`# ${change.status} ${change.path} (binar sau indisponibil: doar hash ${change.after?.sha256?.slice(0, 12) || "—"})\n`); continue; }
-    const diff = unifiedDiff(beforeText, afterText, { label: change.path });
+    const diff = unifiedDiff(beforeText, afterText, { label: change.path, status: change.status });
     for (const line of diff.split("\n")) {
-      if (line.startsWith("+") && !line.startsWith("+++")) added.push({ path: change.path, line: line.slice(1) });
-      if (line.startsWith("-") && !line.startsWith("---")) removed.push({ path: change.path, line: line.slice(1) });
+      if (line.startsWith("+") && !line.startsWith("+++ ")) added.push({ path: change.path, line: line.slice(1) });
+      if (line.startsWith("-") && !line.startsWith("--- ")) removed.push({ path: change.path, line: line.slice(1) });
     }
     parts.push(diff);
   }

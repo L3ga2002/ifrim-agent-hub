@@ -1168,6 +1168,11 @@ export function createFactory(deps) {
     const baseline = stageResults(missionId, "BASELINE", "base");
     if (!baseline.complete) return step("BASELINE", baseline.rows.length ? "Baseline-ul nu a rulat complet (oprit sau blocat); îl rulez din nou" : "Baseline-ul nu a rulat încă", () => runBaseline(missionId));
     if (!cs) return step("IMPLEMENTING", "Implementarea nu a produs încă un change set", () => dispatchWriter(missionId, { repair: false }));
+    // A writer turn that changed nothing (e.g. its commands timed out): resuming means "implement again", not "check an
+    // empty change set" (which would only fail like the baseline and turn the retry into a repair cycle).
+    if (!cs.changes.length && !allowExtraCycle && last?.stage === "IMPLEMENTING" && last.status === "DONE") {
+      return step("IMPLEMENTING", "Writer-ul nu a modificat nimic; reiau implementarea (încercare nouă)", () => dispatchWriter(missionId, { repair: false }));
+    }
     if (!checkState.complete) return step("CHECKING", `Verificări pentru change set ${cs.seq}`, () => runChecks(missionId));
     const repairOrDecide = (why) => (allowExtraCycle || f.repairCycles < f.limits.maxRepairCycles
       ? step("REPAIRING", allowExtraCycle ? "Ciclu suplimentar aprobat de tine" : why, () => (allowExtraCycle ? dispatchWriter(missionId, { repair: true }) : nextRepairOrDecision(missionId, why)))

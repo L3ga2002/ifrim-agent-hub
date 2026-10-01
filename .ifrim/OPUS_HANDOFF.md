@@ -1,5 +1,24 @@
 # Ifrim Agent Hub - Opus Handoff
 
+## 2026-10-01 (night) — M03 closure probes and the R2 environment (current; see `M03_CLOSURE_RESULTS.md`)
+
+- **Probes (owner-approved, owner clicks):** 2.3 PASS_LIVE, 2.5 PASS_LIVE, 2.6 PASS_LIVE. Demo A bundle accepted by the owner. Demo B bundle `bnd_mupwze7b_e03f70f2d7` awaits the owner's decision.
+- **Hub:** BUILD_SAFE, no active grants. Two fixes are on disk and load at the next Hub restart:
+  - resume after an empty writer turn re-runs IMPLEMENTING (test M03-FAC-28);
+  - the diff renderer: no phantom line for added files, /dev/null headers, the no-EOL marker (M03-DIFF-02).
+- **R2:** `ifrim-runner` (Ubuntu 24.04, WSL2) is installed:
+  - no Windows drives, interop off, `runner` without sudo;
+  - Codex 0.159.2 pinned in `/usr/local/lib/codex`, Node 24 in `/usr/local/lib/nodejs`;
+  - profiles with `:root` denied and `~/.codex`, `/tmp`, `.env*` denied;
+  - ChatGPT login done through the browser flow (device code returned 503).
+
+  The canary passes PASS_LOCAL 40/40 with the real token present.
+- **R2 still open:**
+  - the Hub `wsl-runner` (clean env, copied workspace, verified patch, C14/C16);
+  - the `host_isolation` gate change bound to the environment fingerprint;
+  - a live probe through it.
+- **Next:** the owner decides on the Demo B bundle; then the `wsl-runner` milestone; merge `v2-milestone-01` → `main` when the owner wants.
+
 ## Milestone 04 handoff — 2026-10-01 (current; Sales & lead generation, version `2.5.0-m04`)
 
 - **State:** M04 built in BUILD_SAFE terms with no model, no live collection and no external contact. Committed locally as `2301dcd` on `v2-milestone-01` (over `3c5d202`, which the owner pushed); **not pushed** (push stays the owner's). Levels: BUILD_READY + SIMULATED_SALES_FLOW_VERIFIED. LIVE_RESEARCH_VALIDATED, REAL_CLIENT_DATA_READY, OUTREACH_ENABLED and OWNER_ACCEPTED are not reached.

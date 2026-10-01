@@ -680,3 +680,22 @@ test("M03-FAC-27 Claude can never switch models on its own: a fallbackModel in t
     assert.equal(done.factory.stage, "DELIVERY_READY", done.factory.stageReason);
   } finally { fs.rmSync(settings, { force: true }); await t.cleanup(); }
 });
+
+test("M03-FAC-28 a writer turn that changed nothing (live probe 2.3: its commands timed out on a cold sandbox): resume re-runs IMPLEMENTING, it does not check an empty change set", async () => {
+  const t = await factoryHub("bug-demo");
+  try {
+    const { mission } = await prepare(t, "bug-demo");
+    t.queue("codex", "ok", "factory-write:bug-fix");
+    t.queue("claude", "review:pass");
+    await approveAndStart(t, mission.id);
+    const empty = await untilStage(t, mission.id, SETTLED);
+    assert.equal(empty.factory.stage, "NEEDS_OWNER_DECISION");
+    assert.match(empty.factory.stageReason || "", /nu a modificat niciun fișier/);
+    const resumed = (await dispatch(t.hub, "factory.resume", { missionId: mission.id }, "ui")).result;
+    assert.equal(resumed.factory.stage, "IMPLEMENTING", "the writer runs again");
+    const done = await untilStage(t, mission.id, ["DELIVERY_READY", "NEEDS_OWNER_DECISION", "BLOCKED"]);
+    assert.equal(done.factory.stage, "DELIVERY_READY", done.factory.stageReason);
+    assert.equal(done.factory.repairCycles, 0, "no repair cycle was spent on the empty change set");
+    assert.ok(!done.evidence.some((e) => e.stage === "CHECKING" && e.changeSetId === done.changeSets[0].id), "the empty change set was never checked");
+  } finally { await t.cleanup(); }
+});

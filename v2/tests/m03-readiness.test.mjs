@@ -4,6 +4,8 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import path from "node:path";
 import fs from "node:fs";
+import os from "node:os";
+import { execFileSync } from "node:child_process";
 import { resolveRunPlan, EFFORT_PROFILES } from "../server/policy/run-plan.mjs";
 import { createTimeline, summarizeTimeline } from "../server/runtime/timeline.mjs";
 import { effortArgs } from "../server/providers/codex.mjs";
@@ -192,6 +194,30 @@ test("M03-DIFF-01 the Hub's own diff reports the exact changed lines (no git inv
   const d = unifiedDiff("a\nb\nc\n", "a\nB\nc\n", { label: "x.js" });
   assert.match(d, /--- a\/x\.js/);
   assert.match(d, /-b\n\+B/);
+});
+
+test("M03-DIFF-02 the rendered diff applies byte-exact with git apply: added, deleted, no final newline (no phantom empty line)", () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "ifrim-diff-"));
+  const git = (...args) => execFileSync("git", ["-C", dir, "-c", "core.autocrlf=false", ...args], { stdio: "pipe" });
+  try {
+    git("init", "-q");
+    const cases = [
+      { label: "new.mjs", before: "", after: "line 1\nline 2\n", status: "added" },
+      { label: "old.txt", before: "gone\nfor good\n", after: "", status: "deleted" },
+      { label: "noeol.txt", before: "a\nb", after: "a\nB", status: "modified" },
+      { label: "addeol.txt", before: "x\ny", after: "x\ny\n", status: "modified" },
+    ];
+    for (const c of cases) if (c.status !== "added") fs.writeFileSync(path.join(dir, c.label), c.before);
+    const added = unifiedDiff(cases[0].before, cases[0].after, { label: cases[0].label, status: "added" });
+    assert.match(added, /^--- \/dev\/null\n\+\+\+ b\/new\.mjs\n@@ -0,0 \+1,2 @@\n\+line 1\n\+line 2\n$/, "two lines, no phantom third one");
+    for (const c of cases) {
+      fs.writeFileSync(path.join(dir, `${c.label}.patch`), unifiedDiff(c.before, c.after, { label: c.label, status: c.status }));
+      git("apply", `${c.label}.patch`);
+      if (c.status === "deleted") assert.equal(fs.existsSync(path.join(dir, c.label)), false, c.label);
+      else assert.equal(fs.readFileSync(path.join(dir, c.label), "utf8"), c.after, c.label);
+    }
+    assert.match(unifiedDiff("a\nb", "a\nB", { label: "n" }), /-b\n\\ No newline at end of file\n\+B\n\\ No newline at end of file/);
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
 });
 
 test("M03-RUN-01 runner parsing: zero tests is never a pass; counts from TAP and spec reporters; only allowed commands map to argv", () => {

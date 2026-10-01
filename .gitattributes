@@ -1,3 +1,5 @@
 # Factory fixtures and the writer patches generated from them are compared byte for byte (make-patches.mjs): always LF.
 v2/fixtures/** text eol=lf
 v2/tests/fixtures/** text eol=lf
+# Shell scripts piped into the WSL runner must keep LF line ends.
+v2/tests/manual/*.sh text eol=lf
