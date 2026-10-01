@@ -151,6 +151,7 @@ export function FactoryPanel({ missionId }) {
   const [note, setNote] = useState("");
   const [showDiff, setShowDiff] = useState(false);
   const act = useAction(async (path, body = {}) => { await api(`/api/factory/${missionId}/${path}`, { method: "POST", body }); reload(); });
+  const [reviewerModel, setReviewerModel] = useState(""); // the owner may pick an allowed reviewer model when resuming
   if (loading) return <Panel title="Software Factory" icon={Factory}><Loading /></Panel>;
   if (error) return <Panel title="Software Factory" icon={Factory}><ErrorNotice error={error} onRetry={reload} /></Panel>;
   const f = view.factory;
@@ -172,13 +173,18 @@ export function FactoryPanel({ missionId }) {
             <dt>Cicluri de remediere</dt><dd>{f.repairCycles}/{f.limits.maxRepairCycles}</dd>
             <dt>Limite</dt><dd>{f.limits.maxDurationMin} min · {f.limits.maxAttemptsPerStage} încercări/etapă · profil {f.limits.profile}{f.deadlineAt ? ` · termen ${fmt.dateTime(f.deadlineAt)}` : ""}</dd>
             <dt>Runner</dt><dd>{view.runnerReadiness.ok ? view.runnerReadiness.isolation : <span className="warn">{view.runnerReadiness.detail}</span>}</dd>
+            <dt>Modele</dt><dd>writer: {f.limits.writerModel || "implicitul din model/list"} · reviewer: {f.limits.reviewerModel || "implicitul contului Claude Code (Fable/1M refuzate)"}</dd>
             <dt>Granturi necesare</dt><dd>{view.grantsNeeded.map((g) => `${g.provider} ${g.access} × ${g.attempts} (${g.why})`).join(" · ")}</dd>
           </dl>
           {["PAUSED", "BLOCKED", "NEEDS_OWNER_DECISION"].includes(f.stage) && f.approvedSpecVersion && (
             <div className="row wrap">
-              <button className="btn primary" disabled={act.pending} onClick={() => act.run("resume")}><Play size={14} />Reia</button>
-              {f.stage === "NEEDS_OWNER_DECISION" && <button className="btn" disabled={act.pending} onClick={() => act.run("resume", { allowExtraCycle: true })}>Încă un ciclu de remediere</button>}
-              {f.stage === "NEEDS_OWNER_DECISION" && view.reviews.at(-1)?.verdict === "INCONCLUSIVE" && <button className="btn" disabled={act.pending} onClick={() => act.run("resume", { proceedToQa: true })}>Continuă la QA (decizia mea)</button>}
+              <select className="select" aria-label="Modelul reviewer-ului la reluare" value={reviewerModel} onChange={(e) => setReviewerModel(e.target.value)}>
+                <option value="">Reviewer: {f.limits.reviewerModel || "implicitul contului"}</option>
+                {["sonnet", "opus", "haiku"].filter((m) => m !== f.limits.reviewerModel).map((m) => <option key={m} value={m}>Reviewer: {m}</option>)}
+              </select>
+              <button className="btn primary" disabled={act.pending} onClick={() => act.run("resume", reviewerModel ? { reviewerModel } : {})}><Play size={14} />Reia</button>
+              {f.stage === "NEEDS_OWNER_DECISION" && <button className="btn" disabled={act.pending} onClick={() => act.run("resume", { allowExtraCycle: true, ...(reviewerModel ? { reviewerModel } : {}) })}>Încă un ciclu de remediere</button>}
+              {f.stage === "NEEDS_OWNER_DECISION" && view.reviews.at(-1)?.verdict === "INCONCLUSIVE" && <button className="btn" disabled={act.pending} onClick={() => act.run("resume", { proceedToQa: true, ...(reviewerModel ? { reviewerModel } : {}) })}>Continuă la QA (decizia mea)</button>}
             </div>
           )}
           <ErrorNotice error={act.error} />

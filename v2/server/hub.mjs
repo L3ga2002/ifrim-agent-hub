@@ -114,6 +114,7 @@ export function createHub(config, { providerOverrides = {}, homeDir, browserLaun
   // Lega (voice): a separate Codex app-server with GPT-Live; admitted by gate.evaluateVoice, stopped by Stop All.
   const refreshCodexConfig = () => {
     try { const current = providerState.get("codex") || {}; if (providers.codex.inspectConfig) providerState.set("codex", { ...current, config: providers.codex.inspectConfig() }); } catch { /* reported by the gate */ }
+    try { const current = providerState.get("claude"); if (current && providers.claude.inspectConfig) providerState.set("claude", { ...current, config: providers.claude.inspectConfig() }); } catch { /* reported by the gate */ }
   };
   const legaRead = {
       briefing: () => buildBriefing({ db, settings, missions, backups, projects, clock }),

@@ -28,7 +28,7 @@ M03 adds the Engineering department on top of M02 + Lega. It reuses the existing
 - demos A/B/C PASS_SIMULATED; Demo B's E2E criterion runs in the real browser (FAC-02, M03-BR-00…03 PASS_LOCAL);
 - canary on a fictive tree PASS_LOCAL (50 checks; R3 DENIED; R2 confirmed open); sandbox per command ~4–6 s on a fictive profile;
 - demo projects A and B created and registered as hub-test;
-- no model ran in M03;
+- Live 2026-10-01 (owner-approved): probe 2.1 PASS_LIVE (Codex gpt-6.1-sol · medium fixed Demo A through the factory; turn → first command 14 s) and probe 2.2 PASS_LIVE (Claude review with an explicit `sonnet` after the account default `fable[1m]` was refused before the model; PASS, QA 2/2, bundle `bnd_mupj3diq_d386324921` awaiting the owner's acceptance). Probe 2.3 (Demo B, `mis_mupj3zl4_9970bdd58b`) is prepared and needs the owner's „Aprobă și pornește” (the session safety classifier refuses an agent approving the scope on the owner's behalf); 2.5 and 2.6 NOT_RUN.
 - LIVE_SANDBOX_VALIDATED NOT_RUN;
 - REAL_PROJECT_READY not reached (R2 open).
 

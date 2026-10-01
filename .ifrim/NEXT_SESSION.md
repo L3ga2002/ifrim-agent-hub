@@ -18,7 +18,8 @@
 - **Next, in order, each only with the owner's approval:**
   1. Done by the owner in the UI (2026-10-01 06:46 UTC): „Verifică contul” (Codex `gpt-6.1-sol` · `medium` passes `run_plan`) and the R3 ACL re-consent (`0f5b7efee0143fa8`). Gate preview for Codex RW on Demo A: only `mode` (BUILD_SAFE) and the grant are missing.
   2. Optional, owner's terminal: `codex-sandbox-timing.mjs --real-profile`.
-  3. Live 2.1 (Codex RW via the factory on Demo A) with the approval package in `M03_LIVE_VALIDATION_PLAN.md` §2.1; then 2.2 (Claude review), 2.3, 2.5, 2.6.
+  3. Live 2026-10-01 (owner-approved): probe 2.1 PASS_LIVE (Codex gpt-6.1-sol · medium fixed Demo A through the factory; turn → first command 14 s) and probe 2.2 PASS_LIVE (Claude review with an explicit `sonnet` after the account default `fable[1m]` was refused before the model; PASS, QA 2/2, bundle `bnd_mupj3diq_d386324921` awaiting the owner's acceptance). Probe 2.3 (Demo B, `mis_mupj3zl4_9970bdd58b`) is prepared and needs the owner's „Aprobă și pornește” (the session safety classifier refuses an agent approving the scope on the owner's behalf); 2.5 and 2.6 NOT_RUN.
+     Earlier note — done 2026-10-01: live 2.1 PASS_LIVE (mission `mis_muph73y3_9c2c87061c`, run `run_muphc63x_ef0699abd6`, gpt-6.1-sol · medium, turn → first command 14 s, checks 6/6; stopped cleanly at review without a Claude grant; grant revoked, BUILD_SAFE). Next: 2.2 Claude read-only review on the same mission (needs a Claude grant + Reia), then 2.3, 2.5, 2.6.
   4. R2 separate environment before any real project.
   5. Commit of the M03 work (exact approval).
 

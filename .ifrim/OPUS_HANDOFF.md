@@ -31,6 +31,7 @@
   - no automatic resume after restart;
   - Software Factory refusing the Hub itself as a project outside test mode;
   - E2E steps only declarative (no scripts, relative paths only), Chromium with the OS sandbox, only the preview origin reachable.
+- **Live:** Live 2026-10-01 (owner-approved): probe 2.1 PASS_LIVE (Codex gpt-6.1-sol · medium fixed Demo A through the factory; turn → first command 14 s) and probe 2.2 PASS_LIVE (Claude review with an explicit `sonnet` after the account default `fable[1m]` was refused before the model; PASS, QA 2/2, bundle `bnd_mupj3diq_d386324921` awaiting the owner's acceptance). Probe 2.3 (Demo B, `mis_mupj3zl4_9970bdd58b`) is prepared and needs the owner's „Aprobă și pornește” (the session safety classifier refuses an agent approving the scope on the owner's behalf); 2.5 and 2.6 NOT_RUN.
 - **Open:** R2 (needs a separate environment), `--real-profile` timing (owner's terminal), the live validations (approval package in `M03_LIVE_VALIDATION_PLAN.md` §2.1), the commit. See `OPEN_ISSUES.md` (2026-10-01 later).
 
 ## Post-M02 handoff: Lega + M02 verification — 2026-10-01 (superseded by the M03 handoff above where they overlap)

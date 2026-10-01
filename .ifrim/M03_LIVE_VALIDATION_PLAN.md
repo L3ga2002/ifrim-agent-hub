@@ -46,7 +46,7 @@ Condiții comune:
 
 | # | Probă | Proiect | Rută | Model / efort | Grant | Durată max | Date trimise | Condiții de oprire | Artefacte | Stare finală dorită |
 |---|---|---|---|---|---|---|---|---|---|---|
-| 2.1 | Smoke Codex RW prin Software Factory (Demo A) | `ifrim-factory-demo-a` | Codex app-server, profil `ifrim_hub_rw`, rețea oprită | implicitul contului din `model/list` / `medium` (BALANCED) | Codex · workspace-write · 2 încercări · 60 min | 30 min (limita misiunii) | fixture-ul (fictiv) + specificația | apel MCP; model sau efort diferit de cel cerut; cerere de aprobare în afara workspace-ului; termen | run id, cronologie, change set, diff, dovezi baseline/verificări | `REVIEWING` sau `BLOCKED` cu motiv clar |
+| 2.1 | **PASS_LIVE (2026-10-01, 11:55–11:59 UTC)**: Smoke Codex RW prin Software Factory (Demo A); detalii în §2.1 rezultat | `ifrim-factory-demo-a` | Codex app-server, profil `ifrim_hub_rw`, rețea oprită | implicitul contului din `model/list` / `medium` (BALANCED) | Codex · workspace-write · 2 încercări · 60 min | 30 min (limita misiunii) | fixture-ul (fictiv) + specificația | apel MCP; model sau efort diferit de cel cerut; cerere de aprobare în afara workspace-ului; termen | run id, cronologie, change set, diff, dovezi baseline/verificări | `REVIEWING` sau `BLOCKED` cu motiv clar |
 | 2.2 | Review Claude RO pe change set-ul de la 2.1 | același | Claude Code `-p`, Read/Glob/Grep, `dontAsk`, fără MCP | implicitul Claude Code (raportat la init; Fable refuzat) / `medium` | Claude · read-only · 2 încercări · 60 min | 15 min | pachetul de review (diff redactat ≤ 40 000 caractere) | init cu MCP; apiKeySource; model refuzat | review validat, findings | `QA` → `DELIVERY_READY` sau `NEEDS_OWNER_DECISION` |
 | 2.3 | Un round-trip de remediere (Demo B sau C) | `ifrim-factory-demo-b` | ca 2.1 + 2.2 | ca mai sus | Codex RW · 3 · 90 min; Claude RO · 3 · 90 min | 60 min | ca mai sus | ca mai sus + limita de 2 cicluri | toate dovezile + preview | `DELIVERY_READY` |
 | 2.4 | „Aprobă și pornește” din UI pentru misiunea aprobată | (inclus în 2.1–2.3: aprobarea scope-ului e chiar acest click) | — | — | — | — | — | — | aprobarea + dispatch-ul (idempotent) | — |
@@ -102,3 +102,92 @@ Condiții comune:
 - REAL_PROJECT_READY: cere întâi rezolvarea R2 printr-un mediu separat (vezi `M03_RUNTIME_READINESS.md` §3, opțiunea A).
 - Upgrade-ul Claude Code CLI: verifici tu dacă e necesar; azi `--effort` e listat de 2.1.175.
 - Commit, push, merge sau deploy: acțiuni separate, aprobate pe comanda exactă.
+
+### 2.1 Rezultat: PASS_LIVE (2026-10-01)
+
+Aprobată de proprietar cu textul exact. Pași: mod LIVE_VALIDATION, grant `grant_muph73xv_86e66f49e4`, misiunea `mis_muph73y3_9c2c87061c`; „Aprobă și pornește” apăsat de proprietar la 11:55:04 UTC.
+
+**Desfășurare:**
+- **11:55:04 BASELINE:** `node --test test/acceptance.test.mjs` → FAIL 1/2, adică bug-ul e reprodus (151,3 s, prima comandă din sandbox).
+- **11:57:35 IMPLEMENTING:** Codex `gpt-6.1-sol` · `medium`, execuția `run_muphc63x_ef0699abd6` → completed în 130 s; fără niciun eveniment MCP, fără cereri de aprobare.
+- **Change set 1:**
+  - `src/requests.js`: validarea folosește `name.trim()`;
+  - un test nou de regresie (`test/requests.regression.test.mjs`).
+- **11:59:46 CHECKING:** `node --test` → PASS 6/6 (5,2 s).
+- **11:59:51 REVIEWING → BLOCKED (grant):** review-ul Claude a fost refuzat de poartă înainte de orice model (fără grant Claude, cum s-a cerut); turn netrimis.
+
+**După probă:**
+- grantul revocat (1 din 2 încercări folosite);
+- modul readus la BUILD_SAFE;
+- 0 granturi active;
+- arborele Hub-ului neschimbat; în Demo A s-au schimbat doar cele 2 fișiere.
+
+**Pentru 2.2:**
+- misiunea așteaptă un grant Claude read-only și „Reia”;
+- termenul misiunii (13:55 UTC) se prelungește la reluare;
+- observație pentru reviewer: fixul validează numele curățat, dar păstrează în `value.name` valoarea necurățată (fix minim; decizia rămâne la review).
+
+### 2.2 Prima încercare: garda de facturare a oprit review-ul înainte de model (2026-10-01, 12:04 UTC)
+
+Aprobată de proprietar cu textul exact:
+- mod LIVE_VALIDATION;
+- grant Claude read-only `grant_muphjoe1_ab9ba5ee01`, 2 încercări;
+- „Reia” apăsat de proprietar la 12:04:05.
+
+**Ce s-a întâmplat:**
+- Claude Code a pornit (`run_muphkh0k_2b2e92f412`) și a raportat la init modelul implicit al contului: **`fable[1m]`**.
+- Hub-ul l-a oprit **înainte de model**: Fable e refuzat, iar varianta 1M poate factura credite de utilizare pe Max.
+- Turn netrimis, nicio inferență. Încercarea a fost returnată automat (`grant.refunded`).
+
+**Rezultat:**
+- **garda de facturare: PASS_LIVE**;
+- review-ul: NOT_RUN.
+
+**După probă:**
+- grant revocat (0 din 2 folosite);
+- BUILD_SAFE;
+- misiunea în BLOCKED (decizia ta).
+
+**Remediere în cod** (necomisă; testul M03-FAC-26):
+- la „Reia” poți alege modelul reviewer-ului (`sonnet`, `opus`, `haiku`; Fable, `best` și `[1m]` sunt refuzate). Alegerea e înregistrată ca eveniment și trimisă explicit cu `--model`;
+- o pornire oprită înainte de model (poartă, grant, gardă de facturare, MCP la init) nu mai consumă o încercare a etapei.
+
+### 2.2 Reluare cu reviewer `sonnet`: PASS_LIVE (2026-10-01, 12:46 UTC)
+
+Înainte de reluare, verificarea doar-citire a schimbării a confirmat un risc: Claude Code poate comuta singur modelul în timpul execuției dacă setările utilizatorului au `fallbackModel`. Reparat și testat (FAC-27, verificare prin mutație):
+- refuz la pornire dacă există `fallbackModel`;
+- oprire la orice comutare de model;
+- verificarea `modelUsage` din rezultat;
+- listă permisă strictă pentru modelul reviewer-ului.
+
+**Desfășurare:**
+- grant Claude read-only `grant_mupj2kdh_4d8df15823`;
+- reluare cu `reviewerModel: sonnet`, alegere înregistrată ca `factory.model_override`;
+- execuția `run_mupj2kys_c24485b26f`: sonnet · medium, init acceptat, 30 s, fără MCP;
+- verdictul **PASS (VALID)**, legat de change set-ul 1, plus 2 findings informative;
+- **QA** `node --test test/acceptance.test.mjs` → PASS 2/2;
+- pachetul **`bnd_mupj3diq_d386324921` READY_FOR_OWNER_ACCEPTANCE**.
+
+**După probă:** grant revocat (1 din 2 încercări folosite), BUILD_SAFE.
+
+**Rezultat:** Demo A a parcurs live întregul flux al fabricii: spec → baseline roșu → Codex → verificări → review Claude → QA → pachet. **Acceptarea rămâne la proprietar** („Accept local”).
+
+### Verificare fără model: un server sub sandbox-ul Codex real ascultă pe 127.0.0.1 (PASS_LOCAL, 2026-10-01)
+
+Un `node server.js` pornit cu `codex sandbox` (profil `ifrim_hub_rw`, rețea oprită), într-un folder temporar, a răspuns Hub-ului pe `127.0.0.1` după 6,2 s. Rezolvă întrebarea deschisă despre preview-ul sub sandbox.
+
+### 2.3 Pregătită, nepornită: așteaptă clicul proprietarului
+
+Misiunea `mis_mupj3zl4_9970bdd58b` (Demo B, reviewer `sonnet`, 2 cicluri, 120 min) e în SPEC_DRAFT, cu specificația completă.
+
+Aprobarea scope-ului în numele proprietarului a fost **refuzată de clasificatorul de siguranță al sesiunii**: un agent nu își aprobă singur acțiunile care cer aprobarea proprietarului. Granturile create pentru probă au fost revocate nefolosite (0/3 fiecare), iar Hub-ul e în BUILD_SAFE.
+
+**Pentru pornire:**
+1. mod LIVE_VALIDATION;
+2. grant Codex workspace-write × 3 și grant Claude read-only × 3 pe Demo B;
+3. proprietarul apasă „Cere aprobarea scope-ului” → „Aprobă și pornește”.
+
+### 2.5 (Stop într-un turn real) și 2.6 (Lega): NOT_RUN
+
+- **2.5** cere aprobarea unei execuții noi: același clic al proprietarului.
+- **2.6** cere vocea proprietarului.

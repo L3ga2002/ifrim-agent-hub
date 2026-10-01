@@ -122,6 +122,7 @@ export function evaluateRoute(provider, inspection, { attestations = {}, now = n
     } else if (auth) add("plan", "unverified", "Tipul abonamentului nu este raportat");
     if (inspection?.config?.apiKeyHelper) add("config", "failed", "Un apiKeyHelper este configurat în setările Claude");
     else if (inspection?.config?.riskyEnvInSettings?.length) add("config", "failed", `Setările Claude definesc ${inspection.config.riskyEnvInSettings.join(", ")}`);
+    else if (inspection?.config?.fallbackModelSet) add("config", "failed", "Setările Claude definesc fallbackModel (comutare automată pe alt model, posibil facturată); scoate cheia din setări");
     else if (inspection?.config) add("config", "verified", "Fără apiKeyHelper sau variabile de facturare în setările Claude");
     else add("config", "unverified", "Setările Claude nu au fost inspectate");
   } else {

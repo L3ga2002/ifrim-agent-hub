@@ -81,18 +81,21 @@ export function inspectClaudeConfig(homeDir, projectDir = null) {
   const files = [path.join(homeDir, ".claude", "settings.json"), path.join(homeDir, ".claude", "settings.local.json")];
   if (projectDir) files.push(path.join(projectDir, ".claude", "settings.json"), path.join(projectDir, ".claude", "settings.local.json"));
   let apiKeyHelper = false;
+  let fallbackModelSet = false;
   const riskyEnvInSettings = new Set();
   const inspected = [];
-  for (const file of files) {
+  for (const [i, file] of files.entries()) {
     const data = readJson(file);
     if (!data) continue;
     inspected.push(path.relative(homeDir, file) || file);
     if (data.apiKeyHelper) apiKeyHelper = true;
+    // Only the user files count: Hub runs load --setting-sources user.
+    if (i < 2 && data.fallbackModel !== undefined && data.fallbackModel !== null && String(data.fallbackModel) !== "") fallbackModelSet = true;
     for (const name of Object.keys(data.env || {})) if (BILLING_RISK_ENV.some((risk) => risk.toUpperCase() === name.toUpperCase())) riskyEnvInSettings.add(name);
   }
   const anthropicDir = path.join(process.env.APPDATA || path.join(homeDir, "AppData", "Roaming"), "Anthropic");
   const federationProfile = fs.existsSync(path.join(anthropicDir, "active_config"));
-  return { inspectedFiles: inspected.length, apiKeyHelper, riskyEnvInSettings: [...riskyEnvInSettings], anthropicActiveProfilePresent: federationProfile };
+  return { inspectedFiles: inspected.length, apiKeyHelper, fallbackModelSet, riskyEnvInSettings: [...riskyEnvInSettings], anthropicActiveProfilePresent: federationProfile };
 }
 
 /**
@@ -167,6 +170,11 @@ export function createClaudeAdapter({ config, supervisor, homeDir = os.homedir()
     if (model && CLAUDE_REFUSED_MODELS.test(model)) {
       return failedHandle(key, "billing", `Modelul ${model} este refuzat: ${refusedModelReason(model)}`);
     }
+    // A fallbackModel in the user settings lets the CLI switch to another model by itself during the run (overload, model
+    // not found): the same paid-fallback risk as the forbidden --fallback-model flag. Checked on every launch.
+    if (inspectClaudeConfig(homeDir).fallbackModelSet) {
+      return failedHandle(key, "billing", "Setările Claude Code ale utilizatorului definesc fallbackModel: Claude ar putea comuta singur pe alt model (inclusiv Fable) în timpul execuției; oprit înainte de model. Scoate cheia fallbackModel din setări.");
+    }
     const newSession = !sessionId;
     const nativeSessionId = sessionId || crypto.randomUUID();
     const tools = access === "workspace-write" ? WRITE_TOOLS : READ_ONLY_TOOLS;
@@ -229,10 +237,19 @@ export function createClaudeAdapter({ config, supervisor, homeDir = os.homedir()
             billingStop = true;
             supervisor.stop(key, { graceMs: 200 }).catch(() => {});
           }
+        } else if (event.type === "system" && /model_(refusal_)?fallback/.test(String(event.subtype || ""))) {
+          // The CLI switched the main model during the run: never accepted (the reported model must stay the one checked
+          // at init). Stopped at once, whatever the new model is.
+          onEvent({ type: "notice", level: "warning", text: `Claude Code a comutat modelul ${String(event.original_model || "?").slice(0, 60)} → ${String(event.fallback_model || "?").slice(0, 60)}; execuția e oprită` });
+          billingStop = `Claude Code a comutat modelul în timpul execuției (${String(event.original_model || "?").slice(0, 60)} → ${String(event.fallback_model || "?").slice(0, 60)}); oprit`;
+          supervisor.stop(key, { graceMs: 0 }).catch(() => {});
         } else if (event.type === "system" && event.subtype === "permission_denied") {
           onEvent({ type: "activity", label: `Claude permission denied: ${String(event.tool_name || event.tool || "").slice(0, 60)}` });
         } else if (event.type === "result") {
           resultEvent = event;
+          const used = Object.keys(event.modelUsage || {});
+          const refused = used.find((m) => CLAUDE_REFUSED_MODELS.test(m));
+          if (refused) billingStop = `Rezultatul raportează folosirea modelului ${refused.slice(0, 60)}: rezultatul nu e acceptat`;
           if (event.usage) usage = { tokens: event.usage, clientEstimateUsd: event.total_cost_usd ?? null, note: "total_cost_usd is a client-side estimate, not a subscription charge" };
           if (!output && typeof event.result === "string") { output = event.result; onEvent({ type: "delta", text: event.result }); }
           onEvent({ type: "usage", usage });
@@ -248,7 +265,7 @@ export function createClaudeAdapter({ config, supervisor, homeDir = os.homedir()
       supervisor.forget(key);
       const stderr = record.stderrTail.slice(-5).join(" | ");
       if (initStop) return { status: "failed", errorCategory: initStop.category, preInference: true, error: initStop.message, output: "", usage: {}, sessionId: nativeSessionId };
-      if (billingStop) return { status: "failed", errorCategory: "billing", preInference: false, error: "Stopped: provider reported a billing error", output, usage, sessionId: nativeSessionId };
+      if (billingStop) return { status: "failed", errorCategory: "billing", preInference: false, error: typeof billingStop === "string" ? billingStop : "Stopped: provider reported a billing error", output, usage, sessionId: nativeSessionId };
       if (interruptedBy) return { status: "interrupted", errorCategory: null, preInference: !initSeen, error: `interrupted (${interruptedBy}); turn left unfinished, session resumable`, output, usage, sessionId: nativeSessionId };
       if (resultEvent && !resultEvent.is_error && exit.code === 0) {
         return { status: "completed", output, usage, sessionId: resultEvent.session_id || nativeSessionId, permissionDenials: resultEvent.permission_denials || [], numTurns: resultEvent.num_turns };

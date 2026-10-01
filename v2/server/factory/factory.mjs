@@ -17,6 +17,7 @@ import { renderChanges } from "./diff.mjs";
 import { integrityFindings } from "./integrity.mjs";
 import { buildReviewBrief, parseReview, BLOCKING_SEVERITIES } from "./review.mjs";
 import { runE2E, browserStatus } from "../tools/browser.mjs";
+import { CLAUDE_REFUSED_MODELS } from "../providers/claude.mjs";
 
 /**
  * Software Factory conductor (M03 §10–§21). A factory mission is an ordinary mission (template eng_*) plus one row of
@@ -433,13 +434,27 @@ export function createFactory(deps) {
    * One dispatch = one run start. The idempotency key names mission, stage, cycle, change set and attempt; the claim is an
    * atomic UPDATE, so concurrent triggers start at most one run. Every gate/grant/MCP check happens again inside runs.start.
    */
+  /**
+   * Attempts of one step (stage, cycle, change set) that reached the model. Not attempts: the owner's interruptions (Pause,
+   * Stop, the time limit), claims cancelled before a start, and starts stopped before the model (gate or grant refusal,
+   * billing guard, MCP at init): no turn was sent, so nothing was spent and a retry is the owner's normal next step.
+   */
+  function modelAttempts(missionId, stage, cycle, changeSeq) {
+    const prior = db.prepare("SELECT status, run_id FROM factory_dispatches WHERE mission_id = ? AND stage = ? AND request_json LIKE ?")
+      .all(missionId, stage, `%"cycle":${cycle},"changeSeq":${changeSeq}%`);
+    const reachedModel = (r) => {
+      if (r.status === "CANCELLED" || r.status === "INTERRUPTED") return false;
+      if (r.status !== "FAILED") return true;
+      if (!r.run_id) return false;
+      return Boolean(parse(db.prepare("SELECT timeline_json FROM agent_runs WHERE id = ?").get(r.run_id)?.timeline_json, {}).turn_sent);
+    };
+    return { prior, counted: prior.filter(reachedModel).length };
+  }
+
   async function dispatchRun(missionId, { stage, taskId, role, conversationId, brief, cycle, changeSeq }) {
     const f = fm(missionId);
     const route = ROUTES[role];
-    // Owner interruptions (Pause, Stop, the time limit) and claims cancelled before a start are not attempts of the model.
-    const prior = db.prepare("SELECT status FROM factory_dispatches WHERE mission_id = ? AND stage = ? AND request_json LIKE ?")
-      .all(missionId, stage, `%"cycle":${cycle},"changeSeq":${changeSeq}%`);
-    const attempts = prior.filter((r) => r.status !== "CANCELLED" && r.status !== "INTERRUPTED").length;
+    const { prior, counted: attempts } = modelAttempts(missionId, stage, cycle, changeSeq);
     if (attempts >= f.limits.maxAttemptsPerStage) {
       blockTask(taskId, "încercări epuizate");
       return setStage(missionId, "NEEDS_OWNER_DECISION", { waitReason: "owner_decision", reason: `${stage}: ${attempts} încercări folosite (limita ${f.limits.maxAttemptsPerStage}); decide dacă reiei` });
@@ -1062,10 +1077,16 @@ export function createFactory(deps) {
    * Resume after PAUSED / BLOCKED / NEEDS_OWNER_DECISION: re-checks the approved scope, then continues from the last
    * recorded result. `allowExtraCycle` is the owner's explicit decision to grant one more repair cycle (beyond the limit).
    */
-  async function resume(missionId, { actor = "user", allowExtraCycle = false, proceedToQa = false } = {}) {
+  async function resume(missionId, { actor = "user", allowExtraCycle = false, proceedToQa = false, reviewerModel = "" } = {}) {
     return serial(missionId, async () => {
       const f = need(fm(missionId));
       if (!RESUMABLE.has(f.stage)) throw new HubError("conflict", `Misiunea e în ${f.stage}`);
+      // The owner's choice of the reviewer's model (e.g. when the account's default is refused by the billing guard): an
+      // explicit Claude model alias or id; Fable, "best" and the [1m] variants are never accepted. Validated before any change.
+      const chosenReviewer = String(reviewerModel || "").trim();
+      if (chosenReviewer && (!/^(?:sonnet|opus|haiku|claude-(?:sonnet|opus|haiku)-[0-9][0-9a-z.-]{0,40})$/i.test(chosenReviewer) || CLAUDE_REFUSED_MODELS.test(chosenReviewer))) {
+        throw new HubError("validation", `Modelul „${chosenReviewer.slice(0, 40)}” nu e permis pentru reviewer (permise: sonnet, opus, haiku sau un id claude-sonnet/opus/haiku-…; Fable, „best” și variantele [1m] sunt refuzate)`);
+      }
       if (!f.approvedSpecVersion) throw new HubError("conflict", "Scope-ul nu e aprobat");
       if (missionRunIds(missionId).length) throw new HubError("conflict", "O execuție a misiunii rulează încă");
       if (proceedToQa) {
@@ -1076,6 +1097,13 @@ export function createFactory(deps) {
         if (!cs || !checksOk || lastReview?.verdict !== "INCONCLUSIVE") throw new HubError("conflict", "QA direct e permis doar după verificări trecute și un review neconcludent (decizia ta)");
       }
       bus.transaction(() => db.prepare("UPDATE factory_missions SET cancel_requested_at = NULL WHERE mission_id = ?").run(missionId));
+      if (chosenReviewer && chosenReviewer !== f.limits.reviewerModel) {
+        const limits = { ...fm(missionId).limits, reviewerModel: chosenReviewer };
+        bus.transaction(() => {
+          db.prepare("UPDATE factory_missions SET limits_json = ? WHERE mission_id = ?").run(json(limits), missionId);
+          bus.append({ type: "factory.model_override", scopeType: "mission", scopeId: missionId, source: actor, payload: { role: "reviewer", model: chosenReviewer, previous: f.limits.reviewerModel || "implicitul contului" } });
+        });
+      }
       // Resuming after the time limit is the owner's decision to continue: a new window of the mission's duration starts.
       if (f.deadlineAt && new Date(f.deadlineAt) <= clock()) {
         const deadlineAt = new Date(clock().getTime() + f.limits.maxDurationMin * 60000).toISOString();
@@ -1085,7 +1113,7 @@ export function createFactory(deps) {
         });
       }
       if (allowExtraCycle) {
-        const limits = { ...f.limits, maxRepairCycles: Math.max(f.limits.maxRepairCycles, f.repairCycles + 1) };
+        const limits = { ...fm(missionId).limits, maxRepairCycles: Math.max(f.limits.maxRepairCycles, f.repairCycles + 1) };
         bus.transaction(() => {
           db.prepare("UPDATE factory_missions SET limits_json = ? WHERE mission_id = ?").run(json(limits), missionId);
           bus.append({ type: "factory.extra_cycle", scopeType: "mission", scopeId: missionId, source: actor, payload: { maxRepairCycles: limits.maxRepairCycles } });
@@ -1095,8 +1123,7 @@ export function createFactory(deps) {
       // same step (otherwise the only way out would be Stop). Recorded like an extra cycle.
       const lastDispatch = rowToDispatch(db.prepare("SELECT * FROM factory_dispatches WHERE mission_id = ? ORDER BY created_at DESC LIMIT 1").get(missionId));
       if (f.stage === "NEEDS_OWNER_DECISION" && !proceedToQa && lastDispatch && !["DONE", "DONE_LATE"].includes(lastDispatch.status)) {
-        const counted = db.prepare("SELECT status FROM factory_dispatches WHERE mission_id = ? AND stage = ? AND request_json LIKE ?")
-          .all(missionId, lastDispatch.stage, `%"cycle":${lastDispatch.request.cycle},"changeSeq":${lastDispatch.request.changeSeq}%`).filter((r) => r.status !== "CANCELLED" && r.status !== "INTERRUPTED").length;
+        const { counted } = modelAttempts(missionId, lastDispatch.stage, lastDispatch.request.cycle, lastDispatch.request.changeSeq);
         const current = fm(missionId).limits;
         if (counted >= current.maxAttemptsPerStage) {
           const limits = { ...current, maxAttemptsPerStage: counted + 1 };

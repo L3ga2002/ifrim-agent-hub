@@ -82,6 +82,11 @@ process.stdin.on("end", async () => {
     await new Promise((r) => setTimeout(r, 5000));
   }
   if (scenario === "hang") { await new Promise((r) => setTimeout(r, 60000)); }
+  // fallback-fable: after a clean init the CLI switches the main model (a fallbackModel in the settings); the Hub must stop.
+  if (scenario === "fallback-fable") {
+    out({ type: "system", subtype: "model_fallback", original_model: "claude-fake", fallback_model: "claude-fable-5", session_id: sessionArg });
+    await new Promise((r) => setTimeout(r, 5000));
+  }
   if (scenario === "autherror") {
     out({ type: "result", subtype: "error_during_execution", is_error: true, result: "Not logged in · Please run /login", session_id: sessionArg });
     process.exit(1);

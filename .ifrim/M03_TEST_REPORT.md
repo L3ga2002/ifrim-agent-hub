@@ -67,13 +67,17 @@ Comandă: `node --test` într-o copie a fixture-ului, pe 2026-10-01.
 | Canary Codex pe arbore fictiv (R3 DENIED, `KNOWN_GAP_R2`) | **PASS_LOCAL** (2026-10-01, la cererea ta) | 50 de verificări trecute: `config.toml`, `config.toml.bak` și `history.jsonl` DENIED, runner-ul sandbox funcționează; 4 citiri ale proiectului „alt client” ALLOWED = `KNOWN_GAP_R2` (R2 deschis, nu e trecut ca izolare); arbore șters |
 | Măsurarea sandbox-ului fără model, profil fictiv | **PASS_LOCAL** (2026-10-01) | prima comandă 4,7 s; următoarele 3,7–6,4 s (N = 6); detalii în `M03_PERFORMANCE_REPORT.md` §3.1 |
 | Măsurarea sandbox-ului, profil real (`--real-profile`) | NOT_RUN | reaplică DENY-urile reale; o rulezi tu |
-| Runner sau preview sub `codex sandbox` real, prin fabrică | NOT_RUN | odată cu validarea live 2.1 |
+| Runner sub `codex sandbox` real, prin fabrică (baseline + verificări) | **PASS_LIVE** (2026-10-01, proba 2.1) | baseline FAIL cum trebuia (151,3 s, prima comandă), verificări PASS 6/6 (5,2 s); preview-ul sub sandbox real: NOT_RUN (Demo A nu are preview) |
+| Review Claude prin fabrică (sonnet, explicit) + QA + pachet | **PASS_LIVE** (proba 2.2, reluare) | PASS VALID în 30 s, QA 2/2, pachet READY_FOR_OWNER_ACCEPTANCE |
+| Server sub sandbox-ul Codex real, ascultând pe 127.0.0.1 | **PASS_LOCAL** (fără model) | răspuns după 6,2 s |
+| Garda de facturare Claude la init (modelul implicit al contului `fable[1m]`) | **PASS_LIVE** (proba 2.2, prima încercare) | oprit înainte de model, încercare returnată; review-ul NOT_RUN până la alegerea unui model permis |
+| Writer Codex prin fabrică, pe traseul de după reparația MCP | **PASS_LIVE** (proba 2.1) | `gpt-6.1-sol` · `medium`, 130 s, turn → prima comandă 14,1 s, fără MCP, 2 fișiere în workspace |
 | Playwright 1.61.0 instalat (fără descărcare; Chromium 1228 din cache) | **PASS_LOCAL** (2026-10-01, la cererea ta) | Browser Workspace: `available`; Chromium pornit cu sandbox-ul OS (`chromiumSandbox: true`) |
 | Browser real: inspecție izolată (M03-BR-01) | **PASS_LOCAL** | pagina locală se încarcă, celelalte origini sunt blocate (inclusiv `example.com`), o captură scrisă |
 | Browser real: E2E pe formularul Demo B, mobil 390 px (M03-BR-02) | **PASS_LOCAL** | 12 pași: fără depășire orizontală → trimitere validă → „Solicitarea a fost trimisă.” → listă → trimitere goală → „Corectează câmpurile marcate.” |
 | Browser real: E2E care pică (M03-BR-03) | **PASS_LOCAL** | raportează exact pasul care pică (text lipsă, depășire 900 px > 390 px); nu pretinde niciodată PASS |
 | Fabrica cap-coadă cu E2E real (FAC-02, Demo B) | **PASS_SIMULATED** + browser real | provideri falși, dar E2E rulează în Chromium real pe preview-ul versiunii verificate; AC-7 → PASS_EVIDENCE cu captură |
-| Execuții cu model (Codex, Claude, Lega) | NOT_RUN | fără aprobare de inferență în M03 |
+| Execuții cu model: Claude review (2.2), round-trip (2.3), Stop real (2.5), Lega (2.6) | NOT_RUN | fiecare cu aprobarea ei |
 | Build UI (`npm run build:v2`) | PASS_LOCAL | — |
 | Verificare vizuală a ecranelor noi | vezi §5 | — |
 | Testul de symlink (SKIPPED_ENV din M02) | SKIPPED_ENV | Windows fără Developer Mode: s-a testat doar junction-ul, nu symlink-ul; nu e trecut |
@@ -241,3 +245,17 @@ S-au confirmat cazuri-limită noi, în mare parte preexistente. Toate sunt repar
 - portul preview-ului se verifică la nivel TCP (RUN-02).
 
 **Verificare prin mutație:** FAC-21, 22, 23 și 24, fiecare anulat pe rând. Toate au picat, iar codul a fost restaurat.
+
+### 6.4 Verificarea alegerii modelului reviewer-ului (2 perspective + verificare adversarială)
+
+Două probleme medii confirmate, ambele reparate înainte de proba live:
+1. Claude Code putea comuta modelul în timpul execuției prin `fallbackModel` din setările utilizatorului. Acum: refuz la pornire, oprire la comutare, verificarea `modelUsage` (FAC-27, cu mutație).
+2. „Încă un ciclu” suprascria modelul ales în aceeași reluare. Acum se citesc limitele proaspăt (FAC-26).
+
+Minore, reparate și ele:
+- listă permisă strictă pentru model: `sonnet`, `opus`, `haiku` și id-urile lor;
+- lista din UI e trimisă și de celelalte butoane de reluare.
+
+### Rularea completă 8 (după garda de comutare a modelului)
+
+**309 teste: 308 PASS, 0 FAIL, 1 SKIPPED_ENV** (13,4 min).

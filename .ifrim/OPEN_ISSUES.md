@@ -4,7 +4,11 @@
 
 State: M03 (runtime readiness + Software Factory) is built and tested with fixture providers. It is committed on `v2-milestone-01` on 2026-10-01 at the owner's request (the commit right after `6432c5e`; push: see `git status`/GitHub). `main` is still `e9ab563`. Report: `M03_REPORT.md`. Levels: BUILD_READY + SIMULATED_E2E_VERIFIED. LIVE_SANDBOX_VALIDATED is NOT_RUN; REAL_PROJECT_READY is not reached.
 
+Live 2026-10-01 (owner-approved): probe 2.1 PASS_LIVE (Codex gpt-6.1-sol · medium fixed Demo A through the factory; turn → first command 14 s) and probe 2.2 PASS_LIVE (Claude review with an explicit `sonnet` after the account default `fable[1m]` was refused before the model; PASS, QA 2/2, bundle `bnd_mupj3diq_d386324921` awaiting the owner's acceptance). Probe 2.3 (Demo B, `mis_mupj3zl4_9970bdd58b`) is prepared and needs the owner's „Aprobă și pornește” (the session safety classifier refuses an agent approving the scope on the owner's behalf); 2.5 and 2.6 NOT_RUN.
+
 Owner decisions:
+- **Demo A bundle:** accept or reject `bnd_mupj3diq_d386324921` (Misiuni → „Numele din spații trebuie refuzat”).
+- **Probe 2.3:** LIVE_VALIDATION + Codex RW × 3 and Claude RO × 3 grants on Demo B, then „Aprobă și pornește” on `mis_mupj3zl4_9970bdd58b`.
 - **R2 (P0, open):** the Codex Windows sandbox reads the whole host outside the denied paths.
   - The gate now admits Codex only on hub-test projects, or on a project with the owner's time-limited acceptance. That acceptance is not isolation.
   - Real fix: a separate environment (WSL2 / VM) with only the workspace mounted. Needs install approval. See `M03_RUNTIME_READINESS.md` §3.
@@ -31,7 +35,7 @@ Not live-verified (NOT_RUN):
 - Software Factory with real models: Codex writer on the current (post-MCP-fix) route, Claude review, the repair round-trip, Stop during a real turn, Lega engineering proposal.
 - The runner and preview under the real `codex sandbox` (localhost listening under the offline sandbox user is unverified).
 
-Performance (P1): the ~8 minutes are NOT attributed yet.
+Performance (P1): mostly attributed by live probe 2.1 (n=1): effort `max` was the main cause (turn → first command 14 s at `medium` vs 290–467 s at `max`); the first sandbox command with the real profile costs ~150 s once (ACL application), later commands ~5 s. See `M03_PERFORMANCE_REPORT.md` §4.
 - Measured before (n=2): Hub ≤ 7 s; turn → first command 290–467 s; both threads at effort `max`.
 - Fixed: explicit effort (`medium` by default, verified before the turn).
 - Sandbox-only timing on a fictive profile: ~4–6 s per command. Missing: `--real-profile` (large real deny list) and a live `medium` turn. See `M03_PERFORMANCE_REPORT.md`.

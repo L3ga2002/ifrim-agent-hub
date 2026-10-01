@@ -622,3 +622,61 @@ test("M03-FAC-25 attempts really used up: a plain resume is the owner's decision
     assert.equal(done.factory.stage, "DELIVERY_READY", done.factory.stageReason);
   } finally { await t.cleanup(); }
 });
+
+test("M03-FAC-26 the account's Claude default (Fable) is refused before the model; on resume the owner picks an allowed reviewer model, which is sent with --model; the refused start is not an attempt", async () => {
+  const t = await factoryHub("bug-demo");
+  try {
+    const { mission } = await prepare(t, "bug-demo", { limits: { maxAttemptsPerStage: 1 } });
+    t.queue("codex", "factory-write:bug-fix");
+    t.queue("claude", "init-fable", "review:pass");
+    await approveAndStart(t, mission.id);
+    const refused = await untilStage(t, mission.id, ["BLOCKED", "NEEDS_OWNER_DECISION", "DELIVERY_READY"]);
+    await idleWithin(t, mission.id);
+    assert.equal(refused.factory.stage, "BLOCKED", refused.factory.stageReason);
+    assert.match(refused.factory.stageReason, /billing/);
+    for (const bad of ["fable", "best", "sonnet[1m]", "claude-fable-5", "--model x", "default", "fable5", "sonet"]) {
+      await assert.rejects(dispatch(t.hub, "factory.resume", { missionId: mission.id, reviewerModel: bad }, "ui"), /nu e permis|validation/i, bad);
+    }
+    assert.equal(view(t, mission.id).factory.stage, "BLOCKED", "a refused choice changes nothing");
+    // Chosen together with another decision of the same resume (an extra cycle): the model choice is kept.
+    const resumed = (await dispatch(t.hub, "factory.resume", { missionId: mission.id, reviewerModel: "sonnet", allowExtraCycle: true }, "ui")).result;
+    assert.equal(resumed.factory.limits.reviewerModel, "sonnet");
+    assert.equal(view(t, mission.id).factory.limits.reviewerModel, "sonnet", "stored, not overwritten by the extra-cycle limits");
+    const done = await untilStage(t, mission.id, ["DELIVERY_READY", "NEEDS_OWNER_DECISION", "BLOCKED"]);
+    assert.equal(done.factory.stage, "DELIVERY_READY", done.factory.stageReason);
+    const reviews = done.dispatches.filter((d) => d.stage === "REVIEWING");
+    assert.deepEqual(reviews.map((d) => [d.status, d.request.model]), [["FAILED", ""], ["DONE", "sonnet"]]);
+    assert.equal(reviews[1].request.counted, 1, "the start stopped before the model is not an attempt (limit 1 still allows the review)");
+    const invocations = t.readLog("claude").filter((e) => Array.isArray(e.args) && e.args.includes("-p"));
+    const last = invocations.at(-1).args;
+    assert.equal(last[last.indexOf("--model") + 1], "sonnet", "the chosen model is sent explicitly");
+    assert.equal(t.hub.bus.query({ typePrefix: "factory.model_override", limit: 5 }).length, 1);
+  } finally { await t.cleanup(); }
+});
+
+test("M03-FAC-27 Claude can never switch models on its own: a fallbackModel in the user settings refuses the start before the model; a model switch during the run stops it at once", async () => {
+  const t = await factoryHub("bug-demo");
+  const settings = path.join(t.homeDir, ".claude", "settings.json");
+  try {
+    const { mission } = await prepare(t, "bug-demo");
+    t.queue("codex", "factory-write:bug-fix");
+    t.queue("claude", "fallback-fable", "review:pass");
+    fs.writeFileSync(settings, JSON.stringify({ fallbackModel: ["fable"] }));
+    await approveAndStart(t, mission.id);
+    const refused = await untilStage(t, mission.id, ["BLOCKED", "NEEDS_OWNER_DECISION", "DELIVERY_READY"]);
+    await idleWithin(t, mission.id);
+    assert.equal(refused.factory.stage, "BLOCKED");
+    assert.match(refused.factory.stageReason, /fallbackModel/);
+    assert.equal(t.readLog("claude").filter((e) => Array.isArray(e.args) && e.args.includes("-p")).length, 0, "no Claude process was started");
+    fs.rmSync(settings, { force: true });
+    await dispatch(t.hub, "factory.resume", { missionId: mission.id, reviewerModel: "sonnet" }, "ui");
+    const switched = await untilStage(t, mission.id, ["BLOCKED", "NEEDS_OWNER_DECISION", "DELIVERY_READY"]);
+    await idleWithin(t, mission.id);
+    assert.equal(switched.factory.stage, "BLOCKED");
+    assert.match(switched.factory.stageReason, /comutat modelul/);
+    assert.equal(switched.reviews.length, 0, "a review from a switched model is never recorded");
+    await dispatch(t.hub, "factory.resume", { missionId: mission.id }, "ui");
+    const done = await untilStage(t, mission.id, ["DELIVERY_READY", "NEEDS_OWNER_DECISION", "BLOCKED"]);
+    assert.equal(done.factory.stage, "DELIVERY_READY", done.factory.stageReason);
+  } finally { fs.rmSync(settings, { force: true }); await t.cleanup(); }
+});

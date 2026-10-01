@@ -78,3 +78,29 @@ Nu promit o durată finală înaintea acestor măsurători.
 Testele cu provideri falși înregistrează aceleași faze. Ele dovedesc că instrumentarea funcționează (M03-TL-01, M03-FAC-01), nu viteza reală.
 
 Un flux Software Factory simulat complet durează 30–90 s pe acest calculator, din cauza pornirii proceselor Node. Timpul nu e reprezentativ pentru providerii reali.
+
+## 4. Live: proba 2.1, Codex writer prin Software Factory pe Demo A (2026-10-01, PASS_LIVE, n = 1)
+
+Execuția `run_muphc63x_ef0699abd6`: `gpt-6.1-sol`, efort `medium` (trimis explicit și confirmat de thread), workspace-write, profil `ifrim_hub_rw`.
+
+| Fază | Durată |
+|---|---|
+| Hub: cerere → turn trimis (poartă, lease, grant, backup, git, proces, handshake, cont, limite, thread, MCP) | **4,2 s** |
+| Turn → primul text | 4,9 s |
+| Turn → **prima comandă** | **14,1 s** (înainte: 290–467 s la `max`) |
+| Prima comandă, execuția ei în sandbox | 6,2 s |
+| Prima comandă terminată → prima modificare de fișier | 48,2 s |
+| Prima modificare → final | 57,4 s |
+| **Total execuție** | **130,1 s** |
+
+Runner-ul Hub, prin `codex sandbox` cu profilul real:
+
+| Comandă | Durată |
+|---|---|
+| baseline: `node --test test/acceptance.test.mjs` (prima comandă din sandbox după acordul R3) | **151,3 s** |
+| verificări: `node --test` (a doua comandă) | **5,2 s** |
+
+**Concluzie, cu n = 1:**
+- **Cauza principală a celor ~8 minute era efortul `max` moștenit (H2).** La `medium`, turn → prima comandă coboară de la 290–467 s la 14 s.
+- **Sandbox-ul (H1) are un cost unic, nu repetat.** Prima comandă din sandbox cu profilul real a durat ~2,5 minute, foarte probabil scrierea ACL-urilor DENY pe căile reale (inclusiv intrările R3 noi). Comenzile următoare iau ~5–6 s.
+- Pentru o concluzie fermă trebuie mai multe măsurători: o a doua execuție rece și `--real-profile`.

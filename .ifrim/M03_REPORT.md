@@ -17,7 +17,12 @@ Raportul M01 + M02 + Lega rămâne în `M01_M02_REPORT.md`, cu limitările lui.
 - **R3 e reparat și verificat pe arbore fictiv** (canary PASS_LOCAL, 50 de verificări). Ți-ai dat acordul pe lista nouă din UI.
 - **R2 e blocat în poartă, dar nu e rezolvat.** Canary-ul îl confirmă (4 citiri ALLOWED). Pentru un proiect real propun un mediu separat (WSL2 sau VM).
 - **Playwright 1.61.0 e instalat**, fără descărcare de browser. Fabrica rulează acum E2E în browser real pe preview; testat cu Chromium real.
-- **Pregătit pentru prima probă live:** proiectele demo A și B există. Poarta pentru Codex pe Demo A mai cere doar modul LIVE_VALIDATION și grantul (pachetul exact: `M03_LIVE_VALIDATION_PLAN.md` §2.1).
+- **Probe live 2.1 + 2.2: PASS_LIVE** (2026-10-01).
+  - Demo A a parcurs live tot fluxul fabricii: Codex a reparat bug-ul, Claude (sonnet) a dat PASS, QA 2/2, pachet gata de acceptare.
+  - Proba 2.3 (Demo B) e pregătită și așteaptă clicul tău „Aprobă și pornește”.
+  - Detalii: `M03_LIVE_VALIDATION_PLAN.md`.
+- **Proba live 2.1 (detalii):** Codex a reparat bug-ul din Demo A prin fabrică: baseline roșu, writer, verificări 6/6, apoi oprire curată la review (fără grant Claude). La efort `medium`, turn → prima comandă a durat **14 s**, față de 290–467 s înainte. Detalii: `M03_PERFORMANCE_REPORT.md` §4.
+- **Înainte de probă:** proiectele demo A și B există. Poarta pentru Codex pe Demo A mai cere doar modul LIVE_VALIDATION și grantul (pachetul exact: `M03_LIVE_VALIDATION_PLAN.md` §2.1).
 
 ## 2. Baseline-ul verificat și ce am refolosit
 

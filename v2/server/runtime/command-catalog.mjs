@@ -144,8 +144,8 @@ export function registerCommands(commands, hub) {
   reg("factory.pause", { describe: "Pauză: etapa curentă se întrerupe, următoarea nu pornește până reiei", async: true,
     schema: { missionId: { required: true, max: 80 } }, channels: ["ui", "test", "voice", "companion"], execute: (input, ctx) => hub.factory.pause(input.missionId, { actor: ctx.actor }) });
   reg("factory.resume", { describe: "Reia misiunea de unde au rămas dovezile (opțional: încă un ciclu de remediere sau QA după un review neconcludent — decizia ta)", async: true,
-    schema: { missionId: { required: true, max: 80 }, allowExtraCycle: { type: "boolean", default: false }, proceedToQa: { type: "boolean", default: false } },
-    execute: (input, ctx) => hub.factory.resume(input.missionId, { actor: ctx.actor, allowExtraCycle: input.allowExtraCycle, proceedToQa: input.proceedToQa }) });
+    schema: { missionId: { required: true, max: 80 }, allowExtraCycle: { type: "boolean", default: false }, proceedToQa: { type: "boolean", default: false }, reviewerModel: { max: 64, default: "" } },
+    execute: (input, ctx) => hub.factory.resume(input.missionId, { actor: ctx.actor, allowExtraCycle: input.allowExtraCycle, proceedToQa: input.proceedToQa, reviewerModel: input.reviewerModel }) });
   reg("factory.accept", { describe: "Accepți local pachetul de livrare (OWNER_ACCEPTED; fără commit, push sau deploy)", async: true,
     schema: { missionId: { required: true, max: 80 }, note: { max: 500, default: "" } }, execute: (input, ctx) => hub.factory.accept(input.missionId, { note: input.note, actor: ctx.actor }) });
   reg("factory.reject", { describe: "Respingi rezultatul (cu motiv)", async: true,
