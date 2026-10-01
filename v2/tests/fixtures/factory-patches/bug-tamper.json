@@ -1,0 +1,6 @@
+{
+  "summary": "Fixture de integritate: slăbește testul de acceptanță protejat.",
+  "write": {
+    "test/acceptance.test.mjs": "// Test de acceptanță INDEPENDENT (protejat de Software Factory după aprobarea scope-ului): descrie comportamentul cerut.\nimport test from \"node:test\";\nimport assert from \"node:assert/strict\";\nimport { validateRequest } from \"../src/requests.js\";\n\ntest(\"AC-1: un nume format doar din spații este refuzat cu mesajul pentru nume\", () => {\n  const r = validateRequest({ name: \"   \", email: \"ana@example.ro\", service: \"audit\" });\n  assert.ok(r);\n});\n\ntest(\"AC-2: o solicitare validă rămâne acceptată\", () => {\n  assert.equal(validateRequest({ name: \"Ion\", email: \"ion@example.ro\", service: \"mentenanta\" }).ok, true);\n});\n"
+  }
+}

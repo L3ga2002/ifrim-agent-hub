@@ -51,13 +51,16 @@ test("M03-RF-01 Codex model check is exact: the requested id passes (case/space-
     assert.equal(methods(variant, "turn/start").length, 0, "no turn was started");
   } finally { await variant.cleanup(); }
 
-  // No model requested: Codex keeps its default and the run is not stopped (unchanged behaviour).
+  // No model requested. M02 left the choice to Codex's config default and skipped the check; M03 §09/T06 REPLACED that rule:
+  // the Hub now sends the account default from model/list explicitly, so a variant reported for it stops before the turn too.
   const unrequested = await makeTestHub({ codex: "model-variant" });
   try {
     const run = await codexRun(unrequested);
-    assert.equal(run.status, "completed", run.errorMessage || "");
-    assert.equal(methods(unrequested, "thread/start")[0].params.model, undefined);
-    assert.equal(methods(unrequested, "turn/start").length, 1);
+    assert.equal(run.status, "blocked", "the default model is explicit now, so a substitute is caught");
+    assert.match(run.errorMessage, /gpt-fake-sol-mini în loc de gpt-fake-sol/);
+    assert.equal(methods(unrequested, "thread/start")[0].params.model, "gpt-fake-sol", "the account default from model/list was sent");
+    assert.equal(run.plan.modelSource, "model/list (implicit al contului)");
+    assert.equal(methods(unrequested, "turn/start").length, 0);
   } finally { await unrequested.cleanup(); }
 });
 

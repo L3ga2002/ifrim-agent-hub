@@ -1,0 +1,17 @@
+{
+  "verdict": "CHANGES_REQUESTED",
+  "summary": "Lipsește prevenirea dublării cerută de AC-3.",
+  "findings": [
+    {
+      "severity": "high",
+      "file": "src/server-app.js",
+      "area": "deduplicare",
+      "observation": "Solicitările identice nu sunt refuzate: DEDUPE este false",
+      "impact": "AC-3 nu este îndeplinit; dubluri în bază",
+      "evidence": "const DEDUPE = false;",
+      "reproduction": "POST de două ori același corp → 201 de ambele ori"
+    }
+  ],
+  "missingContext": [],
+  "previousFindings": "ALL_RESOLVED"
+}

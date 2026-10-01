@@ -6,6 +6,8 @@ import { transitionTask } from "./state-machine.mjs";
 import { buildTurnPrompt } from "./prompt.mjs";
 import { gitState } from "../tools/git.mjs";
 import { redactText } from "../security/redact.mjs";
+import { resolveRunPlan, planRecord, DEFAULT_PROFILE } from "../policy/run-plan.mjs";
+import { createTimeline, summarizeTimeline } from "./timeline.mjs";
 
 const PERSIST_INTERVAL_MS = 700;
 const APPROVAL_WAIT_MINUTES = 15;
@@ -21,19 +23,21 @@ export const SURFACE_BY_PROVIDER = Object.freeze({ codex: "openai.codex_app_serv
  * persisted result. A finished model turn moves its task to VERIFYING, never to COMPLETED.
  */
 export function createRunManager(deps) {
-  const { db, bus, clock, settings, projects, conversations, missions, gate, leases, grants, backups, approvals, providers, breakers, usage, live } = deps;
+  const { db, bus, clock, settings, projects, conversations, missions, gate, leases, grants, backups, approvals, providers, breakers, usage, live, providerState = null } = deps;
   const surfaceOf = (provider) => SURFACE_BY_PROVIDER[provider] || null;
   const active = new Map(); // runId -> { handle, conversationId, provider, leaseId, taskId }
   const approvalWaiters = new Map(); // approvalId -> resolve
   const starting = new Set(); // conversationId currently being admitted
   let voice = null; // Lega session manager (late-bound): Stop All must end the voice session too
+  let factory = null; // Software Factory (late-bound): Stop All stops its missions before the next stage can start
 
   const rowToRun = (row) => row && ({ id: row.id, taskId: row.task_id, conversationId: row.conversation_id, roleId: row.role_id, stage: row.stage,
     provider: row.provider, model: row.model, effort: row.effort, access: row.access, status: row.status, providerSessionId: row.provider_session_id,
     nativeThreadId: row.native_thread_id, nativeTurnId: row.native_turn_id, pid: row.pid, inputMessageId: row.input_message_id, outputMessageId: row.output_message_id,
     codeVersion: row.code_version, backupId: row.backup_id, approvalId: row.approval_id, grantId: row.grant_id, errorCategory: row.error_category,
     errorMessage: row.error_message, preInference: Boolean(row.pre_inference), usage: parse(row.usage_json, {}), evidence: parse(row.evidence_json, {}),
-    lastEventAt: row.last_event_at, startedAt: row.started_at, finishedAt: row.finished_at, createdAt: row.created_at, legacyId: row.legacy_id });
+    lastEventAt: row.last_event_at, startedAt: row.started_at, finishedAt: row.finished_at, createdAt: row.created_at, legacyId: row.legacy_id,
+    timeline: parse(row.timeline_json, {}), plan: parse(row.plan_json, {}) });
 
   const getRun = (id) => rowToRun(db.prepare("SELECT * FROM agent_runs WHERE id = ?").get(id));
   const listRuns = ({ conversationId = null, taskId = null, status = null, limit = 100 } = {}) => {
@@ -44,24 +48,36 @@ export function createRunManager(deps) {
     return db.prepare(`SELECT * FROM agent_runs ${where.length ? `WHERE ${where.join(" AND ")}` : ""} ORDER BY created_at DESC LIMIT ?`).all(...args, limit).map(rowToRun);
   };
 
-  function recordBlockedRun({ conversation, provider, access, taskId, stage, roleId, inputMessageId, category, message, evidence }) {
+  function recordBlockedRun({ conversation, provider, access, taskId, stage, roleId, inputMessageId, category, message, evidence, timeline = null, plan = null }) {
     const id = newId("run");
     const now = clock().toISOString();
     bus.transaction(() => {
-      db.prepare(`INSERT INTO agent_runs (id, task_id, conversation_id, role_id, stage, provider, access, status, input_message_id, error_category, error_message, pre_inference, evidence_json, created_at, finished_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, 'blocked', ?, ?, ?, 1, ?, ?, ?)`).run(id, taskId, conversation.id, roleId || "", stage || "assist", provider, access, inputMessageId, category, message, json(evidence), now, now);
+      db.prepare(`INSERT INTO agent_runs (id, task_id, conversation_id, role_id, stage, provider, model, effort, access, status, input_message_id, error_category, error_message, pre_inference, evidence_json,
+        timeline_json, plan_json, created_at, finished_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'blocked', ?, ?, ?, 1, ?, ?, ?, ?, ?)`).run(id, taskId, conversation.id, roleId || "", stage || "assist", provider, plan?.model || "", plan?.effort || "", access,
+        inputMessageId, category, message, json(evidence), json(timeline ? timeline.toJSON() : {}), json(plan ? planRecord(plan) : {}), now, now);
       bus.append({ type: "run.blocked", scopeType: "conversation", scopeId: conversation.id, projectId: conversation.projectId, source: "hub", runId: id,
         payload: { provider, category, message, preInference: true } });
     });
     return getRun(id);
   }
 
-  async function start({ conversationId, provider, access = "read-only", model = "", effort = "", taskId = null, stage = "assist", roleId = "", grantId = null, actor = "user", correlationId = null }) {
+  /**
+   * `profile` picks the Hub effort profile when no explicit effort is given (M03 §09); `requestedAt` / `approval` let the
+   * timeline start at the owner's request instead of at admission (M03 §08). Both are optional for older callers.
+   */
+  async function start({ conversationId, provider, access = "read-only", model = "", effort = "", profile = DEFAULT_PROFILE, taskId = null, stage = "assist", roleId = "", grantId = null,
+    actor = "user", correlationId = null, requestedAt = null, approval = null }) {
     const adapter = providers[provider];
     if (!adapter) throw new HubError("validation", `Unknown provider ${provider}`);
     const conversation = conversations.get(conversationId);
     if (!conversation) throw new HubError("not_found", "Conversation not found");
     const project = projects.get(conversation.projectId);
+    const timeline = createTimeline(clock);
+    if (requestedAt) timeline.mark("requested", requestedAt);
+    if (approval?.createdAt) timeline.mark("approval_requested", approval.createdAt);
+    if (approval?.decidedAt) timeline.mark("approval_decided", approval.decidedAt);
+    timeline.mark("dispatch");
     const openHandoff = db.prepare("SELECT id, to_provider, status, step FROM handoffs WHERE conversation_id = ? AND status IN ('in_progress','waiting','ready') ORDER BY created_at DESC LIMIT 1").get(conversationId);
     if (openHandoff && openHandoff.to_provider !== provider) {
       throw new HubError("task", `A handoff to ${openHandoff.to_provider} is in progress for this conversation`);
@@ -76,61 +92,75 @@ export function createRunManager(deps) {
     if (starting.has(conversationId) || [...active.values()].some((a) => a.conversationId === conversationId)) {
       throw new HubError("conflict", "This conversation already has a run starting or running");
     }
+    // Model and effort are decided here, explicitly, before the gate: nothing is left to the provider's config defaults.
+    // The gate reports it as one of its checks (run_plan), so every reason a run cannot start is shown together.
+    const plan = resolveRunPlan({ provider, model, effort, profile: profile || DEFAULT_PROFILE, providerState: providerState?.get(provider) || null });
+    if (!plan.problem) timeline.mark("plan_resolved");
     const resource = workspaceResource(project.path);
-    const decision = gate.evaluate({ provider, projectId: project.id, access, grantId, workspaceResource: resource });
+    const decision = gate.evaluate({ provider, projectId: project.id, access, grantId, workspaceResource: resource, plan });
+    timeline.mark("gate_checked");
     if (!decision.allowed) {
       const failed = decision.checks.filter((c) => !c.ok);
       const run = recordBlockedRun({ conversation, provider, access, taskId, stage, roleId, inputMessageId: lastUser.id, category: "gate",
-        message: failed.map((c) => `${c.id}: ${c.detail}`).join(" · "), evidence: { gate: decision } });
+        message: failed.map((c) => `${c.id}: ${c.detail}`).join(" · "), evidence: { gate: decision }, timeline, plan });
       throw new HubError("gate", "Execution gate refused the run", { data: { runId: run.id, checks: decision.checks } });
     }
 
     starting.add(conversationId);
     let lease = null;
+    let grant = null;
     const runId = newId("run");
     try {
       lease = bus.transaction(() => leases.acquire({ resource, holder: `${provider}:${runId}`, taskId, runId: null, ttlSeconds: 1800 }));
+      timeline.mark("lease_acquired");
       const grantCheck = decision.checks.find((c) => c.id === "live_grant");
-      const grant = grantCheck?.grantId ? bus.transaction(() => grants.consumeAttempt(grantCheck.grantId)) : null;
+      grant = grantCheck?.grantId ? bus.transaction(() => grants.consumeAttempt(grantCheck.grantId)) : null;
+      if (grant) timeline.mark("grant_consumed");
 
       let backup = backups.freshVerified(project.id);
       if (!backup.ok) {
         const created = await backups.run(project.id, `pre-run ${runId}`, "hub");
         if (created?.status !== "verified") {
           bus.transaction(() => leases.release(lease.id, "backup gate failed"));
+          // Nothing reached a provider: the attempt taken above goes back (bounded, see refundPreInference).
+          if (grant) refundPreInference(grant.id, `backup gate failed before ${runId} started`);
           const run = recordBlockedRun({ conversation, provider, access, taskId, stage, roleId, inputMessageId: lastUser.id, category: "gate",
-            message: `Backup gate: ${created?.status || "failed"} ${created?.error || ""}`.trim(), evidence: { backupId: created?.id } });
+            message: `Backup gate: ${created?.status || "failed"} ${created?.error || ""}`.trim(), evidence: { backupId: created?.id }, timeline, plan });
           throw new HubError("gate", "Backup gate failed; the model was not started", { data: { runId: run.id, backupId: created?.id } });
         }
-        backup = { ok: true, backup: created };
+        backup = { ok: true, backup: created, created: true };
       }
+      timeline.mark("backup_ready");
 
       const git = await gitState(project.path);
+      timeline.mark("git_state");
       const now = clock().toISOString();
       const sessionId = conversations.latestSession(conversationId, provider);
       let outputMessage;
       const taskRow = taskId ? db.prepare("SELECT department_id, route_decision_id FROM tasks WHERE id = ?").get(taskId) : null;
       const skillVersions = roleId && deps.skills ? deps.skills.forRole(roleId) : [];
+      timeline.mark("run_recorded");
       bus.transaction(() => {
         db.prepare(`INSERT INTO agent_runs (id, task_id, conversation_id, role_id, stage, provider, model, effort, access, status, provider_session_id, input_message_id,
-          code_version, backup_id, grant_id, last_event_at, started_at, created_at, surface_id, department_id, route_decision_id, correlation_id, skill_versions_json)
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'running', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
-          .run(runId, taskId, conversationId, roleId, stage, provider, model, effort, access, sessionId || null, lastUser.id, git.head || "", backup.backup.id, grant?.id || null, now, now, now,
-            surfaceOf(provider), taskRow?.department_id || null, taskRow?.route_decision_id || null, correlationId || runId, json(skillVersions));
+          code_version, backup_id, grant_id, last_event_at, started_at, created_at, surface_id, department_id, route_decision_id, correlation_id, skill_versions_json, timeline_json, plan_json)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'running', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+          .run(runId, taskId, conversationId, roleId, stage, provider, plan.model, plan.effort, access, sessionId || null, lastUser.id, git.head || "", backup.backup.id, grant?.id || null, now, now, now,
+            surfaceOf(provider), taskRow?.department_id || null, taskRow?.route_decision_id || null, correlationId || runId, json(skillVersions), json(timeline.toJSON()), json(planRecord(plan)));
         leases.attachRun(lease.id, runId);
-        outputMessage = conversations.addMessage({ conversationId, role: "assistant", content: "", provider, model, runId, status: "streaming", metadata: { access } }, "hub");
+        outputMessage = conversations.addMessage({ conversationId, role: "assistant", content: "", provider, model: plan.model, runId, status: "streaming", metadata: { access } }, "hub");
         db.prepare("UPDATE agent_runs SET output_message_id = ? WHERE id = ?").run(outputMessage.id, runId);
         conversations.update(conversationId, { status: "running", writerProvider: provider }, "hub");
         if (taskId) transitionTask(db, bus, clock, { taskId, to: "RUNNING", reason: `Run ${runId} started on ${provider}`, actor });
         bus.append({ type: "run.started", scopeType: "conversation", scopeId: conversationId, projectId: project.id, source: actor, runId,
-          payload: { provider, model, effort, access, backupId: backup.backup.id, grantId: grant?.id || null, codeVersion: git.head } });
+          payload: { provider, model: plan.model, effort: plan.effort, effortSource: plan.effortSource, profile: plan.profile, access, backupId: backup.backup.id, backupCreated: Boolean(backup.created),
+            grantId: grant?.id || null, codeVersion: git.head } });
       });
 
       const prompt = buildTurnPrompt({ db, conversations, conversation, project, git, provider, runId });
       let content = "";
       let lastPersist = 0;
       const handle = adapter.startTurn({
-        runId, cwd: project.path, prompt: prompt.text, access, model, effort,
+        runId, cwd: project.path, prompt: prompt.text, access, model: plan.model, effort: plan.effort,
         threadId: provider === "codex" ? sessionId : undefined, sessionId: provider === "claude" ? sessionId : undefined,
         trustedWorkspace: project.trustedConfig,
         admitUsage: (snapshot) => usage.admit(provider, snapshot),
@@ -140,7 +170,8 @@ export function createRunManager(deps) {
           if (Date.now() - lastPersist > PERSIST_INTERVAL_MS) { conversations.updateStreaming(outputMessage.id, content); lastPersist = Date.now(); }
         }),
       });
-      active.set(runId, { handle, conversationId, provider, leaseId: lease.id, taskId, outputMessageId: outputMessage.id, promptPackage: prompt.packageRef, startedAt: clock().toISOString(), lastEventAt: null, firstOutputAt: null });
+      active.set(runId, { handle, conversationId, provider, leaseId: lease.id, taskId, outputMessageId: outputMessage.id, promptPackage: prompt.packageRef, startedAt: clock().toISOString(), lastEventAt: null, firstOutputAt: null, timeline });
+      if (handle.pid) markPhase(runId, "process_spawned");
       db.prepare("UPDATE agent_runs SET pid = ?, pid_started_at = ? WHERE id = ?").run(handle.pid || null, clock().toISOString(), runId);
       handle.done.then((result) => finalize(runId, result, () => content)).catch((error) => finalize(runId, { status: "failed", errorCategory: "internal", error: error.message, output: content }, () => content));
       return { run: getRun(runId), gate: decision };
@@ -155,13 +186,39 @@ export function createRunManager(deps) {
     }
   }
 
+  /** Records one timeline phase of an active run (first observation only) and persists the timeline. */
+  function markPhase(runId, phase, at = null) {
+    const entry = active.get(runId);
+    if (!entry?.timeline) return;
+    if (entry.timeline.mark(phase, at)) db.prepare("UPDATE agent_runs SET timeline_json = ? WHERE id = ?").run(json(entry.timeline.toJSON()), runId);
+  }
+
+  /**
+   * Gives a grant attempt back after a start that provably never reached the model (no turn was sent). Bounded: at most
+   * `maxAttempts` refunds per grant, so a start that keeps failing before inference cannot loop on one grant forever.
+   * This is the Hub's own attempt counter, not a refund of provider usage.
+   */
+  function refundPreInference(grantId, reason) {
+    const current = grants.get(grantId);
+    if (!current) return null;
+    const refunds = db.prepare("SELECT COUNT(*) AS n FROM events WHERE type = 'grant.refunded' AND scope_id = ?").get(grantId).n;
+    if (refunds >= current.maxAttempts) {
+      bus.emit({ type: "grant.refund_refused", scopeType: "grant", scopeId: grantId, source: "hub", payload: { reason: "refund cap reached", refunds } });
+      return current;
+    }
+    return bus.transaction(() => grants.refundAttempt(grantId, "hub", reason));
+  }
+
   function onProviderEvent(runId, conversationId, event, appendText) {
     const now = clock().toISOString();
     db.prepare("UPDATE agent_runs SET last_event_at = ? WHERE id = ?").run(now, runId);
     // Observable phase only (no progress is inferred): waiting for the provider until the first output arrives.
     const entry = active.get(runId);
     if (entry) { entry.lastEventAt = now; if (event.type === "delta" && !entry.firstOutputAt) entry.firstOutputAt = now; }
+    if (event.type === "phase") { markPhase(runId, event.phase, event.at || null); return; }
+    if (entry?.timeline?.has("turn_acknowledged") && event.type !== "usage") markPhase(runId, "first_event");
     if (event.type === "delta") {
+      markPhase(runId, "first_output");
       appendText(event.text);
       live.publish({ type: "run.delta", conversationId, runId, text: event.text });
       return;
@@ -169,6 +226,10 @@ export function createRunManager(deps) {
     if (event.type === "session") {
       db.prepare("UPDATE agent_runs SET native_thread_id = ?, provider_session_id = COALESCE(provider_session_id, ?) WHERE id = ?").run(event.nativeSessionId || null, event.nativeSessionId || null, runId);
       if (event.model) db.prepare("UPDATE agent_runs SET model = CASE WHEN model = '' THEN ? ELSE model END WHERE id = ?").run(String(event.model), runId);
+      // What the provider reported for this thread, next to what the Hub sent (the adapter stops the run on a mismatch).
+      const plan = parse(db.prepare("SELECT plan_json FROM agent_runs WHERE id = ?").get(runId)?.plan_json, {});
+      db.prepare("UPDATE agent_runs SET plan_json = ? WHERE id = ?").run(json({ ...plan, reported: { model: event.model ? String(event.model).slice(0, 80) : null,
+        effort: event.reasoningEffort ? String(event.reasoningEffort).slice(0, 20) : null, source: entry?.provider === "codex" ? "thread/start" : "init" } }), runId);
     }
     if (event.type === "turn") db.prepare("UPDATE agent_runs SET native_turn_id = ? WHERE id = ?").run(event.turnId || null, runId);
     if (event.type === "usage") {
@@ -249,7 +310,10 @@ export function createRunManager(deps) {
     const status = result.status === "completed" ? "completed" : result.status === "interrupted" ? "interrupted" : pre ? "blocked" : "failed";
     const record = entry ? deps.supervisorRecord?.(entry.handle.key) : null;
     const processGone = !record || record.exited;
+    if (entry?.timeline) entry.timeline.mark("finished");
+    const turnSent = Boolean(entry?.timeline?.has("turn_sent"));
     bus.transaction(() => {
+      if (entry?.timeline) db.prepare("UPDATE agent_runs SET timeline_json = ? WHERE id = ?").run(json(entry.timeline.toJSON()), runId);
       db.prepare(`UPDATE agent_runs SET status = ?, error_category = ?, error_message = ?, pre_inference = ?, finished_at = ?, native_thread_id = COALESCE(native_thread_id, ?),
         native_turn_id = COALESCE(native_turn_id, ?), usage_json = ?, evidence_json = ? WHERE id = ?`)
         .run(status, result.errorCategory || null, result.error ? redactText(String(result.error)).slice(0, 2000) : null, pre ? 1 : 0, clock().toISOString(),
@@ -277,6 +341,9 @@ export function createRunManager(deps) {
         scopeId: run.conversationId, source: "hub", runId, payload: { provider: run.provider, status, errorCategory: result.errorCategory || null, preInference: pre } });
     });
     breakers.record(run.provider, status === "completed" ? null : result.errorCategory || null);
+    // A start that stopped before any turn reached the model (policy/MCP/model/effort checks, auth, quota) gives its grant
+    // attempt back; the evidence is the timeline (no turn_sent) plus the pre-inference flag. An uncertain outcome never does.
+    if (run.grantId && pre && !turnSent && status !== "completed") refundPreInference(run.grantId, `${runId} stopped before inference (${result.errorCategory || status})`);
   }
 
   async function interrupt(runId, reason = "user") {
@@ -295,6 +362,8 @@ export function createRunManager(deps) {
       grants.revokeAll(actor, reason);
       deps.policy?.revokeTaskScopes(null, reason, actor);
     });
+    // Factory missions are marked cancelled FIRST, so a run that ends below cannot trigger the next stage.
+    const factoryPromise = factory ? factory.stopAll(reason).catch((error) => [{ error: error.message }]) : null;
     const interrupted = [];
     for (const [runId, entry] of [...active.entries()]) {
       const result = await entry.handle.interrupt("stop-all").catch((error) => ({ interrupted: false, error: error.message }));
@@ -302,12 +371,15 @@ export function createRunManager(deps) {
     }
     for (const [approvalId, resolve] of approvalWaiters) { approvalWaiters.delete(approvalId); resolve("decline"); }
     const voiceSession = voicePromise ? await voicePromise : null;
-    bus.emit({ type: "system.stop_all", scopeType: "system", scopeId: "hub", source: actor, payload: { reason, interrupted: interrupted.length, voiceStopped: Boolean(voiceSession) } });
-    return { gate: "suspended", interrupted, voiceSession, cloudTasksUnconfirmed: [], irreversibleEffects: [],
+    const factoryMissions = factoryPromise ? await factoryPromise : [];
+    bus.emit({ type: "system.stop_all", scopeType: "system", scopeId: "hub", source: actor, payload: { reason, interrupted: interrupted.length, voiceStopped: Boolean(voiceSession), factoryMissions: factoryMissions.length } });
+    return { gate: "suspended", interrupted, voiceSession, factoryMissions, cloudTasksUnconfirmed: [], irreversibleEffects: [],
       note: "No cloud tasks or external effects are started by this Hub build; only local provider processes were interrupted." };
   }
 
   const activeRuns = () => [...active.entries()].map(([runId, entry]) => ({ runId, provider: entry.provider, conversationId: entry.conversationId, pid: entry.handle.pid, taskId: entry.taskId || null,
-    startedAt: entry.startedAt || null, lastEventAt: entry.lastEventAt || null, firstOutputAt: entry.firstOutputAt || null, phase: entry.firstOutputAt ? "streaming" : "waiting_provider" }));
-  return { start, interrupt, stopAll, resolveApproval, getRun, listRuns, activeRuns, activeCount: () => active.size + starting.size, rowToRun, attachVoice: (v) => { voice = v; } };
+    startedAt: entry.startedAt || null, lastEventAt: entry.lastEventAt || null, firstOutputAt: entry.firstOutputAt || null, phase: entry.firstOutputAt ? "streaming" : "waiting_provider",
+    timeline: entry.timeline ? entry.timeline.toJSON() : {} }));
+  return { start, interrupt, stopAll, resolveApproval, getRun, listRuns, activeRuns, activeCount: () => active.size + starting.size, rowToRun, attachVoice: (v) => { voice = v; }, attachFactory: (f) => { factory = f; },
+    timelineOf: (runId) => summarizeTimeline(getRun(runId)?.timeline || {}), refundPreInference };
 }

@@ -341,7 +341,7 @@ function ActiveView({ status, elapsed, session, micMuted, legaMuted, onMic, onSo
         <span className="lega-meter" title="Nivelul microfonului"><Mic size={12} aria-hidden="true" /><i><b ref={micBar} /></i></span>
         <span className="lega-meter" title="Nivelul vocii Lega"><AudioLines size={12} aria-hidden="true" /><i><b ref={legaBar} /></i></span>
         <span className="mono small">{fmtClock(elapsed)}{session?.maxDurationS ? ` / ${fmtClock(session.maxDurationS)}` : ""}</span>
-        <span className="faint small" title="Estimare după prețul publicat pentru vocea din desktop (0,05 $/min din bugetul Codex)">≈ {cost.toFixed(2)} $ din plan</span>
+        <span className="faint small" title="Estimare după prețul publicat pentru vocea din desktop (0,05 $/min din bugetul Codex); consumul real din plan nu e raportat (UNKNOWN)">≈ {cost.toFixed(2)} $ estimat · consum real: necunoscut</span>
       </div>
       <div className="row wrap">
         <button className="btn sm" onClick={onMic} aria-pressed={micMuted}>{micMuted ? <MicOff size={14} /> : <Mic size={14} />}Microfon oprit</button>

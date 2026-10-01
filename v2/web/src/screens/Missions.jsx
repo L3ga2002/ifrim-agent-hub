@@ -1,12 +1,13 @@
 import { useState, useEffect } from "react";
-import { Target, Plus, MessageSquare, ChevronLeft } from "lucide-react";
+import { Target, Plus, MessageSquare, ChevronLeft, Factory } from "lucide-react";
 import { api, fmt } from "../api.js";
 import { useResource, useAction, usePref } from "../store.js";
 import { missionProgress } from "../lib/uiLogic.js";
 import { Panel, Empty, Loading, ErrorNotice, StatusChip, Dialog, Notice } from "../components/ui.jsx";
 import { TaskGraph } from "../components/TaskGraph.jsx";
+import { FactoryPanel, NewFactoryMission } from "./factory/FactoryPanel.jsx";
 
-const KIND_RO = { development: "Development", incident: "Incident", site_premium: "Site premium", site_audit: "Audit site", leads: "Lead-uri", outreach: "Outreach (doar ciorne)", project_management: "Project management", briefing: "Briefing" };
+const KIND_RO = { eng_bugfix: "Engineering · Bugfix", eng_feature: "Engineering · Feature", eng_refactor: "Engineering · Refactor", development: "Development", incident: "Incident", site_premium: "Site premium", site_audit: "Audit site", leads: "Lead-uri", outreach: "Outreach (doar ciorne)", project_management: "Project management", briefing: "Briefing" };
 
 function NewMission({ onClose, go }) {
   const projects = useResource("/api/projects");
@@ -22,7 +23,7 @@ function NewMission({ onClose, go }) {
   return (
     <Dialog title="Misiune nouă" onClose={onClose} footer={<><button className="btn ghost" onClick={onClose}>Renunță</button><button className="btn primary" disabled={!valid || create.pending} onClick={create.run}>{create.pending ? "Se creează…" : "Creează misiunea"}</button></>}>
       <div className="grid two">
-        <label className="field"><span>Tip</span><select className="select" value={form.kind} onChange={set("kind")}>{Object.entries(KIND_RO).map(([k, v]) => <option key={k} value={k}>{v}</option>)}</select></label>
+        <label className="field"><span>Tip</span><select className="select" value={form.kind} onChange={set("kind")}>{Object.entries(KIND_RO).filter(([k]) => !k.startsWith("eng_")).map(([k, v]) => <option key={k} value={k}>{v}</option>)}</select></label>
         <label className="field"><span>Proiect</span><select className="select" value={form.projectId} onChange={set("projectId")}>{(projects.data?.projects || []).map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}</select></label>
       </div>
       <label className="field"><span>Titlu</span><input className="input" value={form.title} onChange={set("title")} maxLength={160} /></label>
@@ -78,6 +79,7 @@ function MissionDetail({ id, go, query }) {
         </div>
         <div className="row wrap"><StatusChip status={mission.status} />{mission.conversationId && <button className="btn" onClick={() => go(`/conversations/${mission.conversationId}`)}><MessageSquare size={15} />Conversația misiunii</button>}</div>
       </div>
+      {String(mission.kind).startsWith("eng_") && <div style={{ marginBottom: 16 }}><FactoryPanel missionId={mission.id} /></div>}
       <div className="split-main">
         <div className="stack">
           <Panel title={`Taskuri · ${progress.completed}/${progress.total} finalizate`} icon={Target}
@@ -136,12 +138,16 @@ function MissionDetail({ id, go, query }) {
 export default function Missions({ id, go, query }) {
   const { data, error, loading, reload } = useResource(id ? null : "/api/missions", { reloadOn: (e) => e.type.startsWith("mission.") || e.type.startsWith("task.") });
   const [creating, setCreating] = useState(Boolean(query?.new));
+  const [engineering, setEngineering] = useState(Boolean(query?.factory));
   if (id) return <MissionDetail id={id} go={go} query={query} />;
   return (
     <div className="page">
       <div className="page-head">
         <div><h1>Misiuni</h1><p>Fluxuri utilizabile pentru Ifrim Digital, fiecare cu criterii, dependențe și dovezi. Progresul se calculează din taskuri finalizate.</p></div>
-        <button className="btn primary" data-lega-target="mission-new" onClick={() => setCreating(true)}><Plus size={16} />Misiune nouă</button>
+        <div className="row wrap">
+          <button className="btn" data-lega-target="factory-new" onClick={() => setEngineering(true)}><Factory size={16} />Lucrare de engineering</button>
+          <button className="btn primary" data-lega-target="mission-new" onClick={() => setCreating(true)}><Plus size={16} />Misiune nouă</button>
+        </div>
       </div>
       <Panel title="Toate misiunile" icon={Target} flush data-lega-target="missions-list">
         {loading ? <div className="panel-body"><Loading /></div> : error ? <div className="panel-body"><ErrorNotice error={error} onRetry={reload} /></div> : data.missions.length ? (
@@ -154,6 +160,7 @@ export default function Missions({ id, go, query }) {
         ) : <Empty title="Nicio misiune" action={<button className="btn primary sm" onClick={() => setCreating(true)}>Creează prima misiune</button>}>Tipuri: development, incident, site premium, audit site, lead-uri, outreach, project management, briefing.</Empty>}
       </Panel>
       {creating && <NewMission onClose={() => setCreating(false)} go={go} />}
+      {engineering && <NewFactoryMission onClose={() => setEngineering(false)} go={go} />}
     </div>
   );
 }

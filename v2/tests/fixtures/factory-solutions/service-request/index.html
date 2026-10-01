@@ -1,0 +1,70 @@
+<!doctype html>
+<html lang="ro">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Solicitare serviciu</title>
+  <style>
+    :root { color-scheme: light dark; font-family: system-ui, sans-serif; }
+    body { margin: 0; padding: 16px; max-width: 640px; margin-inline: auto; }
+    form { display: grid; gap: 12px; }
+    label { display: grid; gap: 4px; font-weight: 600; }
+    input, select, textarea, button { font: inherit; padding: 10px; border-radius: 8px; border: 1px solid #8888; }
+    button { cursor: pointer; }
+    .error { color: #c62828; font-weight: 400; font-size: 0.9em; }
+    #status[data-state="loading"] { color: #555; }
+    #status[data-state="error"] { color: #c62828; }
+    #status[data-state="success"] { color: #2e7d32; }
+    ul { padding-left: 18px; }
+  </style>
+</head>
+<body>
+  <h1>Solicitare serviciu</h1>
+  <form id="request-form" novalidate>
+    <label>Nume <input name="name" autocomplete="name" required minlength="2" maxlength="120"><span class="error" data-for="name"></span></label>
+    <label>E-mail <input name="email" type="email" autocomplete="email" required><span class="error" data-for="email"></span></label>
+    <label>Serviciu
+      <select name="service" required>
+        <option value="">Alege…</option>
+        <option value="consultanta">Consultanță</option>
+        <option value="mentenanta">Mentenanță</option>
+        <option value="audit">Audit</option>
+      </select><span class="error" data-for="service"></span>
+    </label>
+    <label>Mesaj <textarea name="message" rows="4" maxlength="2000"></textarea><span class="error" data-for="message"></span></label>
+    <button type="submit">Trimite</button>
+    <p id="status" role="status" aria-live="polite" data-state="idle"></p>
+  </form>
+  <h2>Solicitări</h2>
+  <ul id="list"></ul>
+  <script>
+    const form = document.getElementById("request-form");
+    const status = document.getElementById("status");
+    const button = form.querySelector("button");
+    const setState = (state, text) => { status.dataset.state = state; status.textContent = text; };
+    async function refresh() {
+      const res = await fetch("/api/requests");
+      const { requests } = await res.json();
+      const list = document.getElementById("list");
+      list.replaceChildren(...requests.map((r) => Object.assign(document.createElement("li"), { textContent: `${r.name} · ${r.service} · ${new Date(r.createdAt).toLocaleString("ro-RO")}` })));
+    }
+    form.addEventListener("submit", async (event) => {
+      event.preventDefault();
+      if (button.disabled) return; // prevents a double submit while one is in flight
+      form.querySelectorAll(".error").forEach((el) => { el.textContent = ""; });
+      button.disabled = true;
+      setState("loading", "Se trimite…");
+      try {
+        const res = await fetch("/api/requests", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(Object.fromEntries(new FormData(form))) });
+        const body = await res.json().catch(() => ({}));
+        if (res.status === 201) { form.reset(); setState("success", "Solicitarea a fost trimisă."); await refresh(); }
+        else if (res.status === 400) { for (const [field, message] of Object.entries(body.errors || {})) { const el = form.querySelector(`[data-for="${field}"]`); if (el) el.textContent = message; } setState("error", "Corectează câmpurile marcate."); }
+        else if (res.status === 409) setState("error", "Ai trimis deja această solicitare.");
+        else setState("error", body.error || "A apărut o eroare. Încearcă din nou.");
+      } catch { setState("error", "Nu se poate contacta serverul."); }
+      finally { button.disabled = false; }
+    });
+    refresh().catch(() => setState("error", "Lista nu poate fi încărcată."));
+  </script>
+</body>
+</html>

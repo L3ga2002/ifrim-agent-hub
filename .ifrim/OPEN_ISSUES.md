@@ -1,5 +1,48 @@
 # Open Issues - Ifrim Agent Hub
 
+## 2026-10-01 (later) - Open items after Milestone 03 (version `2.4.0-m03`; supersede every section below where they overlap)
+
+State: M03 (runtime readiness + Software Factory) is built and tested with fixture providers. It is committed on `v2-milestone-01` on 2026-10-01 at the owner's request (the commit right after `6432c5e`; push: see `git status`/GitHub). `main` is still `e9ab563`. Report: `M03_REPORT.md`. Levels: BUILD_READY + SIMULATED_E2E_VERIFIED. LIVE_SANDBOX_VALIDATED is NOT_RUN; REAL_PROJECT_READY is not reached.
+
+Owner decisions:
+- **R2 (P0, open):** the Codex Windows sandbox reads the whole host outside the denied paths.
+  - The gate now admits Codex only on hub-test projects, or on a project with the owner's time-limited acceptance. That acceptance is not isolation.
+  - Real fix: a separate environment (WSL2 / VM) with only the workspace mounted. Needs install approval. See `M03_RUNTIME_READINESS.md` §3.
+- **R3 (P0, code done):** `~/.codex/config.toml`, `config.toml.*` and `history.jsonl` are now denied to model commands.
+  - The deny-list fingerprint changed; the owner re-consented on 2026-10-01 (fingerprint `0f5b7efee0143fa8`).
+  - Candidate, owner decision: `~/.codex/plugins` (live evidence: the 2026-09-30 RW run read plugin cache files).
+- **Commit:** done on 2026-10-01 at the owner's request, after three verification rounds (`M03_TEST_REPORT.md` §6).
+- **Known limitation (E2E):** a form that answers a POST with a redirect (post-redirect-get) is not followed by the Hub's request guard (deliberate M02 policy, RT-07); the E2E step fails and `network.blocked` shows why.
+- **Merge** `v2-milestone-01` → `main` and **HUB-018**: unchanged from below.
+
+Pre-live steps without a model:
+- (Done 2026-10-01) Hub restarted on `2.4.0-m03` after a verified backup (`bkp_muox3o1y_de8f59b508`); migration 3 applied.
+- (Done 2026-10-01, owner's request) Canary on a fictive tree: PASS_LOCAL, 50 checks; `config.toml`, `config.toml.bak`, `history.jsonl` DENIED; R2 confirmed open (4 reads ALLOWED, `KNOWN_GAP_R2`).
+- (Done 2026-10-01) `codex-sandbox-timing.mjs --fictive`: first command 4.7 s, later 3.7–6.4 s (N=6). The sandbox costs seconds per command on a small profile, not minutes.
+- (Done 2026-10-01) Demo projects: `ifrim-factory-demo-a` (`prj_mup6nfto_6214f5f782`) and `ifrim-factory-demo-b` (`prj_mup6nqd7_57f7ba5b4b`), both hub-test.
+- (Done by the owner in the UI, 2026-10-01 06:46 UTC) „Verifică contul” with models (`gpt-6.1-sol` default) and the R3 ACL re-consent (fingerprint `0f5b7efee0143fa8`). The real DENY ACEs on the new entries are written at the first real Codex sandbox command.
+- Owner, still open: `codex-sandbox-timing.mjs --real-profile` (own terminal).
+
+Installs:
+- (Done 2026-10-01, owner's request) Playwright 1.61.0 devDependency, no browser download (Chromium 1228 from the cache). Chromium runs with the OS sandbox. The factory E2E runner is built: e2e criteria with declared steps run on the verified preview; real-browser tests M03-BR-00…03 and FAC-02 pass.
+- Local Romanian speech engine and Claude Code CLI upgrade: unchanged.
+
+Not live-verified (NOT_RUN):
+- Software Factory with real models: Codex writer on the current (post-MCP-fix) route, Claude review, the repair round-trip, Stop during a real turn, Lega engineering proposal.
+- The runner and preview under the real `codex sandbox` (localhost listening under the offline sandbox user is unverified).
+
+Performance (P1): the ~8 minutes are NOT attributed yet.
+- Measured before (n=2): Hub ≤ 7 s; turn → first command 290–467 s; both threads at effort `max`.
+- Fixed: explicit effort (`medium` by default, verified before the turn).
+- Sandbox-only timing on a fictive profile: ~4–6 s per command. Missing: `--real-profile` (large real deny list) and a live `medium` turn. See `M03_PERFORMANCE_REPORT.md`.
+
+Known limitations (M03):
+- Stop during a QA command uses the same code as the other stops but has no dedicated test (NEVERIFICAT).
+- The plan is deterministic (from the template); a model-proposed plan is not implemented.
+- Snapshots refuse workspaces over 4 000 files / 64 MB (excluding node_modules, dist, .git): large real projects need a git-based change set (future).
+- Claude Code does not report its effective effort; `permissions.blockReadsOutsideWorkingDirectories` is documented but not applied (version support on 2.1.175 unverified).
+- Tests (2026-10-01): V2 286 = 283 pass + 2 rechecked clean (15/15) + 1 SKIPPED_ENV. V1 552 = 548 pass, 1 skipped, 3 time out against the slow live V1 API on 8004 (`/api/health` 5.6 s), today also when run alone; V1 code unchanged, timeouts not widened.
+
 ## 2026-10-01 - Open items after M02 + Lega (version `2.3.0-m03`; supersede every section below where they overlap)
 
 State: branch `v2-milestone-01` pushed up to `bbe8757` (M01 `f31240b`, M02 `0fb71d2`, Lega `30bfbef`, `dac2db4`, `ce819b9`, `bbe8757`); `main` still `e9ab563`; nothing merged or deployed. The M02 verification fixes, MCP isolation, one-click approvals, expired-grant display, version `2.3.0-m03` and these docs are in the commit after `bbe8757` (local until the owner pushes). Hub on 127.0.0.1:8011 runs `2.3.0-m03`, BUILD_SAFE, execution gate open (as the owner left it for Lega), 0 active grants, no active run or Lega session; simulator 8012 separate.

@@ -20,9 +20,10 @@ import { redactText } from "../security/redact.mjs";
  *   to a dead proxy, host names other than localhost do not resolve, and UDP/QUIC are off (browserLaunchOptions). Shared
  *   workers and sockets opened inside workers are not seen by Playwright routes (review 2026-09-30); this layer stops
  *   them. The proxy is a Chromium switch, not Playwright's `proxy` option, so the Hub's own route.fetch (Node side) still
- *   reaches the local preview. Not run live: Playwright is not installed (NEEDS_INSTALL_APPROVAL).
- * - Playwright is NOT a dependency of this repository. Until the owner approves installing it, the status is
- *   NEEDS_INSTALL_APPROVAL and nothing runs; no E2E result or screenshot is ever reported without a real run.
+ *   reaches the local preview.
+ * - Playwright 1.61.0 is a devDependency since 2026-10-01 (owner-approved, no browser download: it uses the cached Chromium
+ *   1228). Without it the status is NEEDS_INSTALL_APPROVAL and nothing runs; no E2E result or screenshot is ever reported
+ *   without a real run.
  */
 export const BROWSER_APPROVAL_REQUEST = Object.freeze({
   what: "Pachetul npm `playwright` ca devDependency a proiectului (nu global).",
@@ -170,7 +171,9 @@ export function createRequestGuard({ allowedOrigin, fetchTimeoutMs = 20000, maxR
   const takeMainRedirect = () => { const next = mainRedirect; mainRedirect = null; return next; };
   /** Called right before each page.goto: what follows belongs to this navigation only. */
   const expectNavigation = (url) => { expected = String(url); mainRedirect = null; navMark = blocked.length; };
-  return { route, webSocket, summary, takeMainRedirect, expectNavigation, blockedNavigation: () => blocked.slice(navMark).find((b) => b.forGoto) || null };
+  /** Called once a goto settled: a later click or form GET to the same URL is not that goto's request. */
+  const endNavigation = () => { expected = null; mainRedirect = null; };
+  return { route, webSocket, summary, takeMainRedirect, expectNavigation, endNavigation, blockedNavigation: () => blocked.slice(navMark).find((b) => b.forGoto) || null };
 }
 
 /**
@@ -184,6 +187,9 @@ export function browserLaunchOptions(allowedOrigin) {
   const target = new URL(allowedOrigin);
   return {
     headless: true,
+    // The renderer runs generated page code: keep Chromium's OS sandbox on (Playwright's default is off). Verified on this
+    // Windows with Playwright 1.61.0 / Chromium 1228 (2026-10-01).
+    chromiumSandbox: true,
     args: [
       "--proxy-server=http://127.0.0.1:9",
       `--proxy-bypass-list=<-loopback>;${target.hostname}:${target.port}`,
@@ -257,5 +263,159 @@ export async function inspectPage({ url, hubRoot, evidenceDir, timeoutMs = 20000
       isolated: "fresh context, no profile, service workers blocked, downloads refused, only the approved local origin reachable" };
   } finally {
     await browser.close();
+  }
+}
+
+
+/**
+ * Declarative browser E2E steps (Software Factory criteria `verify: "e2e"`, M03 §21). The steps are part of the approved
+ * specification (so the writer cannot change them) and are checked again here. Each step is ONE of:
+ *   { viewport: { width, height } }   { goto: "/path" }   { fill: { selector, value } }   { select: { selector, value } }
+ *   { click: "selector" }   { expectText: "text" }   { expectSelector: "selector" }   { noHorizontalOverflow: true }
+ * Paths are relative to the preview origin; selectors are CSS, values fictive text. No scripts, no URLs. The first step
+ * after the optional viewport steps is a goto (otherwise the steps would run on an empty page). `{run}` inside a fill value
+ * or an expectText becomes a token unique to the run, so a re-run never collides with data an earlier run saved
+ * (deduplication, unique keys) and the page can be checked for exactly what this run submitted.
+ */
+export const E2E_STEP_KINDS = Object.freeze(["viewport", "goto", "fill", "select", "click", "expectText", "expectSelector", "noHorizontalOverflow"]);
+export const E2E_MAX_STEPS = 25;
+export const E2E_RUN_TOKEN = "{run}";
+
+export function validateE2ESteps(steps) {
+  const problems = [];
+  if (!Array.isArray(steps) || !steps.length) return ["cel puțin un pas E2E"];
+  if (steps.length > E2E_MAX_STEPS) problems.push(`cel mult ${E2E_MAX_STEPS} pași E2E`);
+  const selector = (value) => typeof value === "string" && value.length > 0 && value.length <= 200;
+  const text = (value) => typeof value === "string" && value.length <= 500;
+  steps.slice(0, E2E_MAX_STEPS).forEach((step, i) => {
+    const keys = step && typeof step === "object" ? Object.keys(step) : [];
+    if (keys.length !== 1 || !E2E_STEP_KINDS.includes(keys[0])) { problems.push(`pasul ${i + 1}: un singur tip dintre ${E2E_STEP_KINDS.join(", ")}`); return; }
+    const [kind] = keys;
+    const v = step[kind];
+    const ok = {
+      viewport: () => Number.isInteger(v?.width) && Number.isInteger(v?.height) && v.width >= 280 && v.width <= 2560 && v.height >= 400 && v.height <= 1600,
+      goto: () => typeof v === "string" && v.startsWith("/") && !v.startsWith("//") && v.length <= 300 && !/[\s\\]/.test(v),
+      fill: () => selector(v?.selector) && text(v?.value),
+      select: () => selector(v?.selector) && text(v?.value),
+      click: () => selector(v),
+      expectText: () => typeof v === "string" && v.length > 0 && v.length <= 300,
+      expectSelector: () => selector(v),
+      noHorizontalOverflow: () => v === true,
+    }[kind]();
+    if (!ok) problems.push(`pasul ${i + 1} (${kind}): valoare invalidă`);
+  });
+  const firstPageStep = steps.find((step) => !(step && typeof step === "object" && Object.keys(step)[0] === "viewport"));
+  if (firstPageStep && !(typeof firstPageStep === "object" && Object.keys(firstPageStep)[0] === "goto")) {
+    problems.push("primul pas după viewport trebuie să fie goto (altfel pașii rulează pe o pagină goală)");
+  }
+  if (!firstPageStep) problems.push("cel puțin un pas goto");
+  return problems;
+}
+
+/** A browser call that has no timeout of its own (evaluate, viewport, close) must not hold the mission forever. */
+function bounded(promise, ms, what) {
+  let timer;
+  return Promise.race([
+    promise,
+    new Promise((_, reject) => {
+      timer = setTimeout(() => reject(new Error(`${what}: fără răspuns în ${ms} ms (pagina blochează renderer-ul?)`)), ms);
+      timer.unref?.();
+    }),
+  ]).finally(() => clearTimeout(timer));
+}
+
+/**
+ * Runs E2E steps against a local preview in the same isolated browser as inspectPage (fresh context, request guard, dead
+ * proxy for anything but the preview origin, Chromium OS sandbox). Returns { status: PASS|FAIL|INTERRUPTED, steps: [{ i,
+ * kind, ok, ms, error? }], consoleErrors, screenshot, network, durationMs }. Stops at the first failed step; a screenshot is
+ * taken at the end or at the failure. A goto follows same-origin redirects of the page itself (bounded, checked by the
+ * guard) and fails on an HTTP error status. Every step is bounded by `stepTimeoutMs`. `signal` (Stop / Pause of the
+ * mission) closes the browser at once and the result is INTERRUPTED, never a product failure. A failure to start the
+ * browser throws (an infrastructure problem, not a failed step). `launch` is injectable for tests.
+ */
+export async function runE2E({ url, steps, hubRoot, evidenceDir, hubPorts = [], stepTimeoutMs = 10000, launch = null, signal = null }) {
+  const base = validateBrowserUrl(url, { hubPorts });
+  const problems = validateE2ESteps(steps);
+  if (problems.length) throw new HubError("validation", `Pași E2E invalizi: ${problems.join("; ")}`);
+  if (signal?.aborted) throw new HubError("conflict", "E2E oprit înainte de pornire");
+  const allowedOrigin = new URL(base).origin;
+  const start = launch || playwrightLauncher(hubRoot);
+  fs.mkdirSync(evidenceDir, { recursive: true });
+  const id = newId("e2e");
+  const runToken = id.slice(-10);
+  const started = Date.now();
+  const guard = createRequestGuard({ allowedOrigin, fetchTimeoutMs: stepTimeoutMs * 2 });
+  const browser = await start(allowedOrigin);
+  const closeBrowser = () => bounded(Promise.resolve().then(() => browser.close()), 5000, "browser.close").catch(() => {});
+  const onAbort = () => { closeBrowser(); };
+  signal?.addEventListener("abort", onAbort, { once: true });
+  const results = [];
+  const consoleErrors = [];
+  const isolated = "context nou fără profil, service workers blocate, descărcări refuzate, doar originea preview-ului, sandbox OS Chromium";
+  let status = "PASS";
+  try {
+    // Desktop size until a viewport step changes it (a spec may check desktop first, then mobile).
+    const context = await browser.newContext({ serviceWorkers: "block", acceptDownloads: false, viewport: { width: 1280, height: 800 } });
+    await context.route(() => true, guard.route);
+    if (typeof context.routeWebSocket === "function") await context.routeWebSocket(() => true, guard.webSocket);
+    const page = await context.newPage();
+    page.on("console", (msg) => { if (["error", "warning"].includes(msg.type())) consoleErrors.push({ type: msg.type(), text: redactText(msg.text()).slice(0, 500) }); });
+    page.on("pageerror", (error) => consoleErrors.push({ type: "pageerror", text: redactText(String(error.message)).slice(0, 500) }));
+    for (const [i, step] of steps.entries()) {
+      if (signal?.aborted) break;
+      const [kind] = Object.keys(step);
+      const value = step[kind];
+      const t0 = Date.now();
+      try {
+        if (kind === "viewport") await bounded(page.setViewportSize(value), stepTimeoutMs, "viewport");
+        else if (kind === "goto") {
+          let goal = new URL(value, base).href;
+          let response = null;
+          for (let hops = 0; ;) {
+            guard.expectNavigation(goal);
+            try { response = await page.goto(goal, { timeout: stepTimeoutMs * 2, waitUntil: "load" }); break; }
+            catch (error) {
+              const next = guard.takeMainRedirect();
+              if (next && hops < MAX_MAIN_REDIRECTS) { hops += 1; goal = next; continue; }
+              if (next) throw new Error(`mai mult de ${MAX_MAIN_REDIRECTS} redirecționări ale paginii`);
+              const stopped = guard.blockedNavigation();
+              if (stopped) throw new Error(`navigare oprită de allowlist: ${stopped.url} (${stopped.reason})`);
+              throw error;
+            }
+          }
+          guard.endNavigation();
+          if (!onOrigin(page.url(), allowedOrigin)) throw new Error(`pagina a părăsit originea aprobată (${redactText(page.url()).slice(0, 120)})`);
+          if (response && response.status() >= 400) throw new Error(`HTTP ${response.status()} la ${value}`);
+        } else if (kind === "fill") await page.fill(value.selector, value.value.split(E2E_RUN_TOKEN).join(runToken), { timeout: stepTimeoutMs });
+        else if (kind === "select") await page.selectOption(value.selector, value.value, { timeout: stepTimeoutMs });
+        else if (kind === "click") await page.click(value, { timeout: stepTimeoutMs });
+        else if (kind === "expectSelector") await page.waitForSelector(value, { state: "visible", timeout: stepTimeoutMs });
+        else if (kind === "expectText") await page.waitForFunction((needle) => document.body && document.body.innerText.includes(needle), value.split(E2E_RUN_TOKEN).join(runToken), { timeout: stepTimeoutMs });
+        else if (kind === "noHorizontalOverflow") {
+          const widths = await bounded(page.evaluate(() => ({ scroll: document.documentElement.scrollWidth, view: window.innerWidth })), stepTimeoutMs, "noHorizontalOverflow");
+          if (widths.scroll > widths.view + 1) throw new Error(`depășire orizontală: ${widths.scroll}px > ${widths.view}px`);
+        }
+        results.push({ i: i + 1, kind, ok: true, ms: Date.now() - t0 });
+      } catch (error) {
+        if (signal?.aborted) break;
+        // Chromium gone (crash, killed) is not a failure of the page: the caller reports an infrastructure problem.
+        if (typeof browser.isConnected === "function" && !browser.isConnected()) throw new Error(`browserul s-a oprit în timpul E2E (pasul ${i + 1}): ${redactText(String(error.message || error)).split("\n")[0].slice(0, 200)}`);
+        results.push({ i: i + 1, kind, ok: false, ms: Date.now() - t0, error: redactText(String(error.message || error)).split("\n")[0].slice(0, 300) });
+        status = "FAIL";
+        break;
+      }
+    }
+    if (signal?.aborted) {
+      return { id, status: "INTERRUPTED", url: base, steps: results, consoleErrors: consoleErrors.slice(0, 50), screenshot: null, durationMs: Date.now() - started,
+        network: guard.summary(), isolated };
+    }
+    const file = path.join(evidenceDir, `${id}.png`);
+    if (onOrigin(page.url(), allowedOrigin)) await page.screenshot({ path: file, fullPage: false, timeout: stepTimeoutMs }).catch(() => {});
+    await bounded(context.close(), stepTimeoutMs, "context.close").catch(() => {});
+    return { id, status, url: base, steps: results, consoleErrors: consoleErrors.slice(0, 50), screenshot: fs.existsSync(file) ? `${id}.png` : null,
+      durationMs: Date.now() - started, network: guard.summary(), isolated };
+  } finally {
+    signal?.removeEventListener("abort", onAbort);
+    await closeBrowser();
   }
 }

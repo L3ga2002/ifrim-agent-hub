@@ -4,8 +4,26 @@ import { json, parse } from "../storage/db.mjs";
 import { transitionTask, TERMINAL_STATES } from "../runtime/state-machine.mjs";
 import { canTransition } from "../runtime/lifecycles.mjs";
 
+/**
+ * Software Factory steps (M03 §10): the same flow for every engineering work type. `runner` says who does the step:
+ * owner (no model), hub (the Hub runner, no model), writer (Codex, workspace-write) or reviewer (Claude, read-only).
+ * Repair tasks are added per cycle by the factory, linked to the findings they fix.
+ */
+const FACTORY_TASKS = Object.freeze([
+  { key: "spec", title: "Specificație și criterii aprobate de proprietar", role: "planner", stage: "owner", access: "read-only", runner: "owner", taskType: "architecture" },
+  { key: "baseline", title: "Baseline: testele de acceptanță înainte de modificare (runner Hub)", role: "qa", stage: "qa", access: "read-only", runner: "hub", after: ["spec"], taskType: "testing_qa" },
+  { key: "build", title: "Implementare (writer unic)", role: "backend", stage: "owner", access: "workspace-write", runner: "writer", after: ["baseline"], taskType: "coding" },
+  { key: "checks", title: "Verificări locale ale change set-ului (runner Hub)", role: "qa", stage: "qa", access: "read-only", runner: "hub", after: ["build"], taskType: "testing_qa" },
+  { key: "review", title: "Review independent doar-citire", role: "reviewer", stage: "reviewer", access: "read-only", runner: "reviewer", after: ["checks"], taskType: "code_review" },
+  { key: "qa", title: "QA pe criteriile de acceptanță și preview", role: "qa", stage: "qa", access: "read-only", runner: "hub", after: ["review"], taskType: "testing_qa" },
+  { key: "delivery", title: "Pachet de livrare și decizia proprietarului", role: "project-manager", stage: "owner", access: "read-only", runner: "owner", after: ["qa"], taskType: "briefing" },
+]);
+
 /** Mission templates: usable flows, each expanded into tasks with owner → reviewer → QA separation. */
 export const MISSION_TEMPLATES = Object.freeze({
+  eng_bugfix: { label: "Engineering · Bugfix (Software Factory)", department: "engineering", factory: { workType: "BUGFIX" }, tasks: FACTORY_TASKS },
+  eng_feature: { label: "Engineering · Feature (Software Factory)", department: "engineering", factory: { workType: "FEATURE" }, tasks: FACTORY_TASKS },
+  eng_refactor: { label: "Engineering · Refactor (Software Factory)", department: "engineering", factory: { workType: "REFACTOR" }, tasks: FACTORY_TASKS },
   development: { label: "Development", department: "engineering", tasks: [
     { key: "plan", title: "Plan scope and acceptance", role: "planner", stage: "owner", access: "read-only" },
     { key: "build", title: "Implement", role: "backend", stage: "owner", access: "workspace-write", after: ["plan"] },
@@ -192,5 +210,19 @@ export function createMissions({ db, bus, clock }) {
     return db.prepare(`SELECT * FROM tasks ${where.length ? `WHERE ${where.join(" AND ")}` : ""} ORDER BY updated_at DESC LIMIT 500`).all(...args).map(rowToTask);
   };
 
-  return { create, get, list, tasks, task, transitions, progress, command, refreshMissionStatus, allTasks, dependenciesMet, dependencyIds, addDependency, rowToTask };
+  /** Adds one task to an existing mission (Software Factory repair cycles); finish-to-start dependencies are recorded both ways. */
+  function addTask(missionId, { title, description = "", role, stage = "owner", access = "read-only", taskType = "", after = [] }, actor = "hub") {
+    const mission = get(missionId);
+    if (!mission) throw new HubError("not_found", "Mission not found");
+    const id = newId("task");
+    const now = clock().toISOString();
+    db.prepare(`INSERT INTO tasks (id, mission_id, project_id, title, description, role_id, stage, status, status_reason, priority, depends_on_json, acceptance_json, access, task_type, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, 'DRAFT', ?, ?, ?, ?, ?, ?, ?, ?)`).run(id, missionId, mission.projectId, title, description, role, stage, `Added by ${actor}`, mission.priority, json(after), json(mission.acceptance), access,
+      taskType || TASK_TYPE_BY_ROLE[role] || "", now, now);
+    for (const dep of after) db.prepare("INSERT INTO task_dependencies (task_id, depends_on_task_id, created_at) VALUES (?, ?, ?)").run(id, dep, now);
+    bus.append({ type: "task.added", scopeType: "task", scopeId: id, projectId: mission.projectId, source: actor, payload: { missionId, title, role } });
+    return task(id);
+  }
+
+  return { create, get, list, tasks, task, transitions, progress, command, refreshMissionStatus, allTasks, dependenciesMet, dependencyIds, addDependency, rowToTask, addTask };
 }

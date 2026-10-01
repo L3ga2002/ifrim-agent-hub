@@ -9,7 +9,8 @@ import { evaluateRoute, scanEnvironment, ATTESTATION_TEXT, BILLING_POLICY } from
 import { TASK_STATES } from "../runtime/state-machine.mjs";
 import { describeLifecycles } from "../runtime/lifecycles.mjs";
 import { inspectionFromState } from "../policy/gate.mjs";
-import { evaluateIsolation, CODEX_ACL_CONSENT_TEXT, CODEX_PROFILE_BY_ACCESS } from "../policy/isolation.mjs";
+import { resolveRunPlan } from "../policy/run-plan.mjs";
+import { evaluateIsolation, evaluateHostIsolation, CODEX_ACL_CONSENT_TEXT, CODEX_PROFILE_BY_ACCESS, R2_ACCEPT_TEXT, R2_MAX_ACCEPT_DAYS } from "../policy/isolation.mjs";
 import { LEGA_CONSENT_TEXT, LEGA_CONSENT_VERSION, LEGA_VOICES, LEGA_COST_PER_MINUTE_USD, LEGA_DEFAULTS } from "../policy/lega-policy.mjs";
 import { MISSION_TEMPLATES } from "../domain/missions.mjs";
 import { MEMORY_SCOPES, MEMORY_TYPES, MEMORY_SOURCES } from "../domain/memory.mjs";
@@ -248,7 +249,8 @@ export function registerRoutes(router, hub, { token }) {
   post("/api/conversations/:id/attachments", cmd("conversation.attachment", ({ params, body }) => ({ ...body, conversationId: params.id }), { created: true }), { maxBytes: 15 * 1024 * 1024 });
   post("/api/conversations/:id/runs", cmd("run.start", ({ params, body }) => ({ ...body, conversationId: params.id }), { created: true }));
   get("/api/runs", ({ query }) => ({ runs: runs.listRuns({ status: query.status || null, conversationId: query.conversationId || null, taskId: query.taskId || null, limit: 200 }), active: runs.activeRuns() }));
-  get("/api/runs/:id", ({ params }) => ({ run: need(runs.getRun(params.id), "Run"), events: bus.query({ runId: params.id, limit: 300 }).reverse(), telemetry: telemetry.get(params.id) }));
+  get("/api/runs/:id", ({ params }) => ({ run: need(runs.getRun(params.id), "Run"), events: bus.query({ runId: params.id, limit: 300 }).reverse(), telemetry: telemetry.get(params.id),
+    timeline: runs.timelineOf(params.id) }));
   post("/api/runs/:id/interrupt", cmd("run.interrupt", ({ params }) => ({ runId: params.id })));
 
   // ---------- handoffs ----------
@@ -257,6 +259,28 @@ export function registerRoutes(router, hub, { token }) {
   post("/api/handoffs/:id/cancel", cmd("handoff.cancel", ({ params }) => ({ handoffId: params.id })));
   get("/api/handoffs", () => ({ handoffs: db.prepare("SELECT id, conversation_id AS conversationId, from_provider AS fromProvider, to_provider AS toProvider, from_surface AS fromSurface, to_surface AS toSurface, status, step, package_sha256 AS packageSha256, checkpoint_id AS checkpointId, error, created_at AS createdAt, updated_at AS updatedAt FROM handoffs ORDER BY created_at DESC LIMIT 100").all() }));
   get("/api/handoffs/:id", ({ params }) => need(handoffs.get(params.id), "Handoff"));
+
+  // ---------- Software Factory (M03) ----------
+  get("/api/factory", () => ({ missions: hub.factory.list(), runner: hub.factoryRunner.readiness() }));
+  get("/api/factory/:id", ({ params }) => need(hub.factory.view(params.id), "Factory mission"));
+  get("/api/factory/:id/change-sets/:seq", ({ params }) => {
+    const row = db.prepare("SELECT id, seq, sha256, status, changes_json, delta_json, diff_text, diff_truncated, integrity_json, created_at FROM factory_change_sets WHERE mission_id = ? AND seq = ?").get(params.id, Number(params.seq));
+    const cs = need(row, "Change set");
+    return { id: cs.id, seq: cs.seq, sha256: cs.sha256, status: cs.status, changes: JSON.parse(cs.changes_json), delta: JSON.parse(cs.delta_json), diff: cs.diff_text, truncated: Boolean(cs.diff_truncated),
+      integrity: JSON.parse(cs.integrity_json), createdAt: cs.created_at };
+  });
+  post("/api/factory", cmd("factory.prepare", ({ body }) => body, { created: true }));
+  post("/api/factory/:id/spec", cmd("factory.spec.revise", ({ params, body }) => ({ missionId: params.id, spec: body?.spec })));
+  post("/api/factory/:id/limits", cmd("factory.limits", ({ params, body }) => ({ missionId: params.id, limits: body?.limits })));
+  post("/api/factory/:id/start", cmd("factory.start", ({ params, body }) => ({ ...body, missionId: params.id })));
+  post("/api/factory/:id/stop", cmd("factory.stop", ({ params, body }) => ({ missionId: params.id, reason: body?.reason })));
+  post("/api/factory/:id/pause", cmd("factory.pause", ({ params }) => ({ missionId: params.id })));
+  post("/api/factory/:id/resume", cmd("factory.resume", ({ params, body }) => ({ missionId: params.id, allowExtraCycle: Boolean(body?.allowExtraCycle), proceedToQa: Boolean(body?.proceedToQa) })));
+  post("/api/factory/:id/accept", cmd("factory.accept", ({ params, body }) => ({ missionId: params.id, note: body?.note || "" })));
+  post("/api/factory/:id/reject", cmd("factory.reject", ({ params, body }) => ({ missionId: params.id, note: body?.note })));
+  post("/api/factory/:id/findings/:code", cmd("factory.finding", ({ params, body }) => ({ missionId: params.id, code: params.code, status: body?.status, note: body?.note })));
+  post("/api/isolation/r2/:projectId/accept", cmd("isolation.r2_accept", ({ params, body }) => ({ projectId: params.projectId, confirmText: body?.confirmText, days: body?.days })));
+  post("/api/isolation/r2/:projectId/revoke", cmd("isolation.r2_revoke", ({ params }) => ({ projectId: params.projectId })));
 
   // ---------- missions & tasks ----------
   get("/api/missions", ({ query }) => ({ missions: missions.list(query.projectId || null).map((m) => ({ ...m, progress: missions.progress(m.id) })), templates: MISSION_TEMPLATES, taskStates: TASK_STATES }));
@@ -320,7 +344,8 @@ export function registerRoutes(router, hub, { token }) {
     billingPolicy: BILLING_POLICY, attestationText: ATTESTATION_TEXT, environment: scanEnvironment(), grants: grants.list() }));
   get("/api/integrations/registry", ({ query }) => ({ integrations: integrations.list({ kind: query.kind || null }) }));
   post("/api/providers/:id/inspect", async ({ req, params }) => { await dispatch(req, "provider.inspect", { provider: params.id }); return providerSummary(params.id); });
-  post("/api/providers/:id/probe", async ({ req, params, body }) => { await dispatch(req, "provider.probe", { provider: params.id, withModels: Boolean(body?.withModels) }); return providerSummary(params.id); });
+  // model/list is inference-free and the run plan needs it (explicit model/effort): asked for unless the caller opts out.
+  post("/api/providers/:id/probe", async ({ req, params, body }) => { await dispatch(req, "provider.probe", { provider: params.id, withModels: body?.withModels !== false }); return providerSummary(params.id); });
   post("/api/billing/attest", cmd("billing.attest"));
   // Workspace isolation (M02 §05): what each provider's model tools are denied, and the Codex ACL consent state.
   get("/api/isolation", () => {
@@ -333,6 +358,10 @@ export function registerRoutes(router, hub, { token }) {
         consentCurrent: Boolean(consent.codex && consent.codex.fingerprint === codex.fingerprint), sandbox,
         reversal: 'icacls "<cale>" /remove:d CodexSandboxUsers', readOnly: evaluate("codex", "read-only"), workspaceWrite: evaluate("codex", "workspace-write") },
       claude: { readOnly: evaluate("claude", "read-only"), workspaceWrite: evaluate("claude", "workspace-write") },
+      // R2 (M03): host isolation per enabled project; an acceptance is the owner's time-limited decision, never isolation.
+      r2: { status: "OPEN", acceptText: R2_ACCEPT_TEXT, maxDays: R2_MAX_ACCEPT_DAYS,
+        projects: projects.list().filter((p) => p.executionAllowed).map((p) => ({ id: p.id, name: p.name, source: p.source, acceptance: settings.get("r2Acceptance")?.[p.id] || null,
+          codex: evaluateHostIsolation({ provider: "codex", project: p, acceptance: settings.get("r2Acceptance")?.[p.id] || null, now: clock() }) })) },
     };
   });
   // ---------- Lega (voice assistant) ----------
@@ -356,7 +385,10 @@ export function registerRoutes(router, hub, { token }) {
   post("/api/grants/:id/revoke", cmd("grant.revoke", ({ params }) => ({ grantId: params.id })));
   get("/api/gate/preview", ({ query }) => {
     const project = need(projects.get(query.projectId || "ifrim-agent-hub"), "Project");
-    return gate.evaluate({ provider: query.provider || "codex", projectId: project.id, access: query.access || "read-only", workspaceResource: `workspace:${path.resolve(project.path).toLowerCase()}` });
+    const provider = query.provider || "codex";
+    // The same model/effort plan a run would resolve (profile BALANCED unless asked), so a missing model/list shows here first.
+    const plan = resolveRunPlan({ provider, model: query.model || "", effort: query.effort || "", profile: query.profile || "BALANCED", providerState: providerState.get(provider) || null });
+    return gate.evaluate({ provider, projectId: project.id, access: query.access || "read-only", workspaceResource: `workspace:${path.resolve(project.path).toLowerCase()}`, plan });
   });
   get("/api/usage", () => ({ overview: usage.overview(), reservePercent: settings.get("usageReservePercent"),
     note: "Only provider-reported numbers are shown. Allowances of different providers are never summed." }));

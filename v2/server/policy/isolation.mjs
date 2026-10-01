@@ -34,10 +34,19 @@ export const PROTECTED_PROJECT_PATHS = Object.freeze([".ifrim/private", ".ifrim/
 export const PROTECTED_HOME_PATHS = Object.freeze([".claude", ".ssh", ".aws", ".azure", ".docker", ".gnupg", ".config/gh", ".openclaw"]);
 
 /**
- * Inside ~/.codex only credential and transcript entries are denied, never the directory itself: the Windows sandbox
- * starts its command runner from ~/.codex/.sandbox-bin and an inherited DENY cannot be re-allowed on a child.
+ * Inside ~/.codex only credential, configuration and transcript entries are denied, never the directory itself: the Windows
+ * sandbox starts its command runner from ~/.codex/.sandbox-bin and an inherited DENY cannot be re-allowed on a child.
+ *
+ * R3 (M03 §05): config.toml (and its backups config.toml.*) can hold MCP server commands, their env values (tokens) and
+ * provider endpoints; history.jsonl holds the owner's past prompts across every project. The Hub backend still reads
+ * config.toml KEY NAMES itself (inspectCodexConfig, not through the sandbox), and the app-server process runs as the owner,
+ * so the official client keeps working; only commands run by the model (CodexSandboxUsers) lose read access. Adding them
+ * changes the deny-list fingerprint, so Codex runs stay blocked until the owner consents to the new list.
  */
-export const PROTECTED_CODEX_HOME_ENTRIES = Object.freeze([".codex/auth.json", ".codex/secrets", ".codex/sessions", ".codex/archived_sessions"]);
+export const PROTECTED_CODEX_HOME_ENTRIES = Object.freeze([".codex/auth.json", ".codex/secrets", ".codex/sessions", ".codex/archived_sessions",
+  ".codex/config.toml", ".codex/history.jsonl"]);
+/** Glob entries under ~/.codex (forward-slash form, like the Hub's .env.* glob): config.toml backups. */
+export const PROTECTED_CODEX_HOME_GLOBS = Object.freeze([".codex/config.toml.*"]);
 
 export const CODEX_PROFILE_BY_ACCESS = Object.freeze({ "read-only": "ifrim_hub_ro", "workspace-write": "ifrim_hub_rw" });
 
@@ -69,6 +78,11 @@ export function codexDeniedPaths({ homeDir = os.homedir(), hubRoot = HUB_ROOT, e
   ];
 }
 
+/** Every deny entry of the profile as shown to the owner: absolute paths plus the glob entries (Hub .env.*, ~/.codex/config.toml.*). */
+export function codexDeniedEntries({ homeDir = os.homedir(), hubRoot = HUB_ROOT, extra = [] } = {}) {
+  return [...codexDeniedPaths({ homeDir, hubRoot, extra }), `${fwd(hubRoot)}/.env.*`, ...PROTECTED_CODEX_HOME_GLOBS.map((g) => `${fwd(homeDir)}/${g}`)];
+}
+
 /** Stable fingerprint of the deny list: a consent is valid only for the exact list it was given for. */
 export function denyListFingerprint(paths) {
   const canonical = [...new Set(paths.map((p) => path.resolve(p).toLowerCase()))].sort().join("\n");
@@ -85,6 +99,7 @@ export function codexProfileToml(access, { homeDir = os.homedir(), hubRoot = HUB
   const absolute = [
     ...codexDeniedPaths({ homeDir, hubRoot, extra }).map((p) => `${q(p)}="deny"`),
     `${q(`${fwd(hubRoot)}/.env.*`)}="deny"`,
+    ...PROTECTED_CODEX_HOME_GLOBS.map((g) => `${q(`${fwd(homeDir)}/${g}`)}="deny"`),
   ].join(", ");
   const filesystem = `{":root"="read", glob_scan_max_depth=4, ${absolute}, ":workspace_roots"={${workspace}}}`;
   // Network stays off for model commands (the Hub never enables the Codex network proxy).
@@ -161,4 +176,36 @@ export function evaluateIsolation({ provider, access = "read-only", sandbox = nu
       : "SECURITY_BLOCKER: rularea cu shell cere sandbox-ul Claude Code configurat de Hub (neimplementat)" };
   }
   return { ok: false, level: "none", detail: `Provider necunoscut: ${provider}` };
+}
+
+/** Exact text the owner types to accept, for ONE project and a limited time, that R2 is still open (M03 §05). */
+export const R2_ACCEPT_TEXT = "Accept că sandbox-ul Codex poate citi prin cale absolută fișierele neprotejate ale altor proiecte de pe acest calculator (R2 deschis). Nu este o izolare; accept riscul doar pentru acest proiect și doar până la data afișată.";
+export const R2_MAX_ACCEPT_DAYS = 7;
+
+/**
+ * Host isolation (R2, M03 §05). The Codex Windows elevated sandbox needs `:root` read, so every path the profile does not
+ * deny — other client projects, their .env files, the owner's documents — is readable by absolute path from a model
+ * command. A deny list cannot fix that by listing more folders without also changing what Codex desktop can read (the ACEs
+ * are persistent). Until a separate environment is verified, Codex is admitted only on sanitized Hub test projects, or on a
+ * project the owner accepted the open risk for (per project, path-bound, at most R2_MAX_ACCEPT_DAYS). Claude read-only runs
+ * are fenced by Claude Code itself: in dontAsk mode a read outside the working directory would need a prompt and is denied
+ * (tool level, not OS level).
+ */
+export function evaluateHostIsolation({ provider, access = "read-only", project, acceptance = null, now = new Date() }) {
+  if (provider === "claude") {
+    return access === "read-only"
+      ? { ok: true, level: "tool", detail: "Claude: citirile în afara directorului de lucru sunt refuzate de modul dontAsk (nivel unealtă, nu OS)" }
+      : { ok: false, level: "none", detail: "Claude cu scriere/shell nu are graniță pe Windows nativ" };
+  }
+  if (provider !== "codex") return { ok: false, level: "none", detail: `Provider necunoscut: ${provider}` };
+  if (!project) return { ok: false, level: "none", detail: "Proiect necunoscut" };
+  if (project.source === "hub-test") {
+    return { ok: true, level: "test-project", detail: "Proiect de test sanitizat. R2 rămâne deschis pe host: alte proiecte sunt citibile prin cale absolută, deci acest workspace nu primește date reale" };
+  }
+  const valid = acceptance?.confirmedAt && acceptance.text === R2_ACCEPT_TEXT && new Date(acceptance.expiresAt) > now
+    && String(acceptance.projectPath || "").toLowerCase() === String(project.path || "").toLowerCase();
+  if (valid) {
+    return { ok: true, level: "owner-accepted-risk", detail: `R2 DESCHIS — risc acceptat de tine pentru ${project.name} până la ${acceptance.expiresAt} (nu este o izolare; REAL_PROJECT_READY rămâne neatins)` };
+  }
+  return { ok: false, level: "none", detail: `R2_OPEN: pe ${project.name}, comenzile Codex ar putea citi prin cale absolută alte proiecte (inclusiv .env). Pe proiecte reale Codex e blocat până la un mediu separat verificat sau la acceptarea ta explicită, limitată în timp (Integrări → Izolare)` };
 }

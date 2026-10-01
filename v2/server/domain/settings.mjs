@@ -11,6 +11,8 @@ export const DEFAULT_SETTINGS = Object.freeze({
   billingAttestations: {},
   // Owner consent to the persistent DENY ACEs the Codex Windows sandbox writes for the Hub profile (M02 §05).
   isolationConsent: {},
+  // R2 still open, accepted by the owner per project (path-bound, time-limited); never a claim of isolation (M03 §05).
+  r2Acceptance: {},
   // Lega (voice assistant, GPT-Live via Codex): owner consent (versioned) and session preferences.
   legaConsent: {},
   lega: { voice: "cove", maxSessionMinutes: 20, idleTimeoutS: 120 },

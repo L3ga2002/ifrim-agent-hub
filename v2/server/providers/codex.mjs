@@ -9,6 +9,7 @@ import { classifyCodexTurnError, classifyText } from "./classify.mjs";
 import { buildChildEnv } from "../policy/billing.mjs";
 import { codexIsolationArgs, CODEX_PROFILE_BY_ACCESS } from "../policy/isolation.mjs";
 import { HUB_VERSION } from "../config.mjs";
+import { KNOWN_EFFORTS } from "../policy/run-plan.mjs";
 
 const execFileAsync = promisify(execFile);
 
@@ -24,6 +25,17 @@ export const CODEX_ALLOWED_METHODS = new Set([
   "model/list", "account/read", "account/rateLimits/read",
   "windowsSandbox/readiness", "permissionProfile/list", "mcpServerStatus/list",
 ]);
+
+/**
+ * Per-process reasoning effort (M03 §09): the thread default then comes from the Hub, not from the owner's config.toml
+ * (found live: both Hub runs reported "max"). thread/start reports it back, and a different value stops the run before the
+ * turn. Only known effort names reach the command line.
+ */
+export function effortArgs(effort = "") {
+  if (!effort) return [];
+  if (!KNOWN_EFFORTS.includes(effort)) throw Object.assign(new Error(`Unsupported effort ${effort}`), { category: "validation", preInference: true });
+  return ["-c", `model_reasoning_effort="${effort}"`];
+}
 
 /** Per-process args that disable each named MCP server (only names addressable as a dotted path; any other stays active and is refused by the MCP check). */
 export function mcpDisableArgs(names = []) {
@@ -302,7 +314,11 @@ export function createCodexAdapter({ config, supervisor, homeDir = os.homedir() 
           interrupt("policy").catch(() => {});
         }
       } else if (method === "item/started" && ACTIVITY_ITEMS.has(params.item?.type)) {
+        if (params.item.type === "commandExecution") onEvent({ type: "phase", phase: "first_command_started" });
+        if (params.item.type === "fileChange") onEvent({ type: "phase", phase: "first_file_change" });
         onEvent({ type: "activity", label: describeItem(params.item) });
+      } else if (method === "item/completed" && params.item?.type === "commandExecution") {
+        onEvent({ type: "phase", phase: "first_command_completed" });
       } else if (method === "item/completed" && params.item?.type === "agentMessage" && !output && typeof params.item.text === "string") {
         output = params.item.text;
       } else if (method === "turn/diff/updated") {
@@ -351,8 +367,14 @@ export function createCodexAdapter({ config, supervisor, homeDir = os.homedir() 
     };
 
     let interruptReason = null;
+    let extraArgs;
+    try { extraArgs = [...mcpDisableArgs(mcpPlan.names), ...effortArgs(effort)]; } catch (error) {
+      return { key, pid: null, interrupt: async () => ({ interrupted: false, graceful: true, reason: "not started" }),
+        done: Promise.resolve({ status: "failed", errorCategory: "validation", preInference: true, error: error.message, output: "", usage: {}, threadId }) };
+    }
+    const phase = (name) => { try { onEvent({ type: "phase", phase: name }); } catch { /* timeline never breaks a run */ } };
     // The owner's config MCP servers are disabled by name for this process (key names only are read from config.toml).
-    const session = openSession({ cwd, key, access, extraArgs: mcpDisableArgs(mcpPlan.names), onNotification, onServerRequest,
+    const session = openSession({ cwd, key, access, extraArgs, onNotification, onServerRequest,
       onExit: (exit) => finish(interruptReason
         ? { status: "interrupted", output, usage, threadId: currentThread, turnId, errorCategory: null, error: `interrupted (${interruptReason})`, preInference: !turnId }
         : { status: "failed", output, usage, threadId: currentThread, turnId, errorCategory: "transport", error: `app-server exited (${exit.code})`, preInference: !turnId }) });
@@ -381,13 +403,16 @@ export function createCodexAdapter({ config, supervisor, homeDir = os.homedir() 
     const done = (async () => {
       try {
         await session.ready;
+        phase("initialized");
         const account = normalizeAccount(await session.peer.request("account/read", {}, 30000));
+        phase("account_checked");
         onEvent({ type: "auth", auth: account });
         if (account.accountType !== "chatgpt") {
           return { status: "failed", errorCategory: account.accountType === "apiKey" ? "billing" : "authentication", preInference: true,
             error: `Codex account type ${account.accountType || "none"} is not the ChatGPT subscription route`, output, usage, threadId: currentThread };
         }
         const limits = normalizeRateLimits(await session.peer.request("account/rateLimits/read", {}, 30000));
+        phase("rate_limits_checked");
         usage = { rateLimits: limits };
         onEvent({ type: "usage", usage });
         const verdict = admitUsage?.(limits) || { ok: true };
@@ -404,10 +429,19 @@ export function createCodexAdapter({ config, supervisor, homeDir = os.homedir() 
             onEvent({ type: "notice", level: "warning", text: `Could not resume Codex thread (${error.message}); starting a new thread with the Hub context package` });
             return null;
           });
+          // A thread created before M03 keeps the effort it was created with (e.g. the config's "max"); it is not continued
+          // with another effort silently: a new thread starts with the Hub context package and the requested effort.
+          const resumedEffort = String(thread?.reasoningEffort ?? "").trim().toLowerCase();
+          if (thread && effort && resumedEffort && resumedEffort !== effort) {
+            onEvent({ type: "notice", level: "warning", text: `Thread-ul reluat are efortul ${thread.reasoningEffort}; pornesc un thread nou cu efortul cerut ${effort} și pachetul de context al Hub-ului` });
+            thread = null;
+            currentThread = "";
+          }
         }
         if (!thread) thread = await session.peer.request("thread/start", threadParams, 120000);
         currentThread = thread?.thread?.id || currentThread;
         if (!currentThread) throw Object.assign(new Error("Codex did not return a thread id"), { category: "transport" });
+        phase("thread_ready");
         onEvent({ type: "session", nativeSessionId: currentThread, model: thread.model, reasoningEffort: thread.reasoningEffort, sandbox: thread.sandbox });
         // Last checks before turn/start (no model call yet): the Hub stays the approver and gets the model it asked for.
         if (thread.approvalsReviewer && thread.approvalsReviewer !== "user") {
@@ -427,20 +461,29 @@ export function createCodexAdapter({ config, supervisor, homeDir = os.homedir() 
           return { status: "failed", errorCategory: "policy", preInference: true, output, usage, threadId: currentThread,
             error: `Codex a ales modelul ${thread.model} în loc de ${model}; oprit înainte de turn (fără substituire tăcută)` };
         }
+        // The effort the thread will use must be the one the Hub set for this process (never the config's "max" by accident).
+        const reportedEffort = String(thread.reasoningEffort ?? "").trim().toLowerCase();
+        if (effort && reportedEffort && reportedEffort !== effort) {
+          return { status: "failed", errorCategory: "policy", preInference: true, output, usage, threadId: currentThread,
+            error: `Codex a raportat efortul ${thread.reasoningEffort} în loc de ${effort}; oprit înainte de turn (fără efort moștenit din config)` };
+        }
 
         // No MCP server may be active for a Hub run: they run outside the sandbox (plugins and config servers are disabled
         // above; a name that cannot be addressed as a dotted path, or a Codex that ignores the override, stops here).
         const activeMcp = await activeMcpServers(session.peer, currentThread);
+        phase("mcp_checked");
         if (activeMcp.length) {
           return { status: "failed", errorCategory: "policy", preInference: true, output, usage, threadId: currentThread,
             error: `Servere MCP încă active pentru execuție (${activeMcp.slice(0, 5).join(", ")}); rulează în afara sandbox-ului; oprit înainte de turn` };
         }
         if (interruptReason) return { status: "interrupted", errorCategory: null, preInference: true, error: `interrupted (${interruptReason})`, output, usage, threadId: currentThread, turnId: "" };
         turnRequested = true;
+        phase("turn_sent");
 
         const turn = await session.peer.request("turn/start", { threadId: currentThread, input: [{ type: "text", text: prompt }], cwd,
           approvalPolicy: "on-request", approvalsReviewer: "user", ...(model ? { model } : {}), ...(effort ? { effort } : {}) }, 60000);
         turnId = turn?.turn?.id || "";
+        phase("turn_acknowledged");
         onEvent({ type: "turn", turnId });
         const result = await completion;
         // "tool", not "policy": the model already ran (policy counts as a pre-inference stop in the run record).

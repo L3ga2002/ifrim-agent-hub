@@ -1,6 +1,42 @@
 # Project State - Ifrim Agent Hub
 
-## Current State - 2026-10-01 (M02 + Lega, version `2.3.0-m03`, live-validated on the test project)
+## Current State - 2026-10-01 (Milestone 03, version `2.4.0-m03`, simulated end to end, not live-validated)
+
+M03 adds the Engineering department on top of M02 + Lega. It reuses the existing missions, runs, grants, approvals, handoff and Lega; no parallel system.
+
+**Runtime readiness:**
+- every run sends an explicit model (from `model/list`) and effort (profile BALANCED = `medium`), verified before the turn;
+- a per-run phase timeline;
+- the R2 host-isolation gate (Codex only on test projects or with the owner's time-limited acceptance);
+- R3 deny entries (`config.toml*`, `history.jsonl`; the owner must re-consent to the ACL list);
+- bounded pre-inference refunds.
+
+**Software Factory:**
+- versioned spec;
+- validated plan (one Codex writer, a read-only Claude reviewer on another provider, the Hub runner);
+- workspace snapshots and change sets without git writes;
+- integrity checks;
+- structured review bound to the change-set hash;
+- bounded repair with stagnation detection;
+- QA on protected acceptance tests through `codex sandbox`;
+- preview, then browser E2E on the verified preview (Playwright 1.61.0, Chromium with the OS sandbox, declarative steps from the approved spec);
+- delivery bundle;
+- durable idempotent dispatch, Stop/pause/restart recovery;
+- Engineering UI, and Lega as the voice entry point.
+
+**Evidence:**
+- demos A/B/C PASS_SIMULATED; Demo B's E2E criterion runs in the real browser (FAC-02, M03-BR-00…03 PASS_LOCAL);
+- canary on a fictive tree PASS_LOCAL (50 checks; R3 DENIED; R2 confirmed open); sandbox per command ~4–6 s on a fictive profile;
+- demo projects A and B created and registered as hub-test;
+- no model ran in M03;
+- LIVE_SANDBOX_VALIDATED NOT_RUN;
+- REAL_PROJECT_READY not reached (R2 open).
+
+Report: `M03_REPORT.md`; traceability: `M03_IMPLEMENTATION_STATUS.md`.
+
+**Git:** M03 is committed on `v2-milestone-01` on 2026-10-01 at the owner's request (the commit right after `6432c5e`; push: see `git status`/GitHub); `main` is still `e9ab563`.
+
+## Previous State - 2026-10-01 (M02 + Lega, version `2.3.0-m03`, live-validated on the test project)
 
 V2 now has the Lega voice assistant on top of Milestone 02:
 - GPT-Live voice through the ChatGPT subscription via the installed Codex (`codex app-server`, experimental `thread/realtime/*` methods), no API key;

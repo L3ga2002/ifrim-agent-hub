@@ -200,7 +200,7 @@ export function createTools({ db, bus, clock, projects, approvals, supervisor, c
   function definitions() {
     return TOOL_DEFINITIONS.map((d) => {
       if (d.id !== "browser.inspect") return d;
-      const s = browserStatus({ hubRoot: config.hubRoot });
+      const s = browserStatus({ hubRoot: config.browserRoot });
       return { ...d, status: s.installed ? "available (approval per URL)" : "NEEDS_INSTALL_APPROVAL", reason: s.reason, approvalRequest: s.approvalRequest || null };
     });
   }
@@ -220,10 +220,10 @@ export function createTools({ db, bus, clock, projects, approvals, supervisor, c
     if (!approval || approval.actionKind !== "browser.inspect") throw new HubError("not_found", "Approval not found");
     const url = validateBrowserUrl(approval.payload.url, { hubPorts: hubPorts() });
     approvals.consume(approvalId, { actionKind: "browser.inspect", target: url, payload: { url }, codeVersion: "n/a", permissionTier: "DEVELOPMENT_TOOLS", scopeType: "project", scopeId: approval.scopeId });
-    return record("browser.inspect", { url }, null, "local headless browser", () => inspectPage({ url, hubRoot: config.hubRoot, hubPorts: hubPorts(), evidenceDir: path.join(config.dataDir, "browser-evidence") }));
+    return record("browser.inspect", { url }, null, "local headless browser", () => inspectPage({ url, hubRoot: config.browserRoot, hubPorts: hubPorts(), evidenceDir: path.join(config.dataDir, "browser-evidence") }));
   }
 
-  return { get definitions() { return definitions(); }, invoke, executeApprovedScript, executeApprovedBrowser, browserStatus: () => browserStatus({ hubRoot: config.hubRoot }) };
+  return { get definitions() { return definitions(); }, invoke, executeApprovedScript, executeApprovedBrowser, browserStatus: () => browserStatus({ hubRoot: config.browserRoot }) };
 }
 
 function previewCheck(url) {

@@ -2,19 +2,51 @@
 // Simulated Codex app-server (JSONL JSON-RPC over stdio) for PASS_SIMULATED tests.
 // It never contacts a network or a model. Scenario and log path come from argv.
 import fs from "node:fs";
+import path from "node:path";
 import readline from "node:readline";
+import { spawnSync } from "node:child_process";
+import { fileURLToPath } from "node:url";
 
 const args = process.argv.slice(2);
 const opt = (name, fallback = "") => (args.find((a) => a.startsWith(`--${name}=`)) || "").split("=").slice(1).join("=") || fallback;
 // Optional `--scenario-file=<path>`: a non-empty file overrides --scenario, so the simulator can switch scenarios per run.
 const scenarioFromFile = () => { const file = opt("scenario-file"); try { return file ? fs.readFileSync(file, "utf8").trim() : ""; } catch { return ""; } };
-const scenario = scenarioFromFile() || opt("scenario", "ok");
+// Optional `--scenario-queue=<path>`: each app-server process takes the FIRST line of the file (and removes it), so a whole
+// multi-run flow (writer → reviewer → repair …) can be scripted in order. An empty queue falls back to the other options.
+const scenarioFromQueue = () => {
+  const file = opt("scenario-queue");
+  if (!file || !args.includes("app-server")) return "";
+  try {
+    const lines = fs.readFileSync(file, "utf8").split(/\r?\n/).filter((l) => l.trim());
+    if (!lines.length) return "";
+    fs.writeFileSync(file, lines.slice(1).join("\n"));
+    return lines[0].trim();
+  } catch { return ""; }
+};
+const scenario = scenarioFromQueue() || scenarioFromFile() || opt("scenario", "ok");
+// The reasoning effort the Hub set for this process (-c model_reasoning_effort="…"); reported back by thread/start.
+const effortOverride = ((args.find((a) => a.startsWith("model_reasoning_effort=")) || "").match(/"([^"]*)"/) || [])[1] || "";
+const FACTORY_PATCHES = path.join(path.dirname(fileURLToPath(import.meta.url)), "factory-patches");
 const logFile = opt("log");
 const log = (entry) => { if (logFile) fs.appendFileSync(logFile, `${JSON.stringify(entry)}\n`); };
 // Optional `--log-env`: logs the NAMES (never the values) of the environment variables this process received.
 if (args.includes("--log-env")) log({ envNames: Object.keys(process.env).sort(), invocation: args.includes("--version") ? "--version" : args.includes("app-server") ? "app-server" : "other" });
 
 if (args.includes("--version")) { console.log("codex-cli 0.0.0-fake"); process.exit(0); }
+// `codex sandbox … -C <dir> -- <command…>` (QA runner): runs the command in <dir> WITHOUT any real sandbox (fixture only) and
+// logs the profile flags it received, so tests can check what the Hub would pass to the real sandbox.
+if (args.includes("sandbox")) {
+  const sep = args.indexOf("--");
+  const cwdIndex = args.indexOf("-C");
+  const command = sep >= 0 ? args.slice(sep + 1) : [];
+  log({ sandbox: { profile: args[args.indexOf("-P") + 1] || null, cwd: cwdIndex >= 0 ? args[cwdIndex + 1] : null, command, windowsSandbox: args.some((a) => a.startsWith("windows.sandbox=")),
+    networkOff: args.some((a) => a.includes("network={enabled=false}")) } });
+  if (!command.length) { console.error("fake-codex sandbox: no command"); process.exit(2); }
+  const r = spawnSync(command[0], command.slice(1), { cwd: cwdIndex >= 0 ? args[cwdIndex + 1] : process.cwd(), encoding: "utf8", windowsHide: true, timeout: 120000 });
+  process.stdout.write(r.stdout || "");
+  process.stderr.write(r.stderr || "");
+  process.exit(r.status ?? 1);
+}
 if (!args.includes("app-server")) { console.error("fake-codex: unsupported"); process.exit(2); }
 log({ launchArgs: args.filter((a) => !a.startsWith("--scenario=") && !a.startsWith("--log=")) });
 
@@ -60,7 +92,9 @@ rl.on("line", async (line) => {
       return send({ id: msg.id, result: { data: [{ id: ":read-only", allowed: true }, { id: ":workspace", allowed: true },
         ...(scenario === "no-profile" ? [] : [{ id: "ifrim_hub_ro", allowed: true }, { id: "ifrim_hub_rw", allowed: true }])], nextCursor: null } });
     case "model/list":
-      return send({ id: msg.id, result: { data: [{ id: "gpt-fake-sol", model: "gpt-fake-sol", displayName: "Fake Sol", isDefault: true, hidden: false, description: "", supportedReasoningEfforts: [{ reasoningEffort: "medium" }, { reasoningEffort: "high" }], defaultReasoningEffort: "medium" }] } });
+      // A second, non-default model ("gpt-5") lets the model-variant scenario reach the adapter's exact-id check past the gate's run plan.
+      return send({ id: msg.id, result: { data: [{ id: "gpt-fake-sol", model: "gpt-fake-sol", displayName: "Fake Sol", isDefault: true, hidden: false, description: "", supportedReasoningEfforts: [{ reasoningEffort: "medium" }, { reasoningEffort: "high" }], defaultReasoningEffort: "medium" },
+        { id: "gpt-5", model: "gpt-5", displayName: "Fake 5", isDefault: false, hidden: false, description: "", supportedReasoningEfforts: [{ reasoningEffort: "medium" }], defaultReasoningEffort: "medium" }] } });
     case "thread/start":
     case "thread/resume":
       threadId = msg.params.threadId || "thr_fake_1";
@@ -79,8 +113,10 @@ rl.on("line", async (line) => {
       // sandbox-write: the thread projects workspaceWrite whatever access the Hub profile grants (a read-only run must stop).
       // external-sandbox: Codex applies no sandbox of its own (the Hub provides no outer one, so the run must stop).
       const sandboxType = scenario === "full-access" ? "dangerFullAccess" : scenario === "sandbox-write" ? "workspaceWrite" : scenario === "external-sandbox" ? "externalSandbox" : "readOnly";
+      // effort-ignored: Codex keeps the config's "max" whatever the Hub set; effort-resume-max: only a RESUMED thread reports it.
+      const reasoningEffort = scenario === "effort-ignored" || (scenario === "effort-resume-max" && msg.method === "thread/resume") ? "max" : effortOverride || "medium";
       return send({ id: msg.id, result: { thread: { id: threadId, environments }, model: reportedModel, modelProvider: "openai", cwd: msg.params.cwd,
-        approvalPolicy: "on-request", approvalsReviewer: scenario === "auto-reviewer" ? "auto_review" : "user", sandbox: { type: sandboxType }, reasoningEffort: "medium" } });
+        approvalPolicy: "on-request", approvalsReviewer: scenario === "auto-reviewer" ? "auto_review" : "user", sandbox: { type: sandboxType }, reasoningEffort } });
     case "turn/start": {
       const turnId = "turn_fake_1";
       send({ id: msg.id, result: { turn: { id: turnId, status: "inProgress", items: [] } } });
@@ -91,6 +127,7 @@ rl.on("line", async (line) => {
         log({ approvalReply: reply.result });
       }
       if (scenario === "hang") return; // waits for turn/interrupt
+      if (scenario.startsWith("factory-write:")) return factoryWrite(msg, turnId, scenario.slice("factory-write:".length));
       if (scenario === "mcp-tool-completed") {
         // Only the completed item arrives (e.g. a call that failed at once): it must stop the run too.
         return send({ method: "item/completed", params: { threadId, turnId, item: { type: "mcpToolCall", id: "mcp2", server: "node_repl", tool: "js", status: "failed", arguments: {} } } });
@@ -151,6 +188,36 @@ rl.on("line", async (line) => {
 });
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+/**
+ * Software Factory writer fixture: applies tests/fixtures/factory-patches/<name>.json ({ write: {path: text}, delete: [path] })
+ * inside the turn's cwd, like a writer that edits files and runs a command, then completes the turn. Paths are relative and
+ * may not leave the cwd. No model, no network.
+ */
+async function factoryWrite(msg, turnId, name) {
+  const cwd = msg.params.cwd;
+  let patch;
+  try { patch = JSON.parse(fs.readFileSync(path.join(FACTORY_PATCHES, `${name.replace(/[^a-z0-9-]/gi, "")}.json`), "utf8")); }
+  catch { return send({ method: "turn/completed", params: { threadId, turn: { id: turnId, status: "failed", items: [], error: { message: `fake: patch ${name} missing` } } } }); }
+  const inside = (rel) => { const abs = path.resolve(cwd, rel); return abs.startsWith(path.resolve(cwd) + path.sep) ? abs : null; };
+  send({ method: "item/started", params: { threadId, turnId, item: { type: "commandExecution", id: "c1", command: "node --test", status: "inProgress" } } });
+  await sleep(30);
+  send({ method: "item/completed", params: { threadId, turnId, item: { type: "commandExecution", id: "c1", command: "node --test", status: "completed", exitCode: 0 } } });
+  const changed = [];
+  for (const [rel, text] of Object.entries(patch.write || {})) {
+    const abs = inside(rel);
+    if (!abs) continue;
+    fs.mkdirSync(path.dirname(abs), { recursive: true });
+    fs.writeFileSync(abs, text);
+    changed.push(rel);
+  }
+  for (const rel of patch.delete || []) { const abs = inside(rel); if (abs) { fs.rmSync(abs, { force: true }); changed.push(rel); } }
+  send({ method: "item/started", params: { threadId, turnId, item: { type: "fileChange", id: "f1", changes: changed.map((p) => ({ path: p })), status: "inProgress" } } });
+  send({ method: "item/completed", params: { threadId, turnId, item: { type: "fileChange", id: "f1", changes: changed.map((p) => ({ path: p })), status: "completed" } } });
+  const text = `SIMULARE (fixture ${name}): am modificat ${changed.length} fișiere: ${changed.join(", ")}. ${patch.summary || ""}`;
+  for (const part of text.match(/.{1,12}/gs)) send({ method: "item/agentMessage/delta", params: { threadId, turnId, itemId: "m1", delta: part } });
+  return send({ method: "turn/completed", params: { threadId, turn: { id: turnId, status: "completed", items: [] } } });
+}
 const serverRequest = (method, params) => new Promise((resolve) => { const id = serverRequestId++; pendingServer.set(id, resolve); send({ id, method, params }); });
 
 /** Simulated GPT-Live session (thread/realtime/*): signaling only, scripted by scenario; never any network or audio. */

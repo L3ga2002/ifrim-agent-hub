@@ -139,7 +139,7 @@ export function Composer({ conversation, project, handoffReady, onSent }) {
         </select>
         <select className="select compact composer-opt" value={options.effort} onChange={(e) => setEffort(e.target.value)} aria-label="Efort" title={options.effortNote}
           disabled={!options.efforts.length}>
-          <option value="">{options.effortSource === "unsupported" ? "efort indisponibil" : options.defaultEffort ? `efort implicit (${options.defaultEffort})` : "efort implicit"}</option>
+          <option value="">{options.effortSource === "unsupported" ? "efort indisponibil" : "efort: profil Echilibrat (medium, trimis explicit)"}</option>
           {options.efforts.map((x) => <option key={x} value={x}>{options.effortSource === "verified" ? `efort ${x}` : `efort ${x} (nevalidat)`}</option>)}
         </select>
         <div className="grow" />

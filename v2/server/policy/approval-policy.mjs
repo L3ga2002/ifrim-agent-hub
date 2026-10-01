@@ -20,6 +20,7 @@ export const ACTION_CATALOG = Object.freeze([
   { actionKind: "provider.fileChange", tier: "WORKSPACE_EDIT", effects: "local", policy: "ALWAYS_ASK", loosest: "ASK_ONCE_FOR_TASK", label: "Modificare de fișiere propusă de un model" },
   { actionKind: "provider.command", tier: "DEVELOPMENT_TOOLS", effects: "local", policy: "ALWAYS_ASK", loosest: "ASK_ONCE_FOR_TASK", label: "Comandă propusă de un model" },
   { actionKind: "process.run", tier: "DEVELOPMENT_TOOLS", effects: "local", policy: "ALWAYS_ASK", loosest: "ASK_ONCE_FOR_TASK", label: "Script npm al proiectului" },
+  { actionKind: "factory.scope", tier: "WORKSPACE_EDIT", effects: "local", policy: "ALWAYS_ASK", loosest: "ALWAYS_ASK", label: "Scope Software Factory (specificație, plan, rute, limite, comenzi)" },
   { actionKind: "lega.run_request", tier: "DEVELOPMENT_TOOLS", effects: "local", policy: "ALWAYS_ASK", loosest: "ALWAYS_ASK", label: "Execuție propusă de Lega (voce)" },
   { actionKind: "lega.mission_request", tier: "WORKSPACE_EDIT", effects: "local", policy: "ALWAYS_ASK", loosest: "ALWAYS_ASK", label: "Misiune propusă de Lega (voce)" },
   { actionKind: "browser.inspect", tier: "DEVELOPMENT_TOOLS", effects: "local", policy: "ALWAYS_ASK", loosest: "ASK_ONCE_FOR_TASK", label: "Browser local structurat (Playwright)" },

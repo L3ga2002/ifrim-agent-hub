@@ -209,6 +209,9 @@ export function createClaudeAdapter({ config, supervisor, homeDir = os.homedir()
             return;
           }
           initSeen = true;
+          // Timeline (M03): init is the last check before the model; the CLI sends the prompt to the model right after it.
+          onEvent({ type: "phase", phase: "initialized" });
+          onEvent({ type: "phase", phase: "turn_sent" });
           onEvent({ type: "session", nativeSessionId: event.session_id || nativeSessionId, model: event.model, tools: event.tools, mcpServers: (event.mcp_servers || []).map((s) => s.name), capabilities: event.capabilities || [] });
         } else if (initStop) {
           return;
@@ -217,7 +220,7 @@ export function createClaudeAdapter({ config, supervisor, homeDir = os.homedir()
           onEvent({ type: "delta", text: event.event.delta.text || "" });
         } else if (event.type === "assistant" && Array.isArray(event.message?.content)) {
           for (const block of event.message.content) {
-            if (block.type === "tool_use") onEvent({ type: "activity", label: `Claude tool: ${String(block.name).slice(0, 60)}` });
+            if (block.type === "tool_use") { onEvent({ type: "phase", phase: "first_command_started" }); onEvent({ type: "activity", label: `Claude tool: ${String(block.name).slice(0, 60)}` }); }
           }
         } else if (event.type === "system" && event.subtype === "api_retry") {
           const category = classifyClaudeRetry(event.error);

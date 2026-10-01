@@ -3,6 +3,8 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { HubError } from "../core/errors.mjs";
 import { ATTESTATION_TEXT } from "../policy/billing.mjs";
+import { R2_ACCEPT_TEXT } from "../policy/isolation.mjs";
+import { materializeFixture, demoSpec } from "../factory/fixtures.mjs";
 
 /**
  * Deterministic simulator for visual review and state testing (Milestone 02 §23).
@@ -28,8 +30,8 @@ export function simulationOverrides(env = process.env) {
     registryPath: file("no-registry.md"), roleRegistryPath: file("no-roles.json"), legacyDbPath: file("no-legacy.sqlite"),
     port: Number(env.HUB_V2_PORT || 8012),
     providerBinaries: {
-      codex: { executable: process.execPath, prefixArgs: [path.join(FIXTURES, "fake-codex.mjs"), "--scenario=ok", `--scenario-file=${file("codex.scenario")}`, `--log=${file("codex.log")}`] },
-      claude: { executable: process.execPath, prefixArgs: [path.join(FIXTURES, "fake-claude.mjs"), "--fake-scenario=ok", `--fake-scenario-file=${file("claude.scenario")}`, `--fake-log=${file("claude.log")}`] },
+      codex: { executable: process.execPath, prefixArgs: [path.join(FIXTURES, "fake-codex.mjs"), "--scenario=ok", `--scenario-file=${file("codex.scenario")}`, `--scenario-queue=${file("codex.queue")}`, `--log=${file("codex.log")}`] },
+      claude: { executable: process.execPath, prefixArgs: [path.join(FIXTURES, "fake-claude.mjs"), "--fake-scenario=ok", `--fake-scenario-file=${file("claude.scenario")}`, `--fake-scenario-queue=${file("claude.queue")}`, `--fake-log=${file("claude.log")}`] },
     },
   };
 }
@@ -101,6 +103,9 @@ export function createSimulation(hub) {
       hub.settings.set("billingAttestations", { codex: { confirmedAt: now, text: ATTESTATION_TEXT.codex }, claude: { confirmedAt: now, text: ATTESTATION_TEXT.claude } }, "simulator");
       // Fixture providers only: no real sandbox writes ACEs here; the consent mirrors the real flow for the UI.
       hub.settings.set("isolationConsent", { codex: { confirmedAt: now, fingerprint: hub.codexIsolation().fingerprint, simulated: true } }, "simulator");
+      // The synthetic demo project is a registry project; the R2 acceptance mirrors the real flow (fixtures only, no host access).
+      const demo = project();
+      hub.settings.set("r2Acceptance", { [demo.id]: { confirmedAt: now, expiresAt: new Date(Date.now() + 7 * 86400000).toISOString(), projectPath: demo.path, text: R2_ACCEPT_TEXT, simulated: true } }, "simulator");
     });
   }
 
@@ -160,7 +165,32 @@ export function createSimulation(hub) {
     return { missionId, conversationId };
   }
 
+  /**
+   * Software Factory demos (M03 §25–§27): a fixture copied into the simulator's projects root, registered as a test project,
+   * with fixture grants and the writer/reviewer scripts queued. The mission is prepared with its spec; YOU approve the scope
+   * in Misiuni (nothing starts before that click). Labelled SIMULARE everywhere: fixture writer, reviewer and runner.
+   */
+  async function factoryDemo(fixture, { codex, claude }) {
+    const dir = path.join(config.dataDir, `factory-${fixture}-${Date.now().toString(36)}`);
+    const port = fixture === "service-request" ? 46000 + Math.floor(Math.random() * 2500) : null;
+    materializeFixture(fixture, dir, { port });
+    const projectRow = await cmd("project.register_test", { path: dir });
+    hub.bus.transaction(() => {
+      hub.grants.create({ provider: "codex", projectId: projectRow.id, access: "workspace-write", maxAttempts: 4, maxDurationS: 900, ttlMinutes: 240, note: "Simulare (fixture-uri)" }, "simulator");
+      hub.grants.create({ provider: "claude", projectId: projectRow.id, access: "read-only", maxAttempts: 4, maxDurationS: 900, ttlMinutes: 240, note: "Simulare (fixture-uri)" }, "simulator");
+    });
+    fs.appendFileSync(path.join(config.dataDir, "codex.queue"), `${codex.join("\n")}\n`);
+    fs.appendFileSync(path.join(config.dataDir, "claude.queue"), `${claude.join("\n")}\n`);
+    const view = await cmd("factory.prepare", { projectId: projectRow.id, ...demoSpec(fixture, { port }) });
+    return { missionId: view.mission.id, projectId: projectRow.id, next: "Deschide misiunea și apasă „Cere aprobarea scope-ului”, apoi „Aprobă și pornește”" };
+  }
+
   const ACTIONS = {
+    // Demo A: bug with regression (writer fixes, reviewer passes). Demo B: feature with one repair cycle and a preview.
+    // Demo C: review round-trip (CHANGES_REQUESTED → repair → re-review PASS) on Demo A's fixture.
+    "factory-a": () => factoryDemo("bug-demo", { codex: ["factory-write:bug-fix"], claude: ["review:pass"] }),
+    "factory-b": () => factoryDemo("service-request", { codex: ["factory-write:feature-b-nodedupe", "factory-write:feature-b-dedupe"], claude: ["review:pass"] }),
+    "factory-c": () => factoryDemo("bug-demo", { codex: ["factory-write:bug-fix", "factory-write:bug-fix-v2"], claude: ["review:changes-dedupe", "review:pass"] }),
     async execute() {
       const conv = await cmd("conversation.create", { projectId: project().id, title: `Execuție simulată ${new Date().toLocaleTimeString("ro-RO")}` });
       const run = await startRun(conv.id, "codex", "Implementează validarea (scenariu lung, fixture).", "slow", { wait: false });

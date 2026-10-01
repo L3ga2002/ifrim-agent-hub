@@ -257,7 +257,8 @@
 }
 
 /* Simulator scenario triggers inside the banner (simulator process only). */
-.sim-actions { display: inline-flex; gap: 4px; margin-left: 12px; }
+.sim-actions { display: inline-flex; gap: 4px; margin-left: 12px; min-width: 0; max-width: 60vw; overflow-x: auto; scrollbar-width: none; }
+.sim-action { flex: 0 0 auto; }
 .sim-action { font: inherit; font-weight: 600; font-size: 11px; padding: 1px 8px; border-radius: 3px; border: 1px solid currentColor; background: transparent; color: inherit; cursor: pointer; }
 .sim-action:disabled { opacity: 0.5; cursor: default; }
 .sim-action:focus-visible { outline: 2px solid currentColor; outline-offset: 1px; }

@@ -1,0 +1,7 @@
+{
+  "name": "factory-bug-demo",
+  "private": true,
+  "type": "module",
+  "description": "Fixture Software Factory (Demo A): validare de solicitare cu un defect reproductibil. Fără date reale, fără rețea.",
+  "scripts": { "test": "node --test" }
+}

@@ -269,3 +269,76 @@ export function composerOptions({ provider, providerState = null, model = "", ef
   }
   return { models, modelSource, modelNote, efforts, effortSource, effortNote, defaultEffort, effort: efforts.includes(effort) ? effort : "" };
 }
+
+/* ---------------- Software Factory (M03) ---------------- */
+/** Owner-facing stage names (Romanian) and the order of the main path. */
+export const FACTORY_STAGE_RO = Object.freeze({
+  SPEC_DRAFT: "Specificație", BASELINE: "Baseline", IMPLEMENTING: "Implementare", CHECKING: "Verificări", REVIEWING: "Review", REPAIRING: "Remediere",
+  QA: "QA", PREVIEW: "Preview", DELIVERY_READY: "Gata de acceptare", ACCEPTED: "Acceptat local", REJECTED: "Respins", PAUSED: "Pauză", BLOCKED: "Blocat",
+  NEEDS_OWNER_DECISION: "Decizia ta", CANCEL_REQUESTED: "Oprire cerută", CANCELLED: "Oprit",
+});
+export const FACTORY_PATH = Object.freeze(["SPEC_DRAFT", "BASELINE", "IMPLEMENTING", "CHECKING", "REVIEWING", "QA", "PREVIEW", "DELIVERY_READY", "ACCEPTED"]);
+
+/**
+ * What the mission waits for, in words that never say "AI lucrează" when it waits for the owner, a grant, the gate,
+ * the runner or a cancel confirmation. `waitReason` comes from the factory view.
+ */
+export function factoryWaitLabel(waitReason, stage) {
+  switch (waitReason) {
+    case "approval": return "Așteaptă aprobarea ta (comandă sau modificare cerută de model)";
+    case "grant": return "Așteaptă un grant (fără grant nu pornește niciun model)";
+    case "gate": return "Așteaptă poarta de execuție (mod, poartă, izolare sau facturare)";
+    case "provider": return "Modelul lucrează (urmărește cronologia execuției)";
+    case "runner": return stage === "BLOCKED" ? "Runner-ul sau browserul nu au putut rula (fără model); remediază cauza, apoi Reia" : "Runner-ul Hub rulează verificările (fără model)";
+    case "owner_decision": return stage === "SPEC_DRAFT" ? "Completează și aprobă specificația" : "Așteaptă decizia ta";
+    case "cancel": return "Oprire cerută; aștept confirmarea că nimic nu mai rulează";
+    default: return stage === "ACCEPTED" ? "Acceptat local; commit/push/deploy rămân acțiuni separate" : "—";
+  }
+}
+
+/** Index of each stage on the main path (side states map to where the mission stopped). */
+export function factoryProgress(view) {
+  const stage = view?.factory?.stage;
+  const at = FACTORY_PATH.indexOf(stage);
+  if (at >= 0) return { current: at, side: null };
+  const reached = Math.max(0, ...((view?.dispatches || []).map((d) => FACTORY_PATH.indexOf(d.stage === "REPAIRING" ? "IMPLEMENTING" : d.stage))),
+    ...((view?.evidence || []).map((e) => FACTORY_PATH.indexOf(e.stage))));
+  return { current: reached, side: stage || null };
+}
+
+/** "1 min 05 s" style durations for the run timeline (null → "—"). */
+export function formatMs(ms) {
+  if (ms === null || ms === undefined || !Number.isFinite(ms)) return "—";
+  if (ms < 1000) return `${Math.round(ms)} ms`;
+  const s = Math.round(ms / 1000);
+  if (s < 60) return `${s} s`;
+  const m = Math.floor(s / 60);
+  return `${m} min ${String(s % 60).padStart(2, "0")} s`;
+}
+
+/**
+ * Acceptance criteria typed one per line: "text | verify | test/path.mjs". verify: test, review, manual, e2e, preview
+ * (default test when a path is given, otherwise review). Returns the spec array the API expects.
+ */
+/**
+ * Keeps what the line editor cannot show (approved E2E steps, the expected baseline failure) on the criteria that keep their
+ * id and verification kind, so saving a revision never drops them silently.
+ */
+export function mergeCriteria(parsed = [], previous = []) {
+  const byId = new Map(previous.map((a) => [a.id, a]));
+  return parsed.map((a) => {
+    const prev = byId.get(a.id);
+    if (!prev || prev.verify !== a.verify) return a;
+    return { ...a, ...(prev.steps ? { steps: prev.steps } : {}), ...(prev.expectFailure ? { expectFailure: prev.expectFailure } : {}) };
+  });
+}
+
+export function parseCriteriaLines(text = "") {
+  const kinds = new Set(["test", "review", "manual", "e2e", "preview"]);
+  return String(text).split("\n").map((l) => l.trim()).filter(Boolean).slice(0, 20).map((line, i) => {
+    const [body, second = "", third = ""] = line.split("|").map((s) => s.trim());
+    const verify = kinds.has(second) ? second : third ? "test" : second && /[/.]/.test(second) ? "test" : second ? "review" : "review";
+    const testRef = kinds.has(second) ? third : second && /[/.]/.test(second) ? second : "";
+    return { id: `AC-${i + 1}`, text: body, verify, ...(testRef ? { testRef } : {}) };
+  });
+}

@@ -1,0 +1,17 @@
+{
+  "verdict": "PASS",
+  "summary": "Modificarea respectă criteriile; testele protejate sunt neatinse.",
+  "findings": [
+    {
+      "severity": "info",
+      "file": "src/requests.js",
+      "area": "validare",
+      "observation": "Trim aplicat înainte de verificare",
+      "impact": "niciunul",
+      "evidence": "input.name.trim()",
+      "reproduction": "-"
+    }
+  ],
+  "missingContext": [],
+  "previousFindings": "ALL_RESOLVED"
+}

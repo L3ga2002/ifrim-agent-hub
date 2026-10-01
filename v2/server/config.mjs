@@ -6,7 +6,7 @@ export const V2_ROOT = path.resolve(here, "..");
 export const HUB_ROOT = path.resolve(V2_ROOT, "..");
 export const PROJECTS_ROOT = path.resolve(HUB_ROOT, "..");
 
-export const HUB_VERSION = "2.3.0-m03"; // M02 + Lega (voice, stage, full access, web search) and the M02 verification fixes
+export const HUB_VERSION = "2.4.0-m03"; // M03: runtime readiness (explicit model/effort, run timeline, R2/R3 gate) + Software Factory (spec → change set → review → QA → bundle)
 export const DEFAULT_PORT = 8011;
 export const DEFAULT_HOST = "127.0.0.1";
 
@@ -31,6 +31,8 @@ export function loadConfig(overrides = {}, env = process.env) {
     simulation: Boolean(overrides.simulation) && testMode,
     hubProjectName: overrides.hubProjectName || "Ifrim Agent Hub",
     hubRoot: overrides.hubRoot || HUB_ROOT,
+    // Where Playwright is resolved from (Browser Workspace, factory E2E): the Hub itself; a test may point it elsewhere.
+    browserRoot: overrides.browserRoot || overrides.hubRoot || HUB_ROOT,
     projectsRoot: overrides.projectsRoot || PROJECTS_ROOT,
     v2Root: V2_ROOT,
     dataDir,

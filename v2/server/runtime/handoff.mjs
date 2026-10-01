@@ -19,6 +19,7 @@ export const HANDOFF_STEPS = Object.freeze(["frozen", "safe_point", "reconciled"
  * goes through the normal execution gate; step 8 checks the target's acknowledgement line.
  */
 export function createHandoffs({ db, bus, clock, conversations, missions, projects, leases, approvals, supervisor, runs, checkpoints = null }) {
+  let factory = null; // Software Factory (late-bound): its missions' context travels in the package; an active one blocks a handoff
   const rowTo = (row) => row && ({ id: row.id, conversationId: row.conversation_id, taskId: row.task_id, fromProvider: row.from_provider, toProvider: row.to_provider,
     status: row.status, step: row.step, package: parse(row.package_json, {}), packageSha256: row.package_sha256, checkpointId: row.checkpoint_id,
     fromSurface: row.from_surface || null, toSurface: row.to_surface || null,
@@ -43,6 +44,11 @@ export function createHandoffs({ db, bus, clock, conversations, missions, projec
     if (open) throw new HubError("conflict", "A handoff is already open for this conversation", { data: { handoffId: open.id } });
     const fromProvider = conversation.writerProvider || db.prepare("SELECT provider FROM agent_runs WHERE conversation_id = ? ORDER BY created_at DESC LIMIT 1").get(conversationId)?.provider || "none";
     if (fromProvider === toProvider) throw new HubError("validation", `${toProvider} already holds this conversation`);
+    // A Software Factory mission drives its own writer and reviewer; a manual handoff while it is active would mean two writers.
+    const factoryMission = factoryMissionOf(conversation);
+    if (factoryMission && ["BASELINE", "IMPLEMENTING", "CHECKING", "REVIEWING", "REPAIRING", "QA", "PREVIEW", "CANCEL_REQUESTED"].includes(factoryMission.stage)) {
+      throw new HubError("conflict", `Misiunea Software Factory a acestei conversații e în etapa ${factoryMission.stage}; pune-o pe pauză sau oprește-o înainte de handoff`);
+    }
     const id = newId("hof");
     const now = clock().toISOString();
     return bus.transaction(() => {
@@ -118,6 +124,13 @@ export function createHandoffs({ db, bus, clock, conversations, missions, projec
     return get(id);
   }
 
+  /** The factory mission of a conversation (its writer or review conversation), or null. */
+  function factoryMissionOf(conversation) {
+    if (!factory) return null;
+    const row = db.prepare("SELECT fm.mission_id, fm.stage FROM factory_missions fm JOIN missions m ON m.id = fm.mission_id WHERE m.conversation_id = ? OR fm.review_conversation_id = ?").get(conversation.id, conversation.id);
+    return row ? { missionId: row.mission_id, stage: row.stage } : null;
+  }
+
   function buildPackage({ handoff, conversation, project, git, diff, untracked, checkpointId, nativeCheckpointRefs = [] }) {
     const task = handoff.taskId ? missions.task(handoff.taskId) : null;
     const mission = task?.missionId ? missions.get(task.missionId) : (conversation.activeMissionId ? missions.get(conversation.activeMissionId) : null);
@@ -152,6 +165,7 @@ export function createHandoffs({ db, bus, clock, conversations, missions, projec
       target_provider: handoff.toProvider,
       target_surface: handoff.toSurface || SURFACE_BY_PROVIDER[handoff.toProvider] || null,
       native_checkpoint_refs: nativeCheckpointRefs,
+      factory: factoryContext(conversation),
       context_references: { conversation_id: conversation.id, message_range: messageRange, checkpoint_id: checkpointId,
         summaries: db.prepare("SELECT id FROM summaries WHERE conversation_id = ?").all(conversation.id).map((s) => s.id),
         note: "Original messages stay in the Hub; the target reads this package, not the source model's hidden state." },
@@ -192,7 +206,22 @@ export function createHandoffs({ db, bus, clock, conversations, missions, projec
     return get(id);
   }
 
-  return { begin, advance, checkAcknowledgement, cancel, get, list };
+  /**
+   * Software Factory context for the package: approved spec and criteria, the current change set (hash), open findings and
+   * the stage — so the target continues on the same version and criteria, never on a guess.
+   */
+  function factoryContext(conversation) {
+    const fmRef = factoryMissionOf(conversation);
+    if (!fmRef) return null;
+    const v = factory.view(fmRef.missionId);
+    const cs = v.changeSets.find((c) => c.status === "CURRENT");
+    return { mission_id: fmRef.missionId, stage: v.factory.stage, wait_reason: v.factory.waitReason, spec_version: v.spec.version, spec_sha256: v.spec.sha256,
+      acceptance: v.spec.spec.acceptance, protected_tests: Object.keys(v.spec.protected?.files || {}), change_set: cs ? { seq: cs.seq, sha256: cs.sha256, files: cs.changes.map((c) => `${c.status} ${c.path}`) } : null,
+      open_findings: v.findings.filter((f) => f.status === "OPEN").map((f) => ({ code: f.code, severity: f.severity, file: f.file, observation: f.observation.slice(0, 300) })),
+      repair_cycles: v.factory.repairCycles, limits: v.factory.limits };
+  }
+
+  return { begin, advance, checkAcknowledgement, cancel, get, list, attachFactory: (f) => { factory = f; } };
 }
 
 function manifestUntracked(root, files) {

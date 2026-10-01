@@ -24,7 +24,7 @@ import { createIntegrations } from "./domain/integrations.mjs";
 import { createApprovals } from "./policy/approvals.mjs";
 import { createApprovalPolicy } from "./policy/approval-policy.mjs";
 import { createGate, createBreakers } from "./policy/gate.mjs";
-import { codexDeniedPaths, denyListFingerprint } from "./policy/isolation.mjs";
+import { codexDeniedEntries, denyListFingerprint } from "./policy/isolation.mjs";
 import { createCodexRealtime } from "./providers/codex-realtime.mjs";
 import { createLega } from "./runtime/lega.mjs";
 import { createLeases } from "./runtime/leases.mjs";
@@ -41,6 +41,8 @@ import { createCodexAdapter } from "./providers/codex.mjs";
 import { createClaudeAdapter } from "./providers/claude.mjs";
 import { createNativeSessionMirror } from "./providers/native-sessions.mjs";
 import { createTools } from "./tools/registry.mjs";
+import { createFactory } from "./factory/factory.mjs";
+import { createFactoryRunner } from "./factory/runner.mjs";
 import { newId } from "./core/ids.mjs";
 
 /** Live (non-persisted) channel for token deltas; persisted state is always reloadable from the API. */
@@ -57,7 +59,7 @@ function createLiveChannel() {
  * provider call and no run is started here. `boot()` runs recovery (safe mode), seeds the company,
  * surfaces, integrations, computer environments and skills, and starts housekeeping.
  */
-export function createHub(config, { providerOverrides = {}, homeDir } = {}) {
+export function createHub(config, { providerOverrides = {}, homeDir, browserLaunch = null } = {}) {
   const clock = config.now;
   fs.mkdirSync(config.dataDir, { recursive: true });
   const db = openDatabase(config.dbPath);
@@ -98,9 +100,10 @@ export function createHub(config, { providerOverrides = {}, homeDir } = {}) {
   let runs;
   let lega = null;
   // The exact paths the Codex profile denies on this machine; a recorded consent is valid only for this list.
-  const codexIsolation = () => { const paths = codexDeniedPaths({ homeDir: homeDir || os.homedir(), extra: [config.dataDir, config.backupDir] }); return { paths, fingerprint: denyListFingerprint(paths) }; };
+  // Globs included (M03 R3): a consent given for the M02 list does not cover config.toml / history.jsonl.
+  const codexIsolation = () => { const paths = codexDeniedEntries({ homeDir: homeDir || os.homedir(), extra: [config.dataDir, config.backupDir] }); return { paths, fingerprint: denyListFingerprint(paths) }; };
   const gate = createGate({ db, settings, projects, backups, leases, grants, breakers, providerState, clock, activeRunCount: () => runs.activeCount() + (lega?.active() ? 1 : 0), codexIsolation });
-  runs = createRunManager({ db, bus, clock, settings, projects, conversations, missions, gate, leases, grants, backups, approvals, providers, breakers, usage, live, policy, skills,
+  runs = createRunManager({ db, bus, clock, settings, projects, conversations, missions, gate, leases, grants, backups, approvals, providers, breakers, usage, live, policy, skills, providerState,
     supervisorRecord: (key) => supervisor.get(key) });
   const checkpoints = createCheckpoints({ db, bus, clock, projects, conversations, missions, approvals, leases, backups });
   const handoffs = createHandoffs({ db, bus, clock, conversations, missions, projects, leases, approvals, supervisor, runs, checkpoints });
@@ -112,26 +115,35 @@ export function createHub(config, { providerOverrides = {}, homeDir } = {}) {
   const refreshCodexConfig = () => {
     try { const current = providerState.get("codex") || {}; if (providers.codex.inspectConfig) providerState.set("codex", { ...current, config: providers.codex.inspectConfig() }); } catch { /* reported by the gate */ }
   };
-  lega = createLega({ config, bus, live, clock, settings, gate, grants, projects, approvals, missions, missionKinds: Object.keys(MISSION_TEMPLATES),
-    readApi: {
+  const legaRead = {
       briefing: () => buildBriefing({ db, settings, missions, backups, projects, clock }),
       recentRuns: (limit) => db.prepare(`SELECT r.provider, r.status, r.access, r.error_category, r.created_at, r.output_message_id, p.name AS project_name
         FROM agent_runs r LEFT JOIN conversations c ON c.id = r.conversation_id LEFT JOIN projects p ON p.id = c.project_id ORDER BY r.created_at DESC LIMIT ?`).all(limit)
         .map((r) => ({ provider: r.provider, status: r.status, access: r.access, errorCategory: r.error_category, createdAt: r.created_at, outputMessageId: r.output_message_id, projectName: r.project_name })),
-    },
+    // Late-bound below: the factory is created after Lega (it needs the run manager's voice hook first).
+    factorySummary: null,
+  };
+  lega = createLega({ config, bus, live, clock, settings, gate, grants, projects, approvals, missions, missionKinds: Object.keys(MISSION_TEMPLATES),
+    readApi: legaRead,
     runsApi: { activeRuns: () => runs.activeRuns(), getRun: (id) => runs.getRun(id), admitCodexUsage: (snapshot) => usage.admit("codex", snapshot),
       messageText: (id) => db.prepare("SELECT content FROM messages WHERE id = ?").get(id)?.content || "" },
     commandsApi: { dispatch: (request) => commands.dispatch(request) },
     codexRealtime: createCodexRealtime({ codex: providers.codex, supervisor }), refreshCodexConfig, codexConfig: () => providerState.get("codex")?.config || null, timeScale: config.legaTimeScale });
   runs.attachVoice(lega);
+  // Software Factory (M03): a deterministic conductor over missions/runs; its runner uses the Codex sandbox, never Hub rights.
+  const factoryRunner = createFactoryRunner({ config, supervisor, settings, providerState, codexIsolation, homeDir: homeDir || os.homedir() });
+  const factory = createFactory({ db, bus, clock, config, settings, projects, conversations, missions, runs, supervisor, runner: factoryRunner, leases, browserLaunch });
+  runs.attachFactory(factory);
+  legaRead.factorySummary = (missionId) => factory.summary(missionId);
+  handoffs.attachFactory(factory);
 
   const hub = { config, db, bus, live, settings, projects, conversations, missions, approvals, policy, leases, grants, providerState, usage, memory, leads,
     company, chiefOfStaff, surfaces, schedules, computer, skills, artifacts, integrations, nativeSessions, telemetry, router, commands, checkpoints,
-    breakers, supervisor, backups, providers, gate, runs, handoffs, tools, roleConfig, skillConfig, capabilityConfig, codexIsolation, lega, refreshCodexConfig };
+    breakers, supervisor, backups, providers, gate, runs, handoffs, tools, roleConfig, skillConfig, capabilityConfig, codexIsolation, lega, refreshCodexConfig, factory, factoryRunner };
   registerCommands(commands, hub);
 
   const scheduler = createScheduler({ db, bus, clock, approvals, leases, runs,
-    extraTick: () => schedules.tick((cmd) => commands.dispatch({ ...cmd, channel: "schedule", actor: "scheduler" }).then((r) => r.result)) });
+    extraTick: () => Promise.all([schedules.tick((cmd) => commands.dispatch({ ...cmd, channel: "schedule", actor: "scheduler" }).then((r) => r.result)), factory.tick()]) });
   hub.scheduler = scheduler;
 
   // Post-commit reactions (each in its own transaction; never inside the writer's transaction).
@@ -139,6 +151,10 @@ export function createHub(config, { providerOverrides = {}, homeDir } = {}) {
     if (event.runId && ["run.completed", "run.failed", "run.interrupted"].includes(event.type)) {
       try { handoffs.checkAcknowledgement(event.runId); } catch { /* reported through handoff state */ }
       try { telemetry.recordRun(event.runId); } catch { /* telemetry never breaks a run */ }
+      // A factory step finished: the conductor decides the next one (asynchronously, serialized per mission).
+      factory.onRunFinished(event.runId).catch((error) => {
+        try { bus.emit({ type: "factory.error", scopeType: "run", scopeId: event.runId, source: "factory", payload: { message: String(error.message).slice(0, 300) } }); } catch { /* shutting down */ }
+      });
     }
     if (event.scopeType === "task" && ["task.completed", "task.cancelled", "task.failed"].includes(event.type)) {
       try { telemetry.recordTaskOutcome(event.scopeId); } catch { /* ignore */ }
@@ -167,6 +183,7 @@ export function createHub(config, { providerOverrides = {}, homeDir } = {}) {
     const skillImport = skills.importAll("seed");
     surfaces.refreshAvailability();
     bootReport = await recoverOnBoot({ db, bus, clock, settings, approvals });
+    bootReport.factory = factory.recover();
     bootReport.seeded = { ...seeded, skills: skillImport };
     if (!config.testMode) scheduler.start();
     bus.emit({ type: "system.booted", scopeType: "system", scopeId: bootId, source: "hub", payload: { mode: settings.get("mode"), gate: settings.get("executionGate").status } });
@@ -175,6 +192,7 @@ export function createHub(config, { providerOverrides = {}, homeDir } = {}) {
 
   async function close() {
     scheduler.stop();
+    await factory.close();
     await lega.stopAll("shutdown").catch(() => {});
     await supervisor.stopAll();
     db.close();

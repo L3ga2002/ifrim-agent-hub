@@ -81,7 +81,7 @@ function IsolationPanel() {
           <summary className="link-btn" style={{ cursor: "pointer" }}>Căile negate pentru Codex pe acest calculator ({codex.paths.length} + .env oriunde în workspace) · amprentă {codex.fingerprint}</summary>
           <pre className="pre" style={{ maxHeight: 220, marginTop: 8 }}>{codex.paths.join("\n")}</pre>
         </details>
-        <p className="muted small" style={{ margin: 0 }}>Sandbox-ul Windows al Codex aplică refuzul scriind reguli ACL DENY pentru grupul CodexSandboxUsers. Regulile rămân după rulare și se aplică și în Codex desktop; contul tău nu este afectat. Revenire: <span className="mono">{codex.reversal}</span>. ~/.codex nu este negat întreg (acolo rulează sandbox-ul), doar autentificarea și istoricul.</p>
+        <p className="muted small" style={{ margin: 0 }}>Sandbox-ul Windows al Codex aplică refuzul scriind reguli ACL DENY pentru grupul CodexSandboxUsers. Regulile rămân după rulare și se aplică și în Codex desktop; contul tău nu este afectat. Revenire: <span className="mono">{codex.reversal}</span>. ~/.codex nu este negat întreg (acolo rulează sandbox-ul), doar autentificarea, configurația (config.toml și copiile ei, R3) și istoricul.</p>
         {codex.consentCurrent ? (
           <div className="row wrap"><Chip tone="ok">acord înregistrat {fmt.dateTime(codex.consent.confirmedAt)}</Chip><button className="btn sm ghost" disabled={revoke.pending} onClick={revoke.run}>Retrage acordul</button></div>
         ) : (
@@ -94,8 +94,49 @@ function IsolationPanel() {
           </div>
         )}
         <ErrorNotice error={consent.error || revoke.error} />
+        <R2Section r2={iso.data.r2} reload={iso.reload} />
       </div>
     </Panel>
+  );
+}
+
+/**
+ * R2 (M03): the Codex sandbox reads the host outside the denied paths. Test projects are admitted (no real data in them);
+ * a company project needs your explicit, time-limited acceptance of the open risk (never shown as isolation).
+ */
+function R2Section({ r2, reload }) {
+  const [projectId, setProjectId] = useState("");
+  const [text, setText] = useState("");
+  const [days, setDays] = useState(1);
+  const accept = useAction(async () => { await api(`/api/isolation/r2/${projectId}/accept`, { method: "POST", body: { confirmText: text, days: Number(days) } }); setText(""); setProjectId(""); reload(); });
+  const revoke = useAction(async (id) => { await api(`/api/isolation/r2/${id}/revoke`, { method: "POST", body: {} }); reload(); });
+  if (!r2) return null;
+  const real = r2.projects.filter((p) => p.source !== "hub-test");
+  return (
+    <div className="stack tight">
+      <div className="section-title">R2 · citire între proiecte (deschis)</div>
+      <p className="muted small" style={{ margin: 0 }}>Sandbox-ul Windows al Codex citește tot calculatorul în afara căilor negate: o comandă a modelului poate deschide alte proiecte (inclusiv .env-urile lor) prin cale absolută. Codex rulează fără restricții suplimentare doar pe proiecte de test; pe un proiect real, numai dacă accepți tu riscul, pentru acel proiect și cel mult {r2.maxDays} zile. Acceptarea nu repară R2.</p>
+      <ul className="list">{r2.projects.map((p) => (
+        <li key={p.id}><div className="list-row"><div className="grow"><div className="title">{p.name}{p.source === "hub-test" ? " (test)" : ""}</div><div className="sub">{p.codex.detail}</div></div>
+          <Chip tone={p.codex.ok ? (p.codex.level === "owner-accepted-risk" ? "warn" : "ok") : "error"}>{p.codex.ok ? (p.codex.level === "owner-accepted-risk" ? "risc acceptat" : "proiect de test") : "Codex blocat"}</Chip>
+          {p.acceptance && <button className="btn sm ghost" disabled={revoke.pending} onClick={() => revoke.run(p.id)}>Retrage</button>}</div></li>
+      ))}</ul>
+      {real.length > 0 && (
+        <details>
+          <summary className="link-btn" style={{ cursor: "pointer" }}>Accept riscul R2 pentru un proiect real (limitat în timp)</summary>
+          <div className="stack tight" style={{ marginTop: 8 }}>
+            <div className="row wrap">
+              <select className="select" value={projectId} onChange={(e) => setProjectId(e.target.value)} aria-label="Proiect"><option value="">Alege proiectul…</option>{real.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}</select>
+              <select className="select" value={days} onChange={(e) => setDays(e.target.value)} aria-label="Zile">{Array.from({ length: r2.maxDays }, (_, i) => i + 1).map((d) => <option key={d} value={d}>{d} {d === 1 ? "zi" : "zile"}</option>)}</select>
+            </div>
+            <pre className="pre" style={{ maxHeight: 100 }}>{r2.acceptText}</pre>
+            <textarea className="textarea" rows={3} value={text} onChange={(e) => setText(e.target.value)} aria-label="Text de acceptare R2" />
+            <button className="btn sm" disabled={!projectId || text !== r2.acceptText || accept.pending} onClick={accept.run}>Accept riscul pentru acest proiect</button>
+          </div>
+        </details>
+      )}
+      <ErrorNotice error={accept.error || revoke.error} />
+    </div>
   );
 }
 

@@ -1,5 +1,57 @@
 # Runbook — Ifrim Agent Hub V2
 
+## Milestone 03 — Software Factory și pregătirea runtime-ului (2026-10-01, versiunea `2.4.0-m03`)
+
+### Comenzi noi
+
+```bash
+npm run v2:factory-fixture -- bug-demo          # creează și înregistrează „Factory Demo A (bug)” (ifrim-factory-demo-a) — făcut 2026-10-01
+npm run v2:factory-fixture -- service-request   # „Factory Demo B (feature)” (ifrim-factory-demo-b, preview pe 4610) — făcut 2026-10-01
+node v2/tests/manual/codex-sandbox-timing.mjs --fictive        # durata sandbox-ului Codex fără model (arbore din %TEMP%)
+node v2/tests/manual/codex-sandbox-timing.mjs --real-profile   # TU: profilul real (reaplică DENY-urile consimțite)
+node v2/tests/manual/codex-sandbox-canary.mjs   # izolare pe arbore fictiv: R3 (DENIED) și R2 (KNOWN_GAP_R2) — PASS_LOCAL 2026-10-01
+node --test v2/tests/m03-browser.test.mjs       # browserul real (Playwright 1.61.0): inspecție izolată + E2E
+```
+
+### Browser și E2E (Playwright 1.61.0, instalat 2026-10-01)
+
+- Instalat ca devDependency, fără descărcare de browser: folosește Chromium 1228 din `%LOCALAPPDATA%ms-playwright`. Dezinstalare: `npm uninstall playwright`.
+- Chromium pornește cu sandbox-ul OS activ, într-un context nou, fără profil. Ajunge doar la originea aprobată (proxy mort pentru rest).
+- **Browser Workspace (Unelte):** fiecare inspecție cere în continuare aprobare pe URL-ul exact.
+- **Software Factory:** un criteriu `verify: "e2e"` cu `steps` rulează după preview, pe versiunea verificată. Pașii permiși: `viewport`, `goto` (cale relativă), `fill`, `select`, `click`, `expectText`, `expectSelector`, `noHorizontalOverflow`. Un pas care pică devine finding și intră în remediere. Captura rămâne ca dovadă în `.ifrim/tmp/v2/factory/<misiune>/e2e/`.
+
+### Software Factory
+
+- **Misiuni → „Lucrare de engineering”:** proiect, tip (bug / feature / refactor), cerință, criterii, comenzi. Rezultatul e o misiune cu specificația v1 (ciornă). Nimic nu rulează.
+- **Pe pagina misiunii:**
+  - completezi specificația: criteriile cu fișierul testului de acceptanță, care trebuie să existe deja, și comenzile;
+  - apeși „Cere aprobarea scope-ului”, apoi „Aprobă și pornește”.
+- **Ce face Hub-ul apoi:**
+  - baseline (testele de acceptanță trebuie să pice la bug / feature și să treacă la refactor);
+  - implementare (Codex);
+  - verificări (runner prin sandbox);
+  - review (Claude doar-citire);
+  - cel mult 2 remedieri;
+  - QA, preview, pachet.
+- **Fiecare execuție trece prin poartă, cu grantul ei.** Granturile necesare sunt afișate pe misiune: Codex scriere și Claude citire, fiecare cu încercări = 1 + numărul de cicluri de remediere.
+- **Butoane:** Pauză / Stop / Reia; „încă un ciclu” și „QA după review neconcludent” sunt doar decizii ale tale.
+- **„Accept local”** reverifică workspace-ul față de versiunea testată. Nu face commit, push sau deploy.
+- **Simulator (8012):** butoanele „Fabrica A/B/C” pregătesc o misiune pe un fixture. Aprobi tu scope-ul.
+
+### Izolare R2/R3 (vezi `M03_RUNTIME_READINESS.md`)
+
+- **R3:** lista Codex neagă acum și `~/.codex/config.toml`, `config.toml.*` și `history.jsonl`. Acordul ACL pe lista nouă a fost dat din UI pe 2026-10-01 (amprenta `0f5b7efee0143fa8`). Dacă lista se schimbă din nou, poarta refuză Codex până la un acord nou.
+- **R2 rămâne deschis:**
+  - Codex rulează fără condiții doar pe proiecte de test;
+  - pe un proiect real, numai cu acceptarea ta din Integrări → Izolare → R2 (text exact, cel mult 7 zile, retragere și din voce).
+
+### Model și efort
+
+- Fiecare execuție trimite explicit modelul (din `model/list`) și efortul (profil BALANCED = `medium`, sau alegerea ta).
+- Un efort sau un model raportat diferit oprește execuția înainte de turn.
+- „Verifică contul” trebuie să fi salvat lista de modele: acum o cere implicit, fără inferență.
+- Inspectorul arată planul și timpul pe faze pentru fiecare execuție.
+
 ## Milestone 02 + Lega (2026-09-30, actualizat 2026-10-01, versiunea `2.3.0-m03`)
 
 ### Comenzi

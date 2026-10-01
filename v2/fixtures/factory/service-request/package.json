@@ -1,0 +1,7 @@
+{
+  "name": "factory-service-request",
+  "private": true,
+  "type": "module",
+  "description": "Fixture Software Factory (Demo B): formular Solicitare serviciu + endpoint local + bază node:sqlite de test. Fără e-mail, SMS sau servicii cloud.",
+  "scripts": { "test": "node --test", "start": "node server.js" }
+}

@@ -21,7 +21,8 @@
     "test:v2": "node --test --test-concurrency=1 \"v2/tests/*.test.mjs\"",
     "v2:sim": "node v2/scripts/sim.mjs",
     "v2:sim:stop": "node v2/scripts/sim-stop.mjs --force",
-    "v2:test-project": "node v2/scripts/create-test-project.mjs"
+    "v2:test-project": "node v2/scripts/create-test-project.mjs",
+    "v2:factory-fixture": "node v2/scripts/create-factory-fixture.mjs"
   },
   "dependencies": {
     "@vitejs/plugin-react": "^6.0.3",
@@ -31,5 +32,8 @@
     "smol-toml": "1.9.0",
     "typescript": "^5.5.4",
     "vite": "^8.1.3"
+  },
+  "devDependencies": {
+    "playwright": "1.61.0"
   }
 }

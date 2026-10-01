@@ -1,5 +1,17 @@
 # Lega — asistentul vocal al Hub-ului
 
+## M03 (2026-10-01, Hub `2.4.0-m03`): intrarea vocală în departamentul Engineering
+
+- „Lega, pregătește repararea bugului din proiectul X” → `lega.propose_mission` cu tipul `eng_bugfix`, `eng_feature` sau `eng_refactor`.
+- Click-ul tău creează misiunea Software Factory cu specificația v1, ca **ciornă**. O propoziție nu e o specificație aprobabilă: lipsesc testele de acceptanță și comenzile, iar Hub-ul le listează.
+- Specificația o completezi și o aprobi tu, în Misiuni.
+- `lega.mission_detail` raportează etapa fabricii și pe cine așteaptă misiunea. Lega nu spune că s-a scris, revizuit sau testat cod dacă `mission_detail` nu arată asta.
+- **Din voce nu se pot face:** pornirea misiunii, aprobarea scope-ului, acceptarea sau respingerea, reluarea, ciclurile suplimentare, marcarea findings, acceptarea riscului R2.
+- **Din voce se poate face:** pauză sau oprire (`factory.pause` / `factory.stop`) și retragerea acceptării R2.
+- **How-to nou:** `engineering`, cu săgeată pe butonul „Lucrare de engineering”.
+- **Consumul vocii:** `planUsage.status = "UNKNOWN"`. Protocolul nu raportează consumul real; suma afișată e doar o estimare după prețul publicat.
+- **Teste:** M03-FI-03 (propunere → click → ciornă; fiecare decizie e refuzată pe canalul voce), M03-GRD-03 (UNKNOWN). Ambele PASS_SIMULATED. Live: NOT_RUN.
+
 Stare la 2026-10-01 (Hub `2.3.0-m03`):
 - **Implementat și testat simulat** (fixture, fără rețea): 17 teste `M03-LEGA-*` + 8 teste `M03-ACCESS-*` (acces complet sub control, căutare web) + 2 teste `m03-stage`, toate trecute.
 - **Test live: PASS_LIVE** (proprietarul, 2026-09-30, 18:18–19:49 UTC): mai multe sesiuni, română în ambele sensuri, inclusiv versiunea cu acces complet (sesiunea `lega_muoic63s_69b4539e26`, 11,4 min, vocea `sol`, căutare web `cached`). Detalii în „Sesiuni live” mai jos.

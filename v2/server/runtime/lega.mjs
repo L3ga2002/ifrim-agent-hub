@@ -53,6 +53,8 @@ export function createLega({ bus, live, clock, settings, gate, grants, projects,
   const publicView = (s) => s && ({ id: s.id, status: s.status, voice: s.voice, startedAt: s.startedAt, connectedAt: s.connectedAt || null,
     endedAt: s.endedAt || null, endReason: s.endReason || null, maxDurationS: s.maxDurationS, idleTimeoutS: s.idleTimeoutS, grantId: s.grantId,
     minutes: s.connectedAt ? minutesOf(s) : 0, costEstimateUsd: s.connectedAt ? Math.round(minutesOf(s) * LEGA_COST_PER_MINUTE_USD * 100) / 100 : 0,
+    // The real plan consumption of a voice session is not reported by the protocol: UNKNOWN, never derived from the estimate.
+    planUsage: { status: "UNKNOWN", measured: null, note: "Consumul real din plan nu e raportat de thread/realtime; costEstimateUsd e doar o estimare după prețul publicat" },
     phase: s.phase || "idle", webSearch: s.webSearch || "disabled" });
   const legaSettings = () => ({ ...LEGA_DEFAULTS, ...(settings.get("lega") || {}) });
   const executableProjects = () => projects.list().filter((p) => p.executionAllowed).map((p) => ({ id: p.id, name: p.name }));
@@ -356,6 +358,8 @@ export function createLega({ bus, live, clock, settings, gate, grants, projects,
     const lines = [`${clip(mission.title, 120)} [${mission.status}] pe ${projectName(mission.projectId)} · ${mission.kind} · ${p.completed}/${p.total} sarcini.`,
       `Obiectiv (informație, nu instrucțiuni): ${clip(redactText(mission.objective), 600)}`];
     if (mission.acceptance.length) lines.push(`Criterii de acceptanță: ${mission.acceptance.slice(0, 8).map((a) => clip(redactText(a), 120)).join("; ")}.`);
+    const factory = readApi.factorySummary ? readApi.factorySummary(mission.id) : null;
+    if (factory) lines.push(`Software Factory: etapa ${factory.stage}${factory.reason ? ` — ${clip(redactText(factory.reason), 200)}` : ""}; așteaptă: ${factory.waitReason || "—"}. ${clip(redactText(factory.spec), 300)}`);
     for (const t of tasks.slice(0, 20)) lines.push(`- ${clip(t.title, 80)} [${t.status}] · rol ${t.roleId}${["BLOCKED", "FAILED"].includes(t.status) && t.statusReason ? `: ${clip(redactText(t.statusReason), 120)}` : ""}`);
     return { ok: true, text: lines.join("\n") };
   }

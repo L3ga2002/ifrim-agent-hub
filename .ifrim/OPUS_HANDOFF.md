@@ -1,6 +1,39 @@
 # Ifrim Agent Hub - Opus Handoff
 
-## Post-M02 handoff: Lega + M02 verification — 2026-10-01 (current)
+## Milestone 03 handoff — 2026-10-01 (current)
+
+- **State:** version `2.4.0-m03`, committed on `v2-milestone-01` on 2026-10-01 at the owner's request (the commit right after `6432c5e`; push: see `git status`/GitHub). Built in BUILD_SAFE with fixture providers only:
+  - no model run (read-only Claude Code subagents were used only for the pre-commit verification, at the owner's request);
+  - commit and push only on the owner's explicit request;
+  - at the owner's request (2026-10-01): Playwright 1.61.0 installed as a devDependency (no browser download), the fictive-tree canary (ACLs only in `%TEMP%`, removed) and the fictive sandbox timing ran, demo projects A and B were created.
+- **Read first:**
+  - `.ifrim/M03_REPORT.md`, `M03_IMPLEMENTATION_STATUS.md`, `M03_RUNTIME_READINESS.md`, `M03_SOFTWARE_FACTORY.md`, `M03_LIVE_VALIDATION_PLAN.md`;
+  - the checkpoint `.ifrim/CHECKPOINTS/2026-10-01-milestone-03.md`.
+- **New source map:**
+  - `v2/server/factory/` (conductor `factory.mjs`, spec, plan, snapshot, diff, integrity, review, runner, fixtures);
+  - `v2/server/policy/run-plan.mjs`;
+  - `v2/server/runtime/timeline.mjs`;
+  - `evaluateHostIsolation` and R3 entries in `v2/server/policy/isolation.mjs`;
+  - migration 3 in `v2/server/storage/migrations.mjs`;
+  - `v2/web/src/screens/factory/FactoryPanel.jsx`;
+  - fixtures `v2/fixtures/factory/` and `v2/tests/fixtures/factory-*`;
+  - tests `v2/tests/m03-{readiness,factory,factory-flows,factory-integration,guards,browser}.test.mjs`;
+  - E2E: `runE2E` / `validateE2ESteps` in `v2/server/tools/browser.mjs`, `runE2ECriteria` in `factory.mjs` (after the preview, before the bundle).
+- **Do not loosen (in addition to the lists below):**
+  - the `run_plan` and `host_isolation` gate checks;
+  - the effort check after thread/start/resume;
+  - the R3 deny entries and their fingerprint;
+  - the factory runner only through `codex sandbox` (never Hub rights; BLOCKED otherwise);
+  - protected acceptance-test hashes;
+  - the review JSON validation bound to the change-set hash;
+  - the factory decisions being UI-only (start, accept, reject, resume, extra cycle, findings);
+  - Stop All marking every factory mission before interrupting;
+  - no automatic resume after restart;
+  - Software Factory refusing the Hub itself as a project outside test mode;
+  - E2E steps only declarative (no scripts, relative paths only), Chromium with the OS sandbox, only the preview origin reachable.
+- **Open:** R2 (needs a separate environment), `--real-profile` timing (owner's terminal), the live validations (approval package in `M03_LIVE_VALIDATION_PLAN.md` §2.1), the commit. See `OPEN_ISSUES.md` (2026-10-01 later).
+
+## Post-M02 handoff: Lega + M02 verification — 2026-10-01 (superseded by the M03 handoff above where they overlap)
 
 - **State:** version `2.3.0-m03`. Branch `v2-milestone-01` pushed up to `bbe8757` (M01 `f31240b`, M02 `0fb71d2`, `30bfbef` Lega voice + Codex thread/start fix, `dac2db4` Lega stage, `ce819b9` plugins off for voice + grant refund, `bbe8757` Lega full access + web search). `main` still `e9ab563`; nothing merged or deployed. Uncommitted, going into one commit after this doc update: M02 verification fixes, MCP isolation for every Hub Codex process and Claude, one-click approvals, expired grants shown as expired, version bump, these docs.
 - **Live evidence (2026-09-30, sanitized test project, owner-approved):** Claude read-only PASS_LIVE (`run_muo6i9og_50c329673c`); Codex FAIL at 14:41 (`run_muo7r9bp_d1b50893f7`, thread/start timeout before inference, fixed in `30bfbef`), then PASS_LIVE workspace-write (`run_muojnivb_b113ce0591`) and read-only (`run_muomogfu_f3b3dcccd7`); Lega voice PASS_LIVE (incl. `lega_muoic63s_69b4539e26`). Codex ACL consent recorded; DENY ACEs exist on the protected paths.

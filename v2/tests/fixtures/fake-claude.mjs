@@ -6,7 +6,38 @@ const argv = process.argv.slice(2);
 const opt = (name, fallback = "") => (argv.find((a) => a.startsWith(`--fake-${name}=`)) || "").split("=").slice(1).join("=") || fallback;
 // Optional `--fake-scenario-file=<path>`: a non-empty file overrides --fake-scenario, so a test can switch scenarios between invocations.
 const scenarioFromFile = () => { const file = opt("scenario-file"); try { return file ? fs.readFileSync(file, "utf8").trim() : ""; } catch { return ""; } };
-const scenario = scenarioFromFile() || opt("scenario", "ok");
+// Optional `--fake-scenario-queue=<path>`: each `-p` process takes the FIRST line of the file (and removes it), so a
+// multi-run flow (review → re-review …) can be scripted in order. An empty queue falls back to the other options.
+const scenarioFromQueue = () => {
+  const file = opt("scenario-queue");
+  if (!file || !argv.includes("-p")) return "";
+  try {
+    const lines = fs.readFileSync(file, "utf8").split(/\r?\n/).filter((l) => l.trim());
+    if (!lines.length) return "";
+    fs.writeFileSync(file, lines.slice(1).join("\n"));
+    return lines[0].trim();
+  } catch { return ""; }
+};
+const scenario = scenarioFromQueue() || scenarioFromFile() || opt("scenario", "ok");
+const REVIEWS = new URL("./factory-reviews/", import.meta.url);
+
+/**
+ * Software Factory reviewer fixture (`review:<name>`): answers with tests/fixtures/factory-reviews/<name>.json as the final
+ * JSON block, bound to the CHANGE_SET marker of the prompt unless the file names another one. previousFindings
+ * "ALL_RESOLVED" / "ALL_STILL_OPEN" classify every open code listed in the prompt.
+ */
+function reviewAnswer(name, prompt) {
+  const data = JSON.parse(fs.readFileSync(new URL(`${name.replace(/[^a-z0-9-]/gi, "")}.json`, REVIEWS), "utf8"));
+  // The CURRENT request is last in the prompt (earlier briefs of the same conversation come first, as transcript).
+  const marker = [...prompt.matchAll(/CHANGE_SET ([0-9a-f]{12})/g)].at(-1)?.[1] || "";
+  const current = prompt.slice(prompt.lastIndexOf("# Review independent"));
+  const section = current.split("## Findings deschise din review-ul anterior")[1]?.split("\n## ")[0] || "";
+  const codes = [...section.matchAll(/^- ([A-Z]-\d{3}) /gm)].map((m) => m[1]);
+  const state = data.previousFindings === "ALL_RESOLVED" ? "resolved" : data.previousFindings === "ALL_STILL_OPEN" ? "still_open" : null;
+  const answer = { changeSet: data.changeSet || marker, verdict: data.verdict, summary: data.summary, findings: data.findings || [], missingContext: data.missingContext || [],
+    ...(state && codes.length ? { previousFindings: Object.fromEntries(codes.map((c) => [c, state])) } : {}) };
+  return `SIMULARE (review fixture ${name}).\n\n\`\`\`json\n${JSON.stringify(answer, null, 2)}\n\`\`\`\n`;
+}
 const logFile = opt("log");
 const args = argv.filter((a) => !a.startsWith("--fake-"));
 const log = (entry) => { if (logFile) fs.appendFileSync(logFile, `${JSON.stringify(entry)}\n`); };
@@ -56,7 +87,9 @@ process.stdin.on("end", async () => {
     process.exit(1);
   }
   const ack = (prompt.match(/HANDOFF_ACK \S+ \S+/) || [""])[0];
-  const text = `${ack ? `${ack}\n` : ""}Claude simulated answer.`;
+  // review-slow:<name>: the same answer after 4 s (a test changes the workspace while the reviewer is still reading).
+  if (scenario.startsWith("review-slow:")) await new Promise((r) => setTimeout(r, 4000));
+  const text = /^review(-slow)?:/.test(scenario) ? reviewAnswer(scenario.replace(/^review(-slow)?:/, ""), prompt) : `${ack ? `${ack}\n` : ""}Claude simulated answer.`;
   for (const part of text.match(/.{1,8}/gs)) out({ type: "stream_event", event: { type: "content_block_delta", delta: { type: "text_delta", text: part } }, session_id: sessionArg });
   out({ type: "assistant", message: { content: [{ type: "text", text }] }, session_id: sessionArg });
   out({ type: "result", subtype: "success", is_error: false, result: text, session_id: sessionArg, usage: { input_tokens: 10, output_tokens: 5 }, total_cost_usd: 0.01, num_turns: 1 });

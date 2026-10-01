@@ -26,8 +26,13 @@ for (const [rel, text] of [["README.md", "PUBLIC-HUB"], [".ifrim/private/hub-v2.
   [".ifrim/tmp/x.txt", "CANARY-HUB-TMP-FICTIVE"], [".env", "CANARY_HUB_ENV=fictive"], [".env.production", "CANARY_HUB_ENV_PROD=fictive"]]) write(fakeHub, rel, text);
 write(fakeData, "canary.txt", "CANARY-DATA-FICTIVE");
 for (const [rel, text] of [[".ssh/id_canary", "CANARY-SSH-FICTIVE"], [".codex/auth.json", "CANARY-CODEX-AUTH-FICTIVE"], [".codex/sessions/s.jsonl", "CANARY-CODEX-SESSION-FICTIVE"],
-  [".codex/.sandbox-bin/runner-canary.txt", "PUBLIC-RUNNER"], [".codex/config.toml", "PUBLIC-CODEX-CONFIG"], [".claude/.credentials.json", "CANARY-CLAUDE-FICTIVE"],
+  [".codex/.sandbox-bin/runner-canary.txt", "PUBLIC-RUNNER"], [".codex/config.toml", "CANARY-CODEX-CONFIG-FICTIVE"], [".codex/config.toml.bak", "CANARY-CODEX-CONFIG-BAK-FICTIVE"],
+  [".codex/history.jsonl", "CANARY-CODEX-HISTORY-FICTIVE"], [".claude/.credentials.json", "CANARY-CLAUDE-FICTIVE"],
   [".config/gh/hosts.yml", "CANARY-GH-FICTIVE"]]) write(fakeHome, rel, text);
+// R2 (M03): another client's project next to the workspace, read by absolute path. The Hub profile does NOT deny it (the
+// elevated sandbox needs ":root" read): the canary reports it as KNOWN_GAP_R2, not as a pass.
+const otherClient = path.join(base, "other-client");
+for (const [rel, text] of [[".env", "CANARY_OTHER_CLIENT_ENV=fictive"], ["src/client.txt", "CANARY-OTHER-CLIENT-SOURCE-FICTIVE"]]) write(otherClient, rel, text);
 if (process.platform === "win32") execFileSync("cmd", ["/c", "mklink", "/J", path.join(ws, "linked-private"), path.join(ws, ".ifrim", "private")], { stdio: "ignore" });
 
 const binary = resolveCodexBinary({ providerBinaries: {} });
@@ -45,12 +50,15 @@ try {
       [path.join(fakeHub, "README.md"), true], [path.join(fakeHub, ".ifrim", "private", "hub-v2.sqlite"), false], [path.join(fakeHub, ".ifrim", "BACKUPS", "v2", "b.zip"), false],
       [path.join(fakeHub, ".ifrim", "tmp", "x.txt"), false], [path.join(fakeHub, ".env"), false], [path.join(fakeHub, ".env.production"), false], [path.join(fakeData, "canary.txt"), false],
       [path.join(fakeHome, ".ssh", "id_canary"), false], [path.join(fakeHome, ".codex", "auth.json"), false], [path.join(fakeHome, ".codex", "sessions", "s.jsonl"), false],
-      [path.join(fakeHome, ".codex", ".sandbox-bin", "runner-canary.txt"), true], [path.join(fakeHome, ".codex", "config.toml"), true],
-      [path.join(fakeHome, ".claude", ".credentials.json"), false], [path.join(fakeHome, ".config", "gh", "hosts.yml"), false]];
+      [path.join(fakeHome, ".codex", ".sandbox-bin", "runner-canary.txt"), true], [path.join(fakeHome, ".codex", "config.toml"), false],
+      [path.join(fakeHome, ".codex", "config.toml.bak"), false], [path.join(fakeHome, ".codex", "history.jsonl"), false],
+      [path.join(fakeHome, ".claude", ".credentials.json"), false], [path.join(fakeHome, ".config", "gh", "hosts.yml"), false],
+      [path.join(otherClient, ".env"), "R2"], [path.join(otherClient, "src", "client.txt"), "R2"]];
     for (const [target, allowed] of reads) {
       const r = run(process.platform === "win32" ? ["cmd", "/c", "type", target.split("/").join(BS)] : ["cat", target]);
       const read = /PUBLIC-|CANARY/.test(r.stdout || "");
-      expectations.push({ access, op: "read", target: path.isAbsolute(target) ? label(target) : target, expected: allowed, actual: read });
+      const shown = target.startsWith(otherClient) ? `<other-client>${target.slice(otherClient.length).split(BS).join("/")}` : path.isAbsolute(target) ? label(target) : target;
+      expectations.push({ access, op: "read", target: shown, expected: allowed, actual: read });
     }
     for (const [target, allowed] of [["write-test.txt", access === "workspace-write"], [".ifrim/private/write-test.txt", false]]) {
       run(process.platform === "win32" ? ["cmd", "/c", `echo x> ${target.split("/").join(BS)}`] : ["sh", "-c", `echo x > ${target}`]);
@@ -62,11 +70,20 @@ try {
   fs.rmSync(base, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
 }
 let failed = 0;
+let r2Open = 0;
 for (const e of expectations) {
+  if (e.expected === "R2") {
+    // Known gap: reported, never counted as a pass. DENIED here would mean the platform behaves differently than measured.
+    if (e.actual) r2Open += 1;
+    console.log(`${e.actual ? "KNOWN_GAP_R2" : "R2_DENIED?  "} ${e.access.padEnd(15)} ${e.op.padEnd(5)} ${e.actual ? "ALLOWED" : "DENIED "} ${e.target}`);
+    continue;
+  }
   const ok = e.expected === e.actual;
   if (!ok) failed += 1;
   console.log(`${ok ? "PASS" : "FAIL"} ${e.access.padEnd(15)} ${e.op.padEnd(5)} ${e.actual ? "ALLOWED" : "DENIED "} ${e.target}`);
 }
-console.log(failed ? `FAIL: ${failed} unexpected result(s)` : `PASS_LOCAL: ${expectations.length} checks (binary ${path.basename(path.dirname(binary.executable))})`);
+const checked = expectations.filter((e) => e.expected !== "R2").length;
+console.log(failed ? `FAIL: ${failed} unexpected result(s)` : `PASS_LOCAL: ${checked} checks (binary ${path.basename(path.dirname(binary.executable))})`);
+console.log(`R2: ${r2Open} reads of another project by absolute path were ALLOWED (expected while R2 is open; not isolation)`);
 console.log(`tree removed: ${!fs.existsSync(base)}`);
 process.exit(failed ? 1 : 0);

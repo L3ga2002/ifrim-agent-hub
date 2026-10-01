@@ -1,5 +1,5 @@
 import { evaluateRoute } from "./billing.mjs";
-import { evaluateIsolation } from "./isolation.mjs";
+import { evaluateIsolation, evaluateHostIsolation } from "./isolation.mjs";
 import { LEGA_CONSENT_VERSION } from "./lega-policy.mjs";
 
 const INSPECTION_MAX_AGE_H = 24;
@@ -28,7 +28,7 @@ export function inspectionFromState(state, now) {
  * The gate is the single place that decides; UI, companion, voice and automations all go through it.
  */
 export function createGate({ db, settings, projects, backups, leases, grants, breakers, providerState, clock, activeRunCount, codexIsolation = null }) {
-  function evaluate({ provider, projectId, access = "read-only", grantId = null, workspaceResource }) {
+  function evaluate({ provider, projectId, access = "read-only", grantId = null, workspaceResource, plan = null }) {
     const checks = [];
     const add = (id, ok, detail, extra = {}) => checks.push({ id, ok, detail, ...extra });
     const now = clock();
@@ -60,9 +60,15 @@ export function createGate({ db, settings, projects, backups, leases, grants, br
     const isolation = evaluateIsolation({ provider, access, sandbox: inspection?.sandbox || null,
       consent: settings.get("isolationConsent")?.[provider] || null, fingerprint: provider === "codex" && codexIsolation ? codexIsolation().fingerprint : null });
     add("isolation", isolation.ok, isolation.detail, { level: isolation.level });
+    // Host isolation (R2, M03 §05): what else on this machine a model command can read.
+    const host = evaluateHostIsolation({ provider, access, project, acceptance: project ? settings.get("r2Acceptance")?.[project.id] || null : null, now });
+    add("host_isolation", host.ok, host.detail, { level: host.level });
 
     const breaker = breakers.state(provider);
     add("circuit_breaker", breaker.state !== "open", breaker.state === "open" ? `Deschis până la ${breaker.until} după ${breaker.failures} eșecuri de infrastructură` : "Închis");
+
+    // Explicit model and effort (M03 §09): resolved by the run manager; never left to the provider's config defaults.
+    if (plan) add("run_plan", !plan.problem, plan.problem || `${plan.model || "model implicit Claude"} · efort ${plan.effort} (${plan.effortSource})`, { model: plan.model, effort: plan.effort });
 
     const running = activeRunCount();
     const limit = settings.get("maxConcurrentAiRuns");

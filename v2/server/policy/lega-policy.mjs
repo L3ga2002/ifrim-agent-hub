@@ -61,6 +61,7 @@ export const LEGA_TARGETS = Object.freeze({
   "project-backup": { path: "/projects/:project", label: "Backup verificat", project: true },
   "missions-list": { path: "/missions", label: "Misiunile" },
   "mission-new": { path: "/missions", label: "Misiune nouă" },
+  "factory-new": { path: "/missions", label: "Lucrare de engineering (Software Factory)" },
   "focus-composer": { path: "/conversations", label: "Scrie aici sarcina pentru agenți" },
 });
 
@@ -72,6 +73,7 @@ export const LEGA_HOWTO = Object.freeze({
   approvals: { target: "approvals-list", text: "Ecranul Aprobări (Alt+4) arată exact ce se cere; aprobi sau refuzi prin click. Propunerile mele apar și în panoul Lega." },
   project_execution: { target: "project-execution", text: "În Proiecte deschizi proiectul și, în panoul „Execuții pe acest proiect”, tastezi numele exact al proiectului și apeși „Permite execuții”. Înainte de prima execuție Hub-ul face un backup verificat în proiect. Retragerea e un singur click." },
   mission: { target: "mission-new", text: "În Misiuni apeși „Misiune nouă”: alegi proiectul, șablonul, titlul și obiectivul. Sau îmi spui mie și îți pregătesc misiunea; o aprobi prin click." },
+  engineering: { target: "factory-new", text: "În Misiuni apeși „Lucrare de engineering”: alegi proiectul, tipul (bug, funcționalitate sau refactor), scrii cerința și criteriile. Sau îmi spui mie și îți pregătesc misiunea. Tu completezi specificația și aprobi scope-ul prin click; apoi Hub-ul conduce pașii: implementare Codex, verificări, review Claude doar-citire, QA și pachetul de livrare, fiecare execuție prin poartă și grant. Accepți tu rezultatul, local." },
   run: { target: "focus-composer", text: "Spune-mi sarcina și proiectul și îți pregătesc execuția; pornește după click-ul tău. Sau o scrii direct în Conversații, în Focus." },
   stop: { target: "stop-all", text: "Stop All e butonul roșu din bara de sus: suspendă poarta, revocă grant-urile, întrerupe execuțiile și oprește vocea. Îmi poți spune și „Lega, oprește tot”." },
   voice: { target: "lega-button", text: "Lega pornește din butonul din bara de sus (Alt+L); ecranul complet se deschide cu Alt+J. O sesiune cere LIVE_VALIDATION, poarta deschisă, acordul pentru Lega și un grant de tip Lega (voce)." },
@@ -118,6 +120,7 @@ export function legaAgentInstructions({ projects = [], allProjects = [], webSear
     "SEE (read-only, answer at once): lega.hub_status, lega.company_briefing (daily overview), lega.list_projects, lega.project_brief (a project's README/state/next steps/open issues), lega.list_missions, lega.mission_detail, lega.pending_approvals, lega.recent_runs.",
     "SHOW: lega.navigate (open a screen), lega.point (open the right screen and highlight a button or panel with an arrow), lega.how_to (the exact steps for a Hub task; then call lega.point with its target).",
     "PREPARE (the owner confirms by click): lega.propose_run (an agent run on an enabled project), lega.propose_mission (a mission from a template, created as DRAFT), lega.prepare_grant (fills the grant form; the owner presses Creează grant).",
+    "ENGINEERING (Software Factory): to fix a bug, build a feature or refactor code, use lega.propose_mission with kind eng_bugfix, eng_feature or eng_refactor and put the owner's request in the objective. It creates the mission with spec v1 as a draft; the owner completes the spec, approves the scope and accepts the result by click. Use lega.mission_detail to report its stage and what it waits for. Never say code was written, reviewed or tested unless mission_detail shows it.",
     "SAFETY: lega.stop_all and lega.pause act only when the owner just said so.",
     "When the owner asks where or how to do something in the Hub, call lega.how_to and lega.point; never guess the UI.",
     "For real work (code, tests, reading or changing project files, analysis), call lega.propose_run with a precise task. Never claim a run, mission or grant exists before the owner confirmed it.",

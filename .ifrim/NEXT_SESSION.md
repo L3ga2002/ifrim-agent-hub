@@ -1,6 +1,28 @@
 # Next Session - Ifrim Agent Hub
 
-## AFTER M02 + LEGA — 2026-10-01 (current; supersedes the sections below where they overlap)
+## MILESTONE 03 — 2026-10-01 (current; supersedes the sections below where they overlap)
+
+- **Version `2.4.0-m03`.** M03 = runtime readiness (explicit model/effort, run timeline, R2/R3 gate) + Software Factory (spec → plan → writer → checks → review → bounded repair → QA → preview → bundle).
+- **Read first:**
+  - `M03_REPORT.md`, `M03_IMPLEMENTATION_STATUS.md` (traceability T01–T24);
+  - `M03_RUNTIME_READINESS.md`, `M03_SOFTWARE_FACTORY.md`, `M03_PERFORMANCE_REPORT.md`, `M03_LIVE_VALIDATION_PLAN.md`, `M03_TEST_REPORT.md`;
+  - the checkpoint `CHECKPOINTS/2026-10-01-milestone-03.md`.
+- **Git:** M03 is committed on `v2-milestone-01` on 2026-10-01 at the owner's request (the commit right after `6432c5e`; push: see `git status`/GitHub). No merge or deploy. Before the commit: three verification rounds and their fixes (`M03_TEST_REPORT.md` §6).
+- **Levels:** BUILD_READY + SIMULATED_E2E_VERIFIED. No model ran in M03.
+- **Done 2026-10-01 without a model:**
+  - Hub restarted on `2.4.0-m03` (verified backup `bkp_muox3o1y_de8f59b508`, migration 3 applied);
+  - canary on a fictive tree: PASS_LOCAL, 50 checks (R3 DENIED, R2 `KNOWN_GAP_R2` × 4);
+  - `codex-sandbox-timing.mjs --fictive`: 4.7 s first command, 3.7–6.4 s later (N=6);
+  - demo projects A (`prj_mup6nfto_6214f5f782`) and B (`prj_mup6nqd7_57f7ba5b4b`) created and registered as hub-test;
+  - Playwright 1.61.0 installed (no browser download), Chromium OS sandbox on, factory E2E runner built and tested with the real browser (M03-BR-00…03, FAC-02).
+- **Next, in order, each only with the owner's approval:**
+  1. Done by the owner in the UI (2026-10-01 06:46 UTC): „Verifică contul” (Codex `gpt-6.1-sol` · `medium` passes `run_plan`) and the R3 ACL re-consent (`0f5b7efee0143fa8`). Gate preview for Codex RW on Demo A: only `mode` (BUILD_SAFE) and the grant are missing.
+  2. Optional, owner's terminal: `codex-sandbox-timing.mjs --real-profile`.
+  3. Live 2.1 (Codex RW via the factory on Demo A) with the approval package in `M03_LIVE_VALIDATION_PLAN.md` §2.1; then 2.2 (Claude review), 2.3, 2.5, 2.6.
+  4. R2 separate environment before any real project.
+  5. Commit of the M03 work (exact approval).
+
+## AFTER M02 + LEGA — 2026-10-01 (superseded by the M03 section above where they overlap)
 
 - **Version `2.3.0-m03`** (was `2.2.0-m02`). Read first: `OPEN_ISSUES.md` (2026-10-01 section), `LEGA.md`, `M02_IMPLEMENTATION_STATUS.md` („După M02”), `M02_TEST_REPORT.md`, `RUNBOOK.md` (Lega + approvals sections).
 - **Git:** branch `v2-milestone-01` pushed up to `bbe8757` (M01 `f31240b`, M02 `0fb71d2`, then Lega `30bfbef` voice + Codex thread/start fix, `dac2db4` stage, `ce819b9` plugins off for voice + grant refund, `bbe8757` full access + web search for Lega). `main` is still `e9ab563`. Nothing merged or deployed. In the commit after `bbe8757` (local until the owner pushes): M02 verification fixes, MCP isolation for every Hub Codex process and for Claude, one-click approvals, expired grants shown as expired, version `2.3.0-m03`, these docs.

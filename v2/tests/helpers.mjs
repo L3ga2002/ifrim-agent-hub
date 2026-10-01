@@ -1,11 +1,13 @@
 import fs from "node:fs";
 import path from "node:path";
 import crypto from "node:crypto";
+import net from "node:net";
 import { execFileSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { loadConfig } from "../server/config.mjs";
 import { createHub } from "../server/hub.mjs";
 import { ATTESTATION_TEXT } from "../server/policy/billing.mjs";
+import { R2_ACCEPT_TEXT } from "../server/policy/isolation.mjs";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 export const FIXTURES = path.join(here, "fixtures");
@@ -31,45 +33,60 @@ export function makeProject(dir) {
   return dir;
 }
 
-export async function makeTestHub({ codex = "ok", claude = "ok", port = 0, clock, configOverrides = {} } = {}) {
+/** A port the OS reports free right now (a random port in a fixed range can collide with a service already running). */
+export function freePort() {
+  return new Promise((resolve, reject) => {
+    const server = net.createServer();
+    server.unref();
+    server.on("error", reject);
+    server.listen(0, "127.0.0.1", () => { const { port } = server.address(); server.close(() => resolve(port)); });
+  });
+}
+
+export async function makeTestHub({ codex = "ok", claude = "ok", port = 0, clock, configOverrides = {}, queues = false, hubOptions = {} } = {}) {
   const dataDir = tempDir("hub");
   const projectDir = makeProject(path.join(dataDir, "project"));
   const homeDir = path.join(dataDir, "home");
   fs.mkdirSync(path.join(homeDir, ".codex"), { recursive: true });
   fs.mkdirSync(path.join(homeDir, ".claude"), { recursive: true });
   const logs = { codex: path.join(dataDir, "codex.log"), claude: path.join(dataDir, "claude.log") };
+  // Optional scenario queues (one line per provider process, consumed in order) for multi-run flows (Software Factory).
+  const queueFiles = { codex: path.join(dataDir, "codex.queue"), claude: path.join(dataDir, "claude.queue") };
   const config = loadConfig({
     testMode: true, dataDir, hubRoot: projectDir, projectsRoot: dataDir, registryPath: path.join(dataDir, "no-registry.md"),
-    legacyDbPath: path.join(dataDir, "no-legacy.sqlite"), port: port || 18000 + Math.floor(Math.random() * 900),
+    legacyDbPath: path.join(dataDir, "no-legacy.sqlite"), port: port || await freePort(),
     providerBinaries: {
-      codex: { executable: process.execPath, prefixArgs: [path.join(FIXTURES, "fake-codex.mjs"), `--scenario=${codex}`, `--log=${logs.codex}`] },
-      claude: { executable: process.execPath, prefixArgs: [path.join(FIXTURES, "fake-claude.mjs"), `--fake-scenario=${claude}`, `--fake-log=${logs.claude}`] },
+      codex: { executable: process.execPath, prefixArgs: [path.join(FIXTURES, "fake-codex.mjs"), `--scenario=${codex}`, `--log=${logs.codex}`, ...(queues ? [`--scenario-queue=${queueFiles.codex}`] : [])] },
+      claude: { executable: process.execPath, prefixArgs: [path.join(FIXTURES, "fake-claude.mjs"), `--fake-scenario=${claude}`, `--fake-log=${logs.claude}`, ...(queues ? [`--fake-scenario-queue=${queueFiles.claude}`] : [])] },
     },
     ...(clock ? { now: clock } : {}),
     ...configOverrides,
   });
-  const hub = createHub(config, { homeDir });
+  const hub = createHub(config, { homeDir, ...hubOptions });
   await hub.boot();
   const readLog = (name) => (fs.existsSync(logs[name]) ? fs.readFileSync(logs[name], "utf8").split("\n").filter(Boolean).map((l) => JSON.parse(l)) : []);
   const cleanup = async () => {
     await hub.close();
     try { fs.rmSync(dataDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 }); } catch { /* Windows may hold a file briefly; left in .ifrim/tmp */ }
   };
-  return { hub, config, dataDir, projectDir, homeDir, logs, readLog, cleanup };
+  const queue = (provider, ...lines) => fs.appendFileSync(queueFiles[provider], `${lines.join("\n")}\n`);
+  return { hub, config, dataDir, projectDir, homeDir, logs, readLog, cleanup, queue };
 }
 
 /** Puts a test hub into a state where a run is admissible (all through public module APIs). */
-export async function enableLive(hub, { provider = "codex", access = "read-only", attempts = 3, isolationConsent = true } = {}) {
+export async function enableLive(hub, { provider = "codex", access = "read-only", attempts = 3, isolationConsent = true, r2Accept = true } = {}) {
   const project = hub.projects.hub();
   hub.bus.transaction(() => {
     hub.settings.set("mode", "LIVE_VALIDATION", "test");
     hub.settings.set("executionGate", { status: "open", reason: "test", changedAt: new Date().toISOString(), changedBy: "test" }, "test");
     hub.settings.set("billingAttestations", { codex: { confirmedAt: new Date().toISOString(), text: ATTESTATION_TEXT.codex }, claude: { confirmedAt: new Date().toISOString(), text: ATTESTATION_TEXT.claude } }, "test");
     if (isolationConsent) hub.settings.set("isolationConsent", { codex: { confirmedAt: new Date().toISOString(), fingerprint: hub.codexIsolation().fingerprint } }, "test");
+    // The fixture "Hub" project is a registry project: Codex needs the owner's R2 acceptance on it (M03 host isolation).
+    if (r2Accept) hub.settings.set("r2Acceptance", { [project.id]: { confirmedAt: new Date().toISOString(), expiresAt: new Date(Date.now() + 86400000).toISOString(), projectPath: project.path, text: R2_ACCEPT_TEXT } }, "test");
   });
   for (const id of ["codex", "claude"]) {
     const installation = await hub.providers[id].inspectInstallation();
-    const probe = await hub.providers[id].probe({ withUsage: true });
+    const probe = await hub.providers[id].probe({ withUsage: true, withModels: id === "codex" });
     hub.providerState.set(id, { ...probe, installation });
   }
   const grant = hub.bus.transaction(() => hub.grants.create({ provider, projectId: project.id, access, maxAttempts: attempts, maxDurationS: 600, ttlMinutes: 30 }, "test"));

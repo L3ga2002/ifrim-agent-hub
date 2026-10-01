@@ -2,9 +2,10 @@ import path from "node:path";
 import { HubError } from "../core/errors.mjs";
 import { newId } from "../core/ids.mjs";
 import { ATTESTATION_TEXT } from "../policy/billing.mjs";
-import { CODEX_ACL_CONSENT_TEXT } from "../policy/isolation.mjs";
+import { CODEX_ACL_CONSENT_TEXT, R2_ACCEPT_TEXT, R2_MAX_ACCEPT_DAYS } from "../policy/isolation.mjs";
 import { LEGA_CONSENT_TEXT, LEGA_CONSENT_VERSION, LEGA_VOICES, LEGA_TASK_MAX, LEGA_WEB_SEARCH_MODES, LEGA_DEFAULTS } from "../policy/lega-policy.mjs";
 import { APPROVAL_POLICIES } from "../policy/approval-policy.mjs";
+import { EFFORT_PROFILES } from "../policy/run-plan.mjs";
 import { MISSION_TEMPLATES } from "../domain/missions.mjs";
 import { MEMORY_SCOPES, MEMORY_TYPES } from "../domain/memory.mjs";
 import { LEAD_STATUSES } from "../domain/leads.mjs";
@@ -34,6 +35,13 @@ export function registerCommands(commands, hub) {
   const need = (value, what) => { if (!value) throw new HubError("not_found", `${what} not found`); return value; };
   const reg = (type, def) => commands.register(type, def);
 
+  /** When the owner asked (command log) and, for approved commands, when the approval was requested and decided (run timeline). */
+  function requestTiming(ctx) {
+    const command = ctx.commandId ? commands.get(ctx.commandId) : null;
+    const approval = command?.approvalId ? approvals.get(command.approvalId) : null;
+    return { requestedAt: command?.createdAt || null, approval: approval ? { createdAt: approval.createdAt, decidedAt: approval.decidedAt } : null };
+  }
+
   /** Mission from a template + its canonical conversation + company links. Shared by mission.create and Lega's approved proposals. */
   function createMission(input, actor) {
     // Accepts the project id or slug; everything is stored under the canonical project id.
@@ -44,6 +52,8 @@ export function registerCommands(commands, hub) {
     conversations.update(conversation.id, { activeMissionId: mission.id }, actor);
     const deptKey = input.departmentKey || MISSION_TEMPLATES[input.kind].department || departmentForRole(hub, MISSION_TEMPLATES[input.kind].tasks[0].role);
     company.linkMission(mission.id, { departmentId: deptKey ? company.department(deptKey)?.id || null : null, goalId: input.goalId || null, objectiveId: input.objectiveId || null }, actor);
+    // Software Factory kinds (eng_*): factory state + spec v1 as DRAFT, in the same transaction (a refusal rolls it all back).
+    if (MISSION_TEMPLATES[input.kind].factory) hub.factory.initialize(missions.get(mission.id), { spec: input.spec, limits: input.limits }, actor);
     return missions.get(mission.id);
   }
 
@@ -82,10 +92,11 @@ export function registerCommands(commands, hub) {
     mime: { required: true, max: 100 }, base64: { required: true, trim: false } }, logPayload: (i) => ({ conversationId: i.conversationId, filename: i.filename, mime: i.mime, base64Length: i.base64.length }),
     execute: (input) => conversations.saveAttachment(input) });
   reg("run.start", { describe: "Pornește un turn de model prin poarta de execuție", async: true, schema: { conversationId: { required: true }, provider: { enum: ["codex", "claude"], required: true },
-    access: { enum: ["read-only", "workspace-write"], default: "read-only" }, model: { max: 80 }, effort: { enum: ["low", "medium", "high", "xhigh", "max"] }, taskId: { max: 80 }, grantId: { max: 80 } },
+    access: { enum: ["read-only", "workspace-write"], default: "read-only" }, model: { max: 80 }, effort: { enum: ["low", "medium", "high", "xhigh", "max"] },
+    profile: { enum: Object.keys(EFFORT_PROFILES) }, taskId: { max: 80 }, grantId: { max: 80 } },
     execute: async (input, ctx) => {
       const task = input.taskId ? missions.task(input.taskId) : null;
-      return runs.start({ ...input, stage: task?.stage || "assist", roleId: task?.roleId || "", actor: ctx.actor, correlationId: ctx.correlationId });
+      return runs.start({ ...input, stage: task?.stage || "assist", roleId: task?.roleId || "", actor: ctx.actor, correlationId: ctx.correlationId, ...requestTiming(ctx) });
     } });
   reg("run.interrupt", { describe: "Întrerupe o execuție activă", async: true, schema: { runId: { required: true } }, channels: ["ui", "test", "voice", "companion"],
     execute: (input, ctx) => runs.interrupt(input.runId, ctx.actor) });
@@ -101,8 +112,48 @@ export function registerCommands(commands, hub) {
   // ---------- missions & tasks ----------
   reg("mission.create", { describe: "Misiune din șablon (+ conversație canonică)", schema: { projectId: { required: true }, kind: { enum: Object.keys(MISSION_TEMPLATES), required: true },
     title: { required: true, min: 3, max: 160 }, objective: { required: true, min: 5, max: 4000 }, acceptance: { type: "array", max: 30, items: "string" }, constraints: { type: "array", max: 30, items: "string" },
-    priority: { type: "integer", min: 1, max: 3 }, departmentKey: { max: 40 }, goalId: { max: 80 }, objectiveId: { max: 80 } },
+    priority: { type: "integer", min: 1, max: 3 }, departmentKey: { max: 40 }, goalId: { max: 80 }, objectiveId: { max: 80 }, spec: { type: "object" }, limits: { type: "object" } },
     execute: (input, ctx) => createMission(input, ctx.actor) });
+  // ---------- Software Factory (M03) ----------
+  // Preparing, revising and stopping are ordinary commands; starting is bound to the exact scope by an approval (ALWAYS_ASK),
+  // and accepting/rejecting the result, extra repair cycles and owner overrides are UI-only decisions. Voice can stop/pause.
+  const FACTORY_KINDS = { BUGFIX: "eng_bugfix", FEATURE: "eng_feature", REFACTOR: "eng_refactor" };
+  reg("factory.prepare", { describe: "Software Factory: cerință → misiune de engineering cu specificație v1 (ciornă, nimic nu rulează)",
+    schema: { projectId: { required: true, max: 80 }, workType: { enum: Object.keys(FACTORY_KINDS), required: true }, title: { required: true, min: 3, max: 160 },
+      objective: { required: true, min: 10, max: 4000 }, spec: { type: "object", default: {} }, limits: { type: "object", default: {} } },
+    execute: (input, ctx) => {
+      const acceptance = (Array.isArray(input.spec?.acceptance) ? input.spec.acceptance : []).map((a) => String(typeof a === "string" ? a : a?.text || "").slice(0, 300)).filter(Boolean).slice(0, 20);
+      const mission = createMission({ projectId: input.projectId, kind: FACTORY_KINDS[input.workType], title: input.title, objective: input.objective, acceptance, spec: input.spec, limits: input.limits }, ctx.actor);
+      return hub.factory.view(mission.id);
+    } });
+  reg("factory.spec.revise", { describe: "Versiune nouă a specificației (o versiune aprobată nu se editează; scope-ul schimbat cere aprobare nouă)",
+    schema: { missionId: { required: true, max: 80 }, spec: { type: "object", required: true } }, execute: (input, ctx) => hub.factory.reviseSpec(input.missionId, input.spec, ctx.actor) });
+  reg("factory.limits", { describe: "Limitele misiunii (cicluri de remediere ≤ 2, durată, încercări, profil de efort, model/efort pe rol)",
+    schema: { missionId: { required: true, max: 80 }, limits: { type: "object", required: true } }, execute: (input, ctx) => hub.factory.setLimits(input.missionId, input.limits, ctx.actor) });
+  reg("factory.start", { describe: "Pornește misiunea pe scope-ul aprobat (specificație, plan, rute, limite, comenzi); fiecare pas trece apoi prin poarta de execuție",
+    async: true, schema: { missionId: { required: true, max: 80 }, specVersion: { type: "integer", required: true }, specSha: { required: true, max: 64 }, planSha: { required: true, max: 64 },
+      limits: { type: "object", required: true }, routes: { type: "object", required: true }, commands: { type: "object", required: true } },
+    action: (input) => ({ actionKind: "factory.scope", target: `${input.missionId}:v${input.specVersion}`, projectId: missions.get(input.missionId)?.projectId || "*" }),
+    execute: async (input, ctx) => {
+      const command = ctx.commandId ? commands.get(ctx.commandId) : null;
+      return hub.factory.startApproved(input.missionId, input, { approvalId: command?.approvalId || null, actor: ctx.actor });
+    } });
+  reg("factory.stop", { describe: "Oprește misiunea: nicio etapă nouă, execuția ei întreruptă, confirmare când nu mai rulează nimic", async: true,
+    schema: { missionId: { required: true, max: 80 }, reason: { max: 300, default: "Stop" } }, channels: ["ui", "test", "voice", "companion"],
+    execute: (input, ctx) => hub.factory.stop(input.missionId, { reason: input.reason, actor: ctx.actor }) });
+  reg("factory.pause", { describe: "Pauză: etapa curentă se întrerupe, următoarea nu pornește până reiei", async: true,
+    schema: { missionId: { required: true, max: 80 } }, channels: ["ui", "test", "voice", "companion"], execute: (input, ctx) => hub.factory.pause(input.missionId, { actor: ctx.actor }) });
+  reg("factory.resume", { describe: "Reia misiunea de unde au rămas dovezile (opțional: încă un ciclu de remediere sau QA după un review neconcludent — decizia ta)", async: true,
+    schema: { missionId: { required: true, max: 80 }, allowExtraCycle: { type: "boolean", default: false }, proceedToQa: { type: "boolean", default: false } },
+    execute: (input, ctx) => hub.factory.resume(input.missionId, { actor: ctx.actor, allowExtraCycle: input.allowExtraCycle, proceedToQa: input.proceedToQa }) });
+  reg("factory.accept", { describe: "Accepți local pachetul de livrare (OWNER_ACCEPTED; fără commit, push sau deploy)", async: true,
+    schema: { missionId: { required: true, max: 80 }, note: { max: 500, default: "" } }, execute: (input, ctx) => hub.factory.accept(input.missionId, { note: input.note, actor: ctx.actor }) });
+  reg("factory.reject", { describe: "Respingi rezultatul (cu motiv)", async: true,
+    schema: { missionId: { required: true, max: 80 }, note: { required: true, min: 3, max: 500 } }, execute: (input, ctx) => hub.factory.reject(input.missionId, { note: input.note, actor: ctx.actor }) });
+  reg("factory.finding", { describe: "Marchezi un finding (fals pozitiv, contestat, acceptat ca atare) cu motiv",
+    schema: { missionId: { required: true, max: 80 }, code: { required: true, max: 20 }, status: { enum: ["FALSE_POSITIVE", "DISPUTED", "OPEN", "WONTFIX"], required: true }, note: { required: true, min: 5, max: 500 } },
+    execute: (input, ctx) => hub.factory.setFindingStatus(input.missionId, input.code, { status: input.status, note: input.note, actor: ctx.actor }) });
+
   reg("task.command", { describe: "Comandă pe task (coadă, pauză, verificare…)", schema: { taskId: { required: true }, action: { enum: ["queue", "pause", "resume", "cancel", "block", "retry", "verify", "reject"], required: true },
     reason: { max: 500 }, evidence: { type: "object" } }, channels: ["ui", "test", "companion"],
     execute: (input, ctx) => {
@@ -208,6 +259,27 @@ export function registerCommands(commands, hub) {
       settings.set("isolationConsent", value, ctx.actor, "Consent to persistent Codex sandbox DENY ACEs recorded");
       return { consent: value.codex };
     } });
+  // R2 (M03 §05): accepting the open risk is the owner's decision (UI only, exact text, one project, limited time). It never
+  // closes R2 and is not isolation; withdrawing it is fail-safe and may come from voice or companion too.
+  reg("isolation.r2_accept", { describe: "Accepți, pentru un proiect și pentru cel mult 7 zile, că R2 (citire cross-proiect de către Codex) rămâne deschis", schema: { projectId: { required: true, max: 80 },
+    confirmText: { required: true, max: 600 }, days: { type: "integer", min: 1, max: R2_MAX_ACCEPT_DAYS, default: 1 } },
+    execute: (input, ctx) => {
+      if (input.confirmText !== R2_ACCEPT_TEXT) throw new HubError("validation", "Confirmation text does not match");
+      const project = need(projects.get(input.projectId), "Project");
+      if (project.source === "hub-test") throw new HubError("validation", "Proiectele de test nu au nevoie de acceptare R2");
+      const now = clock();
+      const value = { ...settings.get("r2Acceptance"), [project.id]: { confirmedAt: now.toISOString(), expiresAt: new Date(now.getTime() + input.days * 86400000).toISOString(),
+        projectPath: project.path, projectName: project.name, text: R2_ACCEPT_TEXT } };
+      settings.set("r2Acceptance", value, ctx.actor, `R2 risk accepted for ${project.name} (${input.days} d)`);
+      return { acceptance: value[project.id] };
+    } });
+  reg("isolation.r2_revoke", { describe: "Retrage acceptarea R2 pentru un proiect (Codex se blochează din nou pe el)", schema: { projectId: { required: true, max: 80 } }, channels: ["ui", "test", "voice", "companion"],
+    execute: (input, ctx) => {
+      const project = need(projects.get(input.projectId), "Project");
+      const value = { ...settings.get("r2Acceptance") }; delete value[project.id];
+      settings.set("r2Acceptance", value, ctx.actor, `R2 acceptance withdrawn for ${project.name}`);
+      return { revoked: project.id };
+    } });
   reg("isolation.revoke", { describe: "Retrage acordul pentru ACL-urile Codex (nu elimină ACE-urile deja scrise)", schema: { provider: { enum: ["codex"], required: true } }, channels: ["ui", "test", "voice", "companion"],
     execute: (input, ctx) => {
       const value = { ...settings.get("isolationConsent") }; delete value[input.provider];
@@ -226,7 +298,7 @@ export function registerCommands(commands, hub) {
       surfaces.refreshAvailability();
       return { installed: installation.installed, version: installation.version };
     } });
-  reg("provider.probe", { describe: "Verifică contul (handshake/auth status, fără inferență)", async: true, schema: { provider: { enum: ["codex", "claude"], required: true }, withModels: { type: "boolean", default: false } },
+  reg("provider.probe", { describe: "Verifică contul (handshake/auth status, lista de modele; fără inferență)", async: true, schema: { provider: { enum: ["codex", "claude"], required: true }, withModels: { type: "boolean", default: true } },
     execute: async (input, ctx) => {
       const adapter = providers[input.provider];
       const installation = await adapter.inspectInstallation();
@@ -434,7 +506,7 @@ export function registerCommands(commands, hub) {
       const conversation = bus.transaction(() => conversations.create({ projectId: project.id, title: `Lega · ${input.task.replace(/\s+/g, " ").slice(0, 60)}` }, "lega"));
       bus.transaction(() => conversations.addMessage({ conversationId: conversation.id, role: "user", content: input.task }, "lega"));
       try {
-        const started = await runs.start({ conversationId: conversation.id, provider: input.provider, access: input.access, actor: "lega", correlationId: ctx.correlationId });
+        const started = await runs.start({ conversationId: conversation.id, provider: input.provider, access: input.access, actor: "lega", correlationId: ctx.correlationId, ...requestTiming(ctx) });
         if (input.legaSessionId) hub.lega.trackRun(started.run.id, { sessionId: input.legaSessionId, task: input.task });
         return { conversationId: conversation.id, runId: started.run.id };
       } catch (error) {

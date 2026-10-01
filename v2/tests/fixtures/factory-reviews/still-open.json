@@ -1,0 +1,17 @@
+{
+  "verdict": "CHANGES_REQUESTED",
+  "summary": "Problema persistă.",
+  "findings": [
+    {
+      "severity": "high",
+      "file": "src/requests.js",
+      "area": "validare",
+      "observation": "Numele din spații este încă acceptat în unele cazuri",
+      "impact": "AC-1",
+      "evidence": "name === \" \"",
+      "reproduction": "name = \"   \""
+    }
+  ],
+  "missingContext": [],
+  "previousFindings": "ALL_STILL_OPEN"
+}

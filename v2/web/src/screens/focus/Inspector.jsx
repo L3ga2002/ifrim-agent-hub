@@ -4,7 +4,7 @@ import { api, fmt } from "../../api.js";
 import { useResource, useAction, usePref } from "../../store.js";
 import { Empty, Loading, ErrorNotice, StatusChip, Checks, DiffView, Notice, Chip } from "../../components/ui.jsx";
 import { ApprovalCard } from "../Approvals.jsx";
-import { errorStage, missionProgress } from "../../lib/uiLogic.js";
+import { errorStage, missionProgress, formatMs } from "../../lib/uiLogic.js";
 
 const tool = (id, projectId, args) => api(`/api/tools/${id}`, { method: "POST", body: { projectId, args } });
 
@@ -144,6 +144,13 @@ function RunsPanel({ runs }) {
               {r.errorMessage && <><dt>Eroare</dt><dd>{r.errorMessage}</dd></>}
               {r.evidence?.gate && <><dt>Poartă</dt><dd><Checks checks={r.evidence.gate.checks} /></dd></>}
             </dl>
+            {r.plan?.effort && <div className="small">Model <span className="mono">{r.plan.model || "implicit"}</span> ({r.plan.modelSource || "—"}) · efort <span className="mono">{r.plan.effort}</span> ({r.plan.effortSource}){r.plan.reported?.effort ? ` · raportat de provider: ${r.plan.reported.effort}` : ""}</div>}
+            {detail.data?.timeline?.segments?.length > 0 && (
+              <div className="stack tight" aria-label="Timpul pe faze">
+                <div className="faint small">Admitere Hub {formatMs(detail.data.timeline.keySpans.hubAdmissionMs)} · turn → prima comandă {formatMs(detail.data.timeline.keySpans.turnToFirstCommandMs)} · prima comandă {formatMs(detail.data.timeline.keySpans.firstCommandExecutionMs)} · total {formatMs(detail.data.timeline.keySpans.totalMs)}</div>
+                <ul className="plain-list small">{detail.data.timeline.segments.map((s) => <li key={`${s.from}-${s.to}`}><span className="mono">{formatMs(s.ms)}</span> · {s.label} <span className="faint">({s.owner})</span></li>)}</ul>
+              </div>
+            )}
             {detail.data?.telemetry && <div className="faint small">Telemetrie: {Object.entries(detail.data.telemetry.sources || {}).map(([k, v]) => `${k}=${v}`).join(" · ") || "—"}</div>}
             {detail.data?.events?.length > 0 && (
               <ul className="list" aria-label="Evenimente tehnice">{detail.data.events.slice(-30).map((e) => (

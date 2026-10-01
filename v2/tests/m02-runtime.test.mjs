@@ -73,16 +73,40 @@ test("M02-RT-03 browser workspace: only local URLs with a port, never the Hub it
     assert.throws(() => validateBrowserUrl(bad), undefined, bad);
   }
   assert.throws(() => validateBrowserUrl("http://127.0.0.1:8011/", { hubPorts: [8011] }), /admin/);
+  // The "not installed" branch, on a root no node_modules can be found from (Playwright 1.61.0 is a devDependency of the Hub
+  // since 2026-10-01, so test hubs inside the repository resolve it: both branches are covered below).
+  const outside = path.join(path.parse(process.cwd()).root, `ifrim-no-playwright-${process.pid}`);
+  const missing = browserStatus({ hubRoot: outside });
+  if (!missing.installed) {
+    assert.equal(missing.status, "NEEDS_INSTALL_APPROVAL");
+    assert.deepEqual(missing.approvalRequest, BROWSER_APPROVAL_REQUEST);
+  }
   const t = await makeTestHub();
   try {
-    const status = browserStatus({ hubRoot: t.projectDir });
-    assert.equal(status.status, "NEEDS_INSTALL_APPROVAL");
-    assert.deepEqual(status.approvalRequest, BROWSER_APPROVAL_REQUEST);
+    const installed = browserStatus({ hubRoot: t.projectDir }).installed;
     const def = t.hub.tools.definitions.find((d) => d.id === "browser.inspect");
-    assert.equal(def.status, "NEEDS_INSTALL_APPROVAL");
-    await assert.rejects(invoke(t.hub, "browser.inspect", { url: "http://127.0.0.1:3004/" }), /Playwright/);
-    assert.equal(t.hub.db.prepare("SELECT COUNT(*) AS n FROM approvals WHERE action_kind = 'browser.inspect'").get().n, 0, "no approval is created for a tool that cannot run");
+    if (!installed) {
+      assert.equal(def.status, "NEEDS_INSTALL_APPROVAL");
+      await assert.rejects(invoke(t.hub, "browser.inspect", { url: "http://127.0.0.1:3004/" }), /Playwright/);
+      assert.equal(t.hub.db.prepare("SELECT COUNT(*) AS n FROM approvals WHERE action_kind = 'browser.inspect'").get().n, 0, "no approval is created for a tool that cannot run");
+    } else {
+      // Installed: still never automatic, an approval bound to the exact local URL is requested and nothing runs yet.
+      assert.match(def.status, /approval per URL/);
+      const requested = await invoke(t.hub, "browser.inspect", { url: "http://127.0.0.1:3004/" });
+      assert.equal(requested.approvalRequired, true);
+      assert.equal(requested.approval.target, "http://127.0.0.1:3004/");
+      assert.equal(t.hub.db.prepare("SELECT COUNT(*) AS n FROM tool_calls WHERE tool = 'browser.inspect'").get().n, 0, "nothing ran before the approval");
+    }
   } finally { await t.cleanup(); }
+  // The Hub-level refusal without Playwright (Browser Workspace resolved from a root that has none): no approval, nothing runs.
+  if (!missing.installed) {
+    const bare = await makeTestHub({ configOverrides: { browserRoot: outside } });
+    try {
+      assert.equal(bare.hub.tools.definitions.find((d) => d.id === "browser.inspect").status, "NEEDS_INSTALL_APPROVAL");
+      await assert.rejects(invoke(bare.hub, "browser.inspect", { url: "http://127.0.0.1:3004/" }), /Playwright/);
+      assert.equal(bare.hub.db.prepare("SELECT COUNT(*) AS n FROM approvals WHERE action_kind = 'browser.inspect'").get().n, 0, "no approval is created for a tool that cannot run");
+    } finally { await bare.cleanup(); }
+  }
 });
 
 test("M02-RT-04 HTTP: state carries simulation flag, recent conversations/results and company structure; /api/sim is 404 outside the simulator", async () => {
@@ -99,7 +123,7 @@ test("M02-RT-04 HTTP: state carries simulation flag, recent conversations/result
     assert.equal((await s.get("/api/sim")).status, 404);
     assert.equal((await s.post("/api/sim/execute", {})).status, 404);
     const browser = (await s.get("/api/browser/status")).json;
-    assert.equal(browser.status, "NEEDS_INSTALL_APPROVAL");
+    assert.equal(browser.status, browser.installed ? "available" : "NEEDS_INSTALL_APPROVAL");
     assert.equal((await s.get("/api/browser/evidence/..%2F..%2Fhub-v2.sqlite")).status, 400);
     const calls = (await s.get("/api/tool-calls?tool=files.list")).json;
     assert.ok(Array.isArray(calls.calls));

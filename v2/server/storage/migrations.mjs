@@ -396,4 +396,73 @@ export const MIGRATIONS = [
       for (const [from, to] of Object.entries(scopeMap)) db.prepare("UPDATE memory_items SET scope = ? WHERE scope = ?").run(to, from);
     },
   },
+  {
+    version: 3,
+    name: "m03-runtime-readiness-software-factory",
+    /**
+     * Milestone 03. Runs: the phase timeline (where the time goes) and the resolved model/effort plan (what was sent and
+     * why). Software Factory: the missing concepts only (versioned specification, workspace snapshots, change sets,
+     * reviews and findings, verification evidence, durable dispatch requests, delivery bundles) around the EXISTING
+     * missions/tasks/runs/grants/approvals; a factory mission is a mission with one extra row. Additive only.
+     */
+    up(db) {
+      db.exec(`
+        ALTER TABLE agent_runs ADD COLUMN timeline_json TEXT NOT NULL DEFAULT '{}';
+        ALTER TABLE agent_runs ADD COLUMN plan_json TEXT NOT NULL DEFAULT '{}';
+
+        CREATE TABLE factory_missions (
+          mission_id TEXT PRIMARY KEY REFERENCES missions(id), work_type TEXT NOT NULL, stage TEXT NOT NULL,
+          wait_reason TEXT NOT NULL DEFAULT '', stage_reason TEXT NOT NULL DEFAULT '', profile TEXT NOT NULL DEFAULT 'BALANCED',
+          limits_json TEXT NOT NULL, plan_json TEXT NOT NULL DEFAULT '{}', repair_cycles INTEGER NOT NULL DEFAULT 0, approved_spec_version INTEGER, scope_hash TEXT,
+          scope_approval_id TEXT, base_snapshot_id TEXT, review_conversation_id TEXT, cancel_requested_at TEXT,
+          started_at TEXT, deadline_at TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, version INTEGER NOT NULL DEFAULT 1);
+
+        CREATE TABLE factory_specs (
+          id TEXT PRIMARY KEY, mission_id TEXT NOT NULL REFERENCES missions(id), version INTEGER NOT NULL, status TEXT NOT NULL,
+          spec_json TEXT NOT NULL, sha256 TEXT NOT NULL, protected_json TEXT NOT NULL DEFAULT '{}', author TEXT NOT NULL,
+          created_at TEXT NOT NULL, approved_at TEXT, UNIQUE (mission_id, version));
+
+        CREATE TABLE factory_snapshots (
+          id TEXT PRIMARY KEY, mission_id TEXT NOT NULL REFERENCES missions(id), seq INTEGER NOT NULL, kind TEXT NOT NULL,
+          run_id TEXT, manifest_json TEXT NOT NULL, stats_json TEXT NOT NULL DEFAULT '{}', git_json TEXT NOT NULL DEFAULT '{}',
+          sha256 TEXT NOT NULL, created_at TEXT NOT NULL, UNIQUE (mission_id, seq));
+
+        CREATE TABLE factory_change_sets (
+          id TEXT PRIMARY KEY, mission_id TEXT NOT NULL REFERENCES missions(id), seq INTEGER NOT NULL, snapshot_id TEXT NOT NULL,
+          previous_id TEXT, run_id TEXT, task_id TEXT, changes_json TEXT NOT NULL, delta_json TEXT NOT NULL DEFAULT '[]',
+          diff_text TEXT NOT NULL DEFAULT '', diff_truncated INTEGER NOT NULL DEFAULT 0, integrity_json TEXT NOT NULL DEFAULT '{}',
+          sha256 TEXT NOT NULL, status TEXT NOT NULL, created_at TEXT NOT NULL, UNIQUE (mission_id, seq));
+
+        CREATE TABLE factory_reviews (
+          id TEXT PRIMARY KEY, mission_id TEXT NOT NULL REFERENCES missions(id), change_set_id TEXT NOT NULL, change_set_sha TEXT NOT NULL,
+          run_id TEXT, reviewer TEXT NOT NULL, verdict TEXT NOT NULL, summary TEXT NOT NULL DEFAULT '', missing_json TEXT NOT NULL DEFAULT '[]',
+          validation_json TEXT NOT NULL DEFAULT '{}', status TEXT NOT NULL, created_at TEXT NOT NULL);
+
+        CREATE TABLE factory_findings (
+          id TEXT PRIMARY KEY, mission_id TEXT NOT NULL REFERENCES missions(id), code TEXT NOT NULL, source TEXT NOT NULL,
+          review_id TEXT, evidence_id TEXT, change_set_id TEXT NOT NULL, severity TEXT NOT NULL, file TEXT NOT NULL DEFAULT '',
+          area TEXT NOT NULL DEFAULT '', observation TEXT NOT NULL, impact TEXT NOT NULL DEFAULT '', evidence TEXT NOT NULL DEFAULT '',
+          reproduction TEXT NOT NULL DEFAULT '', fingerprint TEXT NOT NULL, status TEXT NOT NULL, resolution_json TEXT NOT NULL DEFAULT '{}',
+          created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
+        CREATE INDEX idx_factory_findings_mission ON factory_findings(mission_id, status);
+
+        CREATE TABLE factory_evidence (
+          id TEXT PRIMARY KEY, mission_id TEXT NOT NULL REFERENCES missions(id), change_set_id TEXT NOT NULL, stage TEXT NOT NULL,
+          kind TEXT NOT NULL, command TEXT NOT NULL, runner TEXT NOT NULL, isolation TEXT NOT NULL, status TEXT NOT NULL,
+          exit_code INTEGER, counts_json TEXT NOT NULL DEFAULT '{}', duration_ms INTEGER, output_tail TEXT NOT NULL DEFAULT '',
+          detail_json TEXT NOT NULL DEFAULT '{}', stale INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL);
+
+        CREATE TABLE factory_dispatches (
+          id TEXT PRIMARY KEY, mission_id TEXT NOT NULL REFERENCES missions(id), stage TEXT NOT NULL, task_id TEXT,
+          idempotency_key TEXT NOT NULL UNIQUE, status TEXT NOT NULL, request_json TEXT NOT NULL, run_id TEXT, claim_token TEXT,
+          error TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
+        CREATE INDEX idx_factory_dispatches_mission ON factory_dispatches(mission_id, created_at);
+
+        CREATE TABLE factory_bundles (
+          id TEXT PRIMARY KEY, mission_id TEXT NOT NULL REFERENCES missions(id), change_set_id TEXT NOT NULL, change_set_sha TEXT NOT NULL,
+          spec_version INTEGER NOT NULL, manifest_json TEXT NOT NULL, sha256 TEXT NOT NULL, status TEXT NOT NULL, file_path TEXT NOT NULL DEFAULT '',
+          decided_at TEXT, decision_note TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL);
+      `);
+    },
+  },
 ];
