@@ -2,10 +2,10 @@
 
 ## 2026-10-01 (evening) - Open items after Milestone 04 (version `2.5.0-m04`; supersede every section below where they overlap)
 
-State: M04 Sales is built and verified on synthetic data (BUILD_READY + SIMULATED_SALES_FLOW_VERIFIED). It is not committed. Report: `M04_REPORT.md`.
+State: M04 Sales is built and verified on synthetic data (BUILD_READY + SIMULATED_SALES_FLOW_VERIFIED). Committed locally as `2301dcd` (not pushed). Report: `M04_REPORT.md`.
 
 Owner decisions:
-- **M04 commit** (push stays the owner's).
+- **M04 push:** committed as `2301dcd`; push stays the owner's.
 - **Sales catalog:** empty on purpose; no services, prices or lead times were invented. Fill it in Vânzări → Catalog.
 - **Real data:** the historical ~3,700-company list was not found in scope. Importing a real file is the owner's decision. Before any real data: retention/erasure rules and the legal basis (`M04_CONTACT_POLICY.md` §6).
 - **Live research:** needs a separate authorization (sources/domains, volume, duration, methods, kept data, stop conditions). `validateCollectorUrl` is ready; the live adapter refuses everything.

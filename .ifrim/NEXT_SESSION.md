@@ -3,7 +3,7 @@
 ## MILESTONE 04 — 2026-10-01 (current; supersedes the sections below where they overlap)
 
 - **Version `2.5.0-m04`.** M04 adds the Sales department: CSV/XLSX import → identity → provenance → fixture audit → qualification → opportunity → proposal → contact draft → human decision → Software Factory draft. Read `M04_REPORT.md` first.
-- **Git:** M04 is not committed (on `v2-milestone-01` over the pushed `3c5d202`). `main` is still `e9ab563`.
+- **Git:** M04 committed locally as `2301dcd` on `v2-milestone-01` (over the pushed `3c5d202`); not pushed: `git push origin v2-milestone-01` is the owner's. `main` is still `e9ab563`.
 - **Levels:** BUILD_READY + SIMULATED_SALES_FLOW_VERIFIED. No model ran; nothing was sent; nothing was collected from the internet.
 - **Live Hub:** restarted on `2.5.0-m04` (pid 22644, 16:57 UTC) after backup `bkp_mups0uoj_cd6d3f5269`; migration 4 applied; it booted in **BUILD_SAFE** (LIVE_VALIDATION is no longer set; set it again yourself before probe 2.3). Simulator running on 8012 with the Sales demo.
 - **Try it (simulator):**

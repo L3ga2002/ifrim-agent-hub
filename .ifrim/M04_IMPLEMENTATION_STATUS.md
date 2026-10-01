@@ -1,6 +1,6 @@
 # M04 — Starea implementării (Vânzări & lead generation)
 
-Versiune: `2.5.0-m04` · 2026-10-01 · Branch `v2-milestone-01`. Codul M04 nu e comis; ultimul commit este `3c5d202`, deja împins.
+Versiune: `2.5.0-m04` · 2026-10-01 · Branch `v2-milestone-01`. Codul M04 e comis local ca `2301dcd`, peste `3c5d202` (împins de tine). Commit-ul M04 nu e împins.
 
 ## Niveluri
 
@@ -42,7 +42,7 @@ Versiune: `2.5.0-m04` · 2026-10-01 · Branch `v2-milestone-01`. Codul M04 nu e 
 - Nicio inferență, nicio colectare live, niciun contact extern, nicio instalare.
 - Nicio acceptare a Demo A și nicio probă M03 relansată.
 - Gmail, SMTP, calendar și inbox nu sunt conectate.
-- Codul nu e comis și nu e împins.
+- Codul e comis local (`2301dcd`), dar nu e împins: push-ul rămâne la tine.
 - Catalogul de servicii pornește **gol** în Hub-ul real. Nu există servicii confirmate în proiect, deci nu am inventat niciunul. Îl completezi tu în Vânzări → Catalog. Simulatorul are un catalog marcat SINTETIC.
 - Lista istorică de ~3.700 de firme nu a fost găsită în scope. Volumul a fost testat cu 3.700 de rânduri sintetice.
 

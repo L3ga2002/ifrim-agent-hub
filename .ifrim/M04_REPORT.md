@@ -8,8 +8,10 @@ Pe scurt: Hub-ul are acum un departament de Vânzări funcțional local, verific
 
 - **Git:**
   - Branch `v2-milestone-01`, HEAD `3c5d202`, împins de tine. `main` e tot `e9ab563`.
-  - Munca M04 **nu e comisă**: 21 de fișiere existente modificate, plus fișiere noi (`v2/server/sales/`, `v2/fixtures/sales/`, 10 fișiere de test `m04-*`, ecranul Vânzări, documentele `.ifrim/M04_*` și `M03_CLOSURE_PACKAGES.md`).
-  - Fără commit, push, merge sau deploy.
+  - Munca M04 e **comisă local** ca `2301dcd`: 22 de fișiere existente modificate, plus fișiere noi (`v2/server/sales/`, `v2/fixtures/sales/`, 10 fișiere de test `m04-*`, ecranul Vânzări, documentele `.ifrim/M04_*` și `M03_CLOSURE_PACKAGES.md`).
+  - Commit-ul l-am făcut pe baza permisiunii tale generale din conversație („îți permit tot ce interzice promptul”).
+  - Actualizările de documentație de după commit (care consemnează commit-ul, repornirea și cifrele finale) sunt **necomise**. Al doilea commit a fost refuzat de clasificatorul de siguranță al sesiunii; îl faci tu.
+  - **Nu am făcut push, merge sau deploy.** Push-ul îl faci tu: `git push origin v2-milestone-01`.
 - **Hub-ul live (8011):**
   - Înainte: `2.4.0-m03`, pid 23532, LIVE_VALIDATION, poarta deschisă (setate de tine). Inactiv: 0 rulări active, 0 granturi active (toate expirate sau epuizate), sesiunea Lega încheiată la 15:47 UTC.
   - Pașii repornirii:
@@ -146,4 +148,4 @@ Bundle-ul `bnd_mupj3diq_d386324921` e tot **READY_FOR_OWNER_ACCEPTANCE** (misiun
   - mecanism de dezabonare;
   - activarea explicită a trimiterii.
 - **Integrarea proiectelor clientului** în Software Factory: după R2, cu un mediu izolat.
-- **Commit-ul M04** (push-ul rămâne la tine) și **decizia OWNER_ACCEPTED**.
+- Commit-ul documentației rămase și **push-ul** (le faci tu), merge-ul în `main` și **decizia OWNER_ACCEPTED**.

@@ -2,7 +2,7 @@
 
 ## Milestone 04 handoff — 2026-10-01 (current; Sales & lead generation, version `2.5.0-m04`)
 
-- **State:** M04 built in BUILD_SAFE terms with no model, no live collection and no external contact. **Not committed** (on `v2-milestone-01` over `3c5d202`, which the owner pushed). Levels: BUILD_READY + SIMULATED_SALES_FLOW_VERIFIED. LIVE_RESEARCH_VALIDATED, REAL_CLIENT_DATA_READY, OUTREACH_ENABLED and OWNER_ACCEPTED are not reached.
+- **State:** M04 built in BUILD_SAFE terms with no model, no live collection and no external contact. Committed locally as `2301dcd` on `v2-milestone-01` (over `3c5d202`, which the owner pushed); **not pushed** (push stays the owner's). Levels: BUILD_READY + SIMULATED_SALES_FLOW_VERIFIED. LIVE_RESEARCH_VALIDATED, REAL_CLIENT_DATA_READY, OUTREACH_ENABLED and OWNER_ACCEPTED are not reached.
 - **Read first:** `M04_REPORT.md`, then:
   - `M04_IMPLEMENTATION_STATUS.md`, `M04_SALES_ARCHITECTURE.md` (the contract);
   - `M04_DATA_PROVENANCE.md`, `M04_CONTACT_POLICY.md`, `M04_TEST_REPORT.md`;

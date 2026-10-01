@@ -1,6 +1,6 @@
 # M04 — Raportul de teste (Vânzări)
 
-Versiune `2.5.0-m04` · 2026-10-01 · Windows 11 Home, Node 24.14.0 · Branch `v2-milestone-01` (necomis, peste `3c5d202`)
+Versiune `2.5.0-m04` · 2026-10-01 · Windows 11 Home, Node 24.14.0 · Branch `v2-milestone-01`, commit `2301dcd`
 
 Niciun test nu pornește modele, nu trimite e-mailuri, nu face commit și nu accesează internetul. Datele sunt sintetice: domenii `.test`, CUI-uri 99… generate cu cifră de control validă, site-uri fixture locale.
 
