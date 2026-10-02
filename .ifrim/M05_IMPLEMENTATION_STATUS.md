@@ -50,7 +50,7 @@ Data: 2026-10-02. Versiunea codului: `2.6.0-m05`, pe disc, **necomisă**. Hub-ul
 |---|---|
 | BUILD_READY | **atins**: cod, teste locale, build UI |
 | LOCAL_ENVIRONMENT_ATTESTED | **atins și înregistrat** la 2026-10-02 ~02:13 UTC (PASS_LOCAL, 71 de verificări, amprenta `7b3afa6ae2a7d1f3`), apoi **invalidat** la ~03:50 UTC, intenționat: canary-ul a primit verificarea reală a curățării (C15r/C15s), deci are o versiune nouă. Atestarea trebuie refăcută din UI. Driverul manual a trecut și el |
-| WSL_LIVE_SANDBOX_VALIDATED | **neatins**: cere (c) |
+| WSL_LIVE_SANDBOX_VALIDATED | **atins** (2026-10-02, Factory Demo A2): writer prin `codex@wsl-runner` cu export C14 aplicat, verificări 6/6, QA 2/2 în mediu, review `sonnet` PASS pe change set-ul exportat (`M05_LIVE_RESULTS.md`). C3, Stop live în mediu: NOT_RUN |
 | PIPELINE_ISOLATION_VERIFIED | **neatins**: preview, E2E și review rămân pe Windows |
 | REAL_PROJECT_ELIGIBLE | **neatins**: `realProjectEligible = false` pe orice rută |
 | OWNER_ACCEPTED | decizia ta |

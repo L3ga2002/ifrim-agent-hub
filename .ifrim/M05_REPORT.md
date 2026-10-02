@@ -4,7 +4,13 @@ Data: 2026-10-02.
 
 **Nivel atins:**
 - **BUILD_READY**;
-- **LOCAL_ENVIRONMENT_ATTESTED**, înregistrat în Hub-ul live: atestarea din UI, 2026-10-02 ~02:13 UTC, PASS_LOCAL, 71 de verificări.
+- **LOCAL_ENVIRONMENT_ATTESTED**, înregistrat în Hub-ul live: re-atestarea din 2026-10-02 06:59 UTC, PASS_LOCAL, 73 de verificări, amprenta `7b3afa6ae2a7d1f3`;
+- **WSL_LIVE_SANDBOX_VALIDATED** (2026-10-02, 07:20–07:30 UTC, Factory Demo A2):
+  - writer Codex `gpt-6.1-sol` prin `wsl-runner`, cu export C14 aplicat;
+  - verificări PASS 6/6 și QA PASS 2/2 în mediu;
+  - review `sonnet` PASS pe change set-ul exportat.
+
+  Pachetul `bnd_muqn17e6_19ce971a24` așteaptă decizia ta. C3 (Stop live în mediu) e NOT_RUN. Detalii: `M05_LIVE_RESULTS.md`.
 
 **R2 rămâne deschis.** Niciun proiect real nu e eligibil pe nicio rută.
 

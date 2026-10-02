@@ -43,7 +43,8 @@
 - **Levels:**
   - BUILD_READY reached;
   - LOCAL_ENVIRONMENT_ATTESTED reached and recorded in the live Hub (2026-10-02 ~02:13 UTC, PASS_LOCAL 71 checks), then invalidated on purpose by the new canary version (C15r/C15s reaper check, ~03:50 UTC): re-attest from the UI;
-  - WSL_LIVE_SANDBOX_VALIDATED, PIPELINE_ISOLATION_VERIFIED and REAL_PROJECT_ELIGIBLE not reached.
+  - WSL_LIVE_SANDBOX_VALIDATED reached live on 2026-10-02 07:20-07:30 UTC (owner clicks, Factory Demo A2, mission `mis_muqmvlvl_f21803e877`): Codex gpt-6.1-sol writer through `codex@wsl-runner`, C14 export applied, checks 6/6 and QA 2/2 in the environment, sonnet review PASS; bundle `bnd_muqn17e6_19ce971a24` awaits the owner; C3 live Stop NOT_RUN; see `M05_LIVE_RESULTS.md`. Hub back in BUILD_SAFE, grants revoked;
+  - PIPELINE_ISOLATION_VERIFIED and REAL_PROJECT_ELIGIBLE not reached.
 
   **R2 stays open.** Real projects keep the R2 refusal on every route.
 - **Pre-probe review (2026-10-02 ~03:00–04:30 UTC).** The owner said in chat that Claude should do every approval. A read-only workflow (35 agents) checked whether the first live probe (c) could waste an attempt. Verified against the real `ifrim-runner` without a model:
