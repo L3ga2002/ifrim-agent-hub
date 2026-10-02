@@ -13,6 +13,15 @@ export const DEFAULT_SETTINGS = Object.freeze({
   isolationConsent: {},
   // R2 still open, accepted by the owner per project (path-bound, time-limited); never a claim of isolation (M03 §05).
   r2Acceptance: {},
+  // M05: execution route per project ({ [projectId]: { environment: "wsl-runner", setAt, setBy } }); absent = Windows route.
+  // Selecting a route never weakens the gate: a project on wsl-runner is refused when the environment is not attested,
+  // and never falls back to Windows.
+  projectEnvironments: {},
+  // M05 (b): the owner's approval of host_isolation = environment for real projects, bound to one attestation and its
+  // fingerprint ({ "wsl-runner": { approvedAt, text, attestationId, fingerprintHash } }). Absent = not approved.
+  environmentPolicy: {},
+  // M05: optional sandbox warm-up when the Hub starts (no model, a trivial command in an empty scratch folder). Off by default.
+  environmentWarmup: { onBoot: false },
   // M04: the owner's company profile used in proposals (name, signature, confirmed materials); nothing is invented.
   salesOwner: { companyName: "Ifrim Digital", signatureName: "", materials: [] },
   // Lega (voice assistant, GPT-Live via Codex): owner consent (versioned) and session preferences.

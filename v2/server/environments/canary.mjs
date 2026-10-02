@@ -1,0 +1,183 @@
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import net from "node:net";
+import crypto from "node:crypto";
+import { spawn } from "node:child_process";
+import { fileURLToPath } from "node:url";
+import { buildChildEnv } from "../policy/billing.mjs";
+import { resolveWsl, runInDistro, runScript, cleanWslText } from "./wsl.mjs";
+
+/**
+ * The R2 canary for the wsl-runner environment (M04_R2_ISOLATION_OPTIONS.md §6, M05 §23), shared by the Hub attestation
+ * and the manual driver v2/tests/manual/r2-wsl-canary.mjs. C1–C13 run inside the distro (scripts/canary.sh, unchanged
+ * meaning), C14 is the export validator against real archives from the distro, C15 restarts the distro and repeats C1–C4,
+ * C16 checks the account through the environment's own client, C17 searches every output for the fictive tokens.
+ * Fictive data only: a random token is written into fictive files; real credentials are never read (only `test -r`).
+ */
+const CANARY_BASE_VERSION = "m05-canary-1";
+const here0 = path.dirname(fileURLToPath(import.meta.url));
+/**
+ * The canary version includes a hash of what the checks ARE (the in-distro script and the C14 exercise): editing either
+ * without a new attestation invalidates the old one, even if nobody bumped the version by hand.
+ */
+export const CANARY_VERSION = `${CANARY_BASE_VERSION}+${crypto.createHash("sha256")
+  .update(fs.readFileSync(path.join(here0, "scripts", "canary.sh"))).update(fs.readFileSync(path.join(here0, "c14.mjs")))
+  .update(fs.readFileSync(path.join(here0, "scripts", "reap.sh"))).update(fs.readFileSync(fileURLToPath(import.meta.url))).digest("hex").slice(0, 8)}`;
+export const CANARY_CHECK_IDS = Object.freeze(["C1", "C2", "C3", "C4", "C5", "C6", "C7", "C8", "C9", "C10", "C11", "C12", "C13", "C14", "C15", "C16", "C17"]);
+
+const here = path.dirname(fileURLToPath(import.meta.url));
+export const canaryScript = () => fs.readFileSync(path.join(here, "scripts", "canary.sh"), "utf8");
+
+/** `wsl.exe --terminate <distro>`: ends every process of the distro (used only by C15, never as a Stop). */
+export function terminateDistro(config, env) {
+  const invocation = resolveWsl(config);
+  if (!invocation) return Promise.resolve({ code: -1 });
+  return new Promise((resolve) => {
+    const child = spawn(invocation.executable, [...invocation.prefixArgs, "--terminate", env.distro], { env: buildChildEnv(), windowsHide: true, stdio: "ignore" });
+    child.once("error", () => resolve({ code: -1 }));
+    child.once("close", (code) => resolve({ code }));
+  });
+}
+
+/**
+ * C15r/C15s: the real reaper (scripts/reap.sh) on a dummy workspace, exactly as a run uses it (a separate wsl.exe call).
+ * Two sleeping `runner` processes are left behind by an earlier call: one with its cwd inside the workspace, one outside.
+ * Marker mode must end the first and leave the second; "all" mode must then end the second. In both modes the reaper must
+ * report remaining=0 — it must never count itself (reap.sh v1 did, in "all" mode). Run only when nothing else uses the
+ * distro ("all" ends every process of the user). Returns check lines.
+ */
+export async function exerciseReaper({ config, env }) {
+  const id = `reap-check-${crypto.randomBytes(4).toString("hex")}`;
+  const ws = `${env.workspaceRoot}/${id}`;
+  const lines = [];
+  const sh = (script, args = []) => runInDistro(config, env, { cwd: env.home, argv: ["/bin/bash", "-s", "--", ...args], input: Buffer.from(script, "utf8"), timeoutMs: 60000, maxStdout: 64 * 1024 })
+    .then((r) => cleanWslText(r.stdout.toString("utf8")));
+  const kv = (text) => Object.fromEntries(String(text).split("\n").map((l) => l.match(/^([a-z_]+)=(.*)$/)).filter(Boolean).map((m) => [m[1], m[2].trim()]));
+  const reapScript = fs.readFileSync(path.join(here0, "scripts", "reap.sh"), "utf8");
+  try {
+    const started = kv(await sh([
+      'set -u; WS="$1"; mkdir -p "$WS"',
+      '(cd "$WS" && exec setsid /bin/sleep 299 </dev/null >/dev/null 2>&1) &',
+      '(cd "$HOME" && exec setsid /bin/sleep 298 </dev/null >/dev/null 2>&1) &',
+      "sleep 0.5",
+      'echo "inside=$(pgrep -u "$(id -u)" -f "^/bin/sleep 299$" | head -1)"',
+      'echo "outside=$(pgrep -u "$(id -u)" -f "^/bin/sleep 298$" | head -1)"',
+    ].join("\n"), [ws]));
+    if (!/^\d+$/.test(started.inside || "") || !/^\d+$/.test(started.outside || "")) {
+      lines.push(`C15r FAIL reaper: procesele-martor nu au pornit (inside=${started.inside || "-"} outside=${started.outside || "-"})`);
+      return lines;
+    }
+    const alive = async () => kv(await sh(`kill -0 ${started.inside} 2>/dev/null && echo inside=1 || echo inside=0\nkill -0 ${started.outside} 2>/dev/null && echo outside=1 || echo outside=0\n`));
+    const marker = kv((await runScript(config, env, reapScript, [ws, "-"])).text);
+    const afterMarker = await alive();
+    const markerOk = marker.remaining === "0" && afterMarker.inside === "0" && afterMarker.outside === "1";
+    lines.push(`C15r ${markerOk ? "PASS" : "FAIL"} reaper (marker): found=${marker.found ?? "-"} remaining=${marker.remaining ?? "-"}; procesul din workspace ${afterMarker.inside === "0" ? "oprit" : "VIU"}, cel din afară ${afterMarker.outside === "1" ? "neatins" : "OPRIT"}`);
+    const all = kv((await runScript(config, env, reapScript, [ws, "-", "all"])).text);
+    const afterAll = await alive();
+    const allOk = all.remaining === "0" && afterAll.outside === "0";
+    lines.push(`C15s ${allOk ? "PASS" : "FAIL"} reaper (all): found=${all.found ?? "-"} remaining=${all.remaining ?? "-"} (nu se numără pe sine); procesul din afara workspace-ului ${afterAll.outside === "0" ? "oprit" : "VIU"}`);
+  } catch (error) {
+    lines.push(`C15r FAIL reaper: ${String(error.message).slice(0, 200)}`);
+  } finally {
+    await sh(`pkill -u "$(id -u)" -f "^/bin/sleep 29[89]$" 2>/dev/null; rm -rf "$1"; echo done=1`, [ws]).catch(() => "");
+  }
+  return lines;
+}
+
+/** Lines "<id> PASS|FAIL <what>" (sub-checks like C7a) → { id, sub, status, detail }. */
+export function parseCheckLines(text) {
+  const out = [];
+  for (const line of String(text).split("\n")) {
+    const m = line.match(/^(C\d+)([a-z]?)(?:\/(C\d+)([a-z]?))? (PASS|FAIL) (.*)$/);
+    if (m) out.push({ id: m[3] ? `${m[1]}/${m[3]}` : m[1], sub: m[3] ? `${m[1]}/${m[3]}${m[4]}` : `${m[1]}${m[2]}`, status: m[5], detail: m[6].slice(0, 300) });
+  }
+  return out;
+}
+
+/**
+ * Runs the canary. `c14` and `c16` are async functions returning check lines (strings) — they need the Hub's validator and
+ * the environment client. `allowRestart()` decides at C15 time whether terminating the distro is safe (no run in it).
+ * Returns { version, lines:[{id, sub, status, detail}], byId:{C1…C17: PASS|FAIL|NOT_RUN}, fingerprintLine, info:[], ok }.
+ */
+export async function runCanary({ config, env, c14 = null, c16 = null, allowRestart = () => true, timeoutMs = 600000 }) {
+  const tok = `CANARY_${crypto.randomBytes(6).toString("hex")}`;
+  const tree = fs.mkdtempSync(path.join(os.tmpdir(), "ifrim-r2-canary-"));
+  const outputs = [];
+  const lines = [];
+  const info = [];
+  let fingerprintLine = "";
+  const server = net.createServer((s) => { s.end(`${tok}_C\n`); });
+  try {
+    fs.mkdirSync(path.join(tree, "alt-client", "src"), { recursive: true });
+    fs.mkdirSync(path.join(tree, "fake-home", ".codex"), { recursive: true });
+    fs.writeFileSync(path.join(tree, "alt-client", ".env"), `SECRET=${tok}_A\n`);
+    fs.writeFileSync(path.join(tree, "alt-client", "src", "client.txt"), `${tok}_B\n`);
+    fs.writeFileSync(path.join(tree, "fake-home", ".codex", "config.toml"), "# fictive\n");
+    const guess = `/mnt/${tree[0].toLowerCase()}/${tree.slice(3).split(path.sep).join("/")}`;
+    await new Promise((r) => server.listen(0, "127.0.0.1", r));
+    const port = String(server.address().port);
+
+    const script = canaryScript();
+    const run1 = await runInDistro(config, env, { cwd: env.home, argv: ["/bin/bash", "-s", "--", tok, guess, port], input: Buffer.from(script, "utf8"), timeoutMs, maxStdout: 2 * 1024 * 1024 });
+    const out1 = `${cleanWslText(run1.stdout.toString("utf8"))}\n${run1.stderr}`;
+    outputs.push(out1);
+    lines.push(...parseCheckLines(out1));
+    for (const line of out1.split("\n")) {
+      if (/^(C\d+ INFO|SBX-WARN)/.test(line)) info.push(line.slice(0, 300));
+      if (line.startsWith("FINGERPRINT ")) fingerprintLine = line.slice(12).trim();
+    }
+    if (run1.code !== 0 && !lines.length) lines.push({ id: "C1", sub: "C1", status: "FAIL", detail: `scriptul canary nu a rulat (exit ${run1.code}): ${run1.stderr.slice(0, 200)}` });
+
+    if (c14) {
+      const c14Lines = await c14().catch((error) => [`C14 FAIL validatorul de export nu a putut fi exersat: ${String(error.message).slice(0, 200)}`]);
+      outputs.push(c14Lines.join("\n"));
+      lines.push(...parseCheckLines(c14Lines.join("\n")));
+    }
+
+    // C15: the reaper on a dummy workspace (C15r/C15s), then restart the distro and repeat C1–C4 (the boundary must not
+    // depend on a running session). Both end processes of the distro, so both run only when nothing else uses it.
+    const idle = allowRestart();
+    // The reaper check needs the real distro (setsid, pgrep, /proc); the test fixture cannot stand in for it, and a simulated
+    // attestation is never valid outside tests anyway.
+    if (idle && !resolveWsl(config)?.fixture) {
+      const reaperLines = await exerciseReaper({ config, env });
+      outputs.push(reaperLines.join("\n"));
+      lines.push(...parseCheckLines(reaperLines.join("\n")));
+    }
+    if (idle) {
+      await terminateDistro(config, env);
+      await new Promise((r) => setTimeout(r, config.testMode ? 50 : 9000));
+      const quick = `${script.split("# C5:")[0]}\nrm -rf "$WS" "$ALT" ~/.codex/canary-marker\n`;
+      const run2 = await runInDistro(config, env, { cwd: env.home, argv: ["/bin/bash", "-s", "--", tok, guess, port], input: Buffer.from(quick, "utf8"), timeoutMs, maxStdout: 1024 * 1024 });
+      const out2 = cleanWslText(run2.stdout.toString("utf8"));
+      outputs.push(out2);
+      const again = parseCheckLines(out2).filter((l) => /^C[1-4]$/.test(l.id));
+      if (!again.length) lines.push({ id: "C15", sub: "C15", status: "FAIL", detail: "după repornire, C1–C4 nu au raportat nimic" });
+      for (const l of again) lines.push({ id: "C15", sub: `C15/${l.sub}`, status: l.status, detail: l.detail });
+    } else {
+      lines.push({ id: "C15", sub: "C15", status: "NOT_RUN", detail: "o execuție folosește mediul: repornirea distribuției ar opri-o" });
+    }
+
+    if (c16) {
+      const c16Lines = await c16().catch((error) => [`C16 FAIL verificarea contului prin mediu nu a rulat: ${String(error.message).slice(0, 200)}`]);
+      outputs.push(c16Lines.join("\n"));
+      lines.push(...parseCheckLines(c16Lines.join("\n")));
+    }
+  } finally {
+    server.close();
+    fs.rmSync(tree, { recursive: true, force: true });
+  }
+  // C17: none of the fictive tokens may appear in any output (they would mean a read crossed the boundary).
+  const all = outputs.join("\n");
+  const leaks = ["A", "B", "C", "D", "E", "F"].filter((s) => all.includes(`${tok}_${s}`));
+  lines.push({ id: "C17", sub: "C17", status: leaks.length ? "FAIL" : "PASS", detail: `căutarea tokenurilor fictive în toate ieșirile (${leaks.length} scurgeri${leaks.length ? `: ${leaks.join(",")}` : ""})` });
+
+  const byId = {};
+  for (const id of CANARY_CHECK_IDS) {
+    const mine = lines.filter((l) => l.id === id || l.id.startsWith(`${id}/`));
+    byId[id] = !mine.length ? "NOT_RUN" : mine.some((l) => l.status === "FAIL") ? "FAIL" : mine.every((l) => l.status === "NOT_RUN") ? "NOT_RUN" : "PASS";
+  }
+  const ok = CANARY_CHECK_IDS.every((id) => byId[id] === "PASS");
+  return { version: CANARY_VERSION, lines, byId, fingerprintLine, info: info.slice(0, 30), ok, failed: lines.filter((l) => l.status === "FAIL").length };
+}

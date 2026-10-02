@@ -604,4 +604,30 @@ export const MIGRATIONS = [
       `);
     },
   },
+  {
+    version: 5,
+    name: "m05-execution-environments",
+    /**
+     * Milestone 05. Execution environments (wsl-runner): the environment each run used, the attestations (canary C1–C17
+     * bound to a fingerprint) and the per-run workspaces in the environment (transfer, export, validation, apply). The
+     * project route choice and the owner's policy approval live in settings. Additive only.
+     */
+    up(db) {
+      db.exec(`
+        ALTER TABLE agent_runs ADD COLUMN environment TEXT NOT NULL DEFAULT 'windows';
+
+        CREATE TABLE environment_attestations (
+          id TEXT PRIMARY KEY, environment_id TEXT NOT NULL, status TEXT NOT NULL, fingerprint_hash TEXT NOT NULL, fingerprint_json TEXT NOT NULL,
+          canary_version TEXT NOT NULL, checks_json TEXT NOT NULL, stages_json TEXT NOT NULL DEFAULT '[]', summary TEXT NOT NULL DEFAULT '',
+          actor TEXT NOT NULL, channel TEXT NOT NULL, started_at TEXT NOT NULL, finished_at TEXT, created_at TEXT NOT NULL);
+        CREATE INDEX idx_environment_attestations ON environment_attestations(environment_id, started_at);
+
+        CREATE TABLE environment_workspaces (
+          id TEXT PRIMARY KEY, environment_id TEXT NOT NULL, run_id TEXT, project_id TEXT NOT NULL DEFAULT '', purpose TEXT NOT NULL,
+          linux_path TEXT NOT NULL, fingerprint_hash TEXT NOT NULL DEFAULT '', stats_json TEXT NOT NULL DEFAULT '{}', export_json TEXT NOT NULL DEFAULT '{}',
+          status TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
+        CREATE INDEX idx_environment_workspaces ON environment_workspaces(environment_id, created_at);
+      `);
+    },
+  },
 ];

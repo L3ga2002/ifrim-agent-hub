@@ -4,6 +4,7 @@ import { api, fmt } from "../../api.js";
 import { useResource, useAction, pushToast } from "../../store.js";
 import { FACTORY_STAGE_RO, FACTORY_PATH, factoryWaitLabel, factoryProgress, formatMs, parseCriteriaLines, mergeCriteria } from "../../lib/uiLogic.js";
 import { Panel, Empty, Loading, ErrorNotice, StatusChip, Notice, Chip, DiffView, Dialog } from "../../components/ui.jsx";
+import { boundaryOf } from "../../lib/environmentLogic.js";
 
 const SEVERITY_TONE = { critical: "error", high: "error", medium: "warn", low: "neutral", info: "neutral" };
 const EVIDENCE_TONE = { PASS: "ok", FAIL: "error", INCONCLUSIVE: "warn", BLOCKED: "error", NOT_RUN: "neutral", NEEDS_INSTALL_APPROVAL: "warn" };
@@ -173,6 +174,10 @@ export function FactoryPanel({ missionId }) {
             <dt>Cicluri de remediere</dt><dd>{f.repairCycles}/{f.limits.maxRepairCycles}</dd>
             <dt>Limite</dt><dd>{f.limits.maxDurationMin} min · {f.limits.maxAttemptsPerStage} încercări/etapă · profil {f.limits.profile}{f.deadlineAt ? ` · termen ${fmt.dateTime(f.deadlineAt)}` : ""}</dd>
             <dt>Runner</dt><dd>{view.runnerReadiness.ok ? view.runnerReadiness.isolation : <span className="warn">{view.runnerReadiness.detail}</span>}</dd>
+            {view.stageEnvironments && <><dt>Unde rulează</dt><dd>
+              <span className="row wrap">{view.stageEnvironments.stages.map((s) => { const b = boundaryOf(s.boundary); return <Chip key={s.stage} tone={b.tone} title={s.where}>{s.label}: {b.label}</Chip>; })}</span>
+              {!view.stageEnvironments.realProjectEligible && <span className="faint small">Nu este eligibil pentru date reale: {view.stageEnvironments.blockers.join(" · ")}</span>}
+            </dd></>}
             <dt>Modele</dt><dd>writer: {f.limits.writerModel || "implicitul din model/list"} · reviewer: {f.limits.reviewerModel || "implicitul contului Claude Code (Fable/1M refuzate)"}</dd>
             <dt>Granturi necesare</dt><dd>{view.grantsNeeded.map((g) => `${g.provider} ${g.access} × ${g.attempts} (${g.why})`).join(" · ")}</dd>
           </dl>

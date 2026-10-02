@@ -16,6 +16,8 @@ export const workspaceResource = (workspacePath) => `workspace:${path.resolve(wo
 
 /** Execution surface of the Hub-driven provider routes (the only PROGRAMMATIC model surfaces in this build). */
 export const SURFACE_BY_PROVIDER = Object.freeze({ codex: "openai.codex_app_server", claude: "anthropic.claude_code_headless" });
+/** Surfaces of the M05 execution environments (same provider, another process boundary). */
+export const SURFACE_BY_ENVIRONMENT = Object.freeze({ "wsl-runner": { codex: "openai.codex_wsl_runner" } });
 
 /**
  * Executes provider turns for the canonical conversation. Sequence:
@@ -24,7 +26,8 @@ export const SURFACE_BY_PROVIDER = Object.freeze({ codex: "openai.codex_app_serv
  */
 export function createRunManager(deps) {
   const { db, bus, clock, settings, projects, conversations, missions, gate, leases, grants, backups, approvals, providers, breakers, usage, live, providerState = null } = deps;
-  const surfaceOf = (provider) => SURFACE_BY_PROVIDER[provider] || null;
+  const surfaceOf = (provider, environment = "windows") => (environment !== "windows" ? SURFACE_BY_ENVIRONMENT[environment]?.[provider] : SURFACE_BY_PROVIDER[provider]) || null;
+  const routeOf = (projectId, provider) => (deps.environments ? deps.environments.routeFor(projectId, provider) : "windows");
   const active = new Map(); // runId -> { handle, conversationId, provider, leaseId, taskId }
   const approvalWaiters = new Map(); // approvalId -> resolve
   const starting = new Set(); // conversationId currently being admitted
@@ -37,7 +40,7 @@ export function createRunManager(deps) {
     codeVersion: row.code_version, backupId: row.backup_id, approvalId: row.approval_id, grantId: row.grant_id, errorCategory: row.error_category,
     errorMessage: row.error_message, preInference: Boolean(row.pre_inference), usage: parse(row.usage_json, {}), evidence: parse(row.evidence_json, {}),
     lastEventAt: row.last_event_at, startedAt: row.started_at, finishedAt: row.finished_at, createdAt: row.created_at, legacyId: row.legacy_id,
-    timeline: parse(row.timeline_json, {}), plan: parse(row.plan_json, {}) });
+    timeline: parse(row.timeline_json, {}), plan: parse(row.plan_json, {}), environment: row.environment || "windows" });
 
   const getRun = (id) => rowToRun(db.prepare("SELECT * FROM agent_runs WHERE id = ?").get(id));
   const listRuns = ({ conversationId = null, taskId = null, status = null, limit = 100 } = {}) => {
@@ -48,14 +51,14 @@ export function createRunManager(deps) {
     return db.prepare(`SELECT * FROM agent_runs ${where.length ? `WHERE ${where.join(" AND ")}` : ""} ORDER BY created_at DESC LIMIT ?`).all(...args, limit).map(rowToRun);
   };
 
-  function recordBlockedRun({ conversation, provider, access, taskId, stage, roleId, inputMessageId, category, message, evidence, timeline = null, plan = null }) {
+  function recordBlockedRun({ conversation, provider, access, taskId, stage, roleId, inputMessageId, category, message, evidence, timeline = null, plan = null, environment = "windows" }) {
     const id = newId("run");
     const now = clock().toISOString();
     bus.transaction(() => {
       db.prepare(`INSERT INTO agent_runs (id, task_id, conversation_id, role_id, stage, provider, model, effort, access, status, input_message_id, error_category, error_message, pre_inference, evidence_json,
-        timeline_json, plan_json, created_at, finished_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'blocked', ?, ?, ?, 1, ?, ?, ?, ?, ?)`).run(id, taskId, conversation.id, roleId || "", stage || "assist", provider, plan?.model || "", plan?.effort || "", access,
-        inputMessageId, category, message, json(evidence), json(timeline ? timeline.toJSON() : {}), json(plan ? planRecord(plan) : {}), now, now);
+        timeline_json, plan_json, created_at, finished_at, environment)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'blocked', ?, ?, ?, 1, ?, ?, ?, ?, ?, ?)`).run(id, taskId, conversation.id, roleId || "", stage || "assist", provider, plan?.model || "", plan?.effort || "", access,
+        inputMessageId, category, message, json(evidence), json(timeline ? timeline.toJSON() : {}), json(plan ? planRecord(plan) : {}), now, now, environment);
       bus.append({ type: "run.blocked", scopeType: "conversation", scopeId: conversation.id, projectId: conversation.projectId, source: "hub", runId: id,
         payload: { provider, category, message, preInference: true } });
     });
@@ -67,12 +70,15 @@ export function createRunManager(deps) {
    * timeline start at the owner's request instead of at admission (M03 §08). Both are optional for older callers.
    */
   async function start({ conversationId, provider, access = "read-only", model = "", effort = "", profile = DEFAULT_PROFILE, taskId = null, stage = "assist", roleId = "", grantId = null,
-    actor = "user", correlationId = null, requestedAt = null, approval = null }) {
-    const adapter = providers[provider];
-    if (!adapter) throw new HubError("validation", `Unknown provider ${provider}`);
+    actor = "user", correlationId = null, requestedAt = null, approval = null, exportPolicy = null }) {
+    if (!providers[provider]) throw new HubError("validation", `Unknown provider ${provider}`);
     const conversation = conversations.get(conversationId);
     if (!conversation) throw new HubError("not_found", "Conversation not found");
     const project = projects.get(conversation.projectId);
+    // M05: the project route decides the adapter (Windows client or an execution environment); the gate checks the same route.
+    const environment = routeOf(project?.id, provider);
+    const adapter = environment === "windows" ? providers[provider] : providers[`${provider}@${environment}`] || null;
+    const stateKey = environment === "windows" ? provider : `${provider}@${environment}`;
     const timeline = createTimeline(clock);
     if (requestedAt) timeline.mark("requested", requestedAt);
     if (approval?.createdAt) timeline.mark("approval_requested", approval.createdAt);
@@ -94,17 +100,18 @@ export function createRunManager(deps) {
     }
     // Model and effort are decided here, explicitly, before the gate: nothing is left to the provider's config defaults.
     // The gate reports it as one of its checks (run_plan), so every reason a run cannot start is shown together.
-    const plan = resolveRunPlan({ provider, model, effort, profile: profile || DEFAULT_PROFILE, providerState: providerState?.get(provider) || null });
+    const plan = resolveRunPlan({ provider, model, effort, profile: profile || DEFAULT_PROFILE, providerState: providerState?.get(stateKey) || null });
     if (!plan.problem) timeline.mark("plan_resolved");
     const resource = workspaceResource(project.path);
-    const decision = gate.evaluate({ provider, projectId: project.id, access, grantId, workspaceResource: resource, plan });
+    const decision = gate.evaluate({ provider, projectId: project.id, access, grantId, workspaceResource: resource, plan, environment });
     timeline.mark("gate_checked");
     if (!decision.allowed) {
       const failed = decision.checks.filter((c) => !c.ok);
       const run = recordBlockedRun({ conversation, provider, access, taskId, stage, roleId, inputMessageId: lastUser.id, category: "gate",
-        message: failed.map((c) => `${c.id}: ${c.detail}`).join(" · "), evidence: { gate: decision }, timeline, plan });
+        message: failed.map((c) => `${c.id}: ${c.detail}`).join(" · "), evidence: { gate: decision }, timeline, plan, environment });
       throw new HubError("gate", "Execution gate refused the run", { data: { runId: run.id, checks: decision.checks } });
     }
+    if (!adapter) throw new HubError("validation", `No adapter for ${provider} in ${environment}`);
 
     starting.add(conversationId);
     let lease = null;
@@ -125,7 +132,7 @@ export function createRunManager(deps) {
           // Nothing reached a provider: the attempt taken above goes back (bounded, see refundPreInference).
           if (grant) refundPreInference(grant.id, `backup gate failed before ${runId} started`);
           const run = recordBlockedRun({ conversation, provider, access, taskId, stage, roleId, inputMessageId: lastUser.id, category: "gate",
-            message: `Backup gate: ${created?.status || "failed"} ${created?.error || ""}`.trim(), evidence: { backupId: created?.id }, timeline, plan });
+            message: `Backup gate: ${created?.status || "failed"} ${created?.error || ""}`.trim(), evidence: { backupId: created?.id }, timeline, plan, environment });
           throw new HubError("gate", "Backup gate failed; the model was not started", { data: { runId: run.id, backupId: created?.id } });
         }
         backup = { ok: true, backup: created, created: true };
@@ -135,34 +142,35 @@ export function createRunManager(deps) {
       const git = await gitState(project.path);
       timeline.mark("git_state");
       const now = clock().toISOString();
-      const sessionId = conversations.latestSession(conversationId, provider);
+      // A native thread lives in ONE client installation: an environment run never resumes a Windows thread (or vice versa).
+      const sessionId = environment === "windows" ? conversations.latestSession(conversationId, provider) : null;
       let outputMessage;
       const taskRow = taskId ? db.prepare("SELECT department_id, route_decision_id FROM tasks WHERE id = ?").get(taskId) : null;
       const skillVersions = roleId && deps.skills ? deps.skills.forRole(roleId) : [];
       timeline.mark("run_recorded");
       bus.transaction(() => {
         db.prepare(`INSERT INTO agent_runs (id, task_id, conversation_id, role_id, stage, provider, model, effort, access, status, provider_session_id, input_message_id,
-          code_version, backup_id, grant_id, last_event_at, started_at, created_at, surface_id, department_id, route_decision_id, correlation_id, skill_versions_json, timeline_json, plan_json)
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'running', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+          code_version, backup_id, grant_id, last_event_at, started_at, created_at, surface_id, department_id, route_decision_id, correlation_id, skill_versions_json, timeline_json, plan_json, environment)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'running', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
           .run(runId, taskId, conversationId, roleId, stage, provider, plan.model, plan.effort, access, sessionId || null, lastUser.id, git.head || "", backup.backup.id, grant?.id || null, now, now, now,
-            surfaceOf(provider), taskRow?.department_id || null, taskRow?.route_decision_id || null, correlationId || runId, json(skillVersions), json(timeline.toJSON()), json(planRecord(plan)));
+            surfaceOf(provider, environment), taskRow?.department_id || null, taskRow?.route_decision_id || null, correlationId || runId, json(skillVersions), json(timeline.toJSON()), json(planRecord(plan)), environment);
         leases.attachRun(lease.id, runId);
         outputMessage = conversations.addMessage({ conversationId, role: "assistant", content: "", provider, model: plan.model, runId, status: "streaming", metadata: { access } }, "hub");
         db.prepare("UPDATE agent_runs SET output_message_id = ? WHERE id = ?").run(outputMessage.id, runId);
         conversations.update(conversationId, { status: "running", writerProvider: provider }, "hub");
         if (taskId) transitionTask(db, bus, clock, { taskId, to: "RUNNING", reason: `Run ${runId} started on ${provider}`, actor });
         bus.append({ type: "run.started", scopeType: "conversation", scopeId: conversationId, projectId: project.id, source: actor, runId,
-          payload: { provider, model: plan.model, effort: plan.effort, effortSource: plan.effortSource, profile: plan.profile, access, backupId: backup.backup.id, backupCreated: Boolean(backup.created),
+          payload: { provider, environment, model: plan.model, effort: plan.effort, effortSource: plan.effortSource, profile: plan.profile, access, backupId: backup.backup.id, backupCreated: Boolean(backup.created),
             grantId: grant?.id || null, codeVersion: git.head } });
       });
 
-      const prompt = buildTurnPrompt({ db, conversations, conversation, project, git, provider, runId });
+      const prompt = buildTurnPrompt({ db, conversations, conversation, project, git, provider, runId, environment });
       let content = "";
       let lastPersist = 0;
       const handle = adapter.startTurn({
         runId, cwd: project.path, prompt: prompt.text, access, model: plan.model, effort: plan.effort,
         threadId: provider === "codex" ? sessionId : undefined, sessionId: provider === "claude" ? sessionId : undefined,
-        trustedWorkspace: project.trustedConfig,
+        trustedWorkspace: project.trustedConfig, projectId: project.id, exportPolicy: exportPolicy || {},
         admitUsage: (snapshot) => usage.admit(provider, snapshot),
         requestApproval: (request) => waitForApproval({ runId, conversation, project, provider, request, taskId }),
         onEvent: (event) => onProviderEvent(runId, conversationId, event, (text) => {
@@ -170,7 +178,7 @@ export function createRunManager(deps) {
           if (Date.now() - lastPersist > PERSIST_INTERVAL_MS) { conversations.updateStreaming(outputMessage.id, content); lastPersist = Date.now(); }
         }),
       });
-      active.set(runId, { handle, conversationId, provider, leaseId: lease.id, taskId, outputMessageId: outputMessage.id, promptPackage: prompt.packageRef, startedAt: clock().toISOString(), lastEventAt: null, firstOutputAt: null, timeline });
+      active.set(runId, { handle, conversationId, provider, environment, leaseId: lease.id, taskId, outputMessageId: outputMessage.id, promptPackage: prompt.packageRef, startedAt: clock().toISOString(), lastEventAt: null, firstOutputAt: null, timeline });
       if (handle.pid) markPhase(runId, "process_spawned");
       db.prepare("UPDATE agent_runs SET pid = ?, pid_started_at = ? WHERE id = ?").run(handle.pid || null, clock().toISOString(), runId);
       handle.done.then((result) => finalize(runId, result, () => content)).catch((error) => finalize(runId, { status: "failed", errorCategory: "internal", error: error.message, output: content }, () => content));
@@ -216,6 +224,8 @@ export function createRunManager(deps) {
     const entry = active.get(runId);
     if (entry) { entry.lastEventAt = now; if (event.type === "delta" && !entry.firstOutputAt) entry.firstOutputAt = now; }
     if (event.type === "phase") { markPhase(runId, event.phase, event.at || null); return; }
+    // An environment adapter starts its provider process after the workspace is ready: its pid arrives as an event.
+    if (event.type === "pid") { db.prepare("UPDATE agent_runs SET pid = ?, pid_started_at = ? WHERE id = ?").run(event.pid || null, now, runId); markPhase(runId, "process_spawned"); return; }
     if (entry?.timeline?.has("turn_acknowledged") && event.type !== "usage") markPhase(runId, "first_event");
     if (event.type === "delta") {
       markPhase(runId, "first_output");
@@ -249,7 +259,8 @@ export function createRunManager(deps) {
     const payload = request.kind === "command" ? { command: request.command, cwd: request.cwd, reason: request.reason } : { changes: request.changes, reason: request.reason };
     const actionKind = `provider.${request.kind}`;
     // Hub approval policy first; a provider/vendor approval prompt never replaces it.
-    const policyDecision = deps.policy ? deps.policy.evaluate({ actionKind, surfaceId: surfaceOf(provider) || "*", projectId: project.id, taskId, target: project.path }) : { decision: "ask" };
+    const runEnv = getRun(runId)?.environment || "windows";
+    const policyDecision = deps.policy ? deps.policy.evaluate({ actionKind, surfaceId: surfaceOf(provider, runEnv) || "*", projectId: project.id, taskId, target: project.path }) : { decision: "ask" };
     if (policyDecision.decision === "deny" || policyDecision.decision === "allow") {
       bus.transaction(() => {
         if (policyDecision.scopeId) deps.policy.useTaskScope(policyDecision.scopeId);
@@ -289,9 +300,9 @@ export function createRunManager(deps) {
           codeVersion: approval.codeVersion, permissionTier: approval.permissionTier, scopeType: approval.scopeType, scopeId: approval.scopeId });
         const run = approval.scopeType === "run" ? getRun(approval.scopeId) : null;
         if (run?.taskId && deps.policy) {
-          const policyNow = deps.policy.evaluate({ actionKind: approval.actionKind, surfaceId: surfaceOf(run.provider) || "*", projectId: projects.get(conversations.get(run.conversationId)?.projectId)?.id || "*", taskId: run.taskId, target: approval.target });
+          const policyNow = deps.policy.evaluate({ actionKind: approval.actionKind, surfaceId: surfaceOf(run.provider, run.environment) || "*", projectId: projects.get(conversations.get(run.conversationId)?.projectId)?.id || "*", taskId: run.taskId, target: approval.target });
           if (policyNow.policy === "ASK_ONCE_FOR_TASK") {
-            bus.transaction(() => deps.policy.grantTaskScope({ taskId: run.taskId, actionKind: approval.actionKind, target: approval.target, surfaceId: surfaceOf(run.provider) || "*", approvalId }));
+            bus.transaction(() => deps.policy.grantTaskScope({ taskId: run.taskId, actionKind: approval.actionKind, target: approval.target, surfaceId: surfaceOf(run.provider, run.environment) || "*", approvalId }));
           }
         }
         resolve("accept");
@@ -309,7 +320,8 @@ export function createRunManager(deps) {
     const pre = Boolean(result.preInference) || PRE_INFERENCE_CATEGORIES.has(result.errorCategory);
     const status = result.status === "completed" ? "completed" : result.status === "interrupted" ? "interrupted" : pre ? "blocked" : "failed";
     const record = entry ? deps.supervisorRecord?.(entry.handle.key) : null;
-    const processGone = !record || record.exited;
+    // An environment run also needs its in-distro processes confirmed gone (reap); otherwise the lease is retained.
+    const processGone = (!record || record.exited) && result.environment?.reap?.ok !== false;
     if (entry?.timeline) entry.timeline.mark("finished");
     const turnSent = Boolean(entry?.timeline?.has("turn_sent"));
     bus.transaction(() => {
@@ -317,13 +329,14 @@ export function createRunManager(deps) {
       db.prepare(`UPDATE agent_runs SET status = ?, error_category = ?, error_message = ?, pre_inference = ?, finished_at = ?, native_thread_id = COALESCE(native_thread_id, ?),
         native_turn_id = COALESCE(native_turn_id, ?), usage_json = ?, evidence_json = ? WHERE id = ?`)
         .run(status, result.errorCategory || null, result.error ? redactText(String(result.error)).slice(0, 2000) : null, pre ? 1 : 0, clock().toISOString(),
-          result.threadId || result.sessionId || null, result.turnId || null, json(result.usage || run.usage), json({ ...run.evidence, permissionDenials: result.permissionDenials, numTurns: result.numTurns, promptPackage: entry?.promptPackage }), runId);
+          result.threadId || result.sessionId || null, result.turnId || null, json(result.usage || run.usage), json({ ...run.evidence, permissionDenials: result.permissionDenials, numTurns: result.numTurns, promptPackage: entry?.promptPackage, ...(result.environment ? { environment: result.environment } : {}) }), runId);
       if (entry?.outputMessageId) {
         conversations.finalize(entry.outputMessageId, { content: content || (result.error ? `Run ${status}: ${redactText(String(result.error))}` : ""), status: status === "completed" ? "final" : status,
           metadata: { runStatus: status, errorCategory: result.errorCategory || null, preInference: pre } });
       }
       const nativeId = result.threadId || result.sessionId;
-      if (nativeId && (status === "completed" || status === "interrupted")) conversations.upsertProviderSession(run.conversationId, run.provider, nativeId, runId, surfaceOf(run.provider));
+      // Environment threads are not resumed (each run gets a fresh workspace), so they are never offered to a later run.
+      if (nativeId && (status === "completed" || status === "interrupted") && (entry?.environment || "windows") === "windows") conversations.upsertProviderSession(run.conversationId, run.provider, nativeId, runId, surfaceOf(run.provider));
       if (entry?.leaseId) {
         if (processGone) leases.release(entry.leaseId, `run ${status}`);
         else leases.retain(entry.leaseId, "provider process did not confirm exit");
@@ -377,7 +390,7 @@ export function createRunManager(deps) {
       note: "No cloud tasks or external effects are started by this Hub build; only local provider processes were interrupted." };
   }
 
-  const activeRuns = () => [...active.entries()].map(([runId, entry]) => ({ runId, provider: entry.provider, conversationId: entry.conversationId, pid: entry.handle.pid, taskId: entry.taskId || null,
+  const activeRuns = () => [...active.entries()].map(([runId, entry]) => ({ runId, provider: entry.provider, environment: entry.environment || "windows", conversationId: entry.conversationId, pid: entry.handle.pid, taskId: entry.taskId || null,
     startedAt: entry.startedAt || null, lastEventAt: entry.lastEventAt || null, firstOutputAt: entry.firstOutputAt || null, phase: entry.firstOutputAt ? "streaming" : "waiting_provider",
     timeline: entry.timeline ? entry.timeline.toJSON() : {} }));
   return { start, interrupt, stopAll, resolveApproval, getRun, listRuns, activeRuns, activeCount: () => active.size + starting.size, rowToRun, attachVoice: (v) => { voice = v; }, attachFactory: (f) => { factory = f; },

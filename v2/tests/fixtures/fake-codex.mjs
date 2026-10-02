@@ -90,7 +90,7 @@ rl.on("line", async (line) => {
       return send({ id: msg.id, result: { status: scenario === "sandbox-not-ready" ? "notConfigured" : "ready" } });
     case "permissionProfile/list":
       return send({ id: msg.id, result: { data: [{ id: ":read-only", allowed: true }, { id: ":workspace", allowed: true },
-        ...(scenario === "no-profile" ? [] : [{ id: "ifrim_hub_ro", allowed: true }, { id: "ifrim_hub_rw", allowed: true }])], nextCursor: null } });
+        ...(scenario === "no-profile" ? [] : [{ id: "ifrim_hub_ro", allowed: true }, { id: "ifrim_hub_rw", allowed: true }, { id: "ifrim_runner_ro", allowed: true }, { id: "ifrim_runner_rw", allowed: true }])], nextCursor: null } });
     case "model/list":
       // A second, non-default model ("gpt-5") lets the model-variant scenario reach the adapter's exact-id check past the gate's run plan.
       return send({ id: msg.id, result: { data: [{ id: "gpt-fake-sol", model: "gpt-fake-sol", displayName: "Fake Sol", isDefault: true, hidden: false, description: "", supportedReasoningEfforts: [{ reasoningEffort: "medium" }, { reasoningEffort: "high" }], defaultReasoningEffort: "medium" },
@@ -124,6 +124,13 @@ rl.on("line", async (line) => {
       if (scenario === "approval") {
         const id = serverRequestId++;
         const reply = await new Promise((resolve) => { pendingServer.set(id, resolve); send({ id, method: "item/commandExecution/requestApproval", params: { threadId, turnId, itemId: "i1", command: "npm test", cwd: msg.params.cwd, reason: "run tests" } }); });
+        log({ approvalReply: reply.result });
+      }
+      // M05: a command that asks for more than its profile (network, extra permissions).
+      if (scenario === "approval-escalate") {
+        const id = serverRequestId++;
+        const reply = await new Promise((resolve) => { pendingServer.set(id, resolve); send({ id, method: "item/commandExecution/requestApproval", params: { threadId, turnId, itemId: "i1", command: "curl https://example.com", cwd: msg.params.cwd, reason: "needs network",
+          additionalPermissions: { network: { enabled: true } } } }); });
         log({ approvalReply: reply.result });
       }
       if (scenario === "hang") return; // waits for turn/interrupt
@@ -293,4 +300,12 @@ async function legaScript() {
     return log({ approvalReply: reply.result });
   }
   if (scenario === "lega-closed") { await sleep(200); return send({ method: "thread/realtime/closed", params: { threadId, reason: "remote" } }); }
+  // M05: the provider fails AFTER the peer connected (the 2026-10-01 "closed: error" shape), with or without activity first.
+  if (scenario === "lega-error-after-connect" || scenario === "lega-error-after-words") {
+    if (scenario === "lega-error-after-words") said("user", "Lega");
+    await sleep(300);
+    send({ method: "error", params: { threadId, error: { message: "fake: upstream realtime failed (1011) token sk-proj-FAKEFAKEFAKEFAKEFAKEFAKE9999" }, willRetry: false } });
+    send({ method: "thread/realtime/error", params: { threadId, message: "fake realtime failure after connect" } });
+    return send({ method: "thread/realtime/closed", params: { threadId, reason: "error", code: 1011 } });
+  }
 }

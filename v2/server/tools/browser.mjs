@@ -73,6 +73,8 @@ export function browserStatus({ hubRoot }) {
 /** ws(s) is judged as the http(s) origin it upgrades from; anything without a network origin is not in this map. */
 const NETWORK_SCHEMES = Object.freeze({ "http:": "http:", "https:": "https:", "ws:": "http:", "wss:": "https:" });
 const REDIRECT_STATUSES = new Set([301, 302, 303, 307, 308]);
+/** Statuses after which a browser re-requests the target with GET (a form POST answered this way is post-redirect-get). */
+const GET_AFTER_REDIRECT = new Set([301, 302, 303]);
 const MAX_BLOCKED_RECORDED = 50;
 const MAX_MAIN_REDIRECTS = 5;
 
@@ -110,6 +112,7 @@ export function createRequestGuard({ allowedOrigin, fetchTimeoutMs = 20000, maxR
   const redirects = [];
   let blockedCount = 0;
   let mainRedirect = null; // a checked same-origin redirect of the navigation inspectPage started, re-navigated by it
+  let pageRedirect = null; // RT-07: a checked same-origin redirect of a main-frame navigation the PAGE started (form, link)
   let expected = null; // the URL inspectPage's page.goto is navigating to right now
   let navMark = 0; // blocked entries before this index belong to earlier navigations
   // Redacted before it is shortened, so a token cut in half never survives; bounded before redaction for huge data: URLs.
@@ -142,14 +145,19 @@ export function createRequestGuard({ allowedOrigin, fetchTimeoutMs = 20000, maxR
         if (!location) return await r.fulfill({ response });
         let next;
         try { next = new URL(location, current).href; } catch { next = String(location); }
+        // RT-07: the main document's form POST answered with 301/302/303 is post-redirect-get — a browser follows it with
+        // a GET of the same-origin target. A method-preserving 307/308 of a POST (a re-POST), a POST from fetch/XHR and any
+        // target outside the approved origin stay refused.
+        const prg = mainFrame && !forGoto && GET_AFTER_REDIRECT.has(response.status());
         const refusal = !onOrigin(next, allowedOrigin) ? `redirect ${browserRequestVerdict(next, allowedOrigin).reason || "to a non-http target"}`
-          : !["GET", "HEAD"].includes(method) ? `redirect of a ${method} request is not followed`
+          : !["GET", "HEAD"].includes(method) && !prg ? `redirect of a ${method} request is not followed`
             : hop >= maxRedirects ? `more than ${maxRedirects} redirects` : "";
         if (refusal) { note(next, refusal, type, navigation, mainFrame, forGoto); return await r.abort("blockedbyclient"); }
-        if (redirects.length < MAX_BLOCKED_RECORDED) redirects.push({ from: clip(current), to: clip(next) });
+        if (redirects.length < MAX_BLOCKED_RECORDED) redirects.push({ from: clip(current), to: clip(next), ...(method !== "GET" ? { method, status: response.status() } : {}) });
         // The main document must commit at its real URL (relative links resolve against it): instead of serving the final
-        // body under the first URL, the checked target is handed back and inspectPage navigates to it afresh.
+        // body under the first URL, the checked target is handed back and the caller navigates to it afresh with a GET.
         if (forGoto) { mainRedirect = next; return await r.abort("aborted"); }
+        if (mainFrame) { pageRedirect = next; return await r.abort("aborted"); }
         current = next;
       }
     } catch {
@@ -169,11 +177,12 @@ export function createRequestGuard({ allowedOrigin, fetchTimeoutMs = 20000, maxR
 
   const summary = () => ({ allowedOrigin, blockedCount, blocked: blocked.slice(), redirects: redirects.slice() });
   const takeMainRedirect = () => { const next = mainRedirect; mainRedirect = null; return next; };
+  const takePageRedirect = () => { const next = pageRedirect; pageRedirect = null; return next; };
   /** Called right before each page.goto: what follows belongs to this navigation only. */
   const expectNavigation = (url) => { expected = String(url); mainRedirect = null; navMark = blocked.length; };
   /** Called once a goto settled: a later click or form GET to the same URL is not that goto's request. */
-  const endNavigation = () => { expected = null; mainRedirect = null; };
-  return { route, webSocket, summary, takeMainRedirect, expectNavigation, endNavigation, blockedNavigation: () => blocked.slice(navMark).find((b) => b.forGoto) || null };
+  const endNavigation = () => { expected = null; mainRedirect = null; pageRedirect = null; };
+  return { route, webSocket, summary, takeMainRedirect, takePageRedirect, expectNavigation, endNavigation, blockedNavigation: () => blocked.slice(navMark).find((b) => b.forGoto) || null };
 }
 
 /**
@@ -361,34 +370,50 @@ export async function runE2E({ url, steps, hubRoot, evidenceDir, hubPorts = [], 
     const page = await context.newPage();
     page.on("console", (msg) => { if (["error", "warning"].includes(msg.type())) consoleErrors.push({ type: msg.type(), text: redactText(msg.text()).slice(0, 500) }); });
     page.on("pageerror", (error) => consoleErrors.push({ type: "pageerror", text: redactText(String(error.message)).slice(0, 500) }));
+    /** The bounded goto loop: same-origin redirects are re-navigated (at most MAX_MAIN_REDIRECTS), anything else refused. */
+    const navigate = async (start, label) => {
+      let goal = start;
+      let response = null;
+      for (let hops = 0; ;) {
+        guard.expectNavigation(goal);
+        try { response = await page.goto(goal, { timeout: stepTimeoutMs * 2, waitUntil: "load" }); break; }
+        catch (error) {
+          const next = guard.takeMainRedirect();
+          if (next && hops < MAX_MAIN_REDIRECTS) { hops += 1; goal = next; continue; }
+          if (next) throw new Error(`mai mult de ${MAX_MAIN_REDIRECTS} redirecționări ale paginii`);
+          const stopped = guard.blockedNavigation();
+          if (stopped) throw new Error(`navigare oprită de allowlist: ${stopped.url} (${stopped.reason})`);
+          throw error;
+        }
+      }
+      guard.endNavigation();
+      if (!onOrigin(page.url(), allowedOrigin)) throw new Error(`pagina a părăsit originea aprobată (${redactText(page.url()).slice(0, 120)})`);
+      if (response && response.status() >= 400) throw new Error(`HTTP ${response.status()} la ${label}`);
+      return response;
+    };
+    /**
+     * RT-07: a click/fill/select may submit a form whose answer is a redirect; the guard handed back the checked target and
+     * the page now shows an aborted navigation. The page continues at the real target with a GET (one POST, then a GET).
+     */
+    let followed = 0;
+    const followPageRedirect = async () => {
+      const next = guard.takePageRedirect();
+      if (!next) return;
+      if (++followed > 20) throw new Error("prea multe redirecționări după acțiuni în pagină");
+      await navigate(next, `redirecționarea după acțiune (${redactText(next).slice(0, 120)})`);
+    };
     for (const [i, step] of steps.entries()) {
       if (signal?.aborted) break;
       const [kind] = Object.keys(step);
       const value = step[kind];
       const t0 = Date.now();
       try {
+        if (kind !== "goto") await followPageRedirect();
         if (kind === "viewport") await bounded(page.setViewportSize(value), stepTimeoutMs, "viewport");
-        else if (kind === "goto") {
-          let goal = new URL(value, base).href;
-          let response = null;
-          for (let hops = 0; ;) {
-            guard.expectNavigation(goal);
-            try { response = await page.goto(goal, { timeout: stepTimeoutMs * 2, waitUntil: "load" }); break; }
-            catch (error) {
-              const next = guard.takeMainRedirect();
-              if (next && hops < MAX_MAIN_REDIRECTS) { hops += 1; goal = next; continue; }
-              if (next) throw new Error(`mai mult de ${MAX_MAIN_REDIRECTS} redirecționări ale paginii`);
-              const stopped = guard.blockedNavigation();
-              if (stopped) throw new Error(`navigare oprită de allowlist: ${stopped.url} (${stopped.reason})`);
-              throw error;
-            }
-          }
-          guard.endNavigation();
-          if (!onOrigin(page.url(), allowedOrigin)) throw new Error(`pagina a părăsit originea aprobată (${redactText(page.url()).slice(0, 120)})`);
-          if (response && response.status() >= 400) throw new Error(`HTTP ${response.status()} la ${value}`);
-        } else if (kind === "fill") await page.fill(value.selector, value.value.split(E2E_RUN_TOKEN).join(runToken), { timeout: stepTimeoutMs });
+        else if (kind === "goto") await navigate(new URL(value, base).href, value);
+        else if (kind === "fill") await page.fill(value.selector, value.value.split(E2E_RUN_TOKEN).join(runToken), { timeout: stepTimeoutMs });
         else if (kind === "select") await page.selectOption(value.selector, value.value, { timeout: stepTimeoutMs });
-        else if (kind === "click") await page.click(value, { timeout: stepTimeoutMs });
+        else if (kind === "click") { await page.click(value, { timeout: stepTimeoutMs }); await followPageRedirect(); }
         else if (kind === "expectSelector") await page.waitForSelector(value, { state: "visible", timeout: stepTimeoutMs });
         else if (kind === "expectText") await page.waitForFunction((needle) => document.body && document.body.innerText.includes(needle), value.split(E2E_RUN_TOKEN).join(runToken), { timeout: stepTimeoutMs });
         else if (kind === "noHorizontalOverflow") {

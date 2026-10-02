@@ -6,7 +6,7 @@ export const V2_ROOT = path.resolve(here, "..");
 export const HUB_ROOT = path.resolve(V2_ROOT, "..");
 export const PROJECTS_ROOT = path.resolve(HUB_ROOT, "..");
 
-export const HUB_VERSION = "2.5.0-m04"; // M04: Sales & Lead Generation (import → identity → evidence → audit → qualification → proposal → draft → Engineering hand-off), DRAFT_ONLY // M03: runtime readiness (explicit model/effort, run timeline, R2/R3 gate) + Software Factory (spec → change set → review → QA → bundle)
+export const HUB_VERSION = "2.6.0-m05"; // M05: execution environments (wsl-runner: copy-in, Codex in ifrim-runner, C14-validated export, attestation C1–C17 bound to a fingerprint, policy (b) owner-only), robustness (Stop in QA, RT-07, warm-up, Lega diagnostics) // M04: Sales & Lead Generation (import → identity → evidence → audit → qualification → proposal → draft → Engineering hand-off), DRAFT_ONLY // M03: runtime readiness (explicit model/effort, run timeline, R2/R3 gate) + Software Factory (spec → change set → review → QA → bundle)
 export const DEFAULT_PORT = 8011;
 export const DEFAULT_HOST = "127.0.0.1";
 
@@ -53,6 +53,8 @@ export function loadConfig(overrides = {}, env = process.env) {
     // Test mode refuses to spawn any executable outside this directory (fake providers only).
     allowedTestBinaryDir: path.join(V2_ROOT, "tests", "fixtures"),
     providerBinaries: overrides.providerBinaries || {},
+    // M05: the wsl.exe used for the wsl-runner environment; tests point it at the fixture (tests/fixtures/fake-wsl.mjs).
+    wsl: overrides.wsl || null,
     // Test mode only: shrinks Lega's idle/max/negotiation timers so they can be exercised quickly.
     legaTimeScale: testMode && Number(overrides.legaTimeScale) > 0 ? Number(overrides.legaTimeScale) : 1,
     registryPath: overrides.registryPath || path.join(PROJECTS_ROOT, "PROJECTS.md"),

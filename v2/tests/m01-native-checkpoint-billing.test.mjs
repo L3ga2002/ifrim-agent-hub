@@ -678,6 +678,11 @@ test("M01-NG1 static scan: v2/server never spawns git with commit/push/tag/reset
   assert.equal(subcommands.length, callSites, "every git call names a literal subcommand");
   const READ_ONLY = new Set(["rev-parse", "status", "diff", "log", "show", "ls-files", "cat-file", "for-each-ref", "rev-list"]);
   assert.deepEqual(subcommands.filter((s) => !READ_ONLY.has(s)), []);
+  // M05: the synchronous helper used by the factory snapshot is held to the same rule.
+  const syncCalls = [...gitSrc.matchAll(/(?<!function )\bgitSync\(/g)].length;
+  const syncSubcommands = [...gitSrc.matchAll(/(?<!function )\bgitSync\(\s*cwd\s*,\s*\[\s*"([^"]+)"/g)].map((m) => m[1]);
+  assert.equal(syncSubcommands.length, syncCalls, "every gitSync call names a literal subcommand");
+  assert.deepEqual(syncSubcommands.filter((s) => !READ_ONLY.has(s)), []);
 });
 
 test("M01-NG2 no command or tool commits, pushes, tags or deploys; commit preparation is a proposal that leaves Git untouched", async () => {

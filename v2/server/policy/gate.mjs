@@ -1,5 +1,5 @@
 import { evaluateRoute } from "./billing.mjs";
-import { evaluateIsolation, evaluateHostIsolation } from "./isolation.mjs";
+import { evaluateIsolation, evaluateHostIsolation, evaluateEnvironmentRoute, evaluateEnvironmentProfile } from "./isolation.mjs";
 import { LEGA_CONSENT_VERSION } from "./lega-policy.mjs";
 
 const INSPECTION_MAX_AGE_H = 24;
@@ -27,8 +27,11 @@ export function inspectionFromState(state, now) {
  * Execution gate: every check is evaluated and reported, the run is admitted only when all pass.
  * The gate is the single place that decides; UI, companion, voice and automations all go through it.
  */
-export function createGate({ db, settings, projects, backups, leases, grants, breakers, providerState, clock, activeRunCount, codexIsolation = null }) {
-  function evaluate({ provider, projectId, access = "read-only", grantId = null, workspaceResource, plan = null }) {
+export function createGate({ db, settings, projects, backups, leases, grants, breakers, providerState, clock, activeRunCount, codexIsolation = null, environments = null }) {
+  /** `environment` defaults to the project route (M05): the gate decides with the same route the run manager will use. */
+  function evaluate({ provider, projectId, access = "read-only", grantId = null, workspaceResource, plan = null, environment = null }) {
+    const route = environment || (environments ? environments.routeFor(projectId, provider) : "windows");
+    const envService = route !== "windows" ? environments?.get(route) || null : null;
     const checks = [];
     const add = (id, ok, detail, extra = {}) => checks.push({ id, ok, detail, ...extra });
     const now = clock();
@@ -52,17 +55,31 @@ export function createGate({ db, settings, projects, backups, leases, grants, br
       add("operational", Boolean(settings.get("operationalEnabled")), settings.get("operationalEnabled") ? "Politici operaționale active" : "Modul OPERATIONAL nu este activat");
     }
 
-    const inspection = inspectionFromState(providerState.get(provider), now);
-    const route = evaluateRoute(provider, inspection, { attestations: settings.get("billingAttestations"), now, usage: inspection?.usage || null, reservePercent: settings.get("usageReservePercent") });
-    add("billing_route", route.allowed, route.allowed ? "Rută inclusă în abonament verificată" : route.blockingReasons.join(" · "), { route });
+    // Billing facts of the route that will run: the environment client has its own login and config.
+    const inspection = inspectionFromState(providerState.get(route === "windows" ? provider : `${provider}@${route}`), now);
+    const billing = evaluateRoute(provider, inspection, { attestations: settings.get("billingAttestations"), now, usage: inspection?.usage || null, reservePercent: settings.get("usageReservePercent") });
+    add("billing_route", billing.allowed, billing.allowed ? `Rută inclusă în abonament verificată${route !== "windows" ? ` (clientul din ${route})` : ""}` : billing.blockingReasons.join(" · "), { route: billing });
 
-    // Workspace isolation (M02 §05): the model's tools must not reach .ifrim/private, backups, .env or credentials.
-    const isolation = evaluateIsolation({ provider, access, sandbox: inspection?.sandbox || null,
-      consent: settings.get("isolationConsent")?.[provider] || null, fingerprint: provider === "codex" && codexIsolation ? codexIsolation().fingerprint : null });
-    add("isolation", isolation.ok, isolation.detail, { level: isolation.level });
-    // Host isolation (R2, M03 §05): what else on this machine a model command can read.
-    const host = evaluateHostIsolation({ provider, access, project, acceptance: project ? settings.get("r2Acceptance")?.[project.id] || null : null, now });
-    add("host_isolation", host.ok, host.detail, { level: host.level });
+    if (route !== "windows") {
+      // M05: the run goes through an execution environment; Windows sandbox facts do not apply to it.
+      add("environment_route", Boolean(envService) && !envService.attesting(), !envService ? `Ruta ${route} nu există în acest Hub; execuția nu trece pe Windows`
+        : envService.attesting() ? `Atestarea mediului ${route} rulează (repornește distribuția); execuția așteaptă` : `Rută: ${route} (aleasă de tine pentru acest proiect)`, { environment: route });
+      const isolation = envService ? evaluateEnvironmentProfile({ environmentId: route, probe: inspection, access, profiles: envService.env.profiles,
+        probeProblem: envService.probeProblem(providerState.get(`${provider}@${route}`), envService.state(), now), simulated: envService.simulated })
+        : { ok: false, level: "none", detail: "Mediu indisponibil" };
+      add("isolation", isolation.ok, isolation.detail, { level: isolation.level });
+      const host = envService ? evaluateEnvironmentRoute({ environmentId: route, envState: envService.state(), attestation: envService.attestationStatus(now), policy: settings.get("environmentPolicy")?.[route] || null, project })
+        : { ok: false, level: "none", detail: "Mediu indisponibil" };
+      add("host_isolation", host.ok, host.detail, { level: host.level });
+    } else {
+      // Workspace isolation (M02 §05): the model's tools must not reach .ifrim/private, backups, .env or credentials.
+      const isolation = evaluateIsolation({ provider, access, sandbox: inspection?.sandbox || null,
+        consent: settings.get("isolationConsent")?.[provider] || null, fingerprint: provider === "codex" && codexIsolation ? codexIsolation().fingerprint : null });
+      add("isolation", isolation.ok, isolation.detail, { level: isolation.level });
+      // Host isolation (R2, M03 §05): what else on this machine a model command can read.
+      const host = evaluateHostIsolation({ provider, access, project, acceptance: project ? settings.get("r2Acceptance")?.[project.id] || null : null, now });
+      add("host_isolation", host.ok, host.detail, { level: host.level });
+    }
 
     const breaker = breakers.state(provider);
     add("circuit_breaker", breaker.state !== "open", breaker.state === "open" ? `Deschis până la ${breaker.until} după ${breaker.failures} eșecuri de infrastructură` : "Închis");
@@ -80,7 +97,7 @@ export function createGate({ db, settings, projects, backups, leases, grants, br
     const backup = project ? backups.freshVerified(project.id) : { ok: false, reason: "No project" };
     add("backup", true, backup.ok ? `Backup verificat ${backup.backup.id} (${backup.backup.fileCount} fișiere)` : `${backup.reason}; se creează și se verifică prin restaurare un backup nou înainte de admitere`, { willCreate: !backup.ok });
 
-    return { allowed: checks.every((c) => c.ok), checks, evaluatedAt: now.toISOString() };
+    return { allowed: checks.every((c) => c.ok), checks, evaluatedAt: now.toISOString(), environment: route };
   }
 
   /**

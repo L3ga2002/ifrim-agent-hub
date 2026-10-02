@@ -97,14 +97,20 @@ export function unifiedDiff(before, after, { label = "file", context = 3, status
  * Renders the diff of a change list from the blob store, redacted and bounded. Binary and secret-like files are listed,
  * never shown. Returns { text, truncated, added: [lines], removed: [lines] } (added/removed feed the integrity checks).
  */
-export function renderChanges(changes, blobDir, { maxChars = 120000 } = {}) {
+export function renderChanges(changes, blobDir, { maxChars = 120000, readGit = null } = {}) {
+  // A git-identified base entry ("git:<blob>", M05 git-backed snapshot) is read from the object database when available.
+  const readSide = (side) => {
+    if (!side) return "";
+    if (String(side.sha256 || "").startsWith("git:")) return readGit ? readGit(side.sha256) : null;
+    return side.text ? readBlob(blobDir, side.sha256) : null;
+  };
   const parts = [];
   const added = [];
   const removed = [];
   for (const change of changes) {
     if (change.secretLike) { parts.push(`# ${change.status} ${change.path} (fișier sensibil: conținut neafișat)\n`); continue; }
-    const beforeText = change.before?.text ? readBlob(blobDir, change.before.sha256) : change.before ? null : "";
-    const afterText = change.after?.text ? readBlob(blobDir, change.after.sha256) : change.after ? null : "";
+    const beforeText = readSide(change.before);
+    const afterText = readSide(change.after);
     if (beforeText === null || afterText === null) { parts.push(`# ${change.status} ${change.path} (binar sau indisponibil: doar hash ${change.after?.sha256?.slice(0, 12) || "—"})\n`); continue; }
     const diff = unifiedDiff(beforeText, afterText, { label: change.path, status: change.status });
     for (const line of diff.split("\n")) {

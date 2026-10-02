@@ -27,7 +27,7 @@ export function projectInstructions(projectPath) {
  * provider is the handoff target), decisions, bounded recent transcript and the latest request.
  * Hidden model reasoning is never requested or transferred.
  */
-export function buildTurnPrompt({ db, conversation, project, git, provider, runId }) {
+export function buildTurnPrompt({ db, conversation, project, git, provider, runId, environment = "windows" }) {
   const handoff = db.prepare("SELECT * FROM handoffs WHERE conversation_id = ? AND to_provider = ? AND status = 'ready' ORDER BY created_at DESC LIMIT 1").get(conversation.id, provider);
   const decisions = db.prepare("SELECT title, decision, source_ref FROM decisions WHERE (conversation_id = ? OR project_id = ?) AND status = 'active' ORDER BY created_at DESC LIMIT 15").all(conversation.id, project.id);
   const summary = db.prepare("SELECT content, covers_until_position FROM summaries WHERE conversation_id = ? ORDER BY covers_until_position DESC LIMIT 1").get(conversation.id);
@@ -44,9 +44,14 @@ export function buildTurnPrompt({ db, conversation, project, git, provider, runI
     transcript.unshift(`[#${message.position} ${message.role}${message.provider ? `/${message.provider}` : ""}] ${text}`);
   }
 
+  // In an execution environment (M05) the worker sees a Linux COPY of the project in its working directory, without .git:
+  // a Windows path or git commands there only waste the turn (and invite an escalation request, which is declined).
+  const where = environment && environment !== "windows"
+    ? `Project: ${project.name}. You work on a copy of the project in your current working directory (execution environment ${environment}, Linux). It has no .git and no access to the original folder or to any Windows path: use relative paths, do not run git. The Hub applies your file changes to the original after validating them. The original is on branch ${git.branch || "?"} @ ${git.head ? git.head.slice(0, 12) : "?"} with ${git.dirty.length} modified, ${git.untracked.length} untracked files.`
+    : `Project: ${project.name} at ${project.path}. Branch ${git.branch || "?"} @ ${git.head ? git.head.slice(0, 12) : "?"}; ${git.dirty.length} modified, ${git.untracked.length} untracked files.`;
   const sections = [
     "You are continuing work inside Ifrim Agent Hub. The Hub conversation is canonical; this turn is one step of it.",
-    `Project: ${project.name} at ${project.path}. Branch ${git.branch || "?"} @ ${git.head ? git.head.slice(0, 12) : "?"}; ${git.dirty.length} modified, ${git.untracked.length} untracked files.`,
+    where,
     "Rules: do not commit, push, tag, deploy, send messages, delete data, change credentials or billing, or start other agents. Stay inside the project directory. Never read .ifrim/private, .ifrim/BACKUPS, .ifrim/tmp, .env files or any credential file. If a step needs one of these, stop and describe the exact action for the user to approve.",
     "Report what you verified (commands and results) separately from assumptions. Do not claim tests passed unless you ran them in this turn.",
   ];

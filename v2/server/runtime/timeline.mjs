@@ -22,6 +22,8 @@ export const RUN_PHASES = Object.freeze([
   ["backup_ready", "Backup verificat disponibil"],
   ["git_state", "Starea git citită"],
   ["run_recorded", "Execuția înregistrată"],
+  ["environment_checked", "Mediul izolat verificat (amprentă = atestare)"],
+  ["workspace_prepared", "Workspace copiat în mediul izolat"],
   ["process_spawned", "Procesul providerului pornit"],
   ["initialized", "Handshake terminat"],
   ["account_checked", "Contul verificat (abonament)"],
@@ -35,6 +37,8 @@ export const RUN_PHASES = Object.freeze([
   ["first_command_completed", "Prima comandă terminată"],
   ["first_file_change", "Prima modificare de fișier"],
   ["first_output", "Primul text de răspuns"],
+  ["export_validated", "Export din mediu citit și validat (C14)"],
+  ["export_applied", "Export aplicat în proiect (fără conflicte)"],
   ["finished", "Execuția s-a terminat"],
 ]);
 const KNOWN = new Set(RUN_PHASES.map(([id]) => id));
@@ -42,7 +46,7 @@ const LABEL = Object.fromEntries(RUN_PHASES);
 
 const OWNER = {
   approval_requested: "hub", approval_decided: "human", dispatch: "hub", plan_resolved: "hub", gate_checked: "hub", lease_acquired: "hub", grant_consumed: "hub",
-  backup_ready: "hub", git_state: "hub", run_recorded: "hub", process_spawned: "provider", initialized: "provider", account_checked: "provider",
+  backup_ready: "hub", git_state: "hub", run_recorded: "hub", environment_checked: "environment", workspace_prepared: "environment", export_validated: "environment", export_applied: "hub", process_spawned: "provider", initialized: "provider", account_checked: "provider",
   rate_limits_checked: "provider", thread_ready: "provider", mcp_checked: "provider", turn_sent: "hub", turn_acknowledged: "provider",
   first_event: "model_or_sandbox", first_command_started: "model_or_sandbox", first_command_completed: "command_execution", first_file_change: "provider_turn",
   first_output: "provider_turn", finished: "provider_turn",

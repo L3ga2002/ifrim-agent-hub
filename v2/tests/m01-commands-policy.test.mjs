@@ -90,7 +90,8 @@ test("M01-CMD-01 unknown command types and channels are refused before anything 
     await assert.rejects(hub.commands.dispatch({ type: "gate.set", payload: { action: "suspend" }, channel: "telepathy" }), hubError("validation", /Unknown channel telepathy/));
     assert.equal(countRows(hub, "commands"), commandsBefore);
     assert.equal(hub.bus.lastSeq(), seq, "no event either");
-    assert.deepEqual([...COMMAND_CHANNELS].sort(), ["automation", "companion", "recovery", "schedule", "test", "ui", "voice"]);
+    // "cli" (M05): local scripts recorded as such; only inference-free checks accept it (M05-T17).
+    assert.deepEqual([...COMMAND_CHANNELS].sort(), ["automation", "cli", "companion", "recovery", "schedule", "test", "ui", "voice"]);
 
     assert.throws(() => hub.commands.register("gate.set", { execute: () => null }), /already registered/);
     assert.throws(() => hub.commands.register("test.masked", { logPayload: () => ({}), action: () => ({ actionKind: "connector.write" }), execute: () => null }),

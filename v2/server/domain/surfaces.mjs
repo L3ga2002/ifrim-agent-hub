@@ -117,6 +117,14 @@ export function createSurfaces({ db, bus, clock, config, providerState }) {
           { version: codex.installation.version, accountType: codex.auth?.accountType || null, planType: codex.auth?.planType || null, probedAt: codex.probedAt || null },
           ok ? "PASS_LOCAL" : "FAIL", "account_probe");
       }
+      const wsl = providerState.get("codex@wsl-runner");
+      if (wsl?.installation) {
+        const ok = wsl.installation.installed && fresh(wsl) && wsl.auth?.accountType === "chatgpt";
+        set("openai.codex_wsl_runner", ok ? "available" : wsl.installation.installed ? "needs_setup" : "unavailable",
+          ok ? `${wsl.installation.version} în ifrim-runner: app-server + account/read ChatGPT prin mediu (nu atestă granița)` : wsl.installation.installed ? "Instalat în mediu; verificarea contului prin mediu lipsește, a eșuat sau are peste 24 h" : wsl.installation.reason || "Mediul nu e disponibil",
+          { version: wsl.installation.version, accountType: wsl.auth?.accountType || null, planType: wsl.auth?.planType || null, probedAt: wsl.probedAt || null },
+          ok ? "PASS_LOCAL" : "FAIL", "account_probe");
+      }
       if (claude?.installation) {
         const ok = claude.installation.installed && fresh(claude) && claude.auth?.loggedIn && claude.auth?.authMethod === "claude.ai";
         set("anthropic.claude_code_headless", ok ? "available" : claude.installation.installed ? "needs_setup" : "unavailable",

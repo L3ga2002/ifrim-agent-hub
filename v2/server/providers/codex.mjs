@@ -185,8 +185,28 @@ export function inspectRealtimeKeys(data = {}) {
   return { riskyKeys: [...new Set(risky)], overriddenPerProcess, mcpServers: mcpServerNames.length, mcpServerNames: mcpServerNames.filter((n) => MCP_NAME_ADDRESSABLE.test(n)) };
 }
 
-export function createCodexAdapter({ config, supervisor, homeDir = os.homedir() }) {
+/**
+ * Where and how a Codex app-server process is started. The default is the Windows client (Codex desktop bundle) with the
+ * Hub's Windows profile; an isolated environment (M05 wsl-runner) supplies its own launcher: same guards, same protocol,
+ * another process boundary. `spawn` returns the exact executable/argv/cwd; nothing is joined into a shell string.
+ */
+export function windowsCodexLauncher({ config, homeDir }) {
+  return {
+    environment: "windows",
+    platform: process.platform === "win32" ? "windows" : process.platform,
+    spawn({ cwd, access, base, extraArgs }) {
+      const binary = resolveCodexBinary(config);
+      if (!binary) throw Object.assign(new Error("Codex client not installed"), { category: "transport", preInference: true });
+      return { executable: binary.executable, args: [...binary.prefixArgs, ...base, ...extraArgs, ...codexIsolationArgs(access, { homeDir, extra: [config.dataDir, config.backupDir] }), "app-server"], cwd };
+    },
+    mcpLaunchPlan: ({ cwd }) => codexMcpLaunchPlan({ homeDir, cwd }),
+    inspectConfig: () => inspectCodexConfig(homeDir),
+  };
+}
+
+export function createCodexAdapter({ config, supervisor, homeDir = os.homedir(), launcher = null }) {
   const id = "codex";
+  const launch = launcher || windowsCodexLauncher({ config, homeDir });
 
   async function inspectInstallation() {
     const binary = resolveCodexBinary(config);
@@ -204,13 +224,12 @@ export function createCodexAdapter({ config, supervisor, homeDir = os.homedir() 
    * `experimentalApi`, `allowedMethods` and `extraArgs` exist for the Lega voice process only (codex-realtime.mjs): it is a
    * separate app-server with its own narrow allowlist. Every run/probe process keeps experimentalApi=false and the run allowlist.
    */
-  function openSession({ cwd, key, access = "read-only", onNotification, onServerRequest, onExit, experimentalApi = false, allowedMethods = CODEX_ALLOWED_METHODS, extraArgs = [], webSearch = "disabled", label = "codex app-server" }) {
-    const binary = resolveCodexBinary(config);
-    if (!binary) throw Object.assign(new Error("Codex client not installed"), { category: "transport", preInference: true });
+  function openSession({ cwd, key, access = "read-only", onNotification, onServerRequest, onExit, experimentalApi = false, allowedMethods = CODEX_ALLOWED_METHODS, extraArgs = [], webSearch = "disabled", label = "codex app-server", launchVars = {} }) {
     const base = codexBaseOverrides({ webSearch });
+    const binary = launch.spawn({ cwd, access, base, extraArgs, vars: launchVars }); // the provider binary (or wsl.exe → the environment's binary)
     let peer;
     const record = supervisor.start({
-      key, label, executable: binary.executable, args: [...binary.prefixArgs, ...base, ...extraArgs, ...codexIsolationArgs(access, { homeDir, extra: [config.dataDir, config.backupDir] }), "app-server"], cwd,
+      key, label, executable: binary.executable, args: binary.args, cwd: binary.cwd,
       onStdoutLine: (line) => peer.handleLine(line),
     });
     peer = createJsonRpcPeer({
@@ -237,11 +256,12 @@ export function createCodexAdapter({ config, supervisor, homeDir = os.homedir() 
    * Explicit, user-initiated probe: initialize + account/read (+ rate limits, + model list).
    * No turn is started, so no inference happens. Identity (email) is never returned.
    */
-  async function probe({ withUsage = true, withModels = false, cwd = config.hubRoot } = {}) {
-    const key = `probe-codex-${Date.now()}`;
-    const session = openSession({ cwd, key });
-    const out = { provider: id, probedAt: new Date().toISOString(), config: inspectCodexConfig(homeDir) };
+  async function probe({ withUsage = true, withModels = false, cwd = launch.probeCwd || config.hubRoot } = {}) {
+    const key = `probe-codex-${launch.environment}-${Date.now()}`;
+    let session;
+    const out = { provider: id, environment: launch.environment, probedAt: new Date().toISOString(), config: launch.inspectConfig() };
     try {
+      session = openSession({ cwd, key });
       const init = await session.ready;
       out.protocol = { userAgent: String(init?.userAgent || "").slice(0, 120), platform: `${init?.platformFamily || ""}/${init?.platformOs || ""}` };
       const account = await session.peer.request("account/read", {}, 30000);
@@ -251,9 +271,13 @@ export function createCodexAdapter({ config, supervisor, homeDir = os.homedir() 
         catch (error) { out.usage = { error: error.message }; }
       }
       // Isolation facts (no inference): is the elevated Windows sandbox ready and is the Hub profile selectable?
-      out.sandbox = { profileId: CODEX_PROFILE_BY_ACCESS["read-only"] };
-      try { out.sandbox.readiness = (await session.peer.request("windowsSandbox/readiness", null, 30000))?.status || null; }
-      catch (error) { out.sandbox.readiness = process.platform === "win32" ? `error: ${error.message}` : "not_applicable"; }
+      // A Linux environment has no Windows sandbox: the question does not apply there (and is not asked).
+      out.sandbox = { profileId: launch.profiles?.["read-only"] || CODEX_PROFILE_BY_ACCESS["read-only"] };
+      if (launch.platform === "linux") out.sandbox.readiness = "not_applicable";
+      else {
+        try { out.sandbox.readiness = (await session.peer.request("windowsSandbox/readiness", null, 30000))?.status || null; }
+        catch (error) { out.sandbox.readiness = process.platform === "win32" ? `error: ${error.message}` : "not_applicable"; }
+      }
       try {
         const listed = await session.peer.request("permissionProfile/list", { cwd }, 30000);
         out.sandbox.profiles = (listed?.data || []).map((p) => ({ id: p.id, allowed: Boolean(p.allowed) }));
@@ -272,8 +296,7 @@ export function createCodexAdapter({ config, supervisor, homeDir = os.homedir() 
       out.error = error.message;
       out.errorCategory = error.category || classifyText(error.message);
     } finally {
-      await supervisor.stop(key, { graceMs: 1500 });
-      supervisor.forget(key);
+      if (session) { await supervisor.stop(key, { graceMs: 1500 }); supervisor.forget(key); }
     }
     return out;
   }
@@ -283,12 +306,12 @@ export function createCodexAdapter({ config, supervisor, homeDir = os.homedir() 
    * (allowance ceiling) → thread start/resume → turn/start → events until turn/completed.
    * Nothing after a pre-inference failure is retried here.
    */
-  function startTurn({ runId, cwd, prompt, access = "read-only", model = "", effort = "", threadId = "", onEvent, requestApproval, admitUsage }) {
+  function startTurn({ runId, cwd, prompt, access = "read-only", model = "", effort = "", threadId = "", onEvent, requestApproval, admitUsage, launchVars = {} }) {
     const key = `run-${runId}`;
     let policyStop = null; // set when the provider does something no Hub run may do; the run ends as a tool violation
     let turnRequested = false; // until turn/start is sent, a Stop kills the process: no model call may follow it
     // Decided before the process starts: an MCP server that is not disabled would already run outside the sandbox.
-    const mcpPlan = codexMcpLaunchPlan({ homeDir, cwd });
+    const mcpPlan = launch.mcpLaunchPlan({ cwd });
     if (mcpPlan.problem) {
       return { key, pid: null, interrupt: async () => ({ interrupted: false, graceful: true, reason: "not started" }),
         done: Promise.resolve({ status: "failed", errorCategory: "policy", preInference: true, error: mcpPlan.problem, output: "", usage: {}, threadId }) };
@@ -353,6 +376,16 @@ export function createCodexAdapter({ config, supervisor, homeDir = os.homedir() 
       // v2 item/* requests answer accept|decline; the legacy requests answer a ReviewDecision (approved | denied{rejection}).
       const legacy = method === "execCommandApproval" || method === "applyPatchApproval";
       const reply = (decision) => ({ result: { decision: legacy ? (decision === "accept" ? "approved" : { denied: { rejection: "Ifrim Agent Hub: refuzat" } }) : (decision === "accept" ? "accept" : "decline") } });
+      // In an execution environment every command or file-change approval is declined without asking: under approvalPolicy
+      // on-request with the workspace-write profile, Codex asks only to go BEYOND the profile (run unsandboxed, write outside
+      // the workspace, network), and the attested profile is the boundary there (M05 security review F6). An escalation does
+      // not always carry the permission/network fields (a plain "retry without sandbox" carries only a reason), so the field
+      // test alone let it reach the owner as an ordinary command card (pre-probe review, 2026-10-02).
+      if (launch.declineEscalations && ["item/commandExecution/requestApproval", "execCommandApproval", "item/fileChange/requestApproval", "applyPatchApproval"].includes(method)) {
+        const what = /command|execCommand/i.test(method) ? `comanda ${JSON.stringify(params.command || params.parsedCmd || "").slice(0, 120)}` : "o modificare de fișiere";
+        onEvent({ type: "notice", level: "warning", text: `Codex a cerut aprobare pentru ${what} dincolo de profilul mediului${params.reason ? ` (${String(params.reason).slice(0, 120)})` : ""}; refuzat automat` });
+        return reply("decline");
+      }
       if (method === "item/commandExecution/requestApproval" || method === "execCommandApproval") {
         return reply(await requestApproval({ kind: "command", command: params.command || params.parsedCmd || params, cwd: params.cwd || cwd, reason: params.reason || "" }));
       }
@@ -374,7 +407,7 @@ export function createCodexAdapter({ config, supervisor, homeDir = os.homedir() 
     }
     const phase = (name) => { try { onEvent({ type: "phase", phase: name }); } catch { /* timeline never breaks a run */ } };
     // The owner's config MCP servers are disabled by name for this process (key names only are read from config.toml).
-    const session = openSession({ cwd, key, access, extraArgs, onNotification, onServerRequest,
+    const session = openSession({ cwd, key, access, extraArgs, onNotification, onServerRequest, launchVars,
       onExit: (exit) => finish(interruptReason
         ? { status: "interrupted", output, usage, threadId: currentThread, turnId, errorCategory: null, error: `interrupted (${interruptReason})`, preInference: !turnId }
         : { status: "failed", output, usage, threadId: currentThread, turnId, errorCategory: "transport", error: `app-server exited (${exit.code})`, preInference: !turnId }) });
@@ -502,7 +535,7 @@ export function createCodexAdapter({ config, supervisor, homeDir = os.homedir() 
     return { key, pid: session.record.pid, done, interrupt };
   }
 
-  return { id, displayName: "Codex (ChatGPT plan)", inspectInstallation, probe, startTurn, openSession, inspectConfig: () => inspectCodexConfig(homeDir) };
+  return { id, environment: launch.environment, displayName: "Codex (ChatGPT plan)", inspectInstallation, probe, startTurn, openSession, inspectConfig: () => launch.inspectConfig() };
 }
 
 export function normalizeAccount(response) {

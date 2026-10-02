@@ -1,7 +1,8 @@
 // Creates a Software Factory demo project (M03 §25–§27) from v2/fixtures/factory as a sanitized TEST project in the
 // projects root, and registers it in the running Hub. Fictive data, no secrets, no network. It never overwrites a folder,
 // never edits PROJECTS.md and never touches other projects. Run by the OWNER (it creates a folder outside the Hub repo).
-// Usage: node v2/scripts/create-factory-fixture.mjs bug-demo|service-request [--dir ifrim-factory-demo-a] [--port 4610] [--no-register]
+// Usage: node v2/scripts/create-factory-fixture.mjs bug-demo|service-request [--dir ifrim-factory-demo-a] [--name "Factory Demo A2"] [--port 4610] [--no-register]
+// --name: the project name in the Hub (its slug must be new; a second copy of a fixture needs one).
 import fs from "node:fs";
 import path from "node:path";
 import { execFileSync } from "node:child_process";
@@ -13,6 +14,8 @@ const fixture = process.argv[2];
 if (!FACTORY_DEMOS[fixture]) { console.error(`Fixture: ${Object.keys(FACTORY_DEMOS).join(" | ")}`); process.exit(2); }
 const DIR_NAME = arg("dir", fixture === "bug-demo" ? "ifrim-factory-demo-a" : "ifrim-factory-demo-b");
 if (!/^[a-z0-9][a-z0-9-]{2,60}$/.test(DIR_NAME)) { console.error("--dir must be a simple lowercase folder name"); process.exit(2); }
+const NAME = arg("name", FACTORY_DEMOS[fixture].name).trim();
+if (NAME.length < 2 || NAME.length > 80) { console.error("--name must have 2–80 characters"); process.exit(2); }
 const port = arg("port", null) ? Number(arg("port", null)) : null;
 const dir = path.join(PROJECTS_ROOT, DIR_NAME);
 const HUB = `http://127.0.0.1:${Number(process.env.HUB_V2_PORT || 8011)}`;
@@ -31,7 +34,7 @@ console.log(`Created ${dir} (fixture ${fixture}, git repo)`);
 
 if (!process.argv.includes("--no-register")) {
   const session = await (await fetch(`${HUB}/api/session`)).json();
-  const res = await fetch(`${HUB}/api/projects/test`, { method: "POST", headers: { "Content-Type": "application/json", "X-Hub-Token": session.token }, body: JSON.stringify({ path: dir, name: FACTORY_DEMOS[fixture].name }) });
+  const res = await fetch(`${HUB}/api/projects/test`, { method: "POST", headers: { "Content-Type": "application/json", "X-Hub-Token": session.token }, body: JSON.stringify({ path: dir, name: NAME }) });
   const body = await res.json();
   if (!res.ok) { console.error(`Hub refused registration (${res.status}): ${body.error?.message || JSON.stringify(body)}`); process.exit(1); }
   const project = body.result || body;

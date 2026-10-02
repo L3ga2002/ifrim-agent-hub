@@ -55,7 +55,10 @@ export function createLega({ bus, live, clock, settings, gate, grants, projects,
     minutes: s.connectedAt ? minutesOf(s) : 0, costEstimateUsd: s.connectedAt ? Math.round(minutesOf(s) * LEGA_COST_PER_MINUTE_USD * 100) / 100 : 0,
     // The real plan consumption of a voice session is not reported by the protocol: UNKNOWN, never derived from the estimate.
     planUsage: { status: "UNKNOWN", measured: null, note: "Consumul real din plan nu e raportat de thread/realtime; costEstimateUsd e doar o estimare după prețul publicat" },
-    phase: s.phase || "idle", webSearch: s.webSearch || "disabled" });
+    phase: s.phase || "idle", webSearch: s.webSearch || "disabled",
+    // M05 §22: why it ended (detail as the provider said it, redacted), what the provider visibly did, and what happened to
+    // the grant attempt (the Hub's counter, not the provider allowance).
+    endDetail: s.endDetail || null, lastError: s.lastError || null, activity: s.activity || null, attempt: s.attempt || null });
   const legaSettings = () => ({ ...LEGA_DEFAULTS, ...(settings.get("lega") || {}) });
   const executableProjects = () => projects.list().filter((p) => p.executionAllowed).map((p) => ({ id: p.id, name: p.name }));
   const companyProjects = () => projects.list().map((p) => ({ id: p.id, name: p.name }));
@@ -100,12 +103,13 @@ export function createLega({ bus, live, clock, settings, gate, grants, projects,
     }
     const grantId = decision.checks.find((c) => c.id === "voice_grant")?.grantId;
     const grant = bus.transaction(() => grants.consumeAttempt(grantId));
+    bus.emit({ type: "lega.attempt_consumed", scopeType: "grant", scopeId: grantId, source: actor, payload: { attemptsUsed: grant.attemptsUsed, maxAttempts: grant.maxAttempts } });
     const id = newId("lega");
     const maxDurationS = Math.min(grant.maxDurationS, prefs.maxSessionMinutes * 60);
     // Empty scratch cwd outside every protected path (.ifrim/tmp is denied to the sandbox): no project file is reachable.
     const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "ifrim-hub-lega-"));
     const current = { id, status: "starting", voice: chosenVoice, webSearch, startedAt: clock().toISOString(), maxDurationS, idleTimeoutS: prefs.idleTimeoutS, grantId, cwd,
-      phase: "connecting", abort: new AbortController(), partial: {}, lastOwnerCommand: null };
+      phase: "connecting", abort: new AbortController(), partial: {}, lastOwnerCommand: null, attempt: { consumed: true, refunded: false, rule: "încercare folosită la pornire" } };
     session = current;
     bus.emit({ type: "lega.session.starting", scopeType: "system", scopeId: id, source: actor, payload: { grantId, voice: chosenVoice, maxDurationS, webSearch } });
     live.publish({ type: "lega.session", session: publicView(current) });
@@ -117,10 +121,12 @@ export function createLega({ bus, live, clock, settings, gate, grants, projects,
       current.handle = await current.startPromise;
     } catch (error) {
       // No GPT-Live call was created: the session never happened, so its grant attempt is given back.
-      if (!error.realtimeRequested) { try { bus.transaction(() => grants.refundAttempt(grantId, "hub", `Lega start failed before voice: ${String(error.message).slice(0, 120)}`)); } catch { /* reported below */ } }
+      // Bounded like runs: at most maxAttempts refunds per grant, so a start that keeps failing cannot loop on one grant.
+      if (!error.realtimeRequested) current.attempt = refundBounded(grantId, `Lega start failed before voice: ${String(error.message).slice(0, 120)}`);
+      else current.attempt = { consumed: true, refunded: false, rule: "GPT-Live a fost cerut (thread/realtime/start): consumul providerului e necunoscut, încercarea nu se restituie" };
       if (current.status !== "ended" && !current.stopping) {
         finalize(current, error.category === "cancelled" ? "cancelled" : `failed: ${String(error.message).slice(0, 200)}`);
-        bus.emit({ type: "lega.session.failed", scopeType: "system", scopeId: id, source: "hub", payload: { category: error.category || "transport", message: String(error.message).slice(0, 300), preInference: !error.realtimeRequested, grantRefunded: !error.realtimeRequested } });
+        bus.emit({ type: "lega.session.failed", scopeType: "system", scopeId: id, source: "hub", payload: { category: error.category || "transport", message: String(error.message).slice(0, 300), preInference: !error.realtimeRequested, grantRefunded: Boolean(current.attempt?.refunded), attemptRule: current.attempt?.rule || null } });
       }
       const category = ["quota", "billing", "policy", "authentication"].includes(error.category) ? error.category : error.category === "cancelled" ? "conflict" : "transport";
       throw new HubError(category, `Lega nu a pornit: ${String(error.message).slice(0, 300)}`);
@@ -151,14 +157,39 @@ export function createLega({ bus, live, clock, settings, gate, grants, projects,
     return publicView(current);
   }
 
+  /** Gives the attempt back only within the per-grant bound (same rule as runs); returns the attempt record. */
+  function refundBounded(grantId, reason) {
+    const grant = grants.get(grantId);
+    const refunds = grant ? bus.query({ typePrefix: "grant.refunded", limit: 2000 }).filter((e) => e.scopeId === grantId).length : 0;
+    if (!grant || refunds >= grant.maxAttempts) {
+      bus.emit({ type: "grant.refund_refused", scopeType: "grant", scopeId: grantId, source: "hub", payload: { reason: "refund cap reached", refunds } });
+      return { consumed: true, refunded: false, rule: "eșec înainte de GPT-Live, dar limita de restituiri a grantului e atinsă" };
+    }
+    try { bus.transaction(() => grants.refundAttempt(grantId, "hub", reason)); } catch { return { consumed: true, refunded: false, rule: "restituirea a eșuat" }; }
+    return { consumed: false, refunded: true, rule: "eșec înainte de cererea GPT-Live: contorul intern al grantului Hub a fost restituit (nu e o rambursare de la provider; consumul providerului nu e măsurat)" };
+  }
+
   function finalize(current, reason, actor = "hub") {
+    const phaseBefore = current.phase;
+    const statusBefore = current.status;
+    current.activity = (() => { try { return current.handle?.activity?.() || current.activity || null; } catch { return null; } })();
+    current.endDetail = current.lastError?.message || current.closeDetail || null;
+    // A session that reached the provider keeps its attempt; the record says why (never a claim of zero cost).
+    if (current.handle && current.attempt && !current.attempt.refunded) {
+      const a = current.activity || {};
+      const did = (a.transcripts || 0) + (a.turns || 0) + (a.toolCalls || 0) + (a.delegations || 0);
+      current.attempt = { consumed: true, refunded: false, rule: did ? `sesiunea a avut activitate (${a.transcripts || 0} transcrieri, ${a.turns || 0} turnuri, ${a.toolCalls || 0} unelte): încercarea rămâne folosită`
+        : "GPT-Live a pornit (răspuns SDP primit); fără activitate observată, dar consumul real e necunoscut: încercarea nu se restituie automat" };
+    }
     current.status = "ended"; current.endedAt = clock().toISOString(); current.endReason = reason; current.phase = "ended";
     clearTimers(current);
     for (const [runId, entry] of pendingRuns) if (entry.sessionId === current.id) pendingRuns.delete(runId);
     try { fs.rmSync(current.cwd, { recursive: true, force: true }); } catch { /* scratch dir; best effort */ }
     const view = publicView(current);
     try {
-      bus.emit({ type: "lega.session.stopped", scopeType: "system", scopeId: current.id, source: actor, payload: { reason, minutes: Math.round(view.minutes * 100) / 100, costEstimateUsd: view.costEstimateUsd } });
+      bus.emit({ type: "lega.session.stopped", scopeType: "system", scopeId: current.id, source: actor, payload: { reason, minutes: Math.round(view.minutes * 100) / 100, costEstimateUsd: view.costEstimateUsd,
+        detail: current.endDetail ? redactText(current.endDetail).slice(0, 300) : null, phase: phaseBefore, status: statusBefore,
+        connectedForS: current.connectedAt ? Math.round((new Date(current.endedAt) - new Date(current.connectedAt)) / 1000) : null, activity: current.activity, attempt: current.attempt, grantId: current.grantId } });
     } catch { /* the database may already be closed during shutdown */ }
     live.publish({ type: "lega.session", session: view });
     return view;
@@ -249,8 +280,15 @@ export function createLega({ bus, live, clock, settings, gate, grants, projects,
     } else if (event.type === "quota") {
       await stop(current.id, "quota", "hub").catch(() => {});
     } else if (event.type === "error") {
-      live.publish({ type: "lega.notice", sessionId: current.id, level: "error", text: redactText(event.message).slice(0, 300) });
+      // Kept on the session and persisted (redacted): the UI and the journal show what the provider said (M05 §22).
+      const text = redactText(String(event.message || "")).slice(0, 300);
+      current.lastError = { source: event.source || "provider", message: text, at: clock().toISOString(), phase: current.phase, status: current.status, willRetry: Boolean(event.willRetry), code: event.code ? redactText(String(event.code)).slice(0, 120) : null };
+      // At most 5 persisted errors per session (a provider that loops on errors does not flood the journal).
+      current.errorCount = (current.errorCount || 0) + 1;
+      if (current.errorCount <= 5) { try { bus.emit({ type: "lega.session.error", scopeType: "system", scopeId: current.id, source: "provider", payload: { ...current.lastError, n: current.errorCount } }); } catch { /* shutting down */ } }
+      live.publish({ type: "lega.notice", sessionId: current.id, level: "error", text });
     } else if (event.type === "closed") {
+      if (event.detail) current.closeDetail = redactText(String(event.detail)).slice(0, 300);
       if (current.status === "connecting" || current.status === "active") await stop(current.id, `closed: ${event.reason || "provider"}`, "hub").catch(() => {});
     }
   }

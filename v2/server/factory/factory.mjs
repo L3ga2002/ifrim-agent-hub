@@ -12,7 +12,7 @@ import { summarizeTimeline } from "../runtime/timeline.mjs";
 import { MISSION_TEMPLATES } from "../domain/missions.mjs";
 import { checkSpec, normalizeSpec, specHash, protectedTestRefs, specSummary, e2eStepLines } from "./spec.mjs";
 import { buildPlan, normalizeLimits, ROUTES } from "./plan.mjs";
-import { takeSnapshot, diffManifests } from "./snapshot.mjs";
+import { takeSnapshot, diffManifests, readGitEntry, gitEntryHash } from "./snapshot.mjs";
 import { renderChanges } from "./diff.mjs";
 import { integrityFindings } from "./integrity.mjs";
 import { buildReviewBrief, parseReview, BLOCKING_SEVERITIES } from "./review.mjs";
@@ -309,12 +309,14 @@ export function createFactory(deps) {
 
   // ---------- snapshots & change sets ----------
   const ignoreOf = (missionId) => (approvedSpec(fm(missionId)) || latestSpec(missionId))?.spec?.workspace?.ignore || [];
+  /** The snapshot mode of the mission's base (walk or repository-index); every later snapshot uses the same identity. */
+  const baseMode = (missionId) => { const f = fm(missionId); return f?.baseSnapshotId ? snapshotRow(f.baseSnapshotId)?.stats?.mode || "walk" : null; };
   function recordSnapshot(missionId, kind, runId, root) {
-    const snap = takeSnapshot(root, { blobDir: blobDir(missionId), ignore: ignoreOf(missionId) });
+    const snap = takeSnapshot(root, { blobDir: blobDir(missionId), ignore: ignoreOf(missionId), mode: kind === "base" ? null : baseMode(missionId) });
     const seq = (db.prepare("SELECT MAX(seq) AS s FROM factory_snapshots WHERE mission_id = ?").get(missionId).s || 0) + 1;
     const id = newId("snap");
-    db.prepare("INSERT INTO factory_snapshots (id, mission_id, seq, kind, run_id, manifest_json, stats_json, sha256, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)")
-      .run(id, missionId, seq, kind, runId, json(snap.files), json({ ...snap.stats, skipped: snap.skipped.slice(0, 50) }), snap.sha256, now());
+    db.prepare("INSERT INTO factory_snapshots (id, mission_id, seq, kind, run_id, manifest_json, stats_json, git_json, sha256, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
+      .run(id, missionId, seq, kind, runId, json(snap.files), json({ ...snap.stats, skipped: snap.skipped.slice(0, 50) }), json(snap.git || {}), snap.sha256, now());
     return { id, seq, ...snap };
   }
 
@@ -326,9 +328,10 @@ export function createFactory(deps) {
     const prev = currentCs(missionId);
     const prevFiles = prev ? snapshotRow(prev.snapshotId).files : base.files;
     const snap = recordSnapshot(missionId, "change", runId, project.path);
-    const changes = diffManifests(base.files, snap.files);
-    const delta = diffManifests(prevFiles, snap.files).map((c) => ({ path: c.path, status: c.status }));
-    const rendered = renderChanges(changes, blobDir(missionId));
+    const resolve = (sha) => gitEntryHash(project.path, sha);
+    const changes = diffManifests(base.files, snap.files, { resolve });
+    const delta = diffManifests(prevFiles, snap.files, { resolve }).map((c) => ({ path: c.path, status: c.status }));
+    const rendered = renderChanges(changes, blobDir(missionId), { readGit: (sha) => readGitEntry(project.path, sha) });
     const spec = approvedSpec(f);
     const integrity = integrityFindings({ changes, added: rendered.added, protectedRefs: Object.keys(spec?.protected?.files || {}) });
     const seq = (prev?.seq || 0) + 1;
@@ -387,7 +390,9 @@ export function createFactory(deps) {
       db.prepare("UPDATE factory_evidence SET stale = 1 WHERE mission_id = ? AND change_set_id = ? AND stage = ? AND stale = 0").run(missionId, changeSetId || "base", stage);
       for (const [i, command] of commands.entries()) {
         if (isHalted(missionId)) break;
-        const result = await runner.run({ key: `factory-run-${missionId}-${stage}-${i}`, ws: project.path, command });
+        // Tracked (M05 §20): a Stop during a runner command stays CANCEL_REQUESTED until the command is gone and its evidence
+        // is written, so CANCELLED is never confirmed while a test process still runs.
+        const result = await tracked(missionId, () => runner.run({ key: `factory-run-${missionId}-${stage}-${i}`, ws: project.path, command, project, shouldStop: () => isHalted(missionId) }));
         // A command killed by Stop / Pause says nothing about the code: kept as INTERRUPTED and stale (never counted).
         const interrupted = isHalted(missionId);
         const status = interrupted ? "INTERRUPTED" : result.status;
@@ -481,8 +486,10 @@ export function createFactory(deps) {
     try {
       const task = missions.task(taskId);
       // Tracked: until runs.start returns (backup, git, process start) the run is not visible to Stop / Pause.
+      // The approved acceptance tests are also refused by the export validator of an execution environment (M05 §16).
+      const exportPolicy = route.access === "workspace-write" ? { protectedPaths: Object.keys(approvedSpec(f)?.protected?.files || {}) } : null;
       ({ run } = await tracked(missionId, () => runs.start({ conversationId, provider: route.provider, access: route.access, model: request.model, effort: request.effort, profile: request.profile,
-        taskId, stage: task.stage, roleId: task.roleId, actor: "factory", correlationId: id, requestedAt: f.updatedAt })));
+        taskId, stage: task.stage, roleId: task.roleId, actor: "factory", correlationId: id, requestedAt: f.updatedAt, exportPolicy })));
     } catch (error) {
       // A Stop / Pause that arrived while the start was in flight: the refusal is its consequence, not a new blocker.
       if (isHalted(missionId)) {
@@ -618,6 +625,9 @@ export function createFactory(deps) {
       }
       if (run.status !== "completed") {
         const reason = `${dispatch.stage}: execuția ${run.status}${run.errorCategory ? ` (${run.errorCategory})` : ""}${run.errorMessage ? ` — ${run.errorMessage.slice(0, 300)}` : ""}`;
+        // A refused or conflicting export from an execution environment: nothing reached the project; the owner decides
+        // (the quarantined export is in the run evidence), never an automatic repair on an unknown state.
+        if (run.errorCategory === "export") return setStage(f.missionId, "NEEDS_OWNER_DECISION", { waitReason: "owner_decision", reason });
         return setStage(f.missionId, run.status === "interrupted" ? "PAUSED" : "BLOCKED", { waitReason: run.errorCategory === "quota" ? "provider" : "owner_decision", reason });
       }
       if (dispatch.stage === "IMPLEMENTING" || dispatch.stage === "REPAIRING") return afterWriter(f.missionId, run);
@@ -712,7 +722,7 @@ export function createFactory(deps) {
     const openPrev = findings(missionId, "OPEN").filter((x) => x.source === "reviewer");
     const parsed = parseReview(text, { changeSetSha: cs.sha256, openCodes: openPrev.map((x) => x.code) });
     // The files may not change under the reviewer: the review counts only for the exact version it saw.
-    const nowSha = takeSnapshot(project.path, { ignore: ignoreOf(missionId) }).sha256;
+    const nowSha = takeSnapshot(project.path, { ignore: ignoreOf(missionId), mode: baseMode(missionId) }).sha256;
     const reviewedSnap = snapshotRow(cs.snapshotId);
     const stale = nowSha !== reviewedSnap.sha256;
     const reviewId = newId("rev");
@@ -785,7 +795,7 @@ export function createFactory(deps) {
     bus.transaction(() => setStage(missionId, "PREVIEW", { waitReason: "runner", reason: `Pornesc preview-ul ${spec.verification.preview.url}` }));
     await runner.stop(key).catch(() => {});
     { const stop = halted(missionId); if (stop) return stop; }
-    const result = await tracked(missionId, () => runner.startPreview({ key, ws: project.path, command: spec.verification.preview.command, url: spec.verification.preview.url }));
+    const result = await tracked(missionId, () => runner.startPreview({ key, ws: project.path, command: spec.verification.preview.command, url: spec.verification.preview.url, project }));
     // A preview started while a Stop / Pause arrived is stopped again and its result is not interpreted.
     if (isHalted(missionId)) { await runner.stop(key).catch(() => {}); return halted(missionId); }
     db.prepare("UPDATE factory_evidence SET stale = 1 WHERE mission_id = ? AND change_set_id = ? AND stage = 'PREVIEW' AND stale = 0").run(missionId, cs.id);
@@ -862,8 +872,11 @@ export function createFactory(deps) {
       if (result.status === "BLOCKED" || result.status === "INTERRUPTED") { blocked = `${a.id}: ${result.error || "E2E întrerupt"}`; break; }
       if (result.status === "FAIL") {
         failures.push(a.id);
+        // What the Hub's network guard refused is part of the finding (M05 §19): a refused redirect is not hidden behind a
+        // step timeout, so the writer is not asked to "fix" the page for a policy decision.
+        const refusedNet = (result.network?.blocked || []).filter((b) => b.navigation || b.mainFrame).slice(0, 3).map((b) => `${b.reason}: ${b.url}`);
         addFinding(missionId, { source: "qa", evidenceId: id, changeSetId: cs.id, severity: "high", area: "e2e", file: "",
-          observation: `E2E ${a.id} nu trece: ${failed ? `pasul ${failed.i} (${failed.kind}) — ${failed.error}; pasul aprobat: ${JSON.stringify(expected).slice(0, 300)}` : result.error}`,
+          observation: `E2E ${a.id} nu trece: ${failed ? `pasul ${failed.i} (${failed.kind}) — ${failed.error}; pasul aprobat: ${JSON.stringify(expected).slice(0, 300)}` : result.error}${refusedNet.length ? `; rețea refuzată de Hub: ${refusedNet.join(" · ")}` : ""}`,
           evidence: a.text, fingerprint: `e2e:${a.id}:${failed?.i || 0}` });
       }
     }
@@ -919,12 +932,12 @@ export function createFactory(deps) {
       reviews: reviewsAll.map((r) => ({ id: r.id, changeSet: r.changeSetSha.slice(0, 12), verdict: r.verdict, status: r.status, problems: r.validation.problems || [] })),
       findings: findings(missionId).map((x) => ({ code: x.code, source: x.source, severity: x.severity, file: x.file, status: x.status, observation: x.observation.slice(0, 300) })),
       evidence: current.map((e) => ({ id: e.id, stage: e.stage, command: e.command, status: e.status, counts: e.counts, isolation: e.isolation, durationMs: e.durationMs })),
-      runs: runRows.map((r) => ({ id: r.id, provider: r.provider, stage: r.stage, status: r.status, model: r.model, effort: r.effort, plan: r.plan, keySpans: summarizeTimeline(r.timeline).keySpans, grantId: r.grantId })),
+      runs: runRows.map((r) => ({ id: r.id, provider: r.provider, environment: r.environment || "windows", stage: r.stage, status: r.status, model: r.model, effort: r.effort, plan: r.plan, keySpans: summarizeTimeline(r.timeline).keySpans, grantId: r.grantId })),
       repairCycles: f.repairCycles,
       start: spec.spec.verification.preview ? { command: spec.spec.verification.preview.command, url: spec.spec.verification.preview.url } : null,
       limitations: [
         ...(config.testMode ? ["SIMULARE: provideri și sandbox fixture; nu dovedește calitatea unui model"] : []),
-        "R2 deschis: sandbox-ul Codex poate citi alte proiecte de pe host prin cale absolută",
+        ...stageEnvironmentLimitations(runRows, current),
         ...criteria.filter((c) => !c.status.startsWith("PASS")).map((c) => `${c.id}: ${c.status}${c.note ? ` — ${c.note}` : ""}`),
         "Nimic nu e comis, urcat sau publicat: livrarea e locală până la o acțiune separată aprobată",
       ],
@@ -956,7 +969,7 @@ export function createFactory(deps) {
       const bundle = db.prepare("SELECT * FROM factory_bundles WHERE mission_id = ? AND status = 'READY_FOR_OWNER_ACCEPTANCE' ORDER BY created_at DESC LIMIT 1").get(missionId);
       const cs = currentCs(missionId);
       const project = projects.get(missions.get(missionId).projectId);
-      const nowSha = takeSnapshot(project.path, { ignore: ignoreOf(missionId) }).sha256;
+      const nowSha = takeSnapshot(project.path, { ignore: ignoreOf(missionId), mode: baseMode(missionId) }).sha256;
       if (!bundle || bundle.change_set_id !== cs.id || nowSha !== snapshotRow(cs.snapshotId).sha256) {
         bus.transaction(() => { if (bundle) db.prepare("UPDATE factory_bundles SET status = 'STALE' WHERE id = ?").run(bundle.id); });
         throw new HubError("conflict", "Workspace-ul nu mai corespunde versiunii testate: pachetul e STALE (refă verificările)");
@@ -1282,8 +1295,40 @@ export function createFactory(deps) {
       evidence: db.prepare("SELECT * FROM factory_evidence WHERE mission_id = ? ORDER BY created_at").all(missionId).map(rowToEvidence),
       bundles: db.prepare("SELECT id, change_set_id, change_set_sha, spec_version, sha256, status, file_path, decided_at, decision_note, created_at FROM factory_bundles WHERE mission_id = ? ORDER BY created_at").all(missionId),
       grantsNeeded: grantsNeeded(f),
-      runnerReadiness: runner.readiness(),
+      runnerReadiness: runner.readiness(project),
+      stageEnvironments: runner.stageMap ? runner.stageMap(project) : null,
     };
+  }
+
+  /**
+   * Where each stage of THIS mission ran (M05 §07): a writer in the environment does not make the checks, preview, E2E or the
+   * review isolated. Only what the evidence shows is listed; the R2 note stays whenever a stage ran on Windows.
+   */
+  /**
+   * Where the delivered version's stages ACTUALLY ran (M05 §07, §17), from the records of what ran — completed writer runs
+   * and the evidence rows of this change set — never from the project's current route (it may have changed since).
+   */
+  const STAGE_RO = { BASELINE: "Baza", CHECKING: "Verificările", QA: "QA", PREVIEW: "Preview-ul", E2E: "E2E (Chromium)" };
+  function stageEnvironmentLimitations(runRows, current) {
+    const out = [];
+    const writers = runRows.filter((r) => r.provider === "codex" && r.status === "completed");
+    if (!writers.length || writers.some((r) => (r.environment || "windows") === "windows")) {
+      out.push("R2 deschis: writer-ul Codex a rulat pe Windows, unde sandbox-ul poate citi alte proiecte de pe host prin cale absolută");
+    }
+    for (const r of writers.filter((w) => (w.environment || "windows") !== "windows")) {
+      const e = r.evidence?.environment || {};
+      out.push(`Writer-ul Codex (${r.id}) a rulat în mediul ${r.environment}${e.simulated ? " SIMULAT (fixture)" : ""}: amprenta ${e.fingerprintHash || "—"}, atestare ${e.attestationStatus || "—"} ${e.attestationId || ""}; exportul a fost validat (C14) și aplicat după verificarea conflictelor`);
+    }
+    const byStage = new Map();
+    for (const e of current) byStage.set(e.stage, [...(byStage.get(e.stage) || []), e]);
+    for (const [stage, rows] of byStage) {
+      const inEnv = rows.filter((e) => /@wsl-runner/.test(e.runner || ""));
+      const elsewhere = rows.filter((e) => !/@wsl-runner/.test(e.runner || ""));
+      if (elsewhere.length) out.push(`${STAGE_RO[stage] || stage}: au rulat pe Windows (${String(elsewhere[0].isolation || elsewhere[0].runner).slice(0, 160)}) — în afara graniței de mediu`);
+      else if (inEnv.length) out.push(`${STAGE_RO[stage] || stage}: au rulat în wsl-runner (${String(inEnv[0].isolation).slice(0, 160)})`);
+    }
+    out.push("Review-ul Claude: graniță de unealtă (Read/Glob/Grep, dontAsk), nu de sistem de operare");
+    return out;
   }
 
   function grantsNeeded(f) {

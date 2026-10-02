@@ -44,6 +44,11 @@ import { createNativeSessionMirror } from "./providers/native-sessions.mjs";
 import { createTools } from "./tools/registry.mjs";
 import { createFactory } from "./factory/factory.mjs";
 import { createFactoryRunner } from "./factory/runner.mjs";
+import { createRoutedFactoryRunner } from "./factory/routed-runner.mjs";
+import { createWslRunnerEnvironment } from "./environments/wsl-runner.mjs";
+import { createWslFactoryRunner } from "./environments/wsl-factory-runner.mjs";
+import { createEnvironmentRegistry } from "./environments/registry.mjs";
+import { createWslCodexAdapter } from "./providers/codex-wsl.mjs";
 import { newId } from "./core/ids.mjs";
 
 /** Live (non-persisted) channel for token deltas; persisted state is always reloadable from the API. */
@@ -98,14 +103,19 @@ export function createHub(config, { providerOverrides = {}, homeDir, browserLaun
     codex: providerOverrides.codex || createCodexAdapter({ config, supervisor, homeDir }),
     claude: providerOverrides.claude || createClaudeAdapter({ config, supervisor, homeDir }),
   };
+  // M05: execution environments. The wsl-runner service only inspects, attests and moves workspaces; a project uses it
+  // only after the owner selects that route for it (settings.projectEnvironments).
+  const wslRunner = createWslRunnerEnvironment({ config, db, bus, clock, providerState, supervisor, homeDir: homeDir || os.homedir() });
+  const environments = createEnvironmentRegistry({ settings, services: { "wsl-runner": wslRunner } });
+  providers["codex@wsl-runner"] = providerOverrides["codex@wsl-runner"] || createWslCodexAdapter({ environment: wslRunner });
   const telemetry = createTelemetry({ db, bus, clock });
   let runs;
   let lega = null;
   // The exact paths the Codex profile denies on this machine; a recorded consent is valid only for this list.
   // Globs included (M03 R3): a consent given for the M02 list does not cover config.toml / history.jsonl.
   const codexIsolation = () => { const paths = codexDeniedEntries({ homeDir: homeDir || os.homedir(), extra: [config.dataDir, config.backupDir] }); return { paths, fingerprint: denyListFingerprint(paths) }; };
-  const gate = createGate({ db, settings, projects, backups, leases, grants, breakers, providerState, clock, activeRunCount: () => runs.activeCount() + (lega?.active() ? 1 : 0), codexIsolation });
-  runs = createRunManager({ db, bus, clock, settings, projects, conversations, missions, gate, leases, grants, backups, approvals, providers, breakers, usage, live, policy, skills, providerState,
+  const gate = createGate({ db, settings, projects, backups, leases, grants, breakers, providerState, clock, activeRunCount: () => runs.activeCount() + (lega?.active() ? 1 : 0), codexIsolation, environments });
+  runs = createRunManager({ db, bus, clock, settings, projects, conversations, missions, gate, leases, grants, backups, approvals, providers, breakers, usage, live, policy, skills, providerState, environments,
     supervisorRecord: (key) => supervisor.get(key) });
   const checkpoints = createCheckpoints({ db, bus, clock, projects, conversations, missions, approvals, leases, backups });
   const handoffs = createHandoffs({ db, bus, clock, conversations, missions, projects, leases, approvals, supervisor, runs, checkpoints });
@@ -134,7 +144,9 @@ export function createHub(config, { providerOverrides = {}, homeDir, browserLaun
     codexRealtime: createCodexRealtime({ codex: providers.codex, supervisor }), refreshCodexConfig, codexConfig: () => providerState.get("codex")?.config || null, timeScale: config.legaTimeScale });
   runs.attachVoice(lega);
   // Software Factory (M03): a deterministic conductor over missions/runs; its runner uses the Codex sandbox, never Hub rights.
-  const factoryRunner = createFactoryRunner({ config, supervisor, settings, providerState, codexIsolation, homeDir: homeDir || os.homedir() });
+  const windowsRunner = createFactoryRunner({ config, supervisor, settings, providerState, codexIsolation, homeDir: homeDir || os.homedir() });
+  const factoryRunner = createRoutedFactoryRunner({ windows: windowsRunner, environments, settings,
+    runners: { "wsl-runner": createWslFactoryRunner({ config, supervisor, environment: wslRunner, settings }) } });
   const factory = createFactory({ db, bus, clock, config, settings, projects, conversations, missions, runs, supervisor, runner: factoryRunner, leases, browserLaunch });
   runs.attachFactory(factory);
   legaRead.factorySummary = (missionId) => factory.summary(missionId);
@@ -143,7 +155,8 @@ export function createHub(config, { providerOverrides = {}, homeDir, browserLaun
 
   const hub = { config, db, bus, live, settings, projects, conversations, missions, approvals, policy, leases, grants, providerState, usage, memory, leads, sales,
     company, chiefOfStaff, surfaces, schedules, computer, skills, artifacts, integrations, nativeSessions, telemetry, router, commands, checkpoints,
-    breakers, supervisor, backups, providers, gate, runs, handoffs, tools, roleConfig, skillConfig, capabilityConfig, codexIsolation, lega, refreshCodexConfig, factory, factoryRunner };
+    breakers, supervisor, backups, providers, gate, runs, handoffs, tools, roleConfig, skillConfig, capabilityConfig, codexIsolation, lega, refreshCodexConfig, factory, factoryRunner,
+    environments, wslRunner };
   registerCommands(commands, hub);
 
   const scheduler = createScheduler({ db, bus, clock, approvals, leases, runs,
@@ -188,8 +201,15 @@ export function createHub(config, { providerOverrides = {}, homeDir, browserLaun
     surfaces.refreshAvailability();
     bootReport = await recoverOnBoot({ db, bus, clock, settings, approvals });
     bootReport.factory = factory.recover();
+    // Workspaces a crash left in the environment are marked orphaned and kept for inspection (never deleted at boot).
+    bootReport.environments = { "wsl-runner": wslRunner.recover() };
     bootReport.seeded = { ...seeded, skills: skillImport };
     if (!config.testMode) scheduler.start();
+    // Optional sandbox warm-up (M05 §21): off unless the owner enabled it; no model, no project code, never blocks the boot.
+    if (!config.testMode && settings.get("environmentWarmup")?.onBoot) {
+      Promise.resolve().then(() => factoryRunner.preflight("windows")).then((result) => bus.emit({ type: "environment.warmup", scopeType: "environment", scopeId: "windows", source: "hub",
+        payload: { trigger: "boot", ok: result.ok, sandboxMs: result.sandboxMs ?? null, reason: result.reason || null } })).catch(() => {});
+    }
     bus.emit({ type: "system.booted", scopeType: "system", scopeId: bootId, source: "hub", payload: { mode: settings.get("mode"), gate: settings.get("executionGate").status } });
     return bootReport;
   }

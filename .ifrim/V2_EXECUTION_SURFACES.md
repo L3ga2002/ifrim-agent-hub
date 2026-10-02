@@ -8,6 +8,7 @@ Același provider oferă mai multe suprafețe. Routerul alege PROVIDER + MODEL +
 |---|---|---|---|---|---|---|---|
 | `hub.local` | hub | HubLocalTools | PROGRAMMATIC | none | local | available | REIMPLEMENT |
 | `openai.codex_app_server` | openai | CodexAppServer | PROGRAMMATIC | subscription | local | unknown | WRAP |
+| `openai.codex_wsl_runner` | openai | CodexAppServer | PROGRAMMATIC | subscription | local | unknown | WRAP |
 | `openai.codex_cli` | openai | CodexCLI | ASSISTED | subscription | local | assisted | ASSISTED |
 | `openai.codex_desktop` | openai | CodexDesktop | NATIVE_INTERACTIVE | subscription | local | assisted | ASSISTED |
 | `openai.codex_cloud` | openai | CodexCloud | PROGRAMMATIC | subscription | cloud | needs_setup | ASSISTED |
@@ -48,6 +49,7 @@ Același provider oferă mai multe suprafețe. Routerul alege PROVIDER + MODEL +
 |---|---|---|---|---|---|---|---|---|---|
 | `hub.local` | ✔ | — | — | ✔ | ✔ | ✔ | — | ✔ | ✔ |
 | `openai.codex_app_server` | ✔ | ✔ | — | ✔ | ✔ | ✔ | ✔ | ✔ | ✔ |
+| `openai.codex_wsl_runner` | ✔ | ✔ | — | ✔ | ✔ | ✔ | ✔ | ✔ | ✔ |
 | `openai.codex_cli` | A | — | — | — | — | — | — | — | — |
 | `openai.codex_desktop` | A | — | — | — | — | — | — | — | — |
 | `openai.codex_cloud` | P | — | — | — | — | — | — | P | P |
@@ -99,6 +101,15 @@ JSON-RPC pe stdio al binarului oficial Codex; turn-uri cu fir nativ, aprobări, 
 - Platformă: Windows (codex.exe din Codex desktop) · Plan: Plan ChatGPT cu Codex · Auth: chatgpt
 - Disponibilitate de bază: unknown — Se confirmă cu Verifică contul (account/read)
 - Restricții de siguranță: Allowlist de metode JSON-RPC; Cont API key refuzat; Metodele de credite blocate; Aprobările de comenzi/fișiere trec prin politica Hub; Mediu controlat fără chei
+
+### Codex app-server în ifrim-runner (WSL2) (`openai.codex_wsl_runner`)
+
+Același app-server Codex, pornit în distribuția WSL2 dedicată ifrim-runner (utilizator runner, fără discuri Windows, interop oprit), pe o copie a proiectului; exportul e validat (C14) înainte de aplicare.
+
+- Capabilități: coding, long_running_coding, architecture, code_review, security_review, local_development, testing_qa, documents
+- Platformă: WSL2 ifrim-runner (Codex CLI Linux fixat) · Plan: Plan ChatGPT cu Codex · Auth: chatgpt
+- Disponibilitate de bază: unknown — Se confirmă cu inspecția, verificarea contului prin mediu (C16) și atestarea C1–C17 (Sistem → Medii de execuție)
+- Restricții de siguranță: Allowlist de metode JSON-RPC; Cont API key refuzat; Metodele de credite blocate; Aprobările de comenzi/fișiere trec prin politica Hub; Mediu controlat fără chei; env -i (fără variabile Windows); Profil ifrim_runner_rw/ro (:root refuzat); Export validat C14 înainte de aplicare; Fără trecere pe Windows dacă mediul refuză
 
 ### Codex CLI (TUI) (`openai.codex_cli`)
 

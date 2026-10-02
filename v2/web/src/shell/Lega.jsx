@@ -126,6 +126,8 @@ export function Lega({ go }) {
       pc = new RTCPeerConnection(); // no STUN/TURN, like the official Codex voice helper
       mic.getTracks().forEach((t) => pc.addTrack(t, mic));
       const dc = pc.createDataChannel("oai-events"); // required by the offer; the app-server sideband controls the session
+      // M05: an error event on the data channel (when the provider sends one) is shown and kept with the stop reason.
+      dc.onmessage = (event) => { try { const m = JSON.parse(String(event.data)); if (m?.type === "error") r.peerError = String(m.error?.message || m.message || "eroare").slice(0, 200); } catch { /* not JSON */ } };
       pc.ontrack = (event) => {
         if (!alive() || !r.audio) return;
         r.audio.srcObject = event.streams[0];
@@ -169,7 +171,7 @@ export function Lega({ go }) {
       pc.onconnectionstatechange = () => {
         if (!alive()) return;
         if (pc.connectionState === "connected") onConnected();
-        if (["failed", "closed"].includes(pc.connectionState) && r.sessionId) stop(`peer-${pc.connectionState}`);
+        if (["failed", "closed"].includes(pc.connectionState) && r.sessionId) stop(`peer-${pc.connectionState}${r.peerError ? `: ${r.peerError}` : ""}`);
       };
     } catch (e) {
       dispose();
@@ -199,7 +201,8 @@ export function Lega({ go }) {
     if (e.type === "lega.session.stopping") { closeLocal(); setStatus("stopping"); }
     else if (e.type === "lega.session" && e.session?.status === "ended") {
       closeLocal(); r.sessionId = null; r.pendingId = null; toOff();
-      if (e.session.endReason && e.session.endReason !== "user") pushToast(`lega-${e.session.id}`, "info", `Lega s-a oprit: ${e.session.endReason}`);
+      // M05: the provider's own words come with the reason ("closed: error" alone said nothing); errors are not "info".
+      if (e.session.endReason && e.session.endReason !== "user") pushToast(`lega-${e.session.id}`, e.session.lastError || /error|failed|eșu/.test(e.session.endReason) ? "error" : "info", `Lega s-a oprit: ${e.session.endReason}${e.session.endDetail ? ` — ${e.session.endDetail}` : ""}`);
       refresh();
     }
     else if (e.type === "lega.phase") setPhase(e.phase === "ended" ? "off" : e.phase);
@@ -423,8 +426,16 @@ function ReadyView({ onStart, disabled }) {
   if (status.error) return <ErrorNotice error={status.error} onRetry={status.reload} />;
   const d = status.data;
   const failed = d.preview.checks.filter((c) => !c.ok);
+  const last = d.session && d.session.status === "ended" ? d.session : null;
   return (
     <div className="stack tight">
+      {last && last.endReason && last.endReason !== "user" && (
+        <Notice tone={last.lastError ? "warn" : "info"} title={`Ultima sesiune s-a oprit: ${last.endReason}`}>
+          {last.endDetail && <div className="small">Ce a spus providerul: {last.endDetail}</div>}
+          {last.attempt && <div className="small">Încercarea din grant (contor Hub): {last.attempt.refunded ? "restituită" : "folosită"} — {last.attempt.rule}</div>}
+          {last.activity && <div className="faint small">Activitate: {last.activity.transcripts} transcrieri, {last.activity.turns} turnuri, {last.activity.toolCalls} unelte. Consumul real din plan: necunoscut.</div>}
+        </Notice>
+      )}
       {!d.consent.recorded && (
         <div className="stack tight">
           <strong className="small">Acord pentru Lega (o singură dată)</strong>

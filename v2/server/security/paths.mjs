@@ -2,7 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { HubError } from "../core/errors.mjs";
 
-const SECRET_NAME = /^(?:\.env(?!\.example$).*|.*\.(?:pem|key|pfx|p12|kdbx)|id_(?:rsa|ed25519|ecdsa)(?:\.pub)?|\.npmrc|\.pypirc|\.netrc|credentials(?:\.json)?|\.credentials\.json|auth\.json)$/i;
+const SECRET_NAME = /^(?:\.env(?!\.example$).*|.*\.(?:pem|key|pfx|p12|kdbx|jks|keystore|ppk|p8|gpg|tfvars|tfstate(?:\.backup)?)|id_(?:rsa|ed25519|ecdsa|dsa)(?:\.pub)?|\.npmrc|\.pypirc|\.netrc|\.git-credentials|\.htpasswd|\.dockercfg|\.dev\.vars|\.vault-token|credentials(?:\.json)?|\.credentials\.json|auth\.json|service-account.*\.json|.*-adminsdk-.*\.json|secrets?\.(?:json|ya?ml|toml|env|ini))$/i;
 
 export const isSecretLikeName = (name) => SECRET_NAME.test(name);
 

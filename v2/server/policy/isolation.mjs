@@ -209,3 +209,41 @@ export function evaluateHostIsolation({ provider, access = "read-only", project,
   }
   return { ok: false, level: "none", detail: `R2_OPEN: pe ${project.name}, comenzile Codex ar putea citi prin cale absolută alte proiecte (inclusiv .env). Pe proiecte reale Codex e blocat până la un mediu separat verificat sau la acceptarea ta explicită, limitată în timp (Integrări → Izolare)` };
 }
+
+/**
+ * M05 (b): exact text the owner confirms to let REAL projects use an attested environment (host_isolation = environment).
+ * It is bound to the environment fingerprint shown when it was given: any change of distro config, kernel, Codex or profile
+ * makes it invalid until a new attestation and a new approval.
+ */
+export const ENV_POLICY_TEXT = "Aprob ca writer-ul Codex, verificările și QA ale proiectelor reale pe care le pun pe ruta wsl-runner să ruleze în mediul ifrim-runner (host_isolation = environment), doar pentru amprenta afișată și cât timp atestarea locală C1–C17 este validă (expiră după 14 zile; nu este o probă live). Aprobarea e valabilă pentru toate aceste proiecte până o retrag sau până se schimbă amprenta. Știu că fișierele proiectului sunt copiate în mediu și trimise modelului prin clientul Codex, a cărui rețea spre OpenAI nu e filtrată pe domenii; că nucleul WSL e comun cu celelalte distribuții și administratorul Windows poate accesa mediul; și că preview-ul, E2E, review-ul și vocea rămân pe Windows, unde R2 e deschis, deci codul proiectului rulat acolo poate citi alte proiecte.";
+
+/**
+ * Host isolation through an execution environment (M05 §12). `envState` is the latest inspection, `attestation` the
+ * service's attestationStatus(), `policy` the owner's approval (b) for this environment. A test project needs a valid
+ * attestation; a real project also needs (b) for the CURRENT fingerprint. Nothing here falls back to the Windows route.
+ */
+export function evaluateEnvironmentRoute({ environmentId, envState, attestation, policy = null, project }) {
+  if (!project) return { ok: false, level: "none", detail: "Proiect necunoscut" };
+  if (!envState?.installed) return { ok: false, level: "none", detail: `ENV_UNAVAILABLE: mediul ${environmentId} nu a fost găsit sau inspectat (${envState?.error || "Sistem → Medii → Inspectează"}); fără trecere pe Windows` };
+  if (!envState.ok) return { ok: false, level: "none", detail: `ENV_BOUNDARY: inspecția raportează probleme (${(envState.problems || []).filter((p) => p.blocking).map((p) => p.detail).slice(0, 3).join("; ")})` };
+  if (!attestation?.valid) return { ok: false, level: "none", detail: `ENV_NOT_ATTESTED: ${attestation?.reason || "atestare lipsă"}` };
+  if (project.source === "hub-test") {
+    return { ok: true, level: "environment-test", detail: `Mediu ${environmentId} atestat (amprenta ${envState.fingerprint?.hash}); acoperă writer, verificări și QA; preview, E2E și review rămân pe Windows; proiect de test` };
+  }
+  const valid = policy?.approvedAt && policy.text === ENV_POLICY_TEXT && policy.fingerprintHash && policy.fingerprintHash === envState.fingerprint?.hash;
+  if (!valid) {
+    return { ok: false, level: "none", detail: policy?.approvedAt && policy.fingerprintHash !== envState.fingerprint?.hash
+      ? `NEEDS_OWNER_APPROVAL: aprobarea (b) a fost dată pentru amprenta ${policy.fingerprintHash}; mediul are acum ${envState.fingerprint?.hash}`
+      : `NEEDS_OWNER_APPROVAL: proiectele reale cer aprobarea ta (b) pentru host_isolation = environment (Sistem → Medii)` };
+  }
+  return { ok: true, level: "environment", detail: `Mediu ${environmentId} (amprenta ${envState.fingerprint?.hash}, aprobat ${policy.approvedAt}) pentru writer, verificări și QA; preview, E2E și review rămân pe Windows (R2 deschis); nucleu WSL comun, acces administrativ din Windows` };
+}
+
+/** Workspace isolation inside the environment: the runner profile must be reported allowed by the environment's own client. */
+export function evaluateEnvironmentProfile({ environmentId, probe, access = "read-only", profiles, probeProblem = null, simulated = false }) {
+  const id = profiles[access] || profiles["read-only"];
+  if (probeProblem) return { ok: false, level: "none", detail: `SECURITY_BLOCKER: ${probeProblem} (Sistem → Medii → Verifică contul prin mediu)` };
+  const profile = (probe?.sandbox?.profiles || []).find((p) => p.id === id);
+  if (!profile?.allowed) return { ok: false, level: "none", detail: `SECURITY_BLOCKER: profilul ${id} nu este raportat permis de clientul din ${environmentId} (${probe ? "rulează Verifică contul în Sistem → Medii" : "cont neverificat prin mediu"})` };
+  return { ok: true, level: "os-linux", detail: `${simulated ? "SIMULAT (fixture): " : ""}profilul ${id} e raportat permis de clientul din ${environmentId}; ce refuză profilul (:root, ~/.codex, /tmp, .env, rețea) e dovedit de atestarea C1–C17, nu de această verificare` };
+}

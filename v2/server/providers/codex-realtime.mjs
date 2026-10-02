@@ -69,6 +69,8 @@ export function createCodexRealtime({ codex, supervisor }) {
     let stopping = null;
     let realtimeRequested = false;
     const activeTurns = new Set();
+    // What the provider visibly did in this session (M05 §22): the evidence for the attempt rule and the diagnosis.
+    const activity = { transcripts: 0, ownerTranscripts: 0, assistantTranscripts: 0, delegations: 0, turns: 0, toolCalls: 0, errors: 0 };
     const turnText = new Map(); // turnId -> streamed agent text
     const deferred = () => { let resolve; let reject; const promise = new Promise((a, b) => { resolve = a; reject = b; }); promise.catch(() => {}); return { promise, resolve, reject }; };
     const startedD = deferred(); const sdpD = deferred();
@@ -86,21 +88,37 @@ export function createCodexRealtime({ codex, supervisor }) {
         case "thread/realtime/started": startedD.resolve({ realtimeSessionId: params.realtimeSessionId || null, version: params.version || null }); break;
         case "thread/realtime/sdp": sdpD.resolve(String(params.sdp || "")); break;
         case "thread/realtime/transcript/delta": onEvent({ type: "transcript.delta", role: params.role, delta: String(params.delta || "") }); break;
-        case "thread/realtime/transcript/done": onEvent({ type: "transcript.done", role: params.role, text: String(params.text || "") }); break;
+        case "thread/realtime/transcript/done":
+          activity.transcripts += 1;
+          if (params.role === "user") activity.ownerTranscripts += 1; else activity.assistantTranscripts += 1;
+          onEvent({ type: "transcript.done", role: params.role, text: String(params.text || "") });
+          break;
         case "thread/realtime/itemAdded":
-          if (params.item?.type === "handoff_request") onEvent({ type: "delegation", handoffId: params.item.handoff_id || null, text: String(params.item.input_transcript || "") });
+          if (params.item?.type === "handoff_request") { activity.delegations += 1; onEvent({ type: "delegation", handoffId: params.item.handoff_id || null, text: String(params.item.input_transcript || "") }); }
           break;
         case "thread/realtime/error": {
           const message = redactText(String(params.message || "realtime error")).slice(0, 500);
+          activity.errors += 1;
           rejectStart(Object.assign(new Error(message), { category: classifyText(message) }));
-          onEvent({ type: "error", message });
+          onEvent({ type: "error", source: "realtime", message });
+          break;
+        }
+        // The app-server's own error notification (lost before M05: Lega showed only "closed: error").
+        case "error": {
+          const message = redactText(String(params.error?.message || params.message || "provider error")).slice(0, 500);
+          activity.errors += 1;
+          onEvent({ type: "error", source: "codex", message, willRetry: Boolean(params.willRetry), code: params.error?.codexErrorInfo ? redactText(String(JSON.stringify(params.error.codexErrorInfo))).slice(0, 120) : null });
           break;
         }
         case "thread/realtime/closed":
           rejectStart(Object.assign(new Error(`realtime closed (${params.reason || "no reason"})`), { category: "transport" }));
-          onEvent({ type: "closed", reason: params.reason || null });
+          {
+            // Everything the protocol said about the close (except ids), redacted: the reason alone was "error".
+            const extra = Object.fromEntries(Object.entries(params || {}).filter(([k]) => !["threadId", "reason"].includes(k)));
+            onEvent({ type: "closed", reason: params.reason || null, detail: Object.keys(extra).length ? redactText(JSON.stringify(extra)).slice(0, 300) : null });
+          }
           break;
-        case "turn/started": if (params.turn?.id) { activeTurns.add(params.turn.id); onEvent({ type: "turn.started", turnId: params.turn.id }); } break;
+        case "turn/started": if (params.turn?.id) { activity.turns += 1; activeTurns.add(params.turn.id); onEvent({ type: "turn.started", turnId: params.turn.id }); } break;
         case "item/agentMessage/delta": if (params.turnId) turnText.set(params.turnId, (turnText.get(params.turnId) || "") + String(params.delta || "")); break;
         case "item/started":
         case "item/completed":
@@ -126,6 +144,7 @@ export function createCodexRealtime({ codex, supervisor }) {
 
     const onServerRequest = async (method, params) => {
       if (method === "item/tool/call") {
+        activity.toolCalls += 1;
         if (params.namespace !== "lega" || !onToolCall) return { result: { contentItems: [{ type: "inputText", text: "Unealtă necunoscută pentru Lega." }], success: false } };
         try {
           const reply = await withTimeout(Promise.resolve(onToolCall({ tool: String(params.tool || ""), args: params.arguments || {}, turnId: params.turnId, callId: params.callId })), TOOL_REPLY_TIMEOUT_MS, "lega tool");
@@ -147,7 +166,8 @@ export function createCodexRealtime({ codex, supervisor }) {
     if (signal?.aborted) throw cancelled();
     const session = codex.openSession({ cwd, key, access: "read-only", experimentalApi: true, allowedMethods: CODEX_VOICE_ALLOWED_METHODS,
       extraArgs: [...CODEX_VOICE_EXTRA_ARGS, ...mcpDisableArgs(mcpServerNames)], webSearch, label: "codex app-server (Lega)", onNotification, onServerRequest,
-      onExit: (exit) => { rejectStart(Object.assign(new Error(`codex app-server (Lega) exited (${exit.code})`), { category: "transport" })); if (!stopped) onEvent({ type: "closed", reason: `process exited (${exit.code})` }); } });
+      onExit: (exit) => { rejectStart(Object.assign(new Error(`codex app-server (Lega) exited (${exit.code})`), { category: "transport" }));
+        if (!stopped) onEvent({ type: "closed", reason: `process exited (${exit.code})`, detail: (session?.record?.stderrTail || []).slice(-3).join(" | ").slice(0, 300) || null }); } });
     const alive = () => !session.record.exited && !session.peer.isClosed?.();
 
     async function interruptTurns() {
@@ -225,6 +245,7 @@ export function createCodexRealtime({ codex, supervisor }) {
       if (!answerSdp.startsWith("v=0")) throw Object.assign(new Error("Codex returned an invalid SDP answer"), { category: "transport" });
       signal?.removeEventListener("abort", onAbort);
       return {
+        activity: () => ({ ...activity }),
         answerSdp, threadId, realtimeSessionId: info.realtimeSessionId, version: info.version, pid: session.record.pid, key,
         appendSpeech: (text) => (alive() ? session.peer.request("thread/realtime/appendSpeech", { threadId, text }, 10000) : Promise.resolve(null)),
         interruptTurns, stop, kill, activeTurnCount: () => activeTurns.size,

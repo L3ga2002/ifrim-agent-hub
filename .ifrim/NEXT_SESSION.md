@@ -1,5 +1,77 @@
 # Next Session - Ifrim Agent Hub
 
+## 2026-10-02 — M05: wsl-runner, R2 work and execution robustness (current; read `M05_REPORT.md` first)
+
+- **Code `2.6.0-m05`:** on disk on `v2-milestone-01` over `895c215`, **uncommitted**.
+  - Staged: one `git mv`, `v2/tests/manual/r2-wsl-canary.sh` → `v2/server/environments/scripts/canary.sh`.
+  - No commit, push, merge or deploy.
+  - The owner ran `migration-dry-run.mjs` (schema 4→5, integrity ok, row counts unchanged) and restarted the Hub from their own terminal on 2026-10-02 02:08 UTC: pid 26992, `2.6.0-m05`, BUILD_SAFE, migration 5 applied. In the live Hub the owner then clicked Inspect, C16 and the attestation (System → Medii de execuție, 2026-10-02 ~02:13 UTC): C16 chatgpt `prolite`, 8 models; attestation **PASS_LOCAL, 71 checks, fingerprint `7b3afa6ae2a7d1f3`** (recorded). (b) not approved, (c) NOT_RUN.
+- **Approvals used:**
+  - (a): M05 code, no model;
+  - real WSL checks without a model: canary, `codex sandbox` on dummy trees, app-server for account and models only;
+  - Hub start (2026-10-01 20:55 UTC);
+  - read-only subagents.
+
+  **Not granted:** (b) `host_isolation=environment`; (c) live WSL probes; (d) `.wslconfig`.
+- **Built:** `v2/server/environments/`:
+  - `wsl.mjs`: `wsl.exe -d ifrim-runner -u runner --exec /usr/bin/env -i …`, argv-validated, no shell;
+  - `wsl-runner.mjs`: inspect, fingerprint, C16 account, attestation, workspace prepare/export/apply/reap/release/recover;
+  - `canary.mjs` + `c14.mjs` (C1–C17);
+  - `workspace.mjs` + `tar.mjs`: copy-in, strict tar reader, C14 export validator, conflict-checked apply with rollback;
+  - `registry.mjs`: per-project route, never falls back to Windows;
+  - `wsl-factory-runner.mjs`;
+  - `environment-commands.mjs`, `overview.mjs`.
+
+  Plus:
+  - `providers/codex-wsl.mjs` (adapter `codex@wsl-runner`);
+  - gate checks `environment_route` and environment-bound `host_isolation`;
+  - migration 5 `m05-execution-environments` (additive);
+  - git snapshots for projects over 4000 files / 64 MB;
+  - Stop during QA commands;
+  - RT-07 PRG in browser E2E;
+  - warm-up and preflight (off at boot);
+  - Lega diagnostics and the attempt rule;
+  - the `cli` command channel;
+  - UI: System → „Medii de execuție” and „Unde rulează” in the mission panel.
+- **Real checks (no model):**
+  - canary PASS_LOCAL 71/71 on fingerprint `7b3afa6ae2a7d1f3` (comparable line identical to 2026-10-01);
+  - C14 26/26 on real GNU tar archives;
+  - C16 PASS (chatgpt `prolite`, 8 models, profiles allowed);
+  - Stop of a real `codex sandbox` tree: 0 survivors in 0.9–1.9 s;
+  - sandbox sockets: EPERM, so preview/E2E cannot run in the environment and stay on Windows.
+- **Found and closed:** a repository `core.fsmonitor` made the Hub's own git calls run a repo program on the host (`tools/git.mjs` now forces it off; test EXP-06 with a positive control). An adversarial review (3 read-only agents) found 2 HIGH and 19 MEDIUM; all fixed with tests, except two documented items (UI nonce for (b), workspace disk quota).
+- **Levels:**
+  - BUILD_READY reached;
+  - LOCAL_ENVIRONMENT_ATTESTED reached and recorded in the live Hub (2026-10-02 ~02:13 UTC, PASS_LOCAL 71 checks), then invalidated on purpose by the new canary version (C15r/C15s reaper check, ~03:50 UTC): re-attest from the UI;
+  - WSL_LIVE_SANDBOX_VALIDATED, PIPELINE_ISOLATION_VERIFIED and REAL_PROJECT_ELIGIBLE not reached.
+
+  **R2 stays open.** Real projects keep the R2 refusal on every route.
+- **Pre-probe review (2026-10-02 ~03:00–04:30 UTC).** The owner said in chat that Claude should do every approval. A read-only workflow (35 agents) checked whether the first live probe (c) could waste an attempt. Verified against the real `ifrim-runner` without a model:
+  - **BLOCKER, fixed: `reap.sh` counted itself.** In "all" mode the reaper found its own subshells. v1 gave `found=3 remaining=3` on an empty workspace, so every real writer turn would have ended FAILED after inference: export discarded, lease retained, attempt spent. v2 skips its own ancestors and descendants, and the attestation now exercises it for real (C15r/C15s: decoy processes, `remaining=0`).
+  - **BLOCKER, not code: Demo A.** It already contains the accepted fix, so a BUGFIX baseline passes. The probe needs a fresh fixture project: `node v2/scripts/create-factory-fixture.mjs bug-demo --dir ifrim-factory-demo-a2 --name "Factory Demo A2"` (`--name` is new).
+  - **Fixed: test output.** `node --test` in the network-off sandbox lost the child processes' output; only `not ok 1 - <file>` came back. Checks now run with `NODE_OPTIONS=--test-isolation=none`, verified for real, including `npm test`. BLOCKED now needs every failing test to show the socket refusal.
+  - **Fixed:** every command or file-change approval is auto-declined on the environment route.
+  - **Fixed:** tar directory entries. An env-made `.git/` is ignored, and an unchanged sent-in `.github/` passes.
+  - **Fixed:** the worker prompt on the environment route names the Linux copy, not the Windows path.
+  - **Tests:** new `v2/tests/m05-live-readiness.test.mjs` (LR-01…06); 5/5 mutants killed.
+- **Hub restart on the fixes.** Claude restarted the live Hub at ~03:50 UTC from an app terminal tab (`npm run v2:stop; npm run v2`): pid 32192, BUILD_SAFE. The 02:13 attestation is **no longer valid**: the canary version changed because `reap.sh` and `canary.mjs` are now hashed into it. Re-attest from System → Medii de execuție.
+- **Live probe (c) NOT run.** The session's permission layer refused further live-Hub actions (reason "Production Deploy"), and Claude stopped there. To run it, the owner does the steps in `M05_LIVE_VALIDATION_PLAN.md` ("Precondiții").
+- **Unchanged:** Demo B bundle `bnd_mupwze7b_e03f70f2d7` awaits the owner; the Demo B draft `mis_mupy0no5_922d2614b0` is SPEC_DRAFT; AROBS, ProDelivery and Sales live untouched.
+- **Next (state 2026-10-02 ~04:30 UTC):**
+  1. **Done:** the migration dry run, the restart onto `2.6.0-m05`, the first attestation, the pre-probe fixes, and the restart onto the fixes.
+  2. Re-attest from System → Medii de execuție (Inspect → C16 → attestation). Expect PASS_LOCAL with C15r/C15s.
+  3. Run (c) per `M05_LIVE_VALIDATION_PLAN.md` "Precondiții" on Factory Demo A2:
+     - create the project with `create-factory-fixture --name`;
+     - put it on the route;
+     - set LIVE_VALIDATION;
+     - create the Codex RW and Claude RO grants (3 attempts, 150 min each);
+     - set the mission limits through the API;
+     - start the mission.
+
+     It needs the owner's clicks in the UI.
+  4. (b) only after the preview/E2E/review isolation decision.
+  5. Push of M05: the owner's step if Claude's push is refused.
+
 ## 2026-10-01 (night) — M03 closure probes and the R2 environment (current; see `M03_CLOSURE_RESULTS.md`)
 
 - **Probes (owner-approved, owner clicks):** 2.3 PASS_LIVE, 2.5 PASS_LIVE, 2.6 PASS_LIVE. Demo A bundle accepted by the owner. Demo B bundle `bnd_mupwze7b_e03f70f2d7` awaits the owner's decision.

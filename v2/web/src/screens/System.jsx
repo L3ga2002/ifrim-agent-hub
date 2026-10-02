@@ -3,9 +3,11 @@ import { Activity, Lock, History, CalendarClock, Scale, ScrollText, Workflow, Bo
 import { api, fmt } from "../api.js";
 import { useResource, useAction, usePref, useHub } from "../store.js";
 import { Panel, Loading, ErrorNotice, Empty, Chip, StatusChip, Notice, Dialog } from "../components/ui.jsx";
+import EnvironmentsTab from "./system/Environments.jsx";
 
 const TABS = [
   { id: "runs", label: "Execuții & telemetrie", icon: Activity },
+  { id: "environments", label: "Medii de execuție", icon: ShieldCheck },
   { id: "locks", label: "Lock-uri & computer", icon: Lock },
   { id: "checkpoints", label: "Checkpointuri & handoff-uri", icon: History },
   { id: "schedules", label: "Programări", icon: CalendarClock },
@@ -1171,7 +1173,7 @@ function NativeTab() {
 
 // ---------------------------------------------------------------- screen
 
-const PANELS = { runs: RunsTab, locks: LocksTab, checkpoints: CheckpointsTab, schedules: SchedulesTab, policies: PoliciesTab, commands: CommandsTab, lifecycles: LifecyclesTab, skills: SkillsTab, native: NativeTab };
+const PANELS = { runs: RunsTab, environments: EnvironmentsTab, locks: LocksTab, checkpoints: CheckpointsTab, schedules: SchedulesTab, policies: PoliciesTab, commands: CommandsTab, lifecycles: LifecyclesTab, skills: SkillsTab, native: NativeTab };
 
 export default function System({ query, go }) {
   const { tab, select, visited } = usePageTabs("system", TABS, query, go);

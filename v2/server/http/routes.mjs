@@ -1,3 +1,4 @@
+import { environmentOverview } from "../environments/overview.mjs";
 import fs from "node:fs";
 import path from "node:path";
 import { execFile } from "node:child_process";
@@ -49,7 +50,10 @@ export function registerRoutes(router, hub, { token }) {
 
   /** Dispatches a command from the UI; 202 when it waits for an approval, 201 for creations. */
   async function dispatch(req, type, payload, { created = false } = {}) {
-    const result = await commands.dispatch({ type, payload, actor: "user", channel: "ui", idempotencyKey: req.headers["idempotency-key"] || null });
+    // A local script says so (X-Hub-Channel: cli): its command is recorded as "cli", and only commands that allow that channel
+    // (inference-free checks) accept it. Without the header the request is the owner's UI, as before.
+    const viaCli = String(req.headers["x-hub-channel"] || "").toLowerCase() === "cli";
+    const result = await commands.dispatch({ type, payload, actor: viaCli ? "cli" : "user", channel: viaCli ? "cli" : "ui", idempotencyKey: req.headers["idempotency-key"] || null });
     if (result.approvalRequired) return { __status: 202, body: { approvalRequired: true, approval: result.approval, commandId: result.command.id } };
     return created ? { __status: 201, body: result.result } : result.result;
   }
@@ -364,6 +368,18 @@ export function registerRoutes(router, hub, { token }) {
           codex: evaluateHostIsolation({ provider: "codex", project: p, acceptance: settings.get("r2Acceptance")?.[p.id] || null, now: clock() }) })) },
     };
   });
+  // ---------- execution environments (M05) ----------
+  get("/api/environments", () => environmentOverview(hub));
+  post("/api/environments/:id/inspect", cmd("environment.inspect", ({ params }) => ({ environmentId: params.id })));
+  post("/api/environments/:id/probe", cmd("environment.probe", ({ params }) => ({ environmentId: params.id })));
+  post("/api/environments/:id/attest", cmd("environment.attest", ({ params, body }) => ({ environmentId: params.id, allowRestart: body?.allowRestart !== false })));
+  post("/api/environments/:id/policy", cmd("environment.policy.approve", ({ params, body }) => ({ environmentId: params.id, confirmText: body?.confirmText, fingerprintHash: body?.fingerprintHash })));
+  post("/api/environments/:id/policy/revoke", cmd("environment.policy.revoke", ({ params }) => ({ environmentId: params.id })));
+  post("/api/environments/:id/reconcile", cmd("environment.reconcile", ({ params }) => ({ environmentId: params.id })));
+  post("/api/environments/:id/workspaces/:ws/release", cmd("environment.workspace.release", ({ params }) => ({ environmentId: params.id, workspaceId: params.ws })));
+  post("/api/environments/warmup", cmd("environment.warmup", ({ body }) => ({ route: body?.route || "windows" })));
+  post("/api/environments/warmup/configure", cmd("environment.warmup.configure", ({ body }) => ({ onBoot: Boolean(body?.onBoot) })));
+  post("/api/projects/:id/environment", cmd("project.environment.set", ({ params, body }) => ({ projectId: params.id, environment: body?.environment })));
   // ---------- Lega (voice assistant) ----------
   // Status + gate preview for the Lega panel (the Codex config is re-read locally, key names only).
   get("/api/lega", () => {
@@ -386,8 +402,10 @@ export function registerRoutes(router, hub, { token }) {
   get("/api/gate/preview", ({ query }) => {
     const project = need(projects.get(query.projectId || "ifrim-agent-hub"), "Project");
     const provider = query.provider || "codex";
+    // The project's route (M05) decides whose model list and account facts apply.
+    const route = hub.environments ? hub.environments.routeFor(project.id, provider) : "windows";
     // The same model/effort plan a run would resolve (profile BALANCED unless asked), so a missing model/list shows here first.
-    const plan = resolveRunPlan({ provider, model: query.model || "", effort: query.effort || "", profile: query.profile || "BALANCED", providerState: providerState.get(provider) || null });
+    const plan = resolveRunPlan({ provider, model: query.model || "", effort: query.effort || "", profile: query.profile || "BALANCED", providerState: providerState.get(route === "windows" ? provider : `${provider}@${route}`) || null });
     return gate.evaluate({ provider, projectId: project.id, access: query.access || "read-only", workspaceResource: `workspace:${path.resolve(project.path).toLowerCase()}`, plan });
   });
   get("/api/usage", () => ({ overview: usage.overview(), reservePercent: settings.get("usageReservePercent"),

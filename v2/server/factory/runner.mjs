@@ -1,9 +1,10 @@
+import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import http from "node:http";
 import net from "node:net";
 import { resolveCodexBinary } from "../providers/codex.mjs";
-import { codexIsolationArgs, CODEX_PROFILE_BY_ACCESS } from "../policy/isolation.mjs";
+import { codexIsolationArgs, CODEX_PROFILE_BY_ACCESS, evaluateHostIsolation } from "../policy/isolation.mjs";
 import { redactText } from "../security/redact.mjs";
 import { isAllowedCommand, isAllowedPreviewCommand } from "./spec.mjs";
 
@@ -57,10 +58,18 @@ export function testStatus({ exitCode, counts, timedOut }) {
 export function createFactoryRunner({ config, supervisor, settings, providerState, codexIsolation, homeDir = os.homedir() }) {
   const profile = CODEX_PROFILE_BY_ACCESS["workspace-write"];
 
-  /** Whether the sandboxed runner may run on this machine now (never a fallback to an unsandboxed process). */
-  function readiness() {
+  /**
+   * Whether the sandboxed runner may run on this machine now (never a fallback to an unsandboxed process). With a project:
+   * a real project's code runs here only under the owner's R2 acceptance, exactly like a Codex writer on Windows (M05 §07:
+   * the runner never had wider access than the worker, and it had no R2 check of its own before).
+   */
+  function readiness(project = null) {
     const binary = resolveCodexBinary(config);
     if (!binary) return { ok: false, isolation: "none", detail: "Clientul Codex nu e instalat: runner-ul sandbox nu poate porni (BLOCKED)" };
+    if (project && project.source !== "hub-test") {
+      const host = evaluateHostIsolation({ provider: "codex", access: "workspace-write", project, acceptance: settings.get("r2Acceptance")?.[project.id] || null, now: config.now() });
+      if (!host.ok) return { ok: false, isolation: "none", detail: host.detail };
+    }
     if (config.testMode) return { ok: true, binary, isolation: "SIMULATED: fixture fake-codex, fără sandbox real" };
     if (process.platform === "win32") {
       const sandbox = providerState.get("codex")?.sandbox;
@@ -81,11 +90,11 @@ export function createFactoryRunner({ config, supervisor, settings, providerStat
    * Runs one allowed command in `ws`. Returns { status, reason, exitCode, counts, failures, durationMs, outputTail, isolation,
    * runner, command }. `key` names the supervised process (Stop kills it).
    */
-  function run({ key, ws, command, timeoutMs = RUNNER_TIMEOUT_MS }) {
+  function run({ key, ws, command, timeoutMs = RUNNER_TIMEOUT_MS, project = null }) {
     const started = Date.now();
     const base = { command, runner: "codex-sandbox", durationMs: 0, exitCode: null, counts: {}, failures: [], outputTail: "" };
     if (!isAllowedCommand(command)) return Promise.resolve({ ...base, status: "BLOCKED", reason: "comandă în afara listei acceptate", isolation: "none" });
-    const ready = readiness();
+    const ready = readiness(project);
     if (!ready.ok) return Promise.resolve({ ...base, status: "BLOCKED", reason: ready.detail, isolation: ready.isolation });
     const argv = commandArgv(command);
     const binary = ready.binary; // the Codex client: the same provider binary every run uses
@@ -115,9 +124,9 @@ export function createFactoryRunner({ config, supervisor, settings, providerStat
   }
 
   /** Starts a long-running preview inside the same sandbox (on a free port) and waits until `url` answers (or `waitMs` passes). */
-  async function startPreview({ key, ws, command, url, waitMs = 20000 }) {
+  async function startPreview({ key, ws, command, url, waitMs = 20000, project = null }) {
     if (!isAllowedPreviewCommand(command)) return { status: "BLOCKED", reason: "comandă de preview neacceptată" };
-    const ready = readiness();
+    const ready = readiness(project);
     if (!ready.ok) return { status: "BLOCKED", reason: ready.detail, isolation: ready.isolation };
     // The port must be free: otherwise the preview evidence and the E2E would be about someone else's server (another dev
     // app, V1). The mission's own previous preview was stopped just before; its port may take a moment to close.
@@ -146,7 +155,30 @@ export function createFactoryRunner({ config, supervisor, settings, providerStat
       url, pid: record.pid, key, check, isolation: ready.isolation, outputTail: [...out, ...record.stderrTail].slice(-40).join("\n"), durationMs: Date.now() - started };
   }
 
-  return { readiness, run, startPreview, stop: (key) => supervisor.stop(key, { graceMs: 500 }) };
+  /**
+   * Warm-up / preflight (M05 §21): one trivial command (`node -e 0`) through the same sandbox in an empty scratch folder. No
+   * project code, no model; it only shows whether the sandbox answers and how long its first command takes.
+   */
+  async function preflight() {
+    const ready = readiness();
+    if (!ready.ok) return { ok: false, environment: "windows", reason: ready.detail };
+    const scratch = path.join(config.workDir, "preflight", `pf-${Date.now().toString(36)}`);
+    fs.mkdirSync(scratch, { recursive: true });
+    const key = `preflight-windows-${Date.now()}`;
+    const started = Date.now();
+    try {
+      const binary = ready.binary;
+      const record = supervisor.start({ key, label: "preflight: node -e 0", executable: binary.executable, args: sandboxArgs(binary, scratch, [process.execPath, "-e", "0"]), cwd: scratch });
+      const timer = setTimeout(() => { supervisor.stop(key, { graceMs: 0 }).catch(() => {}); }, 300000);
+      timer.unref?.();
+      const exit = await record.exit;
+      clearTimeout(timer);
+      supervisor.forget(key);
+      return { ok: exit.code === 0, environment: "windows", sandboxMs: Date.now() - started, durationMs: Date.now() - started, reason: exit.code === 0 ? null : `exit ${exit.code}` };
+    } finally { fs.rmSync(scratch, { recursive: true, force: true }); }
+  }
+
+  return { readiness, run, startPreview, preflight, stop: (key) => supervisor.stop(key, { graceMs: 500 }) };
 }
 
 /**

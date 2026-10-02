@@ -95,6 +95,61 @@
       }
     },
     {
+      "id": "openai.codex_wsl_runner",
+      "provider": "openai",
+      "surfaceType": "CodexAppServer",
+      "name": "Codex app-server în ifrim-runner (WSL2)",
+      "description": "Același app-server Codex, pornit în distribuția WSL2 dedicată ifrim-runner (utilizator runner, fără discuri Windows, interop oprit), pe o copie a proiectului; exportul e validat (C14) înainte de aplicare.",
+      "capabilities": [
+        "coding",
+        "long_running_coding",
+        "architecture",
+        "code_review",
+        "security_review",
+        "local_development",
+        "testing_qa",
+        "documents"
+      ],
+      "platform": "WSL2 ifrim-runner (Codex CLI Linux fixat)",
+      "planRequirement": "Plan ChatGPT cu Codex",
+      "authMode": "chatgpt",
+      "billingMode": "subscription",
+      "programmaticControl": "PROGRAMMATIC",
+      "location": "local",
+      "adapter": "codex_wsl_runner",
+      "availability": "unknown",
+      "availabilityReason": "Se confirmă cu inspecția, verificarea contului prin mediu (C16) și atestarea C1–C17 (Sistem → Medii de execuție)",
+      "safetyConstraints": [
+        "Allowlist de metode JSON-RPC",
+        "Cont API key refuzat",
+        "Metodele de credite blocate",
+        "Aprobările de comenzi/fișiere trec prin politica Hub",
+        "Mediu controlat fără chei",
+        "env -i (fără variabile Windows)",
+        "Profil ifrim_runner_rw/ro (:root refuzat)",
+        "Export validat C14 înainte de aplicare",
+        "Fără trecere pe Windows dacă mediul refuză"
+      ],
+      "hubDecision": "WRAP",
+      "operations": {
+        "start": "SUPPORTED",
+        "resume": "SUPPORTED",
+        "sendInput": {
+          "support": "UNSUPPORTED",
+          "note": "turn/steer nu este în allowlist; mesajul următor devine turn nou"
+        },
+        "streamEvents": "SUPPORTED",
+        "interrupt": "SUPPORTED",
+        "stop": "SUPPORTED",
+        "prepareHandoff": "SUPPORTED",
+        "getStatus": "SUPPORTED",
+        "getArtifacts": {
+          "support": "SUPPORTED",
+          "note": "diff Git și mesaje; artefactele native nu sunt exportate"
+        }
+      }
+    },
+    {
       "id": "openai.codex_cli",
       "provider": "openai",
       "surfaceType": "CodexCLI",

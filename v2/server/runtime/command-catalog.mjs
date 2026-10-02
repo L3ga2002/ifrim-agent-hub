@@ -17,6 +17,7 @@ import { buildBriefing, briefingMarkdown } from "../domain/briefing.mjs";
 import { snapshotLegacy, applyImport, revertImport } from "../storage/v1-import.mjs";
 import { transitionTask } from "./state-machine.mjs";
 import { registerSalesCommands } from "../sales/sales-commands.mjs";
+import { registerEnvironmentCommands } from "../environments/environment-commands.mjs";
 import fs from "node:fs";
 
 /** Commands a LOCAL_HUB schedule may run (non-AI, no external effects). */
@@ -305,8 +306,11 @@ export function registerCommands(commands, hub) {
       const installation = await adapter.inspectInstallation();
       if (!installation.installed) throw new HubError("transport", installation.reason);
       const result = await adapter.probe({ withModels: Boolean(input.withModels), withUsage: true });
+      // A check without the model list keeps the last list (found in M05: "Verifică contul" erased it and the run plan failed).
+      const previous = providerState.get(input.provider);
+      const models = result.models === undefined && Array.isArray(previous?.models) ? { models: previous.models, modelsCheckedAt: previous.modelsCheckedAt || previous.probedAt } : {};
       bus.transaction(() => {
-        providerState.set(input.provider, { ...result, installation, config: adapter.inspectConfig() });
+        providerState.set(input.provider, { ...result, ...models, ...(result.models !== undefined ? { modelsCheckedAt: result.probedAt } : {}), installation, config: adapter.inspectConfig() });
         if (result.usage && !result.usage.error) usage.record(input.provider, result.usage);
         bus.append({ type: result.ok ? "provider.probed" : "provider.unavailable", scopeType: "provider", scopeId: input.provider, source: ctx.actor,
           payload: { ok: result.ok, accountType: result.auth?.accountType || result.auth?.authMethod || null, error: result.error || null } });
@@ -316,7 +320,7 @@ export function registerCommands(commands, hub) {
     } });
 
   // ---------- backups, checkpoints, artifacts ----------
-  reg("backup.run", { describe: "Backup complet + verificare prin restaurare", async: true, schema: { projectId: { required: true } }, channels: UI_SCHED,
+  reg("backup.run", { describe: "Backup complet + verificare prin restaurare", async: true, schema: { projectId: { required: true } }, channels: [...UI_SCHED, "cli"],
     execute: (input, ctx) => backups.run(input.projectId, ctx.channel === "schedule" ? "scheduled backup" : "manual backup", ctx.actor) });
   reg("checkpoint.create", { describe: "Checkpoint operațional cross-provider (referințe native incluse)", async: true, channels: UI_SCHED,
     schema: { scopeType: { enum: ["conversation", "mission", "task", "project", "hub"], default: "project" }, scopeId: { max: 80 }, label: { max: 200, default: "" }, nextAction: { max: 500, default: "" },
@@ -356,6 +360,7 @@ export function registerCommands(commands, hub) {
     execute: async (input) => leads.setStatus(input.leadId, input.status, input.notes ?? null) });
   // ---------- Sales & Lead Generation (M04): the department's commands; the M01 registry above stays for compatibility ----------
   registerSalesCommands(reg, hub, { createMission });
+  registerEnvironmentCommands(reg, hub);
 
   // ---------- company runtime & chief of staff ----------
   reg("company.department_status", { describe: "Stare departament (active/planned/paused)", schema: { departmentKey: { required: true, max: 40 }, status: { enum: ["active", "planned", "paused"], required: true }, reason: { required: true, min: 3, max: 300 } },

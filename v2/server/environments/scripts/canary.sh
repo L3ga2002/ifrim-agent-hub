@@ -1,4 +1,5 @@
 #!/bin/bash
+# ifrim-env:canary v1 (moved from v2/tests/manual/r2-wsl-canary.sh in M05; C1-C13 unchanged)
 # R2 canary inside ifrim-runner (M04_R2_ISOLATION_OPTIONS.md §6), fictive files only, no model, no prompt.
 # Args: $1 token prefix (CANARY_xxxx), $2 Windows-side fictive tree path as /mnt/c/... guess, $3 Windows listener port.
 # Prints one line per check: "<id> PASS|FAIL <what>". Never prints file contents (exit codes and counts only).

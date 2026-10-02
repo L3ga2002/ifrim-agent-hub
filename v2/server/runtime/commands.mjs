@@ -4,7 +4,8 @@ import { validate } from "../core/validate.mjs";
 import { json, parse } from "../storage/db.mjs";
 import { redactDeep } from "../security/redact.mjs";
 
-export const COMMAND_CHANNELS = Object.freeze(["ui", "voice", "automation", "schedule", "companion", "recovery", "test"]);
+// "cli" (M05): a local script acting through the API (inference-free checks only); recorded as such, never as the owner's UI.
+export const COMMAND_CHANNELS = Object.freeze(["ui", "voice", "automation", "schedule", "companion", "recovery", "test", "cli"]);
 const RESULT_LIMIT = 20000;
 
 /**

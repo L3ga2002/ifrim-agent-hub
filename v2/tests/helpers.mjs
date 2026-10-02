@@ -43,7 +43,7 @@ export function freePort() {
   });
 }
 
-export async function makeTestHub({ codex = "ok", claude = "ok", port = 0, clock, configOverrides = {}, queues = false, hubOptions = {} } = {}) {
+export async function makeTestHub({ codex = "ok", claude = "ok", port = 0, clock, configOverrides = {}, queues = false, hubOptions = {}, wsl = null } = {}) {
   const dataDir = tempDir("hub");
   const projectDir = makeProject(path.join(dataDir, "project"));
   const homeDir = path.join(dataDir, "home");
@@ -52,13 +52,19 @@ export async function makeTestHub({ codex = "ok", claude = "ok", port = 0, clock
   const logs = { codex: path.join(dataDir, "codex.log"), claude: path.join(dataDir, "claude.log") };
   // Optional scenario queues (one line per provider process, consumed in order) for multi-run flows (Software Factory).
   const queueFiles = { codex: path.join(dataDir, "codex.queue"), claude: path.join(dataDir, "claude.queue") };
+  const codexPrefix = [path.join(FIXTURES, "fake-codex.mjs"), `--scenario=${codex}`, `--log=${logs.codex}`, ...(queues ? [`--scenario-queue=${queueFiles.codex}`] : [])];
+  // M05: an optional simulated wsl.exe + ifrim-runner distro (tests/fixtures/fake-wsl.mjs); its codex is the same fake.
+  const wslFiles = wsl ? { root: path.join(dataDir, "wslroot"), state: path.join(dataDir, "wsl-state.json"), log: path.join(dataDir, "wsl.log") } : null;
+  if (wslFiles) fs.writeFileSync(wslFiles.state, JSON.stringify(wsl === true ? {} : wsl));
   const config = loadConfig({
     testMode: true, dataDir, hubRoot: projectDir, projectsRoot: dataDir, registryPath: path.join(dataDir, "no-registry.md"),
     legacyDbPath: path.join(dataDir, "no-legacy.sqlite"), port: port || await freePort(),
     providerBinaries: {
-      codex: { executable: process.execPath, prefixArgs: [path.join(FIXTURES, "fake-codex.mjs"), `--scenario=${codex}`, `--log=${logs.codex}`, ...(queues ? [`--scenario-queue=${queueFiles.codex}`] : [])] },
+      codex: { executable: process.execPath, prefixArgs: codexPrefix },
       claude: { executable: process.execPath, prefixArgs: [path.join(FIXTURES, "fake-claude.mjs"), `--fake-scenario=${claude}`, `--fake-log=${logs.claude}`, ...(queues ? [`--fake-scenario-queue=${queueFiles.claude}`] : [])] },
     },
+    ...(wslFiles ? { wsl: { executable: process.execPath, prefixArgs: [path.join(FIXTURES, "fake-wsl.mjs"), `--fake-root=${wslFiles.root}`, `--fake-state=${wslFiles.state}`, `--fake-log=${wslFiles.log}`,
+      `--fake-codex=${JSON.stringify([process.execPath, ...codexPrefix])}`] } } : {}),
     ...(clock ? { now: clock } : {}),
     ...configOverrides,
   });
@@ -70,7 +76,9 @@ export async function makeTestHub({ codex = "ok", claude = "ok", port = 0, clock
     try { fs.rmSync(dataDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 }); } catch { /* Windows may hold a file briefly; left in .ifrim/tmp */ }
   };
   const queue = (provider, ...lines) => fs.appendFileSync(queueFiles[provider], `${lines.join("\n")}\n`);
-  return { hub, config, dataDir, projectDir, homeDir, logs, readLog, cleanup, queue };
+  const wslState = (value) => fs.writeFileSync(wslFiles.state, JSON.stringify(value));
+  const wslLog = () => (wslFiles && fs.existsSync(wslFiles.log) ? fs.readFileSync(wslFiles.log, "utf8").split("\n").filter(Boolean).map((l) => JSON.parse(l)) : []);
+  return { hub, config, dataDir, projectDir, homeDir, logs, readLog, cleanup, queue, wslFiles, wslState, wslLog };
 }
 
 /** Puts a test hub into a state where a run is admissible (all through public module APIs). */

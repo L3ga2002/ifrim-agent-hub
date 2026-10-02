@@ -1,17 +1,93 @@
-import { execFile } from "node:child_process";
+import { execFile, execFileSync } from "node:child_process";
 import { promisify } from "node:util";
 import { redactText } from "../security/redact.mjs";
+import { buildChildEnv } from "../policy/billing.mjs";
 
 const execFileAsync = promisify(execFile);
+const GIT = "git";
 const SECRET_PATHSPEC = [":(exclude,glob)**/.env*", ":(exclude,glob)**/private/**", ":(exclude,glob)**/*.pem", ":(exclude,glob)**/*.key"];
+
+/**
+ * Every Hub git call is read-only and runs no program the repository's own config names (M05 §15, T09): core.fsmonitor is
+ * a command git would run for status/ls-files with the Hub's rights, so it is pinned off; no prompts, no optional locks,
+ * and the child gets the Hub's allowlisted environment (no keys, tokens or proxies).
+ */
+const SAFE_GIT_CONFIG = ["-c", "core.quotepath=off", "-c", "core.fsmonitor=false", "-c", "core.untrackedCache=false", "-c", "diff.external=", "-c", "core.hooksPath=/dev/null"];
+const gitEnv = () => buildChildEnv({ GIT_TERMINAL_PROMPT: "0", GIT_OPTIONAL_LOCKS: "0", GIT_CONFIG_NOSYSTEM: "1" });
 
 async function git(cwd, args, { timeout = 10000, maxBuffer = 2 * 1024 * 1024 } = {}) {
   try {
-    const { stdout } = await execFileAsync("git", ["-c", "core.quotepath=off", ...args], { cwd, windowsHide: true, timeout, maxBuffer });
+    const { stdout } = await execFileAsync(GIT, [...SAFE_GIT_CONFIG, ...args], { cwd, windowsHide: true, timeout, maxBuffer, env: gitEnv() });
     return { ok: true, out: stdout };
   } catch (error) {
     return { ok: false, out: "", error: error.killed ? "timeout" : (error.code || "error") };
   }
+}
+
+/**
+ * Synchronous read-only git for the factory snapshot (which is synchronous by design). Same safe config and environment;
+ * only the read-only subcommands below call it. Returns a Buffer, or null when git fails.
+ */
+function gitSync(cwd, args, { timeout = 30000, maxBuffer = 64 * 1024 * 1024 } = {}) {
+  try { return execFileSync(GIT, [...SAFE_GIT_CONFIG, ...args], { cwd, windowsHide: true, timeout, maxBuffer, env: gitEnv(), stdio: ["ignore", "pipe", "ignore"] }); }
+  catch { return null; }
+}
+
+/** Index entries (tracked files): [{ path, mode, blob }]; null when the folder is not a readable repository. */
+export function gitIndexEntriesSync(cwd) {
+  // -v adds a tag: lowercase = "assume unchanged", S = "skip worktree" — git would not look at those files' contents.
+  const out = gitSync(cwd, ["ls-files", "-s", "-v", "-z"]);
+  if (!out) return null;
+  return out.toString("utf8").split("\0").filter(Boolean).map((line) => {
+    const tab = line.indexOf("\t");
+    const fields = line.slice(0, tab).split(" ");
+    const tag = /^[A-Za-z?]$/.test(fields[0]) ? fields.shift() : "H";
+    const [mode, blob] = fields;
+    return { path: line.slice(tab + 1), mode, blob, trusted: tag === "H" };
+  });
+}
+
+/** Paths whose working-tree content may differ from the index (modified, deleted, renamed, conflicted) and untracked ones. */
+export function gitChangedPathsSync(cwd) {
+  const out = gitSync(cwd, ["status", "--porcelain=v1", "-z", "--untracked-files=all", "--no-renames"]);
+  if (!out) return null;
+  const changed = new Set();
+  const untracked = new Set();
+  for (const entry of out.toString("utf8").split("\0").filter(Boolean)) {
+    const code = entry.slice(0, 2);
+    const p = entry.slice(3);
+    if (code === "??") untracked.add(p); else changed.add(p);
+  }
+  return { changed, untracked };
+}
+
+/** The content of one blob from the object database (read-only), or null. */
+export function gitBlobSync(cwd, blob) {
+  if (!/^[0-9a-f]{40,64}$/.test(String(blob || ""))) return null;
+  return gitSync(cwd, ["cat-file", "blob", blob], { maxBuffer: 16 * 1024 * 1024 });
+}
+
+/** Ignored untracked paths (ignored folders collapsed to "dir/"), read-only. */
+export function gitIgnoredFilesSync(cwd) {
+  const out = gitSync(cwd, ["ls-files", "-z", "--others", "--ignored", "--exclude-standard", "--directory"]);
+  return out ? out.toString("utf8").split("\0").filter(Boolean) : null;
+}
+
+export function gitHeadSync(cwd) {
+  const out = gitSync(cwd, ["rev-parse", "HEAD"]);
+  return out ? out.toString("utf8").trim() : "";
+}
+
+/**
+ * The project files as git sees them: tracked plus untracked, ignored ones excluded (M05 workspace transfer). Read-only;
+ * the caller applies its own exclusion policy on top (a .gitignore is not a security policy). Throws when git fails.
+ */
+export async function gitListFiles(cwd, { split = false } = {}) {
+  const tracked = await git(cwd, ["ls-files", "-z", "--cached"], { timeout: 60000, maxBuffer: 64 * 1024 * 1024 });
+  const others = await git(cwd, ["ls-files", "-z", "--others", "--exclude-standard"], { timeout: 60000, maxBuffer: 64 * 1024 * 1024 });
+  if (!tracked.ok || !others.ok) throw new Error(`git ls-files: ${tracked.error || others.error}`);
+  const lists = { tracked: [...new Set(tracked.out.split("\0").filter(Boolean))], others: [...new Set(others.out.split("\0").filter(Boolean))] };
+  return split ? lists : [...new Set([...lists.tracked, ...lists.others])];
 }
 
 /** Read-only repository snapshot used by checkpoints, handoffs and backups. */
