@@ -64,7 +64,9 @@ function connect(after) {
       for (const fn of eventListeners) fn(event);
       if (!event.type.startsWith("run.activity") && !event.type.startsWith("backup.progress")) scheduleRefresh();
       const toast = TOAST_TYPES[event.type];
-      if (toast) pushToast(event.type, toast.level, toast.text, event);
+      // M06: an approval requested by your own confirmed plan (owner session) is decided by it at once; no "approval needed" alarm.
+      const ownPlan = event.type === "approval.requested" && String(event.source || "").startsWith("owner:");
+      if (toast && !ownPlan) pushToast(event.type, toast.level, toast.text, event);
     },
     onLive(event) { for (const fn of liveListeners) fn(event); },
     onStatus(connection) { setState({ connection }); if (connection === "live") scheduleRefresh(); },

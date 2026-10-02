@@ -38,7 +38,7 @@ test("M03-LEGA-01 voice process allowlist is narrow and separate; run processes 
   for (const k of ["realtime.type", "experimental_realtime_start_instructions", "mcp_servers.<nume neadresabil>"]) assert.ok(keys.riskyKeys.includes(k), k);
   const tools = legaDynamicTools({ projects: [{ id: "p1", name: "Ifrim Hub Test" }] })[0];
   assert.equal(tools.type, "namespace");
-  assert.deepEqual(tools.tools.map((t) => t.name).sort(), ["company_briefing", "how_to", "hub_status", "list_missions", "list_projects", "mission_detail", "navigate", "pause",
+  assert.deepEqual(tools.tools.map((t) => t.name).sort(), ["company_briefing", "how_to", "hub_status", "list_missions", "list_projects", "mission_detail", "navigate", "open_cockpit", "pause",
     "pending_approvals", "point", "prepare_grant", "project_brief", "propose_mission", "propose_run", "recent_runs", "sales_drafts", "sales_lead", "sales_overview", "stop_all"]);
   assert.deepEqual(tools.tools.find((t) => t.name === "propose_run").inputSchema.properties.project.enum, ["Ifrim Hub Test"]);
 });

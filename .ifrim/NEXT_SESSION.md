@@ -1,8 +1,42 @@
 # Next Session - Ifrim Agent Hub
 
-## 2026-10-02 — M05: wsl-runner, R2 work and execution robustness (current; read `M05_REPORT.md` first)
+## 2026-10-02 — M06: Lega 2.0 (voice-first cockpit) + M06-A pipeline readiness (current; read `M06_REPORT.md` first)
 
-- **Code `2.6.0-m05`:** on disk on `v2-milestone-01` over `895c215`, **uncommitted**.
+- **Code `2.7.0-m06`:** on disk on `v2-milestone-01` over `c8ff6f4`, **uncommitted**. No commit, push, merge, deploy, model, install or download.
+- **Live Hub (8011):** still runs `2.6.0-m05` (BUILD_SAFE). `v2/web/dist` already holds the M06 UI, so the Lega screen says "Hub-ul rulează o versiune mai veche" until the owner restarts. Run `node v2/scripts/migration-dry-run.mjs` (schema 5→6) first.
+- **M06-B built** (`v2/server/owner/`):
+  - owner session: WebAuthn `webauthn.mjs` + `trust.mjs`; HttpOnly cookie `ifrim_owner`; only the token hash stored; UV required; re-authentication window 5 min;
+  - versioned product policy `ownerPolicy`: legacy by default; voice-first activated only by the owner (fresh session + exact text);
+  - Mission Authorization Envelopes (`envelopes.mjs`): one consumable confirmation of the exact plan; derived grants (`live_grants.envelope_id`) never wider than the plan; `approvals.decideByEnvelope` with decided_via `owner_session`;
+  - autonomy OBSERVE / ASSISTED / TRUSTED / HIGH_AUTONOMY_BOUNDED through `factory.attachAuthority`;
+  - project cockpit, explain, read-only replay, delta, company map (`cockpit.mjs`);
+  - local intent resolver (`intents.mjs`); safe layout catalog (`layout.mjs`); interruptions (`interrupts.mjs`, new gate check `project_frozen`);
+  - quiet attention, recommendations, shadow reviews (`advisor.mjs`);
+  - local voice gate baseline (`voice.mjs` + `web/src/lib/voiceFeatures.js`, `voiceGate.js`, `web/public/voice-gate-worklet.js`);
+  - the `owner` command channel; migration 6 (additive).
+- **Voice agent:** the new Lega tool `lega.open_cockpit` opens a project's cockpit from anywhere (context only).
+- **M06-B UI:** `#/lega` is the start screen (`screens/Lega.jsx`, `lega/cards.jsx`, `lega/OwnerSetup.jsx`); WebGL2 face with morph targets and an audio-driven mouth (`components/face/LegaFace.jsx`, `lib/faceGeometry.js`).
+- **M06-A built:**
+  - local-only preview profile: bwrap, own network namespace with loopback only (`wsl-factory-runner.mjs localOnlyArgs`, `scripts/preview-host.mjs`);
+  - canary C18, optional coverage `preview-local-only`; canary version changed, so re-attest;
+  - the preview goes into the environment when C18 is attested;
+  - E2E in the namespace is BLOCKED (no Chromium Linux); the review stays on Windows (tool boundary).
+- **Tests:** V2 on the final code 550 / 549 PASS / 0 FAIL / 1 skipped; V1 552 / 551 / 0 / 1. 13 mutants: 12 caught, 1 equivalent (documented). Real-browser E2E with a Chromium virtual authenticator (PASS_SIMULATED). See `M06_TEST_REPORT.md`.
+- **Real, no model, no install:**
+  - bwrap 0.9.0 present in ifrim-runner; Chromium and Claude absent;
+  - C18a–i 9/9 PASS_LOCAL;
+  - real preview host in bwrap: HTTP 200, isolation ok, 0 leftovers.
+- **Levels:**
+  - M06_B_UX_READY in simulation;
+  - TRUSTED_SESSION_READY and VOICE_MISSION_FLOW_VERIFIED: PASS_SIMULATED (typed/click; voice confirmation BLOCKED: no local STT);
+  - VOICE_FILTER partial (synthetic voices, uncalibrated baseline);
+  - M06_A_PIPELINE_READY, PIPELINE_ISOLATION_VERIFIED and REAL_PROJECT_PILOT_ELIGIBLE: not reached.
+- **Owner next steps:** dry run → restart → re-attest → `http://localhost:8011/#/lega/setup` (Windows Hello, policy, autonomy) → D3/D4 on a test project → install package decision (`M06_PIPELINE_READINESS.md` §5: A1 apt libs (owner, root), A2 Chromium Linux, A3 Claude Linux + owner login, B1 local STT, B2 ONNX speaker model, C the C3 live Stop probe, D approval (b) last).
+- **Unchanged:** Demo B bundle `bnd_mupwze7b_e03f70f2d7` awaits the owner; no merge into `main`; ProDelivery, AROBS and Sales live untouched.
+
+## 2026-10-02 — M05: wsl-runner, R2 work and execution robustness (closed; superseded by M06 above where they overlap)
+
+- **Code `2.6.0-m05`:** committed as `d33e207` (code) + `c8ff6f4` (live results) and pushed by the owner (`origin/v2-milestone-01` = `c8ff6f4`). Lines below that say "uncommitted" are historical.
   - Staged: one `git mv`, `v2/tests/manual/r2-wsl-canary.sh` → `v2/server/environments/scripts/canary.sh`.
   - No commit, push, merge or deploy.
   - The owner ran `migration-dry-run.mjs` (schema 4→5, integrity ok, row counts unchanged) and restarted the Hub from their own terminal on 2026-10-02 02:08 UTC: pid 26992, `2.6.0-m05`, BUILD_SAFE, migration 5 applied. In the live Hub the owner then clicked Inspect, C16 and the attestation (System → Medii de execuție, 2026-10-02 ~02:13 UTC): C16 chatgpt `prolite`, 8 models; attestation **PASS_LOCAL, 71 checks, fingerprint `7b3afa6ae2a7d1f3`** (recorded). (b) not approved, (c) NOT_RUN.
@@ -43,7 +77,7 @@
 - **Levels:**
   - BUILD_READY reached;
   - LOCAL_ENVIRONMENT_ATTESTED reached and recorded in the live Hub (2026-10-02 ~02:13 UTC, PASS_LOCAL 71 checks), then invalidated on purpose by the new canary version (C15r/C15s reaper check, ~03:50 UTC): re-attest from the UI;
-  - WSL_LIVE_SANDBOX_VALIDATED reached live on 2026-10-02 07:20-07:30 UTC (owner clicks, Factory Demo A2, mission `mis_muqmvlvl_f21803e877`): Codex gpt-6.1-sol writer through `codex@wsl-runner`, C14 export applied, checks 6/6 and QA 2/2 in the environment, sonnet review PASS; bundle `bnd_muqn17e6_19ce971a24` awaits the owner; C3 live Stop NOT_RUN; see `M05_LIVE_RESULTS.md`. Hub back in BUILD_SAFE, grants revoked;
+  - WSL_LIVE_SANDBOX_VALIDATED reached live on 2026-10-02 07:20-07:30 UTC (owner clicks, Factory Demo A2, mission `mis_muqmvlvl_f21803e877`): Codex gpt-6.1-sol writer through `codex@wsl-runner`, C14 export applied, checks 6/6 and QA 2/2 in the environment, sonnet review PASS; bundle `bnd_muqn17e6_19ce971a24` OWNER_ACCEPTED by the owner (2026-10-02); C3 live Stop NOT_RUN; see `M05_LIVE_RESULTS.md`. Hub back in BUILD_SAFE, grants revoked;
   - PIPELINE_ISOLATION_VERIFIED and REAL_PROJECT_ELIGIBLE not reached.
 
   **R2 stays open.** Real projects keep the R2 refusal on every route.
@@ -56,9 +90,9 @@
   - **Fixed:** the worker prompt on the environment route names the Linux copy, not the Windows path.
   - **Tests:** new `v2/tests/m05-live-readiness.test.mjs` (LR-01…06); 5/5 mutants killed.
 - **Hub restart on the fixes.** Claude restarted the live Hub at ~03:50 UTC from an app terminal tab (`npm run v2:stop; npm run v2`): pid 32192, BUILD_SAFE. The 02:13 attestation is **no longer valid**: the canary version changed because `reap.sh` and `canary.mjs` are now hashed into it. Re-attest from System → Medii de execuție.
-- **Live probe (c) NOT run.** The session's permission layer refused further live-Hub actions (reason "Production Deploy"), and Claude stopped there. To run it, the owner does the steps in `M05_LIVE_VALIDATION_PLAN.md` ("Precondiții").
+- **Live probe (c):** ran 2026-10-02 07:20–07:30 UTC with the owner's clicks (see the levels above and `M05_LIVE_RESULTS.md`). The earlier note that it had not run is superseded.
 - **Unchanged:** Demo B bundle `bnd_mupwze7b_e03f70f2d7` awaits the owner; the Demo B draft `mis_mupy0no5_922d2614b0` is SPEC_DRAFT; AROBS, ProDelivery and Sales live untouched.
-- **Next (state 2026-10-02 ~04:30 UTC):**
+- **Next (historical, state 2026-10-02 ~04:30 UTC; done since: (c) ran, M05 pushed, Demo A2 accepted):**
   1. **Done:** the migration dry run, the restart onto `2.6.0-m05`, the first attestation, the pre-probe fixes, and the restart onto the fixes.
   2. Re-attest from System → Medii de execuție (Inspect → C16 → attestation). Expect PASS_LOCAL with C15r/C15s.
   3. Run (c) per `M05_LIVE_VALIDATION_PLAN.md` "Precondiții" on Factory Demo A2:

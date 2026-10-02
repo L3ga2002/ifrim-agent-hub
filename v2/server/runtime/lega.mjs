@@ -551,6 +551,13 @@ export function createLega({ bus, live, clock, settings, gate, grants, projects,
     if (tool === "company_briefing") return { ok: true, text: briefingText() };
     if (tool === "list_projects") return { ok: true, text: projectsText() };
     if (tool === "project_brief") return projectBrief(args);
+    if (tool === "open_cockpit") {
+      const project = findProject(args?.project);
+      if (!project) return unknownProject(args?.project);
+      live.publish({ type: "lega.navigate", sessionId: current.id, path: `/lega/${project.id}` });
+      const brief = projectBrief({ project: project.name });
+      return { ok: true, text: `Am deschis cockpitul pentru ${project.name} (doar context; nimic nu pornește). ${brief.text}` };
+    }
     if (tool === "list_missions") return missionsText(args);
     if (tool === "mission_detail") return missionDetail(args);
     if (tool === "sales_overview" || tool === "sales_lead" || tool === "sales_drafts") return salesTool(tool, args);

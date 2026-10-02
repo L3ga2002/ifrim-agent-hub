@@ -7,6 +7,8 @@ export const PERMISSION_TIERS = Object.freeze(["READ_ONLY", "WORKSPACE_EDIT", "D
 
 /** Channels allowed to decide approvals. Voice and automation payloads can never approve. */
 const DECISION_CHANNELS = new Set(["ui"]);
+/** M06: the only action kinds a confirmed Mission Authorization Envelope may decide (the exact factory scope it bound). */
+export const ENVELOPE_DECIDABLE = Object.freeze(new Set(["factory.scope"]));
 
 export function approvalHash({ actionKind, target, payload, codeVersion, permissionTier, scopeType, scopeId }) {
   return hashCanonical({ actionKind, target, payload, codeVersion, permissionTier, scopeType, scopeId });
@@ -56,6 +58,26 @@ export function createApprovals(db, bus, clock = () => new Date()) {
   }
 
   /**
+   * M06: the decision carried by a confirmed Mission Authorization Envelope. Only the envelope service calls it, only for
+   * the action kinds an envelope may cover, and only when the approval is exactly the one the envelope bound (same hash).
+   * It is recorded as what it is (decided_via = "owner_session", the envelope and the session named), never as a UI click.
+   */
+  function decideByEnvelope(id, { envelopeId, sessionId, expectedHash }) {
+    const row = byId.get(id);
+    if (!row) throw new HubError("not_found", "Approval not found");
+    const approval = rowToApproval(row);
+    if (!ENVELOPE_DECIDABLE.has(approval.actionKind)) throw new HubError("policy", `${approval.actionKind} cannot be decided by a mission envelope`);
+    if (approval.status !== "pending") throw new HubError("conflict", `Approval is ${approval.status}`);
+    if (new Date(approval.expiresAt) <= clock()) { expire(id); throw new HubError("conflict", "Approval expired"); }
+    if (!expectedHash || expectedHash !== approval.payloadHash) throw new HubError("gate", "The approval does not match the confirmed envelope");
+    if (!envelopeId || !sessionId) throw new HubError("policy", "An envelope decision needs the envelope and the owner session");
+    db.prepare("UPDATE approvals SET status = 'approved', decided_by = ?, decided_via = 'owner_session', decision_note = ?, decided_at = ? WHERE id = ? AND status = 'pending'")
+      .run(`owner:${sessionId}`, `envelope ${envelopeId}`, clock().toISOString(), id);
+    bus.append({ type: "approval.approved", scopeType: approval.scopeType, scopeId: approval.scopeId, source: "owner", payload: { approvalId: id, actionKind: approval.actionKind, via: "owner_session", envelopeId } });
+    return rowToApproval(byId.get(id));
+  }
+
+  /**
    * Verifies an approval against the action about to execute and marks single-use approvals consumed.
    * Runs its own transactions (callers must not wrap it) so that an invalidation or expiry is
    * persisted even though the call then throws.
@@ -98,7 +120,7 @@ export function createApprovals(db, bus, clock = () => new Date()) {
     ? db.prepare("SELECT * FROM approvals WHERE status = ? ORDER BY created_at DESC LIMIT 200").all(status)
     : db.prepare("SELECT * FROM approvals ORDER BY created_at DESC LIMIT 200").all()).map(rowToApproval);
 
-  return { request, decide, consume, expireStale, list, get: (id) => { const r = byId.get(id); return r ? rowToApproval(r) : null; } };
+  return { request, decide, decideByEnvelope, consume, expireStale, list, get: (id) => { const r = byId.get(id); return r ? rowToApproval(r) : null; } };
 }
 
 export function rowToApproval(row) {

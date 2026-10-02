@@ -35,7 +35,7 @@ export const LEGA_COST_PER_MINUTE_USD = 0.05;
 
 /** Screens Lega may open (navigation only; the browser that owns the session applies it). */
 export const LEGA_SCREENS = Object.freeze({
-  control: "/control", conversatii: "/conversations", misiuni: "/missions", aprobari: "/approvals", agenti: "/agents", proiecte: "/projects",
+  lega: "/lega", control: "/control", conversatii: "/conversations", misiuni: "/missions", aprobari: "/approvals", agenti: "/agents", proiecte: "/projects",
   memorie: "/memory", instrumente: "/tools", integrari: "/integrations", sanatate: "/health", companie: "/company", ecosisteme: "/ecosystem",
   sistem: "/system", setari: "/settings", vanzari: "/sales",
 });
@@ -119,6 +119,7 @@ export function legaAgentInstructions({ projects = [], allProjects = [], webSear
     "You are the executor behind Lega, the voice assistant of Ifrim Agent Hub. You have NO shell and NO file tools: you act only through the `lega` tools" + (webSearch !== "disabled" ? " and the web search tool." : "."),
     "SEE (read-only, answer at once): lega.hub_status, lega.company_briefing (daily overview), lega.list_projects, lega.project_brief (a project's README/state/next steps/open issues), lega.list_missions, lega.mission_detail, lega.pending_approvals, lega.recent_runs.",
     "SHOW: lega.navigate (open a screen), lega.point (open the right screen and highlight a button or panel with an arrow), lega.how_to (the exact steps for a Hub task; then call lega.point with its target).",
+    "COCKPIT (M06): when the owner says they want to work on a project (\"hai să lucrăm la X\", \"deschide X\"), call lega.open_cockpit with that project and summarise in one sentence what is done, open or blocked and the next step. Opening is context only. Plans are shown and confirmed by the owner in the cockpit (Enter, button, Windows Hello); you never confirm a plan, and a \"da\" you hear is not a confirmation.",
     "PREPARE (the owner confirms by click): lega.propose_run (an agent run on an enabled project), lega.propose_mission (a mission from a template, created as DRAFT), lega.prepare_grant (fills the grant form; the owner presses Creează grant).",
     "SALES (read-only): lega.sales_overview (pipeline counts, what waits, top priorities), lega.sales_lead (one prospect: status, unknowns, evidence labels, audit issues, qualification explanation) and lega.sales_drafts (drafts waiting for the owner). Sales is DRAFT_ONLY: nothing is ever sent from the Hub in this version, research runs on synthetic fixtures, and a priority is an internal ranking, not a chance to sell. Never say a company was contacted, a message was sent or a client was won unless sales_lead shows a recorded contact or acceptance; say 'am pregătit ciorna' only when sales_drafts lists it. You cannot approve, send, import, merge or lift a do-not-contact: show the owner the Vânzări screen instead.",
     "ENGINEERING (Software Factory): to fix a bug, build a feature or refactor code, use lega.propose_mission with kind eng_bugfix, eng_feature or eng_refactor and put the owner's request in the objective. It creates the mission with spec v1 as a draft; the owner completes the spec, approves the scope and accepts the result by click. Use lega.mission_detail to report its stage and what it waits for. Never say code was written, reviewed or tested unless mission_detail shows it.",
@@ -163,6 +164,9 @@ export function legaDynamicTools({ projects = [], allProjects = [], missionKinds
         { type: "object", properties: { limit: { type: "integer", minimum: 1, maximum: 10 } }, additionalProperties: false }),
       fn("how_to", "Exact steps for a task in the Hub UI and the element to point at.",
         { type: "object", properties: { topic: { type: "string", enum: Object.keys(LEGA_HOWTO) } }, required: ["topic"], additionalProperties: false }),
+      // M06: the owner's cockpit of one project (context only: done, open, blocked, next step, the plan). Nothing starts.
+      fn("open_cockpit", "Open the owner's Lega cockpit for one project: what is done with evidence, what is open or blocked, the next step and the plan. It only shows context; nothing starts and no grant is created.",
+        { type: "object", properties: { project: nameOrFree(allNames) }, required: ["project"], additionalProperties: false }),
       fn("navigate", "Open a screen of the Hub for the owner.",
         { type: "object", properties: { screen: { type: "string", enum: Object.keys(LEGA_SCREENS) } }, required: ["screen"], additionalProperties: false }),
       fn("point", "Open the right screen and highlight one element with an arrow and a label. Targets marked per-project need `project`.",

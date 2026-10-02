@@ -18,6 +18,7 @@ import { snapshotLegacy, applyImport, revertImport } from "../storage/v1-import.
 import { transitionTask } from "./state-machine.mjs";
 import { registerSalesCommands } from "../sales/sales-commands.mjs";
 import { registerEnvironmentCommands } from "../environments/environment-commands.mjs";
+import { registerOwnerCommands } from "../owner/owner-commands.mjs";
 import fs from "node:fs";
 
 /** Commands a LOCAL_HUB schedule may run (non-AI, no external effects). */
@@ -102,7 +103,7 @@ export function registerCommands(commands, hub) {
     } });
   reg("run.interrupt", { describe: "Întrerupe o execuție activă", async: true, schema: { runId: { required: true } }, channels: ["ui", "test", "voice", "companion"],
     execute: (input, ctx) => runs.interrupt(input.runId, ctx.actor) });
-  reg("system.stop_all", { describe: "Stop All: poartă suspendată, granturi revocate, execuții întrerupte", async: true, schema: { reason: { max: 300 } }, channels: ["ui", "test", "voice", "companion"],
+  reg("system.stop_all", { describe: "Stop All: poartă suspendată, granturi revocate, execuții întrerupte", async: true, schema: { reason: { max: 300 } }, channels: ["ui", "test", "voice", "companion", "owner"],
     execute: (input, ctx) => runs.stopAll(ctx.channel === "voice" ? "voice" : ctx.actor, input.reason || (ctx.channel === "voice" ? "Voice: Stop" : "Stop All")) });
 
   // ---------- handoffs ----------
@@ -134,19 +135,19 @@ export function registerCommands(commands, hub) {
     schema: { missionId: { required: true, max: 80 }, limits: { type: "object", required: true } }, execute: (input, ctx) => hub.factory.setLimits(input.missionId, input.limits, ctx.actor) });
   reg("factory.start", { describe: "Pornește misiunea pe scope-ul aprobat (specificație, plan, rute, limite, comenzi); fiecare pas trece apoi prin poarta de execuție",
     async: true, schema: { missionId: { required: true, max: 80 }, specVersion: { type: "integer", required: true }, specSha: { required: true, max: 64 }, planSha: { required: true, max: 64 },
-      limits: { type: "object", required: true }, routes: { type: "object", required: true }, commands: { type: "object", required: true } },
+      limits: { type: "object", required: true }, routes: { type: "object", required: true }, commands: { type: "object", required: true } }, channels: ["ui", "test", "owner"],
     action: (input) => ({ actionKind: "factory.scope", target: `${input.missionId}:v${input.specVersion}`, projectId: missions.get(input.missionId)?.projectId || "*" }),
     execute: async (input, ctx) => {
       const command = ctx.commandId ? commands.get(ctx.commandId) : null;
       return hub.factory.startApproved(input.missionId, input, { approvalId: command?.approvalId || null, actor: ctx.actor });
     } });
   reg("factory.stop", { describe: "Oprește misiunea: nicio etapă nouă, execuția ei întreruptă, confirmare când nu mai rulează nimic", async: true,
-    schema: { missionId: { required: true, max: 80 }, reason: { max: 300, default: "Stop" } }, channels: ["ui", "test", "voice", "companion"],
+    schema: { missionId: { required: true, max: 80 }, reason: { max: 300, default: "Stop" } }, channels: ["ui", "test", "voice", "companion", "owner"],
     execute: (input, ctx) => hub.factory.stop(input.missionId, { reason: input.reason, actor: ctx.actor }) });
   reg("factory.pause", { describe: "Pauză: etapa curentă se întrerupe, următoarea nu pornește până reiei", async: true,
-    schema: { missionId: { required: true, max: 80 } }, channels: ["ui", "test", "voice", "companion"], execute: (input, ctx) => hub.factory.pause(input.missionId, { actor: ctx.actor }) });
+    schema: { missionId: { required: true, max: 80 } }, channels: ["ui", "test", "voice", "companion", "owner"], execute: (input, ctx) => hub.factory.pause(input.missionId, { actor: ctx.actor }) });
   reg("factory.resume", { describe: "Reia misiunea de unde au rămas dovezile (opțional: încă un ciclu de remediere sau QA după un review neconcludent — decizia ta)", async: true,
-    schema: { missionId: { required: true, max: 80 }, allowExtraCycle: { type: "boolean", default: false }, proceedToQa: { type: "boolean", default: false }, reviewerModel: { max: 64, default: "" } },
+    schema: { missionId: { required: true, max: 80 }, allowExtraCycle: { type: "boolean", default: false }, proceedToQa: { type: "boolean", default: false }, reviewerModel: { max: 64, default: "" } }, channels: ["ui", "test", "owner"],
     execute: (input, ctx) => hub.factory.resume(input.missionId, { actor: ctx.actor, allowExtraCycle: input.allowExtraCycle, proceedToQa: input.proceedToQa, reviewerModel: input.reviewerModel }) });
   reg("factory.accept", { describe: "Accepți local pachetul de livrare (OWNER_ACCEPTED; fără commit, push sau deploy)", async: true,
     schema: { missionId: { required: true, max: 80 }, note: { max: 500, default: "" } }, execute: (input, ctx) => hub.factory.accept(input.missionId, { note: input.note, actor: ctx.actor }) });
@@ -361,6 +362,7 @@ export function registerCommands(commands, hub) {
   // ---------- Sales & Lead Generation (M04): the department's commands; the M01 registry above stays for compatibility ----------
   registerSalesCommands(reg, hub, { createMission });
   registerEnvironmentCommands(reg, hub);
+  registerOwnerCommands(reg, hub);
 
   // ---------- company runtime & chief of staff ----------
   reg("company.department_status", { describe: "Stare departament (active/planned/paused)", schema: { departmentKey: { required: true, max: 40 }, status: { enum: ["active", "planned", "paused"], required: true }, reason: { required: true, min: 3, max: 300 } },

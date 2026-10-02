@@ -23,6 +23,7 @@ import { buildBriefing, briefingMarkdown } from "../domain/briefing.mjs";
 import { planImport, readLegacyTable } from "../storage/v1-import.mjs";
 import { gitState } from "../tools/git.mjs";
 import { HUB_VERSION } from "../config.mjs";
+import { registerOwnerRoutes } from "../owner/owner-routes.mjs";
 
 const execFileAsync = promisify(execFile);
 const redactMessage = (m) => ({ ...m, content: redactText(m.content) });
@@ -58,6 +59,8 @@ export function registerRoutes(router, hub, { token }) {
     return created ? { __status: 201, body: result.result } : result.result;
   }
   const cmd = (type, map = ({ body }) => body, options) => (ctx) => dispatch(ctx.req, type, map(ctx), options);
+  // M06: owner session, cockpit, envelopes, interruptions, voice profile, layout (v2/server/owner/owner-routes.mjs).
+  registerOwnerRoutes(router, hub);
 
   // ---------- session, health, state ----------
   get("/api/health", () => ({ ok: true, version: HUB_VERSION, bootId: hub.bootId, mode: settings.get("mode"), gate: settings.get("executionGate").status, time: clock().toISOString(), simulation: Boolean(config.simulation) }));

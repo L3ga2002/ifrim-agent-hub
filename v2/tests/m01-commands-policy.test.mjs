@@ -91,7 +91,9 @@ test("M01-CMD-01 unknown command types and channels are refused before anything 
     assert.equal(countRows(hub, "commands"), commandsBefore);
     assert.equal(hub.bus.lastSeq(), seq, "no event either");
     // "cli" (M05): local scripts recorded as such; only inference-free checks accept it (M05-T17).
-    assert.deepEqual([...COMMAND_CHANNELS].sort(), ["automation", "cli", "companion", "recovery", "schedule", "test", "ui", "voice"]);
+    // "owner" (M06): the authenticated owner session (WebAuthn); the bus refuses it without a resolved session (M06-TR-04).
+    assert.deepEqual([...COMMAND_CHANNELS].sort(), ["automation", "cli", "companion", "owner", "recovery", "schedule", "test", "ui", "voice"]);
+    await assert.rejects(hub.commands.dispatch({ type: "gate.set", payload: { action: "suspend" }, channel: "owner" }), hubError("authentication", /owner session/));
 
     assert.throws(() => hub.commands.register("gate.set", { execute: () => null }), /already registered/);
     assert.throws(() => hub.commands.register("test.masked", { logPayload: () => ({}), action: () => ({ actionKind: "connector.write" }), execute: () => null }),

@@ -25,7 +25,7 @@ Data: 2026-10-02, 07:20–07:30 UTC.
 | CHECKING `node --test` | wsl-runner | PASS 6/6, 2 s | **PASS_LIVE** |
 | Review Claude | Windows (graniță de unealtă) | Review-ul cu implicitul contului (`fable[1m]`) a fost oprit înainte de model, cum era de așteptat. Cu `sonnet`: **PASS / VALID** pe change set-ul exportat `262ac7baa6da`: „fixul este minimal și corect (`.trim()`)”. | **PASS_LIVE** |
 | QA `node --test test/acceptance.test.mjs` | wsl-runner | PASS 2/2, 12 s | **PASS_LIVE** |
-| Pachet | — | `bnd_muqn17e6_19ce971a24` (sha `a9046789070397ba`), READY_FOR_OWNER_ACCEPTANCE | **așteaptă decizia proprietarului** |
+| Pachet | — | `bnd_muqn17e6_19ce971a24` (sha `a9046789070397ba`), READY_FOR_OWNER_ACCEPTANCE | **OWNER_ACCEPTED** (proprietarul, 2026-10-02) |
 
 **Writer-ul, în detaliu:**
 - admitere 8 s, din care: mediul verificat 1 s, copia proiectului 2 s;
@@ -50,4 +50,4 @@ Data: 2026-10-02, 07:20–07:30 UTC.
 ## Starea după probă (07:35 UTC)
 
 - **Hub:** BUILD_SAFE, poarta deschisă, fără granturi active (Codex 1/3 și Claude 1/3 folosite, apoi revocate).
-- **Pachetul `bnd_muqn17e6_19ce971a24`:** așteaptă „Accept local” / „Resping” de la proprietar. Clicul lui Claude pe „Accept local” a fost refuzat de stratul de permisiuni al sesiunii.
+- **Pachetul `bnd_muqn17e6_19ce971a24`:** acceptat local de proprietar (OWNER_ACCEPTED). Clicul lui Claude pe „Accept local” fusese refuzat de stratul de permisiuni; proprietarul a apăsat. M05 e comis (`d33e207`, `c8ff6f4`) și push-uit de proprietar.

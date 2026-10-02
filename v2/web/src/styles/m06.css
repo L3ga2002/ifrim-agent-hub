@@ -1,0 +1,56 @@
+/* M06 · Lega 2.0 cockpit. Graphite layers, cold cyan, amber only for decisions. Text and focus never move with the layout. */
+.cockpit { max-width: 1760px; }
+.cockpit-head { display: flex; justify-content: space-between; align-items: center; gap: var(--sp-3); flex-wrap: wrap; margin-bottom: var(--sp-4); }
+.cockpit-head h1 { margin: 0; font-family: var(--font-display); font-size: var(--fs-xl); font-weight: 600; }
+.cockpit-head .project-switch select { background: var(--surface); color: var(--text); border: 1px solid var(--line); border-radius: var(--r); padding: 6px 10px; min-height: 32px; }
+.cockpit-grid { display: grid; grid-template-columns: minmax(300px, 380px) minmax(0, 1fr); gap: var(--sp-4); align-items: start; }
+.cockpit-left { position: sticky; top: calc(var(--top-h) + var(--sp-3)); display: flex; flex-direction: column; gap: var(--sp-3); max-height: calc(100vh - var(--top-h) - 32px); min-width: 0; }
+.face-box { position: relative; background: radial-gradient(circle at 50% 42%, rgba(101, 217, 255, 0.08), transparent 62%), var(--surface); border: 1px solid var(--line); border-radius: var(--r-l); padding: var(--sp-2); }
+.lega-face-canvas { display: block; width: 100%; aspect-ratio: 1 / 1; max-height: 320px; }
+.face-box.discreet .lega-face-canvas { max-height: 140px; }
+.face-box .core-svg { display: block; width: 100%; max-height: 300px; }
+.face-controls { justify-content: center; gap: 2px; }
+.face-controls .btn[aria-pressed="true"] { color: var(--accent); background: var(--accent-soft); }
+.face-note { text-align: center; margin: 2px 0 0; }
+.lega-conv { list-style: none; margin: 0; padding: var(--sp-2); background: var(--surface); border: 1px solid var(--line); border-radius: var(--r-l); overflow-y: auto; min-height: 120px; flex: 1 1 auto; display: flex; flex-direction: column; gap: var(--sp-2); }
+.lega-conv li { display: flex; flex-direction: column; gap: 2px; }
+.lega-conv .who { font-size: var(--fs-xs); color: var(--text-3); font-weight: 600; }
+.lega-conv .lc-text { white-space: pre-wrap; font-size: var(--fs-s); line-height: 1.45; }
+.lega-conv .lc-user .lc-text { color: var(--text); }
+.lega-conv .lc-lega .lc-text { color: var(--accent-strong); }
+.lega-composer { display: flex; gap: var(--sp-2); }
+.lega-composer .input { flex: 1; }
+.interrupt-bar { gap: 4px; }
+.cockpit-main { min-width: 0; }
+.cockpit-toolbar { margin-bottom: var(--sp-2); }
+.cockpit-cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(340px, 1fr)); gap: var(--sp-3); align-items: start; }
+.cockpit-card.size-l { grid-column: 1 / -1; }
+.cockpit-card .lead { font-size: var(--fs-l); margin: 0 0 var(--sp-2); line-height: 1.4; }
+.cockpit-card .h3 { font-size: var(--fs-s); color: var(--text-2); margin: var(--sp-2) 0 4px; font-weight: 600; }
+.cockpit-cols { display: grid; grid-template-columns: 1fr 1fr; gap: var(--sp-3); }
+.plain { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
+.src { display: inline-block; margin-left: 4px; }
+.decision { outline: none; display: flex; flex-direction: column; gap: var(--sp-2); }
+.decision:focus-visible { box-shadow: var(--focus-ring); border-radius: var(--r); }
+.decision-lines li { padding-left: 14px; position: relative; font-size: var(--fs-s); }
+.decision-lines li::before { content: ""; position: absolute; left: 2px; top: 8px; width: 5px; height: 5px; border-radius: 50%; background: var(--accent); }
+.agent-graph { list-style: none; margin: 0; padding: 0; display: grid; grid-template-columns: repeat(auto-fill, minmax(130px, 1fr)); gap: 8px; counter-reset: stage; }
+.ag-node { position: relative; border: 1px solid var(--line); border-radius: var(--r); padding: 8px 10px 8px 26px; display: flex; flex-direction: column; gap: 2px; background: var(--surface-2); }
+.ag-node .ag-dot { position: absolute; left: 9px; top: 12px; width: 9px; height: 9px; border-radius: 50%; background: var(--text-3); }
+.ag-node.ok .ag-dot { background: var(--ok); }
+.ag-node.info .ag-dot { background: var(--accent); box-shadow: 0 0 0 4px var(--accent-soft); animation: ag-pulse 1.6s var(--ease) infinite; }
+.ag-node.error .ag-dot { background: var(--danger); }
+.ag-node.warn .ag-dot { background: var(--approval); }
+@keyframes ag-pulse { 50% { box-shadow: 0 0 0 7px rgba(101, 217, 255, 0); } }
+@media (prefers-reduced-motion: reduce) { .ag-node.info .ag-dot { animation: none; } }
+.replay input[type="range"] { width: 100%; accent-color: var(--accent); }
+.company-list li { display: flex; flex-wrap: wrap; gap: 4px; align-items: baseline; }
+.link-btn { background: none; border: none; color: var(--accent); cursor: pointer; padding: 0; font: inherit; text-decoration: underline; text-underline-offset: 3px; }
+.cockpit.is-focus .cockpit-cards { grid-template-columns: minmax(0, 860px); }
+@media (max-width: 980px) {
+  .cockpit-grid { grid-template-columns: minmax(0, 1fr); }
+  .cockpit-left { position: static; max-height: none; }
+  .lega-face-canvas { max-height: 220px; }
+  .cockpit-cols { grid-template-columns: minmax(0, 1fr); }
+  .cockpit-cards { grid-template-columns: minmax(0, 1fr); }
+}

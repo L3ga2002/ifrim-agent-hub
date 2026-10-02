@@ -16,9 +16,11 @@ export function createGrants({ db, bus, clock }) {
   const rowTo = (row) => row && ({ id: row.id, provider: row.provider, projectId: row.project_id, maxAttempts: row.max_attempts,
     attemptsUsed: row.attempts_used, tools: parse(row.tools_json, []), kind: grantKind(parse(row.tools_json, [])), access: row.access, maxDurationS: row.max_duration_s,
     // An active grant past its expiry is shown and judged as expired (the row itself is not rewritten on read).
-    expiresAt: row.expires_at, status: row.status === "active" && new Date(row.expires_at) <= clock() ? "expired" : row.status, note: row.note, createdAt: row.created_at });
+    expiresAt: row.expires_at, status: row.status === "active" && new Date(row.expires_at) <= clock() ? "expired" : row.status, note: row.note, createdAt: row.created_at,
+    // M06: a grant derived from a Mission Authorization Envelope names it (null = created by hand in LIVE_VALIDATION).
+    envelopeId: row.envelope_id ?? null });
 
-  function create({ provider, projectId, access, maxAttempts, maxDurationS, ttlMinutes, tools = [], note = "", kind = "run" }, actor) {
+  function create({ provider, projectId, access, maxAttempts, maxDurationS, ttlMinutes, tools = [], note = "", kind = "run", envelopeId = null, expiresAt = null }, actor) {
     if (!["run", "voice"].includes(kind)) throw new HubError("validation", "kind must be run or voice");
     if (kind === "voice") {
       // Lega runs on Codex with the read-only profile; sessions are capped at 30 minutes.
@@ -31,13 +33,18 @@ export function createGrants({ db, bus, clock }) {
     if (!["read-only", "workspace-write"].includes(access)) throw new HubError("validation", "access must be read-only or workspace-write");
     if (!(maxAttempts >= 1 && maxAttempts <= 5)) throw new HubError("validation", "maxAttempts must be 1..5");
     if (!(ttlMinutes >= 5 && ttlMinutes <= 480)) throw new HubError("validation", "ttlMinutes must be 5..480");
+    // A derived grant may end earlier than its TTL: never after the envelope that authorized it.
+    if (expiresAt && !envelopeId) throw new HubError("validation", "An explicit expiry is only for envelope-derived grants");
     if (!(maxDurationS >= 60 && maxDurationS <= 7200)) throw new HubError("validation", "maxDurationS must be 60..7200");
     const id = newId("grant");
     const now = clock();
-    db.prepare(`INSERT INTO live_grants (id, provider, project_id, max_attempts, tools_json, access, max_duration_s, expires_at, status, note, created_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?)`).run(id, provider, projectId, maxAttempts, json(tools), access, maxDurationS,
-      new Date(now.getTime() + ttlMinutes * 60000).toISOString(), note, now.toISOString());
-    bus.append({ type: "grant.created", scopeType: "project", scopeId: projectId, projectId, source: actor, payload: { grantId: id, provider, access, maxAttempts, ttlMinutes, kind } });
+    const ttlEnd = now.getTime() + ttlMinutes * 60000;
+    const end = expiresAt ? Math.min(ttlEnd, Date.parse(expiresAt)) : ttlEnd;
+    if (!(end > now.getTime())) throw new HubError("validation", "The grant would already be expired");
+    db.prepare(`INSERT INTO live_grants (id, provider, project_id, max_attempts, tools_json, access, max_duration_s, expires_at, status, note, created_at, envelope_id)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?, ?)`).run(id, provider, projectId, maxAttempts, json(tools), access, maxDurationS,
+      new Date(end).toISOString(), note, now.toISOString(), envelopeId);
+    bus.append({ type: "grant.created", scopeType: "project", scopeId: projectId, projectId, source: actor, payload: { grantId: id, provider, access, maxAttempts, ttlMinutes, kind, envelopeId } });
     return get(id);
   }
 
@@ -100,7 +107,9 @@ export function createGrants({ db, bus, clock }) {
   const list = () => db.prepare("SELECT * FROM live_grants ORDER BY created_at DESC LIMIT 50").all().map(rowTo);
   /** Every active grant of one project (not only the latest 50), e.g. to revoke them when its runs are withdrawn. */
   const activeForProject = (projectId) => db.prepare("SELECT * FROM live_grants WHERE project_id = ? AND status = 'active'").all(projectId).map(rowTo);
-  return { create, get, findUsable, problem, consumeAttempt, refundAttempt, revoke, revokeAll, list, activeForProject };
+  /** The grants an envelope derived (any status), oldest first. */
+  const ofEnvelope = (envelopeId) => db.prepare("SELECT * FROM live_grants WHERE envelope_id = ? ORDER BY created_at").all(envelopeId).map(rowTo);
+  return { create, get, findUsable, problem, consumeAttempt, refundAttempt, revoke, revokeAll, list, activeForProject, ofEnvelope };
 }
 
 /** Latest provider inspections (installation + probe). Stored without identities or secrets. */

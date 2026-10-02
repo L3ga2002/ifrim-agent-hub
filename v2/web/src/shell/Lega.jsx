@@ -6,6 +6,7 @@ import { Chip, Notice, Checks, ErrorNotice } from "../components/ui.jsx";
 import { legaLevels } from "../lib/legaLevels.js";
 import { offerGrantPrefill, pointAt } from "../lib/legaBridge.js";
 import { isAppShortcut, approvedNotStarted } from "../lib/uiLogic.js";
+import { createVoiceGate } from "../lib/voiceGate.js";
 
 /**
  * Lega — the Hub's voice assistant (GPT-Live via Codex, ChatGPT plan).
@@ -73,7 +74,10 @@ export function Lega({ go }) {
   const [error, setError] = useState(null);
   const [elapsed, setElapsed] = useState(0);
   const [announce, setAnnounce] = useState("");
-  const refs = useRef({ pc: null, mic: null, audio: null, sessionId: null, pendingId: null, posting: false, seq: 0, meters: [], connectedAt: 0, lossTimer: null, bootId: null, openLine: {} });
+  const refs = useRef({ pc: null, mic: null, gate: null, audio: null, sessionId: null, pendingId: null, posting: false, seq: 0, meters: [], connectedAt: 0, lossTimer: null, bootId: null, openLine: {} });
+  // M06: the local voice gate in front of the transport (null = not enabled: everything the microphone hears goes to OpenAI).
+  const [gateInfo, setGateInfo] = useState(null);
+  const [gateLog, setGateLog] = useState([]);
   const micBar = useRef(null); const legaBar = useRef(null);
   const connection = useHub((s) => s.connection);
   const hubLega = useHub((s) => s.hub?.lega);
@@ -89,8 +93,10 @@ export function Lega({ go }) {
     r.meters.forEach((off) => off()); r.meters = [];
     try { r.pc?.getSenders().forEach((s) => s.track?.stop()); r.pc?.close(); } catch { /* closed */ }
     r.mic?.getTracks().forEach((t) => t.stop());
+    r.gate?.close();
     if (r.audio) { r.audio.srcObject = null; r.audio.muted = false; }
-    r.pc = null; r.mic = null; r.openLine = {};
+    legaLevels.muted = false;
+    r.pc = null; r.mic = null; r.gate = null; r.openLine = {};
     clearTimeout(r.lossTimer);
     setPhase("off");
   }, []);
@@ -116,15 +122,27 @@ export function Lega({ go }) {
     const alive = () => r.seq === seq;
     setError(null); setLines([]); setMicMuted(false); setLegaMuted(false); setStatus("preparing"); setPhase("connecting");
     r.bootId = bootId || null; r.openLine = {};
-    let mic = null; let pc = null;
-    const dispose = () => { mic?.getTracks().forEach((t) => t.stop()); try { pc?.close(); } catch { /* closed */ } };
+    let mic = null; let pc = null; let gate = null;
+    const dispose = () => { mic?.getTracks().forEach((t) => t.stop()); gate?.close(); try { pc?.close(); } catch { /* closed */ } };
     try {
       if (!navigator.mediaDevices?.getUserMedia || !window.RTCPeerConnection) throw new Error("Browserul nu permite microfon + WebRTC aici");
       try { mic = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true } }); }
       catch (e) { throw micError(e); }
       if (!alive()) return dispose();
       pc = new RTCPeerConnection(); // no STUN/TURN, like the official Codex voice helper
-      mic.getTracks().forEach((t) => pc.addTrack(t, mic));
+      // M06: with the voice gate enabled, the track sent to OpenAI is the gate's output (each sentence held until the local
+      // speaker check), never the raw microphone. If the enabled gate cannot start, Lega does not start unfiltered.
+      const voice = await api("/api/voice").catch(() => null);
+      let sendTrack = mic.getAudioTracks()[0];
+      if (voice?.gate?.enabled && voice.profile) {
+        try {
+          gate = await createVoiceGate(mic, { strict: voice.gate.strict, onDecision: (d) => setGateLog((log) => [...log.slice(-5), { at: Date.now(), ...d }]) });
+          sendTrack = gate.track;
+          setGateInfo({ enabled: true, strict: voice.gate.strict, verifier: voice.verifier.id });
+        } catch (e) { throw new Error(`Filtrul vocal local nu a pornit (${e.message}); Lega nu pornește nefiltrată cât timp filtrul e activat`); }
+      } else setGateInfo({ enabled: false });
+      if (!alive()) return dispose();
+      pc.addTrack(sendTrack, new MediaStream([sendTrack]));
       const dc = pc.createDataChannel("oai-events"); // required by the offer; the app-server sideband controls the session
       // M05: an error event on the data channel (when the provider sends one) is shown and kept with the stop reason.
       dc.onmessage = (event) => { try { const m = JSON.parse(String(event.data)); if (m?.type === "error") r.peerError = String(m.error?.message || m.message || "eroare").slice(0, 200); } catch { /* not JSON */ } };
@@ -147,7 +165,7 @@ export function Lega({ go }) {
       await pc.setRemoteDescription({ type: "answer", sdp: result.answerSdp });
       if (!alive()) { dispose(); await stopRequest(result.sessionId, "cancelled-during-start"); return; }
       // The attempt is committed: from here the refs own the microphone and the peer.
-      r.mic = mic; r.pc = pc; r.sessionId = result.sessionId; r.pendingId = null; r.committedAt = Date.now();
+      r.mic = mic; r.pc = pc; r.gate = gate; r.sessionId = result.sessionId; r.pendingId = null; r.committedAt = Date.now();
       r.meters.push(attachMeter(mic, micBar, "mic"));
       setSession({ id: result.sessionId, maxDurationS: result.maxDurationS, voice: result.voice });
       setStatus("connecting");
@@ -196,6 +214,8 @@ export function Lega({ go }) {
     const sid = e.sessionId || e.session?.id || null;
     // While this tab's start POST is running, the session announced as "starting" is ours (the Hub admits one at a time).
     if (!r.sessionId && r.posting && e.type === "lega.session" && e.session?.status === "starting") { r.pendingId = e.session.id; return; }
+    // „Taci” from the cockpit (owner.interrupt mute) silences whatever session plays, without stopping the work.
+    if (e.type === "lega.silence" && e.all) { if (r.audio) r.audio.muted = true; legaLevels.muted = true; setLegaMuted(true); return; }
     const mine = r.sessionId ? sid === r.sessionId : (r.pendingId && sid === r.pendingId);
     if (!mine) { if (e.type === "lega.proposal") reloadProposals.current(); return; }
     if (e.type === "lega.session.stopping") { closeLocal(); setStatus("stopping"); }
@@ -230,7 +250,7 @@ export function Lega({ go }) {
       setAnnounce("Lega a completat formularul de grant: verifică valorile și apasă tu Creează grant.");
     }
     else if (e.type === "lega.web") setLines((ls) => [...ls.slice(-60), { id: `w-${Date.now()}-${ls.length}`, role: "system", text: `Caut pe internet${e.text ? `: „${e.text}”` : "…"}`, final: true }]);
-    else if (e.type === "lega.silence") { if (r.audio) r.audio.muted = true; setLegaMuted(true); }
+    else if (e.type === "lega.silence") { if (r.audio) r.audio.muted = true; legaLevels.muted = true; setLegaMuted(true); }
     else if (e.type === "lega.proposal") { reloadProposals.current(); setOpen(true); setAnnounce(e.kind === "mission" ? "Lega propune o misiune: verifică și aprobă sau refuză pe ecran." : "Lega propune o execuție: verifică și aprobă sau refuză pe ecran."); }
     else if (e.type === "lega.notice") pushToast(`lega-notice-${Date.now()}`, e.level === "error" ? "error" : "warning", e.text);
   }), [closeLocal, go]);
@@ -285,6 +305,7 @@ export function Lega({ go }) {
   const toggleLegaSound = () => {
     const next = !legaMuted;
     if (refs.current.audio) refs.current.audio.muted = next;
+    legaLevels.muted = next;
     setLegaMuted(next);
   };
 
@@ -322,7 +343,7 @@ export function Lega({ go }) {
           {legaProposals.map((a) => <ProposalCard key={a.id} approval={a} onDone={() => { proposals.reload(); approvedLega.reload(); }} />)}
           {running ? (
             <ActiveView status={status} elapsed={elapsed} session={session} micMuted={micMuted} legaMuted={legaMuted} onMic={toggleMic} onSound={toggleLegaSound}
-              onStop={() => stop("user")} micBar={micBar} legaBar={legaBar} lines={lines} />
+              onStop={() => stop("user")} micBar={micBar} legaBar={legaBar} lines={lines} gateInfo={gateInfo} gateLog={gateLog} />
           ) : (
             <ReadyView onStart={start} disabled={status !== "off"} />
           )}
@@ -334,7 +355,7 @@ export function Lega({ go }) {
   );
 }
 
-function ActiveView({ status, elapsed, session, micMuted, legaMuted, onMic, onSound, onStop, micBar, legaBar, lines }) {
+function ActiveView({ status, elapsed, session, micMuted, legaMuted, onMic, onSound, onStop, micBar, legaBar, lines, gateInfo, gateLog = [] }) {
   const listRef = useRef(null);
   useEffect(() => { if (listRef.current) listRef.current.scrollTop = listRef.current.scrollHeight; }, [lines]);
   const cost = (elapsed / 60) * 0.05;
@@ -352,6 +373,10 @@ function ActiveView({ status, elapsed, session, micMuted, legaMuted, onMic, onSo
         <button className="btn sm danger" onClick={onStop}><Square size={12} />Oprește Lega</button>
       </div>
       {status !== "active" && <Notice tone="info" title="Se conectează">Aștept confirmarea sesiunii vocale (nu este progres măsurat).</Notice>}
+      {gateInfo && (gateInfo.enabled
+        ? <p className="small" style={{ margin: 0 }}><ShieldCheck size={12} aria-hidden="true" /> Filtru vocal local {gateInfo.strict ? "strict: fiecare propoziție e reținută până la verificare, apoi trimisă (întârziere = durata propoziției + verificarea)" : "activ"} · verificator {gateInfo.verifier} (bază, necalibrat; nu autorizează nimic)
+            {gateLog.length > 0 && <span className="faint"> · ultimele decizii: {gateLog.map((d) => d.result === "MATCH" ? "trimis" : d.result === "INSUFFICIENT_AUDIO" ? "prea scurt" : d.result === "NON_MATCH" ? "altă voce, aruncat" : "incert, aruncat").join(", ")}</span>}</p>
+        : <p className="faint small" style={{ margin: 0 }}>Fără filtru vocal local: tot ce aude microfonul ajunge la OpenAI. Îl activezi din Lega → Configurare.</p>)}
       <ol className="lega-lines" ref={listRef} aria-label="Transcriere">
         {lines.length === 0 && <li className="faint small">Spune ceva, de exemplu „Lega, ce se întâmplă?” sau „Lega, oprește tot”.</li>}
         {lines.map((l) => (

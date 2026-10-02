@@ -24,7 +24,9 @@ const here0 = path.dirname(fileURLToPath(import.meta.url));
 export const CANARY_VERSION = `${CANARY_BASE_VERSION}+${crypto.createHash("sha256")
   .update(fs.readFileSync(path.join(here0, "scripts", "canary.sh"))).update(fs.readFileSync(path.join(here0, "c14.mjs")))
   .update(fs.readFileSync(path.join(here0, "scripts", "reap.sh"))).update(fs.readFileSync(fileURLToPath(import.meta.url))).digest("hex").slice(0, 8)}`;
-export const CANARY_CHECK_IDS = Object.freeze(["C1", "C2", "C3", "C4", "C5", "C6", "C7", "C8", "C9", "C10", "C11", "C12", "C13", "C14", "C15", "C16", "C17"]);
+export const CANARY_CHECK_IDS = Object.freeze(["C1", "C2", "C3", "C4", "C5", "C6", "C7", "C8", "C9", "C10", "C11", "C12", "C13", "C14", "C15", "C16", "C17", "C18"]);
+/** Checks that extend coverage (C18: the local-only preview profile) without being required for the attestation itself. */
+export const CANARY_OPTIONAL_IDS = Object.freeze(["C18"]);
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 export const canaryScript = () => fs.readFileSync(path.join(here, "scripts", "canary.sh"), "utf8");
@@ -178,6 +180,6 @@ export async function runCanary({ config, env, c14 = null, c16 = null, allowRest
     const mine = lines.filter((l) => l.id === id || l.id.startsWith(`${id}/`));
     byId[id] = !mine.length ? "NOT_RUN" : mine.some((l) => l.status === "FAIL") ? "FAIL" : mine.every((l) => l.status === "NOT_RUN") ? "NOT_RUN" : "PASS";
   }
-  const ok = CANARY_CHECK_IDS.every((id) => byId[id] === "PASS");
+  const ok = CANARY_CHECK_IDS.filter((id) => !CANARY_OPTIONAL_IDS.includes(id)).every((id) => byId[id] === "PASS");
   return { version: CANARY_VERSION, lines, byId, fingerprintLine, info: info.slice(0, 30), ok, failed: lines.filter((l) => l.status === "FAIL").length };
 }

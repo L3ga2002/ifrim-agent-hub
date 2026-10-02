@@ -50,6 +50,12 @@ import { createWslFactoryRunner } from "./environments/wsl-factory-runner.mjs";
 import { createEnvironmentRegistry } from "./environments/registry.mjs";
 import { createWslCodexAdapter } from "./providers/codex-wsl.mjs";
 import { newId } from "./core/ids.mjs";
+import { createTrust } from "./owner/trust.mjs";
+import { createEnvelopes } from "./owner/envelopes.mjs";
+import { createCockpit } from "./owner/cockpit.mjs";
+import { createInterrupts } from "./owner/interrupts.mjs";
+import { createAdvisor } from "./owner/advisor.mjs";
+import { createVoice } from "./owner/voice.mjs";
 
 /** Live (non-persisted) channel for token deltas; persisted state is always reloadable from the API. */
 function createLiveChannel() {
@@ -153,14 +159,26 @@ export function createHub(config, { providerOverrides = {}, homeDir, browserLaun
   legaRead.sales = sales;
   handoffs.attachFactory(factory);
 
+  // M06 (Lega 2.0): the owner's trusted session, the product policy, Mission Authorization Envelopes, the project cockpit,
+  // interruptions, quiet proactivity / recommendations / shadow reviews and the local voice profile. Built on the modules
+  // above; the envelope service is the factory's authority hook (no envelope = M03–M05 behaviour).
+  const trust = createTrust({ db, bus, clock, settings, config });
+  const envelopes = createEnvelopes({ db, bus, clock, settings, projects, missions, grants, gate, approvals, commands, trust, factory, factoryRunner, environments, config });
+  factory.attachAuthority((missionId, step) => envelopes.authorityFor(missionId, step));
+  const cockpit = createCockpit({ db, bus, clock, settings, projects, missions, runs, factory, factoryRunner, envelopes, environments, providerState, company });
+  const interrupts = createInterrupts({ db, bus, clock, settings, runs, factory, envelopes, checkpoints, projects, live });
+  const advisor = createAdvisor({ db, bus, clock, settings, approvals, envelopes, runs, factory, conversations, projects, grants });
+  const voice = createVoice({ db, bus, clock, settings, config, trust });
+
   const hub = { config, db, bus, live, settings, projects, conversations, missions, approvals, policy, leases, grants, providerState, usage, memory, leads, sales,
     company, chiefOfStaff, surfaces, schedules, computer, skills, artifacts, integrations, nativeSessions, telemetry, router, commands, checkpoints,
     breakers, supervisor, backups, providers, gate, runs, handoffs, tools, roleConfig, skillConfig, capabilityConfig, codexIsolation, lega, refreshCodexConfig, factory, factoryRunner,
-    environments, wslRunner };
+    environments, wslRunner, trust, envelopes, cockpit, interrupts, advisor, voice };
   registerCommands(commands, hub);
 
   const scheduler = createScheduler({ db, bus, clock, approvals, leases, runs,
-    extraTick: () => Promise.all([schedules.tick((cmd) => commands.dispatch({ ...cmd, channel: "schedule", actor: "scheduler" }).then((r) => r.result)), factory.tick(), Promise.resolve().then(() => sales.tick())]) });
+    extraTick: () => Promise.all([schedules.tick((cmd) => commands.dispatch({ ...cmd, channel: "schedule", actor: "scheduler" }).then((r) => r.result)), factory.tick(), Promise.resolve().then(() => sales.tick()),
+      Promise.resolve().then(() => envelopes.tick())]) });
   hub.scheduler = scheduler;
 
   // Post-commit reactions (each in its own transaction; never inside the writer's transaction).
@@ -168,6 +186,7 @@ export function createHub(config, { providerOverrides = {}, homeDir, browserLaun
     if (event.runId && ["run.completed", "run.failed", "run.interrupted"].includes(event.type)) {
       try { handoffs.checkAcknowledgement(event.runId); } catch { /* reported through handoff state */ }
       try { telemetry.recordRun(event.runId); } catch { /* telemetry never breaks a run */ }
+      try { advisor.onRunFinished(event.runId); } catch { /* a shadow comparison never breaks a run */ }
       // A factory step finished: the conductor decides the next one (asynchronously, serialized per mission).
       factory.onRunFinished(event.runId).catch((error) => {
         try { bus.emit({ type: "factory.error", scopeType: "run", scopeId: event.runId, source: "factory", payload: { message: String(error.message).slice(0, 300) } }); } catch { /* shutting down */ }
@@ -216,6 +235,7 @@ export function createHub(config, { providerOverrides = {}, homeDir, browserLaun
 
   async function close() {
     scheduler.stop();
+    envelopes.close();
     await factory.close();
     await lega.stopAll("shutdown").catch(() => {});
     await supervisor.stopAll();

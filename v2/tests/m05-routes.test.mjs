@@ -155,7 +155,9 @@ test("M05-RT-05 the attestation expires, (b) can be revoked, and two dispatches 
 });
 
 test("M05-RT-06 checks and QA follow the route (codex sandbox in the environment); preview stays on Windows; a socket refusal is BLOCKED, not a code failure (T10)", async () => {
-  const t = await wslHub();
+  // M06-A: with the local-only profile attested (C18) the preview moves into the environment (M06-PL-02); this test keeps the
+  // M05 path — an attestation WITHOUT C18 — where the preview stays on Windows.
+  const t = await wslHub({ wsl: { noC18: true } });
   try {
     const { hub } = t;
     const { project, dir } = await routedTestProject(t);

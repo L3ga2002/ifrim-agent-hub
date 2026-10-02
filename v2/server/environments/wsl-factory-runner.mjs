@@ -1,10 +1,58 @@
 import crypto from "node:crypto";
+import fs from "node:fs";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { redactText } from "../security/redact.mjs";
-import { isAllowedCommand } from "../factory/spec.mjs";
+import { isAllowedCommand, isAllowedPreviewCommand } from "../factory/spec.mjs";
 import { parseTestOutput, testStatus, RUNNER_TIMEOUT_MS } from "../factory/runner.mjs";
-import { resolveWsl, wslArgs, runInDistro } from "./wsl.mjs";
+import { resolveWsl, wslArgs, runInDistro, runScript } from "./wsl.mjs";
 
 const OUTPUT_LINES = 300;
+const here = path.dirname(fileURLToPath(import.meta.url));
+/** The in-namespace preview host (M06-A); written into the run workspace by a versioned script, never edited per run. */
+export const PREVIEW_HOST = fs.readFileSync(path.join(here, "scripts", "preview-host.mjs"), "utf8");
+export const BWRAP = "/usr/bin/bwrap";
+
+/**
+ * The LOCAL-ONLY profile (M06-A), measured in ifrim-runner on 2026-10-02: bwrap 0.9.0 as the unprivileged runner user, new
+ * user/pid/ipc/uts/cgroup/NETWORK namespaces (only loopback), /usr read-only, private /tmp, empty /home, the project COPY at
+ * /work (writable), the host script read-only at /hub, a clean environment. Loopback works (the preview answers itself);
+ * the internet, DNS, the Windows host and the Hub API do not; ~/.codex, /mnt/c and the other workspaces are not visible.
+ * Every element is a separate argv entry (no shell).
+ */
+export function localOnlyArgs({ repo, hostDir, marker }) {
+  for (const p of [repo, hostDir]) if (!/^\/home\/runner\/ws\/hub\/[A-Za-z0-9._-]+\/(repo|host)$/.test(p)) throw new Error(`cale de workspace invalidă pentru bwrap: ${String(p).slice(0, 80)}`);
+  if (!/^[A-Za-z0-9_-]{4,80}$/.test(marker)) throw new Error("marcaj invalid");
+  return ["--unshare-all", "--die-with-parent", "--new-session", "--clearenv",
+    "--ro-bind", "/usr", "/usr", "--symlink", "usr/bin", "/bin", "--symlink", "usr/lib", "/lib", "--symlink", "usr/lib64", "/lib64", "--symlink", "usr/sbin", "/sbin",
+    "--proc", "/proc", "--dev", "/dev", "--tmpfs", "/tmp", "--tmpfs", "/home",
+    "--bind", repo, "/work", "--ro-bind", hostDir, "/hub", "--chdir", "/work",
+    "--setenv", "PATH", "/usr/local/bin:/usr/bin:/bin", "--setenv", "HOME", "/tmp", "--setenv", "TMPDIR", "/tmp", "--setenv", "LANG", "C.UTF-8",
+    "--setenv", "NODE_ENV", "development", "--setenv", "IFRIM_RUN", marker, "--setenv", "npm_config_cache", "/tmp/npm-cache", "--setenv", "npm_config_update_notifier", "false"];
+}
+
+/** The preview command mapped to the environment's own Node/npm (the same shapes the spec accepts). */
+export function previewArgv(command, env) {
+  const parts = String(command).trim().split(/\s+/);
+  if (!isAllowedPreviewCommand(command)) return null;
+  if (parts[0] === "node") return [env.node, ...parts.slice(1)];
+  if (parts[0] === "npm" && parts[1] === "run") return [env.npm, "run", parts[2]];
+  return null;
+}
+
+const previewHostScript = () => `# ifrim-env:previewhost v1 — writes the preview host into ONE run workspace (read-only for the sandbox afterwards).
+set -eu
+D="$1"
+case "$D" in /home/runner/ws/hub/?*/host) ;; *) echo "error=host dir outside the Hub root"; exit 2 ;; esac
+case "$D" in */../*|*//*) echo "error=invalid path"; exit 2 ;; esac
+umask 077
+mkdir -p "$D"
+cat > "$D/preview-host.mjs" <<'IFRIM_PREVIEW_HOST_EOF'
+${PREVIEW_HOST}
+IFRIM_PREVIEW_HOST_EOF
+chmod 500 "$D"
+echo "ok=1"
+`;
 /**
  * node --test runs every test file in a child process read through a pipe by default, and the network-off Linux sandbox loses
  * that child's output: only "not ok 1 - <file>" came back, without the failure text or the per-test lines (measured in
@@ -60,6 +108,7 @@ export function createWslFactoryRunner({ config, supervisor, environment, settin
   const env = environment.env;
   const profile = env.profiles["workspace-write"];
   const owned = new Map(); // supervisor key → workspace id
+  const previews = new Map(); // supervisor key → preview workspace id (M06-A local-only profile)
   const aborts = new Map(); // supervisor key → AbortController of a copy in progress
 
   function readiness(project = null) {
@@ -131,9 +180,91 @@ export function createWslFactoryRunner({ config, supervisor, environment, settin
     })();
   }
 
-  async function startPreview() {
-    return { status: "BLOCKED", isolation: "none",
-      reason: `Preview-ul nu rulează în ${env.id}: sandbox-ul Linux cu rețeaua oprită refuză orice socket (EPERM la listen, măsurat pe Codex 0.159.2). Rămâne pe ruta Windows sau cere o decizie separată (profil de rețea doar-local / runner bwrap dedicat).` };
+  /**
+   * Whether the local-only profile may run project code here: the environment as for checks, plus an attestation whose
+   * canary measured the profile (C18) and bwrap present in the fingerprint. Without it the preview is not offered here.
+   */
+  function localOnlyReadiness(project = null) {
+    const base = readiness(project);
+    if (!base.ok) return base;
+    const att = environment.attestationStatus();
+    const byId = att.latest?.checks?.byId || {};
+    if (byId.C18 !== "PASS") return { ok: false, isolation: "none", detail: `Profilul doar-local (bwrap, rețea doar loopback) nu e atestat: canary C18 ${byId.C18 || "NOT_RUN"}; refă atestarea mediului` };
+    if (!environment.state()?.fingerprint?.bwrap) return { ok: false, isolation: "none", detail: "bwrap lipsește din amprenta mediului" };
+    return { ok: true, isolation: `${environment.simulated ? "SIMULATED: fixture fake-wsl, fără namespace real · " : ""}${env.id}: bwrap ${environment.state().fingerprint.bwrap}, namespace de rețea propriu (doar loopback), /usr doar-citire, copie a proiectului (atestat C18)` };
+  }
+
+  /** E2E needs a browser INSIDE the same namespace (the Windows browser cannot reach it). Not installed: BLOCKED, never Windows. */
+  function e2eReadiness() {
+    const facts = environment.state()?.facts || {};
+    if (!facts.pw_chromium) return { ok: false, detail: `Chromium pentru Linux nu este instalat în ${env.id}: E2E nu poate rula în namespace-ul preview-ului (instalare cerută în pachetul M06-A; nu se trece pe browserul Windows)` };
+    return { ok: false, detail: `Chromium ${facts.pw_chromium} există, dar pornirea lui în bwrap (cu sandbox-ul propriu, fără --no-sandbox) nu a fost încă măsurată; E2E rămâne blocat până la proba aprobată` };
+  }
+
+  /**
+   * Preview of the verified version inside the local-only profile: a fresh copy, the host script, bwrap. The preview is
+   * probed from INSIDE the namespace; the result (HTTP status, title) and the measured isolation are the evidence.
+   */
+  async function startPreview({ key, ws: projectRoot, command, url, waitMs = 20000, project = null }) {
+    const started = Date.now();
+    if (!isAllowedPreviewCommand(command)) return { status: "BLOCKED", reason: "comandă de preview neacceptată", isolation: "none" };
+    const ready = localOnlyReadiness(project);
+    if (!ready.ok) return { status: "BLOCKED", reason: ready.detail, isolation: ready.isolation };
+    const argv = previewArgv(command, env);
+    const binary = resolveWsl(config);
+    if (!argv || !binary) return { status: "BLOCKED", reason: "comanda sau wsl.exe nu pot fi pregătite", isolation: "none" };
+    const wsId = `pv-${crypto.createHash("sha256").update(`${key}:${started}`).digest("hex").slice(0, 16)}`;
+    let prepared;
+    try { prepared = await environment.prepareWorkspace({ id: wsId, projectRoot, projectId: project?.id || "", purpose: "preview" }); }
+    catch (error) { return { status: "BLOCKED", reason: `copia proiectului în ${env.id} a eșuat: ${String(error.message).slice(0, 200)}`, isolation: ready.isolation }; }
+    owned.set(key, wsId);
+    previews.set(key, wsId);
+    const hostDir = `${prepared.ws}/host`;
+    try {
+      const host = await runScript(config, env, previewHostScript(), [hostDir], { timeoutMs: 60000 });
+      if (host.code !== 0) throw new Error(host.text.slice(0, 200) || host.stderr.slice(0, 200));
+    } catch (error) {
+      await stop(key).catch(() => {});
+      return { status: "BLOCKED", reason: `gazda preview-ului nu a putut fi scrisă în mediu: ${String(error.message).slice(0, 200)}`, isolation: ready.isolation };
+    }
+    const facts = [];
+    const out = [];
+    let resolveDone;
+    const done = new Promise((r) => { resolveDone = r; });
+    let record;
+    try {
+      record = supervisor.start({ key, label: `preview@${env.id} (doar-local): ${command}`, executable: binary.executable,
+        args: [...binary.prefixArgs, ...wslArgs(env, { cwd: prepared.repo, vars: { IFRIM_RUN: wsId },
+          argv: [BWRAP, ...localOnlyArgs({ repo: prepared.repo, hostDir, marker: wsId }), env.node, "/hub/preview-host.mjs", "--url", url, "--wait-ms", String(waitMs), "--fake", environment.simulated ? "1" : "0", "--", ...argv] })],
+        cwd: config.hubRoot,
+        onStdoutLine: (line) => {
+          const m = String(line).match(/^IFRIM (\{.*\})$/);
+          if (m) { try { const fact = JSON.parse(m[1]); facts.push(fact); if (["ready", "failed", "error"].includes(fact.kind)) resolveDone(fact); } catch { /* ignored */ } return; }
+          out.push(redactText(line).slice(0, 300)); if (out.length > 60) out.shift();
+        } });
+    } catch (error) {
+      await stop(key).catch(() => {});
+      return { status: "BLOCKED", reason: `preview-ul nu a pornit: ${error.message}`, isolation: ready.isolation };
+    }
+    record.exit.then((exit) => resolveDone({ kind: "exited", exited: exit }));
+    const timer = setTimeout(() => resolveDone({ kind: "timeout" }), waitMs + 30000);
+    timer.unref?.();
+    const result = await done;
+    clearTimeout(timer);
+    const iso = facts.find((f) => f.kind === "isolation") || null;
+    const ok = result.kind === "ready" && result.check?.status >= 200 && result.check?.status < 400;
+    const isolationOk = iso?.simulated || iso?.ok === true;
+    if (!ok || !isolationOk) await stop(key).catch(() => {});
+    const tail = [...out, ...(result.tail || []), ...(record.stderrTail || [])].slice(-40).join("\n");
+    if (ok && !isolationOk) return { status: "BLOCKED", reason: `izolarea măsurată în namespace nu corespunde profilului: ${JSON.stringify(iso).slice(0, 200)}`, url, key, isolation: ready.isolation, outputTail: tail, durationMs: Date.now() - started, inEnvironment: true };
+    return { status: ok ? "PASS" : result.kind === "error" ? "BLOCKED" : "FAIL", url, key, inEnvironment: true, isolationCheck: iso,
+      reason: ok ? `HTTP ${result.check.status}${result.check.title ? ` · ${result.check.title}` : ""} (verificat din namespace-ul preview-ului)` : result.kind === "timeout" ? "preview-ul nu a răspuns la timp" : result.kind === "exited" ? `gazda preview-ului s-a oprit (${result.exited?.code ?? "?"})` : result.reason || `URL-ul nu răspunde (${result.check?.error || result.check?.status || "—"})`,
+      check: result.check || null, isolation: ready.isolation, outputTail: tail, durationMs: Date.now() - started };
+  }
+
+  async function e2e() {
+    const r = e2eReadiness();
+    return { status: "BLOCKED", steps: [], error: r.detail, isolated: `${env.id}: namespace-ul preview-ului (browser nedisponibil)` };
   }
 
   async function stop(key) {
@@ -141,6 +272,8 @@ export function createWslFactoryRunner({ config, supervisor, environment, settin
     const result = await supervisor.stop(key, { graceMs: 500 });
     const wsId = owned.get(key);
     if (wsId) await environment.reap(wsId, { marker: wsId }).catch(() => {});
+    // A preview workspace is removed when its preview stops (a checks workspace is removed by its own run).
+    if (previews.has(key)) { previews.delete(key); owned.delete(key); await environment.release(wsId).catch(() => {}); }
     return result;
   }
 
@@ -163,5 +296,5 @@ export function createWslFactoryRunner({ config, supervisor, environment, settin
     }
   }
 
-  return { environment: env.id, readiness, run, startPreview, stop, preflight };
+  return { environment: env.id, readiness, run, startPreview, stop, preflight, localOnlyReadiness, e2eReadiness, e2e };
 }

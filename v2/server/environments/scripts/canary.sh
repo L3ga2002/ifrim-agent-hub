@@ -1,5 +1,5 @@
 #!/bin/bash
-# ifrim-env:canary v1 (moved from v2/tests/manual/r2-wsl-canary.sh in M05; C1-C13 unchanged)
+# ifrim-env:canary v2 (M06-A adds C18, the local-only profile; C1-C13 unchanged since M05)
 # R2 canary inside ifrim-runner (M04_R2_ISOLATION_OPTIONS.md §6), fictive files only, no model, no prompt.
 # Args: $1 token prefix (CANARY_xxxx), $2 Windows-side fictive tree path as /mnt/c/... guess, $3 Windows listener port.
 # Prints one line per check: "<id> PASS|FAIL <what>". Never prints file contents (exit codes and counts only).
@@ -91,6 +91,43 @@ echo "C13 INFO /proc entries visible in sandbox: $($CLEAN codex sandbox -P ifrim
 echo "SBX-WARN $(grep -ciE 'warn|compat|fallback|namespace' /home/runner/canary-sbx.err 2>/dev/null) warning lines from codex sandbox"
 grep -iE 'warn|compat|fallback|namespace' /home/runner/canary-sbx.err 2>/dev/null | sort -u | head -3 | sed 's/^/SBX-WARN /'
 rm -f /home/runner/canary-sbx.err
+# C18 (M06-A): the LOCAL-ONLY profile used for the preview of project code — bwrap as this user, own network namespace
+# (loopback only), /usr read-only, empty /home, the copy at /work. Same flags as localOnlyArgs() in wsl-factory-runner.mjs.
+LO=/home/runner/ws/hub/canary-lo
+rm -rf "$LO"; mkdir -p "$LO/repo" "$LO/host"
+cat > "$LO/host/probe.mjs" <<'IFRIM_LO_EOF'
+import http from "node:http";
+import fs from "node:fs";
+const out = {};
+const s = http.createServer((q, r) => r.end("lo-ok"));
+await new Promise((r) => s.listen(4173, "127.0.0.1", r));
+try { out.loopback = await (await fetch("http://127.0.0.1:4173/")).text(); } catch { out.loopback = "error"; }
+const reach = async (u) => { try { const c = new AbortController(); const t = setTimeout(() => c.abort(), 2500); await fetch(u, { signal: c.signal }); clearTimeout(t); return "REACHED"; } catch { return "blocked"; } };
+out.internet = await reach("http://1.1.1.1/");
+out.dns = await reach("http://example.com/");
+out.host = await reach("http://" + process.argv[2] + ":" + process.argv[3] + "/");
+for (const [k, p] of [["codex", "/home/runner/.codex"], ["mnt", "/mnt/c"], ["ws", "/home/runner/ws"]]) { try { fs.readdirSync(p); out[k] = "VISIBLE"; } catch { out[k] = "hidden"; } }
+try { fs.writeFileSync("/usr/.lo-probe", "x"); out.usr = "writable"; } catch { out.usr = "readonly"; }
+try { fs.writeFileSync("/work/w.txt", "x"); out.work = "writable"; } catch { out.work = "readonly"; }
+console.log("LO " + JSON.stringify(out));
+s.close();
+IFRIM_LO_EOF
+LOOUT=$(env -i HOME=/home/runner USER=runner LANG=C.UTF-8 PATH=/usr/local/bin:/usr/bin:/bin bwrap --unshare-all --die-with-parent --new-session --clearenv \
+  --ro-bind /usr /usr --symlink usr/bin /bin --symlink usr/lib /lib --symlink usr/lib64 /lib64 --symlink usr/sbin /sbin \
+  --proc /proc --dev /dev --tmpfs /tmp --tmpfs /home --bind "$LO/repo" /work --ro-bind "$LO/host" /hub --chdir /work \
+  --setenv PATH /usr/local/bin:/usr/bin:/bin --setenv HOME /tmp --setenv TMPDIR /tmp --setenv LANG C.UTF-8 \
+  /usr/local/bin/node /hub/probe.mjs "$HOSTIP" "$PORT" 2>/dev/null | grep '^LO ' | head -1)
+loval() { echo "$LOOUT" | grep -o "\"$1\":\"[^\"]*\"" | head -1 | cut -d'"' -f4; }
+res C18a lo-ok "$(loval loopback)" "loopback inside the local-only namespace (preview answers itself)"
+res C18b blocked "$(loval internet)" "public internet from the local-only namespace"
+res C18c blocked "$(loval dns)" "DNS from the local-only namespace"
+res C18d blocked "$(loval host)" "Windows host listener from the local-only namespace"
+res C18e hidden "$(loval codex)" "~/.codex inside the local-only namespace"
+res C18f hidden "$(loval mnt)" "/mnt/c inside the local-only namespace"
+res C18g hidden "$(loval ws)" "other run workspaces inside the local-only namespace"
+res C18h readonly "$(loval usr)" "/usr inside the local-only namespace"
+res C18i writable "$(loval work)" "the project copy inside the local-only namespace"
+rm -rf "$LO"
 # Fingerprint of the environment the result belongs to
 echo "FINGERPRINT distro=ifrim-runner wslconf=$(sha256sum /etc/wsl.conf | cut -c1-16) codex=$(codex --version | awk '{print $2}') config=$(sha256sum ~/.codex/config.toml | cut -c1-16) kernel=$(uname -r)"
 # Cleanup of the in-distro canary files

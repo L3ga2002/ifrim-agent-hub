@@ -9,7 +9,7 @@ import { createCodexAdapter, MCP_NAME_ADDRESSABLE } from "../providers/codex.mjs
 import { WSL_RUNNER, resolveWsl, wslArgs, runInDistro, runScript, parseKeyValues, assertWorkspacePath } from "./wsl.mjs";
 import { writeTar, createTarReader, EXPORT_LIMITS } from "./tar.mjs";
 import { selectTransferFiles, transferStream, validateExport, stageExportFile, applyChanges, EXPORT_POLICY, RUN_TMP_DIR, TRANSFER_LIMITS } from "./workspace.mjs";
-import { runCanary, CANARY_VERSION } from "./canary.mjs";
+import { runCanary, CANARY_VERSION, CANARY_OPTIONAL_IDS } from "./canary.mjs";
 import { exerciseExportValidator } from "./c14.mjs";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -46,17 +46,20 @@ export function probeProblem(probe, state, now = new Date()) {
  */
 export function attestationStatusOf({ canary, before, after, simulated = false }) {
   const sameEnvironment = Boolean(before?.fingerprint?.hash) && before.fingerprint.hash === after?.fingerprint?.hash;
-  const failed = canary.lines.filter((l) => l.status === "FAIL");
-  const notRun = Object.entries(canary.byId).filter(([, s]) => s === "NOT_RUN").map(([k]) => k);
+  // M06-A: C18 (the local-only profile) only ADDS coverage (the preview); a failing or missing C18 never invalidates the
+  // boundary that C1–C17 attest for the writer, checks, QA and export.
+  const optional = (id) => CANARY_OPTIONAL_IDS.includes(String(id).split("/")[0].replace(/[a-z]+$/, ""));
+  const failed = canary.lines.filter((l) => l.status === "FAIL" && !optional(l.id));
+  const notRun = Object.entries(canary.byId).filter(([k, s]) => s === "NOT_RUN" && !optional(k)).map(([k]) => k);
   const status = !sameEnvironment || failed.length || !before?.ok ? "FAIL" : notRun.length ? "INCOMPLETE" : simulated ? "PASS_SIMULATED" : "PASS_LOCAL";
   const summary = !sameEnvironment ? "amprenta s-a schimbat în timpul atestării" : !before?.ok ? "inspecția raportează probleme de graniță"
     : failed.length ? `${failed.length} verificări eșuate: ${failed.slice(0, 4).map((l) => l.sub).join(", ")}` : notRun.length ? `nerulate: ${notRun.join(", ")}`
-      : `C1–C17 trecute (${canary.lines.length} verificări)${simulated ? "; distribuție SIMULATĂ (fixture), nu o dovadă WSL" : "; local, fără model (nu PASS_LIVE)"}`;
+      : `C1–C17 trecute (${canary.lines.length} verificări)${simulated ? "; distribuție SIMULATĂ (fixture), nu o dovadă WSL" : "; local, fără model (nu PASS_LIVE)"}; profilul doar-local C18: ${canary.byId.C18 === "PASS" ? "trecut" : canary.byId.C18 === "FAIL" ? "EȘUAT (preview-ul nu rulează în mediu)" : "nerulat"}`;
   // What the evidence covers, derived from the checks that passed (declared, never assumed): the model-command sandbox
   // (C7–C13) is the boundary of the writer profile and of the checks/QA commands; C14 the export path; C16 the account.
   const passed = (ids) => ids.every((id) => canary.byId[id] === "PASS");
   const stages = status === "PASS_LOCAL" || status === "PASS_SIMULATED"
-    ? [...(passed(["C7", "C8", "C9", "C10", "C11", "C12", "C13"]) ? ["writer-profile", "checks", "qa"] : []), ...(passed(["C14"]) ? ["export"] : []), ...(passed(["C16"]) ? ["account"] : [])]
+    ? [...(passed(["C7", "C8", "C9", "C10", "C11", "C12", "C13"]) ? ["writer-profile", "checks", "qa"] : []), ...(passed(["C14"]) ? ["export"] : []), ...(passed(["C16"]) ? ["account"] : []), ...(passed(["C18"]) ? ["preview-local-only"] : [])]
     : [];
   return { status, summary, stages, failed: failed.length, notRun };
 }

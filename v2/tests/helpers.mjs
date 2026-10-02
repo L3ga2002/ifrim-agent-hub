@@ -110,3 +110,41 @@ export const waitFor = async (predicate, timeoutMs = 15000, stepMs = 50) => {
   }
   throw new Error("waitFor timed out");
 };
+
+/**
+ * M06: registers a SOFTWARE test authenticator as the owner's credential, opens a session and (optionally) activates the
+ * voice-first policy. PASS_SIMULATED only: it exercises the Hub's checks, not Windows Hello.
+ */
+export async function enrolOwner(t, { activatePolicy = true } = {}) {
+  const { createTestAuthenticator } = await import("../server/owner/webauthn.mjs");
+  const { OWNER_SETUP_TEXT, OWNER_POLICY_TEXT } = await import("../server/owner/trust.mjs");
+  const origin = `http://localhost:${t.config.port}`;
+  const auth = createTestAuthenticator({ origin });
+  const begin = t.hub.trust.beginRegistration({ origin, setupText: OWNER_SETUP_TEXT });
+  t.hub.trust.finishRegistration({ origin, challengeId: begin.challengeId, credential: auth.create({ challenge: begin.publicKey.challenge }) });
+  const a = t.hub.trust.beginAuthentication({ origin });
+  const opened = t.hub.trust.finishAuthentication({ origin, challengeId: a.challengeId, credential: auth.get({ challenge: a.publicKey.challenge }) });
+  const session = t.hub.trust.resolveSession(opened.token, { origin });
+  if (activatePolicy) await t.hub.commands.dispatch({ type: "owner.policy.activate", channel: "test", actor: "test", ownerSession: session, payload: { text: OWNER_POLICY_TEXT } });
+  /** Re-authenticates the same session (fresh window) with the same authenticator. */
+  const reauth = () => {
+    const c = t.hub.trust.beginAuthentication({ origin, purpose: "reauth" });
+    t.hub.trust.finishAuthentication({ origin, challengeId: c.challengeId, credential: auth.get({ challenge: c.publicKey.challenge }), currentToken: opened.token });
+    return t.hub.trust.resolveSession(opened.token, { origin });
+  };
+  return { auth, session, token: opened.token, origin, reauth };
+}
+
+/** M06: live preconditions WITHOUT any grant and WITHOUT leaving BUILD_SAFE (a confirmed envelope arranges both). */
+export async function prepareLiveWithoutGrants(hub) {
+  hub.bus.transaction(() => {
+    hub.settings.set("executionGate", { status: "open", reason: "test", changedAt: new Date().toISOString(), changedBy: "test" }, "test");
+    hub.settings.set("billingAttestations", { codex: { confirmedAt: new Date().toISOString(), text: ATTESTATION_TEXT.codex }, claude: { confirmedAt: new Date().toISOString(), text: ATTESTATION_TEXT.claude } }, "test");
+    hub.settings.set("isolationConsent", { codex: { confirmedAt: new Date().toISOString(), fingerprint: hub.codexIsolation().fingerprint } }, "test");
+  });
+  for (const id of ["codex", "claude"]) {
+    const installation = await hub.providers[id].inspectInstallation();
+    const probe = await hub.providers[id].probe({ withUsage: true, withModels: id === "codex" });
+    hub.providerState.set(id, { ...probe, installation });
+  }
+}

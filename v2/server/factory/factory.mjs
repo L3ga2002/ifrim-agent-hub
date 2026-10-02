@@ -47,6 +47,8 @@ export function createFactory(deps) {
   const chains = new Map(); // missionId -> promise chain (one advance at a time per mission)
   const e2eRuns = new Map(); // missionId -> { controller, done } of the browser E2E in progress (Stop / Pause abort it)
   let closed = false; // set when the Hub shuts down: queued steps stop touching the (closing) database
+  // M06: the owner's authority over model steps (Mission Authorization Envelopes). null = no envelope layer (M03–M05 behaviour).
+  let authority = null;
   const now = () => clock().toISOString();
   const workRoot = (missionId) => path.join(config.workDir, "factory", missionId);
   const blobDir = (missionId) => path.join(workRoot(missionId), "blobs");
@@ -465,6 +467,10 @@ export function createFactory(deps) {
       return setStage(missionId, "NEEDS_OWNER_DECISION", { waitReason: "owner_decision", reason: `${stage}: ${attempts} încercări folosite (limita ${f.limits.maxAttemptsPerStage}); decide dacă reiei` });
     }
     if (f.deadlineAt && new Date(f.deadlineAt) <= clock()) return setStage(missionId, "NEEDS_OWNER_DECISION", { waitReason: "owner_decision", reason: "Limita de timp a misiunii a fost atinsă" });
+    if (authority) {
+      const held = authority(missionId, { stage, cycle });
+      if (held) return setStage(missionId, "NEEDS_OWNER_DECISION", { waitReason: "owner_decision", reason: held.reason });
+    }
     const request = { stage, cycle, changeSeq, attempt: prior.length + 1, counted: attempts + 1, provider: route.provider, access: route.access, model: f.limits[`${role}Model`] || "", effort: f.limits[`${role}Effort`] || "", profile: f.limits.profile,
       specVersion: f.approvedSpecVersion };
     const key = `${missionId}:${stage}:c${cycle}:cs${changeSeq}:a${prior.length + 1}`;
@@ -561,6 +567,12 @@ export function createFactory(deps) {
     const mission = missions.get(missionId);
     let taskId = stepTask(f, "build");
     const cycle = repair ? f.repairCycles + 1 : 0;
+    // M06: a repair the confirmed envelope does not cover (e.g. the project is ASSISTED) waits for the owner BEFORE the cycle is
+    // counted or a repair task is created; resuming after the owner's confirmation repeats this exact decision.
+    if (repair && authority) {
+      const held = authority(missionId, { stage: "REPAIRING", cycle });
+      if (held) return setStage(missionId, "NEEDS_OWNER_DECISION", { waitReason: "owner_decision", reason: held.reason });
+    }
     let openFindings = [];
     let failing = [];
     if (repair) {
@@ -850,12 +862,15 @@ export function createFactory(deps) {
     setWait(missionId, "runner", `E2E în browser pe ${spec.verification.preview.url} (${items.length} criterii)`);
     db.prepare("UPDATE factory_evidence SET stale = 1 WHERE mission_id = ? AND change_set_id = ? AND stage = 'E2E' AND stale = 0").run(missionId, cs.id);
     const status = browserStatus({ hubRoot: config.browserRoot });
+    // M06-A: a preview inside the environment's local-only namespace is reachable only from inside it; its E2E goes there too.
+    const envE2E = runner.e2eFor ? runner.e2eFor(projects.get(missions.get(missionId).projectId)) : null;
     const failures = [];
     let blocked = null;
     for (const a of items) {
       { const stop = halted(missionId); if (stop) return stop; }
       let result;
-      if (!status.installed && !browserLaunch) result = { status: "NEEDS_INSTALL_APPROVAL", steps: [], error: "Playwright nu este instalat" };
+      if (envE2E) result = await envE2E({ key: `factory-preview-${missionId}`, url: spec.verification.preview.url, steps: a.steps }).catch((error) => ({ status: "BLOCKED", steps: [], error: String(error.message).slice(0, 280) }));
+      else if (!status.installed && !browserLaunch) result = { status: "NEEDS_INSTALL_APPROVAL", steps: [], error: "Playwright nu este instalat" };
       else {
         try { result = await runE2EBounded(missionId, { url: spec.verification.preview.url, steps: a.steps, hubRoot: config.browserRoot, evidenceDir: path.join(workRoot(missionId), "e2e"), hubPorts: hubPorts() }); }
         catch (error) { result = { status: "BLOCKED", steps: [], error: `browserul nu a putut rula: ${String(error.message).split("\n")[0].slice(0, 280)}` }; }
@@ -865,7 +880,7 @@ export function createFactory(deps) {
       const expected = failed ? a.steps[failed.i - 1] : null;
       const id = newId("evd");
       db.prepare(`INSERT INTO factory_evidence (id, mission_id, change_set_id, stage, kind, command, runner, isolation, status, duration_ms, output_tail, detail_json, created_at)
-        VALUES (?, ?, ?, 'E2E', 'e2e', ?, 'playwright', ?, ?, ?, ?, ?, ?)`).run(id, missionId, cs.id, `e2e ${a.id}`, result.isolated || "browser izolat (nerulat)", result.status, result.durationMs || 0,
+        VALUES (?, ?, ?, 'E2E', 'e2e', ?, ?, ?, ?, ?, ?, ?, ?)`).run(id, missionId, cs.id, `e2e ${a.id}`, envE2E ? "playwright@wsl-runner" : "playwright", result.isolated || "browser izolat (nerulat)", result.status, result.durationMs || 0,
         failed ? `pasul ${failed.i} (${failed.kind}): ${failed.error}` : result.error || "", json({ criterion: a.id, steps: result.steps || [], screenshot: result.screenshot || null,
           consoleErrors: (result.consoleErrors || []).length, network: result.network || null, error: result.error || null, expected }), now());
       bus.emit({ type: "factory.evidence", scopeType: "mission", scopeId: missionId, source: "factory", payload: { evidenceId: id, stage: "E2E", command: `e2e ${a.id}`, status: result.status } });
@@ -1276,7 +1291,7 @@ export function createFactory(deps) {
     const project = projects.get(mission.projectId);
     const dispatches = db.prepare("SELECT * FROM factory_dispatches WHERE mission_id = ? ORDER BY created_at").all(missionId).map(rowToDispatch);
     const runList = dispatches.filter((d) => d.runId).map((d) => runs.getRun(d.runId)).filter(Boolean)
-      .map((r) => ({ id: r.id, provider: r.provider, stage: r.stage, status: r.status, access: r.access, model: r.model, effort: r.effort, plan: r.plan, grantId: r.grantId,
+      .map((r) => ({ id: r.id, provider: r.provider, stage: r.stage, status: r.status, access: r.access, model: r.model, effort: r.effort, plan: r.plan, grantId: r.grantId, environment: r.environment,
         errorCategory: r.errorCategory, errorMessage: r.errorMessage, timeline: summarizeTimeline(r.timeline) }));
     const changeSets = db.prepare("SELECT * FROM factory_change_sets WHERE mission_id = ? ORDER BY seq").all(missionId).map(rowToCs);
     const tasks = missions.tasks(missionId);
@@ -1360,6 +1375,7 @@ export function createFactory(deps) {
   }
 
   return { initialize, reviseSpec, setLimits, scopeFor, assertStartable, startApproved, onRunFinished, stop, pause, resume, accept, reject, stopAll, recover, tick, idle, close,
+    attachAuthority: (fn) => { authority = typeof fn === "function" ? fn : null; },
     setFindingStatus, view, list, summary: (missionId) => { const v = view(missionId); return v && { stage: v.factory.stage, waitReason: v.factory.waitReason, reason: v.factory.stageReason, spec: specSummary(v.spec.spec) }; } };
 }
 

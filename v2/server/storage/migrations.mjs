@@ -630,4 +630,61 @@ export const MIGRATIONS = [
       `);
     },
   },
+  {
+    version: 6,
+    name: "m06-owner-session-envelopes",
+    /**
+     * Milestone 06. The owner's trusted session (WebAuthn credentials, single-use challenges, sessions stored by token hash),
+     * Mission Authorization Envelopes (one consumable confirmation per exact plan, grants derived from it), the owner's last
+     * visit per project (delta briefing) and the local voice-profile metadata (the profile vectors live in a separate file in
+     * the private data folder; no audio, no embedding and no score is kept in these tables). Additive only: approvals and
+     * audit rows written before M06 are never rewritten.
+     */
+    up(db) {
+      db.exec(`
+        CREATE TABLE owner_credentials (
+          id TEXT PRIMARY KEY, label TEXT NOT NULL, public_key_jwk TEXT NOT NULL, alg INTEGER NOT NULL, sign_count INTEGER NOT NULL DEFAULT 0,
+          aaguid TEXT NOT NULL DEFAULT '', transports_json TEXT NOT NULL DEFAULT '[]', uv_initialized INTEGER NOT NULL DEFAULT 0, backup_eligible INTEGER NOT NULL DEFAULT 0,
+          attestation_fmt TEXT NOT NULL DEFAULT 'none', rp_id TEXT NOT NULL, origin TEXT NOT NULL, status TEXT NOT NULL,
+          created_at TEXT NOT NULL, last_used_at TEXT, revoked_at TEXT);
+
+        CREATE TABLE owner_challenges (
+          id TEXT PRIMARY KEY, kind TEXT NOT NULL, challenge TEXT NOT NULL UNIQUE, purpose TEXT NOT NULL, origin TEXT NOT NULL,
+          expires_at TEXT NOT NULL, used_at TEXT, created_at TEXT NOT NULL);
+
+        CREATE TABLE owner_sessions (
+          id TEXT PRIMARY KEY, token_hash TEXT NOT NULL UNIQUE, credential_id TEXT NOT NULL, origin TEXT NOT NULL, policy_version INTEGER NOT NULL,
+          user_verified INTEGER NOT NULL, status TEXT NOT NULL, created_at TEXT NOT NULL, last_seen_at TEXT NOT NULL, expires_at TEXT NOT NULL,
+          reauth_at TEXT NOT NULL, revoked_at TEXT, revoke_reason TEXT, user_agent TEXT NOT NULL DEFAULT '');
+        CREATE INDEX idx_owner_sessions_status ON owner_sessions(status, expires_at);
+
+        CREATE TABLE mission_envelopes (
+          id TEXT PRIMARY KEY, schema_version INTEGER NOT NULL, project_id TEXT NOT NULL, mission_ids_json TEXT NOT NULL, plan_hash TEXT NOT NULL,
+          envelope_hash TEXT NOT NULL, body_json TEXT NOT NULL, summary_json TEXT NOT NULL, autonomy_level TEXT NOT NULL, status TEXT NOT NULL,
+          nonce TEXT NOT NULL UNIQUE, proposed_by TEXT NOT NULL, proposed_via TEXT NOT NULL, owner_session_id TEXT, consent_json TEXT NOT NULL DEFAULT '{}',
+          derived_json TEXT NOT NULL DEFAULT '{}', current_mission_id TEXT, issued_at TEXT NOT NULL, confirm_by TEXT NOT NULL, expires_at TEXT NOT NULL,
+          confirmed_at TEXT, closed_at TEXT, close_reason TEXT, idempotency_key TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, version INTEGER NOT NULL DEFAULT 1);
+        CREATE INDEX idx_mission_envelopes_project ON mission_envelopes(project_id, created_at);
+        -- At most one authority in force per project (a second tab, a double "yes" or a reconnect cannot confirm two).
+        CREATE UNIQUE INDEX ux_mission_envelopes_active ON mission_envelopes(project_id) WHERE status IN ('CONFIRMED', 'ACTIVE', 'WAITING_OWNER');
+
+        ALTER TABLE live_grants ADD COLUMN envelope_id TEXT;
+
+        CREATE TABLE owner_visits (project_id TEXT PRIMARY KEY, last_seen_at TEXT NOT NULL, last_seq INTEGER NOT NULL DEFAULT 0);
+
+        -- Shadow Mode: a second, read-only reviewer on the same change set; its output is a proposal, never an input of the
+        -- mission (the conductor does not read this table).
+        CREATE TABLE shadow_evaluations (
+          id TEXT PRIMARY KEY, mission_id TEXT NOT NULL, change_set_id TEXT NOT NULL, change_set_sha TEXT NOT NULL, primary_review_id TEXT,
+          run_id TEXT, conversation_id TEXT, provider TEXT NOT NULL, model TEXT NOT NULL DEFAULT '', status TEXT NOT NULL, verdict TEXT,
+          findings_json TEXT NOT NULL DEFAULT '[]', metrics_json TEXT NOT NULL DEFAULT '{}', requested_by TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
+        CREATE INDEX idx_shadow_evaluations_mission ON shadow_evaluations(mission_id, created_at);
+
+        CREATE TABLE voice_profiles (
+          id TEXT PRIMARY KEY, version INTEGER NOT NULL, verifier TEXT NOT NULL, status TEXT NOT NULL, samples INTEGER NOT NULL,
+          quality_json TEXT NOT NULL DEFAULT '{}', calibration_json TEXT NOT NULL DEFAULT '{}', file_ref TEXT NOT NULL, consent_version INTEGER NOT NULL,
+          created_at TEXT NOT NULL, revoked_at TEXT);
+      `);
+    },
+  },
 ];

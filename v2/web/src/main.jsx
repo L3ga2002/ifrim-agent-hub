@@ -2,12 +2,15 @@ import { StrictMode, Suspense, lazy, useEffect, useState, useCallback } from "re
 import { createRoot } from "react-dom/client";
 import "./styles/app.css";
 import "./styles/m02.css";
+import "./styles/m06.css";
 import { startHubConnection, useHub } from "./store.js";
 import { Shell } from "./shell/Shell.jsx";
 import { Loading } from "./components/ui.jsx";
 import { navigate } from "./nav.js";
 
 const screens = {
+  // M06: Lega 2.0 — the cockpit you drive by intent (the start screen); the full dashboard stays one click away.
+  lega: lazy(() => import("./screens/Lega.jsx")),
   control: lazy(() => import("./screens/ControlRoom.jsx")),
   conversations: lazy(() => import("./screens/Conversations.jsx")),
   focus: lazy(() => import("./screens/Focus.jsx")),
@@ -29,11 +32,11 @@ const screens = {
 export function parseRoute(hash) {
   const [pathPart, queryPart = ""] = hash.replace(/^#\/?/, "").split("?");
   const parts = pathPart.split("/").filter(Boolean).map(decodeURIComponent);
-  const [name = "control", id = null] = parts;
+  const [name = "lega", id = null] = parts;
   const query = Object.fromEntries(new URLSearchParams(queryPart));
   // Focus is the conversation workspace: /conversations (list + empty center) and /conversations/:id.
   if (name === "conversations") return { name: "focus", id, query };
-  return { name: screens[name] ? name : "control", id, query };
+  return { name: screens[name] ? name : "lega", id, query };
 }
 
 

@@ -28,6 +28,21 @@ export const DEFAULT_SETTINGS = Object.freeze({
   legaConsent: {},
   lega: { voice: "cove", maxSessionMinutes: 20, idleTimeoutS: 120 },
   ui: { reducedMotion: "system" },
+  // M06: the product policy. "legacy" (default) = every effect needs its own UI click, as in M01–M05; "voice_first" = the owner
+  // confirms one exact mission envelope in an authenticated session and the Hub derives the technical grants from it.
+  ownerPolicy: { mode: "legacy" },
+  // M06: the WebAuthn user handle of the owner (random; no personal data).
+  ownerIdentity: {},
+  // M06: autonomy level per project ({ [projectId]: { level, version, setAt, setBy } }); absent = the default of its kind.
+  projectAutonomy: {},
+  // M06: projects frozen by the owner ("Îngheață X"): no new step starts on them until unfrozen.
+  projectFreeze: {},
+  // M06: the owner's interruption preferences (quiet hours, "only decisions", voice notifications).
+  ownerPrefs: { onlyDecisions: false, quietHours: null, voiceNotifications: false },
+  // M06: which envelope switched the Hub from BUILD_SAFE to LIVE_VALIDATION (released when its missions end).
+  envelopeModeHold: {},
+  // M06: local voice gate (speaker verification before anything is sent). Off until the owner enrols and enables it.
+  voiceGate: { enabled: false, strict: true, profileId: null },
   legacyImport: null,
   routingPreferences: {},
 });

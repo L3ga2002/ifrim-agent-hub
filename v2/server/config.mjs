@@ -6,7 +6,7 @@ export const V2_ROOT = path.resolve(here, "..");
 export const HUB_ROOT = path.resolve(V2_ROOT, "..");
 export const PROJECTS_ROOT = path.resolve(HUB_ROOT, "..");
 
-export const HUB_VERSION = "2.6.0-m05"; // M05: execution environments (wsl-runner: copy-in, Codex in ifrim-runner, C14-validated export, attestation C1–C17 bound to a fingerprint, policy (b) owner-only), robustness (Stop in QA, RT-07, warm-up, Lega diagnostics) // M04: Sales & Lead Generation (import → identity → evidence → audit → qualification → proposal → draft → Engineering hand-off), DRAFT_ONLY // M03: runtime readiness (explicit model/effort, run timeline, R2/R3 gate) + Software Factory (spec → change set → review → QA → bundle)
+export const HUB_VERSION = "2.7.0-m06"; // M06: Lega 2.0 (owner session WebAuthn, versioned voice-first policy off by default, Mission Authorization Envelopes with derived grants, project cockpit, intents, interruptions, local voice gate baseline, face) + M06-A pipeline readiness // M05: execution environments (wsl-runner: copy-in, Codex in ifrim-runner, C14-validated export, attestation C1–C17 bound to a fingerprint, policy (b) owner-only), robustness (Stop in QA, RT-07, warm-up, Lega diagnostics) // M04: Sales & Lead Generation (import → identity → evidence → audit → qualification → proposal → draft → Engineering hand-off), DRAFT_ONLY // M03: runtime readiness (explicit model/effort, run timeline, R2/R3 gate) + Software Factory (spec → change set → review → QA → bundle)
 export const DEFAULT_PORT = 8011;
 export const DEFAULT_HOST = "127.0.0.1";
 

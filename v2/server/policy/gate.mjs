@@ -46,6 +46,9 @@ export function createGate({ db, settings, projects, backups, leases, grants, br
     // The folder is checked again at every run: a link or junction swapped in after the owner enabled it is refused.
     const folder = project?.executionAllowed && projects.executionProblem ? projects.executionProblem(project) : null;
     add("project_scope", Boolean(project?.executionAllowed) && !folder, project ? (!project.executionAllowed ? `${project.name} nu este activat pentru execuție V2` : folder ? `${project.name}: ${folder}` : project.name) : "Proiect necunoscut");
+    // M06: „Îngheață X” — no new step on a frozen project until the owner unfreezes it.
+    const frozen = project ? settings.get("projectFreeze")?.[project.id] || null : null;
+    add("project_frozen", !frozen, frozen ? `Proiect înghețat (${frozen.at}); dezgheață-l ca să pornească pași noi` : "Nu este înghețat");
 
     if (mode === "LIVE_VALIDATION") {
       const grant = grantId ? grants.get(grantId) : grants.findUsable(provider, projectId, access);

@@ -43,6 +43,9 @@ echo "node_path=$(readlink -f "$(command -v node 2>/dev/null)" 2>/dev/null)"
 echo "npm_path=$(readlink -f "$(command -v npm 2>/dev/null)" 2>/dev/null)"
 echo "bwrap=$(bwrap --version 2>/dev/null | awk '{print $2}')"
 echo "tar=$(tar --version 2>/dev/null | head -1 | awk '{print $NF}')"
+# M06-A: what a later install would add (names/versions only): a Playwright Chromium for Linux, a Claude Code client.
+echo "pw_chromium=$(ls -1d "$HOME"/.cache/ms-playwright/chromium* 2>/dev/null | head -1 | xargs -r basename)"
+echo "claude_cli=$(command -v claude >/dev/null 2>&1 && claude --version 2>/dev/null | head -1 | awk '{print $1}')"
 if id -nG | tr ' ' '\n' | grep -qxE 'sudo|admin|wheel|root'; then echo "privileged_group=yes"; else echo "privileged_group=no"; fi
 if sudo -n true >/dev/null 2>&1; then echo "sudo=allowed"; else echo "sudo=refused"; fi
 echo "mnt_drives=$(ls /mnt 2>/dev/null | grep -E '^[a-z]$' | tr '\n' ',')"

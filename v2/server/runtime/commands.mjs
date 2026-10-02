@@ -5,7 +5,8 @@ import { json, parse } from "../storage/db.mjs";
 import { redactDeep } from "../security/redact.mjs";
 
 // "cli" (M05): a local script acting through the API (inference-free checks only); recorded as such, never as the owner's UI.
-export const COMMAND_CHANNELS = Object.freeze(["ui", "voice", "automation", "schedule", "companion", "recovery", "test", "cli"]);
+// "owner" (M06): the owner's authenticated session (WebAuthn); a command on it carries the verified session, never a claim.
+export const COMMAND_CHANNELS = Object.freeze(["ui", "voice", "automation", "schedule", "companion", "recovery", "test", "cli", "owner"]);
 const RESULT_LIMIT = 20000;
 
 /**
@@ -62,10 +63,12 @@ export function createCommandBus({ db, bus, clock, policy, approvals }) {
     return bus.withContext({ correlationId }, () => dispatchInner({ ...request, correlationId }, id));
   }
 
-  async function dispatchInner({ type, payload = {}, actor = "user", channel = "ui", intentText = "", idempotencyKey = null, correlationId = null }, id) {
+  async function dispatchInner({ type, payload = {}, actor = "user", channel = "ui", intentText = "", idempotencyKey = null, correlationId = null, ownerSession = null }, id) {
     const handler = handlers.get(type);
     if (!handler) throw new HubError("validation", `Unknown command ${type}`);
     if (!COMMAND_CHANNELS.includes(channel)) throw new HubError("validation", `Unknown channel ${channel}`);
+    // The owner channel exists only with a session the HTTP layer (or the envelope service) resolved from the database.
+    if (channel === "owner" && !ownerSession?.id) throw new HubError("authentication", "The owner channel needs an authenticated owner session");
     if (!handler.channels.includes(channel)) throw new HubError("policy", `Command ${type} cannot be issued through ${channel}`);
     if (idempotencyKey) {
       const existing = db.prepare("SELECT * FROM commands WHERE idempotency_key = ?").get(String(idempotencyKey).slice(0, 120));
@@ -76,7 +79,7 @@ export function createCommandBus({ db, bus, clock, policy, approvals }) {
     }
     const input = validate(payload ?? {}, handler.schema, type);
     const corr = correlationId || id;
-    const ctx = { actor, channel, commandId: id, correlationId: corr };
+    const ctx = { actor, channel, commandId: id, correlationId: corr, ownerSession: channel === "owner" || channel === "test" ? ownerSession : null };
     const action = handler.action ? handler.action(input, ctx) : null;
     const decision = action ? policy.evaluate(action) : { decision: "allow", policy: "AUTO_ALLOWED", reason: "Comandă internă a Hub-ului, fără efecte în afara lui" };
 

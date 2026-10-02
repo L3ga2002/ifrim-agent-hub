@@ -170,12 +170,12 @@ export function createSimulation(hub) {
    * with fixture grants and the writer/reviewer scripts queued. The mission is prepared with its spec; YOU approve the scope
    * in Misiuni (nothing starts before that click). Labelled SIMULARE everywhere: fixture writer, reviewer and runner.
    */
-  async function factoryDemo(fixture, { codex, claude }) {
+  async function factoryDemo(fixture, { codex, claude, grants = true }) {
     const dir = path.join(config.dataDir, `factory-${fixture}-${Date.now().toString(36)}`);
     const port = fixture === "service-request" ? 46000 + Math.floor(Math.random() * 2500) : null;
     materializeFixture(fixture, dir, { port });
     const projectRow = await cmd("project.register_test", { path: dir });
-    hub.bus.transaction(() => {
+    if (grants) hub.bus.transaction(() => {
       hub.grants.create({ provider: "codex", projectId: projectRow.id, access: "workspace-write", maxAttempts: 4, maxDurationS: 900, ttlMinutes: 240, note: "Simulare (fixture-uri)" }, "simulator");
       hub.grants.create({ provider: "claude", projectId: projectRow.id, access: "read-only", maxAttempts: 4, maxDurationS: 900, ttlMinutes: 240, note: "Simulare (fixture-uri)" }, "simulator");
     });
@@ -191,6 +191,9 @@ export function createSimulation(hub) {
     "factory-a": () => factoryDemo("bug-demo", { codex: ["factory-write:bug-fix"], claude: ["review:pass"] }),
     "factory-b": () => factoryDemo("service-request", { codex: ["factory-write:feature-b-nodedupe", "factory-write:feature-b-dedupe"], claude: ["review:pass"] }),
     "factory-c": () => factoryDemo("bug-demo", { codex: ["factory-write:bug-fix", "factory-write:bug-fix-v2"], claude: ["review:changes-dedupe", "review:pass"] }),
+    // M06: the same Demo A WITHOUT any grant: in Lega you see the plan, confirm it once in your session and the envelope derives
+    // the grants (the simulator's authenticator is your browser's; nothing real runs).
+    lega: () => factoryDemo("bug-demo", { codex: ["factory-write:bug-fix"], claude: ["review:pass"], grants: false }),
     async execute() {
       const conv = await cmd("conversation.create", { projectId: project().id, title: `Execuție simulată ${new Date().toLocaleTimeString("ro-RO")}` });
       const run = await startRun(conv.id, "codex", "Implementează validarea (scenariu lung, fixture).", "slow", { wait: false });

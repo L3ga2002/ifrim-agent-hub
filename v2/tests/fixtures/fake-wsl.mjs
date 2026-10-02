@@ -103,7 +103,7 @@ async function bashScript() {
     return 0;
   }
   if (marker === "env:canary") {
-    const lines = ["C1", "C1b", "C2", "C2b", "C3", "C3b", "C4", "C4b", "C4c", "C4d", "C5", "C6", "C6b", "C7a", "C7b", "C7c", "C7d", "C7e", "C8", "C9", "C10a", "C10b", "C10c", "C11", "C12a", "C12b", "C12c", "C13", "C13b"]
+    const lines = ["C1", "C1b", "C2", "C2b", "C3", "C3b", "C4", "C4b", "C4c", "C4d", "C5", "C6", "C6b", "C7a", "C7b", "C7c", "C7d", "C7e", "C8", "C9", "C10a", "C10b", "C10c", "C11", "C12a", "C12b", "C12c", "C13", "C13b", ...(st.noC18 ? [] : ["C18a", "C18b", "C18c", "C18d", "C18e", "C18f", "C18g", "C18h", "C18i"])]
       .map((id) => `${id} ${(st.canaryFail || []).includes(id) ? "FAIL" : "PASS"} simulat`);
     const f = { ...FACTS, ...(st.facts || {}) };
     out(`${lines.join("\n")}\nFINGERPRINT distro=ifrim-runner wslconf=${f.wslconf} codex=${f.codex_version} config=${f.config} kernel=${f.kernel}\n`);
@@ -120,6 +120,15 @@ async function bashScript() {
     return 0;
   }
   if (marker === "c14:hostile") { fs.writeFileSync(path.join(map(argv[0]), "..", ".fake-hostile"), "1"); return 0; }
+  if (marker === "env:previewhost") {
+    const dir = map(argv[0]);
+    const js = script.split("<<'IFRIM_PREVIEW_HOST_EOF'\n")[1]?.split("\nIFRIM_PREVIEW_HOST_EOF")[0];
+    if (!js) { out("error=no host\n"); return 2; }
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(path.join(dir, "preview-host.mjs"), js);
+    out("ok=1\n");
+    return 0;
+  }
   out(`fake-wsl: unknown script ${marker}\n`);
   return 127;
 }
@@ -234,12 +243,37 @@ async function codex() {
   return 2;
 }
 
+/** Simulated bwrap (NO namespace on Windows): binds /work and /hub to the mapped workspace dirs and runs the program there. */
+async function bwrap() {
+  const a = command.slice(1);
+  const binds = {}; const envs = {};
+  let i = 0;
+  while (i < a.length && a[i].startsWith("--")) {
+    const flag = a[i];
+    if (["--bind", "--ro-bind", "--symlink"].includes(flag)) { if (flag !== "--symlink") binds[a[i + 2]] = a[i + 1]; i += 3; }
+    else if (flag === "--setenv") { envs[a[i + 1]] = a[i + 2]; i += 3; }
+    else if (["--proc", "--dev", "--tmpfs", "--chdir"].includes(flag)) i += 2;
+    else i += 1;
+  }
+  const prog = a.slice(i);
+  log({ bwrap: { flags: a.slice(0, i), program: prog.slice(0, 3) } });
+  if (st.bwrapFails) { process.stderr.write("bwrap: simulated failure\n"); return 1; }
+  const fix = (x) => (x === "/usr/local/bin/node" ? process.execPath : x.startsWith("/hub/") ? path.join(map(binds["/hub"]), x.slice(5)) : x.startsWith("/home/runner") ? map(x) : x);
+  const child = spawn(fix(prog[0]), prog.slice(1).map((x, k) => (k === 0 || x === "/usr/local/bin/node" ? fix(x) : x)), { cwd: map(binds["/work"]), stdio: ["ignore", "inherit", "inherit"], windowsHide: true,
+    env: { ...process.env, ...envs, PATH: process.env.PATH } });
+  register(binds["/work"], child.pid);
+  const stopChild = () => { try { child.kill(); } catch { /* gone */ } };
+  process.on("SIGTERM", stopChild); process.on("exit", stopChild);
+  return await new Promise((resolve) => child.on("close", (code) => resolve(code ?? 1)));
+}
+
 async function main() {
   const exe = command[0];
   if (exe === "/bin/bash") return bashScript();
   if (exe === "/usr/bin/tar") return tar();
   if (exe === "/usr/bin/find") return find();
   if (exe === "/usr/local/bin/codex") return codex();
+  if (exe === "/usr/bin/bwrap") return bwrap();
   if (exe === "/bin/true") return 0;
   if (exe === "/bin/mkdir") { fs.mkdirSync(map(command[command.length - 1]), { recursive: true }); return 0; }
   if (exe === "/bin/rm") { fs.rmSync(map(command[command.length - 1]), { recursive: true, force: true }); return 0; }
