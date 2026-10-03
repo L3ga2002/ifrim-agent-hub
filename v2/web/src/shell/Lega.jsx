@@ -7,6 +7,7 @@ import { legaLevels } from "../lib/legaLevels.js";
 import { offerGrantPrefill, pointAt } from "../lib/legaBridge.js";
 import { isAppShortcut, approvedNotStarted } from "../lib/uiLogic.js";
 import { createVoiceGate } from "../lib/voiceGate.js";
+import { presentedPlan, looksLikeConfirmation, isCapturing, preferredMic } from "../lib/voiceContext.js";
 
 /**
  * Lega — the Hub's voice assistant (GPT-Live via Codex, ChatGPT plan).
@@ -126,19 +127,28 @@ export function Lega({ go }) {
     const dispose = () => { mic?.getTracks().forEach((t) => t.stop()); gate?.close(); try { pc?.close(); } catch { /* closed */ } };
     try {
       if (!navigator.mediaDevices?.getUserMedia || !window.RTCPeerConnection) throw new Error("Browserul nu permite microfon + WebRTC aici");
-      try { mic = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true } }); }
+      // The microphone chosen in setup (the profile was recorded with it), else the default one.
+      const deviceId = preferredMic();
+      try { mic = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true, ...(deviceId ? { deviceId: { ideal: deviceId } } : {}) } }); }
       catch (e) { throw micError(e); }
       if (!alive()) return dispose();
       pc = new RTCPeerConnection(); // no STUN/TURN, like the official Codex voice helper
       // M06: with the voice gate enabled, the track sent to OpenAI is the gate's output (each sentence held until the local
       // speaker check), never the raw microphone. If the enabled gate cannot start, Lega does not start unfiltered.
-      const voice = await api("/api/voice").catch(() => null);
+      // Fail closed: if the filter state cannot be read, Lega does not start with the raw microphone.
+      let voice;
+      try { voice = await api("/api/voice"); }
+      catch (e) { throw new Error(`Nu pot citi starea filtrului vocal (${e.message}); Lega nu pornește nefiltrată`); }
       let sendTrack = mic.getAudioTracks()[0];
       if (voice?.gate?.enabled && voice.profile) {
         try {
-          gate = await createVoiceGate(mic, { strict: voice.gate.strict, onDecision: (d) => setGateLog((log) => [...log.slice(-5), { at: Date.now(), ...d }]) });
+          gate = await createVoiceGate(mic, {
+            // The Lega session and the plan on screen at the end of each sentence (the Hub binds the segment to both).
+            context: () => ({ legaSessionId: refs.current.sessionId, envelopeId: presentedPlan()?.envelopeId || null }),
+            onDecision: (d) => { setGateLog((log) => [...log.slice(-5), { at: Date.now(), ...d }]); if (d.result === "MATCH" && d.envelopeId && !isCapturing(d.envelopeId)) followSpokenConfirmation(d); },
+          });
           sendTrack = gate.track;
-          setGateInfo({ enabled: true, strict: voice.gate.strict, verifier: voice.verifier.id });
+          setGateInfo({ enabled: true, strict: true, verifier: voice.verifier.id });
         } catch (e) { throw new Error(`Filtrul vocal local nu a pornit (${e.message}); Lega nu pornește nefiltrată cât timp filtrul e activat`); }
       } else setGateInfo({ enabled: false });
       if (!alive()) return dispose();
@@ -374,8 +384,8 @@ function ActiveView({ status, elapsed, session, micMuted, legaMuted, onMic, onSo
       </div>
       {status !== "active" && <Notice tone="info" title="Se conectează">Aștept confirmarea sesiunii vocale (nu este progres măsurat).</Notice>}
       {gateInfo && (gateInfo.enabled
-        ? <p className="small" style={{ margin: 0 }}><ShieldCheck size={12} aria-hidden="true" /> Filtru vocal local {gateInfo.strict ? "strict: fiecare propoziție e reținută până la verificare, apoi trimisă (întârziere = durata propoziției + verificarea)" : "activ"} · verificator {gateInfo.verifier} (bază, necalibrat; nu autorizează nimic)
-            {gateLog.length > 0 && <span className="faint"> · ultimele decizii: {gateLog.map((d) => d.result === "MATCH" ? "trimis" : d.result === "INSUFFICIENT_AUDIO" ? "prea scurt" : d.result === "NON_MATCH" ? "altă voce, aruncat" : "incert, aruncat").join(", ")}</span>}</p>
+        ? <p className="small" style={{ margin: 0 }}><ShieldCheck size={12} aria-hidden="true" /> Filtru vocal local strict: fiecare propoziție e reținută până când Hub-ul o recunoaște ca a ta, apoi trimisă (întârziere = durata propoziției + ~1 s) · verificator {gateInfo.verifier} (local; nu autorizează nimic singur)
+            {gateLog.length > 0 && gateLog[gateLog.length - 1].result !== "MATCH" && <span> · <strong>ultima propoziție nu a trecut:</strong> {gateLog[gateLog.length - 1].reason}</span>}{gateLog.length > 0 && <span className="faint"> · ultimele decizii: {gateLog.map((d) => d.result === "MATCH" ? "trimis" : d.result === "INSUFFICIENT_AUDIO" ? "prea scurt" : d.result === "NON_MATCH" ? "altă voce, aruncat" : "incert, aruncat").join(", ")}</span>}</p>
         : <p className="faint small" style={{ margin: 0 }}>Fără filtru vocal local: tot ce aude microfonul ajunge la OpenAI. Îl activezi din Lega → Configurare.</p>)}
       <ol className="lega-lines" ref={listRef} aria-label="Transcriere">
         {lines.length === 0 && <li className="faint small">Spune ceva, de exemplu „Lega, ce se întâmplă?” sau „Lega, oprește tot”.</li>}
@@ -438,6 +448,33 @@ function ProposalCard({ approval, onDone }) {
       <ErrorNotice error={run.error || reject.error} />
     </div>
   );
+}
+
+/**
+ * M07 §15: a sentence the gate let through while a plan waited. The Hub transcribes it locally (a second or two); if it reads
+ * like a confirmation, the cockpit's intent route gets the SEGMENT (never text): the Hub resolves it as the owner's local
+ * voice and confirms only that plan, only in this session. Anything else stays a conversation with Lega.
+ */
+async function followSpokenConfirmation(decision) {
+  const started = Date.now();
+  let row = null;
+  // The local transcript usually takes about a second; a cold engine can take much longer (bounded by its own timeout).
+  while (Date.now() - started < 50000) {
+    try { row = await api(`/api/voice/utterances/${decision.utteranceId}`); } catch { return; }
+    if (row.transcriptStatus !== "pending") break;
+    await new Promise((r) => setTimeout(r, 400));
+  }
+  if (row?.transcriptStatus === "pending") { pushToast(`env-voice-${decision.envelopeId}`, "warn", "Transcrierea locală întârzie; confirmă cu butonul sau repetă."); return; }
+  if (row?.transcriptStatus !== "final" || !looksLikeConfirmation(row.transcript)) return;
+  const plan = presentedPlan();
+  if (!plan || plan.envelopeId !== decision.envelopeId) return;
+  try {
+    const out = await api("/api/owner/intent", { method: "POST", body: { utteranceId: decision.utteranceId, projectId: plan.projectId || undefined, presented: { envelopeId: plan.envelopeId, nonce: plan.nonce, hash: plan.hash } } });
+    const confirmed = (out?.results || []).find((r) => r.confirmed);
+    const refused = (out?.results || []).find((r) => r.refused || r.error);
+    if (confirmed) pushToast(`env-${plan.envelopeId}`, "ok", "Confirmat prin voce (verificată și transcrisă local): misiunea a pornit");
+    else pushToast(`env-voice-${plan.envelopeId}`, "warn", refused?.refused || refused?.error?.message || `Am auzit „${row.transcript}”, nu o confirmare clară; nimic nu a pornit`);
+  } catch (e) { pushToast(`env-voice-${plan.envelopeId}`, "warn", e.message); }
 }
 
 /** Before a session: what is missing (gate checks), the consent form and the voice choice. */

@@ -194,7 +194,8 @@ test("M05-RT-07 a real project's code never runs on the Windows runner without t
     // With the owner's R2 acceptance the Windows route works as before (M03 behaviour kept).
     await enableLive(hub, { provider: "codex", access: "workspace-write" });
     assert.equal(hub.factoryRunner.readiness(real).ok, true);
-    // Claude is never routed: its review stays on Windows at tool level, whatever the project route is.
+    // Claude follows the route only when the environment's reviewer is ready (M07: installed, C20 attested, (b) for a real
+    // project); here nothing is attested, so its review stays on Windows at tool level, whatever the project route is.
     await dispatch(hub, "project.environment.set", { projectId: real.id, environment: "wsl-runner" });
     const claude = hub.gate.evaluate({ provider: "claude", projectId: real.id, access: "read-only" });
     assert.equal(claude.environment, "windows");

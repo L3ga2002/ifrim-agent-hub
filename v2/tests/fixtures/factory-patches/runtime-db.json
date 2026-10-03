@@ -1,0 +1,10 @@
+{
+  "summary": "Am adăugat o notă; testele au lăsat o bază SQLite în data/.",
+  "write": {
+    "docs/runtime-note.md": "# Notă\n\nSchimbare de test.\n",
+    "data/notes.txt": "text de rulare\n"
+  },
+  "writeBase64": {
+    "data/runtime.sqlite": "U1FMaXRlIGZvcm1hdCAzAAcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBw=="
+  }
+}

@@ -10,7 +10,8 @@ import { fileURLToPath } from "node:url";
 import { makeTestHub, enableLive, waitFor } from "./helpers.mjs";
 import { materializeFixture, demoSpec } from "../server/factory/fixtures.mjs";
 import { localOnlyArgs, previewArgv } from "../server/environments/wsl-factory-runner.mjs";
-import { CANARY_CHECK_IDS } from "../server/environments/canary.mjs";
+import { CANARY_CHECK_IDS, canaryPrelude } from "../server/environments/canary.mjs";
+import { shellArray } from "../server/environments/sandbox-profiles.mjs";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const dispatch = (hub, type, payload, channel = "test") => hub.commands.dispatch({ type, payload, actor: "test", channel }).then((r) => r.result);
@@ -42,10 +43,15 @@ test("M06-PL-01 the preview sandbox flags: namespaces, die-with-parent, clean en
   assert.throws(() => localOnlyArgs({ repo: "/home/runner/.codex", hostDir: "/home/runner/ws/hub/x/host", marker: "abcd" }), /invalid/);
   assert.deepEqual(previewArgv("npm run dev", { node: "/usr/local/bin/node", npm: "/usr/local/bin/npm" }), ["/usr/local/bin/npm", "run", "dev"]);
   assert.equal(previewArgv("bash -c evil", { node: "n", npm: "m" }), null);
-  // The canary attests exactly this profile: every isolation flag used for the preview appears in canary.sh's C18 call.
+  // The canary attests exactly this profile. M07: canary.sh no longer carries a hand-written copy of the flags (a copy could
+  // drift from production) — its C18 runs bwrap with LO_ARGS, the production argv (localOnlyArgs) that canary.mjs prepends
+  // as a bash array, so every isolation flag of the preview is, by construction, what C18 measured.
   const canary = fs.readFileSync(path.join(here, "..", "server", "environments", "scripts", "canary.sh"), "utf8");
-  const c18 = canary.slice(canary.indexOf("# C18"), canary.indexOf("# Fingerprint"));
-  for (const flag of ["--unshare-all", "--die-with-parent", "--new-session", "--clearenv", "--ro-bind /usr /usr", "--tmpfs /home", "--tmpfs /tmp", "--chdir /work"]) assert.ok(c18.includes(flag), `canary C18 uses ${flag}`);
+  const c18 = canary.slice(canary.indexOf("# C18"), canary.indexOf("# C19"));
+  assert.ok(c18.includes('bwrap "${LO_ARGS[@]}"'), "C18 runs the production argv");
+  const lo = canaryPrelude().split("\n").find((l) => l.startsWith("LO_ARGS=("));
+  assert.equal(lo, shellArray("LO_ARGS", localOnlyArgs({ repo: "/home/runner/ws/hub/canary-lo/repo", hostDir: "/home/runner/ws/hub/canary-lo/host", marker: "canary-lo" })));
+  for (const flag of ["'--unshare-all'", "'--die-with-parent'", "'--new-session'", "'--clearenv'", "'--ro-bind' '/usr' '/usr'", "'--tmpfs' '/home'", "'--tmpfs' '/tmp'", "'--chdir' '/work'"]) assert.ok(lo.includes(flag), `canary C18 uses ${flag}`);
   for (const id of ["C18a", "C18b", "C18c", "C18d", "C18e", "C18f", "C18g", "C18h", "C18i"]) assert.ok(c18.includes(`res ${id} `), id);
   assert.ok(CANARY_CHECK_IDS.includes("C18"));
 });

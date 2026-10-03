@@ -1,5 +1,39 @@
 # Open Issues - Ifrim Agent Hub
 
+## 2026-10-03 — Open items after M07 (version `2.8.0-m07`; supersede every section below where they overlap)
+
+1. **OneDrive sync (pre-existing; owner decision).** The project lives under OneDrive Desktop, including `.ifrim/private` (Hub database, logs, V1/V2 backups), and is synced to the cloud. Voice confirmation transcripts and history land there.
+   - Options: move `HUB_V2_DATA_DIR` outside OneDrive, or exclude the folder from sync.
+   - The voice profile and models are already outside (`C:\Users\mihai\IfrimHub\voice`).
+2. **Voice profile ACL on Windows (owner decision).** The code asks for mode 600, but Node does not apply it on Windows.
+   - The profile files inherit read access from `C:\Users\mihai\IfrimHub`: the `CodexSandboxUsers` group, SYSTEM and Administrators.
+   - The path is not in the Codex deny list.
+   - Restricting it needs an explicit ACL or a deny rule in the Codex profile. Not changed automatically, given the persistent-DENY-ACE behaviour of Codex profiles.
+3. **whisper-server has no authentication and sends `Access-Control-Allow-Origin: *`** (v1.9.4; `--request-path` breaks every route in this build).
+   - It listens on loopback only, on a random port, with a one-time, best-effort PID check at start.
+   - A local process or web page that guesses the port can use it or `/load` another model (DoS until the next request). It cannot inject text into the Hub.
+4. **Chromium (Playwright) and Claude binaries in ifrim-runner are owned by `runner`.** A replacement changes the fingerprint, so the attestation falls and runs are refused, but the write itself is not prevented. Fix: move them under root-owned `/opt` (owner's root step).
+5. **E2E evidence can be forged by the project under test** (same uid and network namespace as the E2E host). This is the same limit as parsing test output; the host boundary is unaffected.
+6. **Reviewer network = the distro's network.** Not domain-filtered; the reviewer's tools have no network access.
+7. **Reviewer runs through `claude@wsl-runner` record `surface_id` null.** Cosmetic; affects the audit only.
+8. **Leftover workspace directories in ifrim-runner:**
+   - `ws/hub/stop-kill-wsl-only-muq4as4j` (M05);
+   - `ws/hub/pv-deb603de5c6be589` (D6's preview), marked orphaned by the restart, with no processes and its files kept for inspection.
+
+   Remove both in the next maintenance window (Environments → the trash icon on the orphaned row).
+9. **D8 not validated live.** No Lega cloud session ran with the voice filter (0/2 used). No spoken taci / pauză / oprește on the live Hub, and "Hai să lucrăm la ProDelivery" was not spoken in the live cockpit (resolver and cockpit read verified separately). All PASS_SIMULATED or PASS_LOCAL.
+10. **Voice threshold calibrated on the owner's samples only.** With no authorized negative voices, the false-accept rate is unmeasured. Voice is a filter and the spoken form of a session confirmation, never authentication.
+11. **The C14 attestation does not exercise the project-ignore drop** (the C14 fixture is not a git repository). M07-EXP-08/09 and M07-ENV-12 cover it; add a C14 case at the next canary version.
+12. **(Closed in M07.)** The voice-first-policy check in `restoreModeHold` is tested in M07-EN-16 (mutant MM-9).
+13. **What D6 relied on that is no longer possible for an agent.** D6's second writer attempt was granted by an agent resume (`factory.extra_attempt`) under the pre-review code, within the M07 budget of 2 attempts per probe. After review round 2 an agent resumes only BLOCKED or its own pause. Future agent-driven probes need the owner's click for any NEEDS_OWNER_DECISION (an extra attempt included), a new time window or the end of the owner's pause. Policy (b) re-approval (e.g. after a fingerprint change) is the owner's.
+14. **Lega screens.** The full-screen stage (Alt+J) and the cockpit coexist. The owner asked whether the big screen should be the start screen or open from the cockpit card. Proposal pending.
+15. **Residuals from review round 2 (rejected as defects, mechanisms real):**
+    - **The 'hub-test' label.** A real directory could be registered as a test project through an 8.3 short-path duplicate; this needs write access to the project already.
+    - **Agent pause/resume loop.** On a test project, an agent can loop pause/resume and get model turns not counted per stage, bounded by the grant's attempts.
+    - **Writer-chosen file names.** They reach the stage reason, Lega's context and the bundle markdown unfiltered (bidi, U+2028). This is pre-existing.
+    - **Malformed `mission_ids_json`.** One such row makes `envelopeOfMission` throw; this fails closed.
+    - **No two-Hub restart test.** No test opens a second Hub over the same database; a real restart was exercised live in D6 (restore worked).
+
 ## 2026-10-02 — M06: Lega 2.0 (voice-first cockpit) + M06-A pipeline readiness (current; read `M06_REPORT.md` first)
 
 - **Code `2.7.0-m06`:** on disk on `v2-milestone-01` over `c8ff6f4`, **uncommitted**. No commit, push, merge, deploy, model, install or download.

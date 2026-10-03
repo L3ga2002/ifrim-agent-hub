@@ -103,7 +103,7 @@ function EnvironmentPanel({ env, policyText, reload }) {
             <div className="table-wrap" style={{ marginTop: 8 }}><table className="table"><thead><tr><th>Id</th><th>Scop</th><th>Stare</th><th>Fișiere</th><th>Export</th><th /></tr></thead><tbody>
               {env.workspaces.map((w) => (
                 <tr key={w.id}><td className="mono small">{w.id}</td><td>{w.purpose}</td><td><Chip tone={["released", "applied"].includes(w.status) ? "ok" : ["refused", "conflict", "orphaned", "retained", "failed"].includes(w.status) ? "warn" : "info"}>{w.status}</Chip></td>
-                  <td>{w.files ?? "—"}</td><td className="small">{w.export ? `${w.export.ok ? "valid" : "refuzat"} · +${w.export.added} ~${w.export.modified} -${w.export.deleted}${w.export.refused ? ` · ${w.export.refused} refuzuri` : ""}${w.export.conflicts ? ` · ${w.export.conflicts} conflicte` : ""}` : "—"}</td>
+                  <td>{w.files ?? "—"}</td><td className="small">{w.export ? `${w.export.ok ? "valid" : "refuzat"} · +${w.export.added} ~${w.export.modified} -${w.export.deleted}${w.export.refused ? ` · ${w.export.refused} refuzuri` : ""}${w.export.conflicts ? ` · ${w.export.conflicts} conflicte` : ""}${w.export.ignoredByProject ? ` · ${w.export.ignoredByProject} lăsate deoparte (.gitignore)` : ""}${w.export.ignoreRulesError ? " · regulile .gitignore necitite" : ""}` : "—"}</td>
                   <td>{["orphaned", "retained"].includes(w.status) && <button className="btn sm ghost" disabled={release.pending} onClick={() => release.run(w.id)} aria-label={`Șterge ${w.id}`}><Trash2 size={13} /></button>}</td></tr>
               ))}
             </tbody></table></div>

@@ -53,8 +53,8 @@ export function registerOwnerCommands(reg, hub) {
     execute: (input, ctx) => envelopes.propose({ projectId: input.projectId, missionIds: input.missionIds || [], level: input.level || null, constraints: input.constraints || {}, actor: ctx.actor, via: ctx.channel }) });
   reg("envelope.confirm", { describe: "Confirmarea ta unică a planului afișat (sesiune autentificată, politica voice-first)", async: true, channels: OWNER,
     schema: { envelopeId: { required: true, max: 80 }, nonce: { required: true, max: 64 }, displayedHash: { required: true, max: 64 }, modality: { enum: ["click", "keyboard", "typed", "voice"], default: "click" },
-      voice: { type: "object" } },
-    execute: (input, ctx) => envelopes.confirm({ envelopeId: input.envelopeId, nonce: input.nonce, displayedHash: input.displayedHash, session: session(ctx), modality: input.modality, voice: input.voice || null, idempotencyKey: ctx.commandId }) });
+      utteranceId: { max: 80 } },
+    execute: (input, ctx) => envelopes.confirm({ envelopeId: input.envelopeId, nonce: input.nonce, displayedHash: input.displayedHash, session: session(ctx), modality: input.modality, utteranceId: input.utteranceId || null, idempotencyKey: ctx.commandId }) });
   reg("envelope.confirm_delta", { describe: "Confirmi doar diferența (un ciclu de remediere în plus, în limita misiunii)", channels: OWNER,
     schema: { envelopeId: { required: true, max: 80 }, missionId: { required: true, max: 80 }, modality: { enum: ["click", "keyboard", "typed"], default: "click" } },
     execute: (input, ctx) => envelopes.confirmDelta({ envelopeId: input.envelopeId, missionId: input.missionId, session: session(ctx), modality: input.modality }) });
@@ -83,15 +83,18 @@ export function registerOwnerCommands(reg, hub) {
     execute: (input) => cockpit.markVisit(input.projectId === "__company__" ? "__company__" : (projects.get(input.projectId)?.id || input.projectId)) });
 
   // ---------- voice profile ----------
-  reg("voice.enroll", { describe: "Înscrierea locală a profilului vocal (doar caracteristici, fără audio)", channels: OWNER,
-    schema: { samples: { type: "array", required: true, max: 12 }, consentText: { required: true, max: 600 } },
-    logPayload: (i) => ({ samples: Array.isArray(i.samples) ? i.samples.length : 0 }), logResult: (r) => ({ profileId: r?.profile?.id, version: r?.profile?.version }),
-    execute: (input, ctx) => voice.enroll({ samples: input.samples, consentText: input.consentText, session: session(ctx) }) });
+  // M07: the samples themselves go to the raw-audio route (never into a command log); finishing builds the profile from the
+  // samples the Hub accepted in this session.
+  reg("voice.enroll.finish", { describe: "Finalizează profilul vocal din mostrele acceptate în sesiunea ta (acordul exact)", channels: OWNER,
+    schema: { consentText: { required: true, max: 800 } }, logPayload: () => ({ consent: true }), logResult: (r) => ({ profileId: r?.profile?.id, version: r?.profile?.version, samples: r?.calibration?.samples }),
+    execute: (input, ctx) => voice.enrollFinish({ consentText: input.consentText, session: session(ctx) }) });
+  reg("voice.enroll.reset", { describe: "Renunță la mostrele începute (nimic nu e salvat)", channels: OWNER, schema: {},
+    execute: (input, ctx) => voice.enrollReset({ session: session(ctx) }) });
   reg("voice.delete", { describe: "Șterge profilul vocal (și fișierul lui)", channels: OWNER, schema: { reason: { max: 120, default: "la cererea ta" } },
     execute: (input, ctx) => voice.remove({ session: session(ctx), reason: input.reason }) });
   reg("voice.gate", { describe: "Pornește/oprește filtrul vocal local (modul strict reține propoziția până la verificare)", channels: OWNER,
     schema: { enabled: { type: "boolean", required: true }, strict: { type: "boolean" } },
-    execute: (input, ctx) => voice.setGate({ enabled: input.enabled, strict: input.strict, session: session(ctx) }) });
+    execute: (input, ctx) => voice.setGate({ enabled: input.enabled, session: session(ctx) }) });
 
   // ---------- shadow ----------
   reg("shadow.review", { describe: "Shadow Mode: un al doilea review, doar citire, pe același change set (fără efect asupra misiunii; cere un grant)", async: true, channels: ["ui", "owner", "test"],
@@ -105,7 +108,9 @@ export function registerOwnerCommands(reg, hub) {
    * presented. Voice transcripts from the provider never confirm.
    */
   reg("owner.intent", { describe: "Limbaj natural → pași (citire, navigare, plan, întreruperi; confirmarea doar în sesiunea ta)", async: true, channels: ANY_OWNER_FACING,
-    schema: { text: { required: true, max: 2000 }, projectId: { max: 80 }, source: { enum: ["typed", "voice-local", "voice-provider"], default: "typed" },
+    // M07: "voice-local" is never a client's claim: a spoken sentence arrives as an utteranceId, and the text and its source are
+    // read from the server-held row (local speaker check + local transcript, this session only).
+    schema: { text: { max: 2000, default: "" }, projectId: { max: 80 }, source: { enum: ["typed", "voice-provider"], default: "typed" }, utteranceId: { max: 80 },
       presented: { type: "object" }, layout: { type: "object" } },
     execute: async (input, ctx) => {
       const projectList = projects.list().map((p) => ({ id: p.id, name: p.name, slug: p.slug }));
@@ -114,7 +119,14 @@ export function registerOwnerCommands(reg, hub) {
       const pendingForProject = envelopes.pending().filter((e) => !current || e.projectId === current.id);
       // A confirmation is valid only for the plan the cockpit reports it showed (id + nonce + hash); voice-provider never.
       const awaiting = presented?.envelopeId && pendingForProject.some((e) => e.id === presented.envelopeId) ? "envelope_confirmation" : null;
-      const source = ctx.channel === "voice" ? "voice-provider" : input.source;
+      let source = ctx.channel === "voice" ? "voice-provider" : input.source;
+      if (input.utteranceId) {
+        if (ctx.channel !== "owner" && ctx.channel !== "test") throw new HubError("authentication", "Fraza vocală locală se folosește doar în sesiunea ta de proprietar");
+        const spoken = voice.utteranceForIntent({ utteranceId: input.utteranceId, session: session(ctx) });
+        input.text = spoken.transcript;
+        source = "voice-local";
+      }
+      if (!String(input.text || "").trim()) throw new HubError("validation", "Text gol");
       const resolved = resolveIntent(input.text, { projects: projectList, currentProjectId: current?.id || null, missions: missions.list(current?.id || null).map((m) => ({ id: m.id, projectId: m.projectId, title: m.title })),
         departments: company.departments().map((d) => ({ key: d.key, name: d.name })), pendingEnvelopes: awaiting ? pendingForProject.filter((e) => e.id === presented.envelopeId).map((e) => ({ id: e.id, title: e.summary.headline })) : pendingForProject.map((e) => ({ id: e.id, title: e.summary.headline })),
         awaiting, source });
@@ -136,7 +148,8 @@ export function registerOwnerCommands(reg, hub) {
             if (step.args.projectId) { projectId = step.args.projectId; r.cockpit = await cockpit.projectCockpit(projectId); r.navigate = `/cockpit/${projectId}`; }
             else r.message = step.args.unknownRef ? `Nu găsesc proiectul „${step.args.unknownRef}”.` : "Spune-mi proiectul.";
           } else if (["show_plan", "continue_work"].includes(step.intent)) {
-            if (!projectId) { r.message = "Pe ce proiect?"; }
+            if (source === "voice-local" && awaiting) { r.refused = "Planul afișat așteaptă răspunsul tău; spune „Da, execută planul” sau „Nu acum” (nu pregătesc alt plan peste el)"; }
+            else if (!projectId) { r.message = "Pe ce proiect?"; }
             else {
               const proposal = await envelopes.propose({ projectId, missionIds: step.args.missionId ? [step.args.missionId] : [], constraints: step.constraints, actor: ctx.actor, via: ctx.channel })
                 .catch((error) => ({ error: error.message }));
@@ -148,7 +161,7 @@ export function registerOwnerCommands(reg, hub) {
           } else if (step.intent === "confirm") {
             if (ctx.channel !== "owner" && ctx.channel !== "test") r.refused = "Confirmarea se face în sesiunea ta autentificată (cockpit, tastă sau buton)";
             else if (!presented || presented.envelopeId !== step.args.envelopeId) r.refused = "Confirm doar planul afișat acum în cockpit";
-            else r.confirmed = await envelopes.confirm({ envelopeId: presented.envelopeId, nonce: presented.nonce, displayedHash: presented.hash, session: session(ctx), modality: source === "voice-local" ? "voice" : "typed", voice: input.presented?.voice || null, idempotencyKey: ctx.commandId });
+            else r.confirmed = await envelopes.confirm({ envelopeId: presented.envelopeId, nonce: presented.nonce, displayedHash: presented.hash, session: session(ctx), modality: source === "voice-local" ? "voice" : "typed", utteranceId: source === "voice-local" ? input.utteranceId : null, idempotencyKey: ctx.commandId });
           } else if (step.intent === "status") r.explain = cockpit.status({ projectId, worker: step.args.worker || null });
           else if (step.intent === "why_blocked") r.explain = cockpit.whyBlocked({ projectId, missionId: step.args.missionId || null });
           else if (step.intent === "why_route") r.explain = cockpit.whyRoute({ worker: step.args.worker });

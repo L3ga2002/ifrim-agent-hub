@@ -4,15 +4,67 @@ import { createEventGate } from "./lib/uiLogic.js";
 let token = null;
 let tokenPromise = null;
 
+/**
+ * M07 UI–API contract. The build carries the contract it was made for (vite define); the server reports its own on
+ * /api/session, the SSE hello and every /api response. A mutating request is refused here, before it is sent, when they
+ * differ — except the fail-safe ones (stop, pause, revoke, log out), which must always work.
+ */
+/* global __UI_VERSION__, __UI_CONTRACT__ */
+export const UI_BUILD = Object.freeze({
+  version: typeof __UI_VERSION__ === "string" ? __UI_VERSION__ : "dev",
+  contract: typeof __UI_CONTRACT__ === "number" ? __UI_CONTRACT__ : null,
+});
+const FAILSAFE = ["/api/stop-all", "/api/runs/*/interrupt", "/api/lega/sessions/*/stop", "/api/owner/interrupt", "/api/owner/policy/deactivate",
+  "/api/owner/logout", "/api/owner/sessions/revoke-all", "/api/envelopes/*/revoke", "/api/factory/*/stop", "/api/factory/*/pause", "/api/grants/*/revoke"];
+export function isFailsafePath(path, body = null) {
+  if (String(path).split("?")[0] === "/api/gate") return body?.action === "suspend"; // suspending is fail-safe, opening is not
+  const parts = String(path).split("?")[0].split("/");
+  return FAILSAFE.some((p) => { const w = p.split("/"); return w.length === parts.length && w.every((x, i) => (x === "*" ? parts[i].length > 0 : x === parts[i])); });
+}
+let server = null; // { version, apiContract, bootId } as last reported by the server
+const listeners = new Set();
+/** Subscribes to server-info changes (a restart, another version); returns the unsubscribe function. */
+export function onServerInfo(fn) { listeners.add(fn); return () => listeners.delete(fn); }
+export const serverInfo = () => server;
+/** "ok" | "ui_older" | "server_older" | "unknown" (no contract known yet, or a dev build without one). */
+export function contractState(info = server) {
+  if (!info || UI_BUILD.contract === null) return "unknown";
+  // A server that reports no contract predates M07: it is older than any page that has one.
+  if (typeof info.apiContract !== "number") return info.version ? "server_older" : "unknown";
+  if (info.apiContract === UI_BUILD.contract) return "ok";
+  return info.apiContract > UI_BUILD.contract ? "ui_older" : "server_older";
+}
+export function noteServer(info) {
+  if (!info || typeof info !== "object") return;
+  const restarted = Boolean(info.bootId && server?.bootId && info.bootId !== server.bootId);
+  const next = restarted
+    ? { version: info.version ?? null, apiContract: typeof info.apiContract === "number" ? info.apiContract : null, bootId: info.bootId }
+    : { version: info.version ?? server?.version ?? null, apiContract: typeof info.apiContract === "number" ? info.apiContract : server?.apiContract ?? null, bootId: info.bootId ?? server?.bootId ?? null };
+  const changed = !server || next.version !== server.version || next.apiContract !== server.apiContract || next.bootId !== server.bootId;
+  if (server && next.bootId && next.bootId !== server.bootId) token = null; // a restart rotates the per-boot token
+  server = next;
+  if (changed) for (const fn of listeners) { try { fn(server); } catch { /* a listener's problem */ } }
+}
+
 export async function ensureToken() {
   if (token) return token;
   if (!tokenPromise) {
     tokenPromise = fetch("/api/session", { credentials: "same-origin" })
       .then((res) => { if (!res.ok) throw new Error("Session unavailable"); return res.json(); })
-      .then((data) => { token = data.token; return token; })
+      .then((data) => { noteServer(data); token = data.token; return token; })
       .finally(() => { tokenPromise = null; });
   }
   return tokenPromise;
+}
+
+function staleRefusal(path, body = null) {
+  if (isFailsafePath(path, body)) return null;
+  const state = contractState();
+  if (state !== "ui_older" && state !== "server_older") return null;
+  const message = state === "ui_older"
+    ? `Interfața (${UI_BUILD.version}) e mai veche decât serverul (${server.version}): reîncarcă pagina.`
+    : `Serverul rulează ${server.version}, interfața e ${UI_BUILD.version}: repornește Hub-ul (v2\\scripts\\restart.ps1).`;
+  return new ApiError(409, { error: { category: "conflict", code: "UI_STALE", message, details: { ui: UI_BUILD, server } } });
 }
 
 export class ApiError extends Error {
@@ -20,6 +72,7 @@ export class ApiError extends Error {
     super(body?.error?.message || `HTTP ${status}`);
     this.status = status;
     this.category = body?.error?.category || "internal";
+    this.code = body?.error?.code || null;
     this.details = body?.error?.details;
   }
 }
@@ -29,6 +82,9 @@ export async function api(path, { method = "GET", body, signal } = {}) {
   if (method !== "GET") {
     headers["X-Hub-Token"] = await ensureToken();
     headers["Content-Type"] = "application/json";
+    if (UI_BUILD.contract !== null) headers["X-Hub-UI-Contract"] = String(UI_BUILD.contract);
+    const stale = staleRefusal(path, body);
+    if (stale) throw stale;
   }
   let res;
   try {
@@ -42,8 +98,33 @@ export async function api(path, { method = "GET", body, signal } = {}) {
     if (/session token/i.test(body403?.error?.message || "")) { token = null; return api(path, { method, body, signal }); }
     throw new ApiError(403, body403);
   }
+  const contract = Number(res.headers.get("x-hub-contract"));
+  if (Number.isFinite(contract) && contract > 0 && server && contract !== server.apiContract) noteServer({ ...server, apiContract: contract, version: res.headers.get("x-hub-version") || server.version });
   const type = res.headers.get("content-type") || "";
   const payload = type.includes("json") ? await res.json().catch(() => null) : await res.text();
+  if (!res.ok) {
+    if (payload?.error?.code === "UI_STALE") noteServer({ ...server, apiContract: payload.error.details?.serverContract, version: payload.error.details?.serverVersion });
+    throw new ApiError(res.status, payload);
+  }
+  return payload;
+}
+
+/**
+ * M07: raw bytes (an audio segment, PCM16 16 kHz) to a session-bound route. Same token, contract and stale-page refusal as
+ * api(); the owner's session cookie goes with it (same origin). Extra headers are plain ASCII (e.g. X-Voice-Flags JSON).
+ */
+export async function apiRaw(path, bytes, { headers = {}, signal } = {}) {
+  const stale = staleRefusal(path);
+  if (stale) throw stale;
+  const send = async () => fetch(path, { method: "POST", body: bytes, signal, credentials: "same-origin",
+    headers: { "Content-Type": "application/octet-stream", "X-Hub-Token": await ensureToken(), ...(UI_BUILD.contract !== null ? { "X-Hub-UI-Contract": String(UI_BUILD.contract) } : {}), ...headers } });
+  let res;
+  try { res = await send(); } catch (error) { if (error.name === "AbortError") throw error; throw new ApiError(0, { error: { message: "Hub server is not reachable (offline)", category: "transport" } }); }
+  if (res.status === 403) {
+    const body = await res.clone().json().catch(() => null);
+    if (/session token/i.test(body?.error?.message || "")) { token = null; res = await send(); }
+  }
+  const payload = await res.json().catch(() => null);
   if (!res.ok) throw new ApiError(res.status, payload);
   return payload;
 }
@@ -82,7 +163,9 @@ export function openStream({ after = null, onEvent, onLive, onStatus, EventSourc
     source = es;
     es.addEventListener("hello", (message) => {
       if (!current(es)) return;
-      const hello = gate.hello(parseData(message));
+      const helloData = parseData(message);
+      noteServer(helloData); // M07: a restart or another server version is noticed here, before the next command
+      const hello = gate.hello(helloData);
       if (hello.resync) { drop(es); if (++resyncs > 3) scheduleReconnect(); else connect(); return; }
       if (!gate.known) { drop(es); scheduleReconnect(); return; } // a hello without the server's lastSeq: retry with backoff
       retry = 1000; resyncs = 0;
@@ -134,9 +217,12 @@ export const fmt = {
 export function uploadWithProgress(path, body, onProgress) {
   const xhr = new XMLHttpRequest();
   const promise = ensureToken().then((tok) => new Promise((resolve, reject) => {
+    const stale = staleRefusal(path);
+    if (stale) { reject(stale); return; }
     xhr.open("POST", path);
     xhr.setRequestHeader("Content-Type", "application/json");
     xhr.setRequestHeader("X-Hub-Token", tok);
+    if (UI_BUILD.contract !== null) xhr.setRequestHeader("X-Hub-UI-Contract", String(UI_BUILD.contract));
     xhr.upload.onprogress = (e) => { if (e.lengthComputable) onProgress?.(e.loaded / e.total); };
     xhr.onload = () => {
       let data = null; try { data = JSON.parse(xhr.responseText); } catch { /* not json */ }

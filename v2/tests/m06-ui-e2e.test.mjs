@@ -36,15 +36,13 @@ test("M06-UI-E2E-01 register (virtual authenticator) → policy → plan → ONE
     await cdp.send("WebAuthn.enable");
     await cdp.send("WebAuthn.addVirtualAuthenticator", { options: { protocol: "ctap2", transport: "internal", hasResidentKey: true, hasUserVerification: true, isUserVerified: true, automaticPresenceSimulation: true } });
 
-    // 1 · setup page: the exact setup text, then the authenticator ceremony (virtual) and the session cookie.
+    // 1 · setup page (M07: the resumable steps on top; the shown setup text is accepted by the authenticator gesture).
     await page.goto(`${origin}/#/lega/setup`);
-    const ownerStatus = t.hub.trust.status();
-    await page.getByLabel("Textul de configurare").fill(ownerStatus.setupText);
+    await page.getByText("Windows Hello / cheia ta înregistrată").first().waitFor({ timeout: 20000 });
     await page.getByRole("button", { name: /Înregistrează acest calculator/ }).click();
     await page.getByText(/sesiune deschisă până la/).waitFor({ timeout: 20000 });
-    // 2 · the voice-first policy (fresh session + exact text).
-    await page.getByLabel("Textul politicii").fill(ownerStatus.policyText);
-    await page.getByRole("button", { name: /Activez politica/ }).click();
+    // 2 · the voice-first policy (fresh session; the versioned text shown and accepted with the gesture).
+    await page.getByRole("button", { name: /Accept și activez/ }).click();
     await page.getByText(/activă \(v1\)/).waitFor({ timeout: 20000 });
     assert.equal(t.hub.trust.policy().active, true);
     await page.screenshot({ path: path.join(evidence, "m06-setup.png"), fullPage: true });

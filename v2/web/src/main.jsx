@@ -3,6 +3,7 @@ import { createRoot } from "react-dom/client";
 import "./styles/app.css";
 import "./styles/m02.css";
 import "./styles/m06.css";
+import "./styles/m07.css";
 import { startHubConnection, useHub } from "./store.js";
 import { Shell } from "./shell/Shell.jsx";
 import { Loading } from "./components/ui.jsx";

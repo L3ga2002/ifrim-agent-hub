@@ -85,8 +85,10 @@ test("M05-LR-02 checks in the environment run node --test in-process (the sandbo
     assert.ok(mixed.failures.includes("respinge numele gol"), "the failing test is named, so a repair brief can quote it");
     t.wslState({ sandboxOutput: `${TAP_SOCKET.join("\n")}\n`, sandboxExit: 1 });
     const socket = await hub.factoryRunner.run({ key: "lr-02-c", ws: root, command: "node --test", project });
-    assert.equal(socket.status, "BLOCKED");
-    assert.match(socket.reason, /socket/);
+    // M07: the refusal is recognised as the sandbox's limit and the command re-runs in the attested local-only profile (C18);
+    // without C18 it stays BLOCKED (M07-PL-13).
+    assert.equal(socket.runner, "bwrap-local-only@wsl-runner", JSON.stringify(socket).slice(0, 300));
+    assert.match(socket.fallbackFrom, /socket refuzat/);
   } finally { await t.cleanup(); }
 });
 
@@ -138,6 +140,13 @@ test("M05-LR-05 the worker's prompt on the environment route names the Linux cop
     assert.ok(!env.includes(project.path), "no Windows path for a worker that cannot reach it");
     assert.match(env, /copy of the project in your current working directory/);
     assert.match(env, /no \.git/);
+    const writer = buildTurnPrompt({ db: hub.db, conversation, project, git, provider: "codex", runId: "r3", environment: "wsl-runner", access: "workspace-write" }).text;
+    assert.match(writer, /New binary files other than images, fonts and PDF refuse the whole change unless the project's git ignore rules exclude them/);
+    assert.match(writer, /Text files are applied wherever they are/);
+    // A project without its own repository: nothing is left out, and the writer is told so (M07 review round 3).
+    const noRepo = buildTurnPrompt({ db: hub.db, conversation, project: { ...project, path: t.dataDir }, git, provider: "codex", runId: "r4", environment: "wsl-runner", access: "workspace-write" }).text;
+    assert.match(noRepo, /this project has no git repository of its own, so nothing is left out/);
+    assert.ok(!/unless the project's git ignore rules exclude them/.test(noRepo));
     const win = buildTurnPrompt({ db: hub.db, conversation, project, git, provider: "codex", runId: "r2" }).text;
     assert.ok(win.includes(project.path));
   } finally { await t.cleanup(); }

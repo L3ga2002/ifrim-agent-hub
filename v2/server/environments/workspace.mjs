@@ -205,13 +205,48 @@ function isUtf8(buf) {
 }
 const extensionOf = (rel) => (rel.match(/\.([A-Za-z0-9]{1,8})$/)?.[1] || "").toLowerCase();
 
+/** At most this many names are asked of git per export (the writer chooses them; the question runs off the event loop). */
+export const IGNORE_QUERY_LIMIT = 1000;
+
+/**
+ * Whether a NEW exported file may be left out because the project's ignore rules exclude it (M07, found live in D6: the
+ * project's tests left SQLite databases under data/, which the project's .gitignore excludes, and C14 refused the whole export
+ * as "binary"). Only a file C14 would otherwise REFUSE as a binary non-asset is eligible: text files keep their normal path
+ * (applied as before), guarded and control names, Hub-policy exclusions (.env…) and anything that was sent in keep their
+ * checks. Names with glob characters are never asked (git reads stdin as pathspecs). Used for the question and the answer.
+ */
+function ignoreEligible(rel, { baselineKeys, staged, sha256 }) {
+  if (baselineKeys.has(caseKey(rel)) || isRegenerablePath(rel) || guardedPath(rel) || isControlPath(rel) || /[[\]]/.test(rel)) return false;
+  if (transferExclusion(rel, { allowRegenerable: true })) return false;
+  const s = staged[rel];
+  return Boolean(s && s.binary && (sha256 === undefined || s.sha256 === sha256) && !BINARY_EXTENSIONS.has(extensionOf(rel)));
+}
+
+/**
+ * The new files of an export that the project's ignore rules may leave out (the names asked of `git check-ignore` on the
+ * project): binary non-asset regular files only — see ignoreEligible. At most IGNORE_QUERY_LIMIT.
+ */
+export function ignoreCandidates({ read, baseline, staged = {} }) {
+  const baselineKeys = new Set(Object.keys(baseline).map(caseKey));
+  const out = [];
+  for (const entry of read.entries || []) {
+    if (entry.typeName !== "file") continue;
+    const n = normalizeExportName(entry.rawName);
+    if (!n.rel || !ignoreEligible(n.rel, { baselineKeys, staged, sha256: entry.sha256 })) continue;
+    out.push(n.rel);
+    if (out.length >= IGNORE_QUERY_LIMIT) break;
+  }
+  return out;
+}
+
 /**
  * C14 — the export validator. `read` is the tar reader result; `baseline` the manifest recorded at transfer; `staged` the
  * rel → { sha256, binary } map filled while reading (content stored by hash in the staging area). `protectedPaths` are the
- * project-relative files the writer must never change (approved acceptance tests). Returns
- * { ok, changes:[{ path, status, before, after }], refused:[{ path, reason }], problems:[], stats }.
+ * project-relative files the writer must never change (approved acceptance tests). `projectIgnored` is the set of new files
+ * the project's ignore rules exclude (asked of the project on Windows, never of the copy); only binary non-asset files in it
+ * are left out (ignoreEligible). Returns { ok, changes:[{ path, status, before, after }], refused:[{ path, reason }], problems:[], stats }.
  */
-export function validateExport({ read, baseline, staged = {}, protectedPaths = [], policy = EXPORT_POLICY }) {
+export function validateExport({ read, baseline, staged = {}, protectedPaths = [], projectIgnored = new Set(), policy = EXPORT_POLICY }) {
   const refused = [];
   const problems = [...(read.problems || [])];
   const refuse = (p, reason) => { if (refused.length < 200) refused.push({ path: String(p).slice(0, 300), reason }); };
@@ -221,6 +256,11 @@ export function validateExport({ read, baseline, staged = {}, protectedPaths = [
   const exported = new Map(); // rel → entry
   let ignored = 0;
   const ignoredPaths = [];
+  // M07 (found live, D6): runtime files a project's tests leave (a SQLite database under data/) in a folder the project's
+  // ignore rules exclude are not part of the change. A NEW binary non-asset file there — one C14 would refuse — is left out
+  // (counted and listed in the evidence, never applied). Everything else keeps its normal checks (ignoreEligible).
+  let projectIgnoredCount = 0;
+  const projectIgnoredPaths = [];
   const baselineKeys = new Set(Object.keys(baseline).map(caseKey));
   // Folders that were sent in (every parent of a baseline file): their directory entries come back from tar even when
   // nothing in them changed (./.github/), and a directory carries no content of its own.
@@ -242,6 +282,11 @@ export function validateExport({ read, baseline, staged = {}, protectedPaths = [
     if (!guarded && !baselineKeys.has(caseKey(rel)) && (isRegenerablePath(rel) || (entry.typeName === "directory" && isRegenerablePath(`${rel}/x`)))) {
       if (entry.typeName !== "file" && entry.typeName !== "directory") refuse(rel, `tip ${entry.typeName} refuzat (doar fișiere obișnuite pot ieși din mediu)`);
       else { ignored += 1; if (ignoredPaths.length < 20 && entry.typeName === "file") ignoredPaths.push(rel); }
+      continue;
+    }
+    if (entry.typeName === "file" && !guarded && projectIgnored.has(rel) && ignoreEligible(rel, { baselineKeys, staged, sha256: entry.sha256 })) {
+      projectIgnoredCount += 1;
+      if (projectIgnoredPaths.length < 20) projectIgnoredPaths.push(rel);
       continue;
     }
     // A .git FOLDER made in the environment (git init) is the environment's own scratch: ignored, never applied (its files are
@@ -309,7 +354,7 @@ export function validateExport({ read, baseline, staged = {}, protectedPaths = [
   if (deleted > policy.maxDeletes) problems.push(`${deleted} ștergeri (limita ${policy.maxDeletes})`);
   const ok = problems.length === 0 && refused.length === 0;
   return { ok, changes: changes.sort((a, b) => a.path.localeCompare(b.path)), refused, problems,
-    stats: { entries: (read.entries || []).length, files: exported.size, ignoredRegenerable: ignored, ignoredNewFiles: ignoredPaths, added, modified, deleted, changedBytes, archiveBytes: read.bytes || 0 } };
+    stats: { entries: (read.entries || []).length, files: exported.size, ignoredRegenerable: ignored, ignoredNewFiles: ignoredPaths, ignoredByProject: projectIgnoredCount, ignoredByProjectFiles: projectIgnoredPaths, added, modified, deleted, changedBytes, archiveBytes: read.bytes || 0 } };
 }
 
 /** Records one exported file in the staging area (content-addressed) when it differs from the baseline. */

@@ -28,14 +28,15 @@ test("M05-UI-01 readiness summary: test-ready, real-ready and missing rungs are 
   assert.ok(real.missing.includes("Probă live (c)"), "a missing live probe stays visible");
 });
 
-test("M05-UI-02 the (b) form: exact text, a valid attestation and a known fingerprint; canary rows always C1…C17", () => {
+test("M05-UI-02 the (b) form: exact text, a valid attestation and a known fingerprint; canary rows always C1…C20 (M07: C18–C20 optional coverage)", () => {
   const base = { policyText: "TEXT EXACT", fingerprintHash: "abc", attestationValid: true };
   assert.equal(policyFormProblem({ ...base, text: "TEXT EXACT" }), null);
   assert.match(policyFormProblem({ ...base, text: "text exact" }), /identic/);
   assert.match(policyFormProblem({ ...base, text: "TEXT EXACT", attestationValid: false }), /atestare/);
   assert.match(policyFormProblem({ ...base, text: "TEXT EXACT", fingerprintHash: "" }), /Amprenta/);
   const rows = canaryRows({ C1: "PASS", C14: "FAIL" });
-  assert.equal(rows.length, 17);
+  assert.equal(rows.length, 20);
+  assert.deepEqual(rows.filter((r) => r.optional).map((r) => r.id), ["C18", "C19", "C20"]);
   assert.deepEqual(rows.filter((r) => r.status !== "NOT_RUN").map((r) => `${r.id}:${r.status}`), ["C1:PASS", "C14:FAIL"]);
   assert.equal(boundaryOf("environment").tone, "ok");
   assert.equal(boundaryOf("windows-sandbox").tone, "warn");

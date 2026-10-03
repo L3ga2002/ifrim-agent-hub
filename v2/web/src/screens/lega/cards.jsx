@@ -1,11 +1,13 @@
 import { Fragment, useEffect, useMemo, useRef, useState } from "react";
-import { FolderGit2, Footprints, ShieldCheck, Network, FileDiff, ListChecks, MessageSquareText, History, MonitorPlay, Newspaper, HelpCircle, Building2, Lock, Check, X, Pin, PinOff, ChevronDown, ChevronRight, Play, Rewind } from "lucide-react";
+import { FolderGit2, Footprints, ShieldCheck, Network, FileDiff, ListChecks, MessageSquareText, History, MonitorPlay, Newspaper, HelpCircle, Building2, Lock, Check, X, Pin, PinOff, ChevronDown, ChevronRight, Play, Rewind, Mic2, Square } from "lucide-react";
 import { api, fmt } from "../../api.js";
 import { useResource, useAction, pushToast, refresh } from "../../store.js";
 import { Panel, Empty, Loading, ErrorNotice, StatusChip, Notice, Chip, DiffView } from "../../components/ui.jsx";
 import { STATE_TONE, missionGraph } from "../../lib/cockpitLogic.js";
 import { FACTORY_STAGE_RO } from "../../lib/uiLogic.js";
 import { withReauth } from "../../lib/ownerSession.js";
+import { recordSegment, sendSegment } from "../../lib/voiceGate.js";
+import { setPresentedPlan, clearPresentedPlan, beginCapture, endCapture, preferredMic } from "../../lib/voiceContext.js";
 
 const EVIDENCE_TONE = { PASS: "ok", FAIL: "error", INCONCLUSIVE: "warn", BLOCKED: "error", NOT_RUN: "neutral", NEEDS_INSTALL_APPROVAL: "warn" };
 const NODE_TONE = { DONE: "ok", RUNNING: "info", WAITING: "neutral", FAILED: "error", BLOCKED: "warn" };
@@ -89,10 +91,18 @@ export function DecisionCard({ plan, owner, onConfirmed, onCancel, ...rest }) {
     live.reload(); refresh(); onConfirmed?.(res.envelope);
   });
   const revoke = useAction(async () => { await api(`/api/envelopes/${env.id}/revoke`, { method: "POST", body: { reason: "Revocat din cockpit" } }); live.reload(); onCancel?.(); });
-  if (!plan) return null;
-  if (!env) return <CardShell {...rest} title="Planul" icon={ShieldCheck}><Notice tone="warn" title="Planul nu e complet">{(summary?.blockers || []).join(" · ")}</Notice></CardShell>;
   const awaiting = current?.status === "PROPOSED" && new Date(current.confirmBy) > new Date();
   const eligible = summary?.state === "PLAN_READY";
+  // While this plan waits for you, a sentence spoken to Lega is tagged with it (the Hub still checks everything). Every hook
+  // runs before the early returns below (a card may switch between a plan with and without an envelope).
+  const presentable = Boolean(env && awaiting && eligible && policyActive);
+  useEffect(() => {
+    if (!presentable || !env) return undefined;
+    setPresentedPlan({ envelopeId: env.id, nonce: env.nonce, hash: env.envelopeHash, projectId: env.projectId });
+    return () => clearPresentedPlan(env.id);
+  }, [presentable, env?.id]);
+  if (!plan) return null;
+  if (!env) return <CardShell {...rest} title="Planul" icon={ShieldCheck}><Notice tone="warn" title="Planul nu e complet">{(summary?.blockers || []).join(" · ")}</Notice></CardShell>;
   const stateLabel = { PROPOSED: awaiting ? "așteaptă confirmarea ta" : "expirat", CONFIRMED: "autorizat · în pregătire", ACTIVE: "autorizat · în execuție", WAITING_OWNER: "așteaptă decizia ta", COMPLETED: "încheiat", REVOKED: "revocat", EXPIRED: "expirat", SUPERSEDED: "înlocuit (s-a schimbat ceva)", FAILED_TO_START: "confirmat, dar nu a pornit", CANCELLED: "anulat" }[current?.status] || current?.status;
   return (
     <CardShell {...rest} title="Arată-mi înainte să faci" icon={ShieldCheck} actions={<Chip tone={current?.status === "ACTIVE" ? "info" : awaiting ? "approval" : "neutral"}>{stateLabel}</Chip>}>
@@ -124,11 +134,63 @@ export function DecisionCard({ plan, owner, onConfirmed, onCancel, ...rest }) {
             {policyActive && !owner?.session && <span className="faint small"><Lock size={12} /> Confirmarea îți cere Windows Hello / cheia (sesiunea e blocată).</span>}
           </div>
         )}
-        {current?.status === "ACTIVE" && <p className="small">Autorizat. Granturile tehnice au fost derivate intern; urmărește graful execuției.</p>}
+        {awaiting && eligible && policyActive && <VoiceConfirm env={env} onConfirmed={(res) => { live.reload(); refresh(); onConfirmed?.(res.envelope); }} />}
+        {current?.status === "ACTIVE" && <p className="small">Autorizat{current?.consent?.modality === "voice" ? " prin vocea ta (verificată și transcrisă local)" : ""}. Granturile tehnice au fost derivate intern; urmărește graful execuției.</p>}
         {current?.closeReason && !awaiting && <p className="faint small">{current.closeReason}</p>}
         <ErrorNotice error={confirm.error || revoke.error} />
       </div>
     </CardShell>
+  );
+}
+
+/**
+ * M07 §15: the spoken form of the same confirmation. Push-to-talk records ONE sentence for THIS plan; the Hub decides the
+ * speaker and transcribes it locally, then the confirmation points to that server-held segment (never to text from the page).
+ * Anything but a clear "Da, execută planul" from your voice is shown and nothing starts; the button and Enter stay available.
+ */
+function VoiceConfirm({ env, onConfirmed }) {
+  const [phase, setPhase] = useState("idle"); // idle | listening | checking | done
+  const [level, setLevel] = useState(0);
+  const [heard, setHeard] = useState(null);
+  const [error, setError] = useState(null);
+  const handle = useRef(null);
+  const start = async () => {
+    setError(null); setHeard(null); setPhase("listening");
+    beginCapture(env.id);
+    try {
+      handle.current = recordSegment({ deviceId: preferredMic() || null, maxSeconds: 6, onLevel: setLevel });
+      const r = await handle.current.promise;
+      handle.current = null;
+      if (!r) { setPhase("idle"); return; }
+      setPhase("checking");
+      const seg = await sendSegment(r.bytes, { purpose: "confirm", envelopeId: env.id, flags: r.flags });
+      setHeard(seg);
+      if (seg.result !== "MATCH" || !seg.transcript) { setPhase("idle"); return; }
+      const res = await withReauth(() => api(`/api/envelopes/${env.id}/confirm`, { method: "POST", body: { nonce: env.nonce, displayedHash: env.envelopeHash, modality: "voice", utteranceId: seg.utteranceId } }));
+      pushToast(`env-${env.id}`, "ok", res.envelope.status === "ACTIVE" ? "Confirmat prin voce: misiunea a pornit" : `Confirmat: ${res.envelope.status}`);
+      setPhase("done");
+      onConfirmed?.(res);
+    } catch (e) {
+      // Confirmed meanwhile (another tab, the button): that is the outcome the owner wanted, not an error.
+      const now = await api(`/api/envelopes/${env.id}`).catch(() => null);
+      if (now && ["CONFIRMED", "ACTIVE"].includes(now.status)) { setPhase("done"); onConfirmed?.({ envelope: now }); }
+      else { setError(e); setPhase("idle"); }
+    } finally { endCapture(env.id); }
+  };
+  return (
+    <div className="voice-confirm">
+      <div className="row wrap">
+        <button className="btn" disabled={phase === "checking" || phase === "done"} onClick={phase === "listening" ? () => handle.current?.cancel() : start} aria-live="polite">
+          {phase === "listening" ? <><Square size={14} />Ascult… spune „Da, execută planul”</> : phase === "checking" ? "Verific local…" : <><Mic2 size={14} />Confirmă cu vocea</>}
+        </button>
+        <span className="faint small">vocea e verificată și transcrisă pe acest calculator; e forma vorbită a confirmării din sesiunea ta, nu autentificare</span>
+      </div>
+      {phase === "listening" && <div className="mic-level" aria-hidden="true"><span style={{ width: `${Math.round(level * 100)}%` }} /></div>}
+      {heard && (
+        <p className="heard">{heard.result === "MATCH" ? <>Am auzit: <b>„{heard.transcript || "—"}”</b>{heard.sttMs ? ` · ${heard.sttMs} ms` : ""}</> : <>Nu te-am recunoscut ({heard.result}: {heard.reason}); nimic nu a pornit.</>}</p>
+      )}
+      <ErrorNotice error={error} />
+    </div>
   );
 }
 

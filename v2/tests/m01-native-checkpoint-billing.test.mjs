@@ -669,7 +669,14 @@ test("M01-NG1 static scan: v2/server never spawns git with commit/push/tag/reset
   }
   assert.deepEqual(offenders, []);
   assert.deepEqual(gitSpawners, ["tools/git.mjs"], "only tools/git.mjs names the git executable");
-  assert.deepEqual([...supervisorExecutables].sort(), ["binary.executable", "process.execPath"], "supervised processes are provider binaries or node");
+  // M07: the Claude adapter spawns what its launcher resolved (spec.executable): the Claude binary on Windows, or wsl.exe for
+  // claude@wsl-runner. Both launchers are pinned below, so the set still means "provider binaries or node".
+  assert.deepEqual([...supervisorExecutables].sort(), ["binary.executable", "process.execPath", "spec.executable"], "supervised processes are provider binaries or node");
+  const claudeSrc = fs.readFileSync(path.join(SERVER_DIR, "providers", "claude.mjs"), "utf8");
+  assert.match(claudeSrc, /spawn: \(\{ binary, args, cwd \}\) => \(\{ executable: binary\.executable,/, "the Windows launcher returns the resolved Claude binary");
+  const claudeWslSrc = fs.readFileSync(path.join(SERVER_DIR, "providers", "claude-wsl.mjs"), "utf8");
+  assert.match(claudeWslSrc, /resolveWsl\(/, "the environment launcher resolves wsl.exe");
+  assert.match(claudeWslSrc, /executable: invocation\.executable/, "and returns only that");
 
   const gitSrc = fs.readFileSync(path.join(SERVER_DIR, "tools", "git.mjs"), "utf8");
   assert.equal((gitSrc.match(gitLiteral) || []).length, 1, "one git spawn site");

@@ -6,7 +6,13 @@ export const V2_ROOT = path.resolve(here, "..");
 export const HUB_ROOT = path.resolve(V2_ROOT, "..");
 export const PROJECTS_ROOT = path.resolve(HUB_ROOT, "..");
 
-export const HUB_VERSION = "2.7.0-m06"; // M06: Lega 2.0 (owner session WebAuthn, versioned voice-first policy off by default, Mission Authorization Envelopes with derived grants, project cockpit, intents, interruptions, local voice gate baseline, face) + M06-A pipeline readiness // M05: execution environments (wsl-runner: copy-in, Codex in ifrim-runner, C14-validated export, attestation C1–C17 bound to a fingerprint, policy (b) owner-only), robustness (Stop in QA, RT-07, warm-up, Lega diagnostics) // M04: Sales & Lead Generation (import → identity → evidence → audit → qualification → proposal → draft → Engineering hand-off), DRAFT_ONLY // M03: runtime readiness (explicit model/effort, run timeline, R2/R3 gate) + Software Factory (spec → change set → review → QA → bundle)
+export const HUB_VERSION = "2.8.0-m07"; // M07: activation (UI–API contract handshake, canonical origin, agent channel for delegated operations, E2E and review inside ifrim-runner, local Romanian STT and speaker verification on the Hub, voice confirmation through server-held utterances, setup orchestrator) // M06: Lega 2.0 (owner session WebAuthn, versioned voice-first policy off by default, Mission Authorization Envelopes with derived grants, project cockpit, intents, interruptions, local voice gate baseline, face) + M06-A pipeline readiness // M05: execution environments (wsl-runner: copy-in, Codex in ifrim-runner, C14-validated export, attestation C1–C17 bound to a fingerprint, policy (b) owner-only), robustness (Stop in QA, RT-07, warm-up, Lega diagnostics) // M04: Sales & Lead Generation (import → identity → evidence → audit → qualification → proposal → draft → Engineering hand-off), DRAFT_ONLY // M03: runtime readiness (explicit model/effort, run timeline, R2/R3 gate) + Software Factory (spec → change set → review → QA → bundle)
+/**
+ * The UI–API contract (M07): a built UI carries the number it was built against (vite define __UI_CONTRACT__) and sends it on
+ * every mutating request; the server answers 409 UI_STALE when they differ, so new assets never drive an older backend (or the
+ * reverse). Bump it whenever a request or response shape the UI depends on changes.
+ */
+export const API_CONTRACT = 7;
 export const DEFAULT_PORT = 8011;
 export const DEFAULT_HOST = "127.0.0.1";
 
@@ -31,6 +37,11 @@ export function loadConfig(overrides = {}, env = process.env) {
     simulation: Boolean(overrides.simulation) && testMode,
     hubProjectName: overrides.hubProjectName || "Ifrim Agent Hub",
     hubRoot: overrides.hubRoot || HUB_ROOT,
+    // M07: the local voice engines live under the user's profile (outside the repo and OneDrive); tests use a fixture worker
+    // with the same JSON-lines protocol (deterministic transcripts and embeddings, no model).
+    voiceRoot: overrides.voiceRoot || null,
+    voiceWorker: testMode ? overrides.voiceWorker || path.join(V2_ROOT, "tests", "fixtures", "fake-voice-worker.mjs") : null,
+    voiceWorkerEnv: testMode ? overrides.voiceWorkerEnv || {} : {},
     // M04 Sales: a fake transport is accepted only in test mode (the real outreach transport does not exist in M04).
     salesTransport: overrides.testMode && overrides.salesTransport ? overrides.salesTransport : null,
     salesFixtureSites: overrides.salesFixtureSites || null,
@@ -47,6 +58,10 @@ export function loadConfig(overrides = {}, env = process.env) {
     webDist: path.join(V2_ROOT, "web", "dist"),
     host: DEFAULT_HOST,
     port,
+    // M07: the owner's session (WebAuthn RP ID "localhost") lives only on this origin; page navigations to 127.0.0.1 are sent
+    // here (307, documents only — never /api, scripts or iframes). Tests opt in explicitly.
+    canonicalOrigin: `http://localhost:${port}`,
+    canonicalRedirect: overrides.canonicalRedirect ?? !testMode,
     allowedOrigins: new Set([`http://127.0.0.1:${port}`, `http://localhost:${port}`,
       ...(overrides.devOrigins || [`http://127.0.0.1:3011`, `http://localhost:3011`])]),
     maxConcurrentAiRuns: Number(overrides.maxConcurrentAiRuns ?? 2),

@@ -4,7 +4,8 @@ import path from "node:path";
 import { spawn } from "node:child_process";
 import { HUB_ROOT, DATA_DIR, LOG_FILE, PORT, readPid, health, sleep, pidAlive } from "./common.mjs";
 
-const url = `http://127.0.0.1:${PORT}/`;
+// M07: the canonical origin (the owner session and Windows Hello live on localhost only); the API client in common.mjs keeps 127.0.0.1.
+const url = `http://localhost:${PORT}/`;
 const running = await health();
 if (running?.ok) {
   console.log(`Ifrim Agent Hub V2 already running: ${url} (mode ${running.mode}, gate ${running.gate})`);

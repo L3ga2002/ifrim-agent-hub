@@ -49,6 +49,7 @@ import { createWslRunnerEnvironment } from "./environments/wsl-runner.mjs";
 import { createWslFactoryRunner } from "./environments/wsl-factory-runner.mjs";
 import { createEnvironmentRegistry } from "./environments/registry.mjs";
 import { createWslCodexAdapter } from "./providers/codex-wsl.mjs";
+import { createWslClaudeAdapter } from "./providers/claude-wsl.mjs";
 import { newId } from "./core/ids.mjs";
 import { createTrust } from "./owner/trust.mjs";
 import { createEnvelopes } from "./owner/envelopes.mjs";
@@ -56,6 +57,8 @@ import { createCockpit } from "./owner/cockpit.mjs";
 import { createInterrupts } from "./owner/interrupts.mjs";
 import { createAdvisor } from "./owner/advisor.mjs";
 import { createVoice } from "./owner/voice.mjs";
+import { createVoiceEngine } from "./owner/voice-engine.mjs";
+import { createSetup } from "./owner/setup.mjs";
 
 /** Live (non-persisted) channel for token deltas; persisted state is always reloadable from the API. */
 function createLiveChannel() {
@@ -114,9 +117,12 @@ export function createHub(config, { providerOverrides = {}, homeDir, browserLaun
   const wslRunner = createWslRunnerEnvironment({ config, db, bus, clock, providerState, supervisor, homeDir: homeDir || os.homedir() });
   const environments = createEnvironmentRegistry({ settings, services: { "wsl-runner": wslRunner } });
   providers["codex@wsl-runner"] = providerOverrides["codex@wsl-runner"] || createWslCodexAdapter({ environment: wslRunner });
+  // M07: the read-only reviewer inside the same environment (routed only when its readiness is ok; see environments/registry.mjs).
+  providers["claude@wsl-runner"] = providerOverrides["claude@wsl-runner"] || createWslClaudeAdapter({ environment: wslRunner, config, supervisor });
   const telemetry = createTelemetry({ db, bus, clock });
   let runs;
   let lega = null;
+  let voice = null; // M07: created after the envelopes' dependencies; Lega reads it late-bound (the voice-gate bypass check)
   // The exact paths the Codex profile denies on this machine; a recorded consent is valid only for this list.
   // Globs included (M03 R3): a consent given for the M02 list does not cover config.toml / history.jsonl.
   const codexIsolation = () => { const paths = codexDeniedEntries({ homeDir: homeDir || os.homedir(), extra: [config.dataDir, config.backupDir] }); return { paths, fingerprint: denyListFingerprint(paths) }; };
@@ -147,7 +153,8 @@ export function createHub(config, { providerOverrides = {}, homeDir, browserLaun
     runsApi: { activeRuns: () => runs.activeRuns(), getRun: (id) => runs.getRun(id), admitCodexUsage: (snapshot) => usage.admit("codex", snapshot),
       messageText: (id) => db.prepare("SELECT content FROM messages WHERE id = ?").get(id)?.content || "" },
     commandsApi: { dispatch: (request) => commands.dispatch(request) },
-    codexRealtime: createCodexRealtime({ codex: providers.codex, supervisor }), refreshCodexConfig, codexConfig: () => providerState.get("codex")?.config || null, timeScale: config.legaTimeScale });
+    codexRealtime: createCodexRealtime({ codex: providers.codex, supervisor }), refreshCodexConfig, codexConfig: () => providerState.get("codex")?.config || null, timeScale: config.legaTimeScale,
+    voiceGateCheck: (sessionId) => ({ enabled: Boolean(settings.get("voiceGate")?.enabled), released: voice ? voice.recentGateRelease(sessionId) : false }) });
   runs.attachVoice(lega);
   // Software Factory (M03): a deterministic conductor over missions/runs; its runner uses the Codex sandbox, never Hub rights.
   const windowsRunner = createFactoryRunner({ config, supervisor, settings, providerState, codexIsolation, homeDir: homeDir || os.homedir() });
@@ -163,22 +170,27 @@ export function createHub(config, { providerOverrides = {}, homeDir, browserLaun
   // interruptions, quiet proactivity / recommendations / shadow reviews and the local voice profile. Built on the modules
   // above; the envelope service is the factory's authority hook (no envelope = M03–M05 behaviour).
   const trust = createTrust({ db, bus, clock, settings, config });
-  const envelopes = createEnvelopes({ db, bus, clock, settings, projects, missions, grants, gate, approvals, commands, trust, factory, factoryRunner, environments, config });
+  // M07: the local voice engines (whisper.cpp + CAM++ in a supervised worker) and the server-held utterances; created before the
+  // envelopes, which consume a spoken confirmation's utterance in the same transaction that confirms the plan.
+  const voiceEngine = createVoiceEngine({ config, supervisor, clock, onEvent: (event) => live.publish(event) });
+  voice = createVoice({ db, bus, clock, settings, config, trust, engine: voiceEngine });
+  const envelopes = createEnvelopes({ db, bus, clock, settings, projects, missions, grants, gate, approvals, commands, trust, factory, factoryRunner, environments, config, voice });
   factory.attachAuthority((missionId, step) => envelopes.authorityFor(missionId, step));
   const cockpit = createCockpit({ db, bus, clock, settings, projects, missions, runs, factory, factoryRunner, envelopes, environments, providerState, company });
   const interrupts = createInterrupts({ db, bus, clock, settings, runs, factory, envelopes, checkpoints, projects, live });
   const advisor = createAdvisor({ db, bus, clock, settings, approvals, envelopes, runs, factory, conversations, projects, grants });
-  const voice = createVoice({ db, bus, clock, settings, config, trust });
 
   const hub = { config, db, bus, live, settings, projects, conversations, missions, approvals, policy, leases, grants, providerState, usage, memory, leads, sales,
     company, chiefOfStaff, surfaces, schedules, computer, skills, artifacts, integrations, nativeSessions, telemetry, router, commands, checkpoints,
     breakers, supervisor, backups, providers, gate, runs, handoffs, tools, roleConfig, skillConfig, capabilityConfig, codexIsolation, lega, refreshCodexConfig, factory, factoryRunner,
-    environments, wslRunner, trust, envelopes, cockpit, interrupts, advisor, voice };
+    environments, wslRunner, trust, envelopes, cockpit, interrupts, advisor, voice, voiceEngine };
   registerCommands(commands, hub);
+  // M07: the resumable setup (ordered real steps; the automatic ones run on the Hub through the ordinary commands).
+  hub.setup = createSetup(hub);
 
   const scheduler = createScheduler({ db, bus, clock, approvals, leases, runs,
     extraTick: () => Promise.all([schedules.tick((cmd) => commands.dispatch({ ...cmd, channel: "schedule", actor: "scheduler" }).then((r) => r.result)), factory.tick(), Promise.resolve().then(() => sales.tick()),
-      Promise.resolve().then(() => envelopes.tick())]) });
+      Promise.resolve().then(() => envelopes.tick()), Promise.resolve().then(() => voice.tick())]) });
   hub.scheduler = scheduler;
 
   // Post-commit reactions (each in its own transaction; never inside the writer's transaction).

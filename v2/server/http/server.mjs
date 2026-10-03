@@ -4,6 +4,27 @@ import http from "node:http";
 import crypto from "node:crypto";
 import { HubError, toPublicError } from "../core/errors.mjs";
 import { registerRoutes } from "./routes.mjs";
+import { HUB_VERSION, API_CONTRACT } from "../config.mjs";
+
+/**
+ * Fail-safe requests are never refused for a stale UI (M07): stopping, pausing, revoking and logging out must always work,
+ * whatever build the page runs.
+ */
+export const FAILSAFE_PATHS = Object.freeze(["/api/stop-all", "/api/runs/*/interrupt", "/api/lega/sessions/*/stop", "/api/owner/interrupt",
+  "/api/owner/policy/deactivate", "/api/owner/logout", "/api/owner/sessions/revoke-all", "/api/envelopes/*/revoke",
+  "/api/factory/*/stop", "/api/factory/*/pause", "/api/grants/*/revoke"]);
+/**
+ * Segment-wise match ("*" is exactly one segment), so no pattern can widen into another route. /api/gate is a fail-safe only
+ * when it SUSPENDS the gate (opening it is not; review M07), so it needs the body.
+ */
+export const isFailsafe = (pathname, body = null) => {
+  if (pathname === "/api/gate") return body?.action === "suspend";
+  const parts = String(pathname).split("/");
+  return FAILSAFE_PATHS.some((pattern) => {
+    const want = pattern.split("/");
+    return want.length === parts.length && want.every((w, i) => (w === "*" ? parts[i].length > 0 : w === parts[i]));
+  });
+};
 
 const MIME = { ".html": "text/html; charset=utf-8", ".js": "text/javascript; charset=utf-8", ".css": "text/css; charset=utf-8", ".svg": "image/svg+xml",
   ".png": "image/png", ".ico": "image/x-icon", ".json": "application/json", ".woff2": "font/woff2", ".webmanifest": "application/manifest+json" };
@@ -56,15 +77,31 @@ export function createHttpServer(hub) {
       if (req.method === "OPTIONS") { res.writeHead(204); res.end(); return; }
 
       if (url.pathname.startsWith("/api/")) {
+        res.setHeader("X-Hub-Version", HUB_VERSION);
+        res.setHeader("X-Hub-Contract", String(API_CONTRACT));
         const found = router.match(req.method, url.pathname);
         if (!found) throw new HubError("not_found", "Unknown endpoint");
         if (req.method !== "GET" && req.headers["x-hub-token"] !== token) throw new HubError("policy", "Missing or invalid session token");
-        const body = req.method === "GET" ? {} : await readJson(req, found.route.options.maxBytes || 1024 * 1024);
+        // M07: audio segments arrive as raw bytes (application/octet-stream), never as JSON (and never into a command log).
+        const body = req.method === "GET" ? {} : found.route.options.raw ? await readRaw(req, found.route.options.maxBytes || 1024 * 1024) : await readJson(req, found.route.options.maxBytes || 1024 * 1024);
+        // A page built for another contract cannot drive this server (scripts and tests send no header and are unaffected).
+        const uiContract = req.headers["x-hub-ui-contract"];
+        if (req.method !== "GET" && uiContract !== undefined && String(uiContract) !== String(API_CONTRACT) && !isFailsafe(url.pathname, Buffer.isBuffer(body) ? null : body)) {
+          throw new HubError("conflict", `Interfața (contract ${String(uiContract).slice(0, 8)}) nu se potrivește cu serverul ${HUB_VERSION} (contract ${API_CONTRACT}): reîncarcă pagina sau repornește Hub-ul`,
+            { code: "UI_STALE", data: { uiContract: String(uiContract).slice(0, 8), serverContract: API_CONTRACT, serverVersion: HUB_VERSION } });
+        }
         const result = await found.route.handler({ req, res, url, params: found.params, body, query: Object.fromEntries(url.searchParams) });
         if (result === undefined || res.writableEnded || res.headersSent) return;
         if (result && result.__raw) { res.writeHead(200, { "Content-Type": result.contentType }); res.end(result.body); return; }
         res.writeHead(result?.__status || 200, { "Content-Type": "application/json; charset=utf-8", "Cache-Control": "no-store" });
         res.end(JSON.stringify(result?.__status ? result.body : result));
+        return;
+      }
+      // M07: the canonical origin for page navigations (the owner session and WebAuthn live on localhost only).
+      if (config.canonicalRedirect && (req.method === "GET" || req.method === "HEAD") && String(req.headers.host || "").toLowerCase() === `127.0.0.1:${config.port}`
+        && req.headers["sec-fetch-mode"] === "navigate" && req.headers["sec-fetch-dest"] === "document") {
+        res.writeHead(307, { Location: `${config.canonicalOrigin}${url.pathname}${url.search}`, "Cache-Control": "no-store" });
+        res.end();
         return;
       }
       serveStatic(config.webDist, url.pathname, res);
@@ -76,6 +113,21 @@ export function createHttpServer(hub) {
     }
   });
   return { server, token };
+}
+
+function readRaw(req, maxBytes) {
+  return new Promise((resolve, reject) => {
+    if (!/^application\/octet-stream\b/i.test(String(req.headers["content-type"] || ""))) { reject(new HubError("validation", "Content-Type must be application/octet-stream")); return; }
+    let size = 0;
+    const chunks = [];
+    req.on("data", (chunk) => {
+      size += chunk.length;
+      if (size > maxBytes) { reject(new HubError("validation", "Request body too large")); req.destroy(); return; }
+      chunks.push(chunk);
+    });
+    req.on("end", () => resolve(Buffer.concat(chunks)));
+    req.on("error", reject);
+  });
 }
 
 function readJson(req, maxBytes) {

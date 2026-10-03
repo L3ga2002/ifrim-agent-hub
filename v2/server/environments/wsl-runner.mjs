@@ -6,24 +6,35 @@ import { HubError } from "../core/errors.mjs";
 import { newId } from "../core/ids.mjs";
 import { json, parse } from "../storage/db.mjs";
 import { createCodexAdapter, MCP_NAME_ADDRESSABLE } from "../providers/codex.mjs";
-import { WSL_RUNNER, resolveWsl, wslArgs, runInDistro, runScript, parseKeyValues, assertWorkspacePath } from "./wsl.mjs";
+import { CLAUDE_KNOWN_FLAGS } from "../providers/claude.mjs";
+import { ENV_POLICY_TEXT } from "../policy/isolation.mjs";
+import { WSL_RUNNER, resolveWsl, wslArgs, runInDistro, runScript, parseKeyValues, assertWorkspacePath, cleanWslText } from "./wsl.mjs";
+import { BWRAP, reviewerArgs, CLAUDE_IN_SANDBOX, CLAUDE_PKG } from "./sandbox-profiles.mjs";
 import { writeTar, createTarReader, EXPORT_LIMITS } from "./tar.mjs";
-import { selectTransferFiles, transferStream, validateExport, stageExportFile, applyChanges, EXPORT_POLICY, RUN_TMP_DIR, TRANSFER_LIMITS } from "./workspace.mjs";
+import { selectTransferFiles, transferStream, validateExport, stageExportFile, applyChanges, ignoreCandidates, EXPORT_POLICY, RUN_TMP_DIR, TRANSFER_LIMITS } from "./workspace.mjs";
+import { gitCheckIgnored } from "../tools/git.mjs";
 import { runCanary, CANARY_VERSION, CANARY_OPTIONAL_IDS } from "./canary.mjs";
 import { exerciseExportValidator } from "./c14.mjs";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
-const SCRIPTS = Object.fromEntries(["inspect", "prepare", "reap", "release"].map((name) => [name, fs.readFileSync(path.join(here, "scripts", `${name}.sh`), "utf8")]));
+const SCRIPTS = Object.fromEntries(["inspect", "prepare", "reap", "release", "reviewer-cleanup"].map((name) => [name, fs.readFileSync(path.join(here, "scripts", `${name}.sh`), "utf8")]));
 const sha16 = (text) => crypto.createHash("sha256").update(text).digest("hex").slice(0, 16);
 
-/** Fields that define the environment an attestation belongs to (M05 §12). Any change invalidates it. */
-export const FINGERPRINT_FIELDS = Object.freeze(["distro", "wslconf", "codex", "codexSha", "config", "codexExtras", "kernel", "profiles", "bwrap", "tar"]);
+/**
+ * Fields that define the environment an attestation belongs to (M05 §12). Any change invalidates it. M07 adds the E2E browser
+ * (Playwright version, headless-shell build and binary hash) and the reviewer (Claude Code version and binary hash, the
+ * presence and modes of its dedicated config dir and credentials file — never their content).
+ */
+export const FINGERPRINT_FIELDS = Object.freeze(["distro", "wslconf", "codex", "codexSha", "config", "codexExtras", "kernel", "profiles", "bwrap", "tar",
+  "pwVersion", "pwChromium", "pwSha", "claude", "claudeSha", "reviewerConfig"]);
 /** An attestation is evidence for a limited time even when nothing changed (a weekly re-run catches what the fingerprint cannot). */
 export const ATTESTATION_MAX_AGE_DAYS = 14;
 
 export function fingerprintOf(facts, env = WSL_RUNNER) {
   const fp = { distro: env.distro, wslconf: facts.wslconf || "", codex: facts.codex_version || "", codexSha: facts.codex_sha || "", config: facts.config || "",
-    kernel: facts.kernel || "", profiles: String(facts.profiles || "").split(",").filter(Boolean).sort().join(","), bwrap: facts.bwrap || "", tar: facts.tar || "", codexExtras: facts.codex_extras || "" };
+    kernel: facts.kernel || "", profiles: String(facts.profiles || "").split(",").filter(Boolean).sort().join(","), bwrap: facts.bwrap || "", tar: facts.tar || "", codexExtras: facts.codex_extras || "",
+    pwVersion: facts.pw_version || "", pwChromium: facts.pw_chromium || "", pwSha: facts.pw_sha || "", claude: facts.claude_cli || "", claudeSha: facts.claude_sha || "",
+    reviewerConfig: facts.reviewer_config ? `${facts.reviewer_config};creds=${facts.reviewer_creds || "absent"}` : "" };
   return { ...fp, hash: sha16(JSON.stringify(FINGERPRINT_FIELDS.map((k) => [k, fp[k]]))),
     line: `distro=${fp.distro} wslconf=${fp.wslconf} codex=${fp.codex} config=${fp.config} kernel=${fp.kernel}` };
 }
@@ -46,23 +57,44 @@ export function probeProblem(probe, state, now = new Date()) {
  */
 export function attestationStatusOf({ canary, before, after, simulated = false }) {
   const sameEnvironment = Boolean(before?.fingerprint?.hash) && before.fingerprint.hash === after?.fingerprint?.hash;
-  // M06-A: C18 (the local-only profile) only ADDS coverage (the preview); a failing or missing C18 never invalidates the
-  // boundary that C1–C17 attest for the writer, checks, QA and export.
+  // M06-A / M07: C18 (the local-only profile), C19 (Chromium with its own sandbox in it) and C20 (the reviewer boundary) only
+  // ADD coverage; a failing or missing one never invalidates the boundary that C1–C17 attest for the writer, checks, QA and export.
   const optional = (id) => CANARY_OPTIONAL_IDS.includes(String(id).split("/")[0].replace(/[a-z]+$/, ""));
   const failed = canary.lines.filter((l) => l.status === "FAIL" && !optional(l.id));
   const notRun = Object.entries(canary.byId).filter(([k, s]) => s === "NOT_RUN" && !optional(k)).map(([k]) => k);
   const status = !sameEnvironment || failed.length || !before?.ok ? "FAIL" : notRun.length ? "INCOMPLETE" : simulated ? "PASS_SIMULATED" : "PASS_LOCAL";
+  const word = (id, failText) => (canary.byId[id] === "PASS" ? "trecut" : canary.byId[id] === "FAIL" ? `EȘUAT (${failText})` : "nerulat");
   const summary = !sameEnvironment ? "amprenta s-a schimbat în timpul atestării" : !before?.ok ? "inspecția raportează probleme de graniță"
     : failed.length ? `${failed.length} verificări eșuate: ${failed.slice(0, 4).map((l) => l.sub).join(", ")}` : notRun.length ? `nerulate: ${notRun.join(", ")}`
-      : `C1–C17 trecute (${canary.lines.length} verificări)${simulated ? "; distribuție SIMULATĂ (fixture), nu o dovadă WSL" : "; local, fără model (nu PASS_LIVE)"}; profilul doar-local C18: ${canary.byId.C18 === "PASS" ? "trecut" : canary.byId.C18 === "FAIL" ? "EȘUAT (preview-ul nu rulează în mediu)" : "nerulat"}`;
+      : `C1–C17 trecute (${canary.lines.length} verificări)${simulated ? "; distribuție SIMULATĂ (fixture), nu o dovadă WSL" : "; local, fără model (nu PASS_LIVE)"}; profilul doar-local C18: ${word("C18", "preview-ul nu rulează în mediu")}; E2E Chromium C19: ${word("C19", "E2E nu rulează în mediu")}; reviewer C20: ${word("C20", "review-ul rămâne pe Windows")}`;
   // What the evidence covers, derived from the checks that passed (declared, never assumed): the model-command sandbox
-  // (C7–C13) is the boundary of the writer profile and of the checks/QA commands; C14 the export path; C16 the account.
+  // (C7–C13) is the boundary of the writer profile and of the checks/QA commands; C14 the export path; C16 the account;
+  // C18 the preview profile, C19 its browser E2E, C20 the reviewer's sandbox.
   const passed = (ids) => ids.every((id) => canary.byId[id] === "PASS");
   const stages = status === "PASS_LOCAL" || status === "PASS_SIMULATED"
-    ? [...(passed(["C7", "C8", "C9", "C10", "C11", "C12", "C13"]) ? ["writer-profile", "checks", "qa"] : []), ...(passed(["C14"]) ? ["export"] : []), ...(passed(["C16"]) ? ["account"] : []), ...(passed(["C18"]) ? ["preview-local-only"] : [])]
+    ? [...(passed(["C7", "C8", "C9", "C10", "C11", "C12", "C13"]) ? ["writer-profile", "checks", "qa"] : []), ...(passed(["C14"]) ? ["export"] : []), ...(passed(["C16"]) ? ["account"] : []),
+      ...(passed(["C18"]) ? ["preview-local-only"] : []), ...(passed(["C18", "C19"]) ? ["e2e-local-only"] : []), ...(passed(["C20"]) ? ["review-environment"] : [])]
     : [];
   return { status, summary, stages, failed: failed.length, notRun };
 }
+
+/**
+ * The reviewer's own settings (the only ones a Hub run of Claude Code loads, --setting-sources user), from the inspection's
+ * key NAMES: anything that could select another billing route, switch the model by itself or run commands refuses the
+ * reviewer in the environment (the same rules as the Windows reviewer's inspectClaudeConfig).
+ */
+export function reviewerSettingsProblem(facts = {}) {
+  if (facts.reviewer_settings === "unreadable") return "setările reviewer-ului (settings.json) nu pot fi citite";
+  if (facts.reviewer_api_key_helper === "yes") return "setările reviewer-ului definesc apiKeyHelper (rută facturată separat)";
+  if (facts.reviewer_fallback === "yes") return "setările reviewer-ului definesc fallbackModel: Claude ar putea comuta singur pe alt model";
+  if (facts.reviewer_risky_env) return `setările reviewer-ului definesc ${String(facts.reviewer_risky_env).split(",").filter(Boolean).slice(0, 4).join(", ")}`;
+  if (facts.reviewer_hooks === "yes") return "setările reviewer-ului definesc hooks (comenzi rulate de client)";
+  return null;
+}
+/** The reviewer settings as the billing check reads them (inspectClaudeConfig's shape, from names only). */
+export const reviewerConfigFacts = (facts = {}) => ({ inspectedFiles: facts.reviewer_settings === "present" ? 1 : 0, apiKeyHelper: facts.reviewer_api_key_helper === "yes",
+  fallbackModelSet: facts.reviewer_fallback === "yes", riskyEnvInSettings: String(facts.reviewer_risky_env || "").split(",").filter(Boolean), hooks: facts.reviewer_hooks === "yes",
+  anthropicActiveProfilePresent: false, environment: "linux" });
 
 /** What the inspection says about the boundary itself. `blocking` problems stop every dispatch through the environment. */
 export function boundaryProblems(facts, env = WSL_RUNNER) {
@@ -90,6 +122,11 @@ export function boundaryProblems(facts, env = WSL_RUNNER) {
   else if (facts.auth_mode && facts.auth_mode !== "600") p("auth_mode", `fișierul de autentificare are permisiunile ${facts.auth_mode} (așteptat 600)`);
   if (!facts.codex_version) p("codex_missing", "clientul Codex nu este instalat în mediu");
   else if (facts.codex_owner && facts.codex_owner !== "root") p("codex_owner", `binarul Codex aparține lui ${facts.codex_owner}: ar putea fi înlocuit din mediu`);
+  // M07: the E2E browser and the reviewer's client were installed by the runner user. Their hashes are in the fingerprint, so
+  // a replaced binary voids the attestation (and with it the E2E/review stages); owned by root they could not be replaced.
+  for (const [key, label] of [["pw_owner", "Chromium-ul pentru E2E"], ["claude_owner", "clientul Claude Code al reviewer-ului"]]) {
+    if (facts[key] && facts[key] !== "root") p(key, `${label} aparține lui ${facts[key]}: o înlocuire schimbă amprenta (atestarea cade), dar nu e împiedicată`, false);
+  }
   return out;
 }
 
@@ -141,6 +178,7 @@ export function wslCodexLauncher({ config, env = WSL_RUNNER, state }) {
 export function createWslRunnerEnvironment({ config, db, bus, clock, providerState, supervisor, env = WSL_RUNNER, homeDir }) {
   const stateKey = `env:${env.id}`;
   const probeKey = `codex@${env.id}`;
+  const reviewerKey = `claude@${env.id}`;
   const workRoot = path.join(config.workDir, "environments", env.id);
   const users = new Map(); // operation id → label: runs, runner commands, attestation (C15 must not restart under them)
   let attesting = false;
@@ -305,7 +343,7 @@ export function createWslRunnerEnvironment({ config, db, bus, clock, providerSta
   }
 
   /** Reads the workspace back as a tar stream and validates it against the transfer manifest (C14). Nothing is applied here. */
-  async function collectExport(id, { protectedPaths = [] } = {}) {
+  async function collectExport(id, { protectedPaths = [], projectRoot = null } = {}) {
     const row = getWorkspace(id);
     if (!row) throw new HubError("not_found", "Workspace necunoscut");
     const ws = assertWorkspacePath(row.linuxPath, env);
@@ -319,7 +357,11 @@ export function createWslRunnerEnvironment({ config, db, bus, clock, providerSta
       onStdout: (chunk) => { reader.push(chunk); return !reader.aborted; }, timeoutMs: 600000 });
     const read = reader.end();
     if (out.code !== 0 && !read.aborted) read.problems.push(`tar a ieșit cu ${out.code}: ${out.stderr.slice(0, 200)}`);
-    const validation = validateExport({ read, baseline, staged, protectedPaths, policy: { ...EXPORT_POLICY, maxFileBytes: EXPORT_LIMITS.maxFileBytes } });
+    // New binary files the project's ignore rules exclude (asked of the project on Windows, never of the copy): left out, not
+    // applied, listed in the evidence. Only for a writer turn (the caller passes projectRoot); a git failure leaves nothing out.
+    const rules = projectRoot ? await gitCheckIgnored(projectRoot, ignoreCandidates({ read, baseline, staged })) : { ignored: new Set(), error: null };
+    const validation = validateExport({ read, baseline, staged, protectedPaths, projectIgnored: rules.ignored, policy: { ...EXPORT_POLICY, maxFileBytes: EXPORT_LIMITS.maxFileBytes } });
+    if (rules.error) validation.stats.ignoreRulesError = rules.error;
     const report = { ok: validation.ok, stats: validation.stats, refused: validation.refused.slice(0, 50), problems: validation.problems.slice(0, 20),
       changes: validation.changes.map((c) => ({ path: c.path, status: c.status, before: c.before?.sha256 || null, after: c.after?.sha256 || null })).slice(0, 500), durationMs: Date.now() - started };
     fs.writeFileSync(path.join(workRoot, id, "export.json"), json(report));
@@ -340,8 +382,21 @@ export function createWslRunnerEnvironment({ config, db, bus, clock, providerSta
     return result;
   }
 
+  /**
+   * Reaps run one at a time for the whole environment (M07, the PLAUSIBLE reap race): a Stop's interrupt-path reap and the
+   * post-turn "all"-mode reap used to run together, and the "all" reaper (which ends every process of the runner user but
+   * its own) counted the other reaper's shell → remaining ≥ 1 → the run ended as an environment error with its lease
+   * retained. A reaper that never overlaps another one never sees one. Each reap is bounded (60 s), so the queue is too.
+   */
+  let reapChain = Promise.resolve();
+  function reap(id, options = {}) {
+    const run = reapChain.then(() => reapOnce(id, options));
+    reapChain = run.catch(() => {});
+    return run;
+  }
+
   /** Ends the processes of one workspace (Stop/cleanup). Targets only this user's processes in this workspace. */
-  async function reap(id, { marker = "", all = false } = {}) {
+  async function reapOnce(id, { marker = "", all = false } = {}) {
     const row = getWorkspace(id);
     const ws = assertWorkspacePath(row?.linuxPath || `${env.workspaceRoot}/${id}`, env);
     const result = await runScript(config, env, SCRIPTS.reap, [ws, marker || "-", ...(all ? ["all"] : [])], { timeoutMs: 60000 });
@@ -412,11 +467,103 @@ export function createWslRunnerEnvironment({ config, db, bus, clock, providerSta
     return { ok: true, detail: null };
   }
 
+  // ---------- reviewer (M07: claude@wsl-runner) ----------
+  const projectRow = (id) => (id ? db.prepare("SELECT id, source FROM projects WHERE id = ?").get(id) || null : null);
+
+  /**
+   * Whether the read-only reviewer may run in this environment for a project: Claude Code installed at the fixed path
+   * (version + binary hash in the fingerprint), its dedicated config dir (700) with a login (credentials 600, stat only), no
+   * billing-relevant key in its settings, the environment as attested, a canary that measured the reviewer's sandbox (C20),
+   * and (b) for a real project. Not ready → the reviewer stays on Windows (tool boundary, as before M07); the route, the
+   * stage map and the gate all say which. The account check is NOT part of it: a stale one blocks at the gate (billing_route)
+   * instead of silently changing the boundary.
+   */
+  function reviewerReadiness(projectOrId = null, settings = null, at = clock()) {
+    const st = state();
+    if (!st?.installed || !st.ok) return { ok: false, detail: st?.error || `mediul ${env.id} nu e inspectat sau are probleme de graniță` };
+    const f = st.facts || {};
+    if (!f.claude_cli || !f.claude_sha) return { ok: false, detail: `Claude Code nu este instalat în ${env.id} (${CLAUDE_PKG})` };
+    if (f.reviewer_config !== "present:700") return { ok: false, detail: `directorul de configurare al reviewer-ului ${f.reviewer_config && f.reviewer_config !== "absent" ? `are ${f.reviewer_config}` : "lipsește"} (așteptat 700)` };
+    if (f.reviewer_creds !== "present:600") return { ok: false, detail: !f.reviewer_creds || f.reviewer_creds === "absent" ? "NEEDS_AUTH: reviewer-ul din mediu nu are login (claude login cu directorul de configurare dedicat)" : `fișierul de autentificare al reviewer-ului are ${f.reviewer_creds} (așteptat 600)` };
+    const settingsProblem = reviewerSettingsProblem(f);
+    if (settingsProblem) return { ok: false, detail: settingsProblem };
+    const att = attestationStatus(at);
+    if (!att.valid) return { ok: false, detail: att.reason };
+    const c20 = att.latest?.checks?.byId?.C20;
+    if (c20 !== "PASS") return { ok: false, detail: `granița reviewer-ului nu e atestată: canary C20 ${c20 || "NOT_RUN"}; refă atestarea mediului` };
+    const project = typeof projectOrId === "string" ? projectRow(projectOrId) : projectOrId;
+    if (project && project.source !== "hub-test") {
+      const policy = settings?.get("environmentPolicy")?.[env.id];
+      if (!policy?.approvedAt || policy.text !== ENV_POLICY_TEXT || policy.fingerprintHash !== st.fingerprint?.hash) return { ok: false, detail: "proiectul real cere aprobarea (b) pentru amprenta curentă" };
+    }
+    return { ok: true, detail: null };
+  }
+
+  /** Check lines of the reviewer's account check (like C16 for Codex), shown with the probe and in the overview. */
+  function reviewerLines(probe) {
+    const auth = probe?.auth || {};
+    const cfg = probe?.config || {};
+    return [
+      `R1 ${probe?.ok && probe.installation?.installed ? "PASS" : "FAIL"} Claude Code în sandbox-ul reviewer-ului din ${env.distro}: ${probe?.installation?.version || probe?.error || "—"}`,
+      `R2 ${auth.loggedIn && auth.authMethod === "claude.ai" && auth.apiProvider === "firstParty" ? "PASS" : "FAIL"} login prin abonament: ${auth.authMethod || "—"}/${auth.apiProvider || "—"}, plan ${auth.subscriptionType || "—"} (fără cheie API)`,
+      `R3 ${!cfg.apiKeyHelper && !cfg.fallbackModelSet && !(cfg.riskyEnvInSettings || []).length && !cfg.hooks ? "PASS" : "FAIL"} setările reviewer-ului fără apiKeyHelper, fallbackModel, variabile de facturare sau hooks`,
+    ];
+  }
+
+  /**
+   * The reviewer's account check through the environment (M07; the reviewer's C16): `claude --version`, `--help` (which of
+   * the flags the Hub passes it lists) and `claude auth status --json`, each inside the EXACT production reviewer sandbox
+   * (reviewerArgs), in an empty workspace — no prompt, no model. Only loggedIn/authMethod/apiProvider/subscriptionType are
+   * kept. Stored as the provider state of `claude@wsl-runner`, bound to the fingerprint (probeProblem: 24 h).
+   */
+  async function probeReviewer() {
+    users.set("reviewer-probe", "reviewer account check");
+    const id = `rp-${crypto.randomBytes(6).toString("hex")}`;
+    const ws = `${env.workspaceRoot}/${id}`;
+    let created = false;
+    try {
+      const inspected = await inspect();
+      if (!inspected.installed) throw new HubError("transport", inspected.error || "Mediul nu este disponibil");
+      const facts = inspected.facts || {};
+      const value = { provider: "claude", environment: env.id, probedAt: now(), fingerprintHash: inspected.fingerprint?.hash || null, config: reviewerConfigFacts(facts),
+        installation: { installed: Boolean(facts.claude_cli && facts.claude_sha), binary: `wsl:${env.distro}:${CLAUDE_PKG}`, source: env.id, version: facts.claude_cli ? `${facts.claude_cli} (Claude Code)` : null } };
+      const store = (extra) => { const v = { ...value, ...extra }; providerState.set(reviewerKey, v); return { ...v, lines: reviewerLines(v) }; };
+      if (!value.installation.installed) return store({ ok: false, error: `Claude Code nu este instalat în ${env.id}` });
+      const prep = await runScript(config, env, SCRIPTS.prepare, [ws], { timeoutMs: 120000 });
+      if (prep.code !== 0) throw new HubError("transport", `Workspace-ul de verificare nu a putut fi creat: ${parseKeyValues(prep.text).error || prep.stderr.slice(0, 200)}`);
+      created = true;
+      const inSandbox = (args, timeoutMs = 90000) => runInDistro(config, env, { cwd: `${ws}/repo`, vars: { IFRIM_RUN: id }, timeoutMs, maxStdout: 512 * 1024,
+        argv: [BWRAP, ...reviewerArgs({ repo: `${ws}/repo`, marker: id }), CLAUDE_IN_SANDBOX, ...args] });
+      const text = (r) => cleanWslText(r.stdout.toString("utf8"));
+      const version = await inSandbox(["--version"], 60000);
+      const help = await inSandbox(["--help"], 60000);
+      const status = await inSandbox(["auth", "status", "--json"]);
+      let parsed = null;
+      try { parsed = JSON.parse(text(status)); } catch { /* reported below */ }
+      value.installation.version = text(version).trim().split("\n")[0].slice(0, 80) || value.installation.version;
+      value.installation.flags = CLAUDE_KNOWN_FLAGS.filter((flag) => text(help).includes(flag));
+      if (version.code !== 0 || !parsed) return store({ ok: false, error: `claude în sandbox-ul reviewer-ului: exit ${version.code}/${status.code} ${status.stderr.slice(0, 160)}` });
+      return store({ ok: true, auth: { loggedIn: Boolean(parsed.loggedIn), authMethod: parsed.authMethod || null, apiProvider: parsed.apiProvider || null, subscriptionType: parsed.subscriptionType || null } });
+    } finally {
+      if (created) await release(id).catch(() => {});
+      users.delete("reviewer-probe");
+    }
+  }
+
+  /** Deletes one reviewer session's files (transcript, per-session state) from the reviewer's config dir after a run. */
+  async function cleanupReviewerSession(sessionId) {
+    if (!/^[0-9a-f-]{36}$/.test(String(sessionId || ""))) return { ok: false, error: "id de sesiune invalid" };
+    const result = await runScript(config, env, SCRIPTS["reviewer-cleanup"], [sessionId], { timeoutMs: 60000 });
+    const facts = parseKeyValues(result.text);
+    return { ok: result.code === 0 && facts.left === "0", removed: Number(facts.removed || 0), historyLines: Number(facts.history_lines || 0), left: Number(facts.left ?? -1), error: facts.error || null };
+  }
+
   const service = {
     config, env, codex, simulated, writerReadiness, probeProblem, launcher, stateKey, probeKey, state, inspect, probeAccount, c16Lines, attest, attestationStatus, latestAttestation, attestation,
     prepareWorkspace, collectExport, applyExport, reap, release, recover, getWorkspace, listWorkspaces, setWorkspace,
     markInUse: (id, label) => users.set(id, label), markIdle: (id) => users.delete(id), inUse: () => [...users.entries()].map(([id, label]) => ({ id, label })),
     attesting: () => attesting,
+    reviewerKey, reviewerReadiness, probeReviewer, reviewerLines, cleanupReviewerSession,
   };
   return service;
 }

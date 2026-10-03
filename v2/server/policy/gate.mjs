@@ -1,5 +1,5 @@
 import { evaluateRoute } from "./billing.mjs";
-import { evaluateIsolation, evaluateHostIsolation, evaluateEnvironmentRoute, evaluateEnvironmentProfile } from "./isolation.mjs";
+import { evaluateIsolation, evaluateHostIsolation, evaluateEnvironmentRoute, evaluateEnvironmentProfile, evaluateEnvironmentReviewer } from "./isolation.mjs";
 import { LEGA_CONSENT_VERSION } from "./lega-policy.mjs";
 
 const INSPECTION_MAX_AGE_H = 24;
@@ -67,9 +67,12 @@ export function createGate({ db, settings, projects, backups, leases, grants, br
       // M05: the run goes through an execution environment; Windows sandbox facts do not apply to it.
       add("environment_route", Boolean(envService) && !envService.attesting(), !envService ? `Ruta ${route} nu există în acest Hub; execuția nu trece pe Windows`
         : envService.attesting() ? `Atestarea mediului ${route} rulează (repornește distribuția); execuția așteaptă` : `Rută: ${route} (aleasă de tine pentru acest proiect)`, { environment: route });
-      const isolation = envService ? evaluateEnvironmentProfile({ environmentId: route, probe: inspection, access, profiles: envService.env.profiles,
-        probeProblem: envService.probeProblem(providerState.get(`${provider}@${route}`), envService.state(), now), simulated: envService.simulated })
-        : { ok: false, level: "none", detail: "Mediu indisponibil" };
+      // M07: Claude on an environment route is the read-only reviewer in its bwrap sandbox (C20), not a Codex profile.
+      const probeProblem = envService ? envService.probeProblem(providerState.get(`${provider}@${route}`), envService.state(), now) : null;
+      const isolation = !envService ? { ok: false, level: "none", detail: "Mediu indisponibil" }
+        : provider === "claude" ? evaluateEnvironmentReviewer({ environmentId: route, access, probeProblem, simulated: envService.simulated,
+          readiness: envService.reviewerReadiness ? envService.reviewerReadiness(project, settings, now) : { ok: false, detail: `mediul ${route} nu are un reviewer` } })
+          : evaluateEnvironmentProfile({ environmentId: route, probe: inspection, access, profiles: envService.env.profiles, probeProblem, simulated: envService.simulated });
       add("isolation", isolation.ok, isolation.detail, { level: isolation.level });
       const host = envService ? evaluateEnvironmentRoute({ environmentId: route, envState: envService.state(), attestation: envService.attestationStatus(now), policy: settings.get("environmentPolicy")?.[route] || null, project })
         : { ok: false, level: "none", detail: "Mediu indisponibil" };

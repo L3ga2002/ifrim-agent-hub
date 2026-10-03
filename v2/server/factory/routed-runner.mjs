@@ -1,10 +1,12 @@
 /**
  * The factory runner seen by the Software Factory (M05 §07, §13): checks and QA follow the project's route (Windows sandbox,
- * or the execution environment the owner chose), the preview and its browser E2E stay on Windows (the Linux sandbox refuses
- * sockets), and a route that is not available is refused — never replaced by Windows.
+ * or the execution environment the owner chose), and a route that is not available is refused — never replaced by Windows.
+ * On an environment route the preview runs in the environment's local-only profile once C18 is attested (M06-A) and its
+ * browser E2E inside that same namespace once C19 is attested (M07); the read-only review moves into the environment once
+ * C20 is attested and the reviewer is installed there (M07, claude@wsl-runner — routed by environments/registry.mjs).
  *
  * stageMap() is the honest per-stage picture for one project: where each stage runs and what boundary that is. A project is
- * REAL_PROJECT_ELIGIBLE only when every stage that executes project code is inside a demonstrated environment boundary.
+ * REAL_PROJECT_ELIGIBLE only when every stage that executes or reads project code is inside a demonstrated environment boundary.
  */
 const STAGES = [
   ["writer", "Writer (Codex)"], ["checks", "Verificări"], ["qa", "QA"], ["preview", "Preview"], ["e2e", "E2E în browser"],
@@ -31,9 +33,10 @@ export function createRoutedFactoryRunner({ windows, environments, runners = {},
 
   /**
    * M06-A: the preview runs in the environment's LOCAL-ONLY profile (bwrap, own network namespace with loopback only) when the
-   * project is on an environment route and that profile is attested (canary C18); its E2E must then run inside the same
-   * namespace (Chromium for Linux) and is BLOCKED while that browser is missing — it never moves to the Windows browser.
-   * Without the attested profile the M05 behaviour stays: preview and E2E on Windows (outside the environment boundary).
+   * project is on an environment route and that profile is attested (canary C18); its E2E then runs inside the same namespace
+   * (M07: Chromium for Linux with its own sandbox, attested by C19) and is BLOCKED while that is not ready — it never moves to
+   * the Windows browser. Without the attested profile the M05 behaviour stays: preview and E2E on Windows (outside the
+   * environment boundary).
    */
   const previewRunner = (project) => {
     const route = routeOf(project);
@@ -41,7 +44,7 @@ export function createRoutedFactoryRunner({ windows, environments, runners = {},
     return r?.localOnlyReadiness?.(project)?.ok ? r : null;
   };
   const startPreview = (options) => { const r = previewRunner(options.project); return r ? r.startPreview(options) : windows.startPreview(options); };
-  const e2eFor = (project) => { const r = previewRunner(project); return r ? (options) => r.e2e(options) : null; };
+  const e2eFor = (project) => { const r = previewRunner(project); return r ? (options) => r.e2e({ ...options, project }) : null; };
 
   async function stop(key) {
     const results = await Promise.all([windows.stop(key), ...Object.values(runners).map((r) => r.stop(key).catch(() => null))]);
@@ -58,7 +61,10 @@ export function createRoutedFactoryRunner({ windows, environments, runners = {},
     const profiles = envService?.env?.profiles || {};
     const windowsWhere = "Windows · sandbox Codex elevated (R2: host-ul rămâne citibil în afara căilor protejate)";
     const lo = envRunner?.localOnlyReadiness ? envRunner.localOnlyReadiness(project) : null;
-    const e2eReady = envRunner?.e2eReadiness ? envRunner.e2eReadiness() : null;
+    const e2eReady = envRunner?.e2eReadiness ? envRunner.e2eReadiness(project) : null;
+    // M07: the reviewer goes where the registry routes Claude (the environment only when its reviewer is ready).
+    const reviewRoute = project ? environments.routeFor(project.id, "claude") : "windows";
+    const reviewer = route !== "windows" && envService?.reviewerReadiness ? envService.reviewerReadiness(project, settings) : null;
     const entries = {
       writer: route === "windows" ? { where: windowsWhere, boundary: "windows-sandbox" }
         : { where: `${route} · Codex app-server, profil ${profiles["workspace-write"] || "—"}, export validat (C14)`, boundary: writerReady?.ok ? "environment" : "blocked", detail: writerReady?.ok ? null : writerReady?.detail },
@@ -68,7 +74,9 @@ export function createRoutedFactoryRunner({ windows, environments, runners = {},
         : { where: `${windowsWhere}${route !== "windows" ? `; profilul doar-local din ${route} nu e pregătit (${lo?.detail || "—"})` : ""}`, boundary: "windows-sandbox" },
       e2e: lo?.ok ? { where: `${route} · în namespace-ul preview-ului: ${e2eReady?.detail || "—"}`, boundary: e2eReady?.ok ? "environment" : "blocked", detail: e2eReady?.ok ? null : e2eReady?.detail }
         : { where: "Windows · Chromium (sandbox Chromium) contra preview-ului de pe Windows", boundary: "windows-browser" },
-      review: { where: "Windows · Claude Code Read/Glob/Grep, mod dontAsk (graniță de unealtă, nu OS)", boundary: "tool" },
+      review: reviewRoute !== "windows" && reviewRoute === route
+        ? { where: `${route} · Claude Code în bwrap: copia doar-citire la /work, fără fișierele host-ului, config dedicat, unelte Read/Glob/Grep (C20)`, boundary: "environment" }
+        : { where: `Windows · Claude Code Read/Glob/Grep, mod dontAsk (graniță de unealtă, nu OS)${route !== "windows" ? `; reviewer-ul din ${route} nu e pregătit (${reviewer?.detail || "—"})` : ""}`, boundary: "tool" },
       lega: { where: "Windows · Codex realtime fără workspace (voce, propuneri care cer clicul tău)", boundary: "no-workspace" },
     };
     entries.qa = { ...entries.checks };

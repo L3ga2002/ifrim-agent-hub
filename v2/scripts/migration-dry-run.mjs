@@ -28,12 +28,15 @@ try {
   const after = migrated.prepare("SELECT MAX(version) AS v FROM schema_migrations").get().v;
   const cols = migrated.prepare("PRAGMA table_info(agent_runs)").all().map((c) => c.name);
   const tables = migrated.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name LIKE 'environment_%'").all().map((r) => r.name);
+  const ownerTables = migrated.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name IN ('owner_credentials','owner_challenges','owner_sessions','mission_envelopes','owner_visits','shadow_evaluations','voice_profiles','voice_utterances')").all().map((r) => r.name);
+  const grantCols = migrated.prepare("PRAGMA table_info(live_grants)").all().map((c) => c.name);
   const integrity = migrated.prepare("PRAGMA integrity_check").get();
   const copyCounts = counts(migrated);
   migrated.close();
   console.log(JSON.stringify({
     schemaBefore: before, schemaAfter: after, latestKnown: MIGRATIONS.at(-1).version, durationMs: Date.now() - started,
-    agentRunsHasEnvironment: cols.includes("environment"), environmentTables: tables, integrity: Object.values(integrity)[0],
+    agentRunsHasEnvironment: cols.includes("environment"), environmentTables: tables, ownerTables, liveGrantsHasEnvelope: grantCols.includes("envelope_id"),
+    integrity: Object.values(integrity)[0],
     rowCountsUnchanged: JSON.stringify(liveCounts) === JSON.stringify(copyCounts), rowCounts: copyCounts,
   }, null, 2));
 } finally {

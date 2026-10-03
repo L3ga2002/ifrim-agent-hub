@@ -31,7 +31,7 @@ function SetupPage({ go }) {
   const owner = useOwner();
   return (
     <div className="page">
-      <div className="page-head"><div><h1>Lega · Configurare</h1><p>O singură dată: autentificatorul, politica voice-first, autonomia pe proiecte și profilul vocal local.</p></div>
+      <div className="page-head"><div><h1>Lega · Configurare</h1><p>Pașii reali până la prima misiune confirmată prin voce: ce face Hub-ul singur, apoi Windows Hello și vocea ta.</p></div>
         <button className="btn" onClick={() => go("/lega")}>Înapoi la cockpit</button></div>
       <ErrorNotice error={owner.error} />
       <OwnerSetup owner={owner.data} reload={owner.reload} />
@@ -179,7 +179,7 @@ function Cockpit({ projectId, go }) {
           <button className="btn sm ghost" onClick={() => go("/lega/setup")}><Settings2 size={14} />Configurare</button>
         </div>
       </header>
-      {owner.error?.status === 404 && <Notice tone="warn" title="Hub-ul rulează o versiune mai veche">Interfața e M06, dar serverul pornit nu are încă rutele Lega 2.0 (versiunea {hub?.version || "—"}). Repornește Hub-ul (npm run v2:stop, apoi npm run v2); până atunci folosește Control Room.</Notice>}
+      {owner.error?.status === 404 && <Notice tone="warn" title="Hub-ul rulează o versiune mai veche">Serverul pornit ({hub?.version || "—"}) nu are rutele Lega 2.0. Repornește Hub-ul (v2\scripts\restart.ps1); până atunci folosește Control Room.</Notice>}
       {hub?.simulation && <Notice tone="info" title="Simulare">Instanță separată cu date sintetice și provideri fixture; nimic de aici nu e real.</Notice>}
       <div className="cockpit-grid">
         <aside className="cockpit-left" aria-label="Lega">

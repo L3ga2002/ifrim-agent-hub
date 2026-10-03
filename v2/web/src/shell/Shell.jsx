@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { Search, Square, ShieldCheck, Pause, CircleDot, X, MoreHorizontal, Plus, HardDrive, RefreshCw, WifiOff, Wifi, FlaskConical, Minimize2, FolderGit2, Target, Keyboard, MessageSquare } from "lucide-react";
 import { NAV } from "../nav.js";
 import { useHub, dismissToast, refresh, pushToast, usePref, useResource } from "../store.js";
-import { api, fmt } from "../api.js";
+import { api, fmt, ensureToken, serverInfo, onServerInfo, contractState, UI_BUILD } from "../api.js";
 import { Chip, Dialog, Notice } from "../components/ui.jsx";
 import { ErrorBoundary } from "../components/ErrorBoundary.jsx";
 import { VoiceControl } from "./Voice.jsx";
@@ -216,6 +216,27 @@ const SIM_ACTIONS = [["lega", "Lega M06 (plan)"], ["execute", "Execuție"], ["ap
   ["factory-a", "Fabrica A (bug)"], ["factory-b", "Fabrica B (feature)"], ["factory-c", "Fabrica C (review)"], ["sales", "Vânzări"]];
 
 /** Persistent simulator banner with scenario triggers (only in the simulator process; the real Hub answers 404). */
+/**
+ * M07: one global notice when the page and the server disagree (another API contract: commands are refused until a reload or
+ * a restart; stop/pause/revoke keep working) or when the page is not on the canonical origin (the owner session and Windows
+ * Hello live on http://localhost only).
+ */
+function HubStatusBanner() {
+  const [info, setInfo] = useState(serverInfo());
+  useEffect(() => { ensureToken().catch(() => {}); return onServerInfo(setInfo); }, []);
+  const state = contractState(info);
+  const offOrigin = typeof location !== "undefined" && location.hostname !== "localhost" && location.port === "8011";
+  if (state !== "ui_older" && state !== "server_older" && !offOrigin) return null;
+  const canonical = typeof location !== "undefined" ? `http://localhost:${location.port}${location.pathname}${location.hash}` : "";
+  return (
+    <div className="hub-status-banner" role="alert">
+      {state === "ui_older" && <span><b>Interfață veche ({UI_BUILD.version}).</b> Serverul rulează {info?.version}. Comenzile sunt oprite până reîncarci pagina; Stop și Pauză merg. <button className="btn sm" onClick={() => location.reload()}><RefreshCw size={13} />Reîncarcă</button></span>}
+      {state === "server_older" && <span><b>Serverul rulează {info?.version}</b>, interfața e {UI_BUILD.version}. Comenzile sunt oprite până la repornirea Hub-ului (<code>v2\scripts\restart.ps1</code>); Stop și Pauză merg.</span>}
+      {offOrigin && state !== "ui_older" && state !== "server_older" && <span>Sesiunea de proprietar și Windows Hello merg doar pe <a href={canonical}>http://localhost:{location.port}</a> — deschide adresa aceasta.</span>}
+    </div>
+  );
+}
+
 function SimBanner() {
   const [busy, setBusy] = useState("");
   const trigger = async (id, label) => {
@@ -266,6 +287,7 @@ export function Shell({ route, go, children }) {
     <div className={`app ${simulation ? "is-sim" : ""}`}>
       <a className="skip-link" href="#main" onClick={(e) => { e.preventDefault(); mainRef.current?.focus(); }}>Sari la conținut</a>
       {simulation && <SimBanner />}
+      <HubStatusBanner />
       <header className="topbar">
         <a className="brand" href="#/control" aria-label="Control Room"><img src="/favicon.svg" alt="" className="brand-mark" /><span className="hide-mobile brand-name">IFRIM DIGITAL <b>AGENT HUB</b></span></a>
         <ProjectSwitcher go={go} />

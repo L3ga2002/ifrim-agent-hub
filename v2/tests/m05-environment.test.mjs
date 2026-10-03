@@ -2,6 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import path from "node:path";
+import { execFileSync } from "node:child_process";
 import { makeTestHub, enableLive, waitFor } from "./helpers.mjs";
 import { ENV_POLICY_TEXT } from "../server/policy/isolation.mjs";
 import { materializeFixture } from "../server/factory/fixtures.mjs";
@@ -87,6 +88,90 @@ test("M05-ENV-02 a Codex run on a routed project goes through the environment an
     assert.equal(ws.status, "applied", "the outcome stays the status");
     assert.ok(ws.stats.releasedAt, "and the workspace was released after it");
   } finally { await t.cleanup(); }
+});
+
+test("M07-ENV-12 a writer turn whose tests leave a database in a folder the project's .gitignore excludes: the export is applied, the database is left out and named in the evidence", async () => {
+  // Found live (M07 D6): the whole export used to be refused as "binary" for data/*.sqlite the project's tests created.
+  const t = await readyHub({ codex: "factory-write:runtime-db", queues: false });
+  try {
+    const { hub } = t;
+    await enableLive(hub, { provider: "codex", access: "workspace-write", attempts: 1 });
+    const dir = path.join(t.dataDir, "factory-ignore");
+    materializeFixture("bug-demo", dir);
+    fs.writeFileSync(path.join(dir, ".gitignore"), "data/\nnode_modules/\n");
+    const git = (...args) => execFileSync("git", ["-C", dir, "-c", "user.email=test@example.invalid", "-c", "user.name=Test", "-c", "commit.gpgsign=false", ...args], { stdio: "pipe" });
+    git("init", "-q"); git("add", "."); git("commit", "-q", "-m", "fixture");
+    const project = await dispatch(hub, "project.register_test", { path: dir });
+    const grant = hub.bus.transaction(() => hub.grants.create({ provider: "codex", projectId: project.id, access: "workspace-write", maxAttempts: 1, maxDurationS: 900, ttlMinutes: 60 }, "test"));
+    await dispatch(hub, "project.environment.set", { projectId: project.id, environment: "wsl-runner" });
+    const conv = hub.conversations.create({ projectId: project.id, title: "runtime db" }, "test");
+    hub.conversations.addMessage({ conversationId: conv.id, role: "user", content: "fă modificarea" }, "test");
+    const { run } = await hub.runs.start({ conversationId: conv.id, provider: "codex", access: "workspace-write", grantId: grant.id, actor: "test" });
+    const done = await waitFor(() => { const r = hub.runs.getRun(run.id); return ["completed", "failed", "blocked", "interrupted"].includes(r.status) ? r : null; }, 60000);
+    assert.equal(done.status, "completed", `${done.errorCategory}: ${done.errorMessage}`);
+    const exp = done.evidence.environment.export;
+    assert.equal(exp.ok, true, JSON.stringify(exp));
+    assert.deepEqual(exp.stats.ignoredByProjectFiles, ["data/runtime.sqlite"]);
+    assert.deepEqual(exp.changes.map((c) => `${c.status}:${c.path}`).sort(), ["added:data/notes.txt", "added:docs/runtime-note.md"], "text files are applied as before");
+    assert.equal(fs.existsSync(path.join(dir, "data", "runtime.sqlite")), false, "the database never reaches the project");
+    assert.equal(fs.readFileSync(path.join(dir, "docs", "runtime-note.md"), "utf8"), "# Notă\n\nSchimbare de test.\n");
+    // The owner sees it: the environment's workspace row carries the count.
+    const ws = (await import("../server/environments/overview.mjs")).environmentOverview(hub).environments.find((e) => e.id === "wsl-runner").workspaces.find((w) => w.runId === run.id);
+    assert.equal(ws.export.ignoredByProject, 1);
+  } finally { await t.cleanup(); }
+});
+
+
+/** A routed test project with its own git repository (data/ ignored) and a grant; returns what a run needs. */
+async function ignoreProject(t, { git = true, access = "workspace-write", name = "factory-ignore-2" } = {}) {
+  const { hub } = t;
+  await enableLive(hub, { provider: "codex", access, attempts: 1 });
+  const dir = path.join(t.dataDir, name);
+  materializeFixture("bug-demo", dir);
+  fs.writeFileSync(path.join(dir, ".gitignore"), "data/\nnode_modules/\n");
+  if (git) {
+    const run = (...args) => execFileSync("git", ["-C", dir, "-c", "user.email=test@example.invalid", "-c", "user.name=Test", "-c", "commit.gpgsign=false", ...args], { stdio: "pipe" });
+    run("init", "-q"); run("add", "."); run("commit", "-q", "-m", "fixture");
+  }
+  const project = await dispatch(hub, "project.register_test", { path: dir });
+  const grant = hub.bus.transaction(() => hub.grants.create({ provider: "codex", projectId: project.id, access, maxAttempts: 1, maxDurationS: 900, ttlMinutes: 60 }, "test"));
+  await dispatch(hub, "project.environment.set", { projectId: project.id, environment: "wsl-runner" });
+  const conv = hub.conversations.create({ projectId: project.id, title: "ignore" }, "test");
+  hub.conversations.addMessage({ conversationId: conv.id, role: "user", content: "fă modificarea" }, "test");
+  const { run } = await hub.runs.start({ conversationId: conv.id, provider: "codex", access, grantId: grant.id, actor: "test" });
+  const done = await waitFor(() => { const r = hub.runs.getRun(run.id); return ["completed", "failed", "blocked", "interrupted"].includes(r.status) ? r : null; }, 60000);
+  return { project, dir, done };
+}
+
+test("M07-ENV-13 the drop never hides another binary, never runs for a read-only turn, and a project without its own .git is named in the refusal", async () => {
+  const t = await readyHub({ codex: "factory-write:runtime-db-blob", queues: false });
+  try {
+    // A binary outside the ignore rules refuses the whole export, the ignored database included in the evidence as left out.
+    const a = await ignoreProject(t);
+    assert.equal(a.done.status, "failed");
+    assert.equal(a.done.errorCategory, "export");
+    const exp = a.done.evidence.environment.export;
+    assert.ok(exp.refused.some((r) => r.path === "src/blob.bin" && /binar/.test(r.reason)), JSON.stringify(exp.refused));
+    assert.deepEqual(exp.stats.ignoredByProjectFiles, ["data/runtime.sqlite"]);
+    assert.equal(fs.existsSync(path.join(a.dir, "docs", "runtime-note.md")), false, "nothing applied");
+  } finally { await t.cleanup(); }
+  const u = await readyHub({ codex: "factory-write:runtime-db", queues: false });
+  try {
+    // No .git of its own: nothing can be left out, the export is refused, and the run error says why (not only "binary").
+    const b = await ignoreProject(u, { git: false, name: "factory-nogit" });
+    assert.equal(b.done.status, "failed");
+    assert.match(b.done.errorMessage, /regulile de ignorare ale proiectului nu au putut fi folosite \(proiectul nu are un depozit git propriu/);
+    assert.match(b.done.evidence.environment.export.stats.ignoreRulesError, /depozit git propriu/);
+  } finally { await u.cleanup(); }
+  const r = await readyHub({ codex: "factory-write:runtime-db", queues: false });
+  try {
+    // A read-only turn never asks the ignore rules: every file it left behind is a change or a refusal, never "left out".
+    const c = await ignoreProject(r, { access: "read-only", name: "factory-ro" });
+    assert.equal(c.done.status, "failed");
+    const exp = c.done.evidence.environment.export;
+    assert.equal(exp.stats.ignoredByProject, 0);
+    assert.equal(exp.stats.ignoreRulesError, undefined);
+  } finally { await r.cleanup(); }
 });
 
 test("M05-ENV-03 the gate refuses the routed project without attestation, and never falls back to Windows", async () => {

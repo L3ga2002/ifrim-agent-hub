@@ -1,5 +1,66 @@
 # Project State - Ifrim Agent Hub
 
+## 2026-10-03 — M07: activation, local voice, live validation (current; read `M07_ACTIVATION_REPORT.md` first)
+
+- **Code `2.8.0-m07`, API contract 7:** committed on `v2-milestone-01` right after the M06 commit `66487b9` (see `git log`; push state: `git status`).
+- **M07 docs:** `M07_ACTIVATION_REPORT.md`, `M07_LIVE_VALIDATION_RESULTS.md`, `M07_INSTALL_MANIFEST.md`, `M07_SECURITY_READINESS.md`, `M07_USER_EXPERIENCE.md`.
+- **Live Hub:**
+  - runs `2.8.0-m07` on `http://localhost:8011`, the canonical origin (`127.0.0.1` document navigations get a 307);
+  - started through WMI with `v2/scripts/start-detached.ps1`; restart with `v2/scripts/restart.ps1`; the launcher is `Ifrim Hub V2.cmd` (`start.mjs`, detached);
+  - migration 7 (`voice_utterances`) is applied;
+  - left in BUILD_SAFE, with no active grant, no AI run and the microphone closed.
+- **Installed (A1–B2, see `M07_INSTALL_MANIFEST.md`):**
+  - Chromium libs and Playwright Chromium 1228 in ifrim-runner (no `--no-sandbox`);
+  - Claude Code 2.1.285 Linux as an isolated reviewer (bwrap, dedicated config, the owner's login);
+  - whisper.cpp 1.9.4 large-v3-turbo (CUDA) and sherpa-onnx CAM++ under `C:\Users\mihai\IfrimHub\voice`, outside the MSIX-virtualized LocalAppData and outside OneDrive. All SHA values are pinned in `voice-engine.mjs`.
+- **Attestation:** `att_murgupen_3459ee8157` (2026-10-02 21:21 UTC; valid 14 days), PASS_LOCAL, C1–C20, fingerprint `8f9e9eeb934b6c01`. All 6 stages run in the environment on test projects.
+- **Policy D:** approval (b), `host_isolation = environment`, approved 2026-10-02 23:23:35 UTC through the agent channel after D6's live proof. No real project has the `wsl-runner` route; ProDelivery stays OBSERVE.
+- **New in code:**
+  - **Agent channel:** the `agent` command channel (`X-Hub-Channel: agent` + `X-Hub-Delegation`) records delegated operations as the agent's.
+    - Allowlist `AGENT_COMMANDS`; owner-only decisions are not delegable.
+    - Authority- and work-creating commands are allowed on test projects only (`AGENT_TEST_PROJECT_ONLY` + `assertAgentScope`). Every project-naming field must be a test project (projectId/slug, missionId, conversationId, taskId, approval scope), and the check is repeated when an approved command is executed. Fail-safes are allowed everywhere.
+    - Approving policy (b) is no longer delegable; revoking it is.
+    - An agent's `factory.resume` resumes only BLOCKED or an agent pause. It refuses every NEEDS_OWNER_DECISION, a new time window and the end of the owner's pause.
+    - On every channel, `run.start` refuses a `taskId` from another project than the conversation's.
+  - **UI–API contract handshake:** 409 `UI_STALE`; fail-safe paths exempt.
+  - **Setup orchestrator:** `GET/POST /api/setup`. A declared `cli` is refused on `setup/run`.
+  - **Server-side local voice decision:** speaker first, then the transcript. A `voice_utterances` row is the only evidence of a voice confirmation. The page shows the effective threshold (0.55 ceiling).
+  - **Local-only fallback** for checks and QA when `codex sandbox` refuses sockets.
+  - **Mode hold:** it belongs to the plans that hold it (`holders`: the plan that entered LIVE and the plans confirmed while it was held), and the last holder to close returns the Hub to BUILD_SAFE. A plan that fails to start restores the previous hold, and `mode.set` clears the hold in the same transaction. Plans a boot suspended stay suspended beside a newer plan (`hold.suspended`) and come back, still suspended, when it ends; an explicit resume of one of them rejoins the holders.
+    - A boot only suspends it (`suspendedByBoot`).
+    - An explicit resume restores it (`restoreModeHold`, open + unexpired plan, voice-first policy); `undoRestore` reverts it if the resume is refused.
+    - A manual mode change drops it. The listener writes compare-and-set. `envelopeOfMission` uses exact `json_each` matching.
+  - **Export:** NEW binary non-asset files that the project's ignore rules exclude are left out, listed and not applied (`ignoreEligible`).
+    - The async `gitCheckIgnored` asks the Windows project, for writer turns only.
+    - A git error, or a project without its own .git, leaves nothing out. It is recorded in `ignoreRulesError`, in the run error and in the factory reason.
+    - The result is visible in Environments, in the factory evidence and in the bundle.
+- **Live (see `M07_LIVE_VALIDATION_RESULTS.md`):**
+  - D1 and D2: PASS_LOCAL;
+  - D4 Stop: PASS_LIVE (attempt 2/2); reviewer in the environment: PASS_LIVE;
+  - D5 Windows Hello + voice profile: PASS_LIVE (owner);
+  - D3+D6: PASS_LIVE. Voice confirmation → writer → checks 11/11 → review PASS → QA 5/5 → preview → E2E on mobile, all in ifrim-runner, ending DELIVERY_READY. Bundle `bnd_murl82o1_00afe726c3` awaits the owner. The mission was created, and resumed twice, by the agent; the second resume raised the attempt limit, which is no longer allowed for an agent;
+  - D7 ProDelivery read-only: PASS_LOCAL (resolver + cockpit read);
+  - D8: PASS_SIMULATED (Lega cloud session NOT_RUN, 0/2).
+  - AI budget used: 7/8 (Codex 4, Claude 3).
+- **Pre-commit adversarial verification:**
+  - round 1 (84 subagents): 11 code findings fixed, 3 rejected-but-real mechanisms fixed anyway, 2 gaps found through the docs closed in code, 34 doc corrections;
+  - mutants: 16/16 caught;
+  - round 2 (37 subagents) re-reviewed the new code: 11 findings, all fixed. Among them, a forged extra field bypassed the test-project limit; now every field is checked;
+  - round 3 (12 subagents): nothing new on the agent channel; 2 low findings fixed (suspended plans reactivated by a new plan; the prompt sentence without .git);
+  - mutants: 30/30 caught on the final code (MX-1…8, MM-1…14, MS-1…8).
+- **Tests:** V2 596 / 595 PASS / 0 FAIL / 1 skipped (T25 NOT_RUN: file symlink EPERM) on the final code; V1 552 / 551 / 0 / 1 (V1 files unchanged); mutants 30/30 caught (MX-1…8, MM-1…14, MS-1…8).
+- **Open:** see `OPEN_ISSUES.md` (M07 section). It covers:
+  - OneDrive sync of `.ifrim/private`;
+  - the voice profile ACL (inherited read for CodexSandboxUsers);
+  - whisper-server `/load`;
+  - runner-owned Chromium/Claude binaries;
+  - E2E output forgeable by the project under test;
+  - reviewer `surface_id` null;
+  - leftover workspace dirs;
+  - the D8 cloud session;
+  - the Lega big-screen proposal.
+- **Unchanged:** Demo B bundle `bnd_mupwze7b_e03f70f2d7` awaits the owner. ProDelivery, AROBS and Sales live are untouched, and V1 and OpenClaw are untouched and running.
+
 ## 2026-10-02 — M06: Lega 2.0 (voice-first cockpit) + M06-A pipeline readiness (current; read `M06_REPORT.md` first)
 
 - **Code `2.7.0-m06`:** on disk on `v2-milestone-01` over `c8ff6f4`, **uncommitted**. No commit, push, merge, deploy, model, install or download.

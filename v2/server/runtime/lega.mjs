@@ -44,7 +44,7 @@ function argsProblem(args) {
  * - results come back as a short, framed, redacted spoken summary (appendSpeech), never code.
  * Audio never passes through the Hub; only final transcript text is kept (redacted), never audio.
  */
-export function createLega({ bus, live, clock, settings, gate, grants, projects, approvals, missions, readApi = {}, missionKinds = [], runsApi, commandsApi, codexRealtime, refreshCodexConfig = () => {}, codexConfig = () => null, timeScale = 1 }) {
+export function createLega({ bus, live, clock, settings, gate, grants, projects, approvals, missions, readApi = {}, missionKinds = [], runsApi, commandsApi, codexRealtime, refreshCodexConfig = () => {}, codexConfig = () => null, timeScale = 1, voiceGateCheck = null }) {
   const ms = (value) => Math.max(10, Math.round(value * timeScale));
   let session = null; // the single live session
   const pendingRuns = new Map(); // runId -> { sessionId, task }
@@ -246,6 +246,18 @@ export function createLega({ bus, live, clock, settings, gate, grants, projects,
       touch(current);
       const role = event.role === "user" ? "user" : "assistant";
       current.partial[role] = "";
+      // M07 §14: with the strict voice filter on, the cloud only hears segments the Hub accepted for this session. Words the
+      // provider transcribed without any accepted segment in the last 30 s mean the filter was bypassed (another tab, a page
+      // without the gate, a modified client): they are neither stored nor acted on, and the session stops (always safe).
+      if (role === "user") {
+        const check = voiceGateCheck ? voiceGateCheck(current.id) : null;
+        if (check?.enabled && !check.released) {
+          bus.emit({ type: "lega.voice_gate_bypass", scopeType: "system", scopeId: current.id, source: "hub", payload: { length: String(event.text || "").length } });
+          live.publish({ type: "lega.notice", sessionId: current.id, level: "error", text: "Lega a primit vorbire care nu a trecut prin filtrul vocal local; opresc sesiunea. Repornește Lega din pagina cu filtrul activ." });
+          stop(current.id, "voice_gate_bypass", "hub");
+          return;
+        }
+      }
       const text = redactText(event.text).slice(0, 2000);
       bus.emit({ type: "lega.transcript", scopeType: "system", scopeId: current.id, source: role === "user" ? "user" : "lega", payload: { role, text } });
       live.publish({ type: "lega.transcript.done", sessionId: current.id, role, text });

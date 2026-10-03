@@ -148,7 +148,20 @@ export function registerCommands(commands, hub) {
     schema: { missionId: { required: true, max: 80 } }, channels: ["ui", "test", "voice", "companion", "owner"], execute: (input, ctx) => hub.factory.pause(input.missionId, { actor: ctx.actor }) });
   reg("factory.resume", { describe: "Reia misiunea de unde au rămas dovezile (opțional: încă un ciclu de remediere sau QA după un review neconcludent — decizia ta)", async: true,
     schema: { missionId: { required: true, max: 80 }, allowExtraCycle: { type: "boolean", default: false }, proceedToQa: { type: "boolean", default: false }, reviewerModel: { max: 64, default: "" } }, channels: ["ui", "test", "owner"],
-    execute: (input, ctx) => hub.factory.resume(input.missionId, { actor: ctx.actor, allowExtraCycle: input.allowExtraCycle, proceedToQa: input.proceedToQa, reviewerModel: input.reviewerModel }) });
+    execute: async (input, ctx) => {
+      // An agent (M07 delegation) may only resume a mission where it stopped: never an extra repair cycle, a jump to QA or
+      // another reviewer model — those widen what the owner confirmed and stay the owner's decisions (the factory refuses the
+      // rest: a new time window, one more attempt, the end of the owner's pause).
+      if (ctx.channel === "agent" && (input.allowExtraCycle || input.proceedToQa || input.reviewerModel)) throw new HubError("policy", "Ciclul suplimentar, trecerea la QA și alt model de review sunt decizii ale tale; agentul poate doar relua misiunea de unde a rămas");
+      // The LIVE_VALIDATION the open plans held before a restart comes back with an explicit resume (M07); undone if refused.
+      const restored = hub.envelopes?.restoreModeHold?.(input.missionId, ctx.actor) || null;
+      try {
+        return await hub.factory.resume(input.missionId, { actor: ctx.actor, allowExtraCycle: input.allowExtraCycle, proceedToQa: input.proceedToQa, reviewerModel: input.reviewerModel, byAgent: ctx.channel === "agent" });
+      } catch (error) {
+        hub.envelopes?.undoRestore?.(restored);
+        throw error;
+      }
+    } });
   reg("factory.accept", { describe: "Accepți local pachetul de livrare (OWNER_ACCEPTED; fără commit, push sau deploy)", async: true,
     schema: { missionId: { required: true, max: 80 }, note: { max: 500, default: "" } }, execute: (input, ctx) => hub.factory.accept(input.missionId, { note: input.note, actor: ctx.actor }) });
   reg("factory.reject", { describe: "Respingi rezultatul (cu motiv)", async: true,
@@ -175,8 +188,16 @@ export function registerCommands(commands, hub) {
   // ---------- approvals & policy ----------
   reg("approval.decide", { describe: "Decizia ta asupra unei aprobări (doar din UI, cu hash-ul afișat)", async: true, schema: { approvalId: { required: true },
     decision: { enum: ["approved", "rejected"], required: true }, displayedHash: { required: true, max: 128 }, note: { max: 500, default: "" } },
-    execute: async (input) => {
-      const approval = bus.transaction(() => approvals.decide(input.approvalId, { decision: input.decision, displayedHash: input.displayedHash, note: input.note, channel: "ui", actor: "user" }));
+    execute: async (input, ctx) => {
+      // The decision row records who decided: the owner's UI, or an agent on a recorded delegation (M07), never a fake click.
+      // An agent decides only the kinds the owner delegated (the Software Factory start of a test mission), never sensitive,
+      // external, sales or Lega approvals.
+      if (ctx.channel === "agent") {
+        const kind = approvals.get(input.approvalId)?.actionKind;
+        if (kind !== "factory.scope") throw new HubError("policy", `Aprobările ${kind || "necunoscute"} nu sunt delegate agentului; le decizi tu în Aprobări`);
+      }
+      const via = ctx.channel === "agent" ? { channel: "agent", actor: "agent", note: `${input.note ? `${input.note} · ` : ""}[delegat] ${ctx.delegation}`.slice(0, 500) } : { channel: "ui", actor: "user", note: input.note };
+      const approval = bus.transaction(() => approvals.decide(input.approvalId, { decision: input.decision, displayedHash: input.displayedHash, note: via.note, channel: via.channel, actor: via.actor }));
       runs.resolveApproval(input.approvalId, input.decision);
       return approval;
     } });
@@ -221,6 +242,9 @@ export function registerCommands(commands, hub) {
       if (input.mode === "OPERATIONAL") throw new HubError("policy", "OPERATIONAL mode is not enabled in this build; it needs per-mission policies you approve");
       if (input.mode === "LIVE_VALIDATION" && input.confirm !== "LIVE_VALIDATION") throw new HubError("validation", "Type LIVE_VALIDATION to confirm");
       settings.set("mode", input.mode, ctx.actor, input.mode === "BUILD_SAFE" ? "Returned to safe mode" : "Live validation enabled; runs still need a scoped grant");
+      // A mode chosen by hand belongs to the owner from this moment: the plans' hold is dropped in the same transaction (a resume
+      // or an undo landing right after can never bring the plans' LIVE_VALIDATION back over this choice).
+      if ((settings.get("envelopeModeHold") || {}).envelopeId) settings.set("envelopeModeHold", {}, "envelopes", `Mode changed by hand (${ctx.actor})`);
       return { mode: settings.get("mode") };
     } });
   reg("gate.set", { describe: "Deschide/suspendă poarta de execuție", schema: { action: { enum: ["open", "suspend"], required: true }, reason: { max: 300 }, confirm: { max: 40 } },

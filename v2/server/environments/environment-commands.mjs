@@ -30,15 +30,24 @@ export function registerEnvironmentCommands(reg, hub) {
       return { ok: state.ok, installed: state.installed, fingerprint: state.fingerprint || null, problems: state.problems || [], error: state.error || null, durationMs: state.durationMs };
     } });
 
-  reg("environment.probe", { describe: "Verifică contul prin clientul din mediu (C16: handshake, cont, limite, profiluri, model/list; fără thread și fără turn)", async: true, channels: CHECKS, schema: ENV,
+  reg("environment.probe", { describe: "Verifică contul prin clientul din mediu (C16: handshake, cont, limite, profiluri, model/list; fără thread și fără turn) și, dacă e instalat, reviewer-ul Claude (auth status în sandbox-ul lui, fără model)", async: true, channels: CHECKS, schema: ENV,
     execute: async (input, ctx) => {
-      const result = await service(input.environmentId).probeAccount();
+      const svc = service(input.environmentId);
+      const result = await svc.probeAccount();
       bus.emit({ type: result.ok ? "environment.probed" : "environment.probe_failed", scopeType: "environment", scopeId: input.environmentId, source: ctx.actor,
         payload: { ok: result.ok, accountType: result.auth?.accountType || null, planType: result.auth?.planType || null, models: Array.isArray(result.models) ? result.models.length : 0, c16: result.c16.map((l) => l.split(" ").slice(0, 2).join(" ")) } });
-      return { ok: result.ok, c16: result.c16, error: result.error || null };
+      // M07: the reviewer's account check through the same environment, only when Claude Code is installed there.
+      let reviewer = null;
+      if (svc.probeReviewer && svc.state()?.facts?.claude_cli) {
+        const r = await svc.probeReviewer().catch((error) => ({ ok: false, error: String(error.message).slice(0, 300), lines: [] }));
+        reviewer = { ok: Boolean(r.ok), lines: r.lines || [], error: r.error || null };
+        bus.emit({ type: r.ok ? "environment.reviewer_probed" : "environment.reviewer_probe_failed", scopeType: "environment", scopeId: input.environmentId, source: ctx.actor,
+          payload: { ok: Boolean(r.ok), authMethod: r.auth?.authMethod || null, subscriptionType: r.auth?.subscriptionType || null, lines: (r.lines || []).map((l) => l.split(" ").slice(0, 2).join(" ")) } });
+      }
+      return { ok: result.ok, c16: result.c16, error: result.error || null, reviewer };
     } });
 
-  reg("environment.attest", { describe: "Atestă mediul: canary C1–C17 pe amprenta curentă (fișiere fictive, fără model)", async: true, channels: CHECKS,
+  reg("environment.attest", { describe: "Atestă mediul: canary C1–C17 pe amprenta curentă, plus C18–C20 (preview doar-local, Chromium E2E, reviewer) ca acoperire opțională (fișiere fictive, fără model)", async: true, channels: CHECKS,
     schema: { ...ENV, allowRestart: { type: "boolean", default: true } },
     execute: async (input, ctx) => {
       const svc = service(input.environmentId);

@@ -65,7 +65,9 @@ export function createWslCodexAdapter({ environment }) {
         // 4. Nothing is read back while a process of the run could still write: the app-server is gone (inner finally),
         //    then every remaining process of this workspace is ended.
         // Alone in the environment: every process of the runner user goes (one that left the workspace and dropped the
-        // marker cannot survive into the next run). With another run active, only this workspace's processes.
+        // marker cannot survive into the next run). With another run active, only this workspace's processes. The
+        // environment serializes reaps (M07): a Stop's interrupt-path reap (below) and this one never run at once, so the
+        // "all" reaper never counts the other reaper as a process left behind.
         report.reap = await environment.reap(wsId, { marker: wsId, all: environment.inUse().length <= 1 }).catch((error) => ({ ok: false, error: error.message }));
         if (!report.reap.ok) {
           return withEnv({ ...result, status: result.status === "completed" ? "failed" : result.status, errorCategory: result.errorCategory || "environment",
@@ -81,7 +83,8 @@ export function createWslCodexAdapter({ environment }) {
             error: `Mediul ${env.id} s-a schimbat în timpul execuției (amprenta ${report.fingerprintHash} → ${post.fingerprint?.hash || "—"}${post.ok ? "" : ", probleme de graniță"}); exportul nu a fost aplicat` });
         }
         // 5. Export and validate (C14), even for an interrupted turn (evidence), then apply only a completed one.
-        const validation = await environment.collectExport(wsId, { protectedPaths: exportPolicy.protectedPaths || [] });
+        // Only a writer turn may have runtime files left out by the project's ignore rules; a read-only turn keeps flagging every write.
+        const validation = await environment.collectExport(wsId, { protectedPaths: exportPolicy.protectedPaths || [], projectRoot: options.access === "workspace-write" ? projectRoot : null });
         report.export = { ok: validation.ok, stats: validation.stats, refused: validation.refused.slice(0, 20), problems: validation.problems.slice(0, 10),
           changes: validation.changes.map((c) => ({ path: c.path, status: c.status })).slice(0, 200) };
         phase("export_validated");
@@ -99,7 +102,7 @@ export function createWslCodexAdapter({ environment }) {
         }
         if (!validation.ok) {
           return withEnv({ ...result, status: "failed", errorCategory: "export", preInference: false,
-            error: `Exportul din ${env.id} a fost refuzat (C14): ${[...validation.problems, ...validation.refused.map((r) => `${r.path}: ${r.reason}`)].slice(0, 4).join("; ")}; nimic nu a fost aplicat în proiect` });
+            error: `Exportul din ${env.id} a fost refuzat (C14)${validation.stats?.ignoreRulesError ? ` — regulile de ignorare ale proiectului nu au putut fi folosite (${validation.stats.ignoreRulesError}), deci nimic nu a fost lăsat deoparte` : ""}: ${[...validation.problems, ...validation.refused.map((r) => `${r.path}: ${r.reason}`)].slice(0, 4).join("; ")}; nimic nu a fost aplicat în proiect` });
         }
         // A Stop that arrived while the export was read: nothing is applied after it (the export stays in quarantine).
         if (interruptReason) {

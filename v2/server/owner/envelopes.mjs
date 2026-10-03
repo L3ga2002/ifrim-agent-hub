@@ -46,7 +46,7 @@ export const ENVELOPE_LIMITS = Object.freeze({ confirmWindowMin: 15, slackMin: 3
 // Gate checks an envelope resolves itself (it derives the grants, may enter LIVE_VALIDATION, takes the lease, makes the backup).
 const ENVELOPE_RESOLVES = new Set(["live_grant", "mode", "workspace_lease", "backup", "operational", "concurrency"]);
 
-export function createEnvelopes({ db, bus, clock, settings, projects, missions, grants, gate, approvals, commands, trust, factory, factoryRunner, environments, config }) {
+export function createEnvelopes({ db, bus, clock, settings, projects, missions, grants, gate, approvals, commands, trust, factory, factoryRunner, environments, config, voice = null }) {
   const now = () => clock();
   const iso = (d = now()) => d.toISOString();
   const rowTo = (row) => row && ({ id: row.id, schemaVersion: row.schema_version, projectId: row.project_id, missionIds: parse(row.mission_ids_json, []), planHash: row.plan_hash,
@@ -58,7 +58,10 @@ export function createEnvelopes({ db, bus, clock, settings, projects, missions, 
   const forProject = (projectId, limit = 20) => db.prepare("SELECT * FROM mission_envelopes WHERE project_id = ? ORDER BY created_at DESC LIMIT ?").all(projectId, limit).map(rowTo);
   const openFor = (projectId) => rowTo(db.prepare("SELECT * FROM mission_envelopes WHERE project_id = ? AND status IN ('CONFIRMED','ACTIVE','WAITING_OWNER') LIMIT 1").get(projectId));
   const pending = () => db.prepare("SELECT * FROM mission_envelopes WHERE status = 'PROPOSED' AND confirm_by > ? ORDER BY created_at DESC").all(iso()).map(rowTo);
-  const envelopeOfMission = (missionId) => db.prepare("SELECT * FROM mission_envelopes WHERE status IN ('CONFIRMED','ACTIVE','WAITING_OWNER') AND mission_ids_json LIKE ?").all(`%"${missionId}"%`).map(rowTo)[0] || null;
+  const envelopeOfMission = (missionId) => rowTo(db.prepare("SELECT * FROM mission_envelopes WHERE status IN ('CONFIRMED','ACTIVE','WAITING_OWNER') AND EXISTS (SELECT 1 FROM json_each(mission_envelopes.mission_ids_json) WHERE value = ?) ORDER BY created_at LIMIT 1").get(String(missionId || ""))) || null;
+  const openEnvelopeIds = () => db.prepare("SELECT id FROM mission_envelopes WHERE status IN ('CONFIRMED','ACTIVE','WAITING_OWNER') ORDER BY created_at").all().map((r) => r.id);
+  /** The plans holding the mode (a hold written before M07 round 2 names only its envelopeId). */
+  const holdersOf = (hold) => (Array.isArray(hold?.holders) ? hold.holders : hold?.envelopeId ? [hold.envelopeId] : []);
 
   function setStatus(id, status, { reason = "", extra = {}, from = null } = {}) {
     if (!ENVELOPE_STATUSES.includes(status)) throw new Error(`Unknown envelope status ${status}`);
@@ -94,7 +97,12 @@ export function createEnvelopes({ db, bus, clock, settings, projects, missions, 
     const value = { ...settings.get("projectAutonomy"), [project.id]: { level, version: 1, setAt: iso(), setBy: s ? `session:${s.id}` : actor, previous: current } };
     bus.transaction(() => settings.set("projectAutonomy", value, actor, `Autonomy ${current} → ${level} on ${project.name}`));
     // A lower level narrows an authority already in force: an open envelope above it is revoked.
-    if (!raising) { const open = openFor(project.id); if (open && LEVEL_RANK[open.autonomyLevel] > LEVEL_RANK[level]) revoke(open.id, { actor, reason: `Autonomie coborâtă la ${level}` }); }
+    if (!raising) {
+      const open = openFor(project.id);
+      if (open && LEVEL_RANK[open.autonomyLevel] > LEVEL_RANK[level]) revoke(open.id, { actor, reason: `Autonomie coborâtă la ${level}` });
+      // A plan still waiting for confirmation above the new level can no longer be confirmed: it is superseded now.
+      bus.transaction(() => { for (const p of pending().filter((e) => e.projectId === project.id && LEVEL_RANK[e.autonomyLevel] > LEVEL_RANK[level])) setStatus(p.id, "SUPERSEDED", { reason: `Autonomie coborâtă la ${level}`, from: ["PROPOSED"] }); });
+    }
     return { projectId: project.id, level, previous: current };
   }
 
@@ -164,8 +172,11 @@ export function createEnvelopes({ db, bus, clock, settings, projects, missions, 
       return [{ environment: "windows", isolationConsent: consent ? String(consent.fingerprint || "").slice(0, 16) : null, r2Accepted: Boolean(settings.get("r2Acceptance")?.[project.id]) }];
     }
     const service = environments?.get(route);
+    // attestationStatus() is { valid, reason, latest }: the plan is bound to the latest attestation's id, status and fingerprint
+    // (M07 fix: M06 read fields that do not exist, so the binding was always null and a re-attestation never changed the hash).
     const att = service?.attestationStatus ? service.attestationStatus(now()) : null;
-    return [{ environment: route, attestationId: att?.attestation?.id || att?.id || null, fingerprintHash: att?.attestation?.fingerprintHash || att?.fingerprintHash || null, status: att?.status || att?.attestation?.status || "unknown" }];
+    return [{ environment: route, attestationId: att?.latest?.id || null, fingerprintHash: att?.latest?.fingerprintHash || null, status: att?.latest?.status || "none", valid: Boolean(att?.valid),
+      canaryVersion: att?.latest?.canaryVersion || null }];
   }
 
   /** The envelope content (hashed): everything the confirmation covers. Time, nonce and ids are metadata, not content. */
@@ -221,7 +232,11 @@ export function createEnvelopes({ db, bus, clock, settings, projects, missions, 
   async function propose({ projectId, missionIds = [], level = null, constraints = {}, actor = "owner", via = "ui" }) {
     const project = projects.get(projectId);
     if (!project) throw new HubError("not_found", "Proiect necunoscut");
-    const autonomy = level && AUTONOMY_LEVELS.includes(level) ? level : autonomyOf(project.id).level;
+    // A plan never runs above the project's own level (raising it is a separate, re-authenticated decision); a caller may
+    // ask for a LOWER level for one plan (review M07: a requested level was taken as given).
+    const projectLevel = autonomyOf(project.id).level;
+    if (level && AUTONOMY_LEVELS.includes(level) && LEVEL_RANK[level] > LEVEL_RANK[projectLevel]) throw new HubError("policy", `Planul nu poate cere nivelul ${level} peste nivelul proiectului (${projectLevel}); ridică întâi autonomia proiectului`);
+    const autonomy = level && AUTONOMY_LEVELS.includes(level) ? level : projectLevel;
     let ids = [...new Set((missionIds || []).filter(Boolean))];
     if (!ids.length) {
       ids = factory.list().filter((f) => f.projectId === project.id && f.stage === "SPEC_DRAFT").map((f) => f.missionId);
@@ -259,7 +274,7 @@ export function createEnvelopes({ db, bus, clock, settings, projects, missions, 
    * The owner's one confirmation. `modality`: "click" | "keyboard" | "typed" | "voice". Voice counts only with local
    * verification evidence (speaker gate + local transcription); a provider transcript or an LLM's claim never does.
    */
-  async function confirm({ envelopeId, nonce, displayedHash, session, modality = "click", voice = null, idempotencyKey = null }) {
+  async function confirm({ envelopeId, nonce, displayedHash, session, modality = "click", utteranceId = null, idempotencyKey = null }) {
     const policy = trust.policy();
     if (!policy.active) throw new HubError("policy", "Politica voice-first nu este activă: confirmarea trece prin Aprobări, ca până acum (modul legacy)");
     const s = trust.requireSession(session, "confirmarea unei misiuni");
@@ -272,11 +287,18 @@ export function createEnvelopes({ db, bus, clock, settings, projects, missions, 
     if (new Date(env.confirmBy) <= now()) { bus.transaction(() => setStatus(env.id, "EXPIRED", { reason: "Confirmarea a venit după termen", from: ["PROPOSED"] })); throw new HubError("conflict", "Planul a expirat; cere-l din nou ca să vezi starea actuală"); }
     if (nonce !== env.nonce || displayedHash !== env.envelopeHash) throw new HubError("conflict", "Confirmarea nu corespunde planului afișat (altă versiune); reîncarcă planul");
     if (env.autonomyLevel === "OBSERVE") throw new HubError("policy", "Nivelul OBSERVE nu permite execuții; schimbă nivelul proiectului dacă vrei să pornească");
+    // The project's level may have been lowered after the plan was shown: the plan cannot run above it.
+    const projectLevel = autonomyOf(env.projectId).level;
+    if (projectLevel === "OBSERVE" || LEVEL_RANK[env.autonomyLevel] > LEVEL_RANK[projectLevel]) throw new HubError("policy", `Planul are nivelul ${env.autonomyLevel}, dar proiectul e acum la ${projectLevel}; cere planul din nou`);
     if (env.autonomyLevel === "HIGH_AUTONOMY_BOUNDED") trust.requireFresh(s, "confirmarea unui plan cu autonomie mare");
     if (!["click", "keyboard", "typed", "voice"].includes(modality)) throw new HubError("validation", "Modalitate necunoscută");
+    // M07: a spoken confirmation is the server-held utterance (local speaker check + local transcript) recorded for THIS plan in
+    // THIS session — never a client's claim. It is checked now and consumed in the same transaction that confirms the plan.
+    let spoken = null;
     if (modality === "voice") {
-      const ok = voice && voice.verifiedLocally === true && voice.speaker === "MATCH" && voice.transcriptSource === "local" && (voice.fixture ? config.testMode : true);
-      if (!ok) throw new HubError("policy", "Confirmarea vocală are nevoie de verificarea locală a vorbitorului ȘI de transcrierea locală a frazei; pe această rută lipsește, deci confirmă cu tasta sau butonul din cockpit");
+      if (!voice) throw new HubError("policy", "Confirmarea vocală nu e disponibilă pe acest server; confirmă cu tasta sau butonul din cockpit");
+      if (!utteranceId) throw new HubError("validation", "Confirmarea vocală trebuie să indice segmentul vocal înregistrat pentru plan");
+      spoken = voice.claimForConfirmation({ utteranceId, session: s, envelope: env, pendingEnvelopes: pending().map((e) => ({ id: e.id, title: e.summary?.headline || "" })) });
     }
     // Nothing may have changed since the owner saw it.
     const project = projects.get(env.projectId);
@@ -298,11 +320,13 @@ export function createEnvelopes({ db, bus, clock, settings, projects, missions, 
     if (!ready.eligible) throw new HubError("gate", `Nu pot porni: ${ready.blockers.map((b) => b.detail).slice(0, 4).join(" · ")}`, { data: { blockers: ready.blockers } });
 
     const consent = { channel: "owner_session", modality, sessionId: s.id, credential: s.credentialId.slice(0, 10), policyVersion: policy.version, envelopeHash: env.envelopeHash,
-      confirmedAt: iso(), idempotencyKey: idempotencyKey ? String(idempotencyKey).slice(0, 120) : null, voice: modality === "voice" ? { speaker: voice.speaker, transcriptSource: voice.transcriptSource, fixture: Boolean(voice.fixture) } : null };
+      confirmedAt: iso(), idempotencyKey: idempotencyKey ? String(idempotencyKey).slice(0, 120) : null, voice: spoken ? spoken.evidence : null };
     // Atomic, consumable: a second tab, a double "yes" or a reconnect finds it no longer PROPOSED (and the unique index refuses
     // a second open authority on the same project).
     try {
       const changed = bus.transaction(() => {
+        // The spoken "yes" counts once: a replay, a second tab or a reconnect finds it consumed.
+        if (spoken && spoken.consume(env.id) !== 1) throw new HubError("conflict", "Fraza vocală a fost deja folosită pentru o confirmare");
         const n = setStatus(env.id, "CONFIRMED", { reason: `Confirmat (${modality}) în sesiunea ${s.id}`, from: ["PROPOSED"], extra: { owner_session_id: s.id, consent_json: json(consent), confirmed_at: consent.confirmedAt, idempotency_key: consent.idempotencyKey, current_mission_id: env.missionIds[0] } });
         if (n) bus.append({ type: "envelope.confirmed", scopeType: "envelope", scopeId: env.id, projectId: env.projectId, source: "owner", payload: { channel: "owner_session", modality, session: s.id, hash: env.envelopeHash.slice(0, 16) } });
         return n;
@@ -313,16 +337,40 @@ export function createEnvelopes({ db, bus, clock, settings, projects, missions, 
       throw error;
     }
     env = get(env.id);
+    let prevHold = null;
     try {
       if (body.modeTransition && settings.get("mode") === "BUILD_SAFE") {
+        // Only this plan holds the LIVE_VALIDATION it enters. Plans whose hold a boot suspended stay suspended beside it: only an
+        // explicit resume of one of them makes it a holder again (M07 review round 3), and when this plan ends the suspended hold
+        // comes back as it was.
+        prevHold = settings.get("envelopeModeHold") || {};
+        const suspended = prevHold.suspendedByBoot ? prevHold : prevHold.suspended || null;
         bus.transaction(() => {
           settings.set("mode", "LIVE_VALIDATION", "owner", `Envelope ${env.id}: LIVE_VALIDATION pe durata misiunii`);
-          settings.set("envelopeModeHold", { envelopeId: env.id, since: iso() }, "owner", "Mode held by an envelope");
+          settings.set("envelopeModeHold", { envelopeId: env.id, holders: [env.id], since: iso(), ...(suspended ? { suspended } : {}) }, "owner", "Mode held by an envelope");
         });
+      } else if (settings.get("mode") === "LIVE_VALIDATION" && (settings.get("envelopeModeHold") || {}).envelopeId) {
+        // Confirmed while the plans hold LIVE_VALIDATION: it relies on that mode too, so it holds it until it closes.
+        const hold = settings.get("envelopeModeHold");
+        bus.transaction(() => settings.set("envelopeModeHold", { ...hold, holders: [...new Set([...holdersOf(hold), env.id])] }, "envelopes", `Plan ${env.id} joins the mode hold`));
       }
       await startMission(env, env.missionIds[0], s);
       bus.transaction(() => setStatus(env.id, "ACTIVE", { reason: "Prima misiune a pornit", from: ["CONFIRMED"], extra: { current_mission_id: env.missionIds[0] } }));
     } catch (error) {
+      // A plan that entered LIVE_VALIDATION and did not start gives the mode back as it was (a suspended hold stays suspended).
+      if (prevHold) {
+        const hold = settings.get("envelopeModeHold") || {};
+        const others = holdersOf(hold).filter((id) => id !== env.id && !holdersOf(hold.suspended).includes(id));
+        bus.transaction(() => {
+          if (others.length && hold.envelopeId) {
+            // Another plan joined the hold meanwhile: it keeps it; this plan only leaves.
+            settings.set("envelopeModeHold", { ...hold, envelopeId: others.includes(hold.envelopeId) ? hold.envelopeId : others[0], holders: others }, "envelopes", `Plan ${env.id} did not start: leaves the hold`);
+          } else {
+            if (settings.get("mode") === "LIVE_VALIDATION") settings.set("mode", "BUILD_SAFE", "envelopes", `Planul ${env.id} nu a pornit: înapoi la BUILD_SAFE`);
+            settings.set("envelopeModeHold", prevHold, "envelopes", "Mode hold restored (the plan did not start)");
+          }
+        });
+      }
       close(env.id, "FAILED_TO_START", `Nu a pornit: ${String(error.message).slice(0, 300)}`);
       throw new HubError(error.category || "gate", `Confirmarea a fost înregistrată, dar misiunea nu a pornit: ${error.message}. Nimic nu rulează; granturile derivate au fost revocate.`, { data: { envelopeId: env.id } });
     }
@@ -460,13 +508,65 @@ export function createEnvelopes({ db, bus, clock, settings, projects, missions, 
     return view(id);
   }
 
+  /*
+   * The mode hold (settings.envelopeModeHold). A plan confirmed in BUILD_SAFE moves the Hub to LIVE_VALIDATION; that mode then
+   * belongs to the open plans as a group (the hold names one of them) and returns to BUILD_SAFE when the LAST open plan closes,
+   * whichever it is (M07 review: with two open plans the holder could close first and the Hub stayed in LIVE_VALIDATION).
+   * - A manual mode change (UI, agent) drops the hold: the owner owns the mode again and nothing switches it back later.
+   * - A boot's reset to BUILD_SAFE only SUSPENDS it (suspendedByBoot): an explicit resume of a mission of an open, unexpired plan
+   *   may restore exactly the LIVE_VALIDATION the plans held before the restart — only for a plan that held it, never after the
+   *   owner chose a mode by hand (mode.set clears the hold in the same transaction), never under the legacy policy.
+   * - holders: the plans that entered LIVE_VALIDATION or were confirmed while the plans held it. Only they keep it alive.
+   * Every write here uses source "envelopes", which the listener below never reads as a manual change.
+   */
+  function restoreModeHold(missionId, actor = "owner") {
+    const env = envelopeOfMission(missionId);
+    if (!env || !OPEN.has(env.status) || new Date(env.expiresAt) <= now() || !trust.policy().active) return null;
+    const hold = settings.get("envelopeModeHold") || {};
+    if (settings.get("mode") === "LIVE_VALIDATION" && hold.envelopeId && holdersOf(hold.suspended).includes(env.id)) {
+      // LIVE is held by a newer plan; this plan held it before the boot and is now explicitly resumed: it holds it again too.
+      const rest = holdersOf(hold.suspended).filter((id) => id !== env.id);
+      const { suspended: _drop, ...active } = hold;
+      const next = { ...active, holders: [...new Set([...holdersOf(hold), env.id])], ...(rest.length ? { suspended: { ...hold.suspended, holders: rest, envelopeId: rest.includes(hold.suspended.envelopeId) ? hold.suspended.envelopeId : rest[0] } } : {}) };
+      bus.transaction(() => settings.set("envelopeModeHold", next, "envelopes", `Plan ${env.id} rejoins the mode hold on resume (${actor})`));
+      return { envelopeId: env.id, mode: "LIVE_VALIDATION", joined: true, previous: hold, written: next };
+    }
+    if (!hold.envelopeId || !hold.suspendedByBoot || settings.get("mode") === "LIVE_VALIDATION" || !holdersOf(hold).includes(env.id)) return null;
+    const open = openEnvelopeIds();
+    bus.transaction(() => {
+      settings.set("mode", "LIVE_VALIDATION", "envelopes", `Envelope ${env.id}: reluare (${actor}), LIVE_VALIDATION ca înainte de repornire`);
+      settings.set("envelopeModeHold", { envelopeId: env.id, holders: holdersOf(hold).filter((id) => open.includes(id)), since: iso(), restored: true, by: actor }, "envelopes", "Mode hold restored on resume");
+    });
+    return { envelopeId: env.id, mode: "LIVE_VALIDATION", previous: hold, written: settings.get("envelopeModeHold") };
+  }
+
+  /** The resume that restoreModeHold preceded was refused: back to BUILD_SAFE with the hold suspended as it was (nothing resumed). */
+  function undoRestore(restored) {
+    if (!restored) return;
+    const hold = settings.get("envelopeModeHold") || {};
+    if (JSON.stringify(hold) !== JSON.stringify(restored.written || {})) return; // something wrote the hold since: leave it
+    bus.transaction(() => {
+      if (!restored.joined && settings.get("mode") === "LIVE_VALIDATION") settings.set("mode", "BUILD_SAFE", "envelopes", "Reluarea a fost refuzată: înapoi la BUILD_SAFE");
+      settings.set("envelopeModeHold", restored.previous, "envelopes", restored.joined ? "Plan left the hold again (resume refused)" : "Mode hold suspended again (resume refused)");
+    });
+  }
+
   function releaseMode(id) {
     const hold = settings.get("envelopeModeHold") || {};
-    if (hold.envelopeId !== id) return;
-    const stillOpen = db.prepare("SELECT COUNT(*) AS n FROM mission_envelopes WHERE status IN ('CONFIRMED','ACTIVE','WAITING_OWNER')").get().n;
+    if (!hold.envelopeId) return; // the mode is not the plans' (never entered, or the owner changed it by hand)
+    const open = openEnvelopeIds();
+    const remaining = holdersOf(hold).filter((h) => open.includes(h));
+    if (remaining.length) {
+      // Another plan that holds the mode is still in force: the hold passes to it, so the last holder to close releases the mode.
+      if (!open.includes(hold.envelopeId) || remaining.length !== holdersOf(hold).length) {
+        bus.transaction(() => settings.set("envelopeModeHold", { ...hold, envelopeId: remaining.includes(hold.envelopeId) ? hold.envelopeId : remaining[0], holders: remaining, since: iso(), handedOverFrom: hold.envelopeId }, "envelopes", `Mode hold after ${id} closed`));
+      }
+      return;
+    }
+    const back = holdersOf(hold.suspended).filter((h) => open.includes(h));
     bus.transaction(() => {
-      settings.set("envelopeModeHold", {}, "envelopes", "Mode hold released");
-      if (!stillOpen && settings.get("mode") === "LIVE_VALIDATION") settings.set("mode", "BUILD_SAFE", "envelopes", `Planul ${id} s-a încheiat: revin la BUILD_SAFE`);
+      settings.set("envelopeModeHold", back.length ? { ...hold.suspended, holders: back, envelopeId: back.includes(hold.suspended.envelopeId) ? hold.suspended.envelopeId : back[0] } : {}, "envelopes", back.length ? "Mode hold back to the plans a boot suspended" : "Mode hold released");
+      if (settings.get("mode") === "LIVE_VALIDATION") settings.set("mode", "BUILD_SAFE", "envelopes", `Planul ${id} s-a încheiat: revin la BUILD_SAFE`);
     });
   }
 
@@ -529,9 +629,19 @@ export function createEnvelopes({ db, bus, clock, settings, projects, missions, 
         later(() => { for (const row of db.prepare("SELECT id FROM mission_envelopes WHERE status IN ('CONFIRMED','ACTIVE','WAITING_OWNER')").all()) close(row.id, "REVOKED", "Stop All"); });
       }
       if (event.type === "settings.changed" && event.payload?.key === "mode" && event.source !== "envelopes" && event.source !== "owner") {
-        // The owner changed the mode by hand: the envelope no longer owns it (it will not switch it back later).
+        // A boot's reset only suspends the hold (an explicit resume may restore it); any other change is the owner's: the plans no
+        // longer own the mode and nothing switches it back later. Compare-and-set: a hold written in the meantime (a restore, a
+        // new confirmation) is never erased by this deferred write.
         const hold = settings.get("envelopeModeHold") || {};
-        if (hold.envelopeId) later(() => bus.transaction(() => settings.set("envelopeModeHold", {}, "envelopes", "Mode changed by the owner")));
+        if (hold.envelopeId) {
+          const seen = JSON.stringify(hold);
+          const boot = event.source === "recovery";
+          later(() => bus.transaction(() => {
+            if (JSON.stringify(settings.get("envelopeModeHold") || {}) !== seen) return;
+            const { suspended: nested, ...top } = hold;
+            settings.set("envelopeModeHold", boot ? { ...top, holders: [...new Set([...holdersOf(top), ...holdersOf(nested)])], suspendedByBoot: true, suspendedAt: iso() } : {}, "envelopes", boot ? "Mode hold suspended by the boot" : "Mode changed by the owner");
+          }));
+        }
       }
     } catch { /* a listener never breaks the writer */ }
   });
@@ -550,6 +660,6 @@ export function createEnvelopes({ db, bus, clock, settings, projects, missions, 
       awaitingConfirmation: env.status === "PROPOSED" && new Date(env.confirmBy) > now() };
   }
 
-  return { propose, confirm, confirmDelta, revoke, view, get, forProject, openFor, pending, autonomyOf, setAutonomy, readiness, deriveGrants, assertWithin, authorityFor, tick, envelopeOfMission,
+  return { propose, confirm, confirmDelta, revoke, view, get, forProject, openFor, pending, autonomyOf, setAutonomy, readiness, deriveGrants, assertWithin, authorityFor, tick, envelopeOfMission, restoreModeHold, undoRestore,
     close: () => { stopped = true; } };
 }

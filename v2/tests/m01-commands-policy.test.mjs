@@ -92,7 +92,9 @@ test("M01-CMD-01 unknown command types and channels are refused before anything 
     assert.equal(hub.bus.lastSeq(), seq, "no event either");
     // "cli" (M05): local scripts recorded as such; only inference-free checks accept it (M05-T17).
     // "owner" (M06): the authenticated owner session (WebAuthn); the bus refuses it without a resolved session (M06-TR-04).
-    assert.deepEqual([...COMMAND_CHANNELS].sort(), ["automation", "cli", "companion", "owner", "recovery", "schedule", "test", "ui", "voice"]);
+    // "agent" (M07): a delegated engineering agent, recorded as such; only the delegated commands accept it (M07-AC-01).
+    assert.deepEqual([...COMMAND_CHANNELS].sort(), ["agent", "automation", "cli", "companion", "owner", "recovery", "schedule", "test", "ui", "voice"]);
+    await assert.rejects(hub.commands.dispatch({ type: "gate.set", payload: { action: "suspend" }, channel: "agent", delegation: "test delegation ref" }), hubError("policy", /not delegated/));
     await assert.rejects(hub.commands.dispatch({ type: "gate.set", payload: { action: "suspend" }, channel: "owner" }), hubError("authentication", /owner session/));
 
     assert.throws(() => hub.commands.register("gate.set", { execute: () => null }), /already registered/);

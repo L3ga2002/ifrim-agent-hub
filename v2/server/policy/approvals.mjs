@@ -6,7 +6,9 @@ import { json, parse } from "../storage/db.mjs";
 export const PERMISSION_TIERS = Object.freeze(["READ_ONLY", "WORKSPACE_EDIT", "DEVELOPMENT_TOOLS", "EXTERNAL_ACTIONS", "SENSITIVE_ACTIONS"]);
 
 /** Channels allowed to decide approvals. Voice and automation payloads can never approve. */
-const DECISION_CHANNELS = new Set(["ui"]);
+// "agent" (M07): an approval decided by an engineering agent on the owner's recorded delegation is stored as such (decided_by /
+// decided_via "agent", the delegation in the note); it never reaches "owner_session", which only the WebAuthn session gives.
+const DECISION_CHANNELS = new Set(["ui", "agent"]);
 /** M06: the only action kinds a confirmed Mission Authorization Envelope may decide (the exact factory scope it bound). */
 export const ENVELOPE_DECIDABLE = Object.freeze(new Set(["factory.scope"]));
 

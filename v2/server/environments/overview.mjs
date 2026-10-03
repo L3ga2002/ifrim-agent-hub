@@ -1,4 +1,4 @@
-import { ENV_POLICY_TEXT, evaluateEnvironmentRoute } from "../policy/isolation.mjs";
+import { ENV_POLICY_TEXT, evaluateEnvironmentRoute, environmentCoverage } from "../policy/isolation.mjs";
 import { CANARY_VERSION } from "./canary.mjs";
 import { ATTESTATION_MAX_AGE_DAYS, probeProblem } from "./wsl-runner.mjs";
 
@@ -7,7 +7,8 @@ import { ATTESTATION_MAX_AGE_DAYS, probeProblem } from "./wsl-runner.mjs";
  * environment → canary complete → policy approved (b) → live probe → per-project, per-stage eligibility. Separate states,
  * never one green light; nothing here starts a process (it reads what inspections, attestations and runs recorded).
  */
-const SAFE_FACTS = ["os", "kernel", "codex_version", "codex_path", "node_version", "bwrap", "tar", "workspaces", "disk_free_kb", "auth_present", "sudo", "mnt_drives", "interop_cmd"];
+const SAFE_FACTS = ["os", "kernel", "codex_version", "codex_path", "node_version", "bwrap", "tar", "workspaces", "disk_free_kb", "auth_present", "sudo", "mnt_drives", "interop_cmd",
+  "pw_version", "pw_chromium", "claude_cli", "reviewer_config", "reviewer_creds", "reviewer_settings"];
 
 export function environmentOverview(hub) {
   const { settings, projects, db, config } = hub;
@@ -26,6 +27,10 @@ export function environmentOverview(hub) {
     const liveFailed = db.prepare("SELECT COUNT(*) AS n FROM agent_runs WHERE environment = ? AND status IN ('failed','blocked')").get(id).n;
     const accountProblem = probeProblem(probe, state, now);
     const c16 = probe ? svc.c16Lines(probe) : [];
+    // M07: the reviewer's own account check through the environment (claude@wsl-runner) and where each stage can run now.
+    const reviewerProbe = svc.reviewerKey ? hub.providerState.get(svc.reviewerKey) : null;
+    const reviewerReady = svc.reviewerReadiness ? svc.reviewerReadiness(null, settings, now) : null;
+    const coverage = environmentCoverage(attestation.valid ? attestation : null);
     const ladder = [
       { step: "installed", label: "Instalat", ok: Boolean(state?.installed), detail: state ? (state.installed ? `${state.facts?.os || ""} · inspectat ${state.inspectedAt}` : state.error || "neinstalat") : "neinspectat" },
       { step: "adapter", label: "Adaptor implementat", ok: true, informational: true, detail: "cod M05 + teste locale; nu spune nimic despre mediu" },
@@ -38,7 +43,9 @@ export function environmentOverview(hub) {
     ];
     return {
       id, label: `${svc.env.distro} (WSL2)`, distro: svc.env.distro, user: svc.env.user, profiles: svc.env.profiles, simulated: svc.simulated,
-      covers: "writer, verificări, QA (preview, E2E, review și vocea rămân pe Windows)",
+      covers: `${coverage.inEnv.join(", ")}${coverage.outside.length ? ` (${coverage.outside.join(", ")} și vocea rămân pe Windows)` : " (vocea rămâne pe Windows)"}`,
+      reviewer: { ready: Boolean(reviewerReady?.ok), detail: reviewerReady?.detail || null, probe: reviewerProbe ? { ok: reviewerProbe.ok, probedAt: reviewerProbe.probedAt, version: reviewerProbe.installation?.version || null,
+        authMethod: reviewerProbe.auth?.authMethod || null, subscriptionType: reviewerProbe.auth?.subscriptionType || null, problem: probeProblem(reviewerProbe, state, now), lines: svc.reviewerLines(reviewerProbe) } : null },
       inspection: state ? { ok: state.ok, installed: state.installed, inspectedAt: state.inspectedAt, durationMs: state.durationMs, error: state.error || null,
         fingerprint: state.fingerprint || null, problems: state.problems || [], facts: Object.fromEntries(SAFE_FACTS.map((k) => [k, state.facts?.[k] ?? null])) } : null,
       account: probe ? { ok: probe.ok, probedAt: probe.probedAt, accountType: probe.auth?.accountType || null, planType: probe.auth?.planType || null,
@@ -63,8 +70,8 @@ export function environmentOverview(hub) {
   });
   return { environments, projects: projectsView, policyText: ENV_POLICY_TEXT, warmup: settings.get("environmentWarmup"),
     notes: [
-      "Mediul izolat acoperă writer-ul Codex și verificările/QA pe o copie; preview-ul, E2E, review-ul Claude și vocea rămân pe Windows.",
+      "Mediul izolat acoperă writer-ul Codex și verificările/QA pe o copie; preview-ul (C18), E2E în Chromium (C19) și review-ul Claude doar-citire (C20) intră în mediu doar cât atestarea le-a verificat; vocea rămâne pe Windows.",
       "Kernelul WSL e comun cu celelalte distribuții; administratorul Windows poate accesa mediul (\\\\wsl$, wsl -u root).",
-      "Clientul Codex din mediu are rețea spre OpenAI fără filtru de domenii; comenzile modelului nu au rețea deloc.",
+      "Clientul Codex din mediu are rețea spre OpenAI fără filtru de domenii; comenzile modelului nu au rețea deloc. Reviewer-ul Claude are rețea spre Anthropic (nefiltrată pe domenii), dar doar unelte Read/Glob/Grep pe copia doar-citire.",
     ] };
 }

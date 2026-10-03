@@ -1,4 +1,6 @@
-import { execFile, execFileSync } from "node:child_process";
+import fs from "node:fs";
+import path from "node:path";
+import { execFile, execFileSync, spawn } from "node:child_process";
 import { promisify } from "node:util";
 import { redactText } from "../security/redact.mjs";
 import { buildChildEnv } from "../policy/billing.mjs";
@@ -88,6 +90,43 @@ export async function gitListFiles(cwd, { split = false } = {}) {
   if (!tracked.ok || !others.ok) throw new Error(`git ls-files: ${tracked.error || others.error}`);
   const lists = { tracked: [...new Set(tracked.out.split("\0").filter(Boolean))], others: [...new Set(others.out.split("\0").filter(Boolean))] };
   return split ? lists : [...new Set([...lists.tracked, ...lists.others])];
+}
+
+/**
+ * Which of `paths` (project-relative, forward slashes) the project's ignore rules exclude, as git applies them on this computer:
+ * the repository's .gitignore files, .git/info/exclude and the Windows user's global excludes — the same rules the transfer
+ * into an environment uses (gitListFiles --exclude-standard), read from the project on Windows, never from a copy an agent
+ * could edit. Untracked paths only (git never reports a tracked file as ignored). Asynchronous: the Hub keeps serving while
+ * git answers. Returns { ignored: Set, error } — exit 1 means "none ignored" (no error); any other failure (a pathspec inside
+ * a submodule, a timeout) returns an empty set AND the error, so nothing is left out and the evidence says why. A folder without
+ * its own .git is never asked: git would answer with the rules of an enclosing repository.
+ */
+export function gitCheckIgnored(cwd, paths, { timeoutMs = 30000 } = {}) {
+  const list = [...new Set(paths)].filter((p) => p && !p.includes("\0"));
+  if (!list.length) return Promise.resolve({ ignored: new Set(), error: null });
+  if (!cwd || !fs.existsSync(path.join(cwd, ".git"))) return Promise.resolve({ ignored: new Set(), error: "proiectul nu are un depozit git propriu; regulile de ignorare nu au fost consultate" });
+  return new Promise((resolve) => {
+    let child;
+    try { child = spawn(GIT, [...SAFE_GIT_CONFIG, "check-ignore", "-z", "--stdin"], { cwd, windowsHide: true, env: gitEnv(), stdio: ["pipe", "pipe", "pipe"] }); }
+    catch (error) { resolve({ ignored: new Set(), error: `git check-ignore nu a pornit: ${String(error.message).slice(0, 160)}` }); return; }
+    const out = [];
+    let err = "";
+    let size = 0;
+    let settled = false;
+    const done = (value) => { if (!settled) { settled = true; clearTimeout(timer); resolve(value); } };
+    const timer = setTimeout(() => { child.kill(); done({ ignored: new Set(), error: `git check-ignore a depășit ${Math.round(timeoutMs / 1000)} s` }); }, timeoutMs);
+    timer.unref?.();
+    child.stdout.on("data", (chunk) => { size += chunk.length; if (size <= 8 * 1024 * 1024) out.push(chunk); });
+    child.stderr.on("data", (chunk) => { if (err.length < 2000) err += chunk.toString("utf8"); });
+    child.on("error", (error) => done({ ignored: new Set(), error: `git check-ignore: ${String(error.message).slice(0, 160)}` }));
+    child.on("close", (code) => {
+      if (code === 0) done({ ignored: new Set(Buffer.concat(out).toString("utf8").split("\0").filter(Boolean)), error: null });
+      else if (code === 1) done({ ignored: new Set(), error: null });
+      else done({ ignored: new Set(), error: `git check-ignore a ieșit cu ${code}: ${redactText(err.trim()).slice(0, 200)}` });
+    });
+    child.stdin.on("error", () => { /* git exited before reading everything: reported by close */ });
+    child.stdin.end(Buffer.from(`${list.join("\0")}\0`, "utf8"));
+  });
 }
 
 /** Read-only repository snapshot used by checkpoints, handoffs and backups. */

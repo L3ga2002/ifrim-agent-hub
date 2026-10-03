@@ -41,7 +41,7 @@ try {
   console.log(`FINGERPRINT-HASH before=${before.fingerprint.hash} after=${after.fingerprint?.hash}`);
   const { status, summary, stages, notRun } = attestationStatusOf({ canary: result, before, after, simulated: svc.simulated });
   console.log(`BY-ID ${Object.entries(result.byId).map(([k, v]) => `${k}=${v}`).join(" ")}`);
-  console.log(`STAGES ${stages.join(",") || "none"} (preview, E2E, review, voice: not covered)`);
+  console.log(`STAGES ${stages.join(",") || "none"} (preview C18, E2E C19, review C20 are optional coverage; voice runs on Windows by design)`);
   console.log(`SUMMARY ${status} · ${summary} · canary ${CANARY_VERSION} · ${result.lines.length} checks · ${result.failed} failed${notRun.length ? ` · not run: ${notRun.join(",")}` : ""} · ${Math.round((Date.now() - started) / 1000)} s · fictive data removed · local only, not recorded in the Hub, not PASS_LIVE`);
 } finally {
   await supervisor.stopAll();

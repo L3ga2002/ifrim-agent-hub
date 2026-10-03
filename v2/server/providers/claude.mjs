@@ -57,9 +57,29 @@ export const CLAUDE_GUARD_ENV = Object.freeze({
  */
 export const CLAUDE_DENIED_READS = Object.freeze(claudeDeniedReads(null));
 
-const READ_ONLY_TOOLS = ["Read", "Glob", "Grep"];
+export const READ_ONLY_TOOLS = Object.freeze(["Read", "Glob", "Grep"]);
 const WRITE_TOOLS = ["Read", "Glob", "Grep", "Edit", "Write", "Bash"];
 const SAFE_BASH = ["Bash(npm test)", "Bash(npm run build)", "Bash(npm run test:v2)", "Bash(git status *)", "Bash(git diff *)", "Bash(git log *)", "Bash(node --test *)"];
+/** The flags the Hub relies on, as `--help` lists them (installation check; the run plan requires --effort). */
+export const CLAUDE_KNOWN_FLAGS = Object.freeze(["--output-format", "--include-partial-messages", "--session-id", "--resume", "--permission-mode", "--tools", "--strict-mcp-config", "--effort", "--permission-prompts", "--setting-sources", "--no-chrome"]);
+
+/**
+ * The exact argv of one Hub turn of Claude Code after the binary (M07: shared by the Windows client and the reviewer inside
+ * the wsl-runner environment, so both run with the same flags; only the deny rules carry their own platform's paths).
+ */
+export function claudeTurnArgs({ access = "read-only", deniedReads, newSession, sessionId, model = "", effort = "" }) {
+  const tools = access === "workspace-write" ? WRITE_TOOLS : READ_ONLY_TOOLS;
+  return ["-p", "--output-format", "stream-json", "--verbose", "--include-partial-messages",
+    "--permission-mode", access === "workspace-write" ? "acceptEdits" : "dontAsk",
+    "--tools", tools.join(","),
+    "--strict-mcp-config", "--mcp-config", JSON.stringify({ mcpServers: {} }),
+    "--setting-sources", "user",
+    "--no-chrome", // Claude in Chrome acts in the owner's browser: never from a Hub run (computer runtime policy)
+    "--disallowedTools", ...deniedReads,
+    ...(access === "workspace-write" ? ["--allowedTools", ...SAFE_BASH] : []),
+    ...(newSession ? ["--session-id", sessionId] : ["--resume", sessionId]),
+    ...(model ? ["--model", model] : []), ...(effort ? ["--effort", effort] : [])];
+}
 
 export function resolveClaudeBinary(config) {
   if (config.providerBinaries.claude) return config.providerBinaries.claude;
@@ -116,8 +136,34 @@ export function inspectWorkspaceStartup(projectDir) {
   return found;
 }
 
-export function createClaudeAdapter({ config, supervisor, homeDir = os.homedir() }) {
+/**
+ * Where a Hub turn of Claude Code runs and with which host-specific facts (M07). The Windows launcher is the behaviour the
+ * Hub always had: the native binary, the Windows deny rules, the project's startup files and the user settings read on this
+ * machine. The wsl-runner launcher (providers/claude-wsl.mjs) runs the same argv inside the reviewer's bwrap sandbox.
+ *   resolve()                    → { executable, prefixArgs } | null
+ *   deniedReads(cwd)             → the --disallowedTools rules for this platform
+ *   startupProblem(cwd, trusted) → a refusal text when the workspace defines startup hooks/MCP, else null
+ *   fallbackModelSet()           → whether the settings the run loads define fallbackModel
+ *   spawn({ binary, args, cwd, launchVars }) → { executable, args, cwd, env } for the supervisor
+ */
+export function windowsClaudeLauncher({ config, homeDir = os.homedir() }) {
+  return {
+    environment: "windows",
+    label: "claude -p",
+    resolve: () => resolveClaudeBinary(config),
+    deniedReads: (cwd) => claudeDeniedReads(cwd, { homeDir, extra: [config.dataDir, config.backupDir] }),
+    startupProblem: (cwd, trusted) => {
+      const startup = inspectWorkspaceStartup(cwd);
+      return !trusted && startup.some((item) => item.kind !== "definitions") ? `Workspace defines startup hooks/MCP (${startup.map((s) => s.file).join(", ")}); mark the project trusted after review` : null;
+    },
+    fallbackModelSet: () => inspectClaudeConfig(homeDir).fallbackModelSet,
+    spawn: ({ binary, args, cwd }) => ({ executable: binary.executable, args: [...binary.prefixArgs, ...args], cwd, env: CLAUDE_GUARD_ENV }),
+  };
+}
+
+export function createClaudeAdapter({ config, supervisor, homeDir = os.homedir(), launcher = null }) {
   const id = "claude";
+  const host = launcher || windowsClaudeLauncher({ config, homeDir });
 
   async function run(args, timeout = 30000) {
     const binary = resolveClaudeBinary(config);
@@ -132,8 +178,7 @@ export function createClaudeAdapter({ config, supervisor, homeDir = os.homedir()
     try {
       const version = (await run(["--version"], 20000)).trim();
       const help = await run(["--help"], 20000);
-      const flags = ["--output-format", "--include-partial-messages", "--session-id", "--resume", "--permission-mode", "--tools", "--strict-mcp-config", "--effort", "--permission-prompts", "--setting-sources", "--no-chrome"]
-        .filter((flag) => help.includes(flag));
+      const flags = CLAUDE_KNOWN_FLAGS.filter((flag) => help.includes(flag));
       return { provider: id, installed: true, binary: binary.executable, source: binary.source || "configured", version, flags };
     } catch (error) {
       return { provider: id, installed: false, binary: binary.executable, reason: `--version failed: ${error.code || error.message}` };
@@ -157,38 +202,29 @@ export function createClaudeAdapter({ config, supervisor, homeDir = os.homedir()
 
   /**
    * One headless turn: `claude -p` with stream-json output, prompt on stdin, pre-assigned session id
-   * for new sessions (so a crash can be reconciled by id), `--resume` for continuation.
+   * for new sessions (so a crash can be reconciled by id), `--resume` for continuation. `launchVars` (M07): variables of
+   * the environment launcher (the run marker the reaper finds); the Windows launcher ignores them.
    */
-  function startTurn({ runId, cwd, prompt, access = "read-only", model = "", effort = "", sessionId = "", trustedWorkspace = false, onEvent }) {
-    const binary = resolveClaudeBinary(config);
+  function startTurn({ runId, cwd, prompt, access = "read-only", model = "", effort = "", sessionId = "", trustedWorkspace = false, onEvent, launchVars = {} }) {
+    const binary = host.resolve();
     const key = `run-${runId}`;
     if (!binary) return failedHandle(key, "transport", "Claude Code not installed");
-    const startup = inspectWorkspaceStartup(cwd);
-    if (!trustedWorkspace && startup.some((item) => item.kind !== "definitions")) {
-      return failedHandle(key, "policy", `Workspace defines startup hooks/MCP (${startup.map((s) => s.file).join(", ")}); mark the project trusted after review`);
-    }
+    const startupProblem = host.startupProblem(cwd, trustedWorkspace);
+    if (startupProblem) return failedHandle(key, "policy", startupProblem);
     if (model && CLAUDE_REFUSED_MODELS.test(model)) {
       return failedHandle(key, "billing", `Modelul ${model} este refuzat: ${refusedModelReason(model)}`);
     }
     // A fallbackModel in the user settings lets the CLI switch to another model by itself during the run (overload, model
     // not found): the same paid-fallback risk as the forbidden --fallback-model flag. Checked on every launch.
-    if (inspectClaudeConfig(homeDir).fallbackModelSet) {
+    if (host.fallbackModelSet()) {
       return failedHandle(key, "billing", "Setările Claude Code ale utilizatorului definesc fallbackModel: Claude ar putea comuta singur pe alt model (inclusiv Fable) în timpul execuției; oprit înainte de model. Scoate cheia fallbackModel din setări.");
     }
     const newSession = !sessionId;
     const nativeSessionId = sessionId || crypto.randomUUID();
-    const tools = access === "workspace-write" ? WRITE_TOOLS : READ_ONLY_TOOLS;
-    const args = [...binary.prefixArgs, "-p", "--output-format", "stream-json", "--verbose", "--include-partial-messages",
-      "--permission-mode", access === "workspace-write" ? "acceptEdits" : "dontAsk",
-      "--tools", tools.join(","),
-      "--strict-mcp-config", "--mcp-config", JSON.stringify({ mcpServers: {} }),
-      "--setting-sources", "user",
-      "--no-chrome", // Claude in Chrome acts in the owner's browser: never from a Hub run (computer runtime policy)
-      "--disallowedTools", ...claudeDeniedReads(cwd, { homeDir, extra: [config.dataDir, config.backupDir] }),
-      ...(access === "workspace-write" ? ["--allowedTools", ...SAFE_BASH] : []),
-      ...(newSession ? ["--session-id", nativeSessionId] : ["--resume", nativeSessionId]),
-      ...(model ? ["--model", model] : []), ...(effort ? ["--effort", effort] : [])];
-    if (args.some((arg) => CLAUDE_FORBIDDEN_FLAGS.includes(arg))) return failedHandle(key, "policy", "Forbidden Claude flag");
+    let spec;
+    try { spec = host.spawn({ binary, args: claudeTurnArgs({ access, deniedReads: host.deniedReads(cwd), newSession, sessionId: nativeSessionId, model, effort }), cwd, launchVars }); }
+    catch (error) { return failedHandle(key, error.category || "transport", String(error.message || error).slice(0, 300)); }
+    if (spec.args.some((arg) => CLAUDE_FORBIDDEN_FLAGS.includes(arg))) return failedHandle(key, "policy", "Forbidden Claude flag");
 
     let output = "";
     let usage = {};
@@ -196,8 +232,8 @@ export function createClaudeAdapter({ config, supervisor, homeDir = os.homedir()
     let billingStop = false;
     let initSeen = false;
     let initStop = null;
-    const record = supervisor.start({ key, label: "claude -p", executable: binary.executable, args, cwd,
-      env: CLAUDE_GUARD_ENV,
+    const record = supervisor.start({ key, label: host.label || "claude -p", executable: spec.executable, args: spec.args, cwd: spec.cwd,
+      env: spec.env,
       onStdoutLine: (line) => {
         let event;
         try { event = JSON.parse(line); } catch { return; }

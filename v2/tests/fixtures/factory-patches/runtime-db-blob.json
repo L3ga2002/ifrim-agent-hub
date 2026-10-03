@@ -1,0 +1,10 @@
+{
+  "summary": "Bază de test în data/ și un binar în src/.",
+  "write": {
+    "docs/runtime-note.md": "# Notă\n"
+  },
+  "writeBase64": {
+    "data/runtime.sqlite": "U1FMaXRlIGZvcm1hdCAzAAcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBw==",
+    "src/blob.bin": "AAECAwD/"
+  }
+}

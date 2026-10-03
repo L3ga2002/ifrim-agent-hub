@@ -74,3 +74,13 @@ test("M06-IN-04 references: diacritics, ambiguity → one question, departments,
   assert.equal(one("Hai să lucrăm la Nivora").args.unknownRef, "nivora");
   assert.deepEqual(matchRef("comenzi", ctx.missions, { name: (m) => m.title }).map((m) => m.id), ["m1"]);
 });
+
+test("M07-IN-12 the owner's own wording of the plan request resolves to the plan, never to opening a project named after it", () => {
+  // Found live (M07, 2026-10-02): "Arată-mi înainte să fac" was read as open_project("inainte sa fac") and the cockpit said
+  // „Nu găsesc proiectul „inainte sa fac”".
+  for (const text of ["Arată-mi înainte să fac", "Arată-mi înainte să faci", "Arata-mi inainte sa fac.", "Arată înainte de a face", "Lega, arată-mi înainte să faci"]) {
+    const s = one(text);
+    assert.equal(s.intent, "show_plan", `${text} → ${s.intent}`);
+    assert.equal(s.effect, "plan");
+  }
+});

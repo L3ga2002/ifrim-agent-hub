@@ -9,6 +9,7 @@ import path from "node:path";
 import { makeTestHub, waitFor, enrolOwner, prepareLiveWithoutGrants } from "./helpers.mjs";
 import { materializeFixture, demoSpec } from "../server/factory/fixtures.mjs";
 import { approvalHash } from "../server/policy/approvals.mjs";
+import { enrolVoice, speak, OTHER_SPEAKER } from "./voice-helpers.mjs";
 
 const dispatch = (hub, type, payload, extra = {}) => hub.commands.dispatch({ type, payload, channel: "test", actor: "test", ...extra });
 const SETTLED = ["DELIVERY_READY", "NEEDS_OWNER_DECISION", "BLOCKED", "PAUSED", "CANCELLED", "ACCEPTED", "REJECTED"];
@@ -241,18 +242,33 @@ test("M06-EN-10 OBSERVE refuses execution; raising autonomy needs a fresh sessio
   } finally { await t.cleanup(); }
 });
 
-test("M06-EN-11 voice confirmation needs local speaker verification AND local transcription; a provider transcript or no evidence is refused", async () => {
+test("M06-EN-11 voice confirmation needs the Hub's own local speaker check AND local transcript for THIS plan (M07: server-held utterance); a client's claim is refused", async () => {
   const t = await ownerHub({ level: "TRUSTED" });
   try {
+    await enrolVoice(t, t.owner);
     const { envelope } = await propose(t);
-    await assert.rejects(confirm(t, envelope, { modality: "voice" }), /transcrierea locală/);
-    await assert.rejects(confirm(t, envelope, { modality: "voice", voice: { verifiedLocally: true, speaker: "MATCH", transcriptSource: "provider" } }), /transcrierea locală/);
-    await assert.rejects(confirm(t, envelope, { modality: "voice", voice: { verifiedLocally: true, speaker: "UNCERTAIN", transcriptSource: "local" } }), /transcrierea locală/);
+    // No utterance, or a client-built "evidence" object (the M06 contract): refused before anything else.
+    await assert.rejects(confirm(t, envelope, { modality: "voice" }), /segmentul vocal/);
+    await assert.rejects(confirm(t, envelope, { modality: "voice", voice: { verifiedLocally: true, speaker: "MATCH", transcriptSource: "local" } }), /segmentul vocal|not allowed|necunoscut/i);
+    // Another voice (not transcribed at all) and a "yes" recorded for another plan: refused.
+    const other = await speak(t, t.owner, "Da, execută planul", { speaker: OTHER_SPEAKER, envelopeId: envelope.id });
+    assert.equal(other.result, "NON_MATCH"); assert.equal(other.transcript, null);
+    await assert.rejects(confirm(t, envelope, { modality: "voice", utteranceId: other.utteranceId }), /nu a fost recunoscută/);
+    const elsewhere = await speak(t, t.owner, "Da, execută planul", { envelopeId: "env_other" });
+    await assert.rejects(confirm(t, envelope, { modality: "voice", utteranceId: elsewhere.utteranceId }), /pentru planul acesta/);
+    // The owner saying "yes, but don't start": not a confirmation.
+    const notYet = await speak(t, t.owner, "Da, dar nu porni încă", { envelopeId: envelope.id });
+    await assert.rejects(confirm(t, envelope, { modality: "voice", utteranceId: notYet.utteranceId }), /nu o confirmare clară/);
     assert.equal(t.hub.envelopes.get(envelope.id).status, "PROPOSED");
-    // The fixture path exists only in test mode (no local STT is installed): reported as PASS_SIMULATED, never live.
+    // The real path: the owner's voice, the local transcript, this plan → ACTIVE; the evidence is the server's row.
+    const yes = await speak(t, t.owner, "Da, execută planul", { envelopeId: envelope.id });
+    assert.equal(yes.result, "MATCH"); assert.equal(yes.transcript, "Da, execută planul");
     t.queue("codex", "factory-write:bug-fix"); t.queue("claude", "review:pass");
-    const ok = (await confirm(t, envelope, { modality: "voice", voice: { verifiedLocally: true, speaker: "MATCH", transcriptSource: "local", fixture: true } })).result;
-    assert.equal(ok.envelope.consent.voice.fixture, true);
+    const ok = (await confirm(t, envelope, { modality: "voice", utteranceId: yes.utteranceId })).result;
+    assert.equal(ok.envelope.consent.modality, "voice");
+    assert.equal(ok.envelope.consent.voice.utteranceId, yes.utteranceId);
+    assert.equal(ok.envelope.consent.voice.transcriptSource, "local");
+    assert.equal(t.hub.db.prepare("SELECT consumed_by FROM voice_utterances WHERE id = ?").get(yes.utteranceId).consumed_by, envelope.id);
     await untilStage(t, t.mission.id, SETTLED);
   } finally { await t.cleanup(); }
 });
@@ -280,5 +296,263 @@ test("M06-EN-12 the billing guard still applies: a route that is not included in
     const out = await propose(t);
     assert.ok(out.readiness.blockers.some((b) => /billing_route/.test(b.id)), JSON.stringify(out.readiness.blockers));
     await assert.rejects(confirm(t, out.envelope), /billing_route|Nu pot porni/);
+  } finally { await t.cleanup(); }
+});
+
+// ---------- M07: the plans' mode hold across a restart, several plans and the agent channel ----------
+const agent = (t, type, payload) => t.hub.commands.dispatch({ type, payload, channel: "agent", actor: "agent", delegation: "proprietar în conversație, M07 §03" });
+const hold = (t) => t.hub.settings.get("envelopeModeHold") || {};
+const settle = () => new Promise((r) => setTimeout(r, 30));
+/** What a boot does (recovery.mjs, in a transaction): BUILD_SAFE written by "recovery"; the plans' hold is then suspended, not dropped. */
+async function simulateBoot(t) {
+  // Exactly like recoverOnBoot: the write happens only when the mode is not already BUILD_SAFE.
+  if (t.hub.settings.get("mode") !== "BUILD_SAFE") t.hub.bus.transaction(() => t.hub.settings.set("mode", "BUILD_SAFE", "recovery", "Every boot starts in BUILD_SAFE"));
+  return waitFor(() => (hold(t).suspendedByBoot ? hold(t) : null), 5000, 10);
+}
+async function pausedMission(t, { by = "agent" } = {}) {
+  const { envelope } = await propose(t);
+  t.queue("codex", "hang");
+  await confirm(t, envelope);
+  await waitFor(() => t.hub.runs.activeRuns().length > 0, 20000);
+  if (by === "agent") await agent(t, "factory.pause", { missionId: t.mission.id });
+  else await dispatch(t.hub, "factory.pause", { missionId: t.mission.id });
+  await untilStage(t, t.mission.id, ["PAUSED"]);
+  await waitFor(() => t.hub.runs.activeRuns().length === 0, 15000);
+  return envelope;
+}
+
+test("M07-EN-14 a restart only suspends the plan's LIVE_VALIDATION; an explicit resume restores exactly that, and the plan's end returns to BUILD_SAFE", async () => {
+  // Found live (M07 D6): after a Hub restart the mission's resume ran with the mode back in BUILD_SAFE and no hold; the first fix
+  // then wrote the restored mode as the agent, which the listener read as a manual change (the Hub stayed LIVE afterwards).
+  const t = await ownerHub({ level: "TRUSTED" });
+  try {
+    const envelope = await pausedMission(t);
+    const suspended = await simulateBoot(t);
+    assert.equal(suspended.envelopeId, envelope.id);
+    assert.ok(["ACTIVE", "WAITING_OWNER"].includes(t.hub.envelopes.get(envelope.id).status), "the plan itself is still in force");
+    t.queue("codex", "factory-write:bug-fix");
+    t.queue("claude", "review:pass");
+    await agent(t, "factory.resume", { missionId: t.mission.id });
+    assert.equal(t.hub.settings.get("mode"), "LIVE_VALIDATION", "the plan's LIVE_VALIDATION is back");
+    await settle();
+    assert.equal(hold(t).envelopeId, envelope.id, "and still held after the listener ran");
+    assert.equal(hold(t).restored, true);
+    const done = await untilStage(t, t.mission.id, SETTLED);
+    assert.equal(done.factory.stage, "DELIVERY_READY", done.factory.stageReason);
+    await untilEnvelope(t, envelope.id, ["COMPLETED"]);
+    await waitFor(() => (t.hub.settings.get("mode") === "BUILD_SAFE" ? true : null), 10000);
+    assert.deepEqual(hold(t), {});
+    assert.equal(t.hub.envelopes.restoreModeHold(t.mission.id, "agent"), null, "a closed plan restores nothing");
+  } finally { await t.cleanup(); }
+});
+
+test("M07-EN-15 two open plans: their LIVE_VALIDATION returns to BUILD_SAFE only when the LAST one closes, whichever closes first", async () => {
+  const t = await ownerHub({ level: "TRUSTED" });
+  try {
+    const dir2 = path.join(t.dataDir, "factory-service-request");
+    materializeFixture("service-request", dir2);
+    const p2 = (await dispatch(t.hub, "project.register_test", { path: dir2 })).result;
+    await dispatch(t.hub, "owner.autonomy.set", { projectId: p2.id, level: "TRUSTED" }, { ownerSession: t.owner.reauth() });
+    await dispatch(t.hub, "factory.prepare", { projectId: p2.id, ...demoSpec("service-request") });
+    const { envelope: e1 } = await propose(t);
+    t.queue("codex", "hang");
+    await confirm(t, e1);
+    assert.equal(t.hub.settings.get("mode"), "LIVE_VALIDATION");
+    assert.equal(hold(t).envelopeId, e1.id);
+    // The second plan is confirmed while the Hub is already LIVE: it shows no transition of its own and writes no hold.
+    const e2 = (await dispatch(t.hub, "envelope.propose", { projectId: p2.id })).result.envelope;
+    assert.equal(e2.body.modeTransition, null);
+    t.queue("codex", "hang");
+    await confirm(t, e2);
+    // A resume of the first plan's mission while LIVE is held changes nothing (no overwrite of the holder).
+    assert.equal(t.hub.envelopes.restoreModeHold(t.mission.id, "agent"), null);
+    // The holder closes first: LIVE stays (the second plan is in force) and the hold passes to it.
+    await dispatch(t.hub, "envelope.revoke", { envelopeId: e1.id });
+    await untilEnvelope(t, e1.id, ["REVOKED"]);
+    await waitFor(() => (hold(t).envelopeId === e2.id ? true : null), 5000, 10);
+    assert.equal(t.hub.settings.get("mode"), "LIVE_VALIDATION");
+    assert.equal(hold(t).handedOverFrom, e1.id);
+    // The last plan closes: nothing is open, the Hub is back in BUILD_SAFE.
+    await dispatch(t.hub, "envelope.revoke", { envelopeId: e2.id });
+    await untilEnvelope(t, e2.id, ["REVOKED"]);
+    await waitFor(() => (t.hub.settings.get("mode") === "BUILD_SAFE" ? true : null), 5000, 10);
+    assert.deepEqual(hold(t), {});
+    await dispatch(t.hub, "system.stop_all", { reason: "test" }, { channel: "owner", ownerSession: t.owner.session });
+    await waitFor(() => t.hub.runs.activeRuns().length === 0, 15000);
+  } finally { await t.cleanup(); }
+});
+
+test("M07-EN-16 a resume never restores a LIVE_VALIDATION the owner gave up by hand or under an expired plan; a stale deferred drop never erases a newer hold", async () => {
+  const t = await ownerHub({ level: "TRUSTED" });
+  try {
+    const envelope = await pausedMission(t);
+    // The owner chooses BUILD_SAFE by hand: the plan no longer owns the mode — at once, in the same transaction — and no resume
+    // brings LIVE back.
+    await dispatch(t.hub, "mode.set", { mode: "BUILD_SAFE" });
+    assert.deepEqual(hold(t), {}, "dropped synchronously with the manual change");
+    assert.equal(t.hub.envelopes.restoreModeHold(t.mission.id, "agent"), null);
+    await simulateBoot(t).catch(() => null);
+    assert.equal(hold(t).envelopeId, undefined, "a boot has no hold to suspend after the owner's choice");
+    assert.equal(t.hub.envelopes.restoreModeHold(t.mission.id, "agent"), null);
+    assert.equal(t.hub.settings.get("mode"), "BUILD_SAFE");
+
+    // A suspended hold under a plan whose time has passed (before the housekeeping tick closes it): nothing restored.
+    t.hub.bus.transaction(() => t.hub.settings.set("envelopeModeHold", { envelopeId: envelope.id, since: new Date().toISOString(), suspendedByBoot: true }, "envelopes", "test"));
+    const expiresAt = t.hub.envelopes.get(envelope.id).expiresAt;
+    t.hub.db.prepare("UPDATE mission_envelopes SET expires_at = ? WHERE id = ?").run(new Date(Date.now() - 1000).toISOString(), envelope.id);
+    assert.equal(t.hub.envelopes.restoreModeHold(t.mission.id, "agent"), null);
+    assert.equal(t.hub.settings.get("mode"), "BUILD_SAFE");
+    t.hub.db.prepare("UPDATE mission_envelopes SET expires_at = ? WHERE id = ?").run(expiresAt, envelope.id);
+    // Back to the legacy policy (the owner's fail-safe): no plan restores LIVE_VALIDATION, whatever the hold says.
+    const policy = t.hub.settings.get("ownerPolicy");
+    await dispatch(t.hub, "owner.policy.deactivate", { reason: "test" });
+    assert.equal(t.hub.envelopes.restoreModeHold(t.mission.id, "agent"), null);
+    assert.equal(t.hub.settings.get("mode"), "BUILD_SAFE");
+    t.hub.bus.transaction(() => t.hub.settings.set("ownerPolicy", policy, "test", "restore the voice-first policy for the rest of the test"));
+    assert.equal(t.hub.envelopes.restoreModeHold(t.mission.id, "agent").envelopeId, envelope.id, "in force again: restored");
+    assert.equal(t.hub.settings.get("mode"), "LIVE_VALIDATION");
+
+    // Compare-and-set: a manual change queues the drop of the hold it saw; a newer hold written before the drop runs survives it.
+    t.hub.bus.transaction(() => t.hub.settings.set("mode", "BUILD_SAFE", "user", "by hand"));
+    const newer = { envelopeId: envelope.id, since: new Date(Date.now() + 5).toISOString(), restored: true, by: "agent" };
+    t.hub.bus.transaction(() => t.hub.settings.set("envelopeModeHold", newer, "envelopes", "newer hold"));
+    await settle();
+    assert.deepEqual(hold(t), newer);
+    // That hold is not one a boot suspended: no resume restores anything from it.
+    t.hub.bus.transaction(() => t.hub.settings.set("mode", "BUILD_SAFE", "envelopes", "test"));
+    assert.equal(t.hub.envelopes.restoreModeHold(t.mission.id, "agent"), null, "only a hold a boot suspended can be restored");
+  } finally { await t.cleanup(); }
+});
+
+test("M07-EN-17 an agent resumes only inside what the owner confirmed: not the owner's pause, not a new time window, not one more attempt; a refused resume leaves no LIVE_VALIDATION behind", async () => {
+  const t = await ownerHub({ level: "TRUSTED" });
+  try {
+    await pausedMission(t, { by: "owner" });
+    await simulateBoot(t);
+    await assert.rejects(agent(t, "factory.resume", { missionId: t.mission.id }), /Pauza a fost decizia ta/);
+    assert.equal(t.hub.settings.get("mode"), "BUILD_SAFE", "the restored mode was undone");
+    assert.equal(hold(t).suspendedByBoot, true, "and the hold is suspended again, as before the refused resume");
+    assert.equal(view(t, t.mission.id).factory.stage, "PAUSED");
+    // The owner resumes (their decision); then the agent pauses; past the time limit the agent may not open a new window.
+    t.queue("codex", "hang");
+    await dispatch(t.hub, "factory.resume", { missionId: t.mission.id });
+    assert.equal(t.hub.settings.get("mode"), "LIVE_VALIDATION");
+    await waitFor(() => t.hub.runs.activeRuns().length > 0, 20000);
+    await agent(t, "factory.pause", { missionId: t.mission.id });
+    await untilStage(t, t.mission.id, ["PAUSED"]);
+    await waitFor(() => t.hub.runs.activeRuns().length === 0, 15000);
+    const deadline = t.hub.db.prepare("SELECT deadline_at FROM factory_missions WHERE mission_id = ?").get(t.mission.id).deadline_at;
+    t.hub.db.prepare("UPDATE factory_missions SET deadline_at = ? WHERE mission_id = ?").run(new Date(Date.now() - 1000).toISOString(), t.mission.id);
+    await assert.rejects(agent(t, "factory.resume", { missionId: t.mission.id }), /fereastră nouă de timp e decizia ta/);
+    assert.equal(t.hub.db.prepare("SELECT COUNT(*) AS n FROM events WHERE type = 'factory.deadline_extended' AND scope_id = ?").get(t.mission.id).n, 0);
+    t.hub.db.prepare("UPDATE factory_missions SET deadline_at = ? WHERE mission_id = ?").run(deadline, t.mission.id);
+    await dispatch(t.hub, "system.stop_all", { reason: "test" }, { channel: "owner", ownerSession: t.owner.session });
+    await waitFor(() => t.hub.runs.activeRuns().length === 0, 15000);
+  } finally { await t.cleanup(); }
+  // Exhausted attempts: a writer turn that keeps failing ends at NEEDS_OWNER_DECISION; one more attempt is the owner's call.
+  const u = await ownerHub({ level: "TRUSTED" });
+  try {
+    const { envelope } = await propose(u);
+    for (let i = 0; i < 3; i += 1) u.queue("codex", "factory-write:none");
+    await confirm(u, envelope);
+    // A failed writer turn is BLOCKED; the agent may resume it while attempts remain (inside the confirmed limit of 2).
+    assert.equal((await untilStage(u, u.mission.id, SETTLED)).factory.stage, "BLOCKED");
+    await agent(u, "factory.resume", { missionId: u.mission.id });
+    await waitFor(() => (view(u, u.mission.id).factory.stage === "BLOCKED" && u.hub.runs.activeRuns().length === 0 ? true : null), 30000);
+    // The next resume finds both attempts used: the factory stops at the owner's decision.
+    await agent(u, "factory.resume", { missionId: u.mission.id });
+    const stuck = await untilStage(u, u.mission.id, ["NEEDS_OWNER_DECISION"]);
+    assert.match(stuck.factory.stageReason, /2 încercări folosite/);
+    await assert.rejects(agent(u, "factory.resume", { missionId: u.mission.id }), /Misiunea așteaptă decizia ta \(IMPLEMENTING: 2 încercări folosite/);
+    assert.equal(u.hub.db.prepare("SELECT COUNT(*) AS n FROM events WHERE type = 'factory.extra_attempt' AND scope_id = ?").get(u.mission.id).n, 0, "no attempt was added");
+  } finally { await u.cleanup(); }
+});
+
+test("M07-EN-18 only the plans that hold LIVE_VALIDATION keep it: after the owner's manual choice, a later plan's end returns to BUILD_SAFE even with an older plan open", async () => {
+  const t = await ownerHub({ level: "TRUSTED" });
+  try {
+    const dir2 = path.join(t.dataDir, "factory-service-request");
+    materializeFixture("service-request", dir2);
+    const p2 = (await dispatch(t.hub, "project.register_test", { path: dir2 })).result;
+    await dispatch(t.hub, "owner.autonomy.set", { projectId: p2.id, level: "TRUSTED" }, { ownerSession: t.owner.reauth() });
+    await dispatch(t.hub, "factory.prepare", { projectId: p2.id, ...demoSpec("service-request") });
+    const { envelope: e1 } = await propose(t);
+    t.queue("codex", "hang");
+    await confirm(t, e1);
+    assert.deepEqual(hold(t).holders, [e1.id]);
+    // The owner takes the Hub off LIVE by hand while E1 is still open: E1 no longer holds anything.
+    await dispatch(t.hub, "mode.set", { mode: "BUILD_SAFE" });
+    assert.deepEqual(hold(t), {});
+    // A second plan enters LIVE on its own transition; it is the only holder.
+    const e2 = (await dispatch(t.hub, "envelope.propose", { projectId: p2.id })).result.envelope;
+    assert.ok(e2.body.modeTransition);
+    t.queue("codex", "hang");
+    await confirm(t, e2);
+    assert.deepEqual(hold(t).holders, [e2.id]);
+    // E2 ends: the Hub returns to BUILD_SAFE although E1 is still open (it did not hold the mode any more).
+    await dispatch(t.hub, "envelope.revoke", { envelopeId: e2.id });
+    await untilEnvelope(t, e2.id, ["REVOKED"]);
+    await waitFor(() => (t.hub.settings.get("mode") === "BUILD_SAFE" ? true : null), 5000, 10);
+    assert.deepEqual(hold(t), {});
+    assert.ok(["ACTIVE", "WAITING_OWNER", "CONFIRMED"].includes(t.hub.envelopes.get(e1.id).status), "E1 is still open");
+    await dispatch(t.hub, "system.stop_all", { reason: "test" }, { channel: "owner", ownerSession: t.owner.session });
+    await waitFor(() => t.hub.runs.activeRuns().length === 0, 15000);
+  } finally { await t.cleanup(); }
+});
+
+/** Two plans on two projects: X (the fixture's mission, paused by the agent, then a boot) and A on a second project (confirmed after the boot). */
+async function suspendedThenNewPlan(t) {
+  const dir2 = path.join(t.dataDir, "factory-service-request");
+  materializeFixture("service-request", dir2);
+  const p2 = (await dispatch(t.hub, "project.register_test", { path: dir2 })).result;
+  await dispatch(t.hub, "owner.autonomy.set", { projectId: p2.id, level: "TRUSTED" }, { ownerSession: t.owner.reauth() });
+  await dispatch(t.hub, "factory.prepare", { projectId: p2.id, ...demoSpec("service-request") });
+  const x = await pausedMission(t);
+  await simulateBoot(t);
+  assert.deepEqual([hold(t).envelopeId, hold(t).suspendedByBoot], [x.id, true]);
+  const a = (await dispatch(t.hub, "envelope.propose", { projectId: p2.id })).result.envelope;
+  t.queue("codex", "hang");
+  await confirm(t, a);
+  return { x, a };
+}
+
+test("M07-EN-19 a plan confirmed after a boot holds LIVE_VALIDATION alone; when it ends, the plans the boot suspended stay suspended (BUILD_SAFE)", async () => {
+  const t = await ownerHub({ level: "TRUSTED" });
+  try {
+    const { x, a } = await suspendedThenNewPlan(t);
+    assert.equal(t.hub.settings.get("mode"), "LIVE_VALIDATION");
+    assert.deepEqual(hold(t).holders, [a.id], "only the confirming plan holds the mode");
+    assert.deepEqual(hold(t).suspended.holders, [x.id], "the suspended plan waits beside it");
+    await dispatch(t.hub, "envelope.revoke", { envelopeId: a.id });
+    await untilEnvelope(t, a.id, ["REVOKED"]);
+    await waitFor(() => (t.hub.settings.get("mode") === "BUILD_SAFE" ? true : null), 5000, 10);
+    assert.deepEqual([hold(t).envelopeId, hold(t).suspendedByBoot, hold(t).holders], [x.id, true, [x.id]], "the boot-suspended hold is back as it was");
+    // Only an explicit resume of X restores its LIVE_VALIDATION.
+    t.queue("codex", "hang");
+    await agent(t, "factory.resume", { missionId: t.mission.id });
+    assert.equal(t.hub.settings.get("mode"), "LIVE_VALIDATION");
+    await dispatch(t.hub, "system.stop_all", { reason: "test" }, { channel: "owner", ownerSession: t.owner.session });
+    await waitFor(() => t.hub.runs.activeRuns().length === 0, 15000);
+  } finally { await t.cleanup(); }
+});
+
+test("M07-EN-20 a suspended plan resumed while a newer plan holds LIVE_VALIDATION joins the holders; the mode then lasts until the last of them ends", async () => {
+  const t = await ownerHub({ level: "TRUSTED" });
+  try {
+    const { x, a } = await suspendedThenNewPlan(t);
+    t.queue("codex", "hang");
+    await agent(t, "factory.resume", { missionId: t.mission.id });
+    assert.deepEqual([...hold(t).holders].sort(), [a.id, x.id].sort(), "X holds the mode again, beside A");
+    assert.equal(hold(t).suspended, undefined);
+    await dispatch(t.hub, "envelope.revoke", { envelopeId: a.id });
+    await untilEnvelope(t, a.id, ["REVOKED"]);
+    await waitFor(() => (hold(t).envelopeId === x.id ? true : null), 5000, 10);
+    assert.equal(t.hub.settings.get("mode"), "LIVE_VALIDATION", "X still holds it");
+    await dispatch(t.hub, "envelope.revoke", { envelopeId: x.id });
+    await untilEnvelope(t, x.id, ["REVOKED"]);
+    await waitFor(() => (t.hub.settings.get("mode") === "BUILD_SAFE" ? true : null), 5000, 10);
+    assert.deepEqual(hold(t), {});
+    await dispatch(t.hub, "system.stop_all", { reason: "test" }, { channel: "owner", ownerSession: t.owner.session });
+    await waitFor(() => t.hub.runs.activeRuns().length === 0, 15000);
   } finally { await t.cleanup(); }
 });

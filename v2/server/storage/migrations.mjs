@@ -687,4 +687,27 @@ export const MIGRATIONS = [
       `);
     },
   },
+  {
+    version: 7,
+    name: "m07-voice-utterances",
+    /**
+     * Milestone 07. One row per speech segment the owner's authenticated page sent to the Hub (the voice gate before the cloud
+     * route, a spoken confirmation, the post-enrolment check). The Hub itself decided the speaker (local model) and, for the
+     * owner's matched speech only, transcribed it locally: the row is the server-held evidence a voice confirmation must point
+     * to (a client can no longer claim "local"). The audio is never stored — only its SHA-256. A confirmation consumes its row
+     * once (consumed_at), inside the same transaction that confirms the plan.
+     */
+    up(db) {
+      db.exec(`
+        CREATE TABLE voice_utterances (
+          id TEXT PRIMARY KEY, owner_session_id TEXT NOT NULL, purpose TEXT NOT NULL, lega_session_id TEXT, envelope_id TEXT,
+          duration_ms INTEGER NOT NULL, speech_ms INTEGER NOT NULL DEFAULT 0, snr_db REAL, sample_rate INTEGER NOT NULL, audio_sha256 TEXT NOT NULL,
+          speaker_result TEXT NOT NULL, speaker_reason TEXT NOT NULL DEFAULT '', verifier TEXT NOT NULL, profile_id TEXT, profile_version INTEGER,
+          flags_json TEXT NOT NULL DEFAULT '[]', transcript TEXT, transcript_status TEXT NOT NULL DEFAULT 'none', stt_engine TEXT, stt_ms INTEGER, sv_ms INTEGER,
+          consumed_by TEXT, consumed_at TEXT, expires_at TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
+        CREATE INDEX idx_voice_utterances_session ON voice_utterances(owner_session_id, created_at);
+        CREATE INDEX idx_voice_utterances_lega ON voice_utterances(lega_session_id, created_at);
+      `);
+    },
+  },
 ];

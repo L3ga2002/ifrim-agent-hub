@@ -143,6 +143,23 @@ export function claudeDeniedReads(projectDir, { homeDir = os.homedir(), hubRoot 
 }
 
 /**
+ * Read denials for the reviewer INSIDE the wsl-runner environment (M07). The sandbox already hides the host (only the copy at
+ * /work, the client and its own config exist there); these rules keep the model's Read/Glob/Grep inside the copy: the same
+ * project-relative rules as on Windows plus their absolute /work form, every other top-level directory of the sandbox (the
+ * client's config and home, /proc, /tmp, /etc, /opt…), and secret-like names anywhere.
+ */
+export const CLAUDE_LINUX_DENIED_DIRS = Object.freeze(["rhome", "proc", "tmp", "etc", "opt", "home", "dev", "sys", "run", "var", "root", "mnt", "usr", "pw", "hub"]);
+const SECRET_LIKE = ["*.pem", "*.key", "id_rsa*", "id_ed25519*", "id_ecdsa*", ".npmrc", ".netrc", ".git-credentials", "*.tfvars", ".codex/**", ".ssh/**", ".aws/**", ".docker/**", ".gnupg/**"];
+export function claudeLinuxDeniedReads(workDir = "/work") {
+  const rules = new Set();
+  for (const p of PROTECTED_PROJECT_PATHS) { rules.add(`Read(./${p}/**)`); rules.add(`Read(/${workDir}/${p}/**)`); }
+  for (const p of [".env", ".env.*"]) { rules.add(`Read(./${p})`); rules.add(`Read(./**/${p})`); rules.add(`Read(//**/${p})`); }
+  for (const d of CLAUDE_LINUX_DENIED_DIRS) rules.add(`Read(//${d}/**)`);
+  for (const g of SECRET_LIKE) rules.add(`Read(//**/${g})`);
+  return [...rules];
+}
+
+/**
  * Gate check: can this provider/access run on this machine with a verified boundary?
  * `sandbox` is what the Codex probe read without inference (windowsSandbox/readiness + permissionProfile/list).
  * `consent` is the owner's recorded acceptance of the persistent ACEs; `fingerprint` identifies the current deny list.
@@ -215,7 +232,24 @@ export function evaluateHostIsolation({ provider, access = "read-only", project,
  * It is bound to the environment fingerprint shown when it was given: any change of distro config, kernel, Codex or profile
  * makes it invalid until a new attestation and a new approval.
  */
-export const ENV_POLICY_TEXT = "Aprob ca writer-ul Codex, verificările și QA ale proiectelor reale pe care le pun pe ruta wsl-runner să ruleze în mediul ifrim-runner (host_isolation = environment), doar pentru amprenta afișată și cât timp atestarea locală C1–C17 este validă (expiră după 14 zile; nu este o probă live). Aprobarea e valabilă pentru toate aceste proiecte până o retrag sau până se schimbă amprenta. Știu că fișierele proiectului sunt copiate în mediu și trimise modelului prin clientul Codex, a cărui rețea spre OpenAI nu e filtrată pe domenii; că nucleul WSL e comun cu celelalte distribuții și administratorul Windows poate accesa mediul; și că preview-ul, E2E, review-ul și vocea rămân pe Windows, unde R2 e deschis, deci codul proiectului rulat acolo poate citi alte proiecte.";
+// M07: the text names the stages that move into the environment only when the canary verified them (C18 preview, C19 E2E, C20
+// review). Changing it invalidates every earlier approval (b) — none was given when it changed (2026-10-02).
+export const ENV_POLICY_TEXT = "Aprob ca writer-ul Codex, verificările și QA ale proiectelor reale pe care le pun pe ruta wsl-runner să ruleze în mediul ifrim-runner (host_isolation = environment), doar pentru amprenta afișată și cât timp atestarea locală C1–C17 este validă (expiră după 14 zile; nu este o probă live). Preview-ul, E2E în browser și review-ul Claude (doar citire) rulează tot în mediu numai cât atestarea le-a verificat (C18, C19, C20); altfel rămân pe Windows, unde R2 e deschis, deci codul proiectului rulat acolo poate citi alte proiecte. Aprobarea e valabilă pentru toate aceste proiecte până o retrag sau până se schimbă amprenta. Știu că fișierele proiectului sunt copiate în mediu și trimise modelelor prin clienții Codex și Claude Code, a căror rețea spre OpenAI și Anthropic nu e filtrată pe domenii; că nucleul WSL e comun cu celelalte distribuții și administratorul Windows poate accesa mediul; și că vocea rămâne pe Windows.";
+
+/**
+ * Which factory stages the latest attestation moves into the environment (M07), in the owner's words: writer, checks and
+ * QA with C1–C17; the preview with C18, its browser E2E with C18+C19, the read-only review with C20. The rest stays on
+ * Windows. Derived from the recorded checks, never assumed.
+ */
+export function environmentCoverage(attestation) {
+  const byId = attestation?.latest?.checks?.byId || {};
+  const inEnv = ["writer", "verificări", "QA"];
+  const outside = [];
+  (byId.C18 === "PASS" ? inEnv : outside).push("preview");
+  (byId.C18 === "PASS" && byId.C19 === "PASS" ? inEnv : outside).push("E2E");
+  (byId.C20 === "PASS" ? inEnv : outside).push("review");
+  return { inEnv, outside, text: `acoperă ${inEnv.join(", ")}${outside.length ? `; ${outside.join(", ")} rămân pe Windows (R2 deschis acolo)` : "; nicio etapă cu cod de proiect nu rămâne pe Windows"}` };
+}
 
 /**
  * Host isolation through an execution environment (M05 §12). `envState` is the latest inspection, `attestation` the
@@ -228,7 +262,7 @@ export function evaluateEnvironmentRoute({ environmentId, envState, attestation,
   if (!envState.ok) return { ok: false, level: "none", detail: `ENV_BOUNDARY: inspecția raportează probleme (${(envState.problems || []).filter((p) => p.blocking).map((p) => p.detail).slice(0, 3).join("; ")})` };
   if (!attestation?.valid) return { ok: false, level: "none", detail: `ENV_NOT_ATTESTED: ${attestation?.reason || "atestare lipsă"}` };
   if (project.source === "hub-test") {
-    return { ok: true, level: "environment-test", detail: `Mediu ${environmentId} atestat (amprenta ${envState.fingerprint?.hash}); acoperă writer, verificări și QA; preview, E2E și review rămân pe Windows; proiect de test` };
+    return { ok: true, level: "environment-test", detail: `Mediu ${environmentId} atestat (amprenta ${envState.fingerprint?.hash}); ${environmentCoverage(attestation).text}; proiect de test` };
   }
   const valid = policy?.approvedAt && policy.text === ENV_POLICY_TEXT && policy.fingerprintHash && policy.fingerprintHash === envState.fingerprint?.hash;
   if (!valid) {
@@ -236,7 +270,20 @@ export function evaluateEnvironmentRoute({ environmentId, envState, attestation,
       ? `NEEDS_OWNER_APPROVAL: aprobarea (b) a fost dată pentru amprenta ${policy.fingerprintHash}; mediul are acum ${envState.fingerprint?.hash}`
       : `NEEDS_OWNER_APPROVAL: proiectele reale cer aprobarea ta (b) pentru host_isolation = environment (Sistem → Medii)` };
   }
-  return { ok: true, level: "environment", detail: `Mediu ${environmentId} (amprenta ${envState.fingerprint?.hash}, aprobat ${policy.approvedAt}) pentru writer, verificări și QA; preview, E2E și review rămân pe Windows (R2 deschis); nucleu WSL comun, acces administrativ din Windows` };
+  return { ok: true, level: "environment", detail: `Mediu ${environmentId} (amprenta ${envState.fingerprint?.hash}, aprobat ${policy.approvedAt}); ${environmentCoverage(attestation).text}; nucleu WSL comun, acces administrativ din Windows` };
+}
+
+/**
+ * Workspace isolation of the READ-ONLY reviewer inside the environment (M07, claude@wsl-runner): only read-only access, the
+ * reviewer ready in this environment (Claude Code installed, its config and login, C20 attested — reviewerReadiness), and
+ * a fresh account check through the environment on the current fingerprint. The boundary is the reviewer's bwrap sandbox
+ * (the copy read-only, no host files, no nested namespaces), not only Claude Code's tool rules.
+ */
+export function evaluateEnvironmentReviewer({ environmentId, access = "read-only", readiness, probeProblem = null, simulated = false }) {
+  if (access !== "read-only") return { ok: false, level: "none", detail: `SECURITY_BLOCKER: Claude rulează în ${environmentId} doar ca reviewer, doar în citire (cerut: ${access})` };
+  if (!readiness?.ok) return { ok: false, level: "none", detail: `SECURITY_BLOCKER: reviewer-ul din ${environmentId} nu e pregătit: ${readiness?.detail || "—"}` };
+  if (probeProblem) return { ok: false, level: "none", detail: `SECURITY_BLOCKER: ${probeProblem} (Sistem → Medii → Verifică contul prin mediu)` };
+  return { ok: true, level: "os-linux", detail: `${simulated ? "SIMULAT (fixture): " : ""}Claude Code în sandbox-ul bwrap al reviewer-ului din ${environmentId}: copia doar-citire la /work, fără fișierele host-ului, unelte Read/Glob/Grep (atestat C20)` };
 }
 
 /** Workspace isolation inside the environment: the runner profile must be reported allowed by the environment's own client. */

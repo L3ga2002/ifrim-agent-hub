@@ -1,5 +1,5 @@
 #!/bin/bash
-# ifrim-env:inspect v1 — metadata of the ifrim-runner environment for the Hub (M05 §12).
+# ifrim-env:inspect v2 — metadata of the ifrim-runner environment for the Hub (M05 §12; M07 adds the browser and the reviewer).
 # Prints KEY=VALUE lines only: versions, hashes, table NAMES and presence flags. Never a file's content or a secret value.
 set -u
 export PATH=/usr/local/bin:/usr/bin:/bin
@@ -43,9 +43,35 @@ echo "node_path=$(readlink -f "$(command -v node 2>/dev/null)" 2>/dev/null)"
 echo "npm_path=$(readlink -f "$(command -v npm 2>/dev/null)" 2>/dev/null)"
 echo "bwrap=$(bwrap --version 2>/dev/null | awk '{print $2}')"
 echo "tar=$(tar --version 2>/dev/null | head -1 | awk '{print $NF}')"
-# M06-A: what a later install would add (names/versions only): a Playwright Chromium for Linux, a Claude Code client.
-echo "pw_chromium=$(ls -1d "$HOME"/.cache/ms-playwright/chromium* 2>/dev/null | head -1 | xargs -r basename)"
-echo "claude_cli=$(command -v claude >/dev/null 2>&1 && claude --version 2>/dev/null | head -1 | awk '{print $1}')"
+# M07: the E2E browser and the reviewer client, at the FIXED paths the bwrap profiles bind (names, versions, hashes, presence
+# and modes only; nothing is executed). Both binaries are pinned by hash in the fingerprint: replacing one invalidates the
+# attestation. The reviewer's credentials file is only stat-ed, never read.
+PW=/home/runner/tools/pw/node_modules/playwright
+echo "pw_version=$(sed -n 's/^[[:space:]]*"version":[[:space:]]*"\([^"]*\)".*/\1/p' "$PW/package.json" 2>/dev/null | head -1)"
+HS=$(ls -1d "$HOME"/.cache/ms-playwright/chromium_headless_shell-* 2>/dev/null | head -1)
+echo "pw_chromium=$([ -n "$HS" ] && basename "$HS")"
+echo "pw_sha=$([ -n "$HS" ] && sha256sum "$HS/chrome-headless-shell-linux64/chrome-headless-shell" 2>/dev/null | cut -c1-16)"
+echo "pw_owner=$([ -n "$HS" ] && stat -c %U "$HS/chrome-headless-shell-linux64/chrome-headless-shell" 2>/dev/null)"
+CC=/home/runner/tools/claude/node_modules/@anthropic-ai/claude-code
+CLREAL=$(readlink -f /home/runner/tools/claude/node_modules/.bin/claude 2>/dev/null)
+echo "claude_cli=$(sed -n 's/^[[:space:]]*"version":[[:space:]]*"\([^"]*\)".*/\1/p' "$CC/package.json" 2>/dev/null | head -1)"
+echo "claude_path=$CLREAL"
+echo "claude_sha=$([ -f "$CC/bin/claude.exe" ] && sha256sum "$CC/bin/claude.exe" 2>/dev/null | cut -c1-16)"
+echo "claude_owner=$([ -f "$CC/bin/claude.exe" ] && stat -c %U "$CC/bin/claude.exe" 2>/dev/null)"
+RC=/home/runner/ifrim-reviewer/config
+if [ -d "$RC" ]; then echo "reviewer_config=present:$(stat -c %a "$RC")"; else echo "reviewer_config=absent"; fi
+if [ -f "$RC/.credentials.json" ]; then echo "reviewer_creds=present:$(stat -c %a "$RC/.credentials.json")"; else echo "reviewer_creds=absent"; fi
+# The reviewer's user settings (the only ones a Hub run loads): key NAMES that could change the billing route or the model.
+if [ -f "$RC/settings.json" ]; then
+  node -e 'let s={};try{s=JSON.parse(require("fs").readFileSync(process.argv[1],"utf8"))}catch{console.log("reviewer_settings=unreadable");process.exit(0)}
+const risky=["ANTHROPIC_API_KEY","ANTHROPIC_AUTH_TOKEN","ANTHROPIC_BASE_URL","ANTHROPIC_PROFILE","ANTHROPIC_FEDERATION_RULE_ID","ANTHROPIC_ORGANIZATION_ID","CLAUDE_CODE_USE_BEDROCK","CLAUDE_CODE_USE_VERTEX","CLAUDE_CODE_USE_FOUNDRY","AWS_BEARER_TOKEN_BEDROCK","CLAUDE_CODE_OAUTH_TOKEN","HTTP_PROXY","HTTPS_PROXY","ALL_PROXY"];
+const env=Object.keys(s.env||{}).filter((k)=>risky.includes(k.toUpperCase()));
+console.log("reviewer_settings=present");console.log("reviewer_api_key_helper="+(s.apiKeyHelper?"yes":"no"));
+console.log("reviewer_fallback="+(s.fallbackModel!==undefined&&s.fallbackModel!==null&&String(s.fallbackModel)!==""?"yes":"no"));
+console.log("reviewer_risky_env="+env.join(","));console.log("reviewer_hooks="+(s.hooks&&Object.keys(s.hooks).length?"yes":"no"))' "$RC/settings.json" 2>/dev/null
+else
+  echo "reviewer_settings=absent"
+fi
 if id -nG | tr ' ' '\n' | grep -qxE 'sudo|admin|wheel|root'; then echo "privileged_group=yes"; else echo "privileged_group=no"; fi
 if sudo -n true >/dev/null 2>&1; then echo "sudo=allowed"; else echo "sudo=refused"; fi
 echo "mnt_drives=$(ls /mnt 2>/dev/null | grep -E '^[a-z]$' | tr '\n' ',')"

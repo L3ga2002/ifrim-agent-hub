@@ -639,7 +639,7 @@ export function createFactory(deps) {
         const reason = `${dispatch.stage}: execuția ${run.status}${run.errorCategory ? ` (${run.errorCategory})` : ""}${run.errorMessage ? ` — ${run.errorMessage.slice(0, 300)}` : ""}`;
         // A refused or conflicting export from an execution environment: nothing reached the project; the owner decides
         // (the quarantined export is in the run evidence), never an automatic repair on an unknown state.
-        if (run.errorCategory === "export") return setStage(f.missionId, "NEEDS_OWNER_DECISION", { waitReason: "owner_decision", reason });
+        if (run.errorCategory === "export") return setStage(f.missionId, "NEEDS_OWNER_DECISION", { waitReason: "owner_decision", reason: `${reason}${ignoredByProjectNote(run.evidence?.environment?.export?.stats)}` });
         return setStage(f.missionId, run.status === "interrupted" ? "PAUSED" : "BLOCKED", { waitReason: run.errorCategory === "quota" ? "provider" : "owner_decision", reason });
       }
       if (dispatch.stage === "IMPLEMENTING" || dispatch.stage === "REPAIRING") return afterWriter(f.missionId, run);
@@ -651,8 +651,9 @@ export function createFactory(deps) {
   async function afterWriter(missionId, run) {
     const before = currentCs(missionId);
     const cs = recordChangeSet(missionId, run.id, run.taskId);
-    if (!cs.changes.length) return setStage(missionId, "NEEDS_OWNER_DECISION", { waitReason: "owner_decision", reason: "Writer-ul nu a modificat niciun fișier față de bază" });
-    if (before && before.sha256 === cs.sha256) return setStage(missionId, "NEEDS_OWNER_DECISION", { waitReason: "owner_decision", reason: "Remedierea nu a schimbat nimic față de change set-ul anterior (fără progres)" });
+    const leftOut = ignoredByProjectNote(run?.evidence?.environment?.export?.stats);
+    if (!cs.changes.length) return setStage(missionId, "NEEDS_OWNER_DECISION", { waitReason: "owner_decision", reason: `Writer-ul nu a modificat niciun fișier față de bază${leftOut}` });
+    if (before && before.sha256 === cs.sha256) return setStage(missionId, "NEEDS_OWNER_DECISION", { waitReason: "owner_decision", reason: `Remedierea nu a schimbat nimic față de change set-ul anterior (fără progres)${leftOut}` });
     const critical = findings(missionId, "OPEN").filter((x) => x.source === "integrity" && x.severity === "critical" && x.changeSetId === cs.id);
     if (critical.length) {
       return setStage(missionId, "NEEDS_OWNER_DECISION", { waitReason: "owner_decision",
@@ -812,8 +813,10 @@ export function createFactory(deps) {
     if (isHalted(missionId)) { await runner.stop(key).catch(() => {}); return halted(missionId); }
     db.prepare("UPDATE factory_evidence SET stale = 1 WHERE mission_id = ? AND change_set_id = ? AND stage = 'PREVIEW' AND stale = 0").run(missionId, cs.id);
     const id = newId("evd");
+    // The runner that actually served it: the Windows sandbox, or the environment's local-only profile (M07: "…@wsl-runner",
+    // so the delivery bundle does not say the preview ran on Windows when it did not).
     db.prepare(`INSERT INTO factory_evidence (id, mission_id, change_set_id, stage, kind, command, runner, isolation, status, duration_ms, output_tail, detail_json, created_at)
-      VALUES (?, ?, ?, 'PREVIEW', 'preview', ?, 'codex-sandbox', ?, ?, ?, ?, ?, ?)`).run(id, missionId, cs.id, spec.verification.preview.command, result.isolation || "", result.status,
+      VALUES (?, ?, ?, 'PREVIEW', 'preview', ?, ?, ?, ?, ?, ?, ?, ?)`).run(id, missionId, cs.id, spec.verification.preview.command, result.runner || "codex-sandbox", result.isolation || "", result.status,
       result.durationMs || 0, String(result.outputTail || "").slice(-8000), json({ url: spec.verification.preview.url, reason: result.reason, pid: result.pid || null, key: result.key || null, check: result.check || null }), now());
     if (result.status === "BLOCKED") return pauseFor(missionId, stepTask(f, "qa"), "runner", result.reason);
     if (result.status !== "PASS") {
@@ -835,6 +838,18 @@ export function createFactory(deps) {
       new Promise((_, reject) => { timer = setTimeout(() => { controller.abort(); reject(new Error(`E2E a depășit ${Math.round(deadlineMs / 1000)} s`)); }, deadlineMs); timer.unref?.(); }),
     ]).finally(() => clearTimeout(timer));
     e2eRuns.set(missionId, { controller, done: done.catch(() => {}) });
+    try { return await done; } finally { if (e2eRuns.get(missionId)?.controller === controller) e2eRuns.delete(missionId); }
+  }
+
+  /**
+   * The environment's E2E (M07: inside the preview's namespace in ifrim-runner), registered like the Windows browser so a
+   * Stop / Pause aborts it (the host closes Chromium and answers INTERRUPTED). Its wait is bounded by the runner itself.
+   */
+  async function runEnvE2EBounded(missionId, envE2E, options) {
+    const controller = new AbortController();
+    const done = Promise.resolve().then(() => envE2E({ ...options, stepTimeoutMs: E2E_STEP_TIMEOUT_MS, signal: controller.signal }))
+      .catch((error) => ({ status: "BLOCKED", steps: [], error: String(error.message || error).slice(0, 280) }));
+    e2eRuns.set(missionId, { controller, done });
     try { return await done; } finally { if (e2eRuns.get(missionId)?.controller === controller) e2eRuns.delete(missionId); }
   }
 
@@ -869,7 +884,7 @@ export function createFactory(deps) {
     for (const a of items) {
       { const stop = halted(missionId); if (stop) return stop; }
       let result;
-      if (envE2E) result = await envE2E({ key: `factory-preview-${missionId}`, url: spec.verification.preview.url, steps: a.steps }).catch((error) => ({ status: "BLOCKED", steps: [], error: String(error.message).slice(0, 280) }));
+      if (envE2E) result = await runEnvE2EBounded(missionId, envE2E, { key: `factory-preview-${missionId}`, url: spec.verification.preview.url, steps: a.steps, evidenceDir: path.join(workRoot(missionId), "e2e") });
       else if (!status.installed && !browserLaunch) result = { status: "NEEDS_INSTALL_APPROVAL", steps: [], error: "Playwright nu este instalat" };
       else {
         try { result = await runE2EBounded(missionId, { url: spec.verification.preview.url, steps: a.steps, hubRoot: config.browserRoot, evidenceDir: path.join(workRoot(missionId), "e2e"), hubPorts: hubPorts() }); }
@@ -880,9 +895,9 @@ export function createFactory(deps) {
       const expected = failed ? a.steps[failed.i - 1] : null;
       const id = newId("evd");
       db.prepare(`INSERT INTO factory_evidence (id, mission_id, change_set_id, stage, kind, command, runner, isolation, status, duration_ms, output_tail, detail_json, created_at)
-        VALUES (?, ?, ?, 'E2E', 'e2e', ?, ?, ?, ?, ?, ?, ?, ?)`).run(id, missionId, cs.id, `e2e ${a.id}`, envE2E ? "playwright@wsl-runner" : "playwright", result.isolated || "browser izolat (nerulat)", result.status, result.durationMs || 0,
+        VALUES (?, ?, ?, 'E2E', 'e2e', ?, ?, ?, ?, ?, ?, ?, ?)`).run(id, missionId, cs.id, `e2e ${a.id}`, result.runner || (envE2E ? "playwright@wsl-runner" : "playwright"), result.isolated || "browser izolat (nerulat)", result.status, result.durationMs || 0,
         failed ? `pasul ${failed.i} (${failed.kind}): ${failed.error}` : result.error || "", json({ criterion: a.id, steps: result.steps || [], screenshot: result.screenshot || null,
-          consoleErrors: (result.consoleErrors || []).length, network: result.network || null, error: result.error || null, expected }), now());
+          consoleErrors: (result.consoleErrors || []).length, network: result.network || null, error: result.error || null, expected, ...(result.sandbox ? { sandbox: result.sandbox } : {}) }), now());
       bus.emit({ type: "factory.evidence", scopeType: "mission", scopeId: missionId, source: "factory", payload: { evidenceId: id, stage: "E2E", command: `e2e ${a.id}`, status: result.status } });
       if (result.status === "BLOCKED" || result.status === "INTERRUPTED") { blocked = `${a.id}: ${result.error || "E2E întrerupt"}`; break; }
       if (result.status === "FAIL") {
@@ -1105,10 +1120,24 @@ export function createFactory(deps) {
    * Resume after PAUSED / BLOCKED / NEEDS_OWNER_DECISION: re-checks the approved scope, then continues from the last
    * recorded result. `allowExtraCycle` is the owner's explicit decision to grant one more repair cycle (beyond the limit).
    */
-  async function resume(missionId, { actor = "user", allowExtraCycle = false, proceedToQa = false, reviewerModel = "" } = {}) {
+  async function resume(missionId, { actor = "user", allowExtraCycle = false, proceedToQa = false, reviewerModel = "", byAgent = false } = {}) {
     return serial(missionId, async () => {
       const f = need(fm(missionId));
       if (!RESUMABLE.has(f.stage)) throw new HubError("conflict", `Misiunea e în ${f.stage}`);
+      // An agent on the owner's delegation (M07) resumes only inside what the owner confirmed. A plain resume by the OWNER is the
+      // owner's decision to continue — a new time window, one more attempt of an exhausted step, the end of a pause they chose —
+      // so for an agent each of these is refused before anything changes.
+      if (byAgent) {
+        if (f.stage === "PAUSED") {
+          const pausedBy = db.prepare("SELECT source FROM events WHERE type = 'factory.stage' AND scope_type = 'mission' AND scope_id = ? AND json_extract(payload_json, '$.stage') = 'PAUSED' ORDER BY seq DESC LIMIT 1").get(missionId)?.source;
+          if (pausedBy !== "agent") throw new HubError("policy", "Pauza a fost decizia ta (sau a unui alt canal); reluarea îți aparține");
+        }
+        // Every NEEDS_OWNER_DECISION is the owner's (M07 review round 2): exhausted attempts, a baseline that does not reproduce,
+        // a critical integrity finding, a refused export, the repair limit. The agent resumes only an infrastructure stop
+        // (BLOCKED) or a pause it made itself.
+        if (f.stage === "NEEDS_OWNER_DECISION") throw new HubError("policy", `Misiunea așteaptă decizia ta (${String(f.stageReason || "").slice(0, 160)}); agentul reia doar o oprire de infrastructură sau o pauză pusă de el`);
+        if (f.deadlineAt && new Date(f.deadlineAt) <= clock()) throw new HubError("policy", "Timpul misiunii s-a terminat; o fereastră nouă de timp e decizia ta");
+      }
       // The owner's choice of the reviewer's model (e.g. when the account's default is refused by the billing guard): an
       // explicit Claude model alias or id; Fable, "best" and the [1m] variants are never accepted. Validated before any change.
       const chosenReviewer = String(reviewerModel || "").trim();
@@ -1324,6 +1353,14 @@ export function createFactory(deps) {
    * and the evidence rows of this change set — never from the project's current route (it may have changed since).
    */
   const STAGE_RO = { BASELINE: "Baza", CHECKING: "Verificările", QA: "QA", PREVIEW: "Preview-ul", E2E: "E2E (Chromium)" };
+  /** "; N fișiere binare noi lăsate deoparte …" when the project's ignore rules left runtime files out of a writer's export (M07). */
+  function ignoredByProjectNote(stats) {
+    if (!stats) return "";
+    const parts = [];
+    if (stats.ignoredByProject) parts.push(`${stats.ignoredByProject} fișiere binare noi lăsate deoparte (regulile de ignorare ale proiectului; neaplicate): ${(stats.ignoredByProjectFiles || []).slice(0, 8).join(", ")}${stats.ignoredByProject > 8 ? " …" : ""}`);
+    if (stats.ignoreRulesError) parts.push(`regulile de ignorare nu au putut fi citite (${stats.ignoreRulesError}); nimic nu a fost lăsat deoparte`);
+    return parts.length ? `; ${parts.join("; ")}` : "";
+  }
   function stageEnvironmentLimitations(runRows, current) {
     const out = [];
     const writers = runRows.filter((r) => r.provider === "codex" && r.status === "completed");
@@ -1332,7 +1369,7 @@ export function createFactory(deps) {
     }
     for (const r of writers.filter((w) => (w.environment || "windows") !== "windows")) {
       const e = r.evidence?.environment || {};
-      out.push(`Writer-ul Codex (${r.id}) a rulat în mediul ${r.environment}${e.simulated ? " SIMULAT (fixture)" : ""}: amprenta ${e.fingerprintHash || "—"}, atestare ${e.attestationStatus || "—"} ${e.attestationId || ""}; exportul a fost validat (C14) și aplicat după verificarea conflictelor`);
+      out.push(`Writer-ul Codex (${r.id}) a rulat în mediul ${r.environment}${e.simulated ? " SIMULAT (fixture)" : ""}: amprenta ${e.fingerprintHash || "—"}, atestare ${e.attestationStatus || "—"} ${e.attestationId || ""}; exportul a fost validat (C14) și aplicat după verificarea conflictelor${ignoredByProjectNote(e.export?.stats)}`);
     }
     const byStage = new Map();
     for (const e of current) byStage.set(e.stage, [...(byStage.get(e.stage) || []), e]);
@@ -1342,7 +1379,13 @@ export function createFactory(deps) {
       if (elsewhere.length) out.push(`${STAGE_RO[stage] || stage}: au rulat pe Windows (${String(elsewhere[0].isolation || elsewhere[0].runner).slice(0, 160)}) — în afara graniței de mediu`);
       else if (inEnv.length) out.push(`${STAGE_RO[stage] || stage}: au rulat în wsl-runner (${String(inEnv[0].isolation).slice(0, 160)})`);
     }
-    out.push("Review-ul Claude: graniță de unealtă (Read/Glob/Grep, dontAsk), nu de sistem de operare");
+    // M07: the review is where its completed run ran: the environment's reviewer sandbox, or Windows (a tool boundary).
+    const reviews = runRows.filter((r) => r.provider === "claude" && r.status === "completed");
+    for (const r of reviews.filter((x) => (x.environment || "windows") !== "windows").slice(-1)) {
+      const e = r.evidence?.environment || {};
+      out.push(`Review-ul Claude (${r.id}) a rulat în mediul ${r.environment}${e.simulated ? " SIMULAT (fixture)" : ""}: sandbox bwrap, copia doar-citire, amprenta ${e.fingerprintHash || "—"}, atestare ${e.attestationStatus || "—"} ${e.attestationId || ""}; nimic exportat sau aplicat`);
+    }
+    if (!reviews.length || reviews.some((r) => (r.environment || "windows") === "windows")) out.push("Review-ul Claude: graniță de unealtă (Read/Glob/Grep, dontAsk), nu de sistem de operare");
     return out;
   }
 

@@ -1,0 +1,47 @@
+/* M07 — activation: the version/origin banner, the setup orchestrator and the voice confirmation. */
+
+/* Fixed above the grid so it never changes the shell's layout; it only appears when something needs attention. */
+.hub-status-banner {
+  position: fixed; top: 8px; left: 50%; transform: translateX(-50%); z-index: 80; max-width: min(760px, calc(100vw - 32px));
+  display: flex; align-items: center; gap: 10px; padding: 8px 14px; border-radius: 10px; font-size: var(--fs-s); line-height: 1.4;
+  color: var(--text); background: var(--surface-2, #1c2230); border: 1px solid var(--warn, #e9b56d); box-shadow: 0 6px 24px rgba(0, 0, 0, 0.35);
+}
+.hub-status-banner code { font-size: var(--fs-xs); }
+.hub-status-banner .btn { margin-left: 8px; }
+
+/* Setup orchestrator: an ordered list of real steps, each with its state and the one action it needs. */
+.setup-steps { list-style: none; margin: 0; padding: 0; display: grid; gap: 8px; }
+.setup-step { display: grid; grid-template-columns: 22px minmax(0, 1fr) auto; gap: 10px; align-items: start; padding: 10px 12px; border-radius: 10px;
+  border: 1px solid var(--border); background: var(--surface); }
+.setup-step.is-next { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent) inset; }
+.setup-step .step-title { font-weight: 600; }
+.setup-step .step-detail { color: var(--text-2); font-size: var(--fs-s); margin-top: 2px; overflow-wrap: anywhere; }
+.setup-step .step-state { font-size: var(--fs-xs); font-weight: 700; letter-spacing: 0.03em; white-space: nowrap; }
+.setup-step[data-status="DONE_AUTO"] .step-state, .setup-step[data-status="DONE"] .step-state { color: var(--ok, #6fcf97); }
+.setup-step[data-status="IN_PROGRESS"] .step-state { color: var(--accent); }
+.setup-step[data-status="NEEDS_OWNER"] .step-state { color: var(--warn, #e9b56d); }
+.setup-step[data-status="RECOVERABLE_ERROR"] .step-state { color: var(--danger, #eb5757); }
+.setup-step[data-status="OPTIONAL"] .step-state { color: var(--text-3, #8a93a6); }
+.setup-progress { height: 6px; border-radius: 3px; background: var(--surface-2, #1c2230); overflow: hidden; }
+.setup-progress > span { display: block; height: 100%; background: var(--accent); transition: width 0.3s ease; }
+
+/* Voice confirmation on the decision card: push-to-talk, then the locally heard sentence. */
+.voice-confirm { display: grid; gap: 6px; margin-top: 8px; }
+.voice-confirm .heard { font-size: var(--fs-s); color: var(--text-2); }
+.voice-confirm .heard b { color: var(--text); }
+.mic-level { height: 4px; border-radius: 2px; background: var(--surface-2, #1c2230); overflow: hidden; }
+.mic-level > span { display: block; height: 100%; background: var(--accent); transition: width 0.08s linear; }
+.enroll-phrase { font-size: var(--fs-l, 18px); font-weight: 600; padding: 10px 12px; border-radius: 10px; background: var(--surface-2, #1c2230); }
+
+@media (max-width: 720px) {
+  .hub-status-banner { top: auto; bottom: calc(var(--bottom-h, 56px) + 8px); }
+  .setup-step { grid-template-columns: 22px minmax(0, 1fr); }
+  .setup-step .step-action { grid-column: 2; }
+}
+@media (prefers-reduced-motion: reduce) { .setup-progress > span, .mic-level > span { transition: none; } }
+
+/* Small shared helpers for M07 screens. */
+.spin { animation: m07-spin 1s linear infinite; }
+@keyframes m07-spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) { .spin { animation: none; } }
+.stack blockquote { margin: 0; padding: 8px 12px; border-left: 3px solid var(--accent); background: var(--surface-2, #1c2230); border-radius: 0 8px 8px 0; color: var(--text); }

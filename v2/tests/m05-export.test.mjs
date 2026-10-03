@@ -7,8 +7,8 @@ import { execFileSync } from "node:child_process";
 import { PassThrough } from "node:stream";
 import { tempDir, makeProject } from "./helpers.mjs";
 import { createTarReader, tarEntry, tarEnd, writeTar, BLOCK } from "../server/environments/tar.mjs";
-import { validateExport, normalizeExportName, applyChanges, selectTransferFiles, stageExportFile, safeTarget, transferStream } from "../server/environments/workspace.mjs";
-import { gitListFiles, gitState } from "../server/tools/git.mjs";
+import { validateExport, normalizeExportName, applyChanges, selectTransferFiles, stageExportFile, safeTarget, transferStream, ignoreCandidates } from "../server/environments/workspace.mjs";
+import { gitListFiles, gitState, gitCheckIgnored } from "../server/tools/git.mjs";
 import { takeGitSnapshot } from "../server/factory/snapshot.mjs";
 
 // M05 §15–§17 (T06–T09, T19): the transfer selection, the strict tar reader, the C14 export validator and the apply step,
@@ -219,4 +219,107 @@ test("M05-EXP-07 tar round trip keeps names (spaces, diacritics, long paths) and
   const read = reader.end();
   assert.equal(read.complete, true, JSON.stringify(read.problems));
   for (const f of files) assert.equal(seen[f.name], sha(f.data), f.name);
+});
+
+/**
+ * Runs `fn` with git's per-user configuration pointed at an empty folder, so a global excludes file on the machine running the
+ * tests cannot change what the project's ignore rules leave out (the Hub's git child gets HOME/USERPROFILE from the allowlist).
+ */
+async function withIsolatedGitHome(fn) {
+  const home = scratch("git-home");
+  const saved = { HOME: process.env.HOME, USERPROFILE: process.env.USERPROFILE };
+  process.env.HOME = home;
+  process.env.USERPROFILE = home;
+  try { return await fn(); } finally { for (const [k, v] of Object.entries(saved)) { if (v === undefined) delete process.env[k]; else process.env[k] = v; } }
+}
+const SQLITE = Buffer.concat([Buffer.from("SQLite format 3\0"), crypto.randomBytes(64)]);
+
+test("M07-EXP-08 new BINARY files the project's ignore rules exclude (a test database under data/) are left out and listed; text files and every other check stay as before", async () => {
+  // Found live (M07 D6): the project's tests left data/*.sqlite in the copy and the whole export was refused as "binary".
+  await withIsolatedGitHome(async () => {
+    const project = makeProject(scratch("ignore"));
+    fs.writeFileSync(path.join(project, ".gitignore"), "data/\n*.log\n");
+    const baseline = base({ "README.md": "# Fixture project\n", "src/app.js": "export const answer = 42;\n", ".gitignore": "data/\n*.log\n" });
+    const collect = async (extra, { gitignore = "data/\n*.log\n" } = {}) => {
+      const parts = [file("./README.md", "# Fixture project\n"), file("./src/app.js", "export const answer = 43;\n"), file("./.gitignore", gitignore),
+        tarEntry({ name: "./data/persist-1.sqlite", data: SQLITE }), file("./data/notes.txt", "runtime\n"), file("./server.log", "log\n"), ...extra, tarEnd()];
+      const { read, staged } = readParts(parts, { baseline });
+      // Exactly like collectExport: the candidates are binary non-asset files only, asked of the project on Windows.
+      const candidates = ignoreCandidates({ read, baseline, staged });
+      const rules = await gitCheckIgnored(project, candidates);
+      return { v: validateExport({ read, baseline, staged, projectIgnored: rules.ignored }), candidates, rules };
+    };
+    const clean = await collect([]);
+    assert.equal(clean.v.ok, true, JSON.stringify(clean.v.refused));
+    assert.deepEqual(clean.candidates, ["data/persist-1.sqlite"], "text files are never asked: they keep their normal path");
+    assert.equal(clean.rules.error, null);
+    assert.deepEqual(clean.v.changes.map((c) => `${c.status}:${c.path}`), ["added:data/notes.txt", "added:server.log", "modified:src/app.js"], "text files in ignored folders are applied as before M07");
+    assert.equal(clean.v.stats.ignoredByProject, 1);
+    assert.deepEqual(clean.v.stats.ignoredByProjectFiles, ["data/persist-1.sqlite"]);
+
+    // Ignored by the project is not a pass for anything else: control names, secret-like files, links, assets and other binaries.
+    const hostile = await collect([file("./data/CLAUDE.md", "x\n"), file("./data/.env.local", "K=1\n"), tarEntry({ name: "./data/link", type: "2", linkname: "/etc/passwd" }),
+      tarEntry({ name: "./tool.exe", data: Buffer.from([0x4d, 0x5a, 0, 1]) }), tarEntry({ name: "./[d]ata/x.sqlite", data: SQLITE })]);
+    assert.equal(hostile.v.ok, false);
+    const why = (p) => hostile.v.refused.filter((r) => r.path === p).map((r) => r.reason).join(" | ");
+    assert.match(why("data/CLAUDE.md"), /control/);
+    assert.match(why("data/.env.local"), /protejat/);
+    assert.match(why("data/link"), /symlink/);
+    assert.match(why("tool.exe"), /binar/);
+    assert.ok(!hostile.candidates.includes("[d]ata/x.sqlite"), "a name with glob characters is never asked of git");
+    assert.match(why("[d]ata/x.sqlite"), /binar/, "so it keeps the normal refusal");
+
+    // The rules come from the project on Windows, never from the copy: a .gitignore the writer edits in the copy changes nothing.
+    const edited = await collect([tarEntry({ name: "./src/blob.bin", data: SQLITE })], { gitignore: "data/\n*.log\nsrc/\n" });
+    assert.match(edited.v.refused.map((r) => `${r.path}: ${r.reason}`).join(" "), /src\/blob\.bin: fișier binar/);
+    assert.ok(!edited.v.stats.ignoredByProjectFiles.includes("src/blob.bin"));
+  });
+});
+
+test("M07-EXP-09 the validator leaves out only what is eligible, whatever set it is given; git failures leave nothing out and are reported", async () => {
+  // A hand-made set (another caller, a future source): guarded, control, secret-like, text and baseline files are never left out.
+  const baseline = base({ "src/app.js": "a\n" });
+  const parts = [file("./src/app.js", "a\n"), file("./data/CLAUDE.md", "x\n"), file("./data/.env.local", "K=1\n"), file("./data/notes.txt", "n\n"), tarEntry({ name: "./data/x.sqlite", data: SQLITE }),
+    tarEntry({ name: "./img/logo.png", data: Buffer.from([0x89, 0x50, 0x4e, 0x47, 0, 0]) }), tarEnd()];
+  const { read, staged } = readParts(parts, { baseline });
+  const v = validateExport({ read, baseline, staged, projectIgnored: new Set(["data/CLAUDE.md", "data/.env.local", "data/notes.txt", "data/x.sqlite", "img/logo.png", "src/app.js"]) });
+  const why = (p) => v.refused.filter((r) => r.path === p).map((r) => r.reason).join(" | ");
+  assert.match(why("data/CLAUDE.md"), /control/);
+  assert.match(why("data/.env.local"), /protejat/);
+  assert.deepEqual(v.stats.ignoredByProjectFiles, ["data/x.sqlite"]);
+  assert.deepEqual(v.changes.map((c) => `${c.status}:${c.path}`).sort(), ["added:data/notes.txt", "added:img/logo.png"], "text and asset files take the normal path");
+
+  // Binary files that were SENT IN (baseline) are never left out — a left-out baseline file would read as a deletion — and binary
+  // control, secret-like or shell-active names are refused, not left out, whatever the set says (M07 review round 2).
+  const SQL = Buffer.concat([Buffer.from("SQLite format 3\0"), Buffer.alloc(32, 1)]);
+  const binBase = { "src/app.js": { sha256: sha(Buffer.from("a\n")), size: 2, mode: 0o644 }, "data/seed.sqlite": { sha256: sha(SQL), size: SQL.length, mode: 0o644 }, "data/kept.sqlite": { sha256: sha(SQL), size: SQL.length, mode: 0o644 } };
+  const changedSql = Buffer.concat([SQL, Buffer.from([9, 9])]);
+  const b = readParts([file("./src/app.js", "a\n"), tarEntry({ name: "./data/seed.sqlite", data: changedSql }), tarEntry({ name: "./data/kept.sqlite", data: SQL }),
+    tarEntry({ name: "./data/.env.local", data: SQL }), tarEntry({ name: "./data/server.key", data: SQL }), tarEntry({ name: "./data/desktop.ini", data: SQL }), tarEntry({ name: "./data/x.lnk", data: SQL }), tarEnd()], { baseline: binBase });
+  const bv = validateExport({ read: b.read, baseline: binBase, staged: b.staged, projectIgnored: new Set(["data/seed.sqlite", "data/kept.sqlite", "data/.env.local", "data/server.key", "data/desktop.ini", "data/x.lnk"]) });
+  const bwhy = (p) => bv.refused.filter((r) => r.path === p).map((r) => r.reason).join(" | ");
+  assert.equal(bv.stats.ignoredByProject, 0, "nothing of these is left out");
+  assert.match(bwhy("data/seed.sqlite"), /binar/, "a changed sent-in binary keeps the binary refusal");
+  assert.ok(!bv.changes.some((c) => c.status === "deleted"), "no left-out file ever reads as a deletion");
+  assert.ok(!bv.changes.some((c) => c.path === "data/kept.sqlite"), "an unchanged sent-in binary is no change");
+  for (const p of ["data/.env.local", "data/server.key", "data/desktop.ini", "data/x.lnk"]) assert.ok(bwhy(p), `${p} refused`);
+
+  // A pathspec git refuses for the whole batch (a file inside a registered submodule): nothing is left out, and the error is named.
+  await withIsolatedGitHome(async () => {
+    const project = makeProject(scratch("submodule"));
+    fs.writeFileSync(path.join(project, ".gitignore"), "data/\n");
+    execFileSync("git", ["-C", project, "update-index", "--add", "--cacheinfo", `160000,${"a".repeat(40)},sub`], { stdio: "pipe" });
+    const r = await gitCheckIgnored(project, ["sub/new.bin", "data/x.sqlite"]);
+    assert.equal(r.ignored.size, 0);
+    assert.match(String(r.error), /check-ignore a ieșit cu 128/);
+    const ok = await gitCheckIgnored(project, ["data/x.sqlite"]);
+    assert.deepEqual([...ok.ignored], ["data/x.sqlite"]);
+    assert.equal(ok.error, null);
+    // Not a repository root (a folder inside another repository): never asked, nothing ignored, and the evidence says why.
+    const plain = scratch("plain");
+    const noRepo = await gitCheckIgnored(plain, ["data/x.sqlite"]);
+    assert.equal(noRepo.ignored.size, 0);
+    assert.match(String(noRepo.error), /nu are un depozit git propriu/);
+    assert.deepEqual(await gitCheckIgnored(plain, []), { ignored: new Set(), error: null }, "no candidate, nothing to say");
+  });
 });

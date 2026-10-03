@@ -22,8 +22,12 @@ import { readEcosystemConfig } from "../domain/surfaces.mjs";
 import { buildBriefing, briefingMarkdown } from "../domain/briefing.mjs";
 import { planImport, readLegacyTable } from "../storage/v1-import.mjs";
 import { gitState } from "../tools/git.mjs";
-import { HUB_VERSION } from "../config.mjs";
+import { HUB_VERSION, API_CONTRACT } from "../config.mjs";
 import { registerOwnerRoutes } from "../owner/owner-routes.mjs";
+import { COMMAND_CHANNELS, AGENT_COMMANDS, decodeDelegation, checkDelegation } from "../runtime/commands.mjs";
+
+/** The channel a request declares: a local script ("cli"), a delegated agent ("agent", M07) or the owner's UI (default). */
+export const requestChannel = (req) => { const c = String(req.headers["x-hub-channel"] || "").toLowerCase(); return c === "cli" || c === "agent" ? c : "ui"; };
 
 const execFileAsync = promisify(execFile);
 const redactMessage = (m) => ({ ...m, content: redactText(m.content) });
@@ -53,8 +57,11 @@ export function registerRoutes(router, hub, { token }) {
   async function dispatch(req, type, payload, { created = false } = {}) {
     // A local script says so (X-Hub-Channel: cli): its command is recorded as "cli", and only commands that allow that channel
     // (inference-free checks) accept it. Without the header the request is the owner's UI, as before.
-    const viaCli = String(req.headers["x-hub-channel"] || "").toLowerCase() === "cli";
-    const result = await commands.dispatch({ type, payload, actor: viaCli ? "cli" : "user", channel: viaCli ? "cli" : "ui", idempotencyKey: req.headers["idempotency-key"] || null });
+    // M07: an agent acting on a delegation from the owner's conversation says so (X-Hub-Channel: agent + X-Hub-Delegation); it is
+    // recorded as "agent" with that reference, and only the delegated commands accept it.
+    const channel = requestChannel(req);
+    const result = await commands.dispatch({ type, payload, actor: channel === "cli" ? "cli" : channel === "agent" ? "agent" : "user", channel,
+      delegation: channel === "agent" ? decodeDelegation(req.headers["x-hub-delegation"]) : null, idempotencyKey: req.headers["idempotency-key"] || null });
     if (result.approvalRequired) return { __status: 202, body: { approvalRequired: true, approval: result.approval, commandId: result.command.id } };
     return created ? { __status: 201, body: result.result } : result.result;
   }
@@ -63,7 +70,7 @@ export function registerRoutes(router, hub, { token }) {
   registerOwnerRoutes(router, hub);
 
   // ---------- session, health, state ----------
-  get("/api/health", () => ({ ok: true, version: HUB_VERSION, bootId: hub.bootId, mode: settings.get("mode"), gate: settings.get("executionGate").status, time: clock().toISOString(), simulation: Boolean(config.simulation) }));
+  get("/api/health", () => ({ ok: true, version: HUB_VERSION, apiContract: API_CONTRACT, canonicalOrigin: config.canonicalOrigin, bootId: hub.bootId, mode: settings.get("mode"), gate: settings.get("executionGate").status, time: clock().toISOString(), simulation: Boolean(config.simulation) }));
 
   // ---------- simulator (only inside a simulation process; the real Hub answers 404) ----------
   get("/api/sim", () => {
@@ -77,7 +84,7 @@ export function registerRoutes(router, hub, { token }) {
   get("/api/session", ({ req }) => {
     const site = req.headers["sec-fetch-site"];
     if (site && !["same-origin", "same-site", "none"].includes(site)) throw new HubError("policy", "Cross-site session request refused");
-    return { token, bootId: hub.bootId, version: HUB_VERSION };
+    return { token, bootId: hub.bootId, version: HUB_VERSION, apiContract: API_CONTRACT, canonicalOrigin: config.canonicalOrigin };
   });
 
   get("/api/state", async () => {
@@ -166,7 +173,7 @@ export function registerRoutes(router, hub, { token }) {
         if (batch.length < 500) return;
       }
     };
-    write(`retry: 2000\nevent: hello\ndata: ${JSON.stringify({ lastSeq: bus.lastSeq(), bootId: hub.bootId })}\n\n`);
+    write(`retry: 2000\nevent: hello\ndata: ${JSON.stringify({ lastSeq: bus.lastSeq(), bootId: hub.bootId, version: HUB_VERSION, apiContract: API_CONTRACT })}\n\n`);
     flushPersisted();
     const offBus = bus.subscribe((event) => { if (event.seq > lastSent) flushPersisted(); });
     const offLive = hub.live.subscribe((event) => write(`event: live\ndata: ${JSON.stringify(event)}\n\n`));
@@ -177,14 +184,28 @@ export function registerRoutes(router, hub, { token }) {
 
   // ---------- commands (generic) ----------
   get("/api/commands", ({ query }) => ({ commands: commands.list({ limit: Number(query.limit) || 100, type: query.type || null, status: query.status || null }) }));
-  get("/api/commands/catalog", () => ({ commands: commands.catalog(), channels: ["ui", "voice", "automation", "schedule", "companion"], scheduleCommands: [...SCHEDULE_COMMANDS] }));
+  get("/api/commands/catalog", () => ({ commands: commands.catalog(), channels: [...COMMAND_CHANNELS], agentCommands: [...AGENT_COMMANDS], scheduleCommands: [...SCHEDULE_COMMANDS] }));
   post("/api/commands", async ({ req, body }) => {
     const input = validate(body, { type: { required: true, max: 80 }, payload: { type: "object", default: {} }, intentText: { max: 2000 } });
     if (!commands.has(input.type)) throw new HubError("validation", `Unknown command ${input.type}`);
-    const result = await commands.dispatch({ type: input.type, payload: input.payload, intentText: input.intentText || "", actor: "user", channel: "ui", idempotencyKey: req.headers["idempotency-key"] || null });
+    // The declared channel applies here too (an agent's or a script's call is never recorded as the owner's UI).
+    const channel = requestChannel(req);
+    const result = await commands.dispatch({ type: input.type, payload: input.payload, intentText: input.intentText || "", actor: channel === "ui" ? "user" : channel, channel,
+      delegation: channel === "agent" ? decodeDelegation(req.headers["x-hub-delegation"]) : null, idempotencyKey: req.headers["idempotency-key"] || null });
     return result.approvalRequired ? { __status: 202, body: result } : result;
   });
-  post("/api/commands/:id/execute", async ({ params }) => commands.executeApproved(params.id, "user"));
+  post("/api/commands/:id/execute", async ({ req, params }) => {
+    const channel = requestChannel(req);
+    if (channel === "cli") throw new HubError("policy", "Comenzile aprobate nu se execută de pe canalul cli");
+    // An agent executes only a delegated command type, with its delegation reference (recorded on the executed event).
+    const delegation = channel === "agent" ? checkDelegation(decodeDelegation(req.headers["x-hub-delegation"])) : null;
+    if (channel === "agent") {
+      const command = commands.get(params.id);
+      if (!command) throw new HubError("not_found", "Command not found");
+      if (!AGENT_COMMANDS.has(command.type)) throw new HubError("policy", `Command ${command.type} cannot be executed through agent (not delegated)`);
+    }
+    return commands.executeApproved(params.id, channel === "agent" ? "agent" : "user", { delegation });
+  });
 
   // ---------- settings, mode, gate, stop ----------
   get("/api/settings", () => ({ settings: settings.all(), billingPolicy: BILLING_POLICY, attestationText: ATTESTATION_TEXT, environment: scanEnvironment() }));

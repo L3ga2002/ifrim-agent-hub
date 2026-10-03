@@ -218,6 +218,14 @@ async function factoryWrite(msg, turnId, name) {
     fs.writeFileSync(abs, text);
     changed.push(rel);
   }
+  // Binary files (a test database the project's tests leave behind, M07): base64 in the patch.
+  for (const [rel, b64] of Object.entries(patch.writeBase64 || {})) {
+    const abs = inside(rel);
+    if (!abs) continue;
+    fs.mkdirSync(path.dirname(abs), { recursive: true });
+    fs.writeFileSync(abs, Buffer.from(b64, "base64"));
+    changed.push(rel);
+  }
   for (const rel of patch.delete || []) { const abs = inside(rel); if (abs) { fs.rmSync(abs, { force: true }); changed.push(rel); } }
   send({ method: "item/started", params: { threadId, turnId, item: { type: "fileChange", id: "f1", changes: changed.map((p) => ({ path: p })), status: "inProgress" } } });
   send({ method: "item/completed", params: { threadId, turnId, item: { type: "fileChange", id: "f1", changes: changed.map((p) => ({ path: p })), status: "completed" } } });

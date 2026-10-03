@@ -74,6 +74,11 @@ export function createRunManager(deps) {
     if (!providers[provider]) throw new HubError("validation", `Unknown provider ${provider}`);
     const conversation = conversations.get(conversationId);
     if (!conversation) throw new HubError("not_found", "Conversation not found");
+    if (taskId) {
+      const taskProject = db.prepare("SELECT project_id FROM tasks WHERE id = ?").get(String(taskId))?.project_id;
+      if (!taskProject) throw new HubError("not_found", "Task not found");
+      if (taskProject !== conversation.projectId) throw new HubError("validation", "Sarcina aparține altui proiect decât conversația");
+    }
     const project = projects.get(conversation.projectId);
     // M05: the project route decides the adapter (Windows client or an execution environment); the gate checks the same route.
     const environment = routeOf(project?.id, provider);
@@ -164,7 +169,7 @@ export function createRunManager(deps) {
             grantId: grant?.id || null, codeVersion: git.head } });
       });
 
-      const prompt = buildTurnPrompt({ db, conversations, conversation, project, git, provider, runId, environment });
+      const prompt = buildTurnPrompt({ db, conversations, conversation, project, git, provider, runId, environment, access });
       let content = "";
       let lastPersist = 0;
       const handle = adapter.startTurn({
