@@ -144,4 +144,18 @@ Pe codul final (2026-10-03):
 
 ## Commit și push
 
-⟨GITREC⟩
+- **M06** era deja în commit-ul `66487b9`, pe `origin/v2-milestone-01`.
+- **Commit-ul M07** e `09f50b4` („M07: activation, local voice, agent channel and live validation (2.8.0-m07)”), pe `v2-milestone-01`, peste `66487b9`.
+  - 99 de fișiere: codul, testele, scripturile de pornire și documentele M07.
+  - Fără binare, modele, audio, embeddinguri, baze private sau backupuri. Am scanat caracterele de control și tiparele de secrete; singura potrivire e o cheie falsă de test, existentă deja.
+- **Commit-ul de documentare** care conține acest rând urmează imediat după `09f50b4`.
+- **Push: BLOCAT** de stratul de permisiuni al sesiunii (comanda `git push` a fost refuzată). Conform §26, nu am încercat alt canal.
+- **`main`** a fost avansat **local**, prin fast-forward, de la `895c215` la vârful ramurii `v2-milestone-01`. Condițiile verificate înainte:
+  - testele sunt verzi;
+  - repo-ul e privat;
+  - nu există workflows, webhooks, deployments sau environments pe GitHub (verificat prin `gh api`), deci un fast-forward nu declanșează niciun efect extern.
+- **De rulat de tine**, ca să publici ambele ramuri:
+
+  ```
+  git push origin v2-milestone-01 main
+  ```

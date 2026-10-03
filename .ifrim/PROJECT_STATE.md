@@ -2,7 +2,7 @@
 
 ## 2026-10-03 — M07: activation, local voice, live validation (current; read `M07_ACTIVATION_REPORT.md` first)
 
-- **Code `2.8.0-m07`, API contract 7:** committed on `v2-milestone-01` right after the M06 commit `66487b9` (see `git log`; push state: `git status`).
+- **Code `2.8.0-m07`, API contract 7:** committed as `09f50b4` (plus a docs commit) on `v2-milestone-01`, right after the M06 commit `66487b9`. Local `main` is fast-forwarded to it. The push was refused by the session's permission layer, so the owner runs `git push origin v2-milestone-01 main` (no workflows, hooks or deployments on the private repo).
 - **M07 docs:** `M07_ACTIVATION_REPORT.md`, `M07_LIVE_VALIDATION_RESULTS.md`, `M07_INSTALL_MANIFEST.md`, `M07_SECURITY_READINESS.md`, `M07_USER_EXPERIENCE.md`.
 - **Live Hub:**
   - runs `2.8.0-m07` on `http://localhost:8011`, the canonical origin (`127.0.0.1` document navigations get a 307);
