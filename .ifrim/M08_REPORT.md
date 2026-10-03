@@ -94,9 +94,19 @@ Pe lângă cele zece:
 - **V1, OpenClaw, WSL:** nu am atins V1, OpenClaw, taskurile programate sau WSL.
 - **Git:** nu am făcut commit sau push. Mesajul de commit e pregătit în `.ifrim/M08_COMMIT_MESSAGE.txt`.
 
-## 6. Trecerea Hub-ului live pe M08 (când decizi)
+## 6. Trecerea Hub-ului live pe M08
 
-Rulează din rădăcina Hub-ului, cu Hub-ul fără execuții active:
+**Făcută pe 2026-10-03, 16:26 UTC, de Claude, la cererea ta („fă tu”).** Hub-ul rulează `2.9.0-m08`, contract 8, BUILD_SAFE, cu migrația 8 aplicată, 0 granturi și 0 rulări. Pachetele D6 și Demo B au rămas READY_FOR_OWNER_ACCEPTANCE. Ordinea a fost:
+
+1. oprire, fără execuții active;
+2. A1, mutarea datelor în `C:\Users\mihai\IfrimHub\hub-data`, cu integritate ok și totul verificat cu sha;
+3. A2, ACL-ul profilului vocal, cu `-Apply` și `-Verify`;
+4. build-ul UI și dry-run-ul migrației pe baza mutată;
+5. pornirea.
+
+Detaliile sunt în `OPUS_HANDOFF.md`. Copiile vechi și cele din OneDrive nu au fost șterse (A3).
+
+Pașii folosiți, pentru o repetare:
 
 1. `node v2/scripts/migration-dry-run.mjs` — pe o copie a bazei: schema 7 → 8, `m08Complete: true`, integritate ok, număr de rânduri neschimbat.
 2. `node v2/scripts/stop.mjs`
@@ -110,10 +120,10 @@ Dacă reconstruiești UI-ul înainte de oprire, pagina deschisă primește 409 U
 
 | Nivel | Stare |
 |---|---|
-| BUILD_READY | **DA**: cod, migrație, UI construit (într-un `dist` separat), teste. |
+| BUILD_READY | **DA**: cod, migrație, UI construit, teste; rulează live din 2026-10-03. |
 | SIMULATED_INTEGRATION_VERIFIED | **DA**: autopilot cap-coadă, fereastra vocală, telefonul și pachetele, cu provideri fixture și date sintetice. |
-| PRIVACY_READINESS_VERIFIED | **PREGĂTIT, neexecutat**: scripturile sunt verificate pe date sintetice; execuția reală cere pachetul A. |
-| VOICE_UX_VERIFIED | **NU (live)**: verificat doar cu voce sintetică. Se verifică după trecerea pe M08, cu vocea ta. |
+| PRIVACY_READINESS_VERIFIED | **EXECUTAT local** (2026-10-03): datele V2 sunt în afara OneDrive (A1) și profilul vocal e restrâns la contul tău și SYSTEM (A2). Copiile deja sincronizate în cloud rămân (A3). |
+| VOICE_UX_VERIFIED | **NU (live)**: verificat doar cu voce sintetică. Hub-ul rulează M08; urmează verificarea cu vocea ta, după reconfirmarea izolării (R3). |
 | LIVE_PROJECT_PILOT_VERIFIED | **NU**: pilotul ProDelivery e pregătit (pachetul B), blocat până la A și la autorizarea ta. |
 | CROSS_DEVICE_VERIFIED | **BLOCKED**: lipsesc un telefon real și o conexiune autorizată (Hub-ul ascultă doar pe 127.0.0.1). |
 | OWNER_ACCEPTED | **în așteptare**. |

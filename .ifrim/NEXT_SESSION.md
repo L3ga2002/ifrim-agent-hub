@@ -2,16 +2,15 @@
 
 ## 2026-10-03 — M08: project autopilot & company intelligence (current; read `M08_REPORT.md` first)
 
-- **Code `2.9.0-m08`, API contract 8, migration 8** (13 tables). **Uncommitted** on `v2-milestone-01` over `17921ac` (origin and local `main` are at `17921ac`). The prepared commit message is `.ifrim/M08_COMMIT_MESSAGE.txt`. Commit/push only with the owner's explicit approval.
-- **The live Hub still runs `2.8.0-m07` (contract 7)** from the same source tree, BUILD_SAFE, untouched:
-  - it was not restarted and its DB was not migrated;
-  - `v2/web/dist` was NOT rebuilt (the live UI is the contract-7 build);
-  - the M08 UI was built into `.ifrim/tmp/m08-web-dist` and served to test hubs through `HUB_V2_WEB_DIST`.
-- **Upgrade (owner)** — `M08_REPORT.md` §6:
-  1. `node v2/scripts/migration-dry-run.mjs` (expect 7 → 8, `m08Complete: true`);
-  2. `node v2/scripts/stop.mjs`;
-  3. `npm run build:v2`;
-  4. `v2\scripts\start-detached.ps1`.
+- **Code `2.9.0-m08`, API contract 8, migration 8** (13 tables). **Committed as `8b277c5`** on `v2-milestone-01` over `17921ac` (2026-10-03, at the owner's request "fă tu"), plus a docs commit after the live upgrade. **The push was refused by the session's permission layer** (not retried through another channel): the owner runs `git push origin v2-milestone-01`. Origin and local `main` are still at `17921ac`.
+- **The live Hub runs `2.9.0-m08` (contract 8)** since 2026-10-03 16:26 UTC (pid 8104, BUILD_SAFE, migration 8 applied, 0 grants, 0 runs). Upgrade done by Claude at the owner's request, in this order:
+  1. `node v2/scripts/stop.mjs` (0 active grants/runs/supervised processes before);
+  2. **A1 executed:** `relocate-data.mjs --apply --to C:\Users\mihai\IfrimHub\hub-data` — integrity ok, 100 tables, 5,935 rows, sha256 `bb0ee89f…0153`, 120 backup files (186 MB) + 175 work files sha-verified, 34 stored paths rewritten; new root ACL = owner + SYSTEM; `V2_MOVED.json` in the old `.ifrim/private`; pointer `.ifrim/data-location.json` (git-ignored);
+  3. **A2 executed:** `voice-acl.ps1 -Apply` then `-Verify` on `C:\Users\mihai\IfrimHub\voice\profiles` — only SYSTEM + the owner, 0 inherited, no wide groups (`CodexSandboxUsers` RX removed), no DENY; backup `profiles.acl-backup.txt`; rollback `-Rollback`;
+  4. `npm run build:v2` (the M08 UI is now `v2/web/dist`); `migration-dry-run.mjs` on the moved DB: 7 → 8, `m08Complete`, integrity ok, rows unchanged;
+  5. `v2\scripts\start-detached.ps1`.
+- **A3:** nothing to execute; the old local copies and the OneDrive cloud copies were NOT deleted. The owner still records the package A decision in the UI (Pilot → Decizii, Windows Hello); A1/A2 show as executed from reality.
+- **Owner's next steps:** Ctrl+F5 on `#/lega`; unlock the session; **re-consent to workspace isolation (R3)** — the Codex deny list now contains the new data paths, so Codex on Windows and Lega voice stay blocked until then; decide package A; then package B (pilot) with Windows Hello; the voice filter is off (`gate.enabled: false`, unchanged by the upgrade).
 - **M08 docs:** `M08_REPORT.md`, `M08_IMPLEMENTATION_STATUS.md`, `M08_FEATURE_MATRIX.md`, `M08_DATA_PRIVACY_PLAN.md`, `M08_AUTOPILOT_CONTRACT.md`, `M08_TEST_REPORT.md`, `M08_LIVE_PILOT_PLAN.md`, `M08_UX_MEASUREMENTS.md`; screenshots in `.ifrim/m08-screens/`.
 - **New code:**
   - `v2/server/intel/`: twin, warroom, autopilot, board, simulation, league, skill-evolution, teach, devices, packages, intel-commands, intel-routes;
@@ -24,7 +23,7 @@
   - `.ifrim/data-location.json` (pointer) → `<root>/private`, `backups/v2`, `work`;
   - the old folder gets `V2_MOVED.json` and a V2 Hub refuses to open it;
   - only V2 entries move (`isV2DataEntry`): V1 shares `.ifrim/private` and keeps running there.
-  - **Not executed:** package A is the owner's decision.
+  - **Executed live on 2026-10-03** (A1, see above); rollback: `relocate-data.mjs --rollback` with the Hub stopped.
 - **Packages:**
   - A (A1 relocation, A2 voice-profile ACL, A3 acknowledge cloud copies) and B (ProDelivery pilot: `driver_ranking` unit tests; B1 route, B2 ASSISTED, B3 `python3 -m unittest`, B4 task);
   - B is blocked until A is decided and executed;
@@ -35,11 +34,11 @@
   - full V2 suite with the M08 build: 650 tests, 649 pass, 0 fail, 1 skipped (T25 symlink); V1: 551/552 (1 symlink skip).
 - **Untouched:**
   - bundles D6 `bnd_murl82o1_00afe726c3` and Demo B `bnd_mupwze7b_e03f70f2d7`;
-  - V1, OpenClaw, WSL, scheduled tasks;
+  - V1 (3004/8004, still on `.ifrim/private`), OpenClaw, WSL, scheduled tasks;
   - no model was started, and the M07 grants were not reused.
 - **Definition of Done:**
   - BUILD_READY yes; SIMULATED_INTEGRATION_VERIFIED yes;
-  - PRIVACY_READINESS prepared, not executed;
+  - PRIVACY_READINESS executed locally (A1 + A2; cloud copies remain, A3);
   - VOICE_UX not live; LIVE_PROJECT_PILOT no; CROSS_DEVICE BLOCKED;
   - OWNER_ACCEPTED pending.
 

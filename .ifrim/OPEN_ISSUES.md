@@ -1,11 +1,12 @@
 # Open Issues - Ifrim Agent Hub
 
-## 2026-10-03 — Open items after M08 (code `2.9.0-m08`, uncommitted; the live Hub still runs `2.8.0-m07`)
+## 2026-10-03 — Open items after M08 (code `2.9.0-m08`, committed `8b277c5`, push pending the owner; the live Hub runs `2.9.0-m08` since 16:26 UTC)
 
-1. **Upgrade the live Hub to M08 (owner).** Steps in `M08_REPORT.md` §6. Until then, the M08 features exist only in the source and in test hubs.
-2. **M07 items 1–2 (OneDrive sync, voice-profile ACL) now have a decision package (A).** Pilot → Decizii; scripts `relocate-data.mjs` / `voice-acl.ps1`. Not executed.
-   - After A1, the Codex deny list contains the new data paths, so the R3 isolation consent must be confirmed again.
-   - A3: copies already synced to OneDrive are not deleted by the move.
+1. **Push (owner).** The session's permission layer refused `git push origin v2-milestone-01`; the owner runs it.
+2. **R3 isolation consent must be confirmed again (owner).** A1 moved the V2 data to `C:\Users\mihai\IfrimHub\hub-data`, so the Codex deny list contains the new paths. Until the owner re-consents (Integrări → Izolare workspace), Codex on Windows and Lega voice stay blocked.
+3. **Package A: A1 and A2 executed live on 2026-10-03; the owner still records the decision** (Pilot → Decizii, Windows Hello). A1/A2 show as executed from reality.
+   - A3: the old local copies in `.ifrim/private`, `.ifrim/BACKUPS/v2`, `.ifrim/tmp/v2` and the OneDrive cloud copies were NOT deleted; deleting them is a separate owner decision.
+   - Rollback: `relocate-data.mjs --rollback` (Hub stopped); `voice-acl.ps1 -Rollback`.
 3. **Package B (ProDelivery pilot) is prepared, not started.** It is blocked until A is decided and executed, and it starts only with the owner's confirmed plan. LIVE_PROJECT_PILOT_VERIFIED = no.
 4. **Voice UX is verified only with synthetic voice** (the armed window included). To verify live after the upgrade, with the owner's voice.
 5. **Personal Mission Control on a real phone is BLOCKED.**
