@@ -1,4 +1,4 @@
-// Migration dry run on a COPY of the live V2 database (M05: migration 5 before a Hub restart). Run from the Hub root:
+// Migration dry run on a COPY of the live V2 database (M05: migration 5; M08: migration 8) before a Hub restart. Run from the Hub root:
 //   node v2/scripts/migration-dry-run.mjs
 // The live database is opened read-only and copied with SQLite's online backup into .ifrim/tmp; the migrations run on the
 // copy only; the output is counts and versions (no row content); the copy is deleted. The live Hub may keep running.
@@ -30,12 +30,15 @@ try {
   const tables = migrated.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name LIKE 'environment_%'").all().map((r) => r.name);
   const ownerTables = migrated.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name IN ('owner_credentials','owner_challenges','owner_sessions','mission_envelopes','owner_visits','shadow_evaluations','voice_profiles','voice_utterances')").all().map((r) => r.name);
   const grantCols = migrated.prepare("PRAGMA table_info(live_grants)").all().map((c) => c.name);
+  // M08 (migration 8): company intelligence tables, all new and empty after the migration.
+  const M08 = ["twin_claims", "incidents", "incident_entries", "autopilot_objectives", "board_meetings", "board_items", "simulations", "skill_candidates", "lessons", "devices", "device_pairings", "device_commands", "decision_packages"];
+  const m08Tables = migrated.prepare(`SELECT name FROM sqlite_master WHERE type = 'table' AND name IN (${M08.map(() => "?").join(",")})`).all(...M08).map((r) => r.name);
   const integrity = migrated.prepare("PRAGMA integrity_check").get();
   const copyCounts = counts(migrated);
   migrated.close();
   console.log(JSON.stringify({
     schemaBefore: before, schemaAfter: after, latestKnown: MIGRATIONS.at(-1).version, durationMs: Date.now() - started,
-    agentRunsHasEnvironment: cols.includes("environment"), environmentTables: tables, ownerTables, liveGrantsHasEnvelope: grantCols.includes("envelope_id"),
+    agentRunsHasEnvironment: cols.includes("environment"), environmentTables: tables, ownerTables, liveGrantsHasEnvelope: grantCols.includes("envelope_id"), m08Tables, m08Complete: m08Tables.length === M08.length,
     integrity: Object.values(integrity)[0],
     rowCountsUnchanged: JSON.stringify(liveCounts) === JSON.stringify(copyCounts), rowCounts: copyCounts,
   }, null, 2));

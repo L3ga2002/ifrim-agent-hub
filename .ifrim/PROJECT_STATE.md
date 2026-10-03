@@ -1,6 +1,49 @@
 # Project State - Ifrim Agent Hub
 
-## 2026-10-03 — M07: activation, local voice, live validation (current; read `M07_ACTIVATION_REPORT.md` first)
+## 2026-10-03 — M08: project autopilot & company intelligence (current; read `M08_REPORT.md` first)
+
+- **Code `2.9.0-m08`, API contract 8, migration 8** (13 tables). **Uncommitted** on `v2-milestone-01` over `17921ac` (origin and local `main` are at `17921ac`). The prepared commit message is `.ifrim/M08_COMMIT_MESSAGE.txt`. Commit/push only with the owner's explicit approval.
+- **The live Hub still runs `2.8.0-m07` (contract 7)** from the same source tree, BUILD_SAFE, untouched:
+  - it was not restarted and its DB was not migrated;
+  - `v2/web/dist` was NOT rebuilt (the live UI is the contract-7 build);
+  - the M08 UI was built into `.ifrim/tmp/m08-web-dist` and served to test hubs through `HUB_V2_WEB_DIST`.
+- **Upgrade (owner)** — `M08_REPORT.md` §6:
+  1. `node v2/scripts/migration-dry-run.mjs` (expect 7 → 8, `m08Complete: true`);
+  2. `node v2/scripts/stop.mjs`;
+  3. `npm run build:v2`;
+  4. `v2\scripts\start-detached.ps1`.
+- **M08 docs:** `M08_REPORT.md`, `M08_IMPLEMENTATION_STATUS.md`, `M08_FEATURE_MATRIX.md`, `M08_DATA_PRIVACY_PLAN.md`, `M08_AUTOPILOT_CONTRACT.md`, `M08_TEST_REPORT.md`, `M08_LIVE_PILOT_PLAN.md`, `M08_UX_MEASUREMENTS.md`; screenshots in `.ifrim/m08-screens/`.
+- **New code:**
+  - `v2/server/intel/`: twin, warroom, autopilot, board, simulation, league, skill-evolution, teach, devices, packages, intel-commands, intel-routes;
+  - `v2/scripts/relocate-data.mjs`, `v2/scripts/voice-acl.ps1`;
+  - UI: `screens/Intel.jsx` and `screens/intel/*`, `screens/Mobile.jsx` (`#/m`), `screens/lega/IntelCard.jsx`, `lib/intelLogic.js`.
+- **Envelopes and the Lega gate:**
+  - plans over an objective: the objective is re-read from the DB at propose and at confirm; an amended objective supersedes the old plan;
+  - the armed voice window: 90 s, single use on success, closes after 3 refused sentences; `voice.gate_final` → `confirmFromArmed`, which re-checks everything through `confirm()` / `claimForConfirmation()`.
+- **Data location:**
+  - `.ifrim/data-location.json` (pointer) → `<root>/private`, `backups/v2`, `work`;
+  - the old folder gets `V2_MOVED.json` and a V2 Hub refuses to open it;
+  - only V2 entries move (`isV2DataEntry`): V1 shares `.ifrim/private` and keeps running there.
+  - **Not executed:** package A is the owner's decision.
+- **Packages:**
+  - A (A1 relocation, A2 voice-profile ACL, A3 acknowledge cloud copies) and B (ProDelivery pilot: `driver_ranking` unit tests; B1 route, B2 ASSISTED, B3 `python3 -m unittest`, B4 task);
+  - B is blocked until A is decided and executed;
+  - "executed" is read from reality.
+- **Tests:**
+  - 54 new M08 tests pass (38 + 16 review regressions RF-01…RF-16); 7/7 mutants killed;
+  - browser tests follow `HUB_V2_WEB_DIST` (with the old dist, M04-BR-01 and M06-UI-E2E-01 fail with UI_STALE by design);
+  - full V2 suite with the M08 build: 650 tests, 649 pass, 0 fail, 1 skipped (T25 symlink); V1: 551/552 (1 symlink skip).
+- **Untouched:**
+  - bundles D6 `bnd_murl82o1_00afe726c3` and Demo B `bnd_mupwze7b_e03f70f2d7`;
+  - V1, OpenClaw, WSL, scheduled tasks;
+  - no model was started, and the M07 grants were not reused.
+- **Definition of Done:**
+  - BUILD_READY yes; SIMULATED_INTEGRATION_VERIFIED yes;
+  - PRIVACY_READINESS prepared, not executed;
+  - VOICE_UX not live; LIVE_PROJECT_PILOT no; CROSS_DEVICE BLOCKED;
+  - OWNER_ACCEPTED pending.
+
+## 2026-10-03 — M07: activation, local voice, live validation (superseded by M08 above where they overlap)
 
 - **Code `2.8.0-m07`, API contract 7:** committed as `09f50b4` (plus a docs commit) on `v2-milestone-01`, right after the M06 commit `66487b9`. Local `main` is fast-forwarded to it. The push was refused by the session's permission layer, so the owner runs `git push origin v2-milestone-01 main` (no workflows, hooks or deployments on the private repo).
 - **M07 docs:** `M07_ACTIVATION_REPORT.md`, `M07_LIVE_VALIDATION_RESULTS.md`, `M07_INSTALL_MANIFEST.md`, `M07_SECURITY_READINESS.md`, `M07_USER_EXPERIENCE.md`.

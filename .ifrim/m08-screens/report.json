@@ -1,0 +1,204 @@
+{
+  "generatedAt": "2026-10-03T06:46:08.203Z",
+  "webDist": ".ifrim\\tmp\\m08-web-dist",
+  "hubVersion": "2.9.0-m08",
+  "screens": [
+    {
+      "name": "cockpit",
+      "hash": "/lega/prj_mus13csk_f9051868cf",
+      "width": 1440,
+      "file": "cockpit-1440.png",
+      "msToContent": 945,
+      "horizontalOverflowPx": 0
+    },
+    {
+      "name": "cockpit-today",
+      "hash": "/lega/prj_mus13csk_f9051868cf",
+      "width": 1440,
+      "file": "cockpit-today-1440.png",
+      "msToContent": 18,
+      "horizontalOverflowPx": 0
+    },
+    {
+      "name": "cockpit-incident",
+      "hash": "/lega/prj_mus13csk_f9051868cf",
+      "width": 1440,
+      "file": "cockpit-incident-1440.png",
+      "msToContent": 16,
+      "horizontalOverflowPx": 0
+    },
+    {
+      "name": "cockpit-scenario",
+      "hash": "/lega/prj_mus13csk_f9051868cf",
+      "width": 1440,
+      "file": "cockpit-scenario-1440.png",
+      "msToContent": 13,
+      "horizontalOverflowPx": 0
+    },
+    {
+      "name": "cockpit-teach",
+      "hash": "/lega/prj_mus13csk_f9051868cf",
+      "width": 1440,
+      "file": "cockpit-teach-1440.png",
+      "msToContent": 31,
+      "horizontalOverflowPx": 0
+    },
+    {
+      "name": "stage-fullscreen",
+      "hash": "/lega/prj_mus13csk_f9051868cf",
+      "width": 1440,
+      "file": "stage-fullscreen-1440.png",
+      "msToContent": 15,
+      "horizontalOverflowPx": 0
+    },
+    {
+      "name": "intel-today",
+      "hash": "/intel/today",
+      "width": 1440,
+      "file": "intel-today-1440.png",
+      "msToContent": 119,
+      "horizontalOverflowPx": 0
+    },
+    {
+      "name": "intel-twin",
+      "hash": "/intel/twin?id=prj_mus13csk_f9051868cf",
+      "width": 1440,
+      "file": "intel-twin-1440.png",
+      "msToContent": 58,
+      "horizontalOverflowPx": 0
+    },
+    {
+      "name": "intel-warroom",
+      "hash": "/intel/warroom?id=inc_mus13ct5_c135b288f0",
+      "width": 1440,
+      "file": "intel-warroom-1440.png",
+      "msToContent": 45,
+      "horizontalOverflowPx": 0
+    },
+    {
+      "name": "intel-autopilot",
+      "hash": "/intel/autopilot?id=apo_mus13cts_377d22583d",
+      "width": 1440,
+      "file": "intel-autopilot-1440.png",
+      "msToContent": 45,
+      "horizontalOverflowPx": 0
+    },
+    {
+      "name": "intel-board",
+      "hash": "/intel/board",
+      "width": 1440,
+      "file": "intel-board-1440.png",
+      "msToContent": 18,
+      "horizontalOverflowPx": 0
+    },
+    {
+      "name": "intel-simulation",
+      "hash": "/intel/simulation?id=sim_mus13ctc_9edbedf548",
+      "width": 1440,
+      "file": "intel-simulation-1440.png",
+      "msToContent": 65,
+      "horizontalOverflowPx": 0
+    },
+    {
+      "name": "intel-league",
+      "hash": "/intel/league",
+      "width": 1440,
+      "file": "intel-league-1440.png",
+      "msToContent": 15,
+      "horizontalOverflowPx": 0
+    },
+    {
+      "name": "intel-skills",
+      "hash": "/intel/skills",
+      "width": 1440,
+      "file": "intel-skills-1440.png",
+      "msToContent": 51,
+      "horizontalOverflowPx": 0
+    },
+    {
+      "name": "intel-lessons",
+      "hash": "/intel/lessons",
+      "width": 1440,
+      "file": "intel-lessons-1440.png",
+      "msToContent": 25,
+      "horizontalOverflowPx": 0
+    },
+    {
+      "name": "intel-decisions",
+      "hash": "/intel/decisions",
+      "width": 1440,
+      "file": "intel-decisions-1440.png",
+      "msToContent": 46,
+      "horizontalOverflowPx": 0
+    },
+    {
+      "name": "intel-devices",
+      "hash": "/intel/devices",
+      "width": 1440,
+      "file": "intel-devices-1440.png",
+      "msToContent": 26,
+      "horizontalOverflowPx": 0
+    },
+    {
+      "name": "cockpit",
+      "hash": "/lega/prj_mus13csk_f9051868cf",
+      "width": 360,
+      "file": "cockpit-360.png",
+      "msToContent": 135,
+      "horizontalOverflowPx": 0
+    },
+    {
+      "name": "intel-warroom",
+      "hash": "/intel/warroom?id=inc_mus13ct5_c135b288f0",
+      "width": 360,
+      "file": "intel-warroom-360.png",
+      "msToContent": 41,
+      "horizontalOverflowPx": 0
+    },
+    {
+      "name": "intel-simulation",
+      "hash": "/intel/simulation?id=sim_mus13ctc_9edbedf548",
+      "width": 360,
+      "file": "intel-simulation-360.png",
+      "msToContent": 113,
+      "horizontalOverflowPx": 0
+    },
+    {
+      "name": "intel-decisions",
+      "hash": "/intel/decisions",
+      "width": 360,
+      "file": "intel-decisions-360.png",
+      "msToContent": 23,
+      "horizontalOverflowPx": 0
+    },
+    {
+      "name": "mobile-owner-preview",
+      "hash": "/m",
+      "width": 390,
+      "file": "mobile-owner-preview-390.png",
+      "msToContent": 27,
+      "horizontalOverflowPx": 0
+    },
+    {
+      "name": "mobile-device",
+      "hash": "/m",
+      "width": 390,
+      "file": "mobile-device-390.png",
+      "msToContent": 503,
+      "horizontalOverflowPx": 0
+    },
+    {
+      "name": "mobile-pairing",
+      "hash": "/m",
+      "width": 360,
+      "file": "mobile-pairing-360.png",
+      "msToContent": 580,
+      "horizontalOverflowPx": 0
+    }
+  ],
+  "errors": [],
+  "keyboard": {
+    "afterArrowRight": "intel-tab-twin",
+    "url": "/intel/twin"
+  }
+}

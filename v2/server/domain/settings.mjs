@@ -45,6 +45,12 @@ export const DEFAULT_SETTINGS = Object.freeze({
   voiceGate: { enabled: false, strict: true, profileId: null },
   legacyImport: null,
   routingPreferences: {},
+  // M08 Zero-Menu: what opens first — the project cockpit or the big Lega screen ("stage"). A preference, never an authority.
+  startView: "cockpit",
+  // M08 package B3: extra verification commands the owner allowed for the factory (keys of EXTRA_COMMAND_PATTERNS); none by default.
+  factoryExtraCommands: [],
+  // M08 Simulation: the owner's own estimates reused by "ce se întâmplă dacă…" (never invented; empty until the owner saves them).
+  simulationDefaults: {},
 });
 
 export function createSettings(db, bus, clock = () => new Date()) {

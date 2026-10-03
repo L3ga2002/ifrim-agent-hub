@@ -710,4 +710,95 @@ export const MIGRATIONS = [
       `);
     },
   },
+  {
+    version: 8,
+    name: "m08-intel",
+    /**
+     * Milestone 08 (project autopilot & company intelligence). Additive only; every table hangs off the existing model:
+     * - twin_claims: relations the owner or the Hub RECORDED (an observation with a source, a declaration, or a hypothesis). The
+     *   rest of the Digital Twin is derived on read from projects, missions, change sets, decisions and events, never copied.
+     * - incidents / incident_entries: the War Room (the confirmed impact is a separate field from the recommended priority; every
+     *   signal, hypothesis and action keeps its source and its status).
+     * - autopilot_objectives: Project Autopilot (a finite objective, its validated task graph and the envelope that covers it).
+     * - board_meetings / board_items: minutes and decisions of the executive meeting (proposed / decided / deferred).
+     * - simulations: what-if scenarios (always simulated; never mixed into real metrics).
+     * - skill_candidates: Skill Evolution (proposal, diff, evaluation, approval, limited activation, rollback).
+     * - lessons: Teach Lega (the owner's own instructions; a confirmed lesson becomes a memory item).
+     * - devices / device_pairings / device_commands: Personal Mission Control (own pairing, revocable, idempotent commands).
+     * - decision_packages: the owner's contextual decisions (storage and voice protection, the real pilot), option by option.
+     */
+    up(db) {
+      db.exec(`
+        CREATE TABLE twin_claims (
+          id TEXT PRIMARY KEY, project_id TEXT, subject_type TEXT NOT NULL, subject_id TEXT NOT NULL, predicate TEXT NOT NULL,
+          object_type TEXT NOT NULL, object_id TEXT NOT NULL, kind TEXT NOT NULL CHECK (kind IN ('OBSERVED','DECLARED','HYPOTHESIS')),
+          status TEXT NOT NULL DEFAULT 'open' CHECK (status IN ('open','confirmed','refuted','retracted')),
+          source_kind TEXT NOT NULL, source_ref TEXT NOT NULL DEFAULT '', note TEXT NOT NULL DEFAULT '', author TEXT NOT NULL,
+          version INTEGER NOT NULL DEFAULT 1, created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
+        CREATE INDEX idx_twin_claims_project ON twin_claims(project_id, created_at);
+
+        CREATE TABLE incidents (
+          id TEXT PRIMARY KEY, project_id TEXT NOT NULL, title TEXT NOT NULL, status TEXT NOT NULL, reported_text TEXT NOT NULL DEFAULT '',
+          reported_by TEXT NOT NULL, report_source TEXT NOT NULL, priority_recommended TEXT, impact_confirmed_json TEXT,
+          responsible TEXT NOT NULL DEFAULT 'proprietar', version_ref_json TEXT NOT NULL DEFAULT '{}', components_json TEXT NOT NULL DEFAULT '[]',
+          recent_changes_json TEXT NOT NULL DEFAULT '[]', remediation_mission_id TEXT, version INTEGER NOT NULL DEFAULT 1,
+          created_at TEXT NOT NULL, updated_at TEXT NOT NULL, closed_at TEXT);
+        CREATE INDEX idx_incidents_project ON incidents(project_id, status, created_at);
+        CREATE TABLE incident_entries (
+          id TEXT PRIMARY KEY, incident_id TEXT NOT NULL REFERENCES incidents(id),
+          kind TEXT NOT NULL CHECK (kind IN ('signal','hypothesis','action','evidence','note','timeline')),
+          status TEXT NOT NULL DEFAULT 'UNCONFIRMED', text TEXT NOT NULL, source_kind TEXT NOT NULL, source_ref TEXT NOT NULL DEFAULT '',
+          actor TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
+        CREATE INDEX idx_incident_entries ON incident_entries(incident_id, created_at);
+
+        CREATE TABLE autopilot_objectives (
+          id TEXT PRIMARY KEY, project_id TEXT NOT NULL, title TEXT NOT NULL, status TEXT NOT NULL, plan_json TEXT NOT NULL, plan_hash TEXT NOT NULL,
+          criteria_json TEXT NOT NULL DEFAULT '[]', limits_json TEXT NOT NULL DEFAULT '{}', base_snapshot_json TEXT NOT NULL DEFAULT '{}',
+          envelope_id TEXT, created_by TEXT NOT NULL, version INTEGER NOT NULL DEFAULT 1, created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
+        CREATE INDEX idx_autopilot_objectives_project ON autopilot_objectives(project_id, created_at);
+
+        CREATE TABLE board_meetings (
+          id TEXT PRIMARY KEY, title TEXT NOT NULL, period_from TEXT NOT NULL, period_to TEXT NOT NULL, status TEXT NOT NULL,
+          agenda_json TEXT NOT NULL, cursor INTEGER NOT NULL DEFAULT 0, minutes_json TEXT NOT NULL DEFAULT '[]', opened_by TEXT NOT NULL,
+          created_at TEXT NOT NULL, closed_at TEXT, version INTEGER NOT NULL DEFAULT 1);
+        CREATE TABLE board_items (
+          id TEXT PRIMARY KEY, meeting_id TEXT NOT NULL REFERENCES board_meetings(id), position INTEGER NOT NULL, section TEXT NOT NULL,
+          kind TEXT NOT NULL CHECK (kind IN ('info','recommendation','decision','proposal')), title TEXT NOT NULL, body_json TEXT NOT NULL DEFAULT '{}',
+          status TEXT NOT NULL DEFAULT 'PRESENTED', decided_by TEXT, decision_note TEXT NOT NULL DEFAULT '', decided_at TEXT,
+          carried_from TEXT, version INTEGER NOT NULL DEFAULT 1, created_at TEXT NOT NULL);
+        CREATE INDEX idx_board_items_meeting ON board_items(meeting_id, position);
+
+        CREATE TABLE simulations (
+          id TEXT PRIMARY KEY, title TEXT NOT NULL, model_version TEXT NOT NULL, inputs_json TEXT NOT NULL, result_json TEXT NOT NULL,
+          status TEXT NOT NULL, created_by TEXT NOT NULL, proposal_ref TEXT, created_at TEXT NOT NULL);
+
+        CREATE TABLE skill_candidates (
+          id TEXT PRIMARY KEY, skill_id TEXT NOT NULL, base_version INTEGER NOT NULL, candidate_version INTEGER, reason TEXT NOT NULL,
+          evidence_json TEXT NOT NULL DEFAULT '[]', body TEXT NOT NULL, diff_json TEXT NOT NULL DEFAULT '[]', regression_cases_json TEXT NOT NULL DEFAULT '[]',
+          eval_json TEXT, status TEXT NOT NULL, activation_json TEXT NOT NULL DEFAULT '{}', created_by TEXT NOT NULL, decided_by TEXT,
+          version INTEGER NOT NULL DEFAULT 1, created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
+        CREATE INDEX idx_skill_candidates_skill ON skill_candidates(skill_id, status);
+
+        CREATE TABLE lessons (
+          id TEXT PRIMARY KEY, text TEXT NOT NULL, kind TEXT NOT NULL, scope TEXT NOT NULL, scope_ref TEXT NOT NULL DEFAULT '',
+          parsed_json TEXT NOT NULL, security_json TEXT NOT NULL DEFAULT '[]', provenance TEXT NOT NULL, status TEXT NOT NULL,
+          memory_item_id TEXT, supersedes_id TEXT, proposed_by TEXT NOT NULL, decided_by TEXT, version INTEGER NOT NULL DEFAULT 1,
+          created_at TEXT NOT NULL, decided_at TEXT);
+
+        CREATE TABLE devices (
+          id TEXT PRIMARY KEY, label TEXT NOT NULL, token_hash TEXT NOT NULL UNIQUE, permissions_json TEXT NOT NULL, paired_by TEXT NOT NULL,
+          created_at TEXT NOT NULL, last_seen_at TEXT, revoked_at TEXT, revoked_by TEXT);
+        CREATE TABLE device_pairings (
+          id TEXT PRIMARY KEY, code_hash TEXT NOT NULL, created_by TEXT NOT NULL, expires_at TEXT NOT NULL, attempts INTEGER NOT NULL DEFAULT 0,
+          consumed_at TEXT, device_id TEXT, created_at TEXT NOT NULL);
+        CREATE TABLE device_commands (
+          idempotency_key TEXT PRIMARY KEY, device_id TEXT NOT NULL, type TEXT NOT NULL, result_json TEXT, created_at TEXT NOT NULL);
+
+        CREATE TABLE decision_packages (
+          id TEXT PRIMARY KEY, kind TEXT NOT NULL, title TEXT NOT NULL, body_json TEXT NOT NULL, options_json TEXT NOT NULL, hash TEXT NOT NULL,
+          status TEXT NOT NULL, decisions_json TEXT NOT NULL DEFAULT '{}', decided_by TEXT, created_at TEXT NOT NULL, decided_at TEXT,
+          version INTEGER NOT NULL DEFAULT 1);
+      `);
+    },
+  },
 ];

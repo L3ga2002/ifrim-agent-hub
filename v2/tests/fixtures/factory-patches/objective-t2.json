@@ -1,0 +1,7 @@
+{
+  "summary": "Sarcina t2 a obiectivului (după fixul t1): limită de lungime pentru nume, ca modul separat, cu test unitar.",
+  "write": {
+    "src/limits.js": "export const MAX_NAME = 80;\n\n/** Un nume (după eliminarea spațiilor de la capete) mai lung de MAX_NAME caractere este prea lung. */\nexport function nameTooLong(name) {\n  return String(name || \"\").trim().length > MAX_NAME;\n}\n",
+    "test/limits.test.mjs": "import test from \"node:test\";\nimport assert from \"node:assert/strict\";\nimport { nameTooLong, MAX_NAME } from \"../src/limits.js\";\n\ntest(\"un nume de peste 80 de caractere este prea lung\", () => {\n  assert.equal(nameTooLong(\"a\".repeat(MAX_NAME + 1)), true);\n  assert.equal(nameTooLong(\"  Ana  \"), false);\n});\n"
+  }
+}

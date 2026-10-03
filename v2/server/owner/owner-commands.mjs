@@ -1,7 +1,8 @@
 import { HubError } from "../core/errors.mjs";
-import { resolveIntent } from "./intents.mjs";
+import { resolveIntent, matchRef } from "./intents.mjs";
 import { AUTONOMY_LEVELS } from "./envelopes.mjs";
 import { layoutForIntent } from "./layout.mjs";
+import { localDayStart } from "../intel/twin.mjs";
 
 /**
  * M06 commands. Channels: "owner" = the authenticated owner session (WebAuthn, resolved by the HTTP layer from the cookie);
@@ -107,11 +108,19 @@ export function registerOwnerCommands(reg, hub) {
    * run (they only reduce activity); a confirmation runs ONLY from the owner channel, typed, for the plan the cockpit says it
    * presented. Voice transcripts from the provider never confirm.
    */
+  /** Opens the armed voice window for a plan just shown, when (and only when) every condition holds; otherwise says why not. */
+  function armFor(envelopeId, input, ctx) {
+    const s = session(ctx);
+    if (!s || !input.legaSessionId) return { armed: false, reason: "Confirmă în cockpit (fereastra vocală se deschide doar într-o sesiune Lega cu vocea ta verificată local)" };
+    try { const w = envelopes.armConfirmation({ envelopeId, session: s, legaSessionId: input.legaSessionId }); return { armed: true, expiresAt: w.expiresAt }; }
+    catch (error) { return { armed: false, reason: error.message }; }
+  }
+
   reg("owner.intent", { describe: "Limbaj natural → pași (citire, navigare, plan, întreruperi; confirmarea doar în sesiunea ta)", async: true, channels: ANY_OWNER_FACING,
     // M07: "voice-local" is never a client's claim: a spoken sentence arrives as an utteranceId, and the text and its source are
     // read from the server-held row (local speaker check + local transcript, this session only).
     schema: { text: { max: 2000, default: "" }, projectId: { max: 80 }, source: { enum: ["typed", "voice-provider"], default: "typed" }, utteranceId: { max: 80 },
-      presented: { type: "object" }, layout: { type: "object" } },
+      presented: { type: "object" }, layout: { type: "object" }, legaSessionId: { max: 80 } },
     execute: async (input, ctx) => {
       const projectList = projects.list().map((p) => ({ id: p.id, name: p.name, slug: p.slug }));
       const current = input.projectId ? projects.get(input.projectId) : null;
@@ -155,6 +164,7 @@ export function registerOwnerCommands(reg, hub) {
                 .catch((error) => ({ error: error.message }));
               r.plan = proposal; r.note = "Plan afișat; nimic nu a pornit și niciun grant nu a fost creat.";
               if (proposal.envelope?.id) step.args.envelopeId = proposal.envelope.id;
+              if (proposal.envelope?.id && !step.constraints.noStart && !step.args.previewOnly) r.armed = armFor(proposal.envelope.id, input, ctx);
               if (step.args.previewOnly || step.constraints.noStart) r.note = "Doar planul, cum ai cerut; nu pornesc nimic.";
               if (step.args.untilReady) r.note += " „Până e gata” înseamnă până la livrarea gata de verificarea ta, în limitele planului — nu execuție nelimitată.";
             }
@@ -179,7 +189,63 @@ export function registerOwnerCommands(reg, hub) {
           else if (step.intent === "quiet") r.prefs = advisor.setPrefs({ onlyDecisions: true }, ctx.actor);
           else if (step.intent === "notify_normal") r.prefs = advisor.setPrefs({ onlyDecisions: false }, ctx.actor);
           else if (step.intent === "autonomy") r.autonomy = envelopes.setAutonomy({ projectId: step.args.projectId || projectId, level: step.args.level, session: session(ctx), actor: ctx.actor });
-          if (projectId && ["show_changes", "show_tests", "show_review", "show_preview", "replay", "status", "why_blocked", "why_route", "show_plan", "continue_work", "briefing", "continue_last", "focus"].includes(step.intent)) {
+          // ---------- M08: company intelligence (read, propose, navigate; never start work) ----------
+          else if (step.intent === "incident_open") {
+            if (!projectId) r.message = "Pe ce proiect a apărut problema? Spune „Hai la <proiect>” și apoi ce nu merge.";
+            else { const out = hub.warroom.propose({ projectId, text: input.text, reportedBy: ctx.actor, source: source === "typed" && ctx.channel !== "voice" ? "owner" : "lega" }); r.incident = out; r.navigate = `/intel/warroom?id=${out.incident.id}`; r.note = out.note; }
+          } else if (step.intent === "twin_changes") {
+            // "de ieri" / "de aseară" means since the start of yesterday (local time), not since the last cockpit visit.
+            const nowDate = typeof hub.clock === "function" ? hub.clock() : new Date();
+            const since = /\b(ieri|aseara)\b/.test(step.text || "") ? localDayStart(nowDate, -1).toISOString() : /\b(azi|astazi|de dimineata)\b/.test(step.text || "") ? localDayStart(nowDate, 0).toISOString() : null;
+            r.changes = hub.twin.changesSince(projectId, { since });
+          }
+          else if (step.intent === "twin_impact") {
+            if (!projectId) r.message = "Pe ce proiect?";
+            else { const component = String(step.args.what || "").replace(/^(modificarea|schimbarea|modificarile|schimbarile)( (in|la|din|pe))? /, "").replace(/ /g, "_"); r.impact = hub.twin.impact(projectId, { component }); }
+          } else if (step.intent === "twin_why") r.why = hub.twin.why(projectId, step.args.what || "");
+          else if (step.intent === "board_open") { r.board = hub.board.open({ actor: ctx.actor }); r.navigate = "/intel/board"; }
+          else if (step.intent === "board_next" || step.intent === "board_defer") {
+            const m = hub.board.current();
+            if (!m) r.message = "Nu e nicio ședință deschisă. Spune „Deschide ședința”.";
+            else if (step.intent === "board_next") r.board = hub.board.move(m.id, 1, ctx.actor);
+            else if (!m.current) r.message = "Niciun subiect curent.";
+            else r.board = hub.board.decide(m.current.id, { decision: "defer", note: "amânat (Lega)", actor: ctx.actor, ownerSession: session(ctx) }).meeting || hub.board.view(m.id);
+          } else if (step.intent === "simulate" && step.args.unsupported) {
+            r.message = "Scenariile cu mai puțini clienți sau mai puține ore nu le ghicesc din frază: deschide Pilot → Simulare și pune valorile exacte (le calculez acolo, etichetat SIMULARE).";
+            r.navigate = "/intel/simulation";
+          } else if (step.intent === "simulate") {
+            // The owner's own saved estimates (never invented numbers); what is still missing comes back as a question.
+            const saved = hub.settings.get("simulationDefaults") || {};
+            const inputs = { ...saved, ...Object.fromEntries(Object.entries(step.args).filter(([k]) => Object.hasOwn(hub.simulations.fields, k))) };
+            r.simulation = hub.simulations.run({ title: String(input.text || step.args.scenario || "Scenariu").replace(/^\s*(?:(?:hei|hey|bun[ăa])\s+)?lega[\s,!.:-]+/i, "").slice(0, 160), inputs, actor: ctx.actor });
+            r.navigate = `/intel/simulation?id=${r.simulation.id}`; r.note = "SIMULARE — nu schimbă nimic real.";
+          } else if (step.intent === "league") r.league = hub.league.report({});
+          else if (step.intent === "teach") {
+            // Provenance from the channel (never from the words); the lesson becomes a rule only after the owner's confirmation.
+            const provenance = source === "voice-local" ? "owner-voice-local" : source === "voice-provider" || ctx.channel === "voice" ? "owner-voice-provider" : ctx.channel === "companion" ? "device" : "owner-typed";
+            r.lesson = hub.teach.propose({ text: step.args.text, provenance, projectId, actor: ctx.actor }); r.navigate = "/intel/lessons";
+          } else if (step.intent === "forget") { r.forget = hub.teach.proposeForget({ ref: step.args.ref, actor: ctx.actor }); r.navigate = "/intel/lessons"; }
+          else if (step.intent === "today") r.today = hub.board.today();
+          else if (step.intent === "decisions") { const a = hub.board.agenda({}); r.decisions = a.items.filter((i) => i.section === "decisions" && i.kind !== "info");
+            r.packages = ["A", "B"].map((k) => hub.packages.pending(k)).filter(Boolean).map((p) => ({ id: p.id, kind: p.kind, title: p.title, blockedBy: p.blockedBy || [] })); }
+          else if (step.intent === "fullscreen") r.view = "stage";
+          else if (step.intent === "cockpit_view") r.view = "cockpit";
+          else if (step.intent === "details") r.view = "details";
+          else if (step.intent === "start_view") { bus.transaction(() => hub.settings.set("startView", step.args.startView, ctx.actor, `Ecranul de pornire: ${step.args.startView}`)); r.startView = step.args.startView; }
+          else if (step.intent === "objectives") r.objectives = hub.autopilot.list(projectId);
+          else if (step.intent === "objective_plan") {
+            const list = hub.autopilot.list(projectId).filter((o) => ["PREPARED", "PROPOSED", "WAITING_OWNER"].includes(o.status));
+            const matches = step.args.objectiveRef ? matchRef(step.args.objectiveRef, list, { name: (o) => o.title }) : list;
+            if (matches.length !== 1) r.message = matches.length ? `Care obiectiv: ${matches.slice(0, 4).map((o) => `„${o.title}”`).join(" sau ")}?` : "Nu găsesc un obiectiv pregătit cu acest nume.";
+            else if (source === "voice-local" && awaiting) r.refused = "Planul afișat așteaptă răspunsul tău; nu pregătesc alt plan peste el";
+            else {
+              const out = await hub.autopilot.propose(matches[0].id, { actor: ctx.actor, via: ctx.channel, constraints: step.constraints }).catch((error) => ({ error: error.message }));
+              r.plan = out.plan || out; r.objective = out.objective || null; r.note = "Plan peste obiectiv afișat; nimic nu a pornit.";
+              if (out.plan?.envelope?.id) { step.args.envelopeId = out.plan.envelope.id; if (!step.constraints.noStart) r.armed = armFor(out.plan.envelope.id, input, ctx); }
+            }
+          }
+          if (step.intent === "why_blocked" && projectId) r.blocked = hub.twin.blocked(projectId);
+          if (projectId && ["show_changes", "show_tests", "show_review", "show_preview", "replay", "status", "why_blocked", "why_route", "show_plan", "continue_work", "objective_plan", "briefing", "continue_last", "focus"].includes(step.intent)) {
             const cp = r.cockpit || await cockpit.projectCockpit(projectId);
             const next = layoutForIntent(step, cp, layout);
             if (next) { layout = next; r.layout = next; }

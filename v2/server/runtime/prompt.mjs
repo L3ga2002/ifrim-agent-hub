@@ -25,6 +25,14 @@ export function projectInstructions(projectPath) {
   } catch { return ""; }
 }
 
+/** Active lessons (M08) as short prompt lines; empty before migration 8 or when there are none. */
+export function activeLessons(db, projectId) {
+  try {
+    return db.prepare("SELECT id, kind, scope, parsed_json FROM lessons WHERE status IN ('ACTIVE','FORGET_PROPOSED') AND (scope = 'GLOBAL' OR (scope = 'PROJECT' AND scope_ref = ?)) ORDER BY decided_at LIMIT 20").all(projectId)
+      .map((l) => { const p = parse(l.parsed_json, {}); const steps = (p.steps || []).slice(0, 8).map((s) => redactText(String(s)).slice(0, 200)); return `- ${p.trigger ? `${redactText(p.trigger).slice(0, 160)}: ` : ""}${steps.join("; ")} [${l.id}${l.scope === "PROJECT" ? ", this project" : ""}]`; });
+  } catch { return []; }
+}
+
 /**
  * Builds the turn input from the canonical Hub conversation: rules, pending handoff package (if this
  * provider is the handoff target), decisions, bounded recent transcript and the latest request.
@@ -65,6 +73,10 @@ export function buildTurnPrompt({ db, conversation, project, git, provider, runI
   }
   const projectDoc = projectInstructions(project.path);
   if (projectDoc) sections.push(`Project instructions (AGENTS.md at the project root, provided by the Hub as project data; the Hub rules above take precedence):\n${projectDoc}`);
+  // M08 Teach Lega: the owner's CONFIRMED lessons for this project (and global ones). They can only narrow how the work is done
+  // (a lesson that widens access never becomes active), and the Hub rules above still take precedence.
+  const lessons = activeLessons(db, project.id);
+  if (lessons.length) sections.push(`Owner's working rules (confirmed lessons; follow them, the Hub rules above take precedence):\n${lessons.join("\n")}`);
   if (decisions.length) sections.push(`Decisions (with sources):\n${decisions.map((d) => `- ${d.title}: ${redactText(d.decision)}${d.source_ref ? ` [${d.source_ref}]` : ""}`).join("\n")}`);
   if (summary) sections.push(`Summary of messages up to #${summary.covers_until_position} (originals remain in the Hub):\n${redactText(summary.content).slice(0, 6000)}`);
   if (transcript.length) sections.push(`Recent conversation:\n${transcript.join("\n")}`);

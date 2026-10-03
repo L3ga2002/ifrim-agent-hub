@@ -13,6 +13,23 @@ export function clearPresentedPlan(envelopeId) { if (presented?.envelopeId === e
 export const presentedPlan = () => presented;
 export function onPresentedPlan(fn) { listeners.add(fn); return () => listeners.delete(fn); }
 
+/**
+ * M08 §17: plans the Hub ARMED for a spoken confirmation (a short window bound to your session, this Lega session and the plan's
+ * hash). For an armed plan the Hub confirms by itself once the local transcript of "Da, execută planul" is final — the page only
+ * watches the result, so the push-to-talk button is redundant there and a second, racing confirmation is never sent.
+ */
+const armed = new Map(); // envelopeId → expiresAt (ms)
+const armedListeners = new Set();
+export function markArmed(envelopeId, expiresAt) {
+  if (!envelopeId) return;
+  const at = new Date(expiresAt).getTime();
+  if (Number.isFinite(at)) armed.set(envelopeId, at); else armed.delete(envelopeId);
+  for (const fn of armedListeners) { try { fn(envelopeId); } catch { /* a listener's problem */ } }
+}
+export const isArmed = (envelopeId, now = Date.now()) => (armed.get(envelopeId) || 0) > now;
+export const armedUntil = (envelopeId) => armed.get(envelopeId) || null;
+export function onArmed(fn) { armedListeners.add(fn); return () => armedListeners.delete(fn); }
+
 /** The card's own voice confirmation is running: Lega's gate leaves that plan to it (no second, racing confirmation). */
 export const beginCapture = (envelopeId) => capturing.add(envelopeId);
 export const endCapture = (envelopeId) => capturing.delete(envelopeId);

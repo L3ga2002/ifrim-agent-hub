@@ -9,7 +9,7 @@ import { PERMISSION_TIERS } from "../policy/approvals.mjs";
 const NAME_RE = /^[a-z0-9]+(-[a-z0-9]+)*$/;
 const MAX_FILES = 200;
 const MAX_FILE_BYTES = 512 * 1024;
-const RISKY_PATTERNS = [
+export const RISKY_PATTERNS = [
   { re: /--dangerously-skip-permissions|bypassPermissions|--allow-dangerously-skip-permissions/i, message: "instrucțiune de ocolire a permisiunilor" },
   { re: /ignore (all|any|the) (previous|prior|above) instructions/i, message: "instrucțiune de tip prompt-injection" },
   { re: /\bgit\s+push\b|\bnpm\s+publish\b|\bgh\s+pr\s+(create|merge)\b/i, message: "efect extern (push/publish/PR) fără aprobare legată de acțiune" },
@@ -222,8 +222,19 @@ export function createSkills({ db, bus, clock, config, roleConfig }) {
   }
 
   /** Skills a role may use (only valid, active skills that list the role). */
-  const forRole = (roleId) => list().filter((s) => s.status === "active" && String(s.metadata["hub-roles"] || "").split(/\s+/).includes(roleId))
-    .map((s) => ({ id: s.id, version: s.currentVersion, sha256: s.sha256 }));
+  // M08 Skill Evolution: an approved candidate may be active for some projects (an overlay). Skill bodies are a registry: no version
+  // (base or candidate) is injected into worker prompts today, so the run records the version whose content it could have used (the
+  // base) and names the active candidate separately — outcomes are never attributed to content the worker did not receive (review M08).
+  let overlay = () => ({});
+  const setOverlay = (fn) => { overlay = typeof fn === "function" ? fn : () => ({}); };
+  const forRole = (roleId, { projectId = null } = {}) => {
+    const over = overlay(projectId) || {};
+    return list().filter((s) => s.status === "active" && String(s.metadata["hub-roles"] || "").split(/\s+/).includes(roleId))
+      .map((s) => {
+        const v = over[s.id] && over[s.id] !== s.currentVersion ? db.prepare("SELECT version, sha256 FROM skill_versions WHERE skill_id = ? AND version = ?").get(s.id, over[s.id]) : null;
+        return { id: s.id, version: s.currentVersion, sha256: s.sha256, ...(v ? { candidateActive: v.version, candidateApplied: false } : {}) };
+      });
+  };
 
   /** Writes a Claude Code plugin bundle (.claude-plugin/plugin.json + skills/) under the Hub work dir. */
   function exportBundle({ format = "claude-code-plugin" } = {}) {
@@ -253,5 +264,5 @@ export function createSkills({ db, bus, clock, config, roleConfig }) {
       note: "Pachet local în .ifrim/tmp. Instalarea în ~/.claude sau publicarea cer acordul tău (configurare globală)." };
   }
 
-  return { importAll, importOne, list, versions, forRole, exportBundle, dir: skillsDir };
+  return { importAll, importOne, list, versions, forRole, setOverlay, exportBundle, dir: skillsDir };
 }

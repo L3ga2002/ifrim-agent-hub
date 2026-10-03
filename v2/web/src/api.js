@@ -15,7 +15,9 @@ export const UI_BUILD = Object.freeze({
   contract: typeof __UI_CONTRACT__ === "number" ? __UI_CONTRACT__ : null,
 });
 const FAILSAFE = ["/api/stop-all", "/api/runs/*/interrupt", "/api/lega/sessions/*/stop", "/api/owner/interrupt", "/api/owner/policy/deactivate",
-  "/api/owner/logout", "/api/owner/sessions/revoke-all", "/api/envelopes/*/revoke", "/api/factory/*/stop", "/api/factory/*/pause", "/api/grants/*/revoke"];
+  "/api/owner/logout", "/api/owner/sessions/revoke-all", "/api/envelopes/*/revoke", "/api/factory/*/stop", "/api/factory/*/pause", "/api/grants/*/revoke",
+  // M08: the phone's stop/forget, revoking a phone and rolling a skill back always work (same list as the server).
+  "/api/m/command", "/api/m/forget", "/api/skills/candidates/*/rollback", "/api/devices/*/revoke"];
 export function isFailsafePath(path, body = null) {
   if (String(path).split("?")[0] === "/api/gate") return body?.action === "suspend"; // suspending is fail-safe, opening is not
   const parts = String(path).split("?")[0].split("/");

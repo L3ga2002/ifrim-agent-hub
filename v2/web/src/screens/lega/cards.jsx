@@ -7,13 +7,13 @@ import { STATE_TONE, missionGraph } from "../../lib/cockpitLogic.js";
 import { FACTORY_STAGE_RO } from "../../lib/uiLogic.js";
 import { withReauth } from "../../lib/ownerSession.js";
 import { recordSegment, sendSegment } from "../../lib/voiceGate.js";
-import { setPresentedPlan, clearPresentedPlan, beginCapture, endCapture, preferredMic } from "../../lib/voiceContext.js";
+import { setPresentedPlan, clearPresentedPlan, beginCapture, endCapture, preferredMic, armedUntil, onArmed } from "../../lib/voiceContext.js";
 
 const EVIDENCE_TONE = { PASS: "ok", FAIL: "error", INCONCLUSIVE: "warn", BLOCKED: "error", NOT_RUN: "neutral", NEEDS_INSTALL_APPROVAL: "warn" };
 const NODE_TONE = { DONE: "ok", RUNNING: "info", WAITING: "neutral", FAILED: "error", BLOCKED: "warn" };
 const Src = ({ children }) => <span className="faint small src">{children}</span>;
 
-function CardShell({ card, title, icon, onPin, onDismiss, children, actions }) {
+export function CardShell({ card, title, icon, onPin, onDismiss, children, actions }) {
   return (
     <Panel title={title} icon={icon} className={`cockpit-card size-${card.size || "m"}`} actions={<>
       {actions}
@@ -77,10 +77,18 @@ export function NextStepCard({ cockpit: c, onPlan, ...rest }) {
  * The plan before anything runs, and the ONE confirmation. Under the legacy policy the button says so (Approvals as before);
  * without a session the confirmation opens Windows Hello first. Enter confirms only while this card has focus.
  */
-export function DecisionCard({ plan, owner, onConfirmed, onCancel, ...rest }) {
+export function DecisionCard({ plan, owner, onConfirmed, onCancel, detailsTick = 0, ...rest }) {
   const env = plan?.envelope;
   const summary = plan?.summary || env?.summary;
   const [details, setDetails] = useState(false);
+  // "Detalii" (Zero-Menu) opens the technical details of the plan on screen.
+  useEffect(() => { if (detailsTick) setDetails(true); }, [detailsTick]);
+  // M08: the Hub's armed voice window for this plan (your session + this Lega session + this hash, ~90 s).
+  const [armedAt, setArmedAt] = useState(() => (env?.id ? armedUntil(env.id) : null));
+  const [, setClock] = useState(0);
+  useEffect(() => onArmed((id) => { if (id === env?.id) setArmedAt(armedUntil(id)); }), [env?.id]);
+  useEffect(() => { if (!armedAt) return undefined; const t = setInterval(() => setClock((c) => c + 1), 1000); return () => clearInterval(t); }, [armedAt]);
+  const armedOpen = Boolean(armedAt && armedAt > Date.now());
   const ref = useRef(null);
   const live = useResource(env?.id ? `/api/envelopes/${env.id}` : null, { reloadOn: (e) => e.type.startsWith("envelope.") || e.type === "factory.stage" });
   const current = live.data || env;
@@ -134,7 +142,8 @@ export function DecisionCard({ plan, owner, onConfirmed, onCancel, ...rest }) {
             {policyActive && !owner?.session && <span className="faint small"><Lock size={12} /> Confirmarea îți cere Windows Hello / cheia (sesiunea e blocată).</span>}
           </div>
         )}
-        {awaiting && eligible && policyActive && <VoiceConfirm env={env} onConfirmed={(res) => { live.reload(); refresh(); onConfirmed?.(res.envelope); }} />}
+        {awaiting && eligible && policyActive && armedOpen && <Notice tone="info" title="Fereastra vocală e deschisă">Spune „Da, execută planul” (vocea ta, verificată și transcrisă local) până la {new Date(armedAt).toLocaleTimeString("ro-RO")}. Butonul rămâne disponibil.</Notice>}
+        {awaiting && eligible && policyActive && !armedOpen && <VoiceConfirm env={env} onConfirmed={(res) => { live.reload(); refresh(); onConfirmed?.(res.envelope); }} />}
         {current?.status === "ACTIVE" && <p className="small">Autorizat{current?.consent?.modality === "voice" ? " prin vocea ta (verificată și transcrisă local)" : ""}. Granturile tehnice au fost derivate intern; urmărește graful execuției.</p>}
         {current?.closeReason && !awaiting && <p className="faint small">{current.closeReason}</p>}
         <ErrorNotice error={confirm.error || revoke.error} />

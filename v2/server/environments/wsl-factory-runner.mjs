@@ -58,6 +58,9 @@ export function wslCommandArgv(command, env) {
   if (parts[0] === "node") return [env.node, ...parts.slice(1)];
   if (parts[0] === "npm" && parts[1] === "test") return [env.npm, "test"];
   if (parts[0] === "npm" && parts[1] === "run") return [env.npm, "run", parts[2]];
+  // M08 (owner-enabled, package B3): the standard library's unittest on relative .py files, nothing installed. Only when the spec
+  // check still allows it now (the setting can be turned off after the plan); verbose, so every test prints its own result line.
+  if (parts[0] === "python3" && parts[1] === "-m" && parts[2] === "unittest" && isAllowedCommand(command)) return ["/usr/bin/python3", "-m", "unittest", "-v", ...parts.slice(3)];
   return null;
 }
 

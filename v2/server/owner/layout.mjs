@@ -87,7 +87,8 @@ export function layoutForIntent(step, cockpit, current) {
     case "replay": return mission ? add("Replay", { kind: "mission", id: mission }) : null;
     case "status": case "why_blocked": case "why_route": return add("Explain", mission ? { kind: "mission", id: mission } : { kind: "project", id: pid }, "m");
     // The plan just prepared is shown as the decision card (the one confirmable plan); without one, the list of prepared missions.
-    case "show_plan": case "continue_work": return step.args?.envelopeId ? add("DecisionCard", { kind: "envelope", id: step.args.envelopeId }) : add("MissionPlan", { kind: "project", id: pid });
+    // M08: a plan over an objective is the same confirmable decision card (review M08: it was created but never shown).
+    case "show_plan": case "continue_work": case "objective_plan": return step.args?.envelopeId ? add("DecisionCard", { kind: "envelope", id: step.args.envelopeId }) : add("MissionPlan", { kind: "project", id: pid });
     case "briefing": case "continue_last": return add("Briefing", { kind: "project", id: pid }, "m");
     case "focus": return { ...base, focus: true, cards: base.cards.filter((c) => ["ProjectSummary", "NextStepCard", "DecisionCard"].includes(c.type) || c.pinned) };
     default: return null;

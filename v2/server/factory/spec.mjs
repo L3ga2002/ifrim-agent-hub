@@ -19,7 +19,15 @@ export const SPEC_SCHEMA_VERSION = 1;
  * The runner executes them under the Codex Windows sandbox with the Hub profile (network off), never with the backend's rights.
  */
 const COMMAND_PATTERNS = [/^node --test(?: [\w./-]+)*$/, /^npm test$/, /^npm run (?:build|lint|typecheck|test)$/];
-export const isAllowedCommand = (command) => COMMAND_PATTERNS.some((re) => re.test(String(command || ""))) && !String(command).split(" ").some((part) => part.includes(".."));
+/**
+ * Commands outside the base list that the OWNER can enable (M08 decision package B3), by key; off by default. Enabled keys come from
+ * the setting factoryExtraCommands, applied by the Hub at boot and when the setting changes.
+ */
+export const EXTRA_COMMAND_PATTERNS = Object.freeze({ "python-unittest": /^python3 -m unittest(?: [\w./-]+\.py)+$/ });
+let enabledExtras = new Set();
+export const setExtraCommands = (keys = []) => { enabledExtras = new Set((Array.isArray(keys) ? keys : []).filter((k) => EXTRA_COMMAND_PATTERNS[k])); };
+export const isAllowedCommand = (command) => (COMMAND_PATTERNS.some((re) => re.test(String(command || ""))) || [...enabledExtras].some((k) => EXTRA_COMMAND_PATTERNS[k].test(String(command || ""))))
+  && !String(command).split(" ").some((part) => part.includes(".."));
 const PREVIEW_COMMANDS = [/^node [\w./-]+\.(?:m?js|cjs)$/, /^npm run (?:start|dev|preview)$/];
 export const isAllowedPreviewCommand = (command) => PREVIEW_COMMANDS.some((re) => re.test(String(command || ""))) && !String(command).includes("..");
 

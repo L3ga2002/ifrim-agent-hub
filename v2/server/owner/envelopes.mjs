@@ -180,7 +180,23 @@ export function createEnvelopes({ db, bus, clock, settings, projects, missions, 
   }
 
   /** The envelope content (hashed): everything the confirmation covers. Time, nonce and ids are metadata, not content. */
-  async function buildBody(project, views, level, constraints = {}) {
+  /**
+   * The objective a multi-task plan stands for (M08), read from the database only (a caller cannot claim or shape it): the tasks must
+   * be exactly these missions, in the objective's order, and the objective must still be current. Only the fields that define the
+   * plan are part of it (not its status/version counters), so the same objective gives the same plan at confirmation time.
+   */
+  function objectiveRefFor(objectiveId, projectId, ids) {
+    const row = db.prepare("SELECT id, project_id, title, criteria_json, plan_json, plan_hash, status FROM autopilot_objectives WHERE id = ?").get(String(objectiveId));
+    const plan = parse(row?.plan_json, {});
+    const planTasks = plan.tasks || [];
+    const ordered = planTasks.map((t) => t.missionId).filter((m) => ids.includes(m));
+    if (!row || row.project_id !== projectId || ordered.length !== ids.length || ordered.some((m, i) => m !== ids[i])) throw new HubError("policy", "Misiunile nu sunt sarcinile acestui obiectiv, în ordinea lui");
+    if (["SUPERSEDED", "STOPPED", "DELIVERED"].includes(row.status)) throw new HubError("conflict", `Obiectivul nu mai e curent (${row.status}); cere planul versiunii actuale`);
+    return { id: row.id, title: row.title, criteria: parse(row.criteria_json, []), planHash: row.plan_hash, stopConditions: plan.stopConditions || [],
+      tasks: planTasks.map((t) => ({ key: t.key, title: t.title, missionId: t.missionId, dependsOn: t.dependsOn })) };
+  }
+
+  async function buildBody(project, views, level, constraints = {}, objective = null) {
     const route = environments ? environments.routeFor(project.id, "codex") : "windows";
     const entries = views.map((v) => ({ missionId: v.mission.id, title: v.mission.title, workType: v.factory.workType, specVersion: v.scope.specVersion, specSha: v.scope.specSha,
       planSha: v.scope.planSha, scopeHash: hashCanonical(v.scope), limits: v.scope.limits, routes: v.scope.routes, commands: v.scope.commands,
@@ -203,7 +219,10 @@ export function createEnvelopes({ db, bus, clock, settings, projects, missions, 
       allowedEffects: ["workspace.write (proiectul de mai sus)", "teste locale", "review doar-citire", ...(level === "ASSISTED" ? [] : ["remedieri în limită"]), "QA", "preview local", "E2E local"],
       deniedEffects: [...DENIED_EFFECTS], ownerConstraints: Object.keys(constraints).filter((k) => constraints[k]).sort(),
       subscriptionPolicy: "INCLUDED_SUBSCRIPTION_ONLY",
-      continuationPolicy: { afterPanelClosed: true, repairsWithoutConfirmation: level !== "ASSISTED", nextMissionWithoutConfirmation: level === "HIGH_AUTONOMY_BOUNDED", stopAt: "DELIVERY_READY (nu accept și nu livrez singur)" },
+      // M08: inside an objective the owner confirms the ordered tasks at once, so at TRUSTED the next task of THIS plan starts without
+      // another confirmation (the scope of every task is bound by its hash); ASSISTED plans cover one task at a time.
+      continuationPolicy: { afterPanelClosed: true, repairsWithoutConfirmation: level !== "ASSISTED", nextMissionWithoutConfirmation: level === "HIGH_AUTONOMY_BOUNDED" || (Boolean(objective) && level === "TRUSTED"), stopAt: "DELIVERY_READY (nu accept și nu livrez singur)" },
+      objective: objective ? { id: objective.id, version: objective.version, title: objective.title, criteria: objective.criteria, planHash: objective.planHash, tasks: objective.tasks, stopConditions: objective.stopConditions } : null,
       modeTransition: settings.get("mode") === "BUILD_SAFE" ? "BUILD_SAFE→LIVE_VALIDATION până la sfârșitul misiunilor" : null,
     };
     return body;
@@ -213,7 +232,7 @@ export function createEnvelopes({ db, bus, clock, settings, projects, missions, 
     const m = body.missions;
     const repairs = Object.values(body.limits.maxRepairCycles);
     return {
-      headline: m.length === 1 ? `„${m[0].title}” pe ${body.projectName}` : `${m.length} misiuni pe ${body.projectName}, una după alta`,
+      headline: body.objective ? `Obiectiv „${body.objective.title}”: ${m.length === 1 ? `sarcina „${m[0].title}”` : `${m.length} sarcini, una după alta`} pe ${body.projectName}` : m.length === 1 ? `„${m[0].title}” pe ${body.projectName}` : `${m.length} misiuni pe ${body.projectName}, una după alta`,
       where: `Lucrez numai în ${body.projectName} (${body.workspaceScope.route}); ${body.filesystemScope}.`,
       steps: `Implementare (Codex), verificări, review (Claude, doar citire), ${repairs.every((r) => r === 0) ? "remedierile îți cer confirmarea" : `până la ${Math.max(...repairs)} cicluri de remediere`}, QA, preview și E2E local.`,
       never: "Fără deploy, commit, push, mesaje, bani, schimbări de acces sau izolare, instalări, ștergeri de date reale.",
@@ -229,7 +248,7 @@ export function createEnvelopes({ db, bus, clock, settings, projects, missions, 
 
   // ---------- propose ----------
   /** Preview only: nothing runs, nothing is granted. Works under the legacy policy too (confirmation then goes through Approvals). */
-  async function propose({ projectId, missionIds = [], level = null, constraints = {}, actor = "owner", via = "ui" }) {
+  async function propose({ projectId, missionIds = [], level = null, constraints = {}, actor = "owner", via = "ui", objective = null }) {
     const project = projects.get(projectId);
     if (!project) throw new HubError("not_found", "Proiect necunoscut");
     // A plan never runs above the project's own level (raising it is a separate, re-authenticated decision); a caller may
@@ -243,14 +262,17 @@ export function createEnvelopes({ db, bus, clock, settings, projects, missions, 
       ids = autonomy === "HIGH_AUTONOMY_BOUNDED" ? ids.slice(0, ENVELOPE_LIMITS.maxMissions) : ids.slice(0, 1);
     }
     if (!ids.length) throw new HubError("validation", `Nu există o misiune Software Factory pregătită pe ${project.name}; descrie ce vrei și pregătesc specificația`);
-    if (ids.length > 1 && autonomy !== "HIGH_AUTONOMY_BOUNDED") throw new HubError("policy", "Mai multe misiuni într-un singur plan cer nivelul HIGH_AUTONOMY_BOUNDED");
+    // Several missions in one plan: HIGH_AUTONOMY_BOUNDED, or the ordered tasks of ONE objective at TRUSTED (M08). The objective is
+    // re-read from the database (a caller cannot claim one): its tasks must be exactly these missions, in its order.
+    const objectiveRef = objective?.id ? objectiveRefFor(objective.id, project.id, ids) : null;
+    if (ids.length > 1 && autonomy !== "HIGH_AUTONOMY_BOUNDED" && !(objectiveRef && autonomy === "TRUSTED")) throw new HubError("policy", "Mai multe misiuni într-un singur plan cer nivelul HIGH_AUTONOMY_BOUNDED (sau un obiectiv, la TRUSTED)");
     if (ids.length > ENVELOPE_LIMITS.maxMissions) throw new HubError("validation", `Cel mult ${ENVELOPE_LIMITS.maxMissions} misiuni într-un plan`);
     const views = ids.map((id) => { const v = factory.view(id); if (!v) throw new HubError("not_found", `Misiunea ${id} nu e o misiune Software Factory`); if (v.project?.id !== project.id) throw new HubError("policy", "O misiune din alt proiect nu intră în acest plan"); return v; });
     const ready = readiness(project, views);
     if (views.some((v) => !v.scope)) {
       return { envelope: null, readiness: ready, summary: { headline: views[0].mission.title, blockers: ready.blockers.map((b) => b.detail), state: "PLAN_INCOMPLETE" } };
     }
-    const body = await buildBody(project, views, autonomy, constraints);
+    const body = await buildBody(project, views, autonomy, constraints, objectiveRef);
     const hash = hashCanonical(body);
     const summary = summaryOf(body, ready);
     const t = now();
@@ -267,6 +289,62 @@ export function createEnvelopes({ db, bus, clock, settings, projects, missions, 
       bus.append({ type: "envelope.proposed", scopeType: "envelope", scopeId: id, projectId: project.id, source: actor, payload: { via, missions: ids, hash: hash.slice(0, 16), level: autonomy, eligible: ready.eligible } });
     });
     return { envelope: view(id), readiness: ready, summary };
+  }
+
+  // ---------- armed spoken confirmation (M08 §17) ----------
+  /*
+   * After the exact plan is presented in the owner's authenticated session with the local voice gate active, the service opens a
+   * short window for THAT plan (its hash and nonce) in THAT session. A spoken "Da, execută planul" the Hub itself heard (speaker
+   * MATCH, local final transcript naming the plan, gate segment bound to this envelope) then confirms without a button. Nothing arms
+   * because a model asked "ești de acord?": arming is a server call checked against the plan state, the session, the policy and the
+   * voice profile. Windows live in memory: a restart closes them (fail-safe).
+   */
+  const CONFIRM_WINDOW_MS = 90 * 1000;
+  const ARMED_MAX_FAILURES = 3;
+  const armed = new Map(); // envelopeId → { sessionId, legaSessionId, hash, nonce, expiresAt, used }
+  function armConfirmation({ envelopeId, session, legaSessionId = null }) {
+    if (!trust.policy().active) throw new HubError("policy", "Politica voice-first nu este activă");
+    const s = trust.requireSession(session, "fereastra de confirmare vocală");
+    const env = get(envelopeId);
+    if (!env || env.status !== "PROPOSED" || new Date(env.confirmBy) <= now()) throw new HubError("conflict", "Planul nu mai așteaptă confirmarea");
+    if (env.summary?.state !== "PLAN_READY") throw new HubError("conflict", "Planul nu e eligibil acum; nu deschid o fereastră de confirmare");
+    if (!voice?.status) throw new HubError("policy", "Confirmarea vocală nu e disponibilă pe acest server");
+    const vs = voice.status(s);
+    if (!vs?.profile || !vs?.gate?.enabled) throw new HubError("policy", "Confirmarea vocală cere profilul tău vocal și filtrul activ");
+    const windowNonce = crypto.randomBytes(9).toString("hex");
+    const expiresAt = new Date(now().getTime() + CONFIRM_WINDOW_MS).toISOString();
+    armed.set(env.id, { sessionId: s.id, legaSessionId: legaSessionId || null, hash: env.envelopeHash, nonce: env.nonce, windowNonce, expiresAt, used: false });
+    bus.emit({ type: "envelope.confirmation_armed", scopeType: "envelope", scopeId: env.id, projectId: env.projectId, source: `owner:${s.id}`, payload: { expiresAt, legaSession: Boolean(legaSessionId) } });
+    return { envelopeId: env.id, armed: true, expiresAt, windowNonce, say: "Da, execută planul" };
+  }
+  function disarm(envelopeId) { armed.delete(envelopeId); }
+  /** The armed window for this plan and session (null when none, expired, used, or the plan changed since). */
+  function armedFor(envelopeId, sessionId, legaSessionId = null) {
+    const w = armed.get(envelopeId);
+    const env = w ? get(envelopeId) : null;
+    if (!w || w.used || new Date(w.expiresAt) <= now() || w.sessionId !== sessionId || !env || env.status !== "PROPOSED" || env.envelopeHash !== w.hash) return null;
+    if (w.legaSessionId && legaSessionId && w.legaSessionId !== legaSessionId) return null;
+    return { ...w, env };
+  }
+  /** Called when a gate segment's local transcript is final: confirms the armed plan if every check holds; otherwise does nothing. */
+  async function confirmFromArmed({ utteranceId, envelopeId, sessionId, legaSessionId = null }) {
+    const w = armedFor(envelopeId, sessionId, legaSessionId);
+    if (!w) return { confirmed: false, reason: "nicio fereastră armată pentru acest plan" };
+    // One sentence at a time; the window is spent by a confirmation, and closes after 3 sentences that are not one (a vague "da",
+    // a question, "da, dar nu porni") — those confirm nothing and never re-arm anything.
+    if (w.busy) return { confirmed: false, reason: "o altă frază e verificată acum" };
+    armed.set(envelopeId, { ...armed.get(envelopeId), busy: true });
+    try {
+      const out = await confirm({ envelopeId, nonce: w.nonce, displayedHash: w.hash, session: { id: sessionId }, modality: "voice", utteranceId, idempotencyKey: `armed:${w.windowNonce}` });
+      armed.set(envelopeId, { ...armed.get(envelopeId), busy: false, used: true });
+      return { confirmed: true, envelope: out.envelope };
+    } catch (error) {
+      const failures = (armed.get(envelopeId)?.failures || 0) + 1;
+      if (failures >= ARMED_MAX_FAILURES) armed.delete(envelopeId);
+      else armed.set(envelopeId, { ...armed.get(envelopeId), busy: false, failures });
+      bus.emit({ type: "envelope.armed_refused", scopeType: "envelope", scopeId: envelopeId, source: "envelopes", payload: { reason: String(error.message).slice(0, 200), failures, closed: failures >= ARMED_MAX_FAILURES } });
+      return { confirmed: false, reason: error.message };
+    }
   }
 
   // ---------- confirm ----------
@@ -304,7 +382,13 @@ export function createEnvelopes({ db, bus, clock, settings, projects, missions, 
     const project = projects.get(env.projectId);
     const views = env.missionIds.map((id) => factory.view(id));
     if (views.some((v) => !v?.scope)) { bus.transaction(() => setStatus(env.id, "SUPERSEDED", { reason: "O misiune nu mai are un scope complet", from: ["PROPOSED"] })); throw new HubError("conflict", "Planul nu mai e valabil: o misiune s-a schimbat"); }
-    const body = await buildBody(project, views, env.autonomyLevel, Object.fromEntries((env.body.ownerConstraints || []).map((k) => [k, true])));
+    // An objective's plan is rebuilt from the objective as it is NOW: an amended (superseded) objective is no longer this plan.
+    let objectiveNow = null;
+    if (env.body.objective?.id) {
+      try { objectiveNow = objectiveRefFor(env.body.objective.id, env.projectId, env.missionIds); }
+      catch (error) { bus.transaction(() => setStatus(env.id, "SUPERSEDED", { reason: error.message, from: ["PROPOSED"] })); throw new HubError("conflict", `Planul nu mai e valabil: ${error.message}`); }
+    }
+    const body = await buildBody(project, views, env.autonomyLevel, Object.fromEntries((env.body.ownerConstraints || []).map((k) => [k, true])), objectiveNow);
     // Another tab may have confirmed it while this one was recomputing: report that, not a "changed plan".
     const current = get(env.id);
     if (current.status !== "PROPOSED") {
@@ -437,13 +521,29 @@ export function createEnvelopes({ db, bus, clock, settings, projects, missions, 
   }
 
   /** Starts one mission of a confirmed envelope through the ordinary factory.start command and its exact scope approval. */
+  /** The keys of an objective task's dependencies that are not delivered yet (empty for a plan without an objective). */
+  function objectiveDepsMissing(env, missionId) {
+    if (!env.body.objective?.id) return [];
+    const ref = objectiveRefFor(env.body.objective.id, env.projectId, env.missionIds);
+    const task = ref.tasks.find((t) => t.missionId === missionId);
+    const stageOf = (mid) => (mid ? factory.view(mid)?.factory.stage || null : null);
+    return (task?.dependsOn || []).filter((k) => !["DELIVERY_READY", "ACCEPTED"].includes(stageOf(ref.tasks.find((t) => t.key === k)?.missionId)));
+  }
+
   async function startMission(env, missionId, session) {
     const v = factory.view(missionId);
     const entry = env.body.missions.find((m) => m.missionId === missionId);
     if (!v?.scope || hashCanonical(v.scope) !== entry?.scopeHash) throw new HubError("conflict", `Scope-ul misiunii „${entry?.title || missionId}” s-a schimbat după confirmare`);
+    // An objective task starts only when what it depends on is delivered — the first task at confirmation as well as the next ones.
+    const missing = objectiveDepsMissing(env, missionId);
+    if (missing.length) throw new HubError("conflict", `Sarcina depinde de ${missing.join(", ")}, care nu e livrată`);
+    // The plan may have been closed (Stop All, a rejected earlier task, a revoke) while we waited: never start under a closed plan.
+    const stillCurrent = () => { const now_ = get(env.id); return Boolean(now_ && OPEN.has(now_.status) && (!now_.currentMissionId || now_.currentMissionId === missionId)); };
+    if (!stillCurrent()) throw new HubError("conflict", "Planul s-a închis între timp; misiunea nu mai pornește");
     issueGrants(env, missionId);
     const requested = await commands.dispatch({ type: "factory.start", payload: v.scope, channel: "owner", actor: `owner:${session.id}`, ownerSession: { id: session.id },
       correlationId: env.id, intentText: `Plan ${env.id}`, idempotencyKey: `envelope:${env.id}:${missionId}` });
+    if (requested.approvalRequired && !stillCurrent()) throw new HubError("conflict", "Planul s-a închis între timp; misiunea nu mai pornește (aprobarea rămâne nefolosită)");
     if (requested.approvalRequired) {
       const approval = requested.approval;
       // The approval must be exactly the envelope's scope for this mission (recomputed, not trusted).
@@ -581,13 +681,52 @@ export function createEnvelopes({ db, bus, clock, settings, projects, missions, 
   }
 
   async function advance(env, missionId, stage) {
-    if (!env || !OPEN.has(env.status) || env.currentMissionId !== missionId) return;
+    if (!env || !OPEN.has(env.status)) return;
+    if (env.currentMissionId !== missionId) {
+      // An EARLIER task of an objective was rejected or cancelled (e.g. the owner rejects t1's bundle while t2 runs). If the running
+      // task depends on it (directly or through another task), the plan closes FIRST (authority revoked), then that task is paused.
+      // A later task, or an independent mission of a plain multi-mission plan, leaves the running work alone; a later dependent task
+      // simply never starts (startMission checks its dependencies). Review M08 rounds 1–2.
+      if (!["CANCELLED", "REJECTED"].includes(stage) || !env.body.objective?.id) return;
+      const ids = env.missionIds;
+      if (!ids.includes(missionId) || ids.indexOf(missionId) >= ids.indexOf(env.currentMissionId)) return;
+      let dependsOnIt = false;
+      try {
+        const ref = objectiveRefFor(env.body.objective.id, env.projectId, ids);
+        const keyOf = (mid) => ref.tasks.find((t) => t.missionId === mid)?.key;
+        const deps = new Map(ref.tasks.map((t) => [t.key, t.dependsOn || []]));
+        const reaches = (from, target, seen = new Set()) => (deps.get(from) || []).some((k) => k === target || (!seen.has(k) && (seen.add(k), reaches(k, target, seen))));
+        dependsOnIt = reaches(keyOf(env.currentMissionId), keyOf(missionId));
+      } catch { dependsOnIt = true; } // the objective is no longer current: stop rather than continue
+      if (!dependsOnIt) return;
+      const current = env.currentMissionId;
+      const closed = close(env.id, "CANCELLED", `O sarcină anterioară a planului s-a încheiat (${stage}); sarcina care depinde de ea nu continuă`);
+      try { if (current) await factory.pause(current, { actor: "envelopes" }); } catch { /* not running yet, or already settled */ }
+      return closed;
+    }
     if (stage === "DELIVERY_READY") {
       const index = env.missionIds.indexOf(missionId);
       const next = env.missionIds[index + 1];
       if (next && env.body.continuationPolicy.nextMissionWithoutConfirmation) {
         if (new Date(env.expiresAt) <= now()) return close(env.id, "EXPIRED", "Timpul planului s-a terminat înaintea misiunii următoare");
         const session = env.ownerSessionId ? { id: env.ownerSessionId } : null;
+        // An objective's next task starts only while the objective is still the confirmed one and its dependencies are delivered.
+        if (env.body.objective?.id) {
+          let hold = null;
+          try {
+            const missing = objectiveDepsMissing(env, next);
+            if (missing.length) hold = `Sarcina următoare depinde de ${missing.join(", ")}, care nu e livrată`;
+          } catch (error) { hold = error.message; }
+          if (hold) {
+            // No automatic continuation is possible from here: the spent task's grants are revoked with the hold (review M08 round 2).
+            bus.transaction(() => {
+              for (const g of grants.ofEnvelope(env.id).filter((x) => x.status === "active")) grants.revoke(g.id, `envelope:${env.id}`);
+              db.prepare("UPDATE mission_envelopes SET derived_json = ? WHERE id = ?").run(json({ ...get(env.id).derived, hold: `Nu pornesc sarcina următoare: ${String(hold).slice(0, 200)}` }), env.id);
+              setStatus(env.id, "WAITING_OWNER", { reason: `Nu pornesc sarcina următoare: ${String(hold).slice(0, 200)}`, from: ["ACTIVE", "CONFIRMED"] });
+            });
+            return;
+          }
+        }
         try {
           // The next mission's scope must still be the one confirmed; its grants are derived now (the earlier ones are spent).
           for (const g of grants.ofEnvelope(env.id).filter((x) => x.status === "active")) bus.transaction(() => grants.revoke(g.id, `envelope:${env.id}`));
@@ -660,6 +799,6 @@ export function createEnvelopes({ db, bus, clock, settings, projects, missions, 
       awaitingConfirmation: env.status === "PROPOSED" && new Date(env.confirmBy) > now() };
   }
 
-  return { propose, confirm, confirmDelta, revoke, view, get, forProject, openFor, pending, autonomyOf, setAutonomy, readiness, deriveGrants, assertWithin, authorityFor, tick, envelopeOfMission, restoreModeHold, undoRestore,
+  return { propose, confirm, confirmDelta, revoke, view, get, forProject, openFor, pending, autonomyOf, setAutonomy, readiness, deriveGrants, assertWithin, authorityFor, tick, envelopeOfMission, restoreModeHold, undoRestore, armConfirmation, disarm, armedFor, confirmFromArmed,
     close: () => { stopped = true; } };
 }

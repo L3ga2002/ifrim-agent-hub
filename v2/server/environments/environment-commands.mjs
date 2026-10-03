@@ -9,7 +9,8 @@ import { workspaceResource } from "../runtime/runs.mjs";
  * on the "cli" channel, so the record shows who asked (never "user/ui" for something the owner did not click).
  */
 const CHECKS = ["ui", "test", "cli"];
-const OWNER = ["ui", "test"];
+// M08: "owner" = the authenticated owner session (WebAuthn), strictly stronger than "ui"; a package decision (B1) runs on it.
+const OWNER = ["ui", "owner", "test"];
 const FAILSAFE = ["ui", "test", "voice", "companion"];
 
 export function registerEnvironmentCommands(reg, hub) {

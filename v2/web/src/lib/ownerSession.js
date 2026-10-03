@@ -52,7 +52,8 @@ export const lockSession = () => api("/api/owner/logout", { method: "POST", body
 export async function withReauth(fn) {
   try { return await fn(); }
   catch (error) {
-    if (error?.category === "authentication" && (error.details?.reauth || error.details?.needSession || /confirmă din nou|sesiunea de proprietar/i.test(error.message))) {
+    // M08: the intel services phrase it "sesiunea ta de proprietar" / "în sesiunea ta (Windows Hello)": those ask for the unlock too.
+    if (error?.category === "authentication" && (error.details?.reauth || error.details?.needSession || /confirmă din nou|sesiunea (ta )?de proprietar|sesiunea ta|Windows Hello/i.test(error.message))) {
       await unlockSession("reauth");
       return fn();
     }

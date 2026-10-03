@@ -15,7 +15,9 @@ export function registerOwnerRoutes(router, hub) {
   const get = (p, h) => router.add("GET", p, h);
   const post = (p, h, o) => router.add("POST", p, h, o);
 
-  const cookies = (req) => Object.fromEntries(String(req.headers.cookie || "").split(";").map((c) => c.trim()).filter(Boolean).map((c) => { const i = c.indexOf("="); return [c.slice(0, i), decodeURIComponent(c.slice(i + 1))]; }));
+  // Cookies are shared by every app on localhost: a malformed one ("%" alone) must not break these routes (unlock, interrupt, logout).
+  const safeDecode = (v) => { try { return decodeURIComponent(v); } catch { return v; } };
+  const cookies = (req) => Object.fromEntries(String(req.headers.cookie || "").split(";").map((c) => c.trim()).filter(Boolean).map((c) => { const i = c.indexOf("="); return i < 0 ? [c, ""] : [c.slice(0, i), safeDecode(c.slice(i + 1))]; }));
   const originOf = (req) => req.headers.origin || `http://${String(req.headers.host || "").toLowerCase()}`;
   const tokenOf = (req) => cookies(req)[SESSION_COOKIE] || null;
   const sessionOf = (req, touch = true) => trust.resolveSession(tokenOf(req), { origin: originOf(req), touch });
@@ -69,7 +71,9 @@ export function registerOwnerRoutes(router, hub) {
   get("/api/company/map", () => cockpit.companyMap());
 
   // ---------- natural language, envelopes, autonomy, interruptions ----------
-  post("/api/owner/intent", ({ req, body }) => dispatch(req, "owner.intent", { text: body.text || "", projectId: body.projectId || undefined, source: body.source || "typed", utteranceId: body.utteranceId || undefined, presented: body.presented || undefined, layout: body.layout || undefined }));
+  post("/api/owner/intent", ({ req, body }) => dispatch(req, "owner.intent", { text: body.text || "", projectId: body.projectId || undefined, source: body.source || "typed", utteranceId: body.utteranceId || undefined, presented: body.presented || undefined, layout: body.layout || undefined,
+    // M08: the Lega session the plan is shown in (the Hub arms the short voice window only for it; review M08: it was dropped here).
+    legaSessionId: typeof body.legaSessionId === "string" && body.legaSessionId ? body.legaSessionId.slice(0, 80) : undefined }));
   get("/api/envelopes", ({ query }) => ({ envelopes: query.projectId ? envelopes.forProject(projects.get(query.projectId)?.id || query.projectId, 20).map((e) => envelopes.view(e.id)) : envelopes.pending().map((e) => envelopes.view(e.id)) }));
   get("/api/envelopes/:id", ({ params }) => { const v = envelopes.view(params.id); if (!v) throw new HubError("not_found", "Plan necunoscut"); return v; });
   post("/api/envelopes", ({ req, body }) => dispatch(req, "envelope.propose", { projectId: body.projectId, missionIds: body.missionIds || [], level: body.level || undefined, constraints: body.constraints || {} }));

@@ -14,5 +14,5 @@ for ($i = 0; $i -lt 80; $i++) {
     if ($h.ok) { Write-Host "Ifrim Agent Hub V2 $($h.version), mod $($h.mode), contract $($h.apiContract), http://localhost:8011"; exit 0 }
   } catch { }
 }
-Write-Host "Hub-ul nu a raspuns in 40 s; vezi .ifrim\private\v2-hub.log"
+Write-Host "Hub-ul nu a raspuns in 40 s; vezi v2-hub.log in folderul de date (.ifrim\private sau locatia din .ifrim\data-location.json)"
 exit 1

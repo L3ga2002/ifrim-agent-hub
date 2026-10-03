@@ -13,6 +13,9 @@ const here = path.dirname(fileURLToPath(import.meta.url));
 export const FIXTURES = path.join(here, "fixtures");
 export const HUB_ROOT = path.resolve(here, "..", "..");
 export const TEST_TMP = path.join(HUB_ROOT, ".ifrim", "tmp", "v2-tests");
+// The built UI the browser tests drive: the same folder the server serves (HUB_V2_WEB_DIST lets a new build be tested while the
+// live Hub keeps serving v2/web/dist built for its own contract).
+export const WEB_DIST = process.env.HUB_V2_WEB_DIST ? path.resolve(process.env.HUB_V2_WEB_DIST) : path.join(HUB_ROOT, "v2", "web", "dist");
 
 /** Creates an isolated temp directory inside .ifrim/tmp (never outside the project). */
 export function tempDir(label = "t") {

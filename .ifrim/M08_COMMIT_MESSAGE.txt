@@ -1,0 +1,56 @@
+M08: project autopilot & company intelligence (2.9.0-m08)
+
+Ten features built as one system over the existing database, memory,
+command bus, envelopes and derived grants (API contract 8, migration 8):
+
+- Digital Twin: sourced relations (OBSERVED/DECLARED/HYPOTHESIS), why
+  blocked, what changed since yesterday, change impact, why chosen.
+- War Room: a report opens a PROPOSED incident; model content stays an
+  unconfirmed hypothesis; impact confirmed by the owner; RESOLVED needs
+  confirmed evidence; remediation is a BUGFIX draft.
+- Project Autopilot: finite objectives of dependent tasks under ONE
+  confirmed envelope (TRUSTED), stopping at DELIVERY_READY; no resume
+  right; an amended objective supersedes the old plan.
+- Board meeting: deterministic agenda, owner-session decisions, deferred
+  items carried over, nothing activated.
+- Simulation: deterministic capacity model, INSUFFICIENT_DATA instead of
+  invented numbers, labelled SIMULARE.
+- Agent league: no winner on insufficient evidence; exclusions counted.
+- Skill evolution: proposal -> deterministic evaluation -> owner approval
+  -> limited activation -> rollback (overlay; git stays the source).
+- Teach Lega: owner-only lessons, confirmed into memory with scope;
+  security widenings never become rules; lessons reach worker prompts.
+- Zero-Menu: full-screen button and voice command, start-view
+  preference, M08 intents, armed voice window (90 s, session + Lega
+  session + plan hash, local gate, closes after 3 refused sentences).
+- Personal Mission Control: phone screen, own revocable pairing, view and
+  fail-safe stops only, idempotent commands refused on a stale view.
+
+Also: decision packages A (data relocation out of OneDrive, voice
+profile ACL) and B (ProDelivery pilot, prepared, not started);
+relocate-data.mjs and voice-acl.ps1 (tested on temporary folders only);
+the data root follows .ifrim/data-location.json; only V2 entries move
+(V1 shares .ifrim/private) and the pointer is git-ignored; browser tests
+follow HUB_V2_WEB_DIST. Docs: .ifrim/M08_*.md, screenshots .ifrim/m08-screens/.
+
+Defects found by the M08 tests and fixed: objective plans refused at
+confirmation (plan rebuilt without the objective), objectives stuck after
+an expired plan, the armed window spent by a refused sentence, missing
+setting defaults, stored paths left in the old folder on relocation, the
+"decisions" intent calling packages.pending() without a kind.
+
+Two read-only adversarial review rounds before the commit (24 + 5 agents,
+each finding verified) confirmed 16 + ~20 defects, all fixed with
+regressions in m08-review-fixes.test.mjs: a rejected task did not stop
+its dependent task; forget removed rules without confirmation; the armed
+voice window never opened over HTTP; factory.prepare refused the owner
+channel; python unittest could not run and B4 prepared nothing (pilot
+redesigned around an independent acceptance test that traces real calls);
+relocation rollback ignored the WAL; stdlib shadowing guard added.
+
+Tests: 54 new M08 tests (D1-D10, packages, relocation, UI logic,
+adversarial, 16 review regressions); 7/7 mutants on key guards killed.
+Full V2 suite with the M08 UI build: 650 tests, 649 pass, 0 fail,
+1 skipped (symlink privilege); V1: 551/552.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>

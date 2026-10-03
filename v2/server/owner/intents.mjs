@@ -18,7 +18,54 @@ export const INTENT_EFFECTS = Object.freeze({
   zoom: "navigate", face_show: "none", face_core: "none", face_discreet: "none", face_hide: "none", focus: "none", mute: "interrupt",
   pause: "interrupt", stop_worker: "interrupt", freeze_project: "interrupt", unfreeze_project: "effect", stop_all: "interrupt", takeover: "interrupt",
   quiet: "none", notify_normal: "none", briefing: "read", autonomy: "effect", recommendations: "read", help: "read", unknown: "none",
+  // M08. "plan" here = a PROPOSAL record (incident PROPUS, lesson PROPUSĂ, ședință, plan peste un obiectiv) — nothing starts.
+  // A simulation is a labelled scenario ("read"): it never touches real data.
+  incident_open: "plan", twin_changes: "read", twin_impact: "read", twin_why: "read", board_open: "plan", board_next: "navigate",
+  board_defer: "plan", simulate: "read", league: "read", teach: "plan", forget: "plan", today: "read", decisions: "read",
+  fullscreen: "navigate", cockpit_view: "navigate", details: "navigate", objectives: "read", objective_plan: "plan", start_view: "none",
 });
+
+/** Romanian number words (no diacritics, as normalized) → numbers, for "încă cinci clienți". */
+const NUMBER_WORDS = { un: 1, unu: 1, una: 1, o: 1, doi: 2, doua: 2, trei: 3, patru: 4, cinci: 5, sase: 6, sapte: 7, opt: 8, noua: 9, zece: 10,
+  unsprezece: 11, doisprezece: 12, douasprezece: 12, cincisprezece: 15, douazeci: 20, treizeci: 30 };
+export function numberOf(word) {
+  const w = String(word || "").trim();
+  if (/^\d{1,4}$/.test(w)) return Number(w);
+  return NUMBER_WORDS[w] ?? null;
+}
+/** Words that make a scenario a DECREASE (checked on the whole sentence, any clause; review M08 rounds 1–2). */
+const SCENARIO_DECREASE = /\b(pierdem|pierde|pierd|pierdut|renunta|renunt|renuntam|renunti|pleaca|pleci|plecam|amanam|amana|amanat|anulam|anuleaza|oprim|suspendam|suspenda|inchidem|se retrage|retrage|scadem|scade|reducem|reduce|concediu|in loc de|mai putin|mai putine|mai putini|fara (un|o|doi|doua|trei|\d+)? ?(client|clienti|proiect|proiecte|ore|ora|om|oameni))\b/;
+
+/** What a "ce se întâmplă dacă…" sentence fixes; everything else comes from the observed data or stays a question. */
+function simulationArgs(clause) {
+  const args = {};
+  // Fewer clients, fewer hours, a postponed project: the model only adds projects and takes absolute capacity, so a decrease is
+  // never guessed into numbers (review M08: "pierdem doi clienți" became two NEW projects). The owner enters it on the screen.
+  if (SCENARIO_DECREASE.test(clause)) {
+    args.unsupported = true;
+    return args;
+  }
+  // New projects only after an adding word ("luăm / primim / încă / alți / noi").
+  const p = clause.match(/\b(?:inca|mai|alti|alte|luam|primim|adaugam|semnam)\s+(?:inca\s+)?(?<n>\d{1,4}|[a-z]+) (?:clienti|client|proiecte|proiect|comenzi)\b/)
+    || clause.match(/\b(?<n>\d{1,4}|[a-z]+) (?:clienti|client|proiecte|proiect|comenzi) noi\b/);
+  if (p && numberOf(p.groups.n) != null) args.newProjects = numberOf(p.groups.n);
+  // The first horizon that carries a number ("cu 30 de ore pe săptămână în 4 săptămâni" → 4 weeks, not "pe săptămână").
+  for (const h of clause.matchAll(/\b(?<n>\d{1,3}|[a-z]+) (?<u>saptamani|saptamana|luni|luna)\b/g)) {
+    if (numberOf(h.groups.n) != null && numberOf(h.groups.n) > 0) { args.horizonWeeks = /^lun/.test(h.groups.u) ? Math.round(numberOf(h.groups.n) * 4.33) : numberOf(h.groups.n); break; }
+  }
+  const c = clause.match(/\b(?<n>\d{1,3}) (?:de )?ore (?:pe|pe o|pe fiecare) saptamana\b/);
+  if (c) args.capacityHoursPerWeek = Number(c.groups.n);
+  return args;
+}
+
+/** "Ține minte…", "De acum înainte…", "Învață…": the prefix is removed from the ORIGINAL words (diacritics kept for the lesson). */
+const TEACH_PREFIX = /^(tine minte|retine|invata|noteaza-ti|noteaza|de acum inainte|de acum|de-acum inainte|regula noua)\b[ ,:-]*(ca )?/;
+const TEACH_PROCEDURE = /^(la|cand|inainte de|dupa|dupa ce) (livrarea|predarea|lansarea|publicarea|fiecare|orice|un|o|terminarea|finalizarea) .{3,160}\b(verifica|ruleaza|testeaza|fa|cere|trimite|nu (face|trimite|publica|porni))\b/;
+const FORGET = /^(uita|sterge|renunta la|anuleaza) (regula|lectia|procedura|ce ti-am spus|ce ti am spus)\b ?(?<ref>.*)$/;
+function stripRawPrefix(raw) {
+  return String(raw).replace(/^\s*(?:(?:hei|hey|bun[ăa])\s+)?lega[\s,!.:-]+/i, "")
+    .replace(/^\s*(?:[țţt]ine minte|re[țţt]ine|[îi]nva[țţt][ăa]|noteaz[ăa](?:-[țţt]i)?|de(?:\s|-)acum(?:\s+[îi]nainte)?|regul[ăa] nou[ăa])(?=[\s,:-]|$)[\s,:-]*(?:c[ăa]\s+)?/i, "").trim();
+}
 
 const STRIP = new Map(Object.entries({ "ă": "a", "â": "a", "î": "i", "ș": "s", "ş": "s", "ț": "t", "ţ": "t", "Ă": "a", "Â": "a", "Î": "i", "Ș": "s", "Ş": "s", "Ț": "t", "Ţ": "t" }));
 /** Lower case, no diacritics, punctuation → spaces (quotes kept as markers so quoted words can be excluded). */
@@ -83,6 +130,23 @@ const P = [
   ["replay", /\b(arata|explica)(-mi)? (de ce|cum) a (picat|esuat|cazut)\b|\bde ce a picat\b|\breplay\b|\barata(-mi)? momentul\b/, (m, c) => ({ subject: /\btest/.test(c) ? "test" : "mission" })],
   ["why_blocked", /\bde ce (e|este|a ramas|s-a|sa) (blocat|oprit|in asteptare)|\bde ce nu (porneste|merge|continua)\b|\bce (il|o) blocheaza\b/],
   ["why_route", /\bde ce (?<who>claude|codex)\b/, (m) => ({ worker: m.groups.who })],
+  ["twin_why", /\bde ce (am ales|am decis|am hotarat|folosim|avem|am pus|am schimbat|am trecut pe) (?<what>.+)/, (m) => ({ what: m.groups.what })],
+  ["start_view", /\b(porneste|deschide|incepe) (direct |mereu |intotdeauna )?(in|cu) (?<v>ecran(ul)? complet|lega|scena|cockpit(ul)?)\b/, (m) => ({ startView: /cockpit/.test(m.groups.v) ? "cockpit" : "stage" })],
+  ["fullscreen", /\becran(ul)? complet\b|\bpe tot ecranul\b|\bfullscreen\b|\bmod(ul)? lega\b/],
+  ["cockpit_view", /^(cockpit(ul)?|arata(-mi)? cockpit(ul)?|iesi din ecran(ul)? complet|ecran normal)$/],
+  ["details", /^(detalii|arata(-mi)? detaliile|mai multe detalii|vreau detalii)$/],
+  ["simulate", /\bce (se intampla|s-ar intampla|ar fi|ar insemna) daca (?<what>.+)|\bsimuleaza (?<what2>.+)|\bfa(-mi)? un scenariu\b ?(?<what3>.*)/, (m, c) => ({ scenario: (m.groups.what || m.groups.what2 || m.groups.what3 || "").trim(), ...simulationArgs(c) })],
+  ["league", /\b(cine|ce agent|care agent|ce model|care model) (lucreaza|merge|livreaza|iese) (cel )?mai bine\b|\bclasament(ul)? (agentilor|modelelor)\b|\bliga (agentilor)?\b|\bperformanta (agentilor|modelelor)\b/],
+  ["today", /\bce avem (azi|astazi)\b|\bce am (azi|de facut azi)\b|\bce e (azi )?pe agenda\b|\bagenda (de )?azi\b/],
+  ["decisions", /\bce (decizii (am|astept|sunt)|trebuie sa decid|am de decis)\b|\bce asteapta (decizia mea|de la mine|dupa mine)\b/],
+  ["board_open", /\b(deschide|incepe|hai la|porneste|tine) (o |ședința |)?sedinta\b|\bsedinta (saptamanala|de board|board)\b|\bboard meeting\b/],
+  ["board_next", /^(urmatorul( punct| subiect)?|punctul urmator|subiectul urmator|next)$/],
+  ["board_defer", /\bamana (punctul|asta|subiectul|decizia)\b|\blasa(-l)? pe (saptamana|sedinta) viitoare\b/],
+  ["twin_changes", /\bce s-a schimbat (de ieri|de aseara|de azi dimineata|de la ultima (mea )?vizita|cat am lipsit|de cand am plecat)\b|\bce e nou de ieri\b/],
+  ["twin_impact", /\bce (afecteaza|strica|atinge) (?<what>.+)|\b(care e|ce) impact(ul)? (are|al) (?<what2>.+)|\bce se (strica|afecteaza) daca (schimb|modific) (?<what3>.+)/, (m) => ({ what: (m.groups.what || m.groups.what2 || m.groups.what3 || "").trim() })],
+  ["objective_plan", /\b(pregateste|propune) planul (pentru|obiectivului) (obiectivul )?(?<ref>.+)|\b(porneste|continua) obiectivul (?<ref2>.+)/, (m) => ({ objectiveRef: (m.groups.ref || m.groups.ref2 || "").trim() })],
+  ["objectives", /\b(arata(-mi)?|care sunt|ce) obiective(le)?\b/],
+  ["incident_open", /\b(avem|deschide) un incident\b|^(?<what>.+?) (a picat|a cazut|nu (mai )?(merge|functioneaza|raspunde|se incarca)|s-a stricat|e (jos|picat|cazut)|da (o )?eroare|da erori)\b|^nu (mai )?(merge|functioneaza|se incarca|raspunde) (?<what2>.{2,80})$/, (m) => ({ what: (m.groups.what || m.groups.what2 || "").trim() })],
   ["status", /\bce face (acum|codex|claude)\b|\bce se intampla\b|\bunde (suntem|am ajuns)\b|\bcum merge\b|\bce faci acum\b|\bstatus\b/, (m, c) => ({ worker: /codex/.test(c) ? "codex" : /claude/.test(c) ? "claude" : null })],
   ["show_review", /\b(claude|reviewerul|review-ul|reviewul) ce (a gasit|zice|spune)\b|\bce (a gasit|zice|spune) (claude|reviewerul)\b|\bce zice review\b|\barata(-mi)? review/],
   ["show_changes", /\bce a schimbat\b|\barata(-mi)? (ce a schimbat|diff|modificarile|schimbarile)\b|\bce (fisiere|modificari) (a|au)\b/],
@@ -132,8 +196,22 @@ export function resolveIntent(text, context = {}) {
   const quotedParts = norm.split("\u0001").filter((_, i) => i % 2 === 1).join(" ");
   const quotedConfirm = /\b(da|confirm|confirma|executa|porneste)\b/.test(quotedParts);
   norm = unquote(norm);
-  const clauses = norm.split(/;|\. |!|\? | (?:si )?apoi | dupa aceea | dupa care | iar apoi /).map((s) => s.replace(/[.,!?]+$/g, "").trim()).filter(Boolean);
   const steps = [];
+  const forget = norm.match(FORGET);
+  // An interruption always wins ("De acum oprește tot" stops; it is not a lesson), and a question is never a lesson (review M08).
+  const afterPrefix = norm.replace(TEACH_PREFIX, "").replace(/^[\s,:;-]+/, "");
+  // The interruption must BE the sentence (it starts it, no condition before it); a lesson that merely mentions one ("La deploy,
+  // oprește tot dacă…") or a forget request stays a lesson (review M08 round 2).
+  const interrupting = !forget && !/^(la|cand|daca|inainte de|dupa|in caz ca)\b/.test(afterPrefix)
+    && P.some(([intent, re]) => ["stop_all", "pause", "mute", "stop_worker", "freeze_project", "takeover"].includes(intent) && (afterPrefix.match(re)?.index ?? 99) <= 1);
+  const question = /\?\s*$/.test(String(raw).trim());
+  if (interrupting) norm = afterPrefix;
+  if (!interrupting && !question && (TEACH_PREFIX.test(norm) || TEACH_PROCEDURE.test(norm) || forget)) {
+    const lesson = forget ? { intent: "forget", args: { ref: forget.groups.ref.trim() } } : { intent: "teach", args: { text: stripRawPrefix(raw) } };
+    return { utterance: raw, normalized: norm, source, quotedConfirm, clarification: null, refused: quotedConfirm ? [{ intent: "confirm", reason: "O confirmare între ghilimele este un citat, nu răspunsul tău; am ignorat-o" }] : [],
+      steps: [{ ...lesson, constraints: {}, effect: INTENT_EFFECTS[lesson.intent], text: norm }] };
+  }
+  const clauses = norm.split(/;|\. |!|\? | (?:si )?apoi | dupa aceea | dupa care | iar apoi /).map((s) => s.replace(/[.,!?]+$/g, "").trim()).filter(Boolean);
   const globalConstraints = constraintsOf(norm);
   for (const clause of clauses) {
     const matchedConstraints = constraintsOf(clause);
@@ -148,6 +226,8 @@ export function resolveIntent(text, context = {}) {
     steps.push({ intent: found.intent, args: found.args, constraints: { ...matchedConstraints }, effect: INTENT_EFFECTS[found.intent] || "none", text: clause });
   }
   if (!steps.length) steps.push({ intent: "unknown", args: {}, constraints: {}, effect: "none", text: "" });
+  // A decrease anywhere in the sentence ("…luăm doi clienți, apoi pierdem unul") makes every scenario step a question, not numbers.
+  if (SCENARIO_DECREASE.test(norm)) for (const s of steps) if (s.intent === "simulate") s.args = { scenario: s.args.scenario, unsupported: true };
   for (const step of steps) Object.assign(step.constraints, globalConstraints);
 
   const out = { utterance: raw, normalized: norm, source, quotedConfirm, steps: [], clarification: null, refused: [] };

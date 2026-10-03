@@ -19,6 +19,7 @@ import { transitionTask } from "./state-machine.mjs";
 import { registerSalesCommands } from "../sales/sales-commands.mjs";
 import { registerEnvironmentCommands } from "../environments/environment-commands.mjs";
 import { registerOwnerCommands } from "../owner/owner-commands.mjs";
+import { registerIntelCommands } from "../intel/intel-commands.mjs";
 import fs from "node:fs";
 
 /** Commands a LOCAL_HUB schedule may run (non-AI, no external effects). */
@@ -122,6 +123,8 @@ export function registerCommands(commands, hub) {
   // and accepting/rejecting the result, extra repair cycles and owner overrides are UI-only decisions. Voice can stop/pause.
   const FACTORY_KINDS = { BUGFIX: "eng_bugfix", FEATURE: "eng_feature", REFACTOR: "eng_refactor" };
   reg("factory.prepare", { describe: "Software Factory: cerință → misiune de engineering cu specificație v1 (ciornă, nimic nu rulează)",
+    // M08: also from the owner's authenticated session (autopilot tasks, War Room remediation, package B4 — review M08).
+    channels: ["ui", "owner", "test"],
     schema: { projectId: { required: true, max: 80 }, workType: { enum: Object.keys(FACTORY_KINDS), required: true }, title: { required: true, min: 3, max: 160 },
       objective: { required: true, min: 10, max: 4000 }, spec: { type: "object", default: {} }, limits: { type: "object", default: {} } },
     execute: (input, ctx) => {
@@ -387,6 +390,7 @@ export function registerCommands(commands, hub) {
   registerSalesCommands(reg, hub, { createMission });
   registerEnvironmentCommands(reg, hub);
   registerOwnerCommands(reg, hub);
+  registerIntelCommands(reg, hub);
 
   // ---------- company runtime & chief of staff ----------
   reg("company.department_status", { describe: "Stare departament (active/planned/paused)", schema: { departmentKey: { required: true, max: 40 }, status: { enum: ["active", "planned", "paused"], required: true }, reason: { required: true, min: 3, max: 300 } },

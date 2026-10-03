@@ -24,6 +24,7 @@ import { planImport, readLegacyTable } from "../storage/v1-import.mjs";
 import { gitState } from "../tools/git.mjs";
 import { HUB_VERSION, API_CONTRACT } from "../config.mjs";
 import { registerOwnerRoutes } from "../owner/owner-routes.mjs";
+import { registerIntelRoutes } from "../intel/intel-routes.mjs";
 import { COMMAND_CHANNELS, AGENT_COMMANDS, decodeDelegation, checkDelegation } from "../runtime/commands.mjs";
 
 /** The channel a request declares: a local script ("cli"), a delegated agent ("agent", M07) or the owner's UI (default). */
@@ -68,6 +69,7 @@ export function registerRoutes(router, hub, { token }) {
   const cmd = (type, map = ({ body }) => body, options) => (ctx) => dispatch(ctx.req, type, map(ctx), options);
   // M06: owner session, cockpit, envelopes, interruptions, voice profile, layout (v2/server/owner/owner-routes.mjs).
   registerOwnerRoutes(router, hub);
+  registerIntelRoutes(router, hub);
 
   // ---------- session, health, state ----------
   get("/api/health", () => ({ ok: true, version: HUB_VERSION, apiContract: API_CONTRACT, canonicalOrigin: config.canonicalOrigin, bootId: hub.bootId, mode: settings.get("mode"), gate: settings.get("executionGate").status, time: clock().toISOString(), simulation: Boolean(config.simulation) }));

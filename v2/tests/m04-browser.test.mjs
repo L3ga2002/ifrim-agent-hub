@@ -9,7 +9,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
-import { makeTestHub, tempDir } from "./helpers.mjs";
+import { makeTestHub, tempDir, WEB_DIST } from "./helpers.mjs";
 import { createHttpServer } from "../server/http/server.mjs";
 import { browserStatus, browserLaunchOptions } from "../server/tools/browser.mjs";
 import { generateSyntheticOrgs } from "../server/sales/synthetic.mjs";
@@ -17,7 +17,7 @@ import { MANUAL_CONTACT_TEXT, CLIENT_ACCEPTANCE_TEXT } from "../server/sales/sal
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const HUB_ROOT = path.resolve(here, "..", "..");
-const DIST = path.join(HUB_ROOT, "v2", "web", "dist", "index.html");
+const DIST = path.join(WEB_DIST, "index.html");
 const installed = browserStatus({ hubRoot: HUB_ROOT }).installed;
 const skip = !installed ? "SKIPPED_ENV: Playwright is not installed" : !fs.existsSync(DIST) ? "SKIPPED_ENV: the UI is not built (npm run build:v2)" : false;
 

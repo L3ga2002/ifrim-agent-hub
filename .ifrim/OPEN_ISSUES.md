@@ -1,6 +1,23 @@
 # Open Issues - Ifrim Agent Hub
 
-## 2026-10-03 — Open items after M07 (version `2.8.0-m07`; supersede every section below where they overlap)
+## 2026-10-03 — Open items after M08 (code `2.9.0-m08`, uncommitted; the live Hub still runs `2.8.0-m07`)
+
+1. **Upgrade the live Hub to M08 (owner).** Steps in `M08_REPORT.md` §6. Until then, the M08 features exist only in the source and in test hubs.
+2. **M07 items 1–2 (OneDrive sync, voice-profile ACL) now have a decision package (A).** Pilot → Decizii; scripts `relocate-data.mjs` / `voice-acl.ps1`. Not executed.
+   - After A1, the Codex deny list contains the new data paths, so the R3 isolation consent must be confirmed again.
+   - A3: copies already synced to OneDrive are not deleted by the move.
+3. **Package B (ProDelivery pilot) is prepared, not started.** It is blocked until A is decided and executed, and it starts only with the owner's confirmed plan. LIVE_PROJECT_PILOT_VERIFIED = no.
+4. **Voice UX is verified only with synthetic voice** (the armed window included). To verify live after the upgrade, with the owner's voice.
+5. **Personal Mission Control on a real phone is BLOCKED.**
+   - The Hub binds 127.0.0.1 only; no remote exposure is configured.
+   - A LAN or tunnel connection would be a separate security decision (TLS, origin, pairing over that channel).
+6. **The board's AI summary is not enabled.** The agenda is deterministic. A model summary would consume the subscription and needs its own budget decision.
+7. **Skill bodies are not injected into worker prompts** (neither base nor candidate versions; skills are a registry since M01). Skill evolution therefore manages versions only: an activated candidate is recorded, not applied, and the league/auto-rollback no longer attribute outcomes to it. Injecting skill content would change every existing prompt, so it needs its own decision. There is no model evaluation either (`modelEvaluation: NOT_RUN`).
+9. **Python stdlib shadowing guard is heuristic** (integrity finding `stdlib_shadowed` for writer-created top-level `.py` modules named like standard-library modules; `__init__.py` on the protected test path is HIGH, not blocking). The reviewer still reads every change set.
+10. **A conditional sentence without a teach prefix that contains "oprește tot" is treated as Stop All** (M06 fail-safe bias: stopping only reduces activity).
+8. **Lessons reach worker prompts as text** under the Hub rules. A lesson that widens access is refused at confirmation (security parts), but the parser is heuristic: the owner reviews every proposal before confirming.
+
+## 2026-10-03 — Open items after M07 (version `2.8.0-m07`; superseded by M08 above where they overlap)
 
 1. **OneDrive sync (pre-existing; owner decision).** The project lives under OneDrive Desktop, including `.ifrim/private` (Hub database, logs, V1/V2 backups), and is synced to the cloud. Voice confirmation transcripts and history land there.
    - Options: move `HUB_V2_DATA_DIR` outside OneDrive, or exclude the folder from sync.

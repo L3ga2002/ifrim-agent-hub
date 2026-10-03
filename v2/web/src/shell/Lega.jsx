@@ -7,7 +7,7 @@ import { legaLevels } from "../lib/legaLevels.js";
 import { offerGrantPrefill, pointAt } from "../lib/legaBridge.js";
 import { isAppShortcut, approvedNotStarted } from "../lib/uiLogic.js";
 import { createVoiceGate } from "../lib/voiceGate.js";
-import { presentedPlan, looksLikeConfirmation, isCapturing, preferredMic } from "../lib/voiceContext.js";
+import { presentedPlan, looksLikeConfirmation, isCapturing, preferredMic, isArmed } from "../lib/voiceContext.js";
 
 /**
  * Lega — the Hub's voice assistant (GPT-Live via Codex, ChatGPT plan).
@@ -321,6 +321,8 @@ export function Lega({ go }) {
 
   // The stage (full-screen view) reads the status and sends start/stop without owning the session.
   useEffect(() => { setState({ legaStatus: status }); }, [status]);
+  // M08: the cockpit sends this id with a plan request, so the Hub can arm the short voice window for THIS Lega session.
+  useEffect(() => { setState({ legaSessionId: status !== "off" ? session?.id || null : null }); }, [status, session?.id]);
   useEffect(() => {
     const onCommand = (e) => { if (e.detail === "start") { if (statusRef.current === "off") start(); } else if (e.detail === "stop") stop("user"); else if (e.detail === "open") setOpen(true); };
     window.addEventListener("lega:command", onCommand);
@@ -468,6 +470,21 @@ async function followSpokenConfirmation(decision) {
   if (row?.transcriptStatus !== "final" || !looksLikeConfirmation(row.transcript)) return;
   const plan = presentedPlan();
   if (!plan || plan.envelopeId !== decision.envelopeId) return;
+  // An ARMED plan is confirmed by the Hub itself from the same server-held segment; here we only report what happened.
+  if (isArmed(plan.envelopeId)) {
+    for (let i = 0; i < 25; i += 1) {
+      let env = null;
+      try { env = await api(`/api/envelopes/${plan.envelopeId}`); } catch { return; }
+      if (env.status !== "PROPOSED") {
+        if (env.consent?.modality === "voice") pushToast(`env-${plan.envelopeId}`, "ok", "Confirmat prin voce (verificată și transcrisă local): misiunea a pornit");
+        else pushToast(`env-voice-${plan.envelopeId}`, "info", `Planul e acum: ${env.status}`);
+        return;
+      }
+      await new Promise((r) => setTimeout(r, 400));
+    }
+    pushToast(`env-voice-${plan.envelopeId}`, "warn", `Am auzit „${row.transcript}”, dar planul nu s-a confirmat; folosește butonul sau repetă „Da, execută planul”.`);
+    return;
+  }
   try {
     const out = await api("/api/owner/intent", { method: "POST", body: { utteranceId: decision.utteranceId, projectId: plan.projectId || undefined, presented: { envelopeId: plan.envelopeId, nonce: plan.nonce, hash: plan.hash } } });
     const confirmed = (out?.results || []).find((r) => r.confirmed);

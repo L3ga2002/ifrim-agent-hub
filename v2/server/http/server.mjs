@@ -12,7 +12,7 @@ import { HUB_VERSION, API_CONTRACT } from "../config.mjs";
  */
 export const FAILSAFE_PATHS = Object.freeze(["/api/stop-all", "/api/runs/*/interrupt", "/api/lega/sessions/*/stop", "/api/owner/interrupt",
   "/api/owner/policy/deactivate", "/api/owner/logout", "/api/owner/sessions/revoke-all", "/api/envelopes/*/revoke",
-  "/api/factory/*/stop", "/api/factory/*/pause", "/api/grants/*/revoke"]);
+  "/api/factory/*/stop", "/api/factory/*/pause", "/api/grants/*/revoke", "/api/m/command", "/api/m/forget", "/api/skills/candidates/*/rollback", "/api/devices/*/revoke"]);
 /**
  * Segment-wise match ("*" is exactly one segment), so no pattern can widen into another route. /api/gate is a fail-safe only
  * when it SUSPENDS the gate (opening it is not; review M07), so it needs the body.

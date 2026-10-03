@@ -59,6 +59,17 @@ import { createAdvisor } from "./owner/advisor.mjs";
 import { createVoice } from "./owner/voice.mjs";
 import { createVoiceEngine } from "./owner/voice-engine.mjs";
 import { createSetup } from "./owner/setup.mjs";
+import { createTwin } from "./intel/twin.mjs";
+import { createWarRoom } from "./intel/warroom.mjs";
+import { createAutopilot } from "./intel/autopilot.mjs";
+import { createBoard } from "./intel/board.mjs";
+import { createSimulations } from "./intel/simulation.mjs";
+import { createLeague } from "./intel/league.mjs";
+import { createSkillEvolution } from "./intel/skill-evolution.mjs";
+import { createTeach } from "./intel/teach.mjs";
+import { createDevices } from "./intel/devices.mjs";
+import { createPackages } from "./intel/packages.mjs";
+import { setExtraCommands } from "./factory/spec.mjs";
 
 /** Live (non-persisted) channel for token deltas; persisted state is always reloadable from the API. */
 function createLiveChannel() {
@@ -180,10 +191,28 @@ export function createHub(config, { providerOverrides = {}, homeDir, browserLaun
   const interrupts = createInterrupts({ db, bus, clock, settings, runs, factory, envelopes, checkpoints, projects, live });
   const advisor = createAdvisor({ db, bus, clock, settings, approvals, envelopes, runs, factory, conversations, projects, grants });
 
+  // M08 (project autopilot & company intelligence): every service reads and writes through the modules above — one database, one
+  // memory, one command bus, the same envelopes and grants. Nothing here starts a model by itself.
+  const twin = createTwin({ db, bus, clock, projects, settings, envelopes, approvals });
+  const warroom = createWarRoom({ db, bus, clock, projects, twin, missions, factory, commands });
+  const autopilot = createAutopilot({ db, bus, clock, projects, factory, commands, envelopes });
+  const simulations = createSimulations({ db, bus, clock });
+  const league = createLeague({ db, config });
+  const skillEvolution = createSkillEvolution({ db, bus, clock });
+  skills.setOverlay((projectId) => skillEvolution.overlayFor(projectId));
+  const teach = createTeach({ db, bus, clock, memory, projects });
+  const voiceProfilesDir = config.testMode || !voiceEngine.paths?.root ? path.join(config.dataDir, "voice") : path.join(voiceEngine.paths.root, "profiles");
+  const packages = createPackages({ db, bus, clock, config, settings, projects, environments, voiceProfilesDir });
+  const board = createBoard({ db, bus, clock, settings, sales, factory, approvals, envelopes, warroom, autopilot, company, environments, packages });
+  const devices = createDevices({ db, bus, clock, commands, factory, envelopes, warroom });
+  // Owner-enabled extra verification commands (decision package B3) follow the setting.
+  setExtraCommands(settings.get("factoryExtraCommands") || []);
+
   const hub = { config, db, bus, live, settings, projects, conversations, missions, approvals, policy, leases, grants, providerState, usage, memory, leads, sales,
     company, chiefOfStaff, surfaces, schedules, computer, skills, artifacts, integrations, nativeSessions, telemetry, router, commands, checkpoints,
     breakers, supervisor, backups, providers, gate, runs, handoffs, tools, roleConfig, skillConfig, capabilityConfig, codexIsolation, lega, refreshCodexConfig, factory, factoryRunner,
-    environments, wslRunner, trust, envelopes, cockpit, interrupts, advisor, voice, voiceEngine };
+    environments, wslRunner, trust, envelopes, cockpit, interrupts, advisor, voice, voiceEngine,
+    twin, warroom, autopilot, simulations, league, skillEvolution, teach, packages, board, devices };
   registerCommands(commands, hub);
   // M07: the resumable setup (ordered real steps; the automatic ones run on the Hub through the ordinary commands).
   hub.setup = createSetup(hub);
@@ -204,6 +233,12 @@ export function createHub(config, { providerOverrides = {}, homeDir, browserLaun
         try { bus.emit({ type: "factory.error", scopeType: "run", scopeId: event.runId, source: "factory", payload: { message: String(error.message).slice(0, 300) } }); } catch { /* shutting down */ }
       });
     }
+    // M08 §17: a gate segment's local transcript is final; the envelope service confirms only an ARMED plan, after all its checks.
+    if (event.type === "voice.gate_final" && event.payload?.envelopeId) {
+      const p = event.payload;
+      setImmediate(() => { envelopes.confirmFromArmed({ utteranceId: p.utteranceId, envelopeId: p.envelopeId, sessionId: p.sessionId, legaSessionId: p.legaSessionId || null }).catch(() => {}); });
+    }
+    if (event.type === "settings.changed" && event.payload?.key === "factoryExtraCommands") setExtraCommands(settings.get("factoryExtraCommands") || []);
     if (event.scopeType === "task" && ["task.completed", "task.cancelled", "task.failed"].includes(event.type)) {
       try { telemetry.recordTaskOutcome(event.scopeId); } catch { /* ignore */ }
       try { bus.transaction(() => policy.revokeTaskScopes(event.scopeId, `task ${event.type.split(".")[1]}`)); } catch { /* ignore */ }

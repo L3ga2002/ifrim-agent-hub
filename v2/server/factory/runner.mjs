@@ -36,11 +36,29 @@ export function commandArgv(command) {
 export function parseTestOutput(lines) {
   const counts = {};
   const failures = [];
+  let tapSeen = false; // a TAP/spec summary wins: stderr text after it never rewrites the counts
+  let ran = null; // Python unittest (M08, package B3): "Ran N tests in …" then "OK" / "OK (skipped=1)" / "FAILED (failures=1, errors=2)"
   for (const line of lines) {
     const m = line.match(/^\s*(?:#|ℹ)\s*(tests|pass|fail|skipped|todo|cancelled)\s+(\d+)\s*$/);
-    if (m) counts[m[1]] = Number(m[2]);
+    if (m) { counts[m[1]] = Number(m[2]); tapSeen = true; }
     const f = line.match(/^\s*not ok \d+ - (.+?)(?:\s+#.*)?$/);
     if (f && failures.length < 30) failures.push(f[1].slice(0, 200));
+    // unittest writes to stderr; the environment runner prefixes those lines with "[stderr] ".
+    const plain = line.replace(/^\[stderr\] /, "");
+    const r = plain.match(/^Ran (\d+) tests? in [\d.]+s\s*$/);
+    if (r) ran = Number(r[1]);
+    const u = plain.match(/^(.+?) \.\.\. (FAIL|ERROR)\s*$/);
+    if (u && failures.length < 30) failures.push(u[1].slice(0, 200));
+    if (ran !== null) {
+      const ok = plain.match(/^OK(?: \((.*)\))?\s*$/);
+      const bad = plain.match(/^FAILED \((.*)\)\s*$/);
+      if (ok || bad) {
+        const detail = Object.fromEntries(String((ok || bad)[1] || "").split(",").map((p) => p.trim().split("=")).filter((p) => p.length === 2).map(([k, v]) => [k, Number(v)]));
+        const skipped = (detail.skipped || 0) + (detail["expected failures"] || 0);
+        const failed = bad ? (detail.failures || 0) + (detail.errors || 0) + (detail["unexpected successes"] || 0) : 0;
+        if (!tapSeen) Object.assign(counts, { tests: ran, fail: failed, skipped, pass: Math.max(0, ran - failed - skipped) });
+      }
+    }
   }
   return { counts, failures };
 }
@@ -97,6 +115,8 @@ export function createFactoryRunner({ config, supervisor, settings, providerStat
     const ready = readiness(project);
     if (!ready.ok) return Promise.resolve({ ...base, status: "BLOCKED", reason: ready.detail, isolation: ready.isolation });
     const argv = commandArgv(command);
+    // An allowed command with no Windows mapping (M08: python3 -m unittest runs only inside ifrim-runner) is refused with its reason.
+    if (!argv) return Promise.resolve({ ...base, status: "BLOCKED", reason: `„${command}” rulează doar pe ruta izolată (wsl-runner), nu pe Windows`, isolation: ready.isolation });
     const binary = ready.binary; // the Codex client: the same provider binary every run uses
     return new Promise((resolve) => {
       const out = [];

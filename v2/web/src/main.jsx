@@ -4,7 +4,8 @@ import "./styles/app.css";
 import "./styles/m02.css";
 import "./styles/m06.css";
 import "./styles/m07.css";
-import { startHubConnection, useHub } from "./store.js";
+import { startHubConnection, useHub, setState } from "./store.js";
+import { api } from "./api.js";
 import { Shell } from "./shell/Shell.jsx";
 import { Loading } from "./components/ui.jsx";
 import { navigate } from "./nav.js";
@@ -28,6 +29,9 @@ const screens = {
   ecosystem: lazy(() => import("./screens/Ecosystem.jsx")),
   system: lazy(() => import("./screens/System.jsx")),
   settings: lazy(() => import("./screens/Settings.jsx")),
+  // M08: project autopilot & company intelligence, and the phone's own screen (rendered without the desktop shell).
+  intel: lazy(() => import("./screens/Intel.jsx")),
+  m: lazy(() => import("./screens/Mobile.jsx")),
 };
 
 export function parseRoute(hash) {
@@ -49,10 +53,17 @@ function App() {
     return () => window.removeEventListener("hashchange", onHash);
   }, []);
   useEffect(() => startHubConnection(), []);
+  // M08 Zero-Menu: a plain start (no screen in the address) opens what the owner chose — the cockpit or the big Lega screen.
+  useEffect(() => {
+    const h = window.location.hash;
+    if (h && h !== "#" && h !== "#/") return;
+    api("/api/owner/start-view").then((r) => { if (r?.startView === "stage") setState({ stageOpen: true }); }).catch(() => {});
+  }, []);
   useEffect(() => { document.getElementById("main")?.focus({ preventScroll: true }); }, [route.name]);
   const Screen = screens[route.name];
   const loading = useHub((s) => s.loading);
   const go = useCallback((path) => navigate(path), []);
+  if (route.name === "m") return <Suspense fallback={<div className="mobile-app"><Loading lines={4} /></div>}><Screen /></Suspense>;
   return (
     <Shell route={route} go={go}>
       <Suspense fallback={<div className="page"><Loading lines={5} /></div>}>

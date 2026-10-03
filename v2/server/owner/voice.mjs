@@ -255,6 +255,8 @@ export function createVoice({ db, bus, clock, settings, config, trust, engine })
         let text = String(out.transcript || "").trim().slice(0, 500);
         if (isLikelyHallucination(text, m.quality)) text = "";
         db.prepare("UPDATE voice_utterances SET transcript = ?, transcript_status = ?, stt_engine = ?, stt_ms = ?, updated_at = ? WHERE id = ?").run(text || null, text ? "final" : "empty", out.sttEngine || null, out.sttMs ?? null, iso(), id);
+        // M08 §17: an armed plan may be confirmed by this segment; the envelope service re-checks everything (no authority here).
+        if (text && base.envelope_id) bus.emit({ type: "voice.gate_final", scopeType: "owner", scopeId: "voice", source: "owner", payload: { utteranceId: id, envelopeId: base.envelope_id, sessionId: base.owner_session_id, legaSessionId: base.lega_session_id } });
       }).catch(() => { try { db.prepare("UPDATE voice_utterances SET transcript_status = 'failed', updated_at = ? WHERE id = ?").run(iso(), id); } catch { /* closing */ } });
     }
     return { utteranceId: id, purpose, result: decision.result, reason: decision.reason, flags: decision.suspicious, transcript: purpose === "gate" ? null : transcript, final: transcriptStatus !== "pending",

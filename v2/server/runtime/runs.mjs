@@ -151,7 +151,7 @@ export function createRunManager(deps) {
       const sessionId = environment === "windows" ? conversations.latestSession(conversationId, provider) : null;
       let outputMessage;
       const taskRow = taskId ? db.prepare("SELECT department_id, route_decision_id FROM tasks WHERE id = ?").get(taskId) : null;
-      const skillVersions = roleId && deps.skills ? deps.skills.forRole(roleId) : [];
+      const skillVersions = roleId && deps.skills ? deps.skills.forRole(roleId, { projectId: project?.id || null }) : [];
       timeline.mark("run_recorded");
       bus.transaction(() => {
         db.prepare(`INSERT INTO agent_runs (id, task_id, conversation_id, role_id, stage, provider, model, effort, access, status, provider_session_id, input_message_id,

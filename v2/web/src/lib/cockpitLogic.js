@@ -33,6 +33,30 @@ export function cockpitSummary(c) {
 }
 
 /** Lega's reply to one sentence, built from the results of its steps. */
+/** M08: one or two spoken-style lines for each company-intelligence answer (the card shows the rest). */
+export function intelLines(r) {
+  const out = [];
+  if (r.incident?.incident) out.push(`Am deschis un incident PROPUS: „${r.incident.incident.title.replace(/^Raport: /, "")}”. Nu am oprit și nu am schimbat nimic. Spune-mi ce vezi exact și de când.`);
+  if (r.changes) out.push(r.changes.items.length ? `De la ${r.changes.sinceSource}: ${r.changes.items.length} schimbări (${[...new Set(r.changes.items.map((i) => i.kind))].join(", ")}).` : r.changes.note);
+  if (r.impact) out.push(r.impact.components.length ? `Componente: ${r.impact.components.join(", ")}; ${r.impact.known.history.length} schimbări anterioare, ${r.impact.known.incidents.length} incidente legate de ele.` : r.impact.unknowns[0]);
+  if (r.why) out.push(r.why.found ? `Am găsit ${r.why.decisions.length + r.why.board.length} decizii înregistrate.` : r.why.note);
+  if (r.blocked?.blocked) out.push(`Lanțul blocajului: ${r.blocked.chain.filter((c) => c.kind !== "attention").slice(0, 2).map((c) => c.what).join(" → ")}.`);
+  else if (r.blocked?.chain?.length) out.push(`Nimic nu blochează proiectul; de urmărit: ${r.blocked.chain.slice(0, 2).map((c) => c.what).join(" · ")}.`);
+  if (r.board) { const m = r.board.meeting || r.board; out.push(m.current ? `Ședința: ${m.current.title} (${m.remaining} rămase).` : "Ședința e deschisă."); }
+  if (r.simulation) { const res = r.simulation.result; out.push(res.status === "COMPUTED" ? `SIMULARE: ${res.result.single ? `utilizare ${res.result.single.utilizationPct}%, ${res.result.single.weeksNeeded} săptămâni necesare` : "intervalul optimist–pesimist e pe card"}.` : `Ca să calculez scenariul îmi lipsesc: ${res.missing.map((m) => m.label).join(", ")}.`); }
+  if (r.league) out.push(r.league.verdict === "INSUFFICIENT_EVIDENCE" ? "Nu am destule date pentru un clasament; nu declar un câștigător." : `Liga: ${r.league.groups.length} grupe comparabile.`);
+  if (r.lesson) out.push(r.lesson.refused ? r.lesson.reason : `Am înțeles: ${r.lesson.lesson.parsed.trigger ? `${r.lesson.lesson.parsed.trigger}: ` : ""}${r.lesson.lesson.parsed.steps.join(", ")}. Devine regulă după ce o confirmi.`);
+  if (r.forget) out.push(r.forget.effect || r.forget.question || r.forget.note);
+  if (r.today) out.push(r.today.headline.length ? `Azi: ${r.today.headline.slice(0, 3).map((h) => h.title).join(" · ")}.` : "Azi nu e nimic care să ceară atenția ta.");
+  if (r.decisions) out.push(r.decisions.length || r.packages?.length ? `Te așteaptă ${r.decisions.length + (r.packages?.length || 0)} decizii.` : "Nicio decizie în așteptare.");
+  if (r.objectives) out.push(r.objectives.length ? `${r.objectives.length} obiective pe proiect.` : "Niciun obiectiv pe acest proiect.");
+  if (r.view === "stage") out.push("Ecran complet.");
+  if (r.view === "cockpit") out.push("Înapoi la cockpit.");
+  if (r.startView) out.push(r.startView === "stage" ? "La pornire deschid ecranul complet." : "La pornire deschid cockpit-ul.");
+  if (r.armed?.armed) out.push("Fereastra vocală e deschisă: spune „Da, execută planul”.");
+  return out.filter(Boolean);
+}
+
 export function replyFor(response) {
   if (!response) return "";
   const { resolved, results = [] } = response;
@@ -62,6 +86,7 @@ export function replyFor(response) {
     if (r.autonomy) lines.push(`Nivelul de autonomie e acum ${r.autonomy.level}.`);
     if (r.recommendations) lines.push(r.recommendations.items.length ? r.recommendations.items.map((x) => x.title).slice(0, 2).join(" · ") : "Nu am recomandări susținute de istoricul tău.");
     if (r.companyMap) lines.push(`Compania: ${r.companyMap.departments.length} departamente, ${r.companyMap.activeRuns} execuții active acum.`);
+    lines.push(...intelLines(r));
   }
   const face = faceCommand(resolved?.steps || []);
   if (face?.shape === "FACE") lines.push("Aceasta e fața mea: linii și particule, nu chipul cuiva.");
