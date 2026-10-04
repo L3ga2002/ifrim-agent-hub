@@ -1,6 +1,6 @@
 # Open Issues - Ifrim Agent Hub
 
-## 2026-10-04 — Open items after M10 (code `2.11.0-m10`, contract 10, migration 10; **uncommitted** on `v2-milestone-01`, together with M09, over `ae3aa48`; **the live Hub runs `2.11.0-m10` since 2026-10-04 13:53 UTC**). Detail: `.ifrim/M10_REPORT.md` (takes precedence over the M09 section below where they overlap)
+## 2026-10-04 — Open items after M10 (code `2.11.1-m10`, contract 10, migration 10; **committed as `72d6964`** on `v2-milestone-01`, together with M09, over `ae3aa48`; push pending: the owner runs `git push origin v2-milestone-01`; **the live Hub runs `2.11.0-m10` since 2026-10-04 13:53 UTC**). Detail: `.ifrim/M10_REPORT.md` (takes precedence over the M09 section below where they overlap)
 
 0. **M10.1 — Lega one-click start (`2.11.1-m10`, no migration) is LIVE since 2026-10-04 18:12 UTC.** Owner's approval: "abrob upgrade la 2 11 1". Claude ran `upgrade.mjs --apply`, run `upg_muu51x09`, verified: `2.11.1-m10`, BUILD_SAFE, 0 active grants, 0 runs.
    - The PC had rebooted at 18:07 UTC and the Hub was down, so it was an offline upgrade.
@@ -52,7 +52,7 @@
     - Claude billing re-declaration (M09 #2).
     - Autostart, remote access and permanent listening stay off; M10 adds none of them.
 
-## 2026-10-04 — Open items after M09 (code `2.10.0-m09`, contract 9, migration 9; **uncommitted** on `v2-milestone-01` over `ae3aa48`; **the live Hub runs `2.10.0-m09` since 2026-10-04 07:23 UTC**). Detail: `.ifrim/M09_REPORT.md` (takes precedence over the M08 section below where they overlap)
+## 2026-10-04 — Open items after M09 (code `2.10.0-m09`, contract 9, migration 9; **committed in `72d6964`** with M10 on `v2-milestone-01` over `ae3aa48`; **the live Hub runs `2.10.0-m09` since 2026-10-04 07:23 UTC**). Detail: `.ifrim/M09_REPORT.md` (takes precedence over the M08 section below where they overlap)
 
 1. **Done 2026-10-04 07:20–07:24 UTC (owner's request "fă tu pașii de trecere pe M09"):** live upgrade to M09.
    - Steps: dry run 8 → 9 clean → stop → coherent DB backup → `npm run build:v2` → start → read-only checks.

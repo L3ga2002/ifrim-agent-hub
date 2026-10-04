@@ -1,6 +1,6 @@
 # M10.1 — Lega pornește dintr-un click (fără mod, poartă manuală sau grant)
 
-Data: 2026-10-04 · cod `2.11.1-m10` · contract API 10 (neschimbat) · fără migrare · **necomis** · **Hub-ul live rulează `2.11.1-m10` din 2026-10-04 18:12 UTC**. Upgrade-ul l-a făcut Claude, la aprobarea ta („abrob upgrade la 2 11 1”): `upgrade.mjs --apply`, rularea `upg_muu51x09`.
+Data: 2026-10-04 · cod `2.11.1-m10` · contract API 10 (neschimbat) · fără migrare · **comis în `72d6964`** (push: `git push origin v2-milestone-01`, îl rulezi tu) · **Hub-ul live rulează `2.11.1-m10` din 2026-10-04 18:12 UTC**. Upgrade-ul l-a făcut Claude, la aprobarea ta („abrob upgrade la 2 11 1”): `upgrade.mjs --apply`, rularea `upg_muu51x09`.
 
 ## Problema
 

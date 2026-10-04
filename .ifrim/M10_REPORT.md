@@ -1,8 +1,8 @@
 # M10 — Operatorul PC-ului, autorizare fără formulare, Studio utilizabil
 
-Data: 2026-10-04 · cod `2.11.0-m10` · contract API 10 · migrarea 10 · **necomis** · **Hub-ul live rulează M10 din 2026-10-04 13:53 UTC** (upgrade la aprobarea ta, backup verificat; vezi `M10_ACTIVATION_SHEET.md`, de la pasul 2).
+Data: 2026-10-04 · cod `2.11.0-m10` · contract API 10 · migrarea 10 · **comis în `72d6964`** (împreună cu M09 și M10.1; push-ul îl rulezi tu: `git push origin v2-milestone-01`) · **Hub-ul live rulează M10 din 2026-10-04 13:53 UTC** (upgrade la aprobarea ta, backup verificat; vezi `M10_ACTIVATION_SHEET.md`, de la pasul 2).
 
-> **M10.1 (2026-10-04, cod `2.11.1-m10`, necomis, Hub-ul live încă pe `2.11.0-m10`):** vocea Lega pornește dintr-un click, din sesiunea ta de proprietar. Nu mai cere mod, LIVE_VALIDATION sau grant de mână: Hub-ul derivă o autorizare pentru o singură sesiune vocală și o revocă la final. Detalii, reguli de securitate, teste și repornirea care o activează: `M10_LEGA_ZERO_FORM.md`.
+> **M10.1 (2026-10-04, cod `2.11.1-m10`, comis în `72d6964`, Hub-ul live pe `2.11.1-m10` din 18:12 UTC):** vocea Lega pornește dintr-un click, din sesiunea ta de proprietar. Nu mai cere mod, LIVE_VALIDATION sau grant de mână: Hub-ul derivă o autorizare pentru o singură sesiune vocală și o revocă la final. Detalii, reguli de securitate, teste și repornirea care o activează: `M10_LEGA_ZERO_FORM.md`.
 
 ## Pe scurt
 
