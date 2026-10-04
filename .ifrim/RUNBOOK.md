@@ -1,5 +1,127 @@
 # Runbook — Ifrim Agent Hub V2
 
+## Milestone 10 — Operatorul PC-ului, planuri fără formulare, Studio utilizabil (2026-10-04, versiunea `2.11.0-m10`, contract 10, migrarea 10; necomis)
+
+Activarea completă e în `M10_ACTIVATION_SHEET.md`. Hub-ul live rulează M10 din 2026-10-04 13:53 UTC: `upgrade.mjs --apply`, rularea `upg_mutvrr79`. Backupul de dinainte de migrare e `pre-upgrade\hub-v2.pre-migration.v9-to-v10.2026-10-04T13-53-14-962Z.sqlite`.
+
+### După un restart al PC-ului (pornire automată la logare)
+
+Din 2026-10-04, Hub-ul V2 pornește singur la logarea în Windows, după boot sau restart. Îl pornește sarcina programată **„Ifrim Agent Hub V2”**:
+- rulează ca utilizatorul tău, fără parolă stocată și fără drepturi de administrator, la 45 s după logare;
+- pornește Hub-ul doar dacă nu răspunde nimic pe 8011, deci nu oprește și nu repornește niciodată un Hub care rulează;
+- Hub-ul pornește în BUILD_SAFE, fără model și fără sesiune Lega.
+
+Comenzi:
+
+```bash
+powershell -ExecutionPolicy Bypass -File "v2\scripts\autostart.ps1"
+powershell -ExecutionPolicy Bypass -File "v2\scripts\autostart.ps1" -Install
+powershell -ExecutionPolicy Bypass -File "v2\scripts\autostart.ps1" -Uninstall
+```
+
+(stare / instalare sau actualizare / ștergere)
+
+- **Jurnal:** `%USERPROFILE%\IfrimHub\autostart.log`. Detaliile pornirii sunt în `v2-hub.log`, din folderul de date.
+- **Sarcina V1 „Ifrim Agent Hub”** (tray, porturile 3004/8004) e separată și neatinsă.
+- **Pornire manuală:** `powershell -ExecutionPolicy Bypass -File "v2\scripts\start-detached.ps1"`.
+- **Verificat pe 2026-10-04:**
+  - rulată cu Hub-ul pornit: „deja pornit”, rezultat 0, un singur Hub;
+  - rulată după `stop.mjs`: Hub-ul a pornit în ~6 s (`2.11.1-m10`, BUILD_SAFE) și a rămas pornit după terminarea sarcinii.
+  - Declanșatorul real de logare se vede la următorul restart.
+
+### M10.1 — Lega dintr-un click (`2.11.1-m10`, fără migrare)
+
+**Aplicat live pe 2026-10-04 la 18:12 UTC** (rularea `upg_muu51x09`). Pentru un upgrade viitor fără migrare, aceeași comandă:
+
+```bash
+node v2/scripts/upgrade.mjs --plan
+node v2/scripts/upgrade.mjs --apply
+```
+
+Runner-ul oprește Hub-ul, reconstruiește UI-ul, pornește Hub-ul și verifică versiunea `2.11.1-m10`.
+
+După repornire, „Pornește Lega” cere cel mult o confirmare Windows Hello, dacă sesiunea nu e deschisă. Nu mai trebuie mod sau grant. Dacă Lega refuză, panoul numește blocarea reală:
+- poarta (după Stop All);
+- acordul;
+- declarația Codex;
+- limita de 6 porniri / 15 min.
+
+Detalii: `M10_LEGA_ZERO_FORM.md`.
+
+### Upgrade (de acum înainte, pentru orice migrare)
+
+```bash
+node v2/scripts/upgrade.mjs --plan      # doar citire: versiuni + dry run pe o copie
+node v2/scripts/upgrade.mjs --apply     # preflight → dry run → stop → build (UI + helper) → start (backup automat) → verify
+node v2/scripts/upgrade.mjs --resume    # continuă de la pasul eșuat
+```
+
+- **Backupul de dinainte de migrare** e făcut de server, nu de script. La pornire, dacă baza are migrări în așteptare, se face `VACUUM INTO <dataDir>\pre-upgrade\hub-v2.pre-v<N>-<data>.sqlite` și copia e verificată (integritate, versiune, tabele, sha256). Manifestul `.manifest.json` nu se suprascrie niciodată. Fără backup, Hub-ul refuză să pornească (`PRE_MIGRATION_BACKUP_FAILED`) și baza rămâne neatinsă.
+- **Starea runner-ului:** `<dataDir>\upgrade\state.json` + `runs.jsonl`.
+
+### Rollback (manual, niciodată automat)
+
+1. Oprește Hub-ul: `node v2/scripts/stop.mjs`.
+2. Păstrează baza curentă: mut-o, nu o șterge.
+3. Copiază backupul din `pre-upgrade\` peste `hub-v2.sqlite` și verifică sha256 cu manifestul.
+4. Revino la codul M09 cu git (`git stash` sau checkout pe commitul M09) și pornește Hub-ul.
+
+Backupul pre-M09 rămâne separat: nu e suprascris.
+
+### Operatorul desktop
+
+- **Helperul:** `<workDir>\desktop\IfrimOperator.exe` + `IfrimOperator.manifest.json`. Îl construiește upgrade-ul sau `node v2/scripts/build-operator.mjs`. Hub-ul refuză un binar care nu corespunde manifestului și sursei (`OPERATOR_NOT_READY`).
+- **Stop:** bara de sus → Stop / Preiau eu, „Oprește tot”, Stop All sau `/api/desktop/stop` (fail-safe, fără sesiune). Aplicațiile rămân deschise.
+- **Un helper blocat:** Stop și apoi repornirea Hub-ului. La pornire, sesiunea desktop se încheie și planurile care rulau trec în `NEEDS_OWNER`; nimic nu se reia singur.
+- **Verificare fără desktop:** `node v2/tests/manual/m10-desktop-real.mjs --discover`.
+- **Demonstrații GUI reale** (ești la calculator): `--open notepad --watching`, `--notepad --watching`, `--capcut-inspect --watching`.
+
+### Comenzi de test
+
+```bash
+node --test v2/tests/m10-desktop.test.mjs v2/tests/m10-ops-plans.test.mjs v2/tests/m10-studio.test.mjs v2/tests/m10-upgrade.test.mjs v2/tests/m10-operator-real.test.mjs
+```
+
+Testele de browser M10 rulează pe UI-ul construit separat: `HUB_V2_WEB_DIST=.ifrim/tmp/m10-web-dist node --test v2/tests/m10-ui-e2e.test.mjs`.
+
+### Incidente M10
+
+- **Un plan oprit (`NEEDS_OWNER`):** cardul sau pagina Operator arată motivul. „Continuă” verifică întâi pașii incerți. Dacă rezultatul unui pas nu se poate stabili (`OUTCOME_UNKNOWN`), verifici tu în aplicație și apoi anulezi sau reiei.
+- **O aplicație actualizată:** după o actualizare, aplicația își pierde autorizarea (binar nou). Pagina Operator → Caută aplicațiile → Autorizează.
+- **Un folder de import greșit:** pagina Operator → Foldere de import → Retrage (fail-safe).
+
+## Milestone 09 — Content Studio (2026-10-04, versiunea `2.10.0-m09`, contract 9, migrația 9; necomis)
+
+Trecerea Hub-ului live pe M09 și pachetele de decizie sunt în `M09_LIVE_VALIDATION_PLAN.md`. Pe scurt: dry-run pe copie → stop → `npm run build:v2` → start → status. Fără model.
+
+### Unde stau lucrurile
+
+- **Biblioteca media:** `<dataDir>/v2-media`, adică `C:\Users\mihai\IfrimHub\hub-data\v2-media` pe Hub-ul live. Nu stă în repo și nici în OneDrive.
+- **Lucrul temporar:** `<workDir>/media`. Încărcările trec prin `<workDir>/media-uploads` și se șterg după import.
+- **Livrabilele exportate de mână** (primul clip): `C:\Users\mihai\Videos\Ifrim Studio\`.
+- **Uneltele:** ffmpeg și ffprobe de pe PATH (8.1.x). Versiunea și sha256 se fixează la prima folosire verificată (`settings.mediaToolPins`). Un binar schimbat dă avertismentul `tool_changed`, niciodată o tăcere.
+- **Politica media** (`settings.mediaPolicy`): `autoPublish`, `liveUpload` și `liveCapture` sunt `false`. `importRoots` nu e setat, deci se folosește implicit folderul `%USERPROFILE%\Videos` (`C:\Users\mihai\Videos`). Cât timp nu alegi altele, acesta e singurul folder din care se poate importa după cale.
+
+### Comenzi
+
+```bash
+node --test v2/tests/m09-review-fixes.test.mjs     # regresiile review-ului M09 (fără model)
+node --test v2/tests/m09-media-render.test.mjs     # randare reală prin proxy-ul ffmpeg (SKIPPED_ENV fără ffmpeg)
+node v2/tests/manual/m09-clip-capture.mjs <dir>    # captura demo a unui Hub DE TEST (Chromium, date sintetice)
+node v2/tests/manual/m09-clip-produce.mjs <dir> <livrare>   # producția completă a clipului pe un Hub de test
+```
+
+Testele care folosesc ffmpeg real rulează binarul prin `v2/tests/fixtures/ffmpeg-proxy.mjs`, pentru că supervizorul în modul test pornește doar node și fixture-uri.
+
+### Incidente Studio
+
+- **O randare blocată:**
+  - Studio → Randări → „Anulează”. Ruta `/api/media/renders/:id/cancel` e fail-safe și merge și cu un UI vechi.
+  - La repornire, joburile în lucru devin INTERRUPTED și nu se reiau singure. „Reîncearcă” refolosește segmentele din cache.
+- **Disc plin:** randarea refuză sub rezerva liberă (`DISK_RESERVE`). Curățarea atinge doar derivatele regenerabile și pornește implicit ca simulare. Originalele și copiile A3 nu se șterg.
+- **Un drept retras:** „Revocă” (fail-safe, inclusiv prin voce) arată inventarul și planul de corectare. Manifestele aprobate care folosesc materialul devin INVALIDATED pe loc, iar pachetele lor deschise sunt retrase. Postările deja făcute le retragi tu manual: Hub-ul nu șterge nimic de pe platforme.
+- **Captura live pornită din greșeală:** „Oprește captura live” (`/api/media/policy/capture-off`), fail-safe de pe orice canal.
+
 ## Milestone 03 — Software Factory și pregătirea runtime-ului (2026-10-01, versiunea `2.4.0-m03`)
 
 ### Comenzi noi

@@ -146,7 +146,8 @@ test("M03-MCP-09 Claude Code: an MCP server or mcp__ tool at session init stops 
     const project = hub.projects.hub();
     const conversation = hub.bus.transaction(() => hub.conversations.create({ projectId: project.id, title: "Claude MCP" }, "user"));
     hub.bus.transaction(() => hub.conversations.addMessage({ conversationId: conversation.id, role: "user", content: "Summarise." }, "user"));
-    const { run } = await hub.runs.start({ conversationId: conversation.id, provider: "claude" });
+    // M09: Claude needs an explicit model (sonnet is echoed at init as claude-sonnet-fake, inside the bound family).
+    const { run } = await hub.runs.start({ conversationId: conversation.id, provider: "claude", model: "sonnet" });
     const ended = await waitFor(() => { const r = hub.runs.getRun(run.id); return TERMINAL.includes(r.status) ? r : null; }, 20000);
     assert.deepEqual([ended.status, ended.errorCategory, ended.preInference], ["blocked", "policy", true]);
     assert.match(ended.errorMessage, /servere MCP \(cua, mcp__cua__click\)/);

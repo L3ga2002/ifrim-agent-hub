@@ -191,7 +191,11 @@ export function createWarRoom({ db, bus, clock, projects, twin, missions, factor
       insertEntry(incidentId, { kind: "action", text: `Misiune de remediere pregătită (ciornă, nu rulează): ${missionId}`, sourceKind: "hub", sourceRef: missionId, status: "CONFIRMED", actor });
       bus.append({ type: "incident.remediation_proposed", scopeType: "incident", scopeId: incidentId, projectId: r.projectId, source: actor, payload: { missionId } });
     });
-    return { incident: view(incidentId), missionId, note: testRef ? "Ciorna e completă dacă specificația nu are alte probleme; pornește doar după planul confirmat de tine." : "Ciorna are nevoie de testul care reproduce problema (testRef) înainte să poată intra într-un plan." };
+    // M09: the draft carries no models (War Room never picks them): its scope stays incomplete until the owner fixes the writer and
+    // reviewer models explicitly (Limite → modele); no account default is used in their place.
+    const draftView = missionId && factory?.view ? factory.view(missionId) : null;
+    const modelsNote = draftView && !draftView.scope && (draftView.scopeProblems || []).length ? " Alege explicit modelele writer-ului și reviewer-ului (fără modelul implicit al contului) înainte de plan." : "";
+    return { incident: view(incidentId), missionId, note: (testRef ? "Ciorna e completă dacă specificația nu are alte probleme; pornește doar după planul confirmat de tine." : "Ciorna are nevoie de testul care reproduce problema (testRef) înainte să poată intra într-un plan.") + modelsNote };
   }
 
   /** Missions that could be paused to free attention — a PROPOSAL; War Room never pauses anything itself. */

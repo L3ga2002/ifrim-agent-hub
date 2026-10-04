@@ -7,6 +7,7 @@ import { parse as parseToml } from "smol-toml";
 import { createJsonRpcPeer } from "./jsonrpc.mjs";
 import { classifyCodexTurnError, classifyText } from "./classify.mjs";
 import { buildChildEnv } from "../policy/billing.mjs";
+import { deriveAccountIdentity } from "../policy/billing-evidence.mjs";
 import { codexIsolationArgs, CODEX_PROFILE_BY_ACCESS } from "../policy/isolation.mjs";
 import { HUB_VERSION } from "../config.mjs";
 import { KNOWN_EFFORTS } from "../policy/run-plan.mjs";
@@ -204,9 +205,11 @@ export function windowsCodexLauncher({ config, homeDir }) {
   };
 }
 
-export function createCodexAdapter({ config, supervisor, homeDir = os.homedir(), launcher = null }) {
+export function createCodexAdapter({ config, supervisor, homeDir = os.homedir(), launcher = null, identitySalt = null }) {
   const id = "codex";
   const launch = launcher || windowsCodexLauncher({ config, homeDir });
+  // M09-A2: the salt of the pseudonymous account identity (a getter; absent = no identity, so a bound declaration blocks).
+  const salt = () => { try { return typeof identitySalt === "function" ? identitySalt() : null; } catch { return null; } };
 
   async function inspectInstallation() {
     const binary = resolveCodexBinary(config);
@@ -254,7 +257,8 @@ export function createCodexAdapter({ config, supervisor, homeDir = os.homedir(),
 
   /**
    * Explicit, user-initiated probe: initialize + account/read (+ rate limits, + model list).
-   * No turn is started, so no inference happens. Identity (email) is never returned.
+   * No turn is started, so no inference happens. Identity (email) is never returned: M09-A2 keeps only its salted pseudonym
+   * (auth.accountIdentity), computed here and the e-mail discarded.
    */
   async function probe({ withUsage = true, withModels = false, cwd = launch.probeCwd || config.hubRoot } = {}) {
     const key = `probe-codex-${launch.environment}-${Date.now()}`;
@@ -265,7 +269,7 @@ export function createCodexAdapter({ config, supervisor, homeDir = os.homedir(),
       const init = await session.ready;
       out.protocol = { userAgent: String(init?.userAgent || "").slice(0, 120), platform: `${init?.platformFamily || ""}/${init?.platformOs || ""}` };
       const account = await session.peer.request("account/read", {}, 30000);
-      out.auth = normalizeAccount(account);
+      out.auth = normalizeAccount(account, { salt: salt() });
       if (withUsage && out.auth.accountType === "chatgpt") {
         try { out.usage = normalizeRateLimits(await session.peer.request("account/rateLimits/read", {}, 30000)); }
         catch (error) { out.usage = { error: error.message }; }
@@ -437,7 +441,7 @@ export function createCodexAdapter({ config, supervisor, homeDir = os.homedir(),
       try {
         await session.ready;
         phase("initialized");
-        const account = normalizeAccount(await session.peer.request("account/read", {}, 30000));
+        const account = normalizeAccount(await session.peer.request("account/read", {}, 30000), { salt: salt() });
         phase("account_checked");
         onEvent({ type: "auth", auth: account });
         if (account.accountType !== "chatgpt") {
@@ -538,11 +542,18 @@ export function createCodexAdapter({ config, supervisor, homeDir = os.homedir(),
   return { id, environment: launch.environment, displayName: "Codex (ChatGPT plan)", inspectInstallation, probe, startTurn, openSession, inspectConfig: () => launch.inspectConfig() };
 }
 
-export function normalizeAccount(response) {
+/**
+ * account/read → plan facts. With a salt (M09-A2) the account e-mail becomes `accountIdentity` (salted pseudonym; basis "tuple"
+ * from type + plan when no e-mail is reported) and the e-mail itself is dropped here: it is never returned, stored or logged.
+ */
+export function normalizeAccount(response, { salt = null } = {}) {
   const account = response?.account || null;
   if (!account) return { accountType: "none", requiresOpenaiAuth: Boolean(response?.requiresOpenaiAuth) };
   const type = account.type === "apiKey" || account.type === "apikey" ? "apiKey" : account.type;
-  return { accountType: type, planType: account.planType || null, requiresOpenaiAuth: Boolean(response?.requiresOpenaiAuth) };
+  const out = { accountType: type, planType: account.planType || null, requiresOpenaiAuth: Boolean(response?.requiresOpenaiAuth) };
+  const accountIdentity = salt ? deriveAccountIdentity({ salt, email: typeof account.email === "string" ? account.email : null, tuple: [type, account.planType], plan: account.planType || null }) : null;
+  if (accountIdentity) out.accountIdentity = accountIdentity;
+  return out;
 }
 
 export function normalizeRateLimits(response) {

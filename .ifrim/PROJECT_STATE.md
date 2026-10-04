@@ -1,6 +1,76 @@
 # Project State - Ifrim Agent Hub
 
-## 2026-10-03 — M08: project autopilot & company intelligence (current; read `M08_REPORT.md` first)
+## 2026-10-04 — M10: PC operator + zero-form plans + usable Studio (current; read `M10_REPORT.md` first, then `M10_ACTIVATION_SHEET.md`)
+
+- **M10.1 — Lega one-click start (code `2.11.1-m10`, contract 10, no migration, uncommitted; **live since 2026-10-04 18:12 UTC** — owner-approved `upgrade.mjs --apply`, run `upg_muu51x09`, 2026-10-04 18:12 UTC, verified 2.11.1-m10 / BUILD_SAFE / 0 grants; the PC had rebooted; the Hub now autostarts at logon through the per-user task "Ifrim Agent Hub V2", `v2/scripts/autostart.ps1`).** The Lega voice starts from the owner session with one click, or with the phrase „Pornește Lega”. The Hub derives a one-session voice authority: a Codex voice grant, read-only, created and consumed in one transaction (born exhausted), revoked at the end, bounded by the owner session, at most 6 starts per 15 min, audited as `lega.authority_derived` / `lega.authority_released`. The mode is never written; runs stay refused in BUILD_SAFE. The gate, consent, billing, realtime, isolation, breaker and concurrency checks still decide. The old path (ui + LIVE_VALIDATION + a hand grant) is kept. A Codex billing withdrawal now also stops an old-path session (a deliberate fail-safe). Detail: `.ifrim/M10_LEGA_ZERO_FORM.md`; tests `v2/tests/m10-lega-owner-start.test.mjs` (16) + `m10-lega-stage-e2e.test.mjs` (1, real Chromium); full V2 929 · 928 PASS · 0 FAIL · 1 SKIP. Also: an owner re-authentication in the last 10 min of a session now rotates it (new session; see OPEN_ISSUES item 0).
+- **Version and state.** Code `2.11.0-m10`, API contract 10, migration 10 `m10-operator-plans`. It adds 7 tables: `ops_plans`, `ops_plan_steps`, `desktop_apps`, `desktop_sessions`, `desktop_actions`, `media_project_imports`, `media_import_grants`.
+  - **Uncommitted** on `v2-milestone-01`, together with M09, over `ae3aa48`.
+  - **The live Hub runs `2.11.0-m10` (contract 10) since 2026-10-04 13:53 UTC**: Claude ran `node v2/scripts/upgrade.mjs --apply` at the owner's request ("aprob upgrade ul la m10"), run `upg_mutvrr79`: preflight (0 runs, 0 active grants) → dry run 9 → 10 (integrity ok, rows unchanged) → stop → UI + desktop helper build → start → verify. The server took the verified pre-migration backup `hub-data\private\pre-upgrade\hub-v2.pre-migration.v9-to-v10.2026-10-04T13-53-14-962Z.sqlite` (sha256 `bef36396…fb50`, integrity ok, manifest); the pre-M09 backup is untouched. After: BUILD_SAFE, gate `open` as before, 0 grants, 0 runs, log clean, desktop apps NOT_FOUND until the owner's discovery (none authorized). Before applying, two upgrade-runner defects were fixed: the dry-run copy of the live DB went to `.ifrim/tmp` inside OneDrive (now `<dataDir>/upgrade/dry-run`; the M09 manual dry run had done the same, copy deleted right after), and the start step waited only 40 s. No GUI action on the owner's desktop, no model, no commit or push.
+- **Upgrade.** The upgrade is now one command: `node v2/scripts/upgrade.mjs --plan | --apply | --resume`.
+  - **The server itself** takes and verifies the pre-migration backup (`VACUUM INTO` + integrity + manifest). It refuses to migrate without it (`PRE_MIGRATION_BACKUP_FAILED`).
+  - The `--apply` build step also rebuilds the desktop helper.
+- **Desktop Operator.**
+  - The C# helper (`v2/desktop/operator/IfrimOperator.cs`) is built with the Windows `csc.exe` (`/codepage:65001`) into `<workDir>\desktop`, with a manifest that binds the binary to the source.
+  - The helper speaks HMAC-signed stdio JSON with nonce + timestamp + `auth.exp` + `auth.apps`. Its scope is **fail-closed**.
+  - It refuses protected processes, the Hub's own window, sensitive buttons and secure desktops. It stops on the owner's input.
+  - The single gate is `server/desktop/operator.mjs` (`perform`). Profiles: Notepad edit/Save As, CapCut inspect / new project + import.
+  - Real read-only discovery on this PC: Notepad 11.2607.14.0, Explorer, OBS 32.2.2, CapCut 9.3.0.3970. All four are DISCOVERED with trusted signers and **none is authorized** yet.
+- **Zero-form plans.** `server/policy/action-policy.mjs` defines the classes LOCAL_DIRECT / PLAN_STEP / SENSITIVE / REFUSED, decided by effect.
+  - `server/ops/plans.mjs` gives ONE confirmation in the owner session (typed, click, or local voice evidence for THAT plan). The plan is rebuilt and must match its hash.
+  - The derived authority is checked at every operation. A pause / stop / takeover is fail-safe. „Continuă” reconciles uncertain steps first. A boot never resumes a plan.
+  - The only decisions allowed inside a card are a new app or a new folder (step-up).
+  - Lega intents, the same for text and voice: „Deschide CapCut / OBS / Notepad / Explorer”, „Adu X în față”, „Arată folderul exporturilor”, „Importă din folderul acesta”, „Pregătește varianta verticală”, „Înregistrează demonstrația … fără să publici”, „Continuă”.
+  - „La secunda N …” now also yields a plan card (apply + draft render + QA).
+- **Studio.**
+  - A project bundle `proiect-studio.json`: export → preview → ONE import. Ids are remapped, labels are kept, approvals are never imported, re-import is idempotent; an older delivery can be reconstructed.
+  - The M09 clip folder now holds its bundle. It was verified by importing it into a test hub: 2 sources hash-OK, 8 versions, SIMULATION kept.
+  - Contextual import folders (once / persistent).
+  - `preferredTextTarget` is implemented: the selection wins and labels are never guessed.
+  - Narrow variants plate content text at ≥ 0.9 opacity (guaranteed in the ffmpeg filter) with a legible minimum size; this fixes the M09 LinkedIn ~21 s issue. Legibility QA runs on the real frame.
+  - Local export without overwrite; `media.capture.scope.approve`; `media.policy.obs` (no password stored).
+- **UI.**
+  - The plan card (`screens/lega/OpsPlanCard.jsx`).
+  - A permanent desktop activity bar with Stop / Preiau eu (`shell/DesktopBar.jsx`).
+  - The Operator page `#/desktop` (apps, OBS, folders, plans, actions).
+  - The Studio „Importă un proiect” panel and the correction's text target + clarification options.
+- **Tests.** M10 adds 53 tests (upgrade 8, desktop 15, operator-real 3, plans 13, studio 13, browser E2E 1). Full V2 suite: 912 · 911 PASS · 0 FAIL · 1 SKIP; V1: 552 · 551 PASS · 1 SKIP.
+  - M10 found and fixed 8 real defects, among them the helper's JSON arrays, which made the app scope fail-open. List: `OPEN_ISSUES.md` (M10 #9).
+- **Next.**
+  - The owner continues `M10_ACTIVATION_SHEET.md` from step 2: discover + authorize the apps (Windows Hello), D1/D2/D3/D4/D6, then OBS + MB1 if wanted.
+  - Commit / push only on the owner's exact request.
+
+## 2026-10-04 — M09: Content / Media / Growth studio + core fixes (superseded by M10 above where they overlap; read `M09_REPORT.md`)
+
+- **Code `2.10.0-m09`, API contract 9, migration 9 `m09-media-growth`** (27 tables + columns on `agent_runs`, `factory_missions`, `live_grants`). **Uncommitted** on `v2-milestone-01` over `ae3aa48`; `M08_SESSION_REPORT.md` is still uncommitted too. Commit/push need the owner's exact approval. Never stage `.ifrim/data-location.json`, hub-data, raw media, voice profiles, backups or ProDelivery files.
+- **The live Hub runs `2.10.0-m09` (contract 9) since 2026-10-04 07:23 UTC.** Claude did the upgrade at the owner's request ("fă tu pașii de trecere pe M09"):
+  1. read-only pre-flight (0 runs, 0 grants);
+  2. `migration-dry-run.mjs` 8 → 9 clean (integrity ok, rows unchanged);
+  3. `stop.mjs`;
+  4. coherent DB backup `C:\Users\mihai\IfrimHub\hub-data\private\pre-upgrade\hub-v2.pre-m09.2026-10-04T07-23-05-815Z.sqlite` (sha256 `3f90d2bc…5651`, schema 8, integrity ok; the Hub does not back up by itself before a migration);
+  5. `npm run build:v2` (same bundle hashes as the tested build);
+  6. `start-detached.ps1`;
+  7. GET-only checks: BUILD_SAFE, 0 grants, 5 media presets seeded, billing converted, Claude `reverify_required`, media policy off, log clean.
+
+  The execution gate stayed `open` as before. Rollback: `M09_LIVE_VALIDATION_PLAN.md` §1.
+- **Claude inference is blocked until the owner re-declares billing** (live: `reverify_required`) (owner session + fresh Hello + probe ≤ 24 h). Codex stays valid until its declaration expires.
+- **Track A (core fixes, PASS_SIMULATED):**
+  - A1: explicit model + effort binding from proposal to dispatch, re-checked before any process and at Claude init (`policy/model-binding.mjs`);
+  - A2: Claude billing from evidence with a salted account pseudonym and 30-day expiry (`policy/billing-evidence.mjs`);
+  - A3: approved skill bodies injected and recorded per run (`domain/skill-composer.mjs`, `run_skill_usage`);
+  - whisper-server listener checks (`owner/voice-worker-lib.mjs`). Media transcription never confirms commands.
+- **Track B (Content Studio, `v2/server/media/`, 24 files):** library + rights, EditProjectIR + local ffmpeg renderer, QA, variants, timecode reviews, manifests + manual packs, analytics/experiments/campaigns, Public Demo Mode capture, local transcription. UI `#/studio`. Decision packages MEDIA_A/B/C.
+- **No social API, OBS recording, live capture or AI media run exists or ran.** `AUTO_PUBLISH=OFF`, `LIVE_UPLOAD_DISABLED`, `LIVE_MEDIA_CAPTURE_DISABLED`.
+- **First clip** "Un plan. O singură confirmare." (25.6 s + Reels/LinkedIn/X variants + edit and recovery proofs, QA PASS):
+  - location: `C:\Users\mihai\Videos\Ifrim Studio\M09 - Un plan, o confirmare\`;
+  - produced on a TEST hub from a Public Demo Mode capture (SIMULATION label); sources in `surse/`;
+  - creative acceptance not recorded; its manifest is DRAFT. Re-creating the project on the live Hub needs an asset-id remapping helper (OPEN_ISSUES M09 §5).
+- **Tests** (2026-10-04, final code): V2 full **859 · 858 PASS · 0 FAIL · 1 SKIP** (T25 symlink); M09 files 209/209; V1 552 · 551 · 1 SKIP. (A first full run had 1 FAIL, AS-09, fixed.)
+- **Adversarial review:** 39 findings; all 19 confirmed fixed + 8 more. 11 low residuals are in OPEN_ISSUES M09 §12. Numbers R1–R39 = the session's `review/findings.json`.
+- **Untouched:** ProDelivery pilot `bnd_musqo7xj_1a204a2e55` + F-001, D6 `bnd_murl82o1_00afe726c3`, Demo B `bnd_mupwze7b_e03f70f2d7`, V1, OpenClaw, A3 copies, WSL profiles, `main`/origin.
+
+## 2026-10-03 — M08: project autopilot & company intelligence (current; read `M08_SESSION_REPORT.md` first, then `M08_REPORT.md`)
+
+> **Update 2026-10-03 ~18:45 UTC:** the owner pushed `ae3aa48` to `origin/v2-milestone-01` (`origin/main` still `17921ac`), re-consented R3 (18:29), decided packages A and B (18:30), and confirmed the ProDelivery pilot plan (18:36). The pilot reached DELIVERY_READY (bundle `bnd_musqo7xj_1a204a2e55`, awaiting the owner; review finding F-001 medium; the reviewer ran on `claude-opus-5-5` instead of the approved `sonnet`, a defect to fix). A Windows reboot at 18:19 UTC stopped the Hub; Claude restarted it (pid 5764, BUILD_SAFE). The lines below that say push pending, pid 8104, R3/packages undecided or pilot not started are superseded; **`M08_SESSION_REPORT.md` takes precedence.**
 
 - **Code `2.9.0-m08`, API contract 8, migration 8** (13 tables). **Committed as `8b277c5`** on `v2-milestone-01` over `17921ac` (2026-10-03, at the owner's request "fă tu"), plus a docs commit after the live upgrade. **The push was refused by the session's permission layer** (not retried through another channel): the owner runs `git push origin v2-milestone-01`. Origin and local `main` are still at `17921ac`.
 - **The live Hub runs `2.9.0-m08` (contract 8)** since 2026-10-03 16:26 UTC (pid 8104, BUILD_SAFE, migration 8 applied, 0 grants, 0 runs). Upgrade done by Claude at the owner's request, in this order:

@@ -37,8 +37,10 @@ export function activeLessons(db, projectId) {
  * Builds the turn input from the canonical Hub conversation: rules, pending handoff package (if this
  * provider is the handoff target), decisions, bounded recent transcript and the latest request.
  * Hidden model reasoning is never requested or transferred.
+ * `skillSection` (M09-A3) is the composer's text for this run (the same object the run record is written from); it sits after
+ * the handoff and before AGENTS.md, so the order of precedence is Hub rules > handoff > skills > AGENTS.md > lessons > data.
  */
-export function buildTurnPrompt({ db, conversation, project, git, provider, runId, environment = "windows", access = "read-only" }) {
+export function buildTurnPrompt({ db, conversation, project, git, provider, runId, environment = "windows", access = "read-only", skillSection = "" }) {
   const handoff = db.prepare("SELECT * FROM handoffs WHERE conversation_id = ? AND to_provider = ? AND status = 'ready' ORDER BY created_at DESC LIMIT 1").get(conversation.id, provider);
   const decisions = db.prepare("SELECT title, decision, source_ref FROM decisions WHERE (conversation_id = ? OR project_id = ?) AND status = 'active' ORDER BY created_at DESC LIMIT 15").all(conversation.id, project.id);
   const summary = db.prepare("SELECT content, covers_until_position FROM summaries WHERE conversation_id = ? ORDER BY covers_until_position DESC LIMIT 1").get(conversation.id);
@@ -71,6 +73,7 @@ export function buildTurnPrompt({ db, conversation, project, git, provider, runI
     const bounded = JSON.stringify({ ...pkg, dirty_diff: pkg.dirty_diff ? `${String(pkg.dirty_diff).slice(0, 12000)}${String(pkg.dirty_diff).length > 12000 ? "\n[diff truncated; inspect git diff locally]" : ""}` : "" }, null, 2);
     sections.push(`HANDOFF from ${handoff.from_provider}. Start your reply with exactly: HANDOFF_ACK ${handoff.id} ${handoff.package_sha256.slice(0, 12)}\nThen restate the objective and constraints in one short paragraph, inspect the repository state yourself and continue with next_safe_action.\nHandoffPackage:\n${bounded}`);
   }
+  if (typeof skillSection === "string" && skillSection) sections.push(skillSection);
   const projectDoc = projectInstructions(project.path);
   if (projectDoc) sections.push(`Project instructions (AGENTS.md at the project root, provided by the Hub as project data; the Hub rules above take precedence):\n${projectDoc}`);
   // M08 Teach Lega: the owner's CONFIRMED lessons for this project (and global ones). They can only narrow how the work is done

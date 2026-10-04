@@ -1,7 +1,10 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { openDatabase } from "./storage/db.mjs";
+import crypto from "node:crypto";
+import { openDatabase, preMigrationBackupOf } from "./storage/db.mjs";
+import { HUB_VERSION } from "./config.mjs";
+import { convertLegacyAttestations } from "./policy/billing-evidence.mjs";
 import { createEventBus } from "./events/bus.mjs";
 import { createSettings } from "./domain/settings.mjs";
 import { createProjects } from "./domain/projects.mjs";
@@ -51,7 +54,7 @@ import { createEnvironmentRegistry } from "./environments/registry.mjs";
 import { createWslCodexAdapter } from "./providers/codex-wsl.mjs";
 import { createWslClaudeAdapter } from "./providers/claude-wsl.mjs";
 import { newId } from "./core/ids.mjs";
-import { createTrust } from "./owner/trust.mjs";
+import { createTrust, SESSION_DEFAULTS } from "./owner/trust.mjs";
 import { createEnvelopes } from "./owner/envelopes.mjs";
 import { createCockpit } from "./owner/cockpit.mjs";
 import { createInterrupts } from "./owner/interrupts.mjs";
@@ -69,6 +72,10 @@ import { createSkillEvolution } from "./intel/skill-evolution.mjs";
 import { createTeach } from "./intel/teach.mjs";
 import { createDevices } from "./intel/devices.mjs";
 import { createPackages } from "./intel/packages.mjs";
+import { createMedia } from "./media/index.mjs";
+import { createDesktopOperator } from "./desktop/operator.mjs";
+import { createExecutors } from "./ops/executors.mjs";
+import { createOpsPlans } from "./ops/plans.mjs";
 import { setExtraCommands } from "./factory/spec.mjs";
 
 /** Live (non-persisted) channel for token deltas; persisted state is always reloadable from the API. */
@@ -88,7 +95,9 @@ function createLiveChannel() {
 export function createHub(config, { providerOverrides = {}, homeDir, browserLaunch = null } = {}) {
   const clock = config.now;
   fs.mkdirSync(config.dataDir, { recursive: true });
-  const db = openDatabase(config.dbPath);
+  // M10: a pending migration on an existing database is preceded by a verified copy (refused, Hub not started, if it fails).
+  const db = openDatabase(config.dbPath, { preMigrationBackupDir: config.preUpgradeDir, appVersion: HUB_VERSION });
+  const preMigrationBackup = preMigrationBackupOf(db);
   const bus = createEventBus(db, clock);
   const live = createLiveChannel();
   const roleConfig = JSON.parse(fs.readFileSync(path.join(config.v2Root, "config", "roles.json"), "utf8"));
@@ -119,13 +128,21 @@ export function createHub(config, { providerOverrides = {}, homeDir, browserLaun
   const supervisor = createSupervisor({ config, onEvent: (event) => live.publish({ type: `supervisor.${event.type}`, data: event }) });
   const backups = createBackupService({ db, bus, config, clock, projects });
   const nativeSessions = createNativeSessionMirror({ db, bus, clock, config, projects });
+  // M09-A2: the random salt of the pseudonymous account identity, created once (at first use or at boot) and kept in settings.
+  const identitySalt = () => {
+    const current = settings.get("billingIdentitySecret");
+    if (typeof current === "string" && /^[0-9a-f]{64}$/.test(current)) return current;
+    const created = crypto.randomBytes(32).toString("hex");
+    bus.transaction(() => settings.set("billingIdentitySecret", created, "hub", "Billing identity salt created"));
+    return created;
+  };
   const providers = {
-    codex: providerOverrides.codex || createCodexAdapter({ config, supervisor, homeDir }),
-    claude: providerOverrides.claude || createClaudeAdapter({ config, supervisor, homeDir }),
+    codex: providerOverrides.codex || createCodexAdapter({ config, supervisor, homeDir, identitySalt }),
+    claude: providerOverrides.claude || createClaudeAdapter({ config, supervisor, homeDir, identitySalt }),
   };
   // M05: execution environments. The wsl-runner service only inspects, attests and moves workspaces; a project uses it
   // only after the owner selects that route for it (settings.projectEnvironments).
-  const wslRunner = createWslRunnerEnvironment({ config, db, bus, clock, providerState, supervisor, homeDir: homeDir || os.homedir() });
+  const wslRunner = createWslRunnerEnvironment({ config, db, bus, clock, providerState, supervisor, homeDir: homeDir || os.homedir(), identitySalt });
   const environments = createEnvironmentRegistry({ settings, services: { "wsl-runner": wslRunner } });
   providers["codex@wsl-runner"] = providerOverrides["codex@wsl-runner"] || createWslCodexAdapter({ environment: wslRunner });
   // M07: the read-only reviewer inside the same environment (routed only when its readiness is ok; see environments/registry.mjs).
@@ -134,6 +151,26 @@ export function createHub(config, { providerOverrides = {}, homeDir, browserLaun
   let runs;
   let lega = null;
   let voice = null; // M07: created after the envelopes' dependencies; Lega reads it late-bound (the voice-gate bypass check)
+  // M10: the owner-session trust is created after Lega; Lega reads it late-bound (never during construction) for the derived
+  // one-click voice authority. Until it is bound, every derivation is refused (fail-safe).
+  let ownerTrust = null;
+  /** The owner session behind a derived Lega start, re-read from the database: active, not expired, not idle, credential active, voice-first. */
+  // `assumeTouched`: a preview (GET, which does not touch the session) computes the limit as the start POST will see it — that
+  // request touches the session, so the idle deadline moves to now + idleMinutes. The validity checks are the same either way.
+  const legaOwnerAuthority = (sessionId, { assumeTouched = false } = {}) => {
+    const tr = ownerTrust;
+    const policyActive = Boolean(tr?.policy()?.active);
+    if (!tr || !sessionId) return { ok: false, reason: "no-session", policyActive };
+    let s;
+    try { s = tr.requireSession({ id: sessionId }, "pornirea Lega"); } catch { return { ok: false, reason: "session-ended", policyActive }; }
+    const t = clock().getTime();
+    const idleEnds = Date.parse(s.idleExpiresAt);
+    if (!(idleEnds > t)) return { ok: false, reason: "session-idle", policyActive };
+    if (tr.credential(s.credentialId)?.status !== "active") return { ok: false, reason: "credential-revoked", policyActive };
+    if (!policyActive) return { ok: false, reason: "policy-legacy", policyActive };
+    const idleLimit = assumeTouched ? t + SESSION_DEFAULTS.idleMinutes * 60000 : idleEnds;
+    return { ok: true, sessionId: s.id, endsAt: Math.min(Date.parse(s.expiresAt), idleLimit), policyActive };
+  };
   // The exact paths the Codex profile denies on this machine; a recorded consent is valid only for this list.
   // Globs included (M03 R3): a consent given for the M02 list does not cover config.toml / history.jsonl.
   const codexIsolation = () => { const paths = codexDeniedEntries({ homeDir: homeDir || os.homedir(), extra: [config.dataDir, config.backupDir] }); return { paths, fingerprint: denyListFingerprint(paths) }; };
@@ -165,7 +202,8 @@ export function createHub(config, { providerOverrides = {}, homeDir, browserLaun
       messageText: (id) => db.prepare("SELECT content FROM messages WHERE id = ?").get(id)?.content || "" },
     commandsApi: { dispatch: (request) => commands.dispatch(request) },
     codexRealtime: createCodexRealtime({ codex: providers.codex, supervisor }), refreshCodexConfig, codexConfig: () => providerState.get("codex")?.config || null, timeScale: config.legaTimeScale,
-    voiceGateCheck: (sessionId) => ({ enabled: Boolean(settings.get("voiceGate")?.enabled), released: voice ? voice.recentGateRelease(sessionId) : false }) });
+    voiceGateCheck: (sessionId) => ({ enabled: Boolean(settings.get("voiceGate")?.enabled), released: voice ? voice.recentGateRelease(sessionId) : false }),
+    ownerAuthority: legaOwnerAuthority });
   runs.attachVoice(lega);
   // Software Factory (M03): a deterministic conductor over missions/runs; its runner uses the Codex sandbox, never Hub rights.
   const windowsRunner = createFactoryRunner({ config, supervisor, settings, providerState, codexIsolation, homeDir: homeDir || os.homedir() });
@@ -181,6 +219,7 @@ export function createHub(config, { providerOverrides = {}, homeDir, browserLaun
   // interruptions, quiet proactivity / recommendations / shadow reviews and the local voice profile. Built on the modules
   // above; the envelope service is the factory's authority hook (no envelope = M03–M05 behaviour).
   const trust = createTrust({ db, bus, clock, settings, config });
+  ownerTrust = trust; // M10: Lega's derived voice authority reads the owner session from here (late-bound above)
   // M07: the local voice engines (whisper.cpp + CAM++ in a supervised worker) and the server-held utterances; created before the
   // envelopes, which consume a spoken confirmation's utterance in the same transaction that confirms the plan.
   const voiceEngine = createVoiceEngine({ config, supervisor, clock, onEvent: (event) => live.publish(event) });
@@ -207,19 +246,29 @@ export function createHub(config, { providerOverrides = {}, homeDir, browserLaun
   const devices = createDevices({ db, bus, clock, commands, factory, envelopes, warroom });
   // Owner-enabled extra verification commands (decision package B3) follow the setting.
   setExtraCommands(settings.get("factoryExtraCommands") || []);
+  // M09 Content / Media / Growth: local production (library, edit plans, renders, QA, reviews, variants), hash-bound distribution
+  // packs, measured analytics and the Content → Sales link. No model, capture, upload or publication starts from here by itself.
+  const media = createMedia({ db, bus, live, clock, config, settings, supervisor, sales, runs, voiceEngine });
+  // M10 Lega PC Operator + zero-form plans: the Desktop Operator is the one gate to the owner's desktop (a helper in the interactive
+  // session, started on first use, never at boot); operation plans are shown once, confirmed once, and every step re-authorized.
+  const desktop = createDesktopOperator({ db, bus, clock, config, supervisor, settings, trust, media, live });
+  const executors = createExecutors({ desktop, media, settings, live });
+  const opsPlans = createOpsPlans({ db, bus, clock, settings, trust, voice, apps: desktop.apps, executors, live, desktop,
+    folderContext: () => ({ allowed: desktop.allowedFolders(), forbidden: desktop.forbiddenFolders() }) });
 
   const hub = { config, db, bus, live, settings, projects, conversations, missions, approvals, policy, leases, grants, providerState, usage, memory, leads, sales,
     company, chiefOfStaff, surfaces, schedules, computer, skills, artifacts, integrations, nativeSessions, telemetry, router, commands, checkpoints,
     breakers, supervisor, backups, providers, gate, runs, handoffs, tools, roleConfig, skillConfig, capabilityConfig, codexIsolation, lega, refreshCodexConfig, factory, factoryRunner,
     environments, wslRunner, trust, envelopes, cockpit, interrupts, advisor, voice, voiceEngine,
-    twin, warroom, autopilot, simulations, league, skillEvolution, teach, packages, board, devices };
+    twin, warroom, autopilot, simulations, league, skillEvolution, teach, packages, board, devices, media, desktop, opsPlans, executors };
   registerCommands(commands, hub);
   // M07: the resumable setup (ordered real steps; the automatic ones run on the Hub through the ordinary commands).
   hub.setup = createSetup(hub);
 
   const scheduler = createScheduler({ db, bus, clock, approvals, leases, runs,
     extraTick: () => Promise.all([schedules.tick((cmd) => commands.dispatch({ ...cmd, channel: "schedule", actor: "scheduler" }).then((r) => r.result)), factory.tick(), Promise.resolve().then(() => sales.tick()),
-      Promise.resolve().then(() => envelopes.tick()), Promise.resolve().then(() => voice.tick())]) });
+      Promise.resolve().then(() => envelopes.tick()), Promise.resolve().then(() => voice.tick()), Promise.resolve().then(() => media.tick()),
+      Promise.resolve().then(() => lega.tick())]) });
   hub.scheduler = scheduler;
 
   // Post-commit reactions (each in its own transaction; never inside the writer's transaction).
@@ -254,6 +303,24 @@ export function createHub(config, { providerOverrides = {}, homeDir, browserLaun
     }
   }
 
+  /**
+   * M09-A2 boot conversion (idempotent): legacy billingAttestations → declarations with source legacy_ui (the legacy key stays,
+   * read-only, for rollback). Claude is latched (legacy_unbound): its inference waits for a declaration in the owner session;
+   * Codex stays valid until its expiry. The identity salt is created here too, so the first probe never writes settings.
+   */
+  function convertLegacyBilling() {
+    identitySalt();
+    return bus.transaction(() => {
+      const { evidence, converted } = convertLegacyAttestations({ attestations: settings.get("billingAttestations"), evidence: settings.get("billingEvidence"), now: clock() });
+      if (!converted.length) return { converted: [] };
+      settings.set("billingEvidence", evidence, "hub", `Legacy billing attestations converted (${converted.join(", ")})`);
+      bus.append({ type: "billing.legacy_converted", scopeType: "billing", scopeId: "evidence", source: "hub",
+        payload: { providers: converted, reverifyRequired: converted.filter((p) => p === "claude"), note: "Claude: declarația veche nu era legată de cont; reconfirmă în sesiunea de proprietar" } });
+      if (converted.includes("claude")) bus.append({ type: "billing.reverify_required", scopeType: "provider", scopeId: "claude", source: "hub", payload: { provider: "claude", reason: "legacy_unbound" } });
+      return { converted };
+    });
+  }
+
   const bootId = newId("boot");
   let bootReport = null;
   async function boot() {
@@ -266,10 +333,23 @@ export function createHub(config, { providerOverrides = {}, homeDir, browserLaun
     const skillImport = skills.importAll("seed");
     surfaces.refreshAvailability();
     bootReport = await recoverOnBoot({ db, bus, clock, settings, approvals });
+    // M10: a derived Lega authority whose voice session died with the previous process is closed in the audit (nothing starts).
+    try { bootReport.lega = lega.recover(); } catch (error) { bootReport.lega = { error: String(error?.message || error).slice(0, 300) }; }
+    bootReport.billing = convertLegacyBilling();
     bootReport.factory = factory.recover();
+    // M09: interrupted renders / captures / transcriptions / distribution attempts are marked, never resumed.
+    try { bootReport.media = media.boot(); } catch (error) { bootReport.media = { error: String(error?.message || error).slice(0, 300) }; }
     // Workspaces a crash left in the environment are marked orphaned and kept for inspection (never deleted at boot).
     bootReport.environments = { "wsl-runner": wslRunner.recover() };
+    // M10: a desktop session or a running plan left by a stop is ended / waits for the owner (never resumed by the boot).
+    bootReport.desktop = desktop.recover();
+    bootReport.ops = opsPlans.recover();
     bootReport.seeded = { ...seeded, skills: skillImport };
+    // M10: the verified copy taken before this boot's migration (absent when nothing was pending).
+    bootReport.storage = { preMigrationBackup: preMigrationBackup ? { file: preMigrationBackup.file, sha256: preMigrationBackup.sha256, bytes: preMigrationBackup.bytes,
+      fromVersion: preMigrationBackup.schemaVersion, toVersion: preMigrationBackup.toVersion, integrity: preMigrationBackup.integrity, createdAt: preMigrationBackup.createdAt } : null };
+    if (preMigrationBackup) bus.transaction(() => bus.append({ type: "storage.pre_migration_backup", scopeType: "system", scopeId: bootId, source: "hub",
+      payload: { file: path.basename(preMigrationBackup.file), sha256: preMigrationBackup.sha256.slice(0, 16), fromVersion: preMigrationBackup.schemaVersion, toVersion: preMigrationBackup.toVersion } }));
     if (!config.testMode) scheduler.start();
     // Optional sandbox warm-up (M05 §21): off unless the owner enabled it; no model, no project code, never blocks the boot.
     if (!config.testMode && settings.get("environmentWarmup")?.onBoot) {
@@ -285,9 +365,11 @@ export function createHub(config, { providerOverrides = {}, homeDir, browserLaun
     envelopes.close();
     await factory.close();
     await lega.stopAll("shutdown").catch(() => {});
+    await media.close();
+    await desktop.close().catch(() => {});
     await supervisor.stopAll();
     db.close();
   }
 
-  return Object.assign(hub, { boot, close, bootId, getBootReport: () => bootReport });
+  return Object.assign(hub, { boot, close, bootId, getBootReport: () => bootReport, convertLegacyBilling });
 }

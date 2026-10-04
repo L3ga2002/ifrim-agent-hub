@@ -2,6 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { PILOT_ACCEPTANCE_PATH, PILOT_ACCEPTANCE_SOURCE, pilotMissionInput } from "./pilot-acceptance.mjs";
 import { HubError } from "../core/errors.mjs";
+import { PACKAGE_KINDS } from "./packages.mjs";
 
 /**
  * M08 commands (one command bus, the existing channels). Reading happens through GET routes; everything that writes is a command,
@@ -61,7 +62,8 @@ export function registerIntelCommands(reg, hub) {
   // ---------- Project Autopilot ----------
   reg("autopilot.draft", { describe: "Obiectiv finit: sarcini dependente, criterii, limite (validat; nimic nu pornește)", channels: OWNER_UI,
     schema: { projectId: { required: true, max: 80 }, title: { required: true, min: 3, max: 160 }, criteria: { type: "array", default: [] }, tasks: { type: "array", required: true },
-      verification: { type: "object" }, limits: { type: "object", default: {} } },
+      verification: { type: "object" }, limits: { type: "object", default: {} }, models: { type: "object" } },
+    // M09: `models` = { writer: { model, effort }, reviewer: { model, effort } } — passed explicitly to every task's mission.
     execute: (input, ctx) => autopilot.draft({ ...input, actor: ctx.actor }) });
   reg("autopilot.prepare", { describe: "Creează misiunile sarcinilor (ciorne, în ordinea dependențelor)", channels: OWNER_UI, async: true,
     schema: { objectiveId: { required: true, max: 80 } },
@@ -153,8 +155,15 @@ export function registerIntelCommands(reg, hub) {
     execute: (input, ctx) => devices.revoke(input.deviceId, { actor: ctx.actor, ownerSession: session(ctx), device: ctx.channel === "companion" ? { id: String(ctx.actor).replace(/^device:/, "") } : null }) });
 
   // ---------- Decision packages ----------
-  reg("package.present", { describe: "Prezintă pachetul de decizie A (protecția datelor) sau B (pilotul real)", channels: OWNER_UI, schema: { kind: { enum: ["A", "B"], required: true } },
-    execute: (input, ctx) => packages.present(input.kind, { actor: ctx.actor }) });
+  // M09: the Studio packages read the media tools' verification (created after the packages in hub.mjs).
+  if (hub.media) packages.attachMedia?.(hub.media);
+  reg("package.present", { describe: "Prezintă un pachet de decizie: A (datele), B (pilotul real), MEDIA_A (mediul Studio), MEDIA_B (captură, buget AI), MEDIA_C (conturi, încărcare)", channels: OWNER_UI, async: true,
+    schema: { kind: { enum: [...PACKAGE_KINDS], required: true } },
+    execute: async (input, ctx) => {
+      // MEDIA_A: "executed" comes from a fresh verification of ffmpeg/ffprobe (version + sha256), never from the click.
+      if (input.kind === "MEDIA_A" && hub.media?.tools?.resolve) { try { await hub.media.tools.resolve(); } catch { /* the inventory reports what is known */ } }
+      return packages.present(input.kind, { actor: ctx.actor });
+    } });
   reg("package.decide", { describe: "Decizia ta, opțiune cu opțiune (sesiune proaspătă)", channels: OWNER, async: true,
     schema: { packageId: { required: true, max: 80 }, decisions: { type: "object", required: true } },
     execute: (input, ctx) => packages.decide(input.packageId, { decisions: input.decisions, ownerSession: session(ctx), trust, actor: ctx.actor,
@@ -171,10 +180,22 @@ export function registerIntelCommands(reg, hub) {
             fs.mkdirSync(path.dirname(target), { recursive: true });
             fs.writeFileSync(target, PILOT_ACCEPTANCE_SOURCE, { flag: "wx" });
           }
+          // M09: the mission carries the package's models explicitly (writer/reviewer model + effort), never the account defaults.
+          const modelLimits = packages.pilotModelLimits(inv.models);
           const existing = hub.db.prepare("SELECT m.id FROM missions m JOIN factory_missions fm ON fm.mission_id = m.id WHERE m.project_id = ? AND m.title = ? LIMIT 1").get(inv.projectId, inv.task.title);
-          if (existing) return { missionId: existing.id, existing: true };
+          if (existing) {
+            // A draft prepared before M09 (no models): the owner's B4 approval names these models, so the draft gets them (SPEC_DRAFT only;
+            // a started mission is never changed — it keeps its own approved bindings).
+            const fmRow = hub.factory.view(existing.id)?.factory;
+            const missing = fmRow && Object.entries(modelLimits).some(([k, v]) => String(fmRow.limits?.[k] || "").toLowerCase() !== String(v).toLowerCase());
+            if (fmRow?.stage === "SPEC_DRAFT" && missing) {
+              await hub.commands.dispatch({ type: "factory.limits", channel: ctx.channel === "test" ? "test" : "owner", actor: ctx.actor, ownerSession: ctx.ownerSession, payload: { missionId: existing.id, limits: modelLimits } });
+              return { missionId: existing.id, existing: true, modelsSet: true };
+            }
+            return { missionId: existing.id, existing: true };
+          }
           const prepared = await hub.commands.dispatch({ type: "factory.prepare", channel: ctx.channel === "test" ? "test" : "owner", actor: ctx.actor, ownerSession: ctx.ownerSession,
-            payload: { projectId: inv.projectId, ...pilotMissionInput(inv.task), limits: { ...inv.limits } } });
+            payload: { projectId: inv.projectId, ...pilotMissionInput(inv.task), limits: { ...inv.limits, ...modelLimits } } });
           return { missionId: prepared.result?.mission?.id || null };
         },
       } }) });

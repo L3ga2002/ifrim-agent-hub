@@ -94,16 +94,26 @@ export function createLeague({ db, config }) {
         proposals.push({ cohort, proposal: `De testat: ${best.provider}/${best.model} pare mai bun decât ${next.provider}/${next.model} la prima trecere (${best.metrics.firstPassVerifiedPct}% vs ${next.metrics.firstPassVerifiedPct}%, ${best.observations}/${next.observations} observații)`, applied: false });
       }
     }
+    // M09: an outcome is attributed only to skills the run ACTUALLY received. The composer's usage rows (run_skill_usage, applied = 1)
+    // are the only evidence. A run without usage rows (before M09) is not attributed at all: its skill_versions_json listed the
+    // role's skills, but before M09 they were not injected into the prompt, so crediting them would be a false measurement.
+    // A skill listed for the role but not injected (inactive, unapproved, over budget) never collects a run's success or failure.
+    const usage = new Map();
+    for (const u of db.prepare("SELECT run_id, skill_id, version, applied FROM run_skill_usage").all()) {
+      usage.set(u.run_id, [...(usage.get(u.run_id) || []), { id: u.skill_id, version: u.version, applied: u.applied === 1 }]);
+    }
+    const unattributed = eligible.filter((o) => !usage.has(o.runId) && o.skillVersions.length).length;
     const bySkill = new Map();
-    for (const o of eligible) for (const sv of o.skillVersions) {
+    for (const o of eligible) for (const sv of (usage.get(o.runId) || []).filter((u) => u.applied)) {
       const k = `${sv.id}@v${sv.version}`;
-      const cur = bySkill.get(k) || { skill: sv.id, version: sv.version, runs: 0, completed: 0, failedNonInfra: 0 };
+      const cur = bySkill.get(k) || { skill: sv.id, version: sv.version, runs: 0, completed: 0, failedNonInfra: 0, evidenceSource: "usage" };
       cur.runs += 1;
       if (o.status === "completed") cur.completed += 1; else cur.failedNonInfra += 1;
       bySkill.set(k, cur);
     }
     return { generatedAt: new Date().toISOString(), minEvidence: MIN_EVIDENCE, includeTest, includeSimulated, simulatedData: all.some((o) => o.simulated), totals: { observations: all.length, eligible: eligible.length }, exclusions, groups: rows, proposals,
       skills: [...bySkill.values()].map((s) => ({ ...s, evidence: s.runs >= MIN_EVIDENCE ? "SUFFICIENT" : "INSUFFICIENT_EVIDENCE" })),
+      skillAttribution: { source: "run_skill_usage", runsWithoutUsageEvidence: unattributed },
       verdict: rows.some((r) => r.evidence === "SUFFICIENT") ? null : "INSUFFICIENT_EVIDENCE",
       note: "Fără scoruri de inteligență și fără câștigător pe date insuficiente. Rularea ca simulare, anulările, erorile de infrastructură și (implicit) proiectele de test sunt excluse și numărate separat; regresiile confirmate nu sunt încă măsurate." };
   }

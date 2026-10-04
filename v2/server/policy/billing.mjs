@@ -1,3 +1,5 @@
+import { evidenceState, describeReasons, shortIdentity } from "./billing-evidence.mjs";
+
 /**
  * BillingPolicy is enforced in code, not in prompts. These are Hub-internal rules, not provider
  * settings: they decide whether the Hub is willing to start a route. The Hub cannot change what a
@@ -66,16 +68,10 @@ const SUBSCRIPTION_PLANS = {
 // Plans whose names indicate usage-based billing: allowed only with an attestation, never assumed included.
 const USAGE_BASED_PLANS = new Set(["self_serve_business_usage_based", "enterprise_cbp_usage_based", "enterprise_cbp_automation"]);
 
-const ATTESTATION_MAX_AGE_DAYS = 30;
-
-function attestationStatus(attestations, provider, now) {
-  const record = attestations?.[provider];
-  if (!record?.confirmedAt) return { ok: false, reason: "missing" };
-  const ageDays = (now.getTime() - new Date(record.confirmedAt).getTime()) / 86400000;
-  if (!(ageDays >= 0) || ageDays > ATTESTATION_MAX_AGE_DAYS) return { ok: false, reason: "expired", confirmedAt: record.confirmedAt };
-  return { ok: true, confirmedAt: record.confirmedAt };
-}
-
+/**
+ * The exact text of the owner's declaration (M09: recorded in the owner session, bound to the verified account; see
+ * billing-evidence.mjs). Changing a text changes its version, so every declaration made for the old text needs re-declaring.
+ */
 export const ATTESTATION_TEXT = Object.freeze({
   codex: "Am verificat în ChatGPT Settings → Usage că soldul de credite este 0 și că reîncărcarea automată (automatic reload) este oprită.",
   claude: "Am verificat în claude.ai Settings → Usage că usage credits (fostul extra usage) sunt dezactivate și că auto-reload este oprit.",
@@ -85,10 +81,13 @@ export const ATTESTATION_TEXT = Object.freeze({
  * Evaluates whether a provider route is admissible under BillingPolicy. `inspection` comes from the
  * adapter (identity/auth/config facts gathered with the exact child environment used for runs).
  * Each check reports verified | unverified | failed; any failed or unverified cost check blocks.
+ * M09: `provider_side_overage_setting` reads the billing EVIDENCE (`evidence` = settings.billingEvidence, `identity` = the
+ * account identity of the route's fresh probe); callers build the options with billingInputs() (billing-evidence.mjs). The
+ * legacy `attestations` option is no longer read: a caller that still passes only it gets "missing" (blocked), never a pass.
  */
-export function evaluateRoute(provider, inspection, { attestations = {}, now = new Date(), usage = null, reservePercent = 20 } = {}) {
+export function evaluateRoute(provider, inspection, { evidence = {}, identity = null, now = new Date(), usage = null, reservePercent = 20 } = {}) {
   const checks = [];
-  const add = (id, status, detail) => checks.push({ id, status, detail });
+  const add = (id, status, detail, extra = {}) => checks.push({ id, status, detail, ...extra });
 
   if (!inspection || inspection.installed === false) {
     add("installation", "failed", "Clientul oficial nu a fost găsit sau neinspectat");
@@ -129,9 +128,16 @@ export function evaluateRoute(provider, inspection, { attestations = {}, now = n
     add("provider", "failed", `Unknown provider ${provider}`);
   }
 
-  const attestation = attestationStatus(attestations, provider, now);
-  add("provider_side_overage_setting", attestation.ok ? "verified" : "unverified",
-    attestation.ok ? `Verificare manuală înregistrată ${attestation.confirmedAt}` : `Hub-ul nu poate citi setarea. Necesar: ${ATTESTATION_TEXT[provider] || "verificare manuală"}`);
+  // The setting itself is never readable before inference: only the owner's bound declaration (and no contrary provider
+  // report) admits the route. Every state other than "valid" blocks, exactly as a missing attestation did before.
+  const ev = evidenceState(provider, { evidence, identity, now, currentText: ATTESTATION_TEXT[provider] ?? null });
+  const declared = ev.declaration;
+  const source = declared?.source === "legacy_ui" ? "declarație veche din UI" : declared?.source || "";
+  add("provider_side_overage_setting", ev.state === "valid" ? "verified" : "unverified",
+    ev.state === "valid"
+      ? `Declarația ta (${source}) din ${declared.recordedAt}, valabilă până la ${ev.expiresAt}${declared.accountIdentity ? `, cont ${shortIdentity(declared.accountIdentity)}` : ""}`
+      : `Hub-ul nu poate citi setarea; ${describeReasons(ev.reasons)}. Necesar: declarația ta în sesiunea de proprietar (Integrări → „Declară din nou”): ${ATTESTATION_TEXT[provider] || "verificare manuală"}`,
+    { evidence: { state: ev.state, reasons: ev.reasons, expiresAt: ev.expiresAt || null, source: declared?.source || null, identity: shortIdentity(declared?.accountIdentity) } });
 
   const credits = usage?.creditsReported || null;
   if (credits) {

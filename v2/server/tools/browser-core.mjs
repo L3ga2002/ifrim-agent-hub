@@ -41,7 +41,11 @@ export const onOrigin = (raw, allowedOrigin) => {
  * calling the route, so an allowed request is fetched here with maxRedirects 0: each same-origin hop is followed by the Hub
  * (GET/HEAD only), a hop elsewhere aborts the request, and only the final response is handed to the browser.
  */
-export function createRequestGuard({ allowedOrigin, fetchTimeoutMs = 20000, maxRedirects = 5, redact = identity }) {
+export function createRequestGuard({ allowedOrigin, fetchTimeoutMs = 20000, maxRedirects = 5, redact = identity, streamPaths = [] }) {
+  // M09: a server-sent event stream never ends, so it cannot be fetched and fulfilled; a caller may name EXACT same-origin
+  // stream paths (the Hub's own /api/stream) that are continued natively. Nothing else changes: any other request, any other
+  // path and any other origin still goes through the checked fetch below.
+  const streams = new Set((Array.isArray(streamPaths) ? streamPaths : []).filter((p) => typeof p === "string" && p.startsWith("/") && !p.startsWith("//")));
   const blocked = [];
   const redirects = [];
   let blockedCount = 0;
@@ -71,6 +75,11 @@ export function createRequestGuard({ allowedOrigin, fetchTimeoutMs = 20000, maxR
     const verdict = browserRequestVerdict(first, allowedOrigin);
     if (!verdict.allowed) { note(first, verdict.reason, type, navigation, mainFrame, forGoto); return settle(() => r.abort("blockedbyclient")); }
     const method = String(read(() => request.method(), "GET")).toUpperCase();
+    if (streams.size && method === "GET" && !navigation && (type === "eventsource" || /text\/event-stream/i.test(read(() => request.headers().accept || "", "")))) {
+      let pathname = null;
+      try { const u = new URL(first); pathname = onOrigin(first, allowedOrigin) ? u.pathname : null; } catch { pathname = null; }
+      if (pathname && streams.has(pathname)) return settle(() => r.continue());
+    }
     let current = first;
     try {
       for (let hop = 0; ; hop += 1) {

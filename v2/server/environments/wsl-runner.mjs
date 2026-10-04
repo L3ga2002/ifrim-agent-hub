@@ -6,7 +6,7 @@ import { HubError } from "../core/errors.mjs";
 import { newId } from "../core/ids.mjs";
 import { json, parse } from "../storage/db.mjs";
 import { createCodexAdapter, MCP_NAME_ADDRESSABLE } from "../providers/codex.mjs";
-import { CLAUDE_KNOWN_FLAGS } from "../providers/claude.mjs";
+import { CLAUDE_KNOWN_FLAGS, claudeAuthFacts } from "../providers/claude.mjs";
 import { ENV_POLICY_TEXT } from "../policy/isolation.mjs";
 import { WSL_RUNNER, resolveWsl, wslArgs, runInDistro, runScript, parseKeyValues, assertWorkspacePath, cleanWslText } from "./wsl.mjs";
 import { BWRAP, reviewerArgs, CLAUDE_IN_SANDBOX, CLAUDE_PKG } from "./sandbox-profiles.mjs";
@@ -175,7 +175,9 @@ export function wslCodexLauncher({ config, env = WSL_RUNNER, state }) {
  * (C16), the attestation (canary C1–C17), and the per-run workspace lifecycle (prepare → export → validate → apply → reap →
  * release). Never a model: no thread or turn is started here.
  */
-export function createWslRunnerEnvironment({ config, db, bus, clock, providerState, supervisor, env = WSL_RUNNER, homeDir }) {
+export function createWslRunnerEnvironment({ config, db, bus, clock, providerState, supervisor, env = WSL_RUNNER, homeDir, identitySalt = null }) {
+  // M09-A2: the same salt as the Windows adapters, so the same account has the same pseudonym on both routes.
+  const salt = () => { try { return typeof identitySalt === "function" ? identitySalt() : null; } catch { return null; } };
   const stateKey = `env:${env.id}`;
   const probeKey = `codex@${env.id}`;
   const reviewerKey = `claude@${env.id}`;
@@ -186,7 +188,7 @@ export function createWslRunnerEnvironment({ config, db, bus, clock, providerSta
   const launcher = wslCodexLauncher({ config, env, state });
   // The test fixture stands in for wsl.exe: everything it produces is labelled simulated, never a WSL proof.
   const simulated = Boolean(resolveWsl(config)?.fixture);
-  const codex = createCodexAdapter({ config, supervisor, homeDir, launcher });
+  const codex = createCodexAdapter({ config, supervisor, homeDir, launcher, identitySalt });
 
   const store = (value) => { providerState.set(stateKey, value); return value; };
   const now = () => clock().toISOString();
@@ -514,7 +516,7 @@ export function createWslRunnerEnvironment({ config, db, bus, clock, providerSta
    * The reviewer's account check through the environment (M07; the reviewer's C16): `claude --version`, `--help` (which of
    * the flags the Hub passes it lists) and `claude auth status --json`, each inside the EXACT production reviewer sandbox
    * (reviewerArgs), in an empty workspace — no prompt, no model. Only loggedIn/authMethod/apiProvider/subscriptionType are
-   * kept. Stored as the provider state of `claude@wsl-runner`, bound to the fingerprint (probeProblem: 24 h).
+   * kept, plus (M09-A2) the salted account pseudonym. Stored as the provider state of `claude@wsl-runner`, bound to the fingerprint (probeProblem: 24 h).
    */
   async function probeReviewer() {
     users.set("reviewer-probe", "reviewer account check");
@@ -543,7 +545,9 @@ export function createWslRunnerEnvironment({ config, db, bus, clock, providerSta
       value.installation.version = text(version).trim().split("\n")[0].slice(0, 80) || value.installation.version;
       value.installation.flags = CLAUDE_KNOWN_FLAGS.filter((flag) => text(help).includes(flag));
       if (version.code !== 0 || !parsed) return store({ ok: false, error: `claude în sandbox-ul reviewer-ului: exit ${version.code}/${status.code} ${status.stderr.slice(0, 160)}` });
-      return store({ ok: true, auth: { loggedIn: Boolean(parsed.loggedIn), authMethod: parsed.authMethod || null, apiProvider: parsed.apiProvider || null, subscriptionType: parsed.subscriptionType || null } });
+      // M09-A2: the reviewer's own login gets its own pseudonym (claudeAuthFacts); a declaration made for another account blocks
+      // this route. Any identifier the CLI printed is discarded here.
+      return store({ ok: true, auth: claudeAuthFacts(parsed, { salt: salt() }) });
     } finally {
       if (created) await release(id).catch(() => {});
       users.delete("reviewer-probe");

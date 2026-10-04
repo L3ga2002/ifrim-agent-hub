@@ -155,7 +155,16 @@ test("T08 explicit probes return plan facts without identity", async () => {
     assert.equal(codex.models[0].id, "gpt-fake-sol");
     assert.ok(!t.readLog("codex").some((e) => e.method === "turn/start"), "a probe never starts a turn");
     const claude = await t.hub.providers.claude.probe();
-    assert.deepEqual(claude.auth, { loggedIn: true, authMethod: "claude.ai", apiProvider: "firstParty", subscriptionType: "max" });
+    // M09-A2: the four plan facts plus the salted pseudonym of the account (the fake reports an e-mail → basis "email"); the
+    // e-mail itself never leaves the adapter.
+    const { accountIdentity, ...facts } = claude.auth;
+    assert.deepEqual(facts, { loggedIn: true, authMethod: "claude.ai", apiProvider: "firstParty", subscriptionType: "max" });
+    assert.deepEqual(Object.keys(accountIdentity).sort(), ["basis", "plan", "scheme", "value"]);
+    assert.equal(accountIdentity.scheme, "sha256-salted:v1");
+    assert.equal(accountIdentity.basis, "email");
+    assert.match(accountIdentity.value, /^[0-9a-f]{16}$/);
+    assert.equal(codex.auth.accountIdentity.basis, "email");
+    assert.notEqual(codex.auth.accountIdentity.value, accountIdentity.value, "different fake accounts → different pseudonyms");
     assert.ok(!JSON.stringify([codex, claude]).includes("example.com"));
   } finally { await t.cleanup(); }
 });

@@ -41,7 +41,7 @@ test("M05-FAC-01 Stop during a QA command: killed, INTERRUPTED + stale, CANCELLE
     const input = demoSpec("bug-demo");
     input.spec.verification.checks = ["node --test test/unit.test.mjs"];
     input.spec.verification.acceptance = ["node --test test/acceptance.test.mjs", "node --test test/slow.test.mjs"];
-    const { mission } = (await dispatch(t.hub, "factory.prepare", { projectId: t.project.id, ...input })).result;
+    const { mission } = (await dispatch(t.hub, "factory.prepare", { projectId: t.project.id, ...input, limits: { writerModel: "gpt-fake-sol", reviewerModel: "sonnet" } })).result; // M09: explicit models
     t.queue("codex", "factory-write:bug-hang");
     t.queue("claude", "review:pass");
     await approveAndStart(t, mission.id);

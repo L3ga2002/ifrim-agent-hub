@@ -8,6 +8,7 @@ import { ErrorBoundary } from "../components/ErrorBoundary.jsx";
 import { VoiceControl } from "./Voice.jsx";
 import { Lega } from "./Lega.jsx";
 import { Spotlight } from "./Spotlight.jsx";
+import { DesktopBar } from "./DesktopBar.jsx";
 import { LegaStage, useStageToggle } from "../screens/stage/LegaStage.jsx";
 import { Core3D } from "../components/core/Core3D.jsx";
 import { deriveCoreState, CORE_VISUALS } from "../lib/coreState.js";
@@ -62,11 +63,17 @@ function ConnectionChip() {
 
 function StatusChips() {
   const hub = useHub((s) => s.hub);
+  const legaStatus = useHub((s) => s.legaStatus || "off");
+  const legaAuthority = useHub((s) => s.legaAuthority || null);
   if (!hub) return null;
   const gate = hub.executionGate?.status;
+  // M10: while Lega's voice runs (connecting/active only, not while preparing or stopping), the chip says so; it names the owner
+  // session only for a session admitted from it (the old path is a hand grant). Runs stay in the shown mode either way.
+  const legaOn = legaStatus === "connecting" || legaStatus === "active";
+  const legaTitle = legaAuthority === "owner_session" ? `Lega rulează din sesiunea ta (o sesiune vocală); execuțiile rămân în ${hub.mode}` : `Lega rulează cu un grant „Lega (voce)”; execuțiile rămân în ${hub.mode}`;
   return (
     <div className="row status-chips">
-      <Chip tone={hub.mode === "BUILD_SAFE" ? "info" : "warn"} icon={CircleDot} title="Modul de lucru al Hub-ului">{hub.mode}</Chip>
+      <Chip tone={hub.mode === "BUILD_SAFE" ? "info" : "warn"} icon={CircleDot} title={legaOn ? legaTitle : "Modul de lucru al Hub-ului"}>{hub.mode}{legaOn ? " · Lega activă" : ""}</Chip>
       <span className="hide-xs"><Chip tone={gate === "open" ? "ok" : "neutral"} icon={gate === "open" ? ShieldCheck : Pause} title={hub.executionGate?.reason}>poartă {gate === "open" ? "deschisă" : "suspendată"}</Chip></span>
       <ConnectionChip />
     </div>
@@ -309,6 +316,8 @@ export function Shell({ route, go, children }) {
       </nav>
       {stageOpen && <ErrorBoundary label="stage" fallback={() => null}><LegaStage onClose={() => setStageOpen(false)} go={go} /></ErrorBoundary>}
       <ErrorBoundary label="spotlight" fallback={() => null}><Spotlight /></ErrorBoundary>
+      {/* M10: the Desktop Operator's permanent activity bar (Stop / Preiau eu always one click away while it works). */}
+      <ErrorBoundary label="desktop-bar" fallback={() => null}><DesktopBar go={go} /></ErrorBoundary>
       <main className={`main${activeRunCount ? " has-indicator" : ""}`} id="main" tabIndex={-1} ref={mainRef}>
         {/* A failing screen never takes the shell down: navigation, Stop All and the connection state keep working. */}
         <ErrorBoundary label="screen" resetKey={`${route.name}:${route.id || ""}`} fallback={(error, reset) => (

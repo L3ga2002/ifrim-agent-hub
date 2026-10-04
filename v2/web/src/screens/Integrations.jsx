@@ -4,6 +4,7 @@ import { api, fmt } from "../api.js";
 import { useResource, useAction, useHub, refresh } from "../store.js";
 import { Panel, Loading, ErrorNotice, Chip, Checks, Notice, StatusChip, Empty } from "../components/ui.jsx";
 import { takeGrantPrefill } from "../lib/legaBridge.js";
+import { withReauth } from "../lib/ownerSession.js";
 
 /** Only known grant fields with values the form can show; anything else Lega sends is ignored. */
 const clampInt = (v, min, max) => (Number.isInteger(v) ? Math.min(max, Math.max(min, v)) : undefined);
@@ -25,8 +26,14 @@ function ProviderCard({ provider, attestationText, onChange }) {
   const inspect = useAction(async () => { await api(`/api/providers/${provider.id}/inspect`, { method: "POST", body: {} }); onChange(); });
   const probe = useAction(async (withModels) => { await api(`/api/providers/${provider.id}/probe`, { method: "POST", body: { withModels } }); onChange(); });
   const [confirmText, setConfirmText] = useState("");
-  const attest = useAction(async () => { await api("/api/billing/attest", { method: "POST", body: { provider: provider.id, confirmText } }); setConfirmText(""); onChange(); });
-  const attestationCheck = provider.route.checks.find((c) => c.id === "provider_side_overage_setting");
+  // M09-A2: the declaration is made in the owner session (Windows Hello re-authentication), bound to the account shown here;
+  // withdrawing it is fail-safe and always available.
+  const billing = provider.billing || null;
+  const declare = useAction(async () => {
+    await withReauth(() => api("/api/owner/billing/declare", { method: "POST", body: { provider: provider.id, confirmText, displayedIdentity: billing?.currentIdentity?.value || "" } }));
+    setConfirmText(""); onChange();
+  });
+  const withdraw = useAction(async () => { await api("/api/owner/billing/withdraw", { method: "POST", body: { provider: provider.id, reason: "retrasă din Integrări" } }); onChange(); });
   return (
     <Panel title={provider.displayName} icon={Plug} data-lega-target="billing" actions={<Chip tone={provider.route.allowed ? "ok" : "warn"}>{provider.route.allowed ? "rută inclusă verificată" : "blocat"}</Chip>}>
       <div className="stack">
@@ -45,18 +52,62 @@ function ProviderCard({ provider, attestationText, onChange }) {
         <p className="faint" style={{ margin: 0, fontSize: 12 }}>
           {provider.id === "codex" ? "Verificarea pornește codex app-server local, face handshake și citește account/read și rate limits. Nu pornește niciun turn, deci nu există inferență." : "Rulează comanda oficială „claude auth status --json” cu același mediu controlat folosit la execuții. Nu există inferență."}
         </p>
-        {attestationCheck?.status !== "verified" && (
-          <div className="stack tight">
-            <div className="section-title"><KeyRound size={12} /> Verificare manuală de facturare</div>
-            <p className="muted" style={{ margin: 0 }}>Hub-ul nu poate citi această setare. Verifică-o în contul tău, apoi tastează exact textul de mai jos:</p>
-            <pre className="pre" style={{ maxHeight: 120 }}>{attestationText}</pre>
-            <textarea className="textarea" rows={2} value={confirmText} onChange={(e) => setConfirmText(e.target.value)} aria-label="Text de confirmare" />
-            <button className="btn sm" disabled={confirmText !== attestationText || attest.pending} onClick={attest.run}>Înregistrează verificarea (valabilă 30 de zile)</button>
-          </div>
-        )}
-        <ErrorNotice error={inspect.error || probe.error || attest.error} />
+        <BillingEvidence billing={billing} attestationText={billing?.declarationText || attestationText} confirmText={confirmText} setConfirmText={setConfirmText}
+          declare={declare} withdraw={withdraw} providerName={provider.id === "claude" ? "Claude" : "Codex"} />
+        <ErrorNotice error={inspect.error || probe.error || declare.error || withdraw.error} />
       </div>
     </Panel>
+  );
+}
+
+const EVIDENCE_TONE = { valid: "ok", reverify_required: "warn", missing: "error" };
+const EVIDENCE_LABEL = { valid: "declarație valabilă", reverify_required: "cere reconfirmare", missing: "fără declarație" };
+const SOURCE_LABEL = { "owner_session:webauthn": "sesiunea ta de proprietar", legacy_ui: "declarație veche din UI (nelegată de cont)", simulator: "simulare" };
+
+/**
+ * M09-A2: the billing evidence of one provider — what the Hub holds (source, when, until when, which account as a short
+ * pseudonym, state and reasons), the re-declaration in the owner session and the withdrawal (always available).
+ */
+function BillingEvidence({ billing, attestationText, confirmText, setConfirmText, declare, withdraw, providerName }) {
+  if (!billing) return null;
+  const d = billing.declaration;
+  const current = billing.currentIdentity;
+  const canDeclare = Boolean(current?.value) && confirmText === attestationText && !declare.pending;
+  return (
+    <div className="stack tight" data-lega-target="billing-evidence">
+      <div className="section-title"><KeyRound size={12} /> Declarația de facturare (setarea peste plan)</div>
+      <div className="row wrap">
+        <Chip tone={EVIDENCE_TONE[billing.state] || "warn"}>{EVIDENCE_LABEL[billing.state] || billing.state}</Chip>
+        {billing.reasonText && billing.state !== "valid" && <span className="muted small">{billing.reasonText}</span>}
+      </div>
+      <dl className="kv">
+        <dt>Sursă</dt><dd>{d ? SOURCE_LABEL[d.source] || d.source : "—"}</dd>
+        <dt>Înregistrată</dt><dd>{d ? fmt.dateTime(d.recordedAt) : "—"}</dd>
+        <dt>Expiră</dt><dd>{d?.expiresAt ? fmt.dateTime(d.expiresAt) : "—"} <span className="faint small">(cel mult {billing.maxAgeDays} de zile)</span></dd>
+        <dt>Cont declarat</dt><dd className="mono">{d?.identity ? `${d.identity.short}${d.identity.basis === "tuple" ? " (pseudonim slab: doar planul)" : ""}` : d ? "nelegată de un cont" : "—"}</dd>
+        <dt>Cont verificat acum</dt><dd className="mono">{current ? `${current.short}${current.basis === "tuple" ? " (pseudonim slab: doar planul)" : ""}` : "necunoscut — rulează „Verifică contul”"}</dd>
+        {billing.reports?.length > 0 && <><dt>Rapoarte provider</dt><dd>{billing.reports.map((r) => `${fmt.dateTime(r.recordedAt)} ${r.status || ""}${r.errorCode ? ` ${r.errorCode}` : ""}${r.signals?.length ? ` · ${r.signals.join(", ")}` : ""}`).join(" | ")}</dd></>}
+      </dl>
+      <p className="faint small" style={{ margin: 0 }}>Hub-ul nu poate citi setarea înainte de execuție. Declarația ta e legată de contul verificat (pseudonim, fără e-mail), expiră după cel mult {billing.maxAgeDays} de zile și cade dacă se schimbă contul sau dacă providerul raportează consum peste plan.</p>
+      {billing.state !== "valid" && (
+        <>
+          <p className="muted" style={{ margin: 0 }}>Verifică setarea în contul tău {providerName}, apoi tastează exact textul de mai jos. Confirmi cu Windows Hello (sesiunea de proprietar).</p>
+          <pre className="pre" style={{ maxHeight: 120 }}>{attestationText}</pre>
+          <textarea className="textarea" rows={2} value={confirmText} onChange={(e) => setConfirmText(e.target.value)} aria-label="Textul declarației de facturare" />
+        </>
+      )}
+      {billing.state === "valid" && (
+        <details>
+          <summary className="link-btn" style={{ cursor: "pointer" }}>Declară din nou</summary>
+          <pre className="pre" style={{ maxHeight: 120, marginTop: 8 }}>{attestationText}</pre>
+          <textarea className="textarea" rows={2} value={confirmText} onChange={(e) => setConfirmText(e.target.value)} aria-label="Textul declarației de facturare" />
+        </details>
+      )}
+      <div className="row wrap">
+        <button className="btn sm" disabled={!canDeclare} onClick={declare.run} title={current?.value ? "" : "Rulează întâi „Verifică contul”"}>{declare.pending ? "Confirm…" : `Declară din nou (contul ${current?.short || "—"}, ${billing.maxAgeDays} de zile)`}</button>
+        <button className="btn sm ghost" disabled={withdraw.pending} onClick={withdraw.run}>{withdraw.pending ? "Retrag…" : "Retrage declarația"}</button>
+      </div>
+    </div>
   );
 }
 
@@ -147,6 +198,9 @@ function LivePanel({ integrations, onChange }) {
   const [prefilled, setPrefilled] = useState(false); // true while the form holds values Lega filled in and the owner has not edited
   const projectList = useResource("/api/projects", { reloadOn: (e) => e.type.startsWith("project.") });
   const executable = (projectList.data?.projects || []).filter((p) => p.executionAllowed);
+  // M10: the one-click Lega start exists only under the voice-first policy; under the legacy policy the old path is the way.
+  const ownerStatus = useResource("/api/owner/status", { reloadOn: (e) => e.type.startsWith("owner.") || (e.type === "settings.changed" && e.payload?.key === "ownerPolicy") });
+  const voiceFirst = Boolean(ownerStatus.data?.policy?.active);
   const mode = useAction(async (next) => { await api("/api/mode", { method: "POST", body: { mode: next, confirm } }); setConfirm(""); refresh(); onChange(); });
   const gate = useAction(async (action) => { await api("/api/gate", { method: "POST", body: { action, confirm, reason: action === "open" ? "Deschisă pentru validare live" : "Suspendată de utilizator" } }); setConfirm(""); refresh(); });
   // A Lega (voice) grant is always Codex, read-only, on the Hub project; attempts = voice sessions, duration = session cap.
@@ -176,6 +230,9 @@ function LivePanel({ integrations, onChange }) {
       <div className="stack">
         <dl className="kv"><dt>Mod</dt><dd>{hub?.mode}</dd><dt>Poartă</dt><dd><StatusChip status={hub?.executionGate?.status} /> {hub?.executionGate?.reason}</dd></dl>
         <p className="muted" style={{ margin: 0 }}>O execuție cu model cere toate condițiile: modul LIVE_VALIDATION, poarta deschisă, un grant pentru provider/proiect/acces/încercări/expirare, rută de abonament verificată și backup verificat.</p>
+        {voiceFirst
+          ? <p className="muted small" style={{ margin: 0 }}>Lega (voce) nu mai cere mod sau grant: pornește din sesiunea ta de proprietar (o autorizare de o sesiune, derivată și revocată automat). Grantul „Lega (voce)” de mai jos e doar pentru folosirea fără sesiune.</p>
+          : <p className="muted small" style={{ margin: 0 }}>Lega (voce) pornește fără mod sau grant după ce activezi politica voice-first (Lega → Configurare); până atunci cere LIVE_VALIDATION și un grant „Lega (voce)”.</p>}
         <div className="stack tight" data-lega-target="live-mode">
           <label className="field"><span>Confirmare (tastează LIVE_VALIDATION sau OPEN GATE)</span><input className="input" value={confirm} onChange={(e) => setConfirm(e.target.value)} /></label>
           <div className="row wrap">

@@ -1,4 +1,5 @@
 import { HubError } from "../core/errors.mjs";
+import { CLAUDE_MODEL_ALLOWLIST, CLAUDE_REFUSED_MODELS } from "../providers/claude.mjs";
 
 /**
  * Explicit model and reasoning effort for every provider run (M03 §09).
@@ -55,7 +56,10 @@ export function resolveRunPlan({ provider, model = "", effort = "", profile = DE
         : "model/list nu marchează niciun model implicit; alege explicit un model" };
     }
     plan.model = String(chosen.id);
-    plan.modelSource = requestedModel ? "owner" : "model/list (implicit al contului)";
+    // M09: with no model asked for (a manual run only; factory roles always carry one), the account default is PINNED now as an
+    // explicit id: it is the value sent, recorded as requested and verified at thread/start, never re-read later.
+    plan.modelSource = requestedModel ? "owner" : "account_default_pinned";
+    if (!requestedModel) plan.requestedModel = plan.model;
     plan.supportedEfforts = (chosen.efforts || []).map(String);
     if (plan.supportedEfforts.length && !plan.supportedEfforts.includes(plan.effort)) {
       return { ...plan, problem: `Efortul ${plan.effort} (${plan.effortSource}) nu e suportat de ${plan.model}; eligibile: ${plan.supportedEfforts.join(", ")}` };
@@ -68,8 +72,15 @@ export function resolveRunPlan({ provider, model = "", effort = "", profile = DE
     if (Array.isArray(flags) && !flags.includes("--effort")) {
       return { ...plan, problem: "Claude Code instalat nu listează --effort; efortul nu poate fi aplicat explicit (NEEDS_INSTALL_APPROVAL pentru upgrade)" };
     }
-    plan.modelSource = requestedModel ? "owner" : "setarea implicită Claude Code (raportată la init; modelele Fable/1M sunt refuzate)";
-    plan.verification = "Trimis explicit: --effort; modelul raportat la init este verificat (Fable/[1m] oprite înainte de model). Claude Code nu raportează efortul efectiv în stream";
+    // M09: Claude always runs with an explicit model. The account default is resolved by the CLI at spawn time and seen only at
+    // init, so it is never used: an empty model is refused here, before the gate admits anything. A refused model (Fable,
+    // "best", [1m]) is left to the adapter, which stops it before any process as a billing refusal.
+    if (!requestedModel) return { ...plan, problem: "Claude pornește doar cu un model explicit (sonnet, opus, haiku sau un id claude-sonnet/opus/haiku-…); modelul implicit al contului nu se folosește" };
+    if (!CLAUDE_REFUSED_MODELS.test(requestedModel) && !CLAUDE_MODEL_ALLOWLIST.test(requestedModel)) {
+      return { ...plan, problem: `Modelul „${requestedModel.slice(0, 60)}” nu e permis pentru Claude (permise: sonnet, opus, haiku sau un id claude-sonnet/opus/haiku-…)` };
+    }
+    plan.modelSource = "owner";
+    plan.verification = "Trimis explicit: --model și --effort; modelul raportat la init trebuie să fie din familia cerută (altfel oprire înainte de model; Fable/[1m] oprite). Claude Code nu raportează efortul efectiv în stream";
     return plan;
   }
   return { ...plan, problem: `Provider necunoscut: ${provider}` };
@@ -81,6 +92,12 @@ export function assertRunPlan(plan) {
   return plan;
 }
 
-/** The recorded form (agent_runs.plan_json): what was requested, sent and from where. */
+/**
+ * The recorded form (agent_runs.plan_json): what was requested, sent and from where. M09: plus the approved binding it was
+ * dispatched under (bindingHash, resolvedAlias, resolutionEvidence) and a refused material change; `verified` is added when the
+ * provider reports its model (Codex thread/start, Claude init).
+ */
 export const planRecord = (plan) => ({ profile: plan.profile, requestedModel: plan.requestedModel, model: plan.model, modelSource: plan.modelSource,
-  requestedEffort: plan.requestedEffort, effort: plan.effort, effortSource: plan.effortSource, supportedEfforts: plan.supportedEfforts, verification: plan.verification });
+  requestedEffort: plan.requestedEffort, effort: plan.effort, effortSource: plan.effortSource, supportedEfforts: plan.supportedEfforts, verification: plan.verification,
+  ...(plan.bindingHash ? { bindingHash: plan.bindingHash, bindingRole: plan.bindingRole || null, resolvedAlias: plan.resolvedAlias, resolutionEvidence: plan.resolutionEvidence } : {}),
+  ...(plan.materialChange ? { materialChange: plan.materialChange } : {}) });

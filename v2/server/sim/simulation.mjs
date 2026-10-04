@@ -3,6 +3,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { HubError } from "../core/errors.mjs";
 import { ATTESTATION_TEXT } from "../policy/billing.mjs";
+import { buildDeclaration, applyDeclaration } from "../policy/billing-evidence.mjs";
 import { R2_ACCEPT_TEXT } from "../policy/isolation.mjs";
 import { materializeFixture, demoSpec } from "../factory/fixtures.mjs";
 
@@ -73,7 +74,8 @@ export function createSimulation(hub) {
     await cmd("conversation.message", { conversationId, content });
     try {
       const task = taskId ? hub.missions.task(taskId) : null;
-      const { run } = await hub.runs.start({ conversationId, provider, access: "read-only", actor: "simulator", ...(task ? { taskId, stage: task.stage, roleId: task.roleId } : {}) });
+      // M09: Claude never runs on the account default; the simulator asks for an explicit alias (fixture providers only).
+      const { run } = await hub.runs.start({ conversationId, provider, access: "read-only", actor: "simulator", ...(provider === "claude" ? { model: "sonnet" } : {}), ...(task ? { taskId, stage: task.stage, roleId: task.roleId } : {}) });
       return wait ? await waitRun(run.id) : run;
     } catch (error) {
       if (error.category === "gate") return hub.runs.getRun(error.details?.runId);
@@ -100,7 +102,6 @@ export function createSimulation(hub) {
     hub.bus.transaction(() => {
       hub.settings.set("mode", "LIVE_VALIDATION", "simulator", "Simulare: fixture-uri, fără modele");
       hub.settings.set("executionGate", { status: "open", reason: "Simulare: doar fixture-uri", changedAt: now, changedBy: "simulator" }, "simulator");
-      hub.settings.set("billingAttestations", { codex: { confirmedAt: now, text: ATTESTATION_TEXT.codex }, claude: { confirmedAt: now, text: ATTESTATION_TEXT.claude } }, "simulator");
       // Fixture providers only: no real sandbox writes ACEs here; the consent mirrors the real flow for the UI.
       hub.settings.set("isolationConsent", { codex: { confirmedAt: now, fingerprint: hub.codexIsolation().fingerprint, simulated: true } }, "simulator");
       // The synthetic demo project is a registry project; the R2 acceptance mirrors the real flow (fixtures only, no host access).
@@ -115,6 +116,15 @@ export function createSimulation(hub) {
       const probe = await hub.providers[id].probe({ withUsage: true, withModels: id === "codex" });
       hub.providerState.set(id, { ...probe, installation });
     }
+    // M09-A2: simulated declarations bound to the fixture accounts (simulation process only; labelled "simulator").
+    hub.bus.transaction(() => {
+      let evidence = hub.settings.get("billingEvidence");
+      for (const id of ["codex", "claude"]) {
+        evidence = applyDeclaration(evidence, id, buildDeclaration({ id: `bde_sim_${id}`, provider: id, text: ATTESTATION_TEXT[id], identity: hub.providerState.get(id)?.auth?.accountIdentity || null,
+          now: new Date(), source: "simulator", recordedBy: { channel: "test", actor: "simulator" } }));
+      }
+      hub.settings.set("billingEvidence", evidence, "simulator", "Simulare: declarații de facturare pentru fixture-uri");
+    });
     hub.surfaces.refreshAvailability();
     const p = project();
     hub.bus.transaction(() => {
@@ -181,7 +191,10 @@ export function createSimulation(hub) {
     });
     fs.appendFileSync(path.join(config.dataDir, "codex.queue"), `${codex.join("\n")}\n`);
     fs.appendFileSync(path.join(config.dataDir, "claude.queue"), `${claude.join("\n")}\n`);
-    const view = await cmd("factory.prepare", { projectId: projectRow.id, ...demoSpec(fixture, { port }) });
+    // M09: the demo mission names its models explicitly (the fixture account's listed model for the writer, sonnet for the reviewer).
+    const codexModels = hub.providerState.get("codex")?.models;
+    const writerModel = Array.isArray(codexModels) ? (codexModels.find((m) => m.isDefault) || codexModels[0])?.id || "" : "";
+    const view = await cmd("factory.prepare", { projectId: projectRow.id, ...demoSpec(fixture, { port }), limits: { ...(writerModel ? { writerModel } : {}), reviewerModel: "sonnet" } });
     return { missionId: view.mission.id, projectId: projectRow.id, next: "Deschide misiunea și apasă „Cere aprobarea scope-ului”, apoi „Aprobă și pornește”" };
   }
 

@@ -23,7 +23,7 @@ export function registerOwnerRoutes(router, hub) {
   const sessionOf = (req, touch = true) => trust.resolveSession(tokenOf(req), { origin: originOf(req), touch });
   const setCookie = (res, token, maxAgeS) => res.setHeader("Set-Cookie", `${SESSION_COOKIE}=${token ? encodeURIComponent(token) : ""}; Path=/api; HttpOnly; SameSite=Strict; Max-Age=${token ? maxAgeS : 0}`);
 
-  async function dispatch(req, type, payload, { requireOwner = false } = {}) {
+  async function dispatch(req, type, payload, { requireOwner = false, created = false } = {}) {
     // These routes act for the owner (session) or the owner's UI; a request that declares itself an agent or a script is refused
     // here instead of being recorded as the owner's click.
     const declared = String(req.headers["x-hub-channel"] || "").toLowerCase();
@@ -33,7 +33,7 @@ export function registerOwnerRoutes(router, hub) {
     const result = await commands.dispatch({ type, payload, actor: session ? `owner:${session.id}` : "user", channel: session ? "owner" : "ui", ownerSession: session,
       idempotencyKey: req.headers["idempotency-key"] || null, intentText: type === "owner.intent" ? String(payload.text || "").slice(0, 500) : "" });
     if (result.approvalRequired) return { __status: 202, body: { approvalRequired: true, approval: result.approval, commandId: result.command.id } };
-    return result.result;
+    return created ? { __status: 201, body: result.result } : result.result;
   }
 
   // ---------- trusted session ----------
@@ -52,6 +52,10 @@ export function registerOwnerRoutes(router, hub) {
   post("/api/owner/credentials/:id/revoke", ({ req, params }) => dispatch(req, "owner.credential.revoke", { credentialId: params.id }, { requireOwner: true }));
   post("/api/owner/policy/activate", ({ req, body }) => dispatch(req, "owner.policy.activate", { text: body.text }, { requireOwner: true }));
   post("/api/owner/policy/deactivate", ({ req, body }) => dispatch(req, "owner.policy.deactivate", { reason: body.reason || "" }));
+  // M09-A2: the billing declaration (owner session, re-authenticated, bound to the displayed account) and its fail-safe withdrawal.
+  post("/api/owner/billing/declare", ({ req, body }) => dispatch(req, "billing.declare", { provider: body.provider, confirmText: body.confirmText, displayedIdentity: body.displayedIdentity,
+    route: body.route || undefined }, { requireOwner: true }));
+  post("/api/owner/billing/withdraw", ({ req, body }) => dispatch(req, "billing.withdraw", { provider: body.provider, reason: body.reason || "", stopRunning: body.stopRunning !== false }));
 
   // ---------- cockpit, explain, replay, company map ----------
   get("/api/cockpit/:projectId", async ({ params }) => {
@@ -135,4 +139,8 @@ export function registerOwnerRoutes(router, hub) {
 
   // The factory list per project, for the cockpit's mission picker (read-only).
   get("/api/cockpit/:projectId/missions", ({ params }) => ({ missions: factory.list().filter((f) => f.projectId === (projects.get(params.projectId)?.id || params.projectId)) }));
+
+  // M10: the owner-session resolver and dispatcher, for routes registered elsewhere that must carry the owner channel (Lega's
+  // start lives in routes.mjs; the first-match router keeps it there).
+  return { sessionOf, dispatch };
 }

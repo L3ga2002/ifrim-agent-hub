@@ -122,6 +122,13 @@ export default function Mobile() {
           <section className="m-card" aria-labelledby="m-inc"><h2 id="m-inc" className="h3">Incidente deschise ({data.incidents.length})</h2>
             {data.incidents.length ? <ul className="plain m-list">{data.incidents.map((i) => <li key={i.incidentId}><strong>{i.title}</strong> <span className="faint small">{i.status}{i.impactConfirmed ? " · impact confirmat" : ""}</span></li>)}</ul> : <p className="faint small">—</p>}
           </section>
+          {/* M09: clips in production / review — status only; corrections, approvals and releases happen on the PC. */}
+          <section className="m-card" aria-labelledby="m-content"><h2 id="m-content" className="h3">Clipuri în lucru ({(data.content || []).length})</h2>
+            {(data.content || []).length ? <ul className="plain m-list">{data.content.map((c) => (
+              <li key={c.contentProjectId}><div><strong>{c.title}</strong><div className="faint small">{c.stageLabel || c.stage}{c.openReviews ? ` · ${c.openReviews} ${c.openReviews === 1 ? "corectură propusă" : "corecturi propuse"}` : ""} · se revizuiește {c.where}</div></div></li>
+            ))}</ul> : <p className="faint small">—</p>}
+            <p className="faint small">Doar starea: corecturile, aprobarea creativă și publicarea se fac pe PC.</p>
+          </section>
           <footer className="m-foot faint small">Server {fmt.time(data.serverTime)} · versiunea stării {data.stateVersion}{isDevice && <> · <button className="btn sm ghost" onClick={forget}><LogOut size={13} />Uită acest telefon</button></>}</footer>
         </>
       )}

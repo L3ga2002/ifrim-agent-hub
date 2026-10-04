@@ -193,6 +193,19 @@ x
     assert.ok(t.hub.skillEvolution.overlayFor(pid)?.[skill.id] || t.hub.skillEvolution.overlayFor(pid), "the candidate applies to that project");
     const otherOverlay = t.hub.skillEvolution.overlayFor("prj_other");
     assert.ok(!otherOverlay || !otherOverlay[skill.id], "and only to it");
+    // M09-A3: the composer sees the in-scope candidate (named, pinned to its id) but a shipped skill without hub-task-types is
+    // opt-out, so nothing is injected and no run is attributed to it; the monitor says it cannot measure yet.
+    const { composeSkills } = await import("../server/domain/skill-composer.mjs");
+    const role = String(t.hub.skills.list().find((s) => s.id === skill.id).metadata["hub-roles"] || "").split(/\s+/)[0];
+    const composed = composeSkills({ db: t.hub.db, skills: t.hub.skills, projectId: pid, roleId: role, access: "read-only" });
+    const rec = composed.records.find((r) => r.id === skill.id);
+    assert.equal(rec.candidateId, good.id);
+    assert.equal(rec.candidateActive, approved.candidateVersion);
+    assert.equal(rec.applied, false);
+    assert.equal(composed.section, "");
+    const monitored = t.hub.skillEvolution.monitor(good.id);
+    assert.equal(monitored.verdict.runs, 0);
+    assert.match(monitored.verdict.reason, /Niciun run încheiat/);
     const back = await t.hub.commands.dispatch({ type: "skill.candidate.rollback", channel: "voice", actor: "lega", payload: { candidateId: good.id, reason: "regresie" } }).then((r) => r.result);
     assert.equal(back.status, "ROLLED_BACK", "rollback is fail-safe from any owner-facing channel");
   } finally { await t.cleanup(); }

@@ -1,0 +1,19 @@
+/* M10: Desktop Operator activity bar, operation plan card, operator page, Studio text target. */
+.desktop-bar { display: flex; align-items: center; gap: var(--sp-2); flex-wrap: wrap; padding: 6px var(--sp-3); margin: 0; border-bottom: 1px solid var(--line);
+  background: var(--surface-2); font-size: var(--fs-s); position: sticky; top: var(--top-h); z-index: 20; }
+.desktop-bar.tone-info { border-left: 3px solid var(--info); }
+.desktop-bar.tone-warn { border-left: 3px solid var(--approval); background: var(--approval-soft); }
+.desktop-bar-text { flex: 1 1 260px; min-width: 0; overflow-wrap: anywhere; }
+.ops-steps { margin: var(--sp-2) 0; padding-left: 1.4em; display: grid; gap: 4px; }
+.ops-steps li { line-height: 1.45; }
+.ops-step-title { font-weight: 500; }
+.block { display: block; }
+.op-apps { display: grid; gap: var(--sp-2); }
+.op-app { display: grid; grid-template-columns: minmax(140px, 1fr) auto; gap: var(--sp-2); align-items: start; padding: var(--sp-2) 0; border-bottom: 1px solid var(--line); }
+.op-app:last-child { border-bottom: 0; }
+.op-caps { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 4px; }
+.op-actions { font-size: var(--fs-xs); }
+.op-actions td, .op-actions th { padding: 3px 6px; text-align: left; vertical-align: top; }
+.studio-target { min-width: 200px; }
+.studio-options { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; }
+@media (max-width: 720px) { .op-app { grid-template-columns: 1fr; } .desktop-bar { top: 0; } }

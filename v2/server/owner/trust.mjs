@@ -19,7 +19,9 @@ import { b64url, verifyRegistration, verifyAssertion } from "./webauthn.mjs";
 export const OWNER_POLICY_VERSION = 1;
 export const OWNER_POLICY_TEXT = "Activez politica voice-first: într-o sesiune autentificată cu autentificatorul meu confirm o singură dată planul exact al unei misiuni, iar Hub-ul emite intern granturile tehnice doar în limitele lui. Vocea nu mă autentifică. Deploy, bani, acces, instalări, ștergeri și trimiteri externe cer în continuare o confirmare separată.";
 export const OWNER_SETUP_TEXT = "Înregistrez autentificatorul acestui calculator pentru sesiunea mea de proprietar în Hub.";
-export const SESSION_DEFAULTS = Object.freeze({ maxHours: 8, idleMinutes: 30, reauthMinutes: 5, challengeSeconds: 120 });
+// rotateMinutes: a re-authentication in the last minutes of a session opens a NEW session (new cookie, full lifetime) instead of
+// renewing one that is about to end (M10.1: "open your session again" must actually help, e.g. for a Lega start).
+export const SESSION_DEFAULTS = Object.freeze({ maxHours: 8, idleMinutes: 30, reauthMinutes: 5, challengeSeconds: 120, rotateMinutes: 10 });
 export const SESSION_COOKIE = "ifrim_owner";
 const MAX_CREDENTIALS = 5;
 
@@ -139,9 +141,14 @@ export function createTrust({ db, bus, clock, settings, config }) {
     const t = now();
     const policyVersion = settings.get("ownerPolicy")?.version || 0;
     const existing = currentToken ? resolveRow(currentToken, rp.origin) : null;
+    const nearEnd = Boolean(existing) && Date.parse(existing.expires_at) - t.getTime() < SESSION_DEFAULTS.rotateMinutes * 60000;
     return bus.transaction(() => {
       db.prepare("UPDATE owner_credentials SET sign_count = ?, last_used_at = ? WHERE id = ?").run(result.signCount, iso(t), stored.id);
-      if (existing && existing.credential_id === stored.id) {
+      if (existing && nearEnd) {
+        // Rotation: the old session ends (audited) and a new one is issued below, in the same transaction.
+        const n = db.prepare("UPDATE owner_sessions SET status = 'ended', revoked_at = ?, revoke_reason = 'rotated' WHERE id = ? AND status = 'active'").run(iso(t), existing.id).changes;
+        if (n) bus.append({ type: "owner.session_ended", scopeType: "owner", scopeId: existing.id, source: "owner", payload: { reason: "rotated" } });
+      } else if (existing && existing.credential_id === stored.id) {
         db.prepare("UPDATE owner_sessions SET reauth_at = ?, last_seen_at = ? WHERE id = ?").run(iso(t), iso(t), existing.id);
         bus.append({ type: "owner.session_reauthenticated", scopeType: "owner", scopeId: existing.id, source: "owner", payload: { purpose: row.purpose } });
         return { sessionId: existing.id, token: null, expiresAt: existing.expires_at, reauthAt: iso(t), renewed: true };

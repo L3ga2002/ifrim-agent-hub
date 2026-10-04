@@ -1,4 +1,5 @@
 import { evaluateRoute } from "./billing.mjs";
+import { billingInputs } from "./billing-evidence.mjs";
 import { evaluateIsolation, evaluateHostIsolation, evaluateEnvironmentRoute, evaluateEnvironmentProfile, evaluateEnvironmentReviewer } from "./isolation.mjs";
 import { LEGA_CONSENT_VERSION } from "./lega-policy.mjs";
 
@@ -51,8 +52,12 @@ export function createGate({ db, settings, projects, backups, leases, grants, br
     add("project_frozen", !frozen, frozen ? `Proiect înghețat (${frozen.at}); dezgheață-l ca să pornească pași noi` : "Nu este înghețat");
 
     if (mode === "LIVE_VALIDATION") {
-      const grant = grantId ? grants.get(grantId) : grants.findUsable(provider, projectId, access);
-      const reason = grants.problem(grant, { provider, projectId, access, now });
+      // M09: a grant derived from an envelope serves only the binding it names (the run's approved model/effort hash); a manual
+      // run, a shadow review or a run with another model cannot consume it.
+      const bindingHash = plan?.bindingHash || null;
+      const missionId = plan?.bindingHash ? plan.missionId || null : null;
+      const grant = grantId ? grants.get(grantId) : grants.findUsable(provider, projectId, access, "run", { bindingHash, missionId });
+      const reason = grants.problem(grant, { provider, projectId, access, now, bindingHash, missionId });
       add("live_grant", !reason, reason || `Grant ${grant.id}: ${grant.maxAttempts - grant.attemptsUsed} încercări rămase, expiră ${grant.expiresAt}`, { grantId: grant?.id || null });
     } else if (mode === "OPERATIONAL") {
       add("operational", Boolean(settings.get("operationalEnabled")), settings.get("operationalEnabled") ? "Politici operaționale active" : "Modul OPERATIONAL nu este activat");
@@ -60,7 +65,8 @@ export function createGate({ db, settings, projects, backups, leases, grants, br
 
     // Billing facts of the route that will run: the environment client has its own login and config.
     const inspection = inspectionFromState(providerState.get(route === "windows" ? provider : `${provider}@${route}`), now);
-    const billing = evaluateRoute(provider, inspection, { attestations: settings.get("billingAttestations"), now, usage: inspection?.usage || null, reservePercent: settings.get("usageReservePercent") });
+    // M09-A2: the declaration is compared with THIS route's account (claude@wsl-runner has its own login and probe).
+    const billing = evaluateRoute(provider, inspection, billingInputs(settings, inspection, now));
     add("billing_route", billing.allowed, billing.allowed ? `Rută inclusă în abonament verificată${route !== "windows" ? ` (clientul din ${route})` : ""}` : billing.blockingReasons.join(" · "), { route: billing });
 
     if (route !== "windows") {
@@ -91,7 +97,9 @@ export function createGate({ db, settings, projects, backups, leases, grants, br
     add("circuit_breaker", breaker.state !== "open", breaker.state === "open" ? `Deschis până la ${breaker.until} după ${breaker.failures} eșecuri de infrastructură` : "Închis");
 
     // Explicit model and effort (M03 §09): resolved by the run manager; never left to the provider's config defaults.
-    if (plan) add("run_plan", !plan.problem, plan.problem || `${plan.model || "model implicit Claude"} · efort ${plan.effort} (${plan.effortSource})`, { model: plan.model, effort: plan.effort });
+    // M09: a run under an approved binding reports it; a material change since the approval is this check's problem.
+    if (plan) add("run_plan", !plan.problem, plan.problem || `${plan.model || "—"} · efort ${plan.effort} (${plan.effortSource})${plan.bindingHash ? ` · legat de planul aprobat (${String(plan.bindingHash).slice(0, 12)})` : plan.modelSource === "account_default_pinned" ? " · implicitul contului, fixat acum" : ""}`,
+      { model: plan.model, effort: plan.effort, ...(plan.bindingHash ? { bindingHash: plan.bindingHash } : {}), ...(plan.materialChange ? { materialChange: plan.materialChange } : {}) });
 
     const running = activeRunCount();
     const limit = settings.get("maxConcurrentAiRuns");
@@ -112,22 +120,35 @@ export function createGate({ db, settings, projects, backups, leases, grants, br
    * clean realtime config. No workspace lease or backup: the Lega thread has no environment and an empty scratch cwd, so
    * no project file is reachable from it; project work is proposed and then admitted as a normal run.
    */
-  function evaluateVoice({ voiceActive = false } = {}) {
+  /**
+   * `ownerAuthority` ({ sessionId, maxDurationS }) comes ONLY from lega.preview / lega.start after a database re-read of the owner
+   * session (hub.mjs → ownerAuthority: active, not expired, not idle, credential active, voice-first policy). With it, the M10
+   * zero-form path: the `mode` and `voice_grant` checks are satisfied by an authority derived for ONE voice session (the Hub's
+   * mode is never written; runs stay refused in BUILD_SAFE). Every other check decides exactly as without it.
+   */
+  function evaluateVoice({ voiceActive = false, ownerAuthority = null } = {}) {
     const checks = [];
     const add = (id, ok, detail, extra = {}) => checks.push({ id, ok, detail, ...extra });
     const now = clock();
+    const derived = Boolean(ownerAuthority?.sessionId);
     const gateState = settings.get("executionGate");
     add("execution_gate", gateState.status === "open", gateState.status === "open" ? "Deschisă" : `Suspendată: ${gateState.reason}`);
     const mode = settings.get("mode");
-    add("mode", mode === "LIVE_VALIDATION", mode === "LIVE_VALIDATION" ? "LIVE_VALIDATION" : `${mode}: Lega este un model și nu pornește în acest mod`);
+    if (derived) add("mode", true, `${mode}: Lega pornește cu autoritate derivată din sesiunea ta de proprietar (doar această sesiune vocală; modul Hub-ului nu se schimbă, execuțiile rămân în ${mode})`, { authority: "owner_session" });
+    else add("mode", mode === "LIVE_VALIDATION", mode === "LIVE_VALIDATION" ? "LIVE_VALIDATION" : `${mode}: Lega este un model și nu pornește în acest mod`);
     const hubProject = projects.hub();
-    const grant = hubProject ? grants.findUsable("codex", hubProject.id, "read-only", "voice") : null;
-    const reason = grants.problem(grant, { provider: "codex", projectId: hubProject?.id, access: "read-only", now, kind: "voice" });
-    add("voice_grant", !reason, reason || `Grant ${grant.id}: ${grant.maxAttempts - grant.attemptsUsed} sesiuni rămase, maxim ${Math.round(grant.maxDurationS / 60)} min, expiră ${grant.expiresAt}`, { grantId: grant?.id || null });
+    if (derived) {
+      const minutes = Math.max(1, Math.floor((Number(ownerAuthority.maxDurationS) || 60) / 60));
+      add("voice_grant", Boolean(hubProject), hubProject ? `Se derivă la pornire: 1 sesiune, maxim ${minutes} min, legată de sesiunea ta, revocată la final` : "Proiectul Hub lipsește", { grantId: null, authority: "owner_session" });
+    } else {
+      const grant = hubProject ? grants.findUsable("codex", hubProject.id, "read-only", "voice") : null;
+      const reason = grants.problem(grant, { provider: "codex", projectId: hubProject?.id, access: "read-only", now, kind: "voice" });
+      add("voice_grant", !reason, reason || `Grant ${grant.id}: ${grant.maxAttempts - grant.attemptsUsed} sesiuni rămase, maxim ${Math.round(grant.maxDurationS / 60)} min, expiră ${grant.expiresAt}`, { grantId: grant?.id || null });
+    }
     const consent = settings.get("legaConsent") || {};
     add("lega_consent", consent.version === LEGA_CONSENT_VERSION, consent.version === LEGA_CONSENT_VERSION ? `Acord înregistrat ${consent.confirmedAt}` : "Acordul pentru Lega (audio la OpenAI, consum din plan) nu este înregistrat");
     const inspection = inspectionFromState(providerState.get("codex"), now);
-    const route = evaluateRoute("codex", inspection, { attestations: settings.get("billingAttestations"), now, usage: inspection?.usage || null, reservePercent: settings.get("usageReservePercent") });
+    const route = evaluateRoute("codex", inspection, billingInputs(settings, inspection, now));
     add("billing_route", route.allowed, route.allowed ? "Rută inclusă în abonament verificată" : route.blockingReasons.join(" · "), { route });
     const realtime = inspection?.config?.realtime;
     const risky = realtime?.riskyKeys || [];

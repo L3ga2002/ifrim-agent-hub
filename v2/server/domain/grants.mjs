@@ -18,9 +18,11 @@ export function createGrants({ db, bus, clock }) {
     // An active grant past its expiry is shown and judged as expired (the row itself is not rewritten on read).
     expiresAt: row.expires_at, status: row.status === "active" && new Date(row.expires_at) <= clock() ? "expired" : row.status, note: row.note, createdAt: row.created_at,
     // M06: a grant derived from a Mission Authorization Envelope names it (null = created by hand in LIVE_VALIDATION).
-    envelopeId: row.envelope_id ?? null });
+    envelopeId: row.envelope_id ?? null,
+    // M09: the model/effort binding an envelope-derived grant may serve ({ role, provider, model, effort, bindingHash }); null = any.
+    binding: parse(row.binding_json, null) });
 
-  function create({ provider, projectId, access, maxAttempts, maxDurationS, ttlMinutes, tools = [], note = "", kind = "run", envelopeId = null, expiresAt = null }, actor) {
+  function create({ provider, projectId, access, maxAttempts, maxDurationS, ttlMinutes, tools = [], note = "", kind = "run", envelopeId = null, expiresAt = null, binding = null }, actor) {
     if (!["run", "voice"].includes(kind)) throw new HubError("validation", "kind must be run or voice");
     if (kind === "voice") {
       // Lega runs on Codex with the read-only profile; sessions are capped at 30 minutes.
@@ -36,27 +38,36 @@ export function createGrants({ db, bus, clock }) {
     // A derived grant may end earlier than its TTL: never after the envelope that authorized it.
     if (expiresAt && !envelopeId) throw new HubError("validation", "An explicit expiry is only for envelope-derived grants");
     if (!(maxDurationS >= 60 && maxDurationS <= 7200)) throw new HubError("validation", "maxDurationS must be 60..7200");
+    // M09: a binding is only for an envelope-derived run grant, and it must be complete (the hash is what the gate compares).
+    if (binding && (!envelopeId || kind !== "run")) throw new HubError("validation", "Doar un grant derivat dintr-un plan poate fi legat de un model");
+    if (binding && (binding.provider !== provider || !/^[0-9a-f]{64}$/.test(String(binding.bindingHash || "")) || !String(binding.model || "").trim())) {
+      throw new HubError("validation", "Legătura de model a grantului e incompletă sau pentru alt provider");
+    }
     const id = newId("grant");
     const now = clock();
     const ttlEnd = now.getTime() + ttlMinutes * 60000;
     const end = expiresAt ? Math.min(ttlEnd, Date.parse(expiresAt)) : ttlEnd;
     if (!(end > now.getTime())) throw new HubError("validation", "The grant would already be expired");
-    db.prepare(`INSERT INTO live_grants (id, provider, project_id, max_attempts, tools_json, access, max_duration_s, expires_at, status, note, created_at, envelope_id)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?, ?)`).run(id, provider, projectId, maxAttempts, json(tools), access, maxDurationS,
-      new Date(end).toISOString(), note, now.toISOString(), envelopeId);
-    bus.append({ type: "grant.created", scopeType: "project", scopeId: projectId, projectId, source: actor, payload: { grantId: id, provider, access, maxAttempts, ttlMinutes, kind, envelopeId } });
+    const bound = binding ? { role: String(binding.role || ""), provider: binding.provider, model: String(binding.model).trim().slice(0, 80), effort: String(binding.effort || "").slice(0, 20), bindingHash: binding.bindingHash,
+      ...(binding.missionId ? { missionId: String(binding.missionId).slice(0, 80) } : {}) } : null;
+    db.prepare(`INSERT INTO live_grants (id, provider, project_id, max_attempts, tools_json, access, max_duration_s, expires_at, status, note, created_at, envelope_id, binding_json)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?, ?, ?)`).run(id, provider, projectId, maxAttempts, json(tools), access, maxDurationS,
+      new Date(end).toISOString(), note, now.toISOString(), envelopeId, bound ? json(bound) : null);
+    bus.append({ type: "grant.created", scopeType: "project", scopeId: projectId, projectId, source: actor, payload: { grantId: id, provider, access, maxAttempts, ttlMinutes, kind, envelopeId,
+      ...(bound ? { binding: { role: bound.role, model: bound.model, effort: bound.effort, hash: bound.bindingHash.slice(0, 16) } } : {}) } });
     return get(id);
   }
 
   const get = (id) => rowTo(db.prepare("SELECT * FROM live_grants WHERE id = ?").get(id));
 
-  function findUsable(provider, projectId, access, kind = "run") {
+  /** `bindingHash` (M09): the approved binding of the run asking (null = a run with no binding: manual, shadow, Lega). */
+  function findUsable(provider, projectId, access, kind = "run", { bindingHash = null, missionId = null } = {}) {
     const rows = db.prepare("SELECT * FROM live_grants WHERE provider = ? AND project_id = ? AND status = 'active' ORDER BY created_at DESC").all(provider, projectId)
       .map(rowTo).filter((g) => g.kind === kind);
-    return rows.find((g) => !problem(g, { provider, projectId, access, now: clock(), kind })) || rows[0] || null;
+    return rows.find((g) => !problem(g, { provider, projectId, access, now: clock(), kind, bindingHash, missionId })) || rows[0] || null;
   }
 
-  function problem(grant, { provider, projectId, access, now, kind = "run" }) {
+  function problem(grant, { provider, projectId, access, now, kind = "run", bindingHash = null, missionId = null }) {
     if (!grant) return kind === "voice" ? "Niciun grant de voce (Lega) activ" : "Niciun grant de validare live pentru acest provider și proiect";
     if (grant.kind !== kind) return kind === "voice" ? "Grantul este pentru execuții, nu pentru Lega" : "Grantul este pentru Lega (voce), nu pentru execuții";
     if (grant.status === "expired" || (grant.status === "active" && new Date(grant.expiresAt) <= now)) return "Grantul a expirat";
@@ -66,6 +77,12 @@ export function createGrants({ db, bus, clock }) {
     if (access === "workspace-write" && grant.access !== "workspace-write") return "Grantul permite doar citire";
     if (new Date(grant.expiresAt) <= now) return "Grantul a expirat";
     if (grant.attemptsUsed >= grant.maxAttempts) return "Încercările grantului sunt epuizate";
+    // M09: a grant bound to the model the owner confirmed in a plan serves only a run dispatched under that exact binding.
+    if (grant.binding?.bindingHash && grant.binding.bindingHash !== bindingHash) {
+      return `Grantul este legat de modelul confirmat în plan (${grant.binding.model} · ${grant.binding.effort || "—"}); ${bindingHash ? "execuția cere alt model sau alt efort" : "o execuție fără modelul aprobat (manuală, shadow, Lega) nu îl poate folosi"}`;
+    }
+    // …and only the mission it was derived for: another mission with the same model has its own authority (or none).
+    if (grant.binding?.missionId && grant.binding.missionId !== missionId) return `Grantul a fost derivat pentru misiunea ${grant.binding.missionId}, nu pentru această execuție`;
     return null;
   }
 

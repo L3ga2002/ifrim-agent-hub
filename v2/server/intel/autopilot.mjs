@@ -3,6 +3,7 @@ import { newId } from "../core/ids.mjs";
 import { hashCanonical } from "../core/canonical.mjs";
 import { json, parse } from "../storage/db.mjs";
 import { redactText } from "../security/redact.mjs";
+import { normalizeBindingRequest, ROLE_PROVIDERS } from "../policy/model-binding.mjs";
 
 /**
  * Project Autopilot (M08 §09–§10): the factory goes from one piece of work to a finite OBJECTIVE — a few dependent tasks with
@@ -27,9 +28,31 @@ export const STOP_CONDITIONS = Object.freeze([
 ]);
 const KEY_RE = /^[a-z0-9][a-z0-9-]{0,31}$/;
 
-/** Validates an objective's task graph and budget. Returns { ok, problems, order } (order = topological, dependencies first). */
-export function validateObjectivePlan({ title, criteria = [], tasks = [], limits = {} }) {
+/**
+ * M09: the models of an objective's tasks ({ writer: { model, effort }, reviewer: { model, effort } }), syntax-checked like the
+ * factory does (role provider, allowed Claude model, known effort). Missing models are allowed in the objective (its tasks are
+ * then drafts with an incomplete scope, listed by prepare); an ineligible one is refused here. Returns { models, problems }.
+ */
+export function normalizeObjectiveModels(input) {
+  if (input === undefined || input === null) return { models: null, problems: [] };
+  if (typeof input !== "object" || Array.isArray(input)) return { models: null, problems: ["Modelele obiectivului: obiect { writer, reviewer } așteptat"] };
+  const models = {};
   const problems = [];
+  for (const role of ["writer", "reviewer"]) {
+    const m = input[role];
+    if (m === undefined || m === null) continue;
+    if (typeof m !== "object" || Array.isArray(m)) { problems.push(`Modelul ${role}: { model, effort } așteptat`); continue; }
+    if (m.provider && m.provider !== ROLE_PROVIDERS[role]) { problems.push(`Modelul ${role} rulează pe ${ROLE_PROVIDERS[role]}, nu pe ${String(m.provider).slice(0, 20)}`); continue; }
+    const check = normalizeBindingRequest({ role, model: typeof m.model === "string" ? m.model : "", effort: typeof m.effort === "string" ? m.effort : "" });
+    if (!check.ok) { problems.push(check.problem); continue; }
+    models[role] = { provider: ROLE_PROVIDERS[role], model: check.request.model, effort: check.request.effort };
+  }
+  return { models: Object.keys(models).length ? models : null, problems };
+}
+
+/** Validates an objective's task graph and budget. Returns { ok, problems, order } (order = topological, dependencies first). */
+export function validateObjectivePlan({ title, criteria = [], tasks = [], limits = {}, models = null }) {
+  const problems = [...normalizeObjectiveModels(models ?? limits.models).problems];
   if (!String(title || "").trim() || String(title).trim().length < 3) problems.push("Obiectivul are nevoie de un titlu");
   if (!Array.isArray(criteria) || !criteria.filter((c) => String(c || "").trim()).length) problems.push("Obiectivul are nevoie de cel puțin un criteriu de reușită");
   if (!Array.isArray(tasks) || !tasks.length) problems.push("Obiectivul are nevoie de cel puțin o sarcină");
@@ -85,18 +108,21 @@ export function createAutopilot({ db, bus, clock, projects, factory, commands, e
   }
 
   /** A DRAFT objective (nothing is created in the factory yet). Fields a client sends about trust (test project, owner…) are ignored. */
-  function draft({ projectId, title, criteria = [], tasks = [], verification = null, limits = {}, actor }) {
+  function draft({ projectId, title, criteria = [], tasks = [], verification = null, limits = {}, models = null, actor }) {
     const p = projects.get(projectId);
     if (!p) throw new HubError("not_found", "Proiect necunoscut");
     const defaults = { verification, maxDurationMin: Number(limits.maxDurationMin || 45) };
     const cleaned = (Array.isArray(tasks) ? tasks : []).map((t) => cleanTask(t || {}, defaults));
-    const checked = validateObjectivePlan({ title, criteria, tasks: cleaned, limits });
+    const modelInput = models ?? limits.models ?? null;
+    const checked = validateObjectivePlan({ title, criteria, tasks: cleaned, limits, models: modelInput });
     if (!checked.ok) throw new HubError("validation", `Planul obiectivului are probleme: ${checked.problems.join("; ")}`, { data: { problems: checked.problems } });
     const ordered = checked.order.map((k) => cleaned.find((t) => t.key === k));
     const plan = { tasks: ordered, order: checked.order, stopConditions: STOP_CONDITIONS, totalMinutes: checked.totalMinutes,
       effects: { allowed: ["scriere în workspace-ul proiectului (copie izolată pe ruta lui)", "teste locale", "review doar-citire", "QA / preview / E2E local"], denied: ["deploy", "commit / push", "mesaje", "acces la producție sau la credențiale", "migrare de bază de date reală", "alte proiecte"] },
       roles: { writer: "Codex", reviewer: "Claude (doar citire)", runner: "Hub" }, concurrency: 1 };
-    const cleanLimits = { maxAttemptsPerStage: Math.min(Number(limits.maxAttemptsPerStage || 2), OBJECTIVE_LIMITS.maxAttemptsPerStage), maxRepairCycles: Math.min(Number(limits.maxRepairCycles ?? 1), OBJECTIVE_LIMITS.maxRepairCycles) };
+    const objectiveModels = normalizeObjectiveModels(modelInput).models;
+    const cleanLimits = { maxAttemptsPerStage: Math.min(Number(limits.maxAttemptsPerStage || 2), OBJECTIVE_LIMITS.maxAttemptsPerStage), maxRepairCycles: Math.min(Number(limits.maxRepairCycles ?? 1), OBJECTIVE_LIMITS.maxRepairCycles),
+      ...(objectiveModels ? { models: objectiveModels } : {}) };
     const id = newId("apo");
     const t = iso();
     bus.transaction(() => {
@@ -121,7 +147,10 @@ export function createAutopilot({ db, bus, clock, projects, factory, commands, e
         verification: { checks: ["npm test"], acceptance: [], ...(task.verification || {}), preview: task.preview || task.verification?.preview || null },
         sources: { user: [task.objective], code: [], assumptions: [] } };
       const result = await commands.dispatch({ type: "factory.prepare", channel, actor, ownerSession, payload: { projectId: o.projectId, workType: task.workType, title: task.title,
-        objective: `${task.objective}`.padEnd(10, "."), spec, limits: { maxDurationMin: task.maxDurationMin, maxAttemptsPerStage: o.limits.maxAttemptsPerStage, maxRepairCycles: o.limits.maxRepairCycles } } });
+        // M09: the objective's models reach every task explicitly; without them the task is a draft whose scope is incomplete.
+        objective: `${task.objective}`.padEnd(10, "."), spec, limits: { maxDurationMin: task.maxDurationMin, maxAttemptsPerStage: o.limits.maxAttemptsPerStage, maxRepairCycles: o.limits.maxRepairCycles,
+          ...(o.limits.models?.writer ? { writerModel: o.limits.models.writer.model, ...(o.limits.models.writer.effort ? { writerEffort: o.limits.models.writer.effort } : {}) } : {}),
+          ...(o.limits.models?.reviewer ? { reviewerModel: o.limits.models.reviewer.model, ...(o.limits.models.reviewer.effort ? { reviewerEffort: o.limits.models.reviewer.effort } : {}) } : {}) } } });
       task.missionId = result.result?.mission?.id || null;
     }
     const incomplete = plan.tasks.filter((t) => { const v = t.missionId ? factory.view(t.missionId) : null; return !v?.scope; }).map((t) => t.key);
@@ -129,7 +158,7 @@ export function createAutopilot({ db, bus, clock, projects, factory, commands, e
       db.prepare("UPDATE autopilot_objectives SET plan_json = ?, status = 'PREPARED', version = version + 1, updated_at = ? WHERE id = ?").run(json(plan), iso(), objectiveId);
       bus.append({ type: "autopilot.prepared", scopeType: "autopilot", scopeId: objectiveId, projectId: o.projectId, source: actor, payload: { title: o.title, missions: plan.tasks.map((t) => t.missionId), incomplete } });
     });
-    return { objective: view(objectiveId), incomplete, note: incomplete.length ? `Sarcinile ${incomplete.join(", ")} au specificații incomplete; planul se poate prezenta după ce le completezi.` : "Toate sarcinile au specificații complete; poți cere planul." };
+    return { objective: view(objectiveId), incomplete, note: incomplete.length ? `Sarcinile ${incomplete.join(", ")} au specificații incomplete sau modele nefixate (writer și reviewer, explicit); planul se poate prezenta după ce le completezi.` : "Toate sarcinile au specificații complete și modele fixate; poți cere planul." };
   }
 
   /** One envelope over the ordered tasks (TRUSTED/HIGH: one confirmation for the whole objective; ASSISTED: the next ready task). */
@@ -202,7 +231,7 @@ export function createAutopilot({ db, bus, clock, projects, factory, commands, e
     const planOpen = v.envelope && ["CONFIRMED", "ACTIVE", "WAITING_OWNER"].includes(v.envelope.status);
     if (planOpen || ["RUNNING", "WAITING_OWNER"].includes(v.status)) throw new HubError("conflict", "Obiectivul rulează: oprește planul înainte să schimbi scope-ul (o confirmare nu acoperă un scope schimbat)");
     const next = draft({ projectId: o.projectId, title: changes.title ?? o.title, criteria: changes.criteria ?? o.criteria, tasks: changes.tasks ?? o.plan.tasks.map(({ missionId, ...t }) => t),
-      verification: changes.verification ?? null, limits: { ...o.limits, ...(changes.limits || {}) }, actor });
+      verification: changes.verification ?? null, limits: { ...o.limits, ...(changes.limits || {}) }, models: changes.models ?? null, actor });
     bus.transaction(() => {
       db.prepare("UPDATE autopilot_objectives SET status = 'SUPERSEDED', updated_at = ? WHERE id = ?").run(iso(), objectiveId);
       bus.append({ type: "autopilot.superseded", scopeType: "autopilot", scopeId: objectiveId, projectId: o.projectId, source: actor, payload: { title: o.title, by: next.id } });

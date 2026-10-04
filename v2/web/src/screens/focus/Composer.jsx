@@ -3,7 +3,7 @@ import { Send, Paperclip, Play, ShieldCheck, X, Lock, FileText, Target, ArrowRig
 import { api, fmt, uploadWithProgress } from "../../api.js";
 import { useAction, usePref, useHub } from "../../store.js";
 import { ErrorNotice, Checks, Notice, Chip } from "../../components/ui.jsx";
-import { validateAttachment, composerOptions } from "../../lib/uiLogic.js";
+import { validateAttachment, composerOptions, runRequestBody } from "../../lib/uiLogic.js";
 
 const PROVIDERS = [{ id: "codex", label: "Codex" }, { id: "claude", label: "Claude Code" }];
 const TOOLS_BY_ACCESS = {
@@ -74,7 +74,8 @@ export function Composer({ conversation, project, handoffReady, onSent }) {
         setPreview(await api(`/api/gate/preview?provider=${provider}&access=${access}&projectId=${project.id}`));
       } else {
         try {
-          await api(`/api/conversations/${conversation.id}/runs`, { method: "POST", body: { provider, access, ...(model ? { model } : {}), ...(options.effort ? { effort: options.effort } : {}), ...(conversation.activeTaskId ? { taskId: conversation.activeTaskId } : {}) } });
+          // M09: Claude always sends an explicit model (options.model is never empty for Claude); Codex only when chosen.
+          await api(`/api/conversations/${conversation.id}/runs`, { method: "POST", body: runRequestBody({ provider, access, model: options.model, effort: options.effort, taskId: conversation.activeTaskId || null }) });
         } catch (error) {
           if (error.category === "gate") setRefusal(error.details?.checks || [{ id: "gate", ok: false, detail: error.message }]);
           else throw error;
@@ -126,15 +127,15 @@ export function Composer({ conversation, project, handoffReady, onSent }) {
         <input type="file" ref={fileRef} hidden multiple onChange={(e) => { addFiles([...(e.target.files || [])]); e.target.value = ""; }} accept=".txt,.md,.json,.csv,.png,.jpg,.jpeg,.webp,.pdf,.log" />
         <button className="btn sm icon ghost" onClick={() => fileRef.current?.click()} aria-label="Atașează fișiere (sau trage-le aici)"><Paperclip size={16} /></button>
         <button className="btn sm ghost composer-opt-toggle" aria-expanded={optsOpen} aria-controls="composer-options" onClick={() => setOptsOpen((v) => !v)}>
-          {PROVIDERS.find((p) => p.id === provider)?.label} · {access === "read-only" ? "doar citire" : "scriere"}{model ? ` · ${model}` : ""}
+          {PROVIDERS.find((p) => p.id === provider)?.label} · {access === "read-only" ? "doar citire" : "scriere"}{options.model ? ` · ${options.model}` : ""}
         </button>
         <div className="seg composer-opt" id="composer-options" role="group" aria-label="Provider">{PROVIDERS.map((p) => <button key={p.id} aria-pressed={provider === p.id} onClick={() => setProvider(p.id)}>{p.label}</button>)}</div>
         <div className="seg composer-opt" role="group" aria-label="Acces">
           <button aria-pressed={access === "read-only"} onClick={() => setAccess("read-only")}>Doar citire</button>
           <button aria-pressed={access === "workspace-write"} onClick={() => setAccess("workspace-write")}>Scriere</button>
         </div>
-        <select className="select compact composer-opt" value={model} onChange={(e) => setModel(e.target.value)} aria-label="Model" title={options.modelNote}>
-          <option value="">{options.modelSource === "unread" ? "Model implicit (listă necitită)" : options.modelSource === "unverified" ? "Model implicit (CLI)" : "Model implicit"}</option>
+        <select className="select compact composer-opt" value={options.modelRequired ? options.model : model} onChange={(e) => setModel(e.target.value)} aria-label="Model" title={options.modelNote}>
+          {!options.modelRequired && <option value="">{options.modelSource === "unread" ? "Model implicit (listă necitită)" : "Model implicit"}</option>}
           {(models || []).map((m) => <option key={m.id} value={m.id}>{m.label}</option>)}
         </select>
         <select className="select compact composer-opt" value={options.effort} onChange={(e) => setEffort(e.target.value)} aria-label="Efort" title={options.effortNote}

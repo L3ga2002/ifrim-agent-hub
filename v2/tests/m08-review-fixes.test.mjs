@@ -12,6 +12,8 @@ import { spawnSync } from "node:child_process";
 import { makeTestHub, waitFor, enrolOwner, prepareLiveWithoutGrants, tempDir } from "./helpers.mjs";
 import { createHttpServer } from "../server/http/server.mjs";
 import { materializeFixture, demoSpec } from "../server/factory/fixtures.mjs";
+// M09: every factory mission names its models explicitly (without them it is a draft whose scope is incomplete).
+const M09_MODELS = { writerModel: "gpt-fake-sol", reviewerModel: "sonnet" };
 import { enrolVoice } from "./voice-helpers.mjs";
 import { activeLessons } from "../server/runtime/prompt.mjs";
 import { resolveIntent } from "../server/owner/intents.mjs";
@@ -37,7 +39,7 @@ async function objectiveHub() {
   const owner = await enrolOwner(t);
   await dispatch(t.hub, "owner.autonomy.set", { projectId: project.id, level: "TRUSTED" }, { ownerSession: owner.reauth() });
   const bug = demoSpec("bug-demo");
-  const input = { projectId: project.id, title: "Două sarcini", criteria: ["ok"], tasks: [
+  const input = { projectId: project.id, title: "Două sarcini", criteria: ["ok"], models: { writer: { model: "gpt-fake-sol" }, reviewer: { model: "sonnet" } }, tasks: [
     { key: "t1", title: bug.title, workType: "BUGFIX", objective: bug.objective, inScope: bug.spec.inScope, acceptance: bug.spec.acceptance, verification: bug.spec.verification },
     { key: "t2", title: "Limită nume", workType: "FEATURE", objective: "Detectarea numelui prea lung, cu test.", dependsOn: ["t1"], inScope: ["src/limits.js"], acceptance: [{ id: "AC-1", text: "Numele lung e detectat", verify: "test", testRef: "acceptance/limits.mjs" }], verification: { checks: ["node --test"], acceptance: ["node --test acceptance/limits.mjs"] } },
   ] };
@@ -196,7 +198,7 @@ test("M08-RF-07 HTTP: /api/owner/intent forwards the Lega session, so a plan sho
     await enrolVoice(s, owner);
     await dispatch(s.hub, "voice.gate", { enabled: true }, { ownerSession: owner.session });
     await dispatch(s.hub, "owner.autonomy.set", { projectId: project.id, level: "TRUSTED" }, { ownerSession: owner.reauth() });
-    await dispatch(s.hub, "factory.prepare", { projectId: project.id, ...demoSpec("bug-demo") });
+    await dispatch(s.hub, "factory.prepare", { projectId: project.id, ...demoSpec("bug-demo"), limits: M09_MODELS });
     const r = await s.call("POST", "/api/owner/intent", { cookie: `ifrim_owner=${owner.token}`, body: { text: "Arată-mi planul", projectId: project.id, legaSessionId: "lega_http" } });
     assert.equal(r.status, 200, JSON.stringify(r.json));
     assert.equal(r.json.results[0].armed.armed, true, r.json.results[0].armed.reason);
@@ -278,11 +280,31 @@ test("M08-RF-10 package B4: the owner's decision writes only the independent acc
     assert.equal(t.hub.environments.routeFor(project.id, "codex"), "wsl-runner");
     assert.ok(t.hub.settings.get("factoryExtraCommands").includes("python-unittest"));
     const mission = t.hub.db.prepare("SELECT m.id FROM missions m JOIN factory_missions fm ON fm.mission_id = m.id WHERE m.project_id = ?").get(project.id);
-    const v = t.hub.factory.view(mission.id);
+    let v = t.hub.factory.view(mission.id);
     assert.equal(v.factory.stage, "SPEC_DRAFT");
-    assert.ok(v.scope, `the spec is complete: ${JSON.stringify(v.spec?.problems || [])}`);
+    assert.equal(v.spec.protected?.problems?.length || 0, 0, `the spec is complete: ${JSON.stringify(v.spec?.protected?.problems || [])}`);
+    // M09: the pilot carries the package's models explicitly (M08 promised them in text only and the reviewer ran on the default).
+    assert.deepEqual([v.factory.limits.writerModel, v.factory.limits.writerEffort, v.factory.limits.reviewerModel, v.factory.limits.reviewerEffort], ["gpt-6.1-sol", "medium", "sonnet", "medium"]);
+    assert.match(b.options.find((o) => o.key === "B4").changes.join(" "), /modele: Codex gpt-6\.1-sol · medium \(abonament\); Claude sonnet · medium \(abonament\)/);
+    // With the routes' provider facts (the writer's model/list in wsl-runner lists gpt-6.1-sol; Claude inspected) the scope is complete
+    // and binds exactly those models — nothing ran to learn them.
+    const ctx = (provider) => t.hub.runs.bindingContext(project.id, provider);
+    t.hub.providerState.set(ctx("codex").stateKey, { ...(ctx("codex").providerState || {}), models: [{ id: "gpt-6.1-sol", model: "gpt-6.1-sol", isDefault: false, efforts: ["low", "medium", "high"] }, { id: "gpt-fake-sol", model: "gpt-fake-sol", isDefault: true, efforts: ["medium"] }] });
+    t.hub.providerState.set(ctx("claude").stateKey, { ...(ctx("claude").providerState || {}), installation: { installed: true, version: "2.1.175 (Claude Code)", flags: ["--effort", "--model"] } });
+    v = t.hub.factory.view(mission.id);
+    assert.ok(v.scope, `scope: ${JSON.stringify(v.scopeProblems)}`);
+    assert.deepEqual([v.scope.bindings.writer.resolvedAlias, v.scope.bindings.writer.environment, v.scope.bindings.reviewer.resolvedAlias, v.scope.bindings.reviewer.effort], ["gpt-6.1-sol", "wsl-runner", "sonnet", "medium"]);
     assert.equal(t.hub.db.prepare("SELECT COUNT(*) AS n FROM agent_runs").get().n, 0, "nothing runs");
     assert.equal(t.hub.packages.view(b.id).options.find((o) => o.key === "B4").state, "EXECUTED");
+    // A draft whose models differ from the package's is not "executed": B4 waits; deciding B4 again puts the package's models back.
+    await d("factory.limits", { missionId: mission.id, limits: { reviewerModel: "" } });
+    assert.equal(t.hub.packages.view(b.id).options.find((o) => o.key === "B4").state, "APPROVED_PENDING_EXECUTION");
+    const b2 = await d("package.present", { kind: "B" });
+    const again = await d("package.decide", { packageId: b2.id, decisions: { B1: "approve", B2: "approve", B3: "approve", B4: "approve" } });
+    assert.ok(again.applied.includes("B4"));
+    assert.equal(t.hub.factory.view(mission.id).factory.limits.reviewerModel, "sonnet");
+    assert.equal(t.hub.packages.view(b2.id).options.find((o) => o.key === "B4").state, "EXECUTED");
+    assert.equal(t.hub.db.prepare("SELECT COUNT(*) AS n FROM missions m JOIN factory_missions fm ON fm.mission_id = m.id WHERE m.project_id = ?").get(project.id).n, 1, "the same draft, not a second mission");
   } finally { setExtraCommands([]); await t.cleanup(); }
 });
 

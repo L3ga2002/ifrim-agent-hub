@@ -1,13 +1,126 @@
 # Open Issues - Ifrim Agent Hub
 
-## 2026-10-03 — Open items after M08 (code `2.9.0-m08`, committed `8b277c5`, push pending the owner; the live Hub runs `2.9.0-m08` since 16:26 UTC)
+## 2026-10-04 — Open items after M10 (code `2.11.0-m10`, contract 10, migration 10; **uncommitted** on `v2-milestone-01`, together with M09, over `ae3aa48`; **the live Hub runs `2.11.0-m10` since 2026-10-04 13:53 UTC**). Detail: `.ifrim/M10_REPORT.md` (takes precedence over the M09 section below where they overlap)
 
-1. **Push (owner).** The session's permission layer refused `git push origin v2-milestone-01`; the owner runs it.
-2. **R3 isolation consent must be confirmed again (owner).** A1 moved the V2 data to `C:\Users\mihai\IfrimHub\hub-data`, so the Codex deny list contains the new paths. Until the owner re-consents (Integrări → Izolare workspace), Codex on Windows and Lega voice stay blocked.
-3. **Package A: A1 and A2 executed live on 2026-10-03; the owner still records the decision** (Pilot → Decizii, Windows Hello). A1/A2 show as executed from reality.
-   - A3: the old local copies in `.ifrim/private`, `.ifrim/BACKUPS/v2`, `.ifrim/tmp/v2` and the OneDrive cloud copies were NOT deleted; deleting them is a separate owner decision.
-   - Rollback: `relocate-data.mjs --rollback` (Hub stopped); `voice-acl.ps1 -Rollback`.
-3. **Package B (ProDelivery pilot) is prepared, not started.** It is blocked until A is decided and executed, and it starts only with the owner's confirmed plan. LIVE_PROJECT_PILOT_VERIFIED = no.
+0. **M10.1 — Lega one-click start (`2.11.1-m10`, no migration) is LIVE since 2026-10-04 18:12 UTC.** Owner's approval: "abrob upgrade la 2 11 1". Claude ran `upgrade.mjs --apply`, run `upg_muu51x09`, verified: `2.11.1-m10`, BUILD_SAFE, 0 active grants, 0 runs.
+   - The PC had rebooted at 18:07 UTC and the Hub was down, so it was an offline upgrade.
+   - **Done (owner's request):** the per-user logon task "Ifrim Agent Hub V2" (`v2/scripts/autostart.ps1 -Install`, action `autostart-run.ps1`) starts the Hub 45 s after logon when nothing answers on 8011.
+     - Verified: run while up → "deja pornit"; run after `stop.mjs` → up in ~6 s, BUILD_SAFE.
+     - The real logon trigger is confirmed at the next restart (log: `%USERPROFILE%\IfrimHub\autostart.log`).
+     - The V1 tray task is separate.
+   - **The owner's Lega web-search setting is `live`** (higher risk). A stage or cockpit start opens the panel first and asks for one more click (by design).
+   - **Deliberate behaviour change on the old path:** withdrawing the Codex billing declaration now also stops a voice session started with a hand grant. Before, only the derived path stopped. This is fail-safe: a new start would be refused anyway.
+   - **Left by design:**
+     - hand-made "Lega (voce)" grants from the old path stay valid until they expire (nothing deletes them);
+     - a voice session's `maxDurationS` is fixed at start, from the owner session's time left. Activity during the voice session does not extend it; the owner session idling out stops it (tick ~15 s and before every Lega tool).
+   - **Owner session rotation (`v2/server/owner/trust.mjs`):** a re-authentication in the last 10 minutes of an owner session now opens a new session (new cookie, full 8 h) and ends the old one (`rotated`). Before, it renewed the same session in place. Whatever was bound to the old session stops as it would at expiry, at most 10 min earlier: a derived Lega voice, a running ops plan (→ NEEDS_OWNER, "confirmed in another session") or an envelope continuation. A plan confirmed in those last minutes now gets the new session instead of dying minutes later.
+   - Detail: `.ifrim/M10_LEGA_ZERO_FORM.md`.
+1. **Done 2026-10-04 13:53 UTC (owner's approval "aprob upgrade ul la m10"):** `node v2/scripts/upgrade.mjs --apply` by Claude, run `upg_mutvrr79`. Verified backup `hub-v2.pre-migration.v9-to-v10.2026-10-04T13-53-14-962Z.sqlite` (sha256 `bef36396…fb50`, integrity ok); BUILD_SAFE, 0 grants, 0 runs, log clean; the helper is built in `hub-data\work\desktop`. Two runner defects were fixed first (dry-run copy inside OneDrive; 40 s start wait). The M09 manual dry run had also copied the live DB into `.ifrim/tmp` (OneDrive) for a moment before deleting it.
+   - The server now takes and verifies the pre-migration backup itself.
+   - No GUI action on the owner's desktop and no model were run.
+   - The only real-desktop contact was a **read-only** discovery with the real helper: all four apps DISCOVERED, trusted signatures.
+2. **M09 items closed by M10:**
+   - **M09 #5** (the clip's project could not be imported): a project bundle `proiect-studio.json` + preview + ONE import + reconstruction from an older delivery. The bundle now sits in the clip folder.
+   - **M09 #6** (capture scope approval): `media.capture.scope.approve` (owner, fresh re-auth) + plan steps that approve the exact scope.
+   - **M09 #8, partly** (import roots without UI): contextual folders (once / persistent with fresh re-auth) from the Studio import panel, the Operator page and „Importă din folderul acesta”.
+3. **Live GUI verification is pending:**
+   - D1 (open / focus) and D2 (Notepad edit + Save As) are verified against the deterministic helper fixture.
+   - The real helper is verified automatically only through non-desktop operations (protocol, MAC, replay, authority, fail-closed scope, JSON arrays).
+   - The owner runs the real GUI demos (`m10-desktop-real.mjs --open / --notepad / --capcut-inspect --watching`).
+4. **CapCut's real UI Automation exposure is unknown** until the first `--capcut-inspect`. Until then:
+   - `invokeControl` and `import` stay UNVERIFIED;
+   - export stays ASSISTED_ONLY;
+   - publishing / exporting to platforms is refused (sensitive control).
+5. **Windows may refuse to bring a window to the foreground** (focus-stealing prevention). The result then says „open but not in front”; it is never reported as success. No `AllowSetForegroundWindow` / `AttachThreadInput` tricks are used.
+6. **A failed project import leaves the partially created content project.** The import row is marked FAILED; a retry creates a new project.
+   - **Decide:** archive the partial project automatically on failure, or keep it for inspection.
+7. **`ops.plan.propose` accepts any registered step kind from the owner-facing channels** (UI included). It only proposes: confirmation needs the owner session. No UI exists yet for composing arbitrary plans (only Lega's intents build them).
+8. **OBS through a plan needs:** MB1 (live capture), OBS WebSocket enabled with a password, and the Hub's OBS configuration (Operator page → OBS). The password is typed at each plan's confirmation and never stored.
+9. **Defects found and fixed during M10** (each with a test; detail in `M10_TEST_REPORT.md`):
+   - **helper arrays + fail-open scope:** the C# helper read JSON arrays only as `ArrayList`. Real discovery returned nothing, `listWindows`/`waitWindow` never matched, and the `auth.apps` scope check was skipped (fail-open). Now arrays are read through one function and the scope is fail-closed.
+   - **helper build encoding:** the C# source was compiled without UTF-8; now `/codepage:65001`.
+   - **policy diacritics:** JavaScript's ASCII `\b` let „Postează” / „Șterge” slip past the sensitive-control check.
+   - **protected process names:** compared with „.exe”, while the helper reports them without it.
+   - **plan desktop session:** left ACTIVE after the plan ended.
+   - **implicitly approved folders:** folders a step merely described were treated as approved, so there was no step-up decision.
+   - **bundle export:** refused a destination that did not exist yet.
+   - **translucent plates:** a style box at 0.75 opacity let busy UI text show through (the M09 LinkedIn ~21 s issue), and QA could not see it. Now the plate is reinforced (≥ 0.9, guaranteed in the ffmpeg filter, test M10-ST-13) in narrow variants, and the legibility QA measures around the real glyphs. A frame-based „plate too transparent” check was tried and removed: anti-aliased glyph edges made it fire falsely on the real clip.
+10. **Unchanged and still the owner's:**
+    - pilot ProDelivery/F-001, D6, Demo B;
+    - MEDIA_A / MB1 / MEDIA_C;
+    - the clip's creative approval;
+    - Claude billing re-declaration (M09 #2).
+    - Autostart, remote access and permanent listening stay off; M10 adds none of them.
+
+## 2026-10-04 — Open items after M09 (code `2.10.0-m09`, contract 9, migration 9; **uncommitted** on `v2-milestone-01` over `ae3aa48`; **the live Hub runs `2.10.0-m09` since 2026-10-04 07:23 UTC**). Detail: `.ifrim/M09_REPORT.md` (takes precedence over the M08 section below where they overlap)
+
+1. **Done 2026-10-04 07:20–07:24 UTC (owner's request "fă tu pașii de trecere pe M09"):** live upgrade to M09.
+   - Steps: dry run 8 → 9 clean → stop → coherent DB backup → `npm run build:v2` → start → read-only checks.
+   - The backup: `hub-data\private\pre-upgrade\hub-v2.pre-m09.2026-10-04T07-23-05-815Z.sqlite`, sha256 `3f90d2bc…5651`, integrity ok. The Hub does not back up by itself before a migration.
+   - State after: BUILD_SAFE, 0 grants, 0 runs, log clean.
+   - The execution gate stayed `open` as before (BUILD_SAFE blocks inference anyway).
+   - Rollback: `M09_LIVE_VALIDATION_PLAN.md` §1.
+2. **Claude inference is blocked until the owner re-declares billing.** Live state confirmed after the upgrade: `reverify_required`, `latched` + `legacy_unbound`, route blocked. This is intended.
+   - Codex stays valid until its declaration expires.
+   - Re-declaring needs the owner session + fresh Windows Hello + a probe ≤ 24 h (plan §2).
+   - The Hub still cannot verify Claude credits automatically and does not try.
+3. **M08 items closed by M09** (as code, PASS_SIMULATED; live after the upgrade):
+   - M08 #2, package/autopilot plans now pin models end to end (`policy/model-binding.mjs`);
+   - M08 #7, skill bodies are injected through the composer and recorded per run (`run_skill_usage`).
+   - The skill-evolution league and monitor now count only runs that actually received a skill (review R30/R31).
+4. **Unchanged and still waiting for the owner:**
+   - pilot bundle `bnd_musqo7xj_1a204a2e55` + F-001;
+   - D6 `bnd_murl82o1_00afe726c3`, Demo B `bnd_mupwze7b_e03f70f2d7`;
+   - the ProDelivery working tree (not touched by M09).
+5. **First clip awaits the owner's creative decision.** Files: `C:\Users\mihai\Videos\Ifrim Studio\M09 - Un plan, o confirmare\`. CREATIVE_OWNER_ACCEPTED is not recorded (it needs the Studio on the live Hub + Windows Hello). Its manifest stays DRAFT.
+   - The edit project exists only on the test hub that produced it.
+   - To approve it in the live Studio, the project must be re-created there:
+     1. import `surse/capture.mp4` + `surse/end-card.png` (+ rights);
+     2. `media.edit.create` with `plan-de-montaj_v1.json`, its `assetVersionId`s remapped to the new library ids;
+     3. final render.
+   - **Missing:** a small import helper (OWNER/test command or manual script) that remaps the plan's asset ids; today it would be a manual JSON edit.
+   - The sources were copied out of the session scratchpad into `surse/` (sha of `capture.mp4` verified).
+6. **Live capture cannot be approved yet even with MB1.** `captureBrowserDemo` on the live Hub (8011 or the 3011 dev proxy) and OBS recording both require the owner's approval of the session's exact scope (`consent_json.scopeApproval`, via `owner_session`). M09 has no command or screen that writes it.
+   - **Next step:** an OWNER command `media.capture.scope.approve` (fresh re-auth, scope sha bound, expiry) + a Studio button.
+7. **`media.capture.demo` (the command) always refuses** (review R9, unverified). `mediaPolicy.demoOrigins` has no writer.
+   - The manual harness (`tests/manual/m09-clip-capture.mjs`) calls the capture service directly with its own `allowOrigin`.
+   - **Decide:** add an OWNER `media.policy.demo_origins` writer limited to loopback test ports, or drop the command.
+8. **Import roots have no form in the UI.**
+   - Only `POST /api/media/policy/import-roots` (owner session) exists.
+   - Unset, the default is `%USERPROFILE%\Videos` (production only; tests use none).
+   - Browser upload works without import roots.
+9. **No media AI runs exist.** Brief, script and storyboard of the first clip were written by the development session and labelled `dev_session`. MB2 (max 4 runs, Claude `sonnet · medium`, no fallback) is a budget decision only.
+10. **Simplifications stated in `M09_IMPLEMENTATION_STATUS.md` §4:** circular capture buffer, AI generation/TTS, Remotion/Blender/Computer Use/Premiere UXP, speed ramps, noise cleanup and live social connectors are not implemented. The render queue has no separate heartbeat.
+11. **whisper-server `--inference-path` is implemented but OFF and unverified on the real binary** (needs starting whisper-server). The port is still callable by another local process while the server runs. The restriction is verifiable (listener check, 127.0.0.1, bounded reads), not authentication.
+12. **Residual review findings, documented, not fixed** (numbers = `review/findings.json`, R1..R39; none was confirmed by a verifier; R1 was rejected):
+    - **R4:** re-requesting a transcription after cancelling returns the cancelled job; cancelled queued jobs count toward the queue cap.
+    - **R25:** preset tamper detection is self-consistency only. A code/DB preset conflict is reported at boot, but the DB body is still used.
+    - **R28:** a withdrawal or overage latch does not touch the retained legacy `billingAttestations`. Rolling back to M08 code would re-admit Claude on the old declaration. Withdraw in M08's UI too, or clear it, before any rollback.
+    - **R29:** an overage report latches the provider but stops only the run that reported it. Concurrent Claude runs (max 2) continue to their end.
+    - **R32–R34:** skill approval facts are cached per content hash (a restore of older approved content is not re-checked against git); `importAll` reuses one git snapshot (TOCTOU); a `SKILL.md` symlink is read through but left out of the hash.
+    - **R36:** after MATERIAL_CHANGE a started mission cannot be re-bound to the same model. Under an envelope it can only be stopped and re-proposed.
+    - **R38:** the gate preview omits the composer's model/effort and shows a Claude refusal the real run would not hit.
+    - **R39:** the Focus screen's run retry drops the original effort (profile default used).
+13. **Review fixes made in this session** (all with regression tests):
+    - the 19 confirmed findings: R2, R3, R5, R6, R10–R14, R17–R23, R26, R27, R37;
+    - additionally: R7, R8, R15, R16, R24, R30, R31, R35;
+    - the regression tests themselves caught two more defects: the first R6 fix never ran (it read `rights.revoke`'s result wrongly, RF-07), and R5 accepted a default "now" as "before the withdrawal" (DS-16).
+    - Details: `M09_TEST_REPORT.md` §3.
+
+## 2026-10-03 — Open items after M08 (code `2.9.0-m08`, `8b277c5` + `ae3aa48` pushed to `origin/v2-milestone-01`; `origin/main` still `17921ac`; the live Hub runs `2.9.0-m08`). Current detail: `.ifrim/M08_SESSION_REPORT.md` (takes precedence)
+
+1. **Pilot bundle `bnd_musqo7xj_1a204a2e55` awaits the owner.** ProDelivery mission `mis_musq9hl4_1e9726b3fd` reached DELIVERY_READY live on 2026-10-03 (18:36–18:42 UTC; baseline 0/3, checks 27/27, review PASS, QA 3/3).
+   - Review finding F-001 (medium) is a behaviour change in `driver_ranking.py`: `punctuality_rate = 0` no longer defaults to 0.85. It needs the owner's decision (AC-3: no public contract change).
+   - Accept re-snapshots and goes STALE if the tree changed. Reject does not restore files.
+2. **Defect: package/autopilot plans do not pin models.** B4 promised reviewer Claude `sonnet · medium`, but `preparePilot` (`v2/server/intel/intel-commands.mjs`) passes only limits. The plan had an empty `requestedModel`, and the reviewer ran on the account default `claude-opus-5-5`.
+   - Fix: pin writer/reviewer model and effort, show them in the plan, and refuse a mismatch.
+3. **A pre-run backup is written inside the project.** `ProDelivery/.ifrim/BACKUPS/v2/…bkp_musqh5hy_7dd0d21d67.zip` (~5 MB) is git-ignored there but synced by OneDrive. It contains the owner's uncommitted work too.
+4. **Billing declaration vs the owner's $100.** The Claude declaration (2026-09-30) says usage credits are disabled. If extra usage is enabled on claude.ai, Hub Claude reviews could consume it after the weekly limit. The Hub checks credits automatically only for Codex.
+5. **Still on after the pilot:** ProDelivery ASSISTED + `wsl-runner`, `factoryExtraCommands: ["python-unittest"]`, policy `voice_first`. One plan confirmation starts models again.
+6. **Attestation `att_murgupen_3459ee8157` expires ~2026-10-16** (14 days). After that, wsl-runner missions are refused until re-attested.
+7. **Done on 2026-10-03:** push (owner); R3 re-consent 18:29 UTC; package A decided (A1/A2 executed by Claude, A3 acknowledged, nothing deleted); package B decided.
+   - Rollback of the relocation now needs `--rollback --copy-back` (Hub stopped): the new DB changed after the move.
+8. **The Hub does not start at logon.** After a Windows restart: `Ifrim Hub V2.cmd` or `v2\scripts\start-detached.ps1`. OpenClaw's global gateway (18789) did not come back after the reboot; owner decision.
 4. **Voice UX is verified only with synthetic voice** (the armed window included). To verify live after the upgrade, with the owner's voice.
 5. **Personal Mission Control on a real phone is BLOCKED.**
    - The Hub binds 127.0.0.1 only; no remote exposure is configured.

@@ -23,7 +23,28 @@ export const INTENT_EFFECTS = Object.freeze({
   incident_open: "plan", twin_changes: "read", twin_impact: "read", twin_why: "read", board_open: "plan", board_next: "navigate",
   board_defer: "plan", simulate: "read", league: "read", teach: "plan", forget: "plan", today: "read", decisions: "read",
   fullscreen: "navigate", cockpit_view: "navigate", details: "navigate", objectives: "read", objective_plan: "plan", start_view: "none",
+  // M09 Content Studio. Opening/showing navigates; an edit is a PROPOSED timecode correction (a review row, never applied by a
+  // sentence); "publică" is refused (MEDIA_C + a separate confirmation per upload); turning live capture off only reduces activity.
+  studio_open: "navigate", studio_show_clip: "navigate", studio_edit: "plan", studio_publish: "none", capture_off: "interrupt",
+  // M10 Desktop Operator + zero-form plans. "local" = a LOCAL_DIRECT command (open an authorized app, bring it forward, show an
+  // approved folder) run in the owner's session and verified — it never types into a document, clicks, saves or records. Work that
+  // types, saves, records or spans apps is a PLAN card (ONE confirmation). "Continuă" resumes a stopped plan within the same limits.
+  desktop_open: "local", desktop_focus: "local", desktop_folder: "local", studio_import_here: "plan", studio_variant: "plan", ops_capture_vertical: "plan", ops_continue: "effect",
+  // M10: „Pornește Lega” — a check that writes nothing; the page that sent it starts the voice (browser SDP + the owner cookie).
+  // "effect": a provider transcript never triggers it.
+  lega_start: "effect",
 });
+
+/** The apps the operator knows by name (normalized words → catalog id). Anything else is not a desktop target. */
+const DESKTOP_APP_WORDS = "capcut|cap cut|obs studio|obs|notepad|blocnotes|block notes|explorer-ul|explorerul|explorer|file explorer|exploratorul de fisiere|exploratorul";
+export function desktopAppId(word) {
+  const w = String(word || "").trim();
+  if (/^cap ?cut$/.test(w)) return "capcut";
+  if (/^obs( studio)?$/.test(w)) return "obs";
+  if (/^(notepad|blocnotes|block notes)$/.test(w)) return "notepad";
+  if (/explor/.test(w)) return "explorer";
+  return null;
+}
 
 /** Romanian number words (no diacritics, as normalized) → numbers, for "încă cinci clienți". */
 const NUMBER_WORDS = { un: 1, unu: 1, una: 1, o: 1, doi: 2, doua: 2, trei: 3, patru: 4, cinci: 5, sase: 6, sapte: 7, opt: 8, noua: 9, zece: 10,
@@ -116,7 +137,12 @@ const P = [
   ["freeze_project", /\bingheata (?<ref>.+)/, (m) => ({ projectRef: m.groups.ref })],
   ["unfreeze_project", /\bdezgheata (?<ref>.+)/, (m) => ({ projectRef: m.groups.ref })],
   ["stop_worker", /\bopreste (?<who>codex|claude|writerul|writer|reviewerul|reviewer|agentul|workerul)\b/, (m) => ({ worker: /claude|review/.test(m.groups.who) ? "claude" : /codex|writer/.test(m.groups.who) ? "codex" : "any" })],
+  // M09: live capture off (MEDIA_B rollback) — only reduces activity, so it is accepted from every channel.
+  ["capture_off", /\b(opreste|stop|opriti|inchide) (captura|capturile|captura live|inregistrarea ecranului|filmarea ecranului|filmarea)\b/],
   ["mute", /^(taci|liniste|nu mai vorbi|gata cu vorba|opreste vocea|mut)\b|\bnu mai vorbi\b|\btaci\b/],
+  // M10: start the voice assistant. Anchored on the whole clause: a leading "lega," is stripped before matching, so "Lega,
+  // pornește" stays the plan confirmation below; "deschide <proiect>", "modul Lega", "nu porni" keep their own intents.
+  ["lega_start", /^(porneste|deschide|activeaza|trezeste)( pe)? lega$|^(vreau sa vorbesc|hai sa vorbim|sa vorbim) cu lega$|^porneste vocea( lega)?$/],
   // A confirmation is an answer, anchored at the start ("da", "execută planul"); "nu porni" or "doar planul" never match it.
   ["confirm", /^(da|da,? (fa-l|fa-o|fa|porneste|executa|te rog)|confirm|confirma|confirmat|executa planul|porneste|da,? executa planul|ok,? porneste|da,? porneste)( planul)?$/],
   ["pause", /^(pauza|pune pe pauza|pune pauza)\b|\bpune (totul )?pe pauza\b|\bia o pauza\b/],
@@ -135,6 +161,28 @@ const P = [
   ["fullscreen", /\becran(ul)? complet\b|\bpe tot ecranul\b|\bfullscreen\b|\bmod(ul)? lega\b/],
   ["cockpit_view", /^(cockpit(ul)?|arata(-mi)? cockpit(ul)?|iesi din ecran(ul)? complet|ecran normal)$/],
   ["details", /^(detalii|arata(-mi)? detaliile|mai multe detalii|vreau detalii)$/],
+  // M10 Desktop Operator — BEFORE studio_open ("deschide OBS Studio" is the app, not the Studio page) and open_project ("deschide
+  // CapCut" is not a project). Only known app names match; "importă din folderul acesta" reads the Explorer window in front.
+  ["not_yet", /^nu (deschide|porni|lansa|inregistra|filma|importa|aduce)\b/],
+  ["ops_capture_vertical",/\b(inregistreaza|filmeaza|captureaza|inregistram|filmam)(-mi)?\b.*\b(demonstratia|demo-ul|demoul|demo|ecranul|hub-ul|hubul|aplicatia)\b/,
+    (m, c) => ({ vertical: /\b(vertical|verticala|9 16|tiktok|reels|shorts)\b/.test(c), noPublish: true, obs: /\bobs\b/.test(c) })],
+  ["desktop_folder", /\b(arata|deschide|du-ma la|du-ma in)(-mi)? (folderul|dosarul|locul) (cu |unde sunt |de )?(exporturi(le|lor)?|exportul|export|exportate)\b|\bunde (e|sunt) (exportul|exporturile|clipul exportat)\b/, () => ({ folder: "exports" })],
+  ["desktop_focus", new RegExp(String.raw`(?<!\bnu )\b(adu|pune|treci|comuta|mergi)(-mi|-l|-o)? (pe |in |la )?(?<app>${DESKTOP_APP_WORDS}) (in fata|in prim[- ]plan|deasupra|sus)\b|\b(treci|comuta|mergi) (in|pe|la) (?<app2>${DESKTOP_APP_WORDS})$`),
+    (m) => ({ app: desktopAppId(m.groups.app || m.groups.app2) })],
+  ["desktop_open", new RegExp(String.raw`(?<!\bnu )\b(deschide|deschideti|porneste|lanseaza|da-mi|fa-mi)(-mi)? (aplicatia |programul )?(?<app>${DESKTOP_APP_WORDS})\b`), (m) => ({ app: desktopAppId(m.groups.app) })],
+  ["studio_import_here", /\bimporta(-l|-le|-mi)?( (proiectul|clipul|materialele|fisierele|tot|video-ul|montajul))?( (din|de (in|la))( (folderul|dosarul|locul))? ?(acesta|asta|deschis|curent|de aici|aici)| de aici)\b/],
+  ["studio_variant", /\b(pregateste|fa|randeaza|genereaza|scoate)(-mi)? (si )?(varianta|versiunea|formatul) (?<fmt>verticala|vertical|9 16|tiktok|reels|shorts|patrata|linkedin|youtube)\b/, (m) => ({ format: m.groups.fmt })],
+  ["ops_continue", /^(continua|continua planul|continua acum|reia|reia planul|mergi mai departe|poti continua|gata,? continua|ok,? continua)$/],
+  // M09 Content Studio — BEFORE simulate / incident_open / status / show_preview / open_project, which would otherwise swallow
+  // "arată-mi clipul" (a project named „clipul”), "preview-ul clipului" (the factory preview) or "la secunda 12 …".
+  // "Publică clipul" is never an action from a sentence ("nu publica" / "nu se încarcă" are not requests to publish).
+  ["studio_publish", /(?<!\b(?:nu|se) )\b(publica|posteaza|urca|incarca)(-l|-o)? (clipul|clipurile|video-ul|videoul|video|filmul|montajul|materialul)\b|(?<!\bnu )\b(publica|posteaza|pune|urca)(-l|-o)? pe (instagram|tiktok|youtube|linkedin|twitter|x)\b/],
+  ["studio_open", /\b(deschide|arata(-mi)?|du-ma (la|in)|mergi (la|in)|hai (la|in)|treci (pe|la|in)|intra in) studio(ul)?\b(?: (?:la|pentru|cu|pe) (?:clipul |proiectul )?(?<ref>[a-z0-9 -]{2,60}))?|^studio(ul)?$/, (m) => ({ clipRef: m.groups?.ref?.trim() || null })],
+  ["studio_show_clip", /\b(arata(-mi)?|deschide|vreau sa vad|pune-mi) (clipul|clipurile|video-ul|videoul|filmul|montajul|randarea)(?: (?:despre |cu |pentru |de la )?(?<ref>[a-z0-9 -]{2,60}))?$|\b(preview-ul|previzualizarea) (clipului|video-ului|videoului|montajului)(?: (?<ref2>[a-z0-9 -]{2,60}))?$/,
+    (m) => ({ clipRef: (m.groups.ref || m.groups.ref2 || "").trim() || null })],
+  ["studio_edit", /^(?=.*\b(?:la|de la|in|pe) (?:secunda|sec|secundele|secundei) (?<t>\d{1,4}(?:[.,]\d{1,2})?|[a-z]+)\b)(?=.*\b(?<op>muta|mutati|taie|scoate|pune|mareste|micsoreaza|ridica|coboara|schimba|sterge|tine)\b)/, studioEditArgs],
+  ["studio_edit", /^(?=.*\btaie (?:de )?la (?<from>\d{1,4}) (?:la|pana la) (?<to>\d{1,4})\b)/, studioEditArgs],
+  ["studio_edit", /^(?=.*\b(?<op2>muta|mutati|taie|scoate|mareste|micsoreaza|ridica|coboara)\b)(?=.*\b(textul|titlul|subtitrarea|subtitrarile|logo-ul|logoul|logo|cadrul|hook-ul|cta-ul|butonul|montajul|demonstratia|intro-ul|introul)\b)/, studioEditArgs],
   ["simulate", /\bce (se intampla|s-ar intampla|ar fi|ar insemna) daca (?<what>.+)|\bsimuleaza (?<what2>.+)|\bfa(-mi)? un scenariu\b ?(?<what3>.*)/, (m, c) => ({ scenario: (m.groups.what || m.groups.what2 || m.groups.what3 || "").trim(), ...simulationArgs(c) })],
   ["league", /\b(cine|ce agent|care agent|ce model|care model) (lucreaza|merge|livreaza|iese) (cel )?mai bine\b|\bclasament(ul)? (agentilor|modelelor)\b|\bliga (agentilor)?\b|\bperformanta (agentilor|modelelor)\b/],
   ["today", /\bce avem (azi|astazi)\b|\bce am (azi|de facut azi)\b|\bce e (azi )?pe agenda\b|\bagenda (de )?azi\b/],
@@ -167,6 +215,21 @@ const P = [
   ["help", /\bce (poti|stii sa) (face|faci)\b|\bajutor\b/],
   ["open_project", /\b(hai sa lucram|lucram|hai la|deschide|treci pe|schimba pe|comuta pe|mergi pe|du-ma la|arata-mi) (la |pe )?(proiectul )?(?<ref>[a-z0-9 -]{2,60})$/, (m) => ({ projectRef: m.groups.ref })],
 ];
+
+/**
+ * "la secunda 12 textul acoperă butonul, mută-l mai sus" → { atSec: 12, op: "muta", target: "textul", direction: "sus" }. The time is
+ * never guessed: a missing or unreadable second gives atSec null and the caller asks for it.
+ */
+function studioEditArgs(m, clause) {
+  const g = m.groups || {};
+  const raw = g.t ?? g.from ?? null;
+  const atSec = raw == null ? null : /^\d/.test(raw) ? Number(String(raw).replace(",", ".")) : numberOf(raw);
+  const target = clause.match(/\b(textul|titlul|subtitrarea|subtitrarile|logo-ul|logoul|logo|cadrul|hook-ul|cta-ul|butonul|clipul|montajul|demonstratia)\b/)?.[1] || null;
+  const direction = clause.match(/\b(?:mai )?(sus|jos|la stanga|la dreapta|stanga|dreapta|in centru|la centru)\b/)?.[1] || null;
+  const ref = clause.match(/\b(?:in|din) (?:clipul|video-ul|videoul|montajul) (?<ref>[a-z0-9 -]{2,40}?)(?=,| la | mut| taie|$)/)?.groups?.ref || null;
+  return { atSec: Number.isFinite(atSec) ? atSec : null, op: g.op || g.op2 || (g.from ? "taie" : null), target, direction, clipRef: ref ? ref.trim() : null,
+    toSec: g.to ? Number(g.to) : null };
+}
 
 function cleanTopic(text) {
   return String(text).replace(/\b(problema|misiunea|lucrul|treaba|task(ul)?|cu)\b/g, " ").replace(/\bdar\b.*$/, " ").replace(/\s+/g, " ").trim();
@@ -208,8 +271,11 @@ export function resolveIntent(text, context = {}) {
   if (interrupting) norm = afterPrefix;
   if (!interrupting && !question && (TEACH_PREFIX.test(norm) || TEACH_PROCEDURE.test(norm) || forget)) {
     const lesson = forget ? { intent: "forget", args: { ref: forget.groups.ref.trim() } } : { intent: "teach", args: { text: stripRawPrefix(raw) } };
-    return { utterance: raw, normalized: norm, source, quotedConfirm, clarification: null, refused: quotedConfirm ? [{ intent: "confirm", reason: "O confirmare între ghilimele este un citat, nu răspunsul tău; am ignorat-o" }] : [],
-      steps: [{ ...lesson, constraints: {}, effect: INTENT_EFFECTS[lesson.intent], text: norm }] };
+    const inert = INERT_SOURCES.has(source);
+    const refused = quotedConfirm ? [{ intent: "confirm", reason: "O confirmare între ghilimele este un citat, nu răspunsul tău; am ignorat-o" }] : [];
+    if (inert) refused.push({ intent: lesson.intent, reason: INERT_REASON });
+    return { utterance: raw, normalized: norm, source, quotedConfirm, clarification: null, refused,
+      steps: [{ ...lesson, args: inert ? { ...lesson.args, inert: true } : lesson.args, constraints: {}, effect: inert ? "none" : INTENT_EFFECTS[lesson.intent], text: norm }] };
   }
   const clauses = norm.split(/;|\. |!|\? | (?:si )?apoi | dupa aceea | dupa care | iar apoi /).map((s) => s.replace(/[.,!?]+$/g, "").trim()).filter(Boolean);
   const globalConstraints = constraintsOf(norm);
@@ -255,10 +321,21 @@ export function resolveIntent(text, context = {}) {
       if (dept) { step.intent = "zoom"; step.effect = "navigate"; step.args = { departmentKey: dept.key }; }
       else if (exact.length === 1) { step.intent = "open_project"; step.effect = "navigate"; step.args = { projectId: exact[0].id, projectRef: step.text }; }
     }
+    // Text from a document or a media transcript (a clip's own words: "publică", "oprește tot", "mută la secunda 12") is content,
+    // never a command: every step is kept for display but inert.
+    if (INERT_SOURCES.has(source) && step.effect !== "none" && step.effect !== "read") {
+      if (!out.refused.some((r) => r.reason === INERT_REASON)) out.refused.push({ intent: step.intent, reason: INERT_REASON });
+      step.args = { ...step.args, inert: true, originalEffect: step.effect };
+      step.effect = "none";
+    }
     out.steps.push(step);
   }
   return out;
 }
+
+/** Sources whose words are content, not the owner's instructions (a pasted document, a local transcript of a media file). */
+const INERT_SOURCES = new Set(["document", "media-local"]);
+const INERT_REASON = "Textul vine dintr-un document sau dintr-o transcriere media: e conținut, nu o comandă de la tine";
 
 function resolveRefs(step, context) {
   const projects = context.projects || [];

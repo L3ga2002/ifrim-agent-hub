@@ -17,7 +17,12 @@ export const UI_BUILD = Object.freeze({
 const FAILSAFE = ["/api/stop-all", "/api/runs/*/interrupt", "/api/lega/sessions/*/stop", "/api/owner/interrupt", "/api/owner/policy/deactivate",
   "/api/owner/logout", "/api/owner/sessions/revoke-all", "/api/envelopes/*/revoke", "/api/factory/*/stop", "/api/factory/*/pause", "/api/grants/*/revoke",
   // M08: the phone's stop/forget, revoking a phone and rolling a skill back always work (same list as the server).
-  "/api/m/command", "/api/m/forget", "/api/skills/candidates/*/rollback", "/api/devices/*/revoke"];
+  "/api/m/command", "/api/m/forget", "/api/skills/candidates/*/rollback", "/api/devices/*/revoke",
+  // M09: withdrawing a billing declaration and stopping media work (same list as the server).
+  "/api/owner/billing/withdraw", "/api/media/renders/*/cancel", "/api/media/captures/*/cancel", "/api/media/captures/*/obs/stop", "/api/media/transcripts/*/cancel",
+  "/api/content/releases/*/cancel", "/api/media/rights/*/revoke", "/api/media/policy/capture-off",
+  // M10: desktop Stop / Preiau eu, pausing / cancelling a plan, withdrawing an app or an import folder (same list as the server).
+  "/api/desktop/stop", "/api/desktop/takeover", "/api/desktop/apps/revoke", "/api/ops/plans/*/pause", "/api/ops/plans/*/cancel", "/api/media/import-folders/*/revoke"];
 export function isFailsafePath(path, body = null) {
   if (String(path).split("?")[0] === "/api/gate") return body?.action === "suspend"; // suspending is fail-safe, opening is not
   const parts = String(path).split("?")[0].split("/");

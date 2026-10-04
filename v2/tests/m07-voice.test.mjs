@@ -15,6 +15,8 @@ import { createHttpServer } from "../server/http/server.mjs";
 import { API_CONTRACT } from "../server/config.mjs";
 import { LEGA_CONSENT_VERSION } from "../server/policy/lega-policy.mjs";
 import { materializeFixture, demoSpec } from "../server/factory/fixtures.mjs";
+// M09: every factory mission names its models explicitly (without them it is a draft whose scope is incomplete).
+const M09_MODELS = { writerModel: "gpt-fake-sol", reviewerModel: "sonnet" };
 import { SESSION_COOKIE } from "../server/owner/trust.mjs";
 
 const dispatch = (hub, type, payload, extra = {}) => hub.commands.dispatch({ type, payload, channel: "test", actor: "test", ...extra });
@@ -205,7 +207,7 @@ test("M07-VO-07 a spoken confirmation counts once, for the plan it named, in the
     await enrolVoice(t, owner);
     for (const p of projects) {
       await dispatch(t.hub, "owner.autonomy.set", { projectId: p.id, level: "TRUSTED" }, { ownerSession: owner.reauth() });
-      await dispatch(t.hub, "factory.prepare", { projectId: p.id, ...demoSpec("bug-demo") });
+      await dispatch(t.hub, "factory.prepare", { projectId: p.id, ...demoSpec("bug-demo"), limits: M09_MODELS });
     }
     const envA = (await dispatch(t.hub, "envelope.propose", { projectId: projects[0].id })).result.envelope;
     const envB = (await dispatch(t.hub, "envelope.propose", { projectId: projects[1].id })).result.envelope;
@@ -253,6 +255,12 @@ test("M07-VO-09 the default voice root is outside AppData (a packaged app sees a
   assert.equal(VOICE_COMPONENTS.stt.sha256, "317eb69c11673c9de1e1f0d459b253999804ec71ac4c23c17ecf5fbe24e259a1", "ggml-large-v3-turbo-q8_0.bin as published");
   assert.equal(VOICE_COMPONENTS.sv.sha256, "357a834f702b80161e5b981182c038e18553c1f2ca752ed6cec2052365d4129b", "CAM++ voxceleb as published in sherpa-onnx checksum.txt");
   assert.match(VOICE_COMPONENTS.whisper.treeSha256, /^[0-9a-f]{64}$/);
+  // M09: whisper-cli.exe (media transcription, per file, no port) is part of the same pinned Release folder (same tree hash);
+  // the idle stop is 5 min so whisper-server's unauthenticated port is open only while needed (M09-VS-04).
+  assert.equal(VOICE_COMPONENTS.whisper.cli, "whisper-cli.exe");
+  assert.equal(VOICE_COMPONENTS.whisper.exe, "whisper-server.exe");
+  const { VOICE_ENGINE_LIMITS } = await import("../server/owner/voice-engine.mjs");
+  assert.equal(VOICE_ENGINE_LIMITS.IDLE_STOP_MS, 5 * 60000);
 });
 
 // ---------- regressions from the M07 adversarial review ----------
@@ -267,7 +275,7 @@ test("M07-VO-10 through Lega's gate a confirmation must name the plan: 'Da?' and
     const owner = await enrolOwner(t, { activatePolicy: true });
     await enrolVoice(t, owner);
     await dispatch(t.hub, "owner.autonomy.set", { projectId: project.id, level: "TRUSTED" }, { ownerSession: owner.reauth() });
-    await dispatch(t.hub, "factory.prepare", { projectId: project.id, ...demoSpec("bug-demo") });
+    await dispatch(t.hub, "factory.prepare", { projectId: project.id, ...demoSpec("bug-demo"), limits: M09_MODELS });
     const env = (await dispatch(t.hub, "envelope.propose", { projectId: project.id })).result.envelope;
     const gateSay = async (text) => {
       const g = await speak(t, owner, text, { purpose: "gate", envelopeId: env.id, legaSessionId: "lega_x" });

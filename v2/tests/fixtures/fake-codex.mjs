@@ -29,6 +29,14 @@ const effortOverride = ((args.find((a) => a.startsWith("model_reasoning_effort="
 const FACTORY_PATCHES = path.join(path.dirname(fileURLToPath(import.meta.url)), "factory-patches");
 const logFile = opt("log");
 const log = (entry) => { if (logFile) fs.appendFileSync(logFile, `${JSON.stringify(entry)}\n`); };
+// M09: an optional model list override (see model/list below); a missing, empty or invalid file keeps the built-in list.
+const modelsOverride = () => {
+  const file = opt("models-file") || (logFile ? `${logFile}.models.json` : "");
+  try {
+    const list = file && fs.existsSync(file) ? JSON.parse(fs.readFileSync(file, "utf8")) : null;
+    return Array.isArray(list) && list.length && list.every((m) => m && typeof m.id === "string") ? list : null;
+  } catch { return null; }
+};
 // Optional `--log-env`: logs the NAMES (never the values) of the environment variables this process received.
 if (args.includes("--log-env")) log({ envNames: Object.keys(process.env).sort(), invocation: args.includes("--version") ? "--version" : args.includes("app-server") ? "app-server" : "other" });
 
@@ -91,10 +99,16 @@ rl.on("line", async (line) => {
     case "permissionProfile/list":
       return send({ id: msg.id, result: { data: [{ id: ":read-only", allowed: true }, { id: ":workspace", allowed: true },
         ...(scenario === "no-profile" ? [] : [{ id: "ifrim_hub_ro", allowed: true }, { id: "ifrim_hub_rw", allowed: true }, { id: "ifrim_runner_ro", allowed: true }, { id: "ifrim_runner_rw", allowed: true }])], nextCursor: null } });
-    case "model/list":
+    case "model/list": {
       // A second, non-default model ("gpt-5") lets the model-variant scenario reach the adapter's exact-id check past the gate's run plan.
+      // M09: `--models-file=<path>` (or `<log>.models.json` next to the log) replaces the list — a JSON array of
+      // { id, isDefault, efforts: [..] } — so a test can switch the account default or remove a model between plan and dispatch.
+      const custom = modelsOverride();
+      if (custom) return send({ id: msg.id, result: { data: custom.map((m) => ({ id: m.id, model: m.id, displayName: m.displayName || m.id, isDefault: Boolean(m.isDefault), hidden: false, description: "",
+        supportedReasoningEfforts: (m.efforts || ["medium"]).map((e) => ({ reasoningEffort: e })), defaultReasoningEffort: (m.efforts || ["medium"])[0] })) } });
       return send({ id: msg.id, result: { data: [{ id: "gpt-fake-sol", model: "gpt-fake-sol", displayName: "Fake Sol", isDefault: true, hidden: false, description: "", supportedReasoningEfforts: [{ reasoningEffort: "medium" }, { reasoningEffort: "high" }], defaultReasoningEffort: "medium" },
         { id: "gpt-5", model: "gpt-5", displayName: "Fake 5", isDefault: false, hidden: false, description: "", supportedReasoningEfforts: [{ reasoningEffort: "medium" }], defaultReasoningEffort: "medium" }] } });
+    }
     case "thread/start":
     case "thread/resume":
       threadId = msg.params.threadId || "thr_fake_1";
@@ -108,7 +122,7 @@ rl.on("line", async (line) => {
       // auto-reviewer: the owner's config routes approvals to auto_review; model-swap: Codex substitutes another model;
       // model-variant: a same-family model that only a prefix match would accept (requested "gpt-5" → "gpt-5-mini");
       // model-case: the requested id echoed back in another case with surrounding spaces (the same model).
-      const requestedModel = msg.params.model || "gpt-fake-sol";
+      const requestedModel = msg.params.model || modelsOverride()?.find((m) => m.isDefault)?.id || "gpt-fake-sol";
       const reportedModel = scenario === "model-swap" ? "gpt-fake-legacy" : scenario === "model-variant" ? `${requestedModel}-mini` : scenario === "model-case" ? ` ${requestedModel.toUpperCase()} ` : requestedModel;
       // sandbox-write: the thread projects workspaceWrite whatever access the Hub profile grants (a read-only run must stop).
       // external-sandbox: Codex applies no sandbox of its own (the Hub provides no outer one, so the run must stop).

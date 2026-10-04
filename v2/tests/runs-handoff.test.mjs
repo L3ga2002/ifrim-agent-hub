@@ -56,7 +56,7 @@ test("T14 reviewer must be a different session: owner and reviewer runs keep sep
     hub.bus.transaction(() => hub.conversations.addMessage({ conversationId: conv.id, role: "user", content: "Review it independently" }));
     const handoff = hub.handoffs.begin({ conversationId: conv.id, toProvider: "claude" });
     await hub.handoffs.advance(handoff.id);
-    const reviewer = await hub.runs.start({ conversationId: conv.id, provider: "claude", stage: "reviewer" });
+    const reviewer = await hub.runs.start({ conversationId: conv.id, provider: "claude", model: "sonnet", stage: "reviewer" }); // M09: explicit Claude model
     const r = await finished(hub, reviewer.run.id);
     assert.equal(r.status, "completed");
     const ownerRun = hub.runs.getRun(owner.run.id);
@@ -98,7 +98,7 @@ test("T11 handoff Codex → Claude → Codex keeps objective, constraints and fi
     assert.equal(pkg.source_session.native_session_id, "thr_fake_1");
 
     hub.bus.transaction(() => hub.conversations.addMessage({ conversationId: conv.id, role: "user", content: "Continue on Claude" }));
-    const second = await hub.runs.start({ conversationId: conv.id, provider: "claude" });
+    const second = await hub.runs.start({ conversationId: conv.id, provider: "claude", model: "sonnet" }); // M09: explicit Claude model
     await finished(hub, second.run.id);
     const acked = await waitFor(() => { const h = hub.handoffs.get(h1.id); return h.status === "completed" ? h : null; });
     assert.equal(acked.step, "continued");

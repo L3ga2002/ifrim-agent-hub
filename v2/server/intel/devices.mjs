@@ -95,8 +95,24 @@ export function createDevices({ db, bus, clock, commands, factory, envelopes, wa
       ready: missions.filter((f) => f.stage === "DELIVERY_READY").map(pick),
       decisions: envelopes.pending().map((e) => ({ envelopeId: e.id, headline: e.summary?.headline, where: "PC (sesiunea ta)" })),
       incidents: warroom.list({ open: true }).map((i) => ({ incidentId: i.id, title: i.title, status: i.status, impactConfirmed: Boolean(i.impactConfirmed) })),
+      content: contentReview(),
       permissions: DEVICE_PERMISSIONS,
     };
+  }
+
+  /**
+   * M09: the clips in production / review, READ-ONLY (title, stage, open corrections). No new permission and no command: approving,
+   * applying a correction or preparing a release happens on the PC, in the owner's session.
+   */
+  const CONTENT_STAGE_RO = { PRODUCTION: "Producție", EDITING: "Montaj", REVIEW: "Revizie", SCHEDULED: "Programat" };
+  function contentReview() {
+    try {
+      return db.prepare(`SELECT p.id, p.title, p.stage, p.updated_at,
+          (SELECT COUNT(*) FROM media_reviews r JOIN media_edit_versions v ON v.id = r.edit_version_id JOIN media_edit_projects e ON e.id = v.edit_project_id
+            WHERE e.content_project_id = p.id AND r.status = 'OPEN') AS open_reviews
+        FROM content_projects p WHERE p.stage IN ('PRODUCTION','EDITING','REVIEW','SCHEDULED') ORDER BY p.updated_at DESC LIMIT 20`).all()
+        .map((r) => ({ contentProjectId: r.id, title: r.title, stage: r.stage, stageLabel: CONTENT_STAGE_RO[r.stage] || r.stage, openReviews: Number(r.open_reviews || 0), where: "pe PC, în sesiunea ta" }));
+    } catch { return []; } // a database without the M09 tables shows no content section rather than failing the phone
   }
 
   const DEVICE_COMMANDS = { stop_all: "system.stop_all", pause_mission: "factory.pause", stop_mission: "factory.stop" };

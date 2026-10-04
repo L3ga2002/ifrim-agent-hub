@@ -44,7 +44,7 @@ function ScopeApproval({ view, reload }) {
     <Panel title="Aprobă scope-ul" icon={ShieldCheck}>
       <div className="stack tight">
         <p className="muted" style={{ margin: 0 }}>Aprobi exact: specificația v{s.specVersion} (<span className="mono">{s.specSha.slice(0, 12)}</span>), planul (<span className="mono">{s.planSha.slice(0, 12)}</span>),
-          writer {s.routes.writer.provider} ({s.routes.writer.access}), reviewer {s.routes.reviewer.provider} ({s.routes.reviewer.access}), profil {s.limits.profile},
+          writer {s.routes.writer.provider} ({s.routes.writer.access}{s.bindings?.writer ? `, ${s.bindings.writer.resolvedAlias} · ${s.bindings.writer.effort}` : ""}), reviewer {s.routes.reviewer.provider} ({s.routes.reviewer.access}{s.bindings?.reviewer ? `, ${s.bindings.reviewer.resolvedAlias} · ${s.bindings.reviewer.effort}` : ""}), profil {s.limits.profile},
           cel mult {s.limits.maxRepairCycles} cicluri de remediere, {s.limits.maxDurationMin} min. Comenzi: {[...s.commands.checks, ...s.commands.acceptance].join(", ")}{s.commands.preview ? `; preview ${s.commands.preview.command}` : ""}.</p>
         <Notice tone="info">Aprobarea nu creează granturi și nu deschide poarta: fiecare execuție trece prin poartă, cu grantul ei. Vocea nu poate aproba.</Notice>
         {!pending ? <div><button className="btn primary" disabled={request.pending} onClick={request.run} data-lega-target="factory-approve-scope">Cere aprobarea scope-ului</button></div> : (
@@ -145,6 +145,40 @@ function FindingRow({ finding, missionId, reload }) {
   );
 }
 
+const EFFORT_CHOICES = ["", "low", "medium", "high", "xhigh", "max"];
+const REVIEWER_CHOICES = ["sonnet", "opus", "haiku"];
+
+/**
+ * M09: the models of a draft mission, chosen explicitly (writer: a Codex model from model/list; reviewer: sonnet/opus/haiku). Until
+ * both are set and resolvable the scope is incomplete — no approval, no plan; the account default is never used in their place.
+ */
+function ModelEditor({ view, reload }) {
+  const l = view.factory.limits;
+  const [form, setForm] = useState({ writerModel: l.writerModel || "", writerEffort: l.writerEffort || "", reviewerModel: l.reviewerModel || "", reviewerEffort: l.reviewerEffort || "" });
+  const set = (key) => (e) => setForm((f) => ({ ...f, [key]: e.target.value }));
+  const save = useAction(async () => {
+    await api(`/api/factory/${view.mission.id}/limits`, { method: "POST", body: { limits: { writerModel: form.writerModel.trim(), writerEffort: form.writerEffort, reviewerModel: form.reviewerModel, reviewerEffort: form.reviewerEffort } } });
+    pushToast(`factory-models-${view.mission.id}`, "ok", "Modelele au fost fixate în ciornă"); reload();
+  });
+  const changed = form.writerModel.trim() !== (l.writerModel || "") || form.writerEffort !== (l.writerEffort || "") || form.reviewerModel !== (l.reviewerModel || "") || form.reviewerEffort !== (l.reviewerEffort || "");
+  return (
+    <Panel title="Modele (explicite)" icon={ShieldCheck}>
+      <div className="stack tight">
+        {view.scopeProblems?.length > 0 && <Notice tone="warn" title="Planul nu e complet">{view.scopeProblems.join(" · ")}</Notice>}
+        <div className="grid two">
+          <label className="field"><span>Writer (Codex): modelul din model/list</span><input className="input mono" value={form.writerModel} onChange={set("writerModel")} maxLength={80} placeholder="ex. gpt-6.1-sol" /></label>
+          <label className="field"><span>Efort writer</span><select className="select" value={form.writerEffort} onChange={set("writerEffort")}>{EFFORT_CHOICES.map((e) => <option key={e} value={e}>{e || `din profil (${l.profile})`}</option>)}</select></label>
+          <label className="field"><span>Reviewer (Claude)</span><select className="select" value={form.reviewerModel} onChange={set("reviewerModel")}><option value="">— alege —</option>{REVIEWER_CHOICES.map((m) => <option key={m} value={m}>{m}</option>)}</select></label>
+          <label className="field"><span>Efort reviewer</span><select className="select" value={form.reviewerEffort} onChange={set("reviewerEffort")}>{EFFORT_CHOICES.map((e) => <option key={e} value={e}>{e || `din profil (${l.profile})`}</option>)}</select></label>
+        </div>
+        <p className="faint" style={{ margin: 0, fontSize: 12 }}>Ce fixezi aici e exact ce se trimite: verificat din nou înainte de fiecare pornire (o schimbare a listei de modele sau a versiunii Claude Code oprește execuția înainte de model). Fable, „best” și variantele [1m] sunt refuzate.</p>
+        <div><button className="btn" disabled={!changed || save.pending} onClick={save.run}>{save.pending ? "Se salvează…" : "Fixează modelele"}</button></div>
+        <ErrorNotice error={save.error} />
+      </div>
+    </Panel>
+  );
+}
+
 /** Software Factory view of one engineering mission (stage, wait reason, spec, scope, runs, change sets, findings, evidence, bundle). */
 export function FactoryPanel({ missionId }) {
   const { data: view, error, loading, reload } = useResource(`/api/factory/${missionId}`, { reloadOn: (e) => e.scopeId === missionId || e.type.startsWith("run.") || e.type.startsWith("approval.") || e.type.startsWith("factory.") });
@@ -178,14 +212,16 @@ export function FactoryPanel({ missionId }) {
               <span className="row wrap">{view.stageEnvironments.stages.map((s) => { const b = boundaryOf(s.boundary); return <Chip key={s.stage} tone={b.tone} title={s.where}>{s.label}: {b.label}</Chip>; })}</span>
               {!view.stageEnvironments.realProjectEligible && <span className="faint small">Nu este eligibil pentru date reale: {view.stageEnvironments.blockers.join(" · ")}</span>}
             </dd></>}
-            <dt>Modele</dt><dd>writer: {f.limits.writerModel || "implicitul din model/list"} · reviewer: {f.limits.reviewerModel || "implicitul contului Claude Code (Fable/1M refuzate)"}</dd>
+            {/* M09: the bound models (approved with the scope) or the draft's resolution; never a placeholder for the account default. */}
+            <dt>Modele</dt><dd>writer: {view.models?.writer?.label || <span className="warn">nefixat</span>} · reviewer: {view.models?.reviewer?.label || <span className="warn">nefixat</span>}
+              {view.models?.writer?.approved ? <span className="faint small"> (aprobate cu scope-ul; verificate din nou la fiecare pornire)</span> : <span className="faint small"> (ciornă: se fixează la aprobarea scope-ului)</span>}</dd>
             <dt>Granturi necesare</dt><dd>{view.grantsNeeded.map((g) => `${g.provider} ${g.access} × ${g.attempts} (${g.why})`).join(" · ")}</dd>
           </dl>
           {["PAUSED", "BLOCKED", "NEEDS_OWNER_DECISION"].includes(f.stage) && f.approvedSpecVersion && (
             <div className="row wrap">
               <select className="select" aria-label="Modelul reviewer-ului la reluare" value={reviewerModel} onChange={(e) => setReviewerModel(e.target.value)}>
-                <option value="">Reviewer: {f.limits.reviewerModel || "implicitul contului"}</option>
-                {["sonnet", "opus", "haiku"].filter((m) => m !== f.limits.reviewerModel).map((m) => <option key={m} value={m}>Reviewer: {m}</option>)}
+                <option value="">Reviewer: {f.bindings?.reviewer?.resolvedAlias || f.limits.reviewerModel || "nefixat"} (aprobat)</option>
+                {REVIEWER_CHOICES.filter((m) => m !== (f.bindings?.reviewer?.resolvedAlias || f.limits.reviewerModel)).map((m) => <option key={m} value={m}>Reviewer: {m} (în afara unui plan confirmat)</option>)}
               </select>
               <button className="btn primary" disabled={act.pending} onClick={() => act.run("resume", reviewerModel ? { reviewerModel } : {})}><Play size={14} />Reia</button>
               {f.stage === "NEEDS_OWNER_DECISION" && <button className="btn" disabled={act.pending} onClick={() => act.run("resume", { allowExtraCycle: true, ...(reviewerModel ? { reviewerModel } : {}) })}>Încă un ciclu de remediere</button>}
@@ -206,6 +242,7 @@ export function FactoryPanel({ missionId }) {
           {view.spec.spec.sources?.assumptions?.length > 0 && <div className="faint" style={{ fontSize: 12 }}>Presupuneri (nu cerințe): {view.spec.spec.sources.assumptions.join("; ")}</div>}
         </div>
       </Panel>
+      {f.stage === "SPEC_DRAFT" && !f.approvedSpecVersion && <ModelEditor key={`${f.limits.writerModel || ""}|${f.limits.reviewerModel || ""}|${f.limits.writerEffort || ""}|${f.limits.reviewerEffort || ""}`} view={view} reload={reload} />}
       {f.stage === "SPEC_DRAFT" && !problems.length && <ScopeApproval view={view} reload={reload} />}
 
       {view.runs.length > 0 && (
@@ -267,12 +304,14 @@ export function FactoryPanel({ missionId }) {
 export function NewFactoryMission({ onClose, go }) {
   const projects = useResource("/api/projects");
   const enabled = (projects.data?.projects || []).filter((p) => p.executionAllowed && p.slug !== "ifrim-agent-hub");
-  const [form, setForm] = useState({ projectId: "", workType: "BUGFIX", title: "", objective: "", criteria: "", acceptance: "node --test", checks: "node --test" });
+  const [form, setForm] = useState({ projectId: "", workType: "BUGFIX", title: "", objective: "", criteria: "", acceptance: "node --test", checks: "node --test", writerModel: "", reviewerModel: "" });
   const set = (key) => (e) => setForm((f) => ({ ...f, [key]: e.target.value }));
   const lines = (t) => t.split("\n").map((s) => s.trim()).filter(Boolean);
   const create = useAction(async () => {
+    // M09: the models travel with the request (both explicit; without them the draft's scope stays incomplete until fixed).
+    const limits = { ...(form.writerModel.trim() ? { writerModel: form.writerModel.trim() } : {}), ...(form.reviewerModel ? { reviewerModel: form.reviewerModel } : {}) };
     const view = await api("/api/factory", { method: "POST", body: { projectId: form.projectId || enabled[0]?.id, workType: form.workType, title: form.title.trim(), objective: form.objective.trim(),
-      spec: { acceptance: parseCriteriaLines(form.criteria), verification: { checks: lines(form.checks), acceptance: lines(form.acceptance) } } } });
+      spec: { acceptance: parseCriteriaLines(form.criteria), verification: { checks: lines(form.checks), acceptance: lines(form.acceptance) } }, limits } });
     onClose(); go(`/missions/${view.mission.id}`);
   });
   const valid = form.title.trim().length >= 3 && form.objective.trim().length >= 10 && (form.projectId || enabled[0]);
@@ -289,8 +328,10 @@ export function NewFactoryMission({ onClose, go }) {
       <div className="grid two">
         <label className="field"><span>Comenzi de verificare</span><textarea className="textarea mono" rows={2} value={form.checks} onChange={set("checks")} /></label>
         <label className="field"><span>Comenzi de acceptanță</span><textarea className="textarea mono" rows={2} value={form.acceptance} onChange={set("acceptance")} /></label>
+        <label className="field"><span>Model writer (Codex, din model/list)</span><input className="input mono" value={form.writerModel} onChange={set("writerModel")} maxLength={80} placeholder="ex. gpt-6.1-sol" /></label>
+        <label className="field"><span>Model reviewer (Claude)</span><select className="select" value={form.reviewerModel} onChange={set("reviewerModel")}><option value="">— alege —</option>{REVIEWER_CHOICES.map((m) => <option key={m} value={m}>{m}</option>)}</select></label>
       </div>
-      <p className="faint" style={{ margin: 0, fontSize: 12 }}>Se creează specificația v1 (ciornă) și planul: writer Codex, reviewer Claude doar-citire, runner Hub pentru teste. Nimic nu rulează până aprobi scope-ul.</p>
+      <p className="faint" style={{ margin: 0, fontSize: 12 }}>Se creează specificația v1 (ciornă) și planul: writer Codex, reviewer Claude doar-citire, runner Hub pentru teste. Modelele sunt explicite (fără modelul implicit al contului); nimic nu rulează până aprobi scope-ul.</p>
       <ErrorNotice error={create.error} />
     </Dialog>
   );

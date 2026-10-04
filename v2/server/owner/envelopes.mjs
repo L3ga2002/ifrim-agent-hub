@@ -8,6 +8,7 @@ import { json, parse } from "../storage/db.mjs";
 import { approvalHash } from "../policy/approvals.mjs";
 import { catalogEntry } from "../policy/approval-policy.mjs";
 import { gitState } from "../tools/git.mjs";
+import { bindingLabel, grantBindingOf } from "../policy/model-binding.mjs";
 
 /**
  * Mission Authorization Envelopes (M06 §17–§22) and the CapabilityIssuer.
@@ -127,7 +128,9 @@ export function createEnvelopes({ db, bus, clock, settings, projects, missions, 
     for (const v of missionViews) {
       if (!v) continue;
       if (v.factory.stage !== "SPEC_DRAFT") blockers.push({ id: `mission:${v.mission.id}`, kind: "plan", detail: `„${v.mission.title}” e în etapa ${v.factory.stage}, nu poate primi un plan nou` });
-      else if (!v.scope) blockers.push({ id: `mission:${v.mission.id}`, kind: "plan", detail: `„${v.mission.title}”: specificația are probleme (${(v.spec?.protected?.problems || []).slice(0, 3).join("; ") || "incompletă"})` });
+      else if (!v.scope && (v.spec?.protected?.problems || []).length) blockers.push({ id: `mission:${v.mission.id}`, kind: "plan", detail: `„${v.mission.title}”: specificația are probleme (${(v.spec?.protected?.problems || []).slice(0, 3).join("; ")})` });
+      // M09: a mission whose models are not fixed (or cannot be resolved now) has no scope: the plan is incomplete, never a placeholder.
+      else if (!v.scope) blockers.push({ id: `mission:${v.mission.id}`, kind: "plan", detail: `„${v.mission.title}”: modelele nu sunt fixate (${(v.scopeProblems || []).slice(0, 3).join("; ") || "incompletă"})` });
     }
     return { eligible: blockers.length === 0, isTest, blockers, stageMap: map ? { route: map.route, realProjectEligible: map.realProjectEligible, stages: map.stages.map((s) => ({ stage: s.stage, label: s.label, boundary: s.boundary, where: s.where })) } : null };
   }
@@ -198,8 +201,10 @@ export function createEnvelopes({ db, bus, clock, settings, projects, missions, 
 
   async function buildBody(project, views, level, constraints = {}, objective = null) {
     const route = environments ? environments.routeFor(project.id, "codex") : "windows";
+    // M09: each mission carries its role bindings (explicit model + effort + resolution evidence); they are hashed through
+    // scopeHash and shown as `models` — the value the owner confirms is the value dispatched.
     const entries = views.map((v) => ({ missionId: v.mission.id, title: v.mission.title, workType: v.factory.workType, specVersion: v.scope.specVersion, specSha: v.scope.specSha,
-      planSha: v.scope.planSha, scopeHash: hashCanonical(v.scope), limits: v.scope.limits, routes: v.scope.routes, commands: v.scope.commands,
+      planSha: v.scope.planSha, scopeHash: hashCanonical(v.scope), limits: v.scope.limits, routes: v.scope.routes, bindings: v.scope.bindings, commands: v.scope.commands,
       estimatedFiles: (v.spec?.spec?.inScope || []).slice(0, 10) }));
     const repairs = (e) => (level === "ASSISTED" ? 0 : e.limits.maxRepairCycles);
     const totalMinutes = entries.reduce((sum, e) => sum + e.limits.maxDurationMin, 0);
@@ -210,8 +215,8 @@ export function createEnvelopes({ db, bus, clock, settings, projects, missions, 
       baseSnapshot: await repoState(project),
       eligibleEnvironments: [route], attestationRefs: attestationRefs(project, route),
       allowedRoles: ["writer", "reviewer", "hub-runner"], providers: ["codex", "claude"],
-      models: Object.fromEntries(entries.map((e) => [e.missionId, { writer: e.routes.writer.model || "implicit (fix în plan)", reviewer: e.routes.reviewer.model || "implicit (fix în plan)" }])),
-      effortPolicy: Object.fromEntries(entries.map((e) => [e.missionId, { profile: e.limits.profile, writer: e.routes.writer.effort || "din profil", reviewer: e.routes.reviewer.effort || "din profil" }])),
+      models: Object.fromEntries(entries.map((e) => [e.missionId, { writer: bindingLabel(e.bindings.writer), reviewer: bindingLabel(e.bindings.reviewer) }])),
+      effortPolicy: Object.fromEntries(entries.map((e) => [e.missionId, { profile: e.limits.profile, writer: `${e.bindings.writer.effort} (${e.bindings.writer.effortSource})`, reviewer: `${e.bindings.reviewer.effort} (${e.bindings.reviewer.effortSource})` }])),
       allowedTools: { writer: "Codex: fișierele proiectului (scriere), comenzile din sandbox", reviewer: "Claude: Read/Glob/Grep, fără scriere", runner: "comenzile aprobate din specificație" },
       filesystemScope: route === "windows" ? "proiectul, prin sandbox-ul Codex de pe Windows (R2 deschis)" : `o copie a proiectului în ${route}; exportul validat (C14) se aplică după verificarea conflictelor`,
       networkScope: { writer: "doar furnizorul modelului (abonament)", reviewer: "doar furnizorul modelului (abonament)", runner: route === "windows" ? "sandbox Codex Windows" : `${route}: fără rețea`, preview: "doar loopback local" },
@@ -235,6 +240,8 @@ export function createEnvelopes({ db, bus, clock, settings, projects, missions, 
       headline: body.objective ? `Obiectiv „${body.objective.title}”: ${m.length === 1 ? `sarcina „${m[0].title}”` : `${m.length} sarcini, una după alta`} pe ${body.projectName}` : m.length === 1 ? `„${m[0].title}” pe ${body.projectName}` : `${m.length} misiuni pe ${body.projectName}, una după alta`,
       where: `Lucrez numai în ${body.projectName} (${body.workspaceScope.route}); ${body.filesystemScope}.`,
       steps: `Implementare (Codex), verificări, review (Claude, doar citire), ${repairs.every((r) => r === 0) ? "remedierile îți cer confirmarea" : `până la ${Math.max(...repairs)} cicluri de remediere`}, QA, preview și E2E local.`,
+      // M09: the exact models and efforts the steps run with (the bindings; checked again before every start and at the provider's report).
+      models: `Modele: ${[...new Set(m.map((e) => `writer ${bindingLabel(e.bindings?.writer)}; reviewer ${bindingLabel(e.bindings?.reviewer)}`))].join(" | ")}. Verificate din nou înainte de fiecare pornire; o schimbare oprește execuția înainte de model.`,
       never: "Fără deploy, commit, push, mesaje, bani, schimbări de acces sau izolare, instalări, ștergeri de date reale.",
       stops: `Mă opresc la ${body.limits.maxDurationMin} min, ${body.limits.maxAttemptsPerStage} încercări pe etapă, sau când livrarea e gata de verificarea ta (nu accept singur). Continui și dacă închizi pagina, dar numai în aceste limite; nu încep alte misiuni${body.continuationPolicy.nextMissionWithoutConfirmation ? " decât pe cele din acest plan" : ""}.`,
       cost: "Doar din abonamentele incluse; niciun API plătit, nicio extra usage.",
@@ -463,9 +470,12 @@ export function createEnvelopes({ db, bus, clock, settings, projects, missions, 
 
   function changedParts(before, after) {
     const keys = ["missions", "baseSnapshot", "attestationRefs", "workspaceScope", "limits", "modeTransition", "models", "effortPolicy", "autonomyLevel"];
-    const labels = { missions: "specificația, planul sau limitele unei misiuni", baseSnapshot: "starea repository-ului", attestationRefs: "atestarea mediului", workspaceScope: "ruta proiectului",
+    const labels = { missions: "specificația, planul, limitele sau modelele unei misiuni", baseSnapshot: "starea repository-ului", attestationRefs: "atestarea mediului", workspaceScope: "ruta proiectului",
       limits: "limitele", modeTransition: "modul Hub-ului", models: "modelele", effortPolicy: "efortul", autonomyLevel: "nivelul de autonomie" };
     const out = keys.filter((k) => hashCanonical(before?.[k] ?? null) !== hashCanonical(after?.[k] ?? null)).map((k) => labels[k]);
+    // M09: a binding that changed under the same model label (e.g. the Claude CLI version or the model list behind it) is named too.
+    const bindingsOf = (body) => (body?.missions || []).map((e) => [e.missionId, e.bindings?.writer?.bindingHash || null, e.bindings?.reviewer?.bindingHash || null]);
+    if (hashCanonical(bindingsOf(before)) !== hashCanonical(bindingsOf(after)) && !out.includes(labels.models)) out.push("legătura modelelor (lista de modele sau versiunea Claude Code)");
     return out.length ? out : ["conținutul planului"];
   }
 
@@ -480,16 +490,22 @@ export function createEnvelopes({ db, bus, clock, settings, projects, missions, 
     if (remainingMin < 5) throw new HubError("gate", "Autoritatea planului a expirat");
     const ttlMinutes = Math.min(480, remainingMin);
     const maxDurationS = Math.min(7200, Math.max(60, entry.limits.maxDurationMin * 60));
+    // M09: each grant names the binding (model, effort, hash) of its role: it serves only a run dispatched under that binding.
     return [
-      { role: "writer", provider: entry.routes.writer.provider, access: entry.routes.writer.access, maxAttempts: attempts, ttlMinutes, maxDurationS },
-      { role: "reviewer", provider: entry.routes.reviewer.provider, access: entry.routes.reviewer.access, maxAttempts: attempts, ttlMinutes, maxDurationS },
+      { role: "writer", provider: entry.routes.writer.provider, access: entry.routes.writer.access, maxAttempts: attempts, ttlMinutes, maxDurationS, binding: grantBindingOf(entry.bindings?.writer) },
+      { role: "reviewer", provider: entry.routes.reviewer.provider, access: entry.routes.reviewer.access, maxAttempts: attempts, ttlMinutes, maxDurationS, binding: grantBindingOf(entry.bindings?.reviewer) },
     ];
   }
 
-  /** Refuses any derived grant that would exceed the envelope (provider, access, project, attempts, duration, expiry). */
-  function assertWithin(env, spec, { projectId }) {
+  /** Refuses any derived grant that would exceed the envelope (provider, access, project, attempts, duration, expiry, binding). */
+  function assertWithin(env, spec, { projectId, missionId = null }) {
     const problems = [];
     if (projectId !== env.projectId) problems.push("alt proiect");
+    // M09: the grant's binding must be exactly one the plan confirmed for that role (of the given mission, or of any mission).
+    const confirmed = env.body.missions.filter((m) => !missionId || m.missionId === missionId).map((m) => m.bindings?.[spec.role]?.bindingHash).filter(Boolean);
+    if (!spec.binding?.bindingHash) problems.push("fără modelul confirmat");
+    else if (!confirmed.includes(spec.binding.bindingHash)) problems.push(`model ${spec.binding.model || "?"} în afara planului`);
+    else if (spec.binding.provider && spec.binding.provider !== spec.provider) problems.push("legătura e pentru alt provider");
     if (!env.body.providers.includes(spec.provider)) problems.push(`provider ${spec.provider} în afara planului`);
     const role = spec.role === "writer" ? "writer" : spec.role === "reviewer" ? "reviewer" : null;
     if (!role || !env.body.allowedRoles.includes(role)) problems.push(`rol ${spec.role} în afara planului`);
@@ -507,15 +523,15 @@ export function createEnvelopes({ db, bus, clock, settings, projects, missions, 
   function issueGrants(env, missionId) {
     const specs = deriveGrants(env, missionId);
     const issued = bus.transaction(() => specs.map((spec) => {
-      assertWithin(env, spec, { projectId: env.projectId });
+      assertWithin(env, spec, { projectId: env.projectId, missionId });
       const g = grants.create({ provider: spec.provider, projectId: env.projectId, access: spec.access, maxAttempts: spec.maxAttempts, maxDurationS: spec.maxDurationS,
-        ttlMinutes: Math.max(5, spec.ttlMinutes), expiresAt: env.expiresAt, envelopeId: env.id, note: `Derivat din planul ${env.id} (${spec.role}, misiunea ${missionId})` }, `envelope:${env.id}`);
-      return { grantId: g.id, role: spec.role, provider: g.provider, access: g.access, maxAttempts: g.maxAttempts, expiresAt: g.expiresAt };
+        ttlMinutes: Math.max(5, spec.ttlMinutes), expiresAt: env.expiresAt, envelopeId: env.id, binding: { ...spec.binding, missionId }, note: `Derivat din planul ${env.id} (${spec.role}, misiunea ${missionId}, ${spec.binding.model} · ${spec.binding.effort})` }, `envelope:${env.id}`);
+      return { grantId: g.id, role: spec.role, provider: g.provider, access: g.access, maxAttempts: g.maxAttempts, expiresAt: g.expiresAt, model: spec.binding.model, effort: spec.binding.effort, bindingHash: spec.binding.bindingHash };
     }));
     bus.transaction(() => {
       const derived = get(env.id).derived || {};
       db.prepare("UPDATE mission_envelopes SET derived_json = ?, updated_at = ? WHERE id = ?").run(json({ ...derived, grants: [...(derived.grants || []), ...issued.map((g) => ({ ...g, missionId }))] }), iso(), env.id);
-      bus.append({ type: "envelope.grants_derived", scopeType: "envelope", scopeId: env.id, projectId: env.projectId, source: "envelopes", payload: { missionId, grants: issued.map((g) => ({ id: g.grantId, role: g.role, provider: g.provider, access: g.access, attempts: g.maxAttempts })) } });
+      bus.append({ type: "envelope.grants_derived", scopeType: "envelope", scopeId: env.id, projectId: env.projectId, source: "envelopes", payload: { missionId, grants: issued.map((g) => ({ id: g.grantId, role: g.role, provider: g.provider, access: g.access, attempts: g.maxAttempts, model: g.model, effort: g.effort })) } });
     });
     return issued;
   }
@@ -561,10 +577,17 @@ export function createEnvelopes({ db, bus, clock, settings, projects, missions, 
 
   // ---------- authority hook used by the factory before every model step ----------
   /** Returns null (allowed) or { reason } (the step waits for the owner). Only missions under an envelope are affected. */
-  function authorityFor(missionId, { stage, cycle }) {
+  function authorityFor(missionId, { stage, cycle, role = null, bindingHash = null }) {
     const env = envelopeOfMission(missionId);
     if (!env) return null;
+    // M09: a model change (resume with another reviewer) is never inside a confirmed plan: its grants are bound to the confirmed model.
+    if (stage === "MODEL_OVERRIDE") return { reason: `misiunea rulează sub planul ${env.id} (${env.status}), confirmat cu ${bindingLabel(env.body.missions.find((m) => m.missionId === missionId)?.bindings?.[role || "reviewer"])}` };
     if (new Date(env.expiresAt) <= now()) return { reason: "Autoritatea planului a expirat; confirmă un plan nou ca să continui" };
+    // M09: the step's binding must be the one the owner confirmed for that role of this mission.
+    if (role) {
+      const confirmed = env.body.missions.find((m) => m.missionId === missionId)?.bindings?.[role] || null;
+      if (!confirmed?.bindingHash || confirmed.bindingHash !== bindingHash) return { reason: `Modelul pasului (${role}) nu este cel confirmat în plan (${bindingLabel(confirmed)}); confirmă un plan nou` };
+    }
     if (env.status === "WAITING_OWNER" && env.derived?.hold) return { reason: env.derived.hold };
     const allowed = env.body.limits.maxRepairCycles?.[missionId] ?? 0;
     const extra = (env.derived?.extraCycles || {})[missionId] || 0;
@@ -795,7 +818,8 @@ export function createEnvelopes({ db, bus, clock, settings, projects, missions, 
   function view(id) {
     const env = get(id);
     if (!env) return null;
-    return { ...env, derivedGrants: grants.ofEnvelope(env.id).map((g) => ({ id: g.id, provider: g.provider, access: g.access, status: g.status, attemptsUsed: g.attemptsUsed, maxAttempts: g.maxAttempts, expiresAt: g.expiresAt })),
+    return { ...env, derivedGrants: grants.ofEnvelope(env.id).map((g) => ({ id: g.id, provider: g.provider, access: g.access, status: g.status, attemptsUsed: g.attemptsUsed, maxAttempts: g.maxAttempts, expiresAt: g.expiresAt,
+      model: g.binding?.model || null, effort: g.binding?.effort || null })),
       awaitingConfirmation: env.status === "PROPOSED" && new Date(env.confirmBy) > now() };
   }
 

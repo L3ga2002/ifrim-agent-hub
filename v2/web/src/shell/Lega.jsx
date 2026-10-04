@@ -1,11 +1,16 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { AudioLines, Mic, MicOff, Square, X, Check, Ban, ShieldCheck, Volume2, VolumeX, Maximize2, Globe } from "lucide-react";
 import { api, ensureToken } from "../api.js";
-import { useHub, setState, onLive, pushToast, useResource, useAction, refresh } from "../store.js";
+import { useHub, getState, setState, onLive, pushToast, useResource, useAction, refresh } from "../store.js";
 import { Chip, Notice, Checks, ErrorNotice } from "../components/ui.jsx";
-import { legaLevels } from "../lib/legaLevels.js";
+import { legaLevels, legaStartOptions } from "../lib/legaLevels.js";
 import { offerGrantPrefill, pointAt } from "../lib/legaBridge.js";
-import { isAppShortcut, approvedNotStarted } from "../lib/uiLogic.js";
+import { isAppShortcut, approvedNotStarted, legaStartReadiness, LEGA_CHECK_HINTS } from "../lib/uiLogic.js";
+import { unlockSession } from "../lib/ownerSession.js";
+
+// M10: the web-search setting the Lega panel last displayed; the start sends it, so a stale page never starts under a setting the
+// owner did not see (the Hub refuses with LEGA_TERMS_CHANGED).
+let shownWebSearch = null;
 import { createVoiceGate } from "../lib/voiceGate.js";
 import { presentedPlan, looksLikeConfirmation, isCapturing, preferredMic, isArmed } from "../lib/voiceContext.js";
 
@@ -85,9 +90,10 @@ export function Lega({ go }) {
   const bootId = useHub((s) => s.hub?.bootId);
   const serverTime = useHub((s) => s.hub?.serverTime);
   const statusRef = useRef(status); statusRef.current = status;
+  const openRef = useRef(open); openRef.current = open;
 
   const setPhase = (legaPhase) => setState({ legaPhase });
-  const toOff = () => { setStatus("off"); setPhase("off"); };
+  const toOff = () => { setStatus("off"); setPhase("off"); setState({ legaAuthority: null }); };
 
   const closeLocal = useCallback(() => {
     const r = refs.current;
@@ -116,7 +122,15 @@ export function Lega({ go }) {
     refresh();
   }, [closeLocal]);
 
-  const start = useCallback(async () => {
+  // A failure is always shown: the full-screen stage covers the panel and the toasts, so it closes first; a toast when the panel was closed.
+  const showFailure = useCallback((error, prefix) => {
+    setError(error);
+    if (getState()?.stageOpen) setState({ stageOpen: false });
+    if (!openRef.current) pushToast("lega-start", "error", `${prefix}: ${error?.message || error}`);
+    setOpen(true);
+  }, []);
+
+  const start = useCallback(async (opts = {}) => {
     const r = refs.current;
     if (statusRef.current !== "off") return;
     const seq = ++r.seq;
@@ -127,6 +141,20 @@ export function Lega({ go }) {
     const dispose = () => { mic?.getTracks().forEach((t) => t.stop()); gate?.close(); try { pc?.close(); } catch { /* closed */ } };
     try {
       if (!navigator.mediaDevices?.getUserMedia || !window.RTCPeerConnection) throw new Error("Browserul nu permite microfon + WebRTC aici");
+      // M10: one click. What the start needs, before any microphone prompt: with no owner session (voice-first policy) the click
+      // opens it once (Windows Hello / your key) and the Hub derives the one-session authority itself; a real blocker (the gate
+      // after Stop All, the consent, billing…) is named instead.
+      const pre = await api("/api/lega");
+      if (!alive()) return dispose();
+      const rd = legaStartReadiness(pre);
+      // A real blocker first: opening the session (Windows Hello) would not help, so it is not asked for.
+      if (rd.blocking.length) throw new Error(`Lega nu poate porni încă: ${rd.blocking.map((c) => LEGA_CHECK_HINTS[c.id] || c.detail).join(" · ")}`);
+      if (rd.needsSession) { await unlockSession("unlock"); if (!alive()) return dispose(); }
+      // The web-search mode the owner saw: the one the sender showed (cockpit reply), else the one this panel displayed. Live web
+      // search never starts unseen: the panel opens and one more click starts it.
+      const fresh = pre?.preview?.webSearch || pre?.settings?.webSearch || null;
+      const expectWebSearch = (typeof opts?.expectWebSearch === "string" && opts.expectWebSearch) || shownWebSearch || null;
+      if (!expectWebSearch && fresh === "live") { throw new Error("Căutarea pe internet e pornită (live): verifică setarea în panoul Lega și apasă încă o dată „Pornește Lega”."); }
       // The microphone chosen in setup (the profile was recorded with it), else the default one.
       const deviceId = preferredMic();
       try { mic = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true, ...(deviceId ? { deviceId: { ideal: deviceId } } : {}) } }); }
@@ -168,8 +196,21 @@ export function Lega({ go }) {
       if (!alive()) return dispose();
       r.posting = true;
       let body;
-      try { body = await api("/api/lega/sessions", { method: "POST", body: { sdp: pc.localDescription.sdp } }); }
-      finally { r.posting = false; }
+      const expected = expectWebSearch || fresh;
+      const post = () => api("/api/lega/sessions", { method: "POST", body: { sdp: pc.localDescription.sdp, ...(expected ? { expectWebSearch: expected } : {}) } });
+      try {
+        try { body = await post(); }
+        catch (e) {
+          // The owner session idled out between the check and the POST: open it once and repeat (the SDP offer is still valid).
+          // Not "posting" during the ceremony: a session another client starts meanwhile is never adopted (and stopped) as ours.
+          if (!e?.details?.needSession) throw e;
+          r.posting = false; r.pendingId = null;
+          await unlockSession("unlock");
+          if (!alive()) return dispose();
+          r.posting = true;
+          body = await post();
+        }
+      } finally { r.posting = false; }
       const result = body?.result || body;
       if (!alive()) { dispose(); await stopRequest(result.sessionId, "cancelled-during-start"); return; }
       await pc.setRemoteDescription({ type: "answer", sdp: result.answerSdp });
@@ -178,8 +219,15 @@ export function Lega({ go }) {
       r.mic = mic; r.pc = pc; r.gate = gate; r.sessionId = result.sessionId; r.pendingId = null; r.committedAt = Date.now();
       r.meters.push(attachMeter(mic, micBar, "mic"));
       setSession({ id: result.sessionId, maxDurationS: result.maxDurationS, voice: result.voice });
+      setState({ legaAuthority: result.authority || "grant" });
       setStatus("connecting");
       let reported = false;
+      // After admission (peer failed, connect report failed, not active): the reason is shown like a start failure.
+      const failAfterAdmit = async (reason, error = null) => {
+        if (!alive()) return;
+        showFailure(error || new Error(reason), "Lega s-a oprit");
+        await stop(reason);
+      };
       const onConnected = async () => {
         if (reported || !alive()) return;
         reported = true;
@@ -188,26 +236,27 @@ export function Lega({ go }) {
           const res = await api(`/api/lega/sessions/${sid}/connected`, { method: "POST", body: {} });
           const view = res?.result ?? res;
           if (!alive() || r.sessionId !== sid || r.pc !== pc) return;
-          if (view?.status !== "active") { await stop("not-active-after-connect"); return; }
+          if (view?.status !== "active") { await failAfterAdmit("not-active-after-connect"); return; }
           r.connectedAt = Date.now();
           setStatus("active"); setPhase("listening");
         } catch (e) {
-          if (alive()) { setError(e); await stop("connect-report-failed"); }
+          await failAfterAdmit("connect-report-failed", e);
         }
       };
       dc.onopen = onConnected;
       pc.onconnectionstatechange = () => {
         if (!alive()) return;
         if (pc.connectionState === "connected") onConnected();
-        if (["failed", "closed"].includes(pc.connectionState) && r.sessionId) stop(`peer-${pc.connectionState}${r.peerError ? `: ${r.peerError}` : ""}`);
+        if (["failed", "closed"].includes(pc.connectionState) && r.sessionId) failAfterAdmit(`peer-${pc.connectionState}${r.peerError ? `: ${r.peerError}` : ""}`);
       };
     } catch (e) {
       dispose();
       if (!alive()) return;
-      setError(e);
+      // Started from the stage, the cockpit or an intent, the panel may be closed or covered: the reason is always shown.
+      showFailure(e, "Lega nu a pornit");
       await stop("start-failed");
     }
-  }, [stop, bootId]);
+  }, [stop, bootId, showFailure]);
 
   // Pending Lega proposals are approvals: they survive the session, a reload and an SSE drop.
   const proposals = useResource("/api/approvals?status=pending", { reloadOn: (e) => e.type.startsWith("approval.") || e.type.startsWith("command.") || e.type === "lega.proposal" });
@@ -324,7 +373,13 @@ export function Lega({ go }) {
   // M08: the cockpit sends this id with a plan request, so the Hub can arm the short voice window for THIS Lega session.
   useEffect(() => { setState({ legaSessionId: status !== "off" ? session?.id || null : null }); }, [status, session?.id]);
   useEffect(() => {
-    const onCommand = (e) => { if (e.detail === "start") { if (statusRef.current === "off") start(); } else if (e.detail === "stop") stop("user"); else if (e.detail === "open") setOpen(true); };
+    const onCommand = (e) => {
+      if (e.detail === "start") {
+        const opts = { expectWebSearch: legaStartOptions.expectWebSearch };
+        legaStartOptions.expectWebSearch = null; // read once
+        if (statusRef.current === "off") start(opts);
+      } else if (e.detail === "stop") stop("user"); else if (e.detail === "open") setOpen(true);
+    };
     window.addEventListener("lega:command", onCommand);
     return () => window.removeEventListener("lega:command", onCommand);
   }, [start, stop]);
@@ -357,7 +412,7 @@ export function Lega({ go }) {
             <ActiveView status={status} elapsed={elapsed} session={session} micMuted={micMuted} legaMuted={legaMuted} onMic={toggleMic} onSound={toggleLegaSound}
               onStop={() => stop("user")} micBar={micBar} legaBar={legaBar} lines={lines} gateInfo={gateInfo} gateLog={gateLog} />
           ) : (
-            <ReadyView onStart={start} disabled={status !== "off"} />
+            <ReadyView onStart={() => start()} disabled={status !== "off"} />
           )}
           <ErrorNotice error={error} />
           <p className="faint small" style={{ margin: 0 }}>Vocea merge direct la OpenAI (GPT-Live), nu e locală. Hub-ul păstrează doar textul. Lega nu aprobă nimic: acțiunile cu efecte se confirmă prin click.</p>
@@ -496,7 +551,10 @@ async function followSpokenConfirmation(decision) {
 
 /** Before a session: what is missing (gate checks), the consent form and the voice choice. */
 function ReadyView({ onStart, disabled }) {
-  const status = useResource("/api/lega", { reloadOn: (e) => e.type.startsWith("grant.") || e.type === "settings.changed" || e.type.startsWith("lega.") || e.type.startsWith("provider.") });
+  const status = useResource("/api/lega", { reloadOn: (e) => e.type.startsWith("grant.") || e.type === "settings.changed" || e.type.startsWith("lega.") || e.type.startsWith("provider.") || e.type.startsWith("owner.") });
+  // Only a panel the owner can see records what they saw (the full-screen stage covers it).
+  const stageOpen = useHub((s) => Boolean(s.stageOpen));
+  useEffect(() => { if (status.data?.settings && !stageOpen) shownWebSearch = status.data.settings.webSearch || "disabled"; }, [status.data, stageOpen]);
   const [text, setText] = useState("");
   const consent = useAction(async () => { await api("/api/lega/consent", { method: "POST", body: { confirmText: text } }); setText(""); status.reload(); });
   const saveVoice = useAction(async (voice) => { await api("/api/settings", { method: "PATCH", body: { lega: { voice } } }); status.reload(); });
@@ -504,7 +562,9 @@ function ReadyView({ onStart, disabled }) {
   if (status.loading) return <p className="faint small">Verific dacă Lega poate porni…</p>;
   if (status.error) return <ErrorNotice error={status.error} onRetry={status.reload} />;
   const d = status.data;
-  const failed = d.preview.checks.filter((c) => !c.ok);
+  const rd = legaStartReadiness(d);
+  const failed = rd.blocking;
+  const minutes = d.preview?.maxDurationS ? Math.max(1, Math.floor(d.preview.maxDurationS / 60)) : d.settings.maxSessionMinutes;
   const last = d.session && d.session.status === "ended" ? d.session : null;
   return (
     <div className="stack tight">
@@ -536,13 +596,17 @@ function ReadyView({ onStart, disabled }) {
       {d.settings.webSearch === "live" && <Notice tone="warn" title="Căutare live">Lega poate deschide orice pagină. O pagină sau o notiță de proiect cu instrucțiuni ascunse l-ar putea face să trimită text din Hub spre acea pagină. Nimic nu se execută fără click-ul tău, dar pentru lucru zilnic alege indexul OpenAI.</Notice>}
       <p className="faint small" style={{ margin: 0 }}>Se aplică la următoarea pornire. Căutările apar în transcriere; ce vine de pe internet e tratat ca informație, nu ca instrucțiuni.</p>
       <ErrorNotice error={saveVoice.error || saveWeb.error} />
-      {failed.length > 0 ? (
+      {rd.needsPolicy ? (
+        <Notice tone="warn" title="Lega nu poate porni încă">Politica voice-first nu e activă: o activezi o dată în Lega → Configurare. (Varianta veche, fără sesiune: LIVE_VALIDATION și un grant „Lega (voce)” în Integrări → Validare live.)</Notice>
+      ) : failed.length > 0 ? (
         <Notice tone="warn" title="Lega nu poate porni încă">
           <Checks checks={failed} />
-          <span className="small">Modul LIVE_VALIDATION, poarta și grantul „Lega (voce)” se setează în Integrări → Validare live.</span>
+          <ul className="plain small">{failed.filter((c) => LEGA_CHECK_HINTS[c.id]).map((c) => <li key={c.id}>{LEGA_CHECK_HINTS[c.id]}</li>)}</ul>
         </Notice>
-      ) : <Notice tone="info" title="Gata de pornire">Sesiune de maxim {d.settings.maxSessionMinutes} min; se oprește singură după {d.settings.idleTimeoutS} s de liniște (nu cât timp agentul lucrează).</Notice>}
-      <button className="btn primary" disabled={disabled || failed.length > 0} onClick={async () => { await Promise.resolve(status.reload?.()); onStart(); }}><Mic size={15} />Pornește Lega</button>
+      ) : rd.needsSession ? (
+        <Notice tone="info" title="Pornește din sesiunea ta">{rd.sessionProblem && <span className="small">{rd.sessionProblem}. </span>}Apasă „Pornește Lega”: confirmi o dată cu Windows Hello / cheia ta și Lega pornește. Hub-ul își face singur autorizarea pentru o singură sesiune (cel mult {Math.min(30, d.settings.maxSessionMinutes)} min, doar citire) și o revocă la final; modul Hub-ului nu se schimbă.</Notice>
+      ) : <Notice tone="info" title="Gata de pornire">Sesiune de maxim {minutes} min; se oprește singură după {d.settings.idleTimeoutS} s de liniște (nu cât timp agentul lucrează).{rd.derived ? " Autorizarea se derivă din sesiunea ta și se revocă la final." : ""}</Notice>}
+      <button className="btn primary" disabled={disabled || failed.length > 0 || rd.needsPolicy} onClick={async () => { await Promise.resolve(status.reload?.()); onStart(); }}><Mic size={15} />Pornește Lega</button>
     </div>
   );
 }

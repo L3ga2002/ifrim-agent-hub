@@ -2,6 +2,7 @@ import { HubError } from "../core/errors.mjs";
 import { newId } from "../core/ids.mjs";
 import { json, parse } from "../storage/db.mjs";
 import { evaluateRoute } from "../policy/billing.mjs";
+import { billingInputs } from "../policy/billing-evidence.mjs";
 import { inspectionFromState } from "../policy/gate.mjs";
 import { readEcosystemConfig } from "../domain/surfaces.mjs";
 
@@ -79,7 +80,7 @@ export function createRouter({ db, bus, clock, config, settings, surfaces, provi
     const provider = PROVIDER_OF_SURFACE(surface);
     if (!excluded && executionMode === "programmatic" && provider) {
       const inspection = inspectionFromState(providerState.get(provider), clock());
-      const route = evaluateRoute(provider, inspection, { attestations: settings.get("billingAttestations"), now: clock(), usage: inspection?.usage || null, reservePercent: settings.get("usageReservePercent") });
+      const route = evaluateRoute(provider, inspection, billingInputs(settings, inspection, clock()));
       const failed = route.checks.filter((c) => c.status === "failed");
       const unverified = route.checks.filter((c) => c.status === "unverified" && c.id !== "allowance");
       if (failed.length) exclude("billing_route", failed.map((c) => `${c.id}: ${c.detail}`).join(" · "));

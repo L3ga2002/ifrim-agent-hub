@@ -8,6 +8,8 @@ import fs from "node:fs";
 import path from "node:path";
 import { makeTestHub, waitFor, enrolOwner, prepareLiveWithoutGrants } from "./helpers.mjs";
 import { materializeFixture, demoSpec } from "../server/factory/fixtures.mjs";
+// M09: every factory mission names its models explicitly (without them it is a draft whose scope is incomplete).
+const M09_MODELS = { writerModel: "gpt-fake-sol", reviewerModel: "sonnet" };
 import { approvalHash } from "../server/policy/approvals.mjs";
 import { enrolVoice, speak, OTHER_SPEAKER } from "./voice-helpers.mjs";
 
@@ -22,7 +24,7 @@ async function ownerHub({ level = "TRUSTED", fixture = "bug-demo", policy = true
   const project = (await dispatch(t.hub, "project.register_test", { path: dir })).result;
   const owner = await enrolOwner(t, { activatePolicy: policy });
   if (level && policy) await dispatch(t.hub, "owner.autonomy.set", { projectId: project.id, level }, { ownerSession: owner.reauth() });
-  const { mission } = (await dispatch(t.hub, "factory.prepare", { projectId: project.id, ...demoSpec(fixture) })).result;
+  const { mission } = (await dispatch(t.hub, "factory.prepare", { projectId: project.id, ...demoSpec(fixture), limits: M09_MODELS })).result;
   return { ...t, project, dir, owner, mission };
 }
 const propose = async (t, extra = {}) => (await dispatch(t.hub, "envelope.propose", { projectId: t.project.id, ...extra })).result;
@@ -152,8 +154,15 @@ test("M06-EN-06 a derived grant wider than the plan is refused (attempts, role, 
   try {
     const { envelope } = await propose(t);
     const env = t.hub.envelopes.get(envelope.id);
-    const base = { role: "writer", provider: "codex", access: "workspace-write", maxAttempts: 2, ttlMinutes: 30, maxDurationS: 600 };
+    // M09: a derived grant names the binding (model, effort, hash) the plan confirmed for its role.
+    const writerBinding = t.hub.envelopes.deriveGrants(env, t.mission.id).find((s) => s.role === "writer").binding;
+    assert.equal(writerBinding.model, "gpt-fake-sol");
+    const base = { role: "writer", provider: "codex", access: "workspace-write", maxAttempts: 2, ttlMinutes: 30, maxDurationS: 600, binding: writerBinding };
     assert.ok(t.hub.envelopes.assertWithin(env, base, { projectId: t.project.id }));
+    for (const [bad, why] of [[{ binding: null }, /fără modelul confirmat/], [{ binding: { ...writerBinding, model: "gpt-5", bindingHash: "a".repeat(64) } }, /în afara planului/],
+      [{ role: "reviewer", provider: "claude", access: "read-only" }, /model gpt-fake-sol în afara planului/]]) {
+      assert.throws(() => t.hub.envelopes.assertWithin(env, { ...base, ...bad }, { projectId: t.project.id }), why);
+    }
     for (const [bad, why] of [[{ maxAttempts: 9 }, /încercări/], [{ role: "deployer" }, /rol/], [{ provider: "openai-api" }, /provider/], [{ role: "reviewer", access: "workspace-write" }, /reviewer-ul poate doar citi/],
       [{ maxDurationS: 999999 }, /durată/], [{ ttlMinutes: 100000 }, /expiră după plan/]]) {
       assert.throws(() => t.hub.envelopes.assertWithin(env, { ...base, ...bad }, { projectId: t.project.id }), why);
@@ -208,7 +217,7 @@ test("M06-EN-09 a real (registry) project without verified isolation: BLOCKED_BY
     const owner = await enrolOwner(t);
     const hubProject = t.hub.projects.hub();
     // The registry project can hold missions (test mode lets the factory work on it) but is not a hub-test project.
-    const { mission } = (await dispatch(t.hub, "factory.prepare", { projectId: hubProject.id, ...demoSpec("bug-demo") })).result;
+    const { mission } = (await dispatch(t.hub, "factory.prepare", { projectId: hubProject.id, ...demoSpec("bug-demo"), limits: M09_MODELS })).result;
     await dispatch(t.hub, "owner.autonomy.set", { projectId: hubProject.id, level: "TRUSTED" }, { ownerSession: owner.reauth() });
     const out = (await dispatch(t.hub, "envelope.propose", { projectId: hubProject.id, missionIds: [mission.id] })).result;
     assert.equal(out.summary.state, "BLOCKED_BY_ISOLATION");
@@ -229,7 +238,7 @@ test("M06-EN-10 OBSERVE refuses execution; raising autonomy needs a fresh sessio
     const dir = path.join(t.dataDir, "f"); materializeFixture("bug-demo", dir);
     const project = (await dispatch(t.hub, "project.register_test", { path: dir })).result;
     const owner = await enrolOwner(t);
-    await dispatch(t.hub, "factory.prepare", { projectId: project.id, ...demoSpec("bug-demo") });
+    await dispatch(t.hub, "factory.prepare", { projectId: project.id, ...demoSpec("bug-demo"), limits: M09_MODELS });
     await dispatch(t.hub, "owner.autonomy.set", { projectId: project.id, level: "OBSERVE" }, { channel: "voice" });
     const out = (await dispatch(t.hub, "envelope.propose", { projectId: project.id })).result;
     await assert.rejects(dispatch(t.hub, "envelope.confirm", { envelopeId: out.envelope.id, nonce: out.envelope.nonce, displayedHash: out.envelope.envelopeHash }, { ownerSession: owner.session }), /OBSERVE/);
@@ -292,7 +301,8 @@ test("M06-EN-13 words transcribed by the provider never add authority, even on a
 test("M06-EN-12 the billing guard still applies: a route that is not included in the subscription blocks the plan", async () => {
   const t = await ownerHub({ level: "TRUSTED" });
   try {
-    t.hub.bus.transaction(() => t.hub.settings.set("billingAttestations", {}, "test"));
+    // M09-A2: the route reads the billing evidence (the legacy attestations are no longer read).
+    t.hub.bus.transaction(() => t.hub.settings.set("billingEvidence", {}, "test"));
     const out = await propose(t);
     assert.ok(out.readiness.blockers.some((b) => /billing_route/.test(b.id)), JSON.stringify(out.readiness.blockers));
     await assert.rejects(confirm(t, out.envelope), /billing_route|Nu pot porni/);
@@ -353,7 +363,7 @@ test("M07-EN-15 two open plans: their LIVE_VALIDATION returns to BUILD_SAFE only
     materializeFixture("service-request", dir2);
     const p2 = (await dispatch(t.hub, "project.register_test", { path: dir2 })).result;
     await dispatch(t.hub, "owner.autonomy.set", { projectId: p2.id, level: "TRUSTED" }, { ownerSession: t.owner.reauth() });
-    await dispatch(t.hub, "factory.prepare", { projectId: p2.id, ...demoSpec("service-request") });
+    await dispatch(t.hub, "factory.prepare", { projectId: p2.id, ...demoSpec("service-request"), limits: M09_MODELS });
     const { envelope: e1 } = await propose(t);
     t.queue("codex", "hang");
     await confirm(t, e1);
@@ -475,7 +485,7 @@ test("M07-EN-18 only the plans that hold LIVE_VALIDATION keep it: after the owne
     materializeFixture("service-request", dir2);
     const p2 = (await dispatch(t.hub, "project.register_test", { path: dir2 })).result;
     await dispatch(t.hub, "owner.autonomy.set", { projectId: p2.id, level: "TRUSTED" }, { ownerSession: t.owner.reauth() });
-    await dispatch(t.hub, "factory.prepare", { projectId: p2.id, ...demoSpec("service-request") });
+    await dispatch(t.hub, "factory.prepare", { projectId: p2.id, ...demoSpec("service-request"), limits: M09_MODELS });
     const { envelope: e1 } = await propose(t);
     t.queue("codex", "hang");
     await confirm(t, e1);
@@ -506,7 +516,7 @@ async function suspendedThenNewPlan(t) {
   materializeFixture("service-request", dir2);
   const p2 = (await dispatch(t.hub, "project.register_test", { path: dir2 })).result;
   await dispatch(t.hub, "owner.autonomy.set", { projectId: p2.id, level: "TRUSTED" }, { ownerSession: t.owner.reauth() });
-  await dispatch(t.hub, "factory.prepare", { projectId: p2.id, ...demoSpec("service-request") });
+  await dispatch(t.hub, "factory.prepare", { projectId: p2.id, ...demoSpec("service-request"), limits: M09_MODELS });
   const x = await pausedMission(t);
   await simulateBoot(t);
   assert.deepEqual([hold(t).envelopeId, hold(t).suspendedByBoot], [x.id, true]);

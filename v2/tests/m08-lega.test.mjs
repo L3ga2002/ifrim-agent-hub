@@ -7,6 +7,8 @@ import assert from "node:assert/strict";
 import path from "node:path";
 import { makeTestHub, waitFor, enrolOwner, prepareLiveWithoutGrants } from "./helpers.mjs";
 import { materializeFixture, demoSpec } from "../server/factory/fixtures.mjs";
+// M09: every factory mission names its models explicitly (without them it is a draft whose scope is incomplete).
+const M09_MODELS = { writerModel: "gpt-fake-sol", reviewerModel: "sonnet" };
 import { enrolVoice, speak, OTHER_SPEAKER } from "./voice-helpers.mjs";
 import { parseLesson } from "../server/intel/teach.mjs";
 import { resolveIntent, numberOf } from "../server/owner/intents.mjs";
@@ -163,7 +165,7 @@ async function voiceHub() {
   await enrolVoice(t, owner);
   await dispatch(t.hub, "voice.gate", { enabled: true }, { ownerSession: owner.session });
   await dispatch(t.hub, "owner.autonomy.set", { projectId: project.id, level: "TRUSTED" }, { ownerSession: owner.reauth() });
-  await dispatch(t.hub, "factory.prepare", { projectId: project.id, ...demoSpec("bug-demo") });
+  await dispatch(t.hub, "factory.prepare", { projectId: project.id, ...demoSpec("bug-demo"), limits: M09_MODELS });
   return { ...t, project, owner };
 }
 

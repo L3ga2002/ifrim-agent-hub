@@ -9,6 +9,8 @@ import http from "node:http";
 import { makeTestHub, waitFor, enrolOwner, prepareLiveWithoutGrants } from "./helpers.mjs";
 import { createHttpServer } from "../server/http/server.mjs";
 import { materializeFixture, demoSpec } from "../server/factory/fixtures.mjs";
+// M09: every factory mission names its models explicitly (without them it is a draft whose scope is incomplete).
+const M09_MODELS = { writerModel: "gpt-fake-sol", reviewerModel: "sonnet" };
 import { enrolVoice, speak } from "./voice-helpers.mjs";
 import { API_CONTRACT } from "../server/config.mjs";
 
@@ -76,7 +78,7 @@ test("M08-ADV-04 the armed window closes after three sentences that are not a cl
     await enrolVoice(t, owner);
     await dispatch(t.hub, "voice.gate", { enabled: true }, { ownerSession: owner.session });
     await dispatch(t.hub, "owner.autonomy.set", { projectId: project.id, level: "TRUSTED" }, { ownerSession: owner.reauth() });
-    await dispatch(t.hub, "factory.prepare", { projectId: project.id, ...demoSpec("bug-demo") });
+    await dispatch(t.hub, "factory.prepare", { projectId: project.id, ...demoSpec("bug-demo"), limits: M09_MODELS });
     const env = (await dispatch(t.hub, "envelope.propose", { projectId: project.id })).result.envelope;
     await dispatch(t.hub, "envelope.arm", { envelopeId: env.id, legaSessionId: "lega_c" }, { ownerSession: owner.session });
     const say = async (text) => {
@@ -103,7 +105,7 @@ test("M08-ADV-05 something changes between two autopilot tasks (the project is f
     const owner = await enrolOwner(t);
     await dispatch(t.hub, "owner.autonomy.set", { projectId: project.id, level: "TRUSTED" }, { ownerSession: owner.reauth() });
     const bug = demoSpec("bug-demo");
-    const o = (await dispatch(t.hub, "autopilot.draft", { projectId: project.id, title: "Două sarcini", criteria: ["ok"], tasks: [
+    const o = (await dispatch(t.hub, "autopilot.draft", { projectId: project.id, title: "Două sarcini", criteria: ["ok"], models: { writer: { model: "gpt-fake-sol" }, reviewer: { model: "sonnet" } }, tasks: [
       { key: "t1", title: bug.title, workType: "BUGFIX", objective: bug.objective, inScope: bug.spec.inScope, acceptance: bug.spec.acceptance, verification: bug.spec.verification },
       { key: "t2", title: "Limită nume", workType: "FEATURE", objective: "Detectarea numelui prea lung, cu test.", dependsOn: ["t1"], inScope: ["src/limits.js"], acceptance: [{ id: "AC-1", text: "Numele lung e detectat", verify: "test", testRef: "acceptance/limits.mjs" }], verification: { checks: ["node --test"], acceptance: ["node --test acceptance/limits.mjs"] } },
     ] })).result;

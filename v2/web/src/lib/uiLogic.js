@@ -239,14 +239,36 @@ export const CLAUDE_MODEL_ALIASES = Object.freeze(["sonnet", "opus", "haiku"]);
  * Claude: static aliases ("unverified"); effort only when the installed CLI's --help lists --effort ("unsupported" otherwise),
  * with unverified levels. `effort` comes back as the value that may be sent: a stored choice the options lack becomes "".
  */
+/** M09: the Claude model a run sends — always an explicit alias (the Hub refuses a Claude run without one); sonnet unless chosen. */
+export const DEFAULT_CLAUDE_MODEL = "sonnet";
+export const claudeRunModel = (model) => (CLAUDE_MODEL_ALIASES.includes(model) ? model : DEFAULT_CLAUDE_MODEL);
+
+/**
+ * The body of POST /api/conversations/:id/runs from the composer's choices. Claude always carries an explicit model (never empty);
+ * Codex sends a model only when one was chosen (empty = the account default, pinned by the Hub when the run starts).
+ */
+export function runRequestBody({ provider, access, model = "", effort = "", taskId = null } = {}) {
+  const m = provider === "claude" ? claudeRunModel(model) : String(model || "");
+  return { provider, access, ...(m ? { model: m } : {}), ...(effort ? { effort } : {}), ...(taskId ? { taskId } : {}) };
+}
+
+/** The body of POST /api/missions/:id/shadow: a shadow review names its model too (Claude: an explicit alias, never empty). */
+export function shadowReviewBody({ provider = "claude", model = "" } = {}) {
+  const m = provider === "claude" ? claudeRunModel(model) : String(model || "");
+  return { provider, ...(m ? { model: m } : {}) };
+}
+
 export function composerOptions({ provider, providerState = null, model = "", effort = "" } = {}) {
   let models; let modelSource; let modelNote; let efforts; let effortSource; let effortNote; let defaultEffort = null;
+  let sendModel = String(model || ""); let modelRequired = false;
   if (provider === "claude") {
     const flags = providerState?.installation?.flags;
     const effortFlag = Array.isArray(flags) ? flags.includes("--effort") : null;
     models = CLAUDE_MODEL_ALIASES.map((id) => ({ id, label: `${id} (alias CLI, nevalidat)` }));
     modelSource = "unverified";
-    modelNote = "Aliasuri Claude Code fixe, nevalidate de Hub: verificarea Claude citește doar autentificarea și flag-urile CLI; modelul real depinde de versiunea instalată";
+    modelRequired = true;
+    sendModel = claudeRunModel(model);
+    modelNote = "Aliasuri Claude Code fixe, nevalidate de Hub: verificarea Claude citește doar autentificarea și flag-urile CLI; modelul real depinde de versiunea instalată. Claude rulează doar cu un model explicit (implicit sonnet), niciodată cu modelul implicit al contului";
     efforts = effortFlag === false ? [] : [...FALLBACK_EFFORTS];
     effortSource = effortFlag === false ? "unsupported" : "unverified";
     effortNote = effortFlag === false ? "CLI-ul Claude instalat nu listează --effort; efortul nu se trimite"
@@ -267,7 +289,8 @@ export function composerOptions({ provider, providerState = null, model = "", ef
         : "Niveluri de efort nevalidate de Hub (Codex nu le-a raportat pentru acest model)";
     defaultEffort = accepted.includes(current?.defaultEffort) ? current.defaultEffort : null;
   }
-  return { models, modelSource, modelNote, efforts, effortSource, effortNote, defaultEffort, effort: efforts.includes(effort) ? effort : "" };
+  // `model` is the value that may be sent: for Claude always an alias (never ""); `modelRequired` hides the "implicit" choice.
+  return { models, modelSource, modelNote, efforts, effortSource, effortNote, defaultEffort, effort: efforts.includes(effort) ? effort : "", model: sendModel, modelRequired };
 }
 
 /* ---------------- Software Factory (M03) ---------------- */
@@ -341,4 +364,38 @@ export function parseCriteriaLines(text = "") {
     const testRef = kinds.has(second) ? third : second && /[/.]/.test(second) ? second : "";
     return { id: `AC-${i + 1}`, text: body, verify, ...(testRef ? { testRef } : {}) };
   });
+}
+
+// ---------------------------------------------------------------- M10: Lega's one-click start
+/** Plain hints for the checks that can still block a one-click start (the authority checks are the Hub's own business now). */
+export const LEGA_CHECK_HINTS = Object.freeze({
+  execution_gate: "Poarta e suspendată (de obicei după Stop All): o redeschizi în Integrări → Validare live (OPEN GATE).",
+  lega_consent: "Înregistrează acordul de mai sus (o singură dată).",
+  billing_route: "Integrări → Codex: declarația de abonament, în sesiunea ta.",
+  realtime_config: "Integrări → Inspectează instalarea.",
+  isolation: "Integrări → izolarea Codex.",
+  circuit_breaker: "Codex a eșuat de mai multe ori; reîncearcă după ora afișată.",
+  single_session: "O sesiune Lega e deja pornită.",
+  concurrency: "Prea multe execuții AI rulează acum; așteaptă să se termine una.",
+  derived_rate: "Limita de porniri a fost atinsă; reîncearcă după timpul afișat.",
+});
+const LEGA_AUTHORITY_CHECKS = new Set(["mode", "voice_grant"]);
+/**
+ * What the start needs, from GET /api/lega. Under the voice-first policy, when the click will derive the authority (no owner
+ * session yet, or the presented one must be reopened), mode / voice_grant are never blockers: they mean "open your session" and the
+ * click does it (Windows Hello). Real blockers (the gate after Stop All, the consent, billing, the start limit…) are listed alone, so
+ * the page never points to the old manual path for them. Under the legacy policy every failing check blocks.
+ */
+export function legaStartReadiness(d) {
+  const p = d?.preview || {};
+  const failed = (p.checks || []).filter((c) => !c.ok);
+  const authFailed = failed.filter((c) => LEGA_AUTHORITY_CHECKS.has(c.id));
+  const policyActive = Boolean(d?.owner?.policyActive ?? p.policyActive);
+  const willDerive = policyActive && (!d?.owner?.session || Boolean(p.needSession));
+  const blocking = willDerive ? failed.filter((c) => !LEGA_AUTHORITY_CHECKS.has(c.id)) : failed;
+  const needsSession = willDerive && (authFailed.length > 0 || Boolean(p.needSession));
+  const authorityOnly = failed.length > 0 && authFailed.length === failed.length;
+  const needsPolicy = !policyActive && authorityOnly;
+  return { failed, blocking, authorityOnly, needsSession, needsPolicy, willDerive, sessionProblem: p.sessionProblem || null,
+    ready: failed.length === 0, derived: p.authority === "owner_session" };
 }

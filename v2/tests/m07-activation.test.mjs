@@ -10,6 +10,8 @@ import { createHttpServer, isFailsafe } from "../server/http/server.mjs";
 import { API_CONTRACT, HUB_VERSION } from "../server/config.mjs";
 import { AGENT_COMMANDS, checkDelegation } from "../server/runtime/commands.mjs";
 import { materializeFixture, demoSpec } from "../server/factory/fixtures.mjs";
+// M09: every factory mission names its models explicitly (without them it is a draft whose scope is incomplete).
+const M09_MODELS = { writerModel: "gpt-fake-sol", reviewerModel: "sonnet" };
 
 function httpClient(t, token) {
   return (p, { method = "GET", body, host = `localhost:${t.config.port}`, headers = {} } = {}) => new Promise((resolve, reject) => {
@@ -63,7 +65,7 @@ test("M07-AC-02 an approval decided by an agent records the agent and the delega
     const dir = path.join(t.dataDir, "factory-x");
     materializeFixture("bug-demo", dir);
     const project = (await hub.commands.dispatch({ type: "project.register_test", payload: { path: dir }, channel: "agent", actor: "agent", delegation: "proprietar în conversație, M07 §03" })).result;
-    const { mission } = (await hub.commands.dispatch({ type: "factory.prepare", payload: { projectId: project.id, ...demoSpec("bug-demo") }, channel: "agent", actor: "agent", delegation: "proprietar în conversație, M07 §03" })).result;
+    const { mission } = (await hub.commands.dispatch({ type: "factory.prepare", payload: { projectId: project.id, ...demoSpec("bug-demo"), limits: M09_MODELS }, channel: "agent", actor: "agent", delegation: "proprietar în conversație, M07 §03" })).result;
     const scope = hub.factory.view(mission.id).scope;
     const asked = await hub.commands.dispatch({ type: "factory.start", payload: { missionId: mission.id, ...scope }, channel: "agent", actor: "agent", delegation: "proprietar în conversație, M07 §03" });
     assert.equal(asked.approvalRequired, true);
@@ -172,7 +174,7 @@ test("M07-AC-06 an envelope on the environment route is bound to the attestation
     await hub.commands.dispatch({ type: "environment.inspect", payload: {}, channel: "test", actor: "t" });
     await hub.commands.dispatch({ type: "environment.attest", payload: { allowRestart: true }, channel: "test", actor: "t" });
     await hub.commands.dispatch({ type: "project.environment.set", payload: { projectId: project.id, environment: "wsl-runner" }, channel: "test", actor: "t" });
-    await hub.commands.dispatch({ type: "factory.prepare", payload: { projectId: project.id, ...demoSpec("bug-demo") }, channel: "test", actor: "t" });
+    await hub.commands.dispatch({ type: "factory.prepare", payload: { projectId: project.id, ...demoSpec("bug-demo"), limits: M09_MODELS }, channel: "test", actor: "t" });
     const a = (await hub.commands.dispatch({ type: "envelope.propose", payload: { projectId: project.id }, channel: "test", actor: "t" })).result.envelope;
     const ref = a.body.attestations?.[0] || a.body.environment?.attestations?.[0] || JSON.stringify(a.body).match(/"attestationId":"([^"]+)"/)?.[1];
     assert.ok(ref, "the plan names the attestation");
@@ -195,7 +197,7 @@ test("M07-AC-07 a plan never runs above the project's autonomy; lowering the lev
     materializeFixture("bug-demo", dir);
     const project = (await hub.commands.dispatch({ type: "project.register_test", payload: { path: dir }, channel: "test", actor: "t" })).result;
     const owner = await enrolOwner(t, { activatePolicy: true });
-    await hub.commands.dispatch({ type: "factory.prepare", payload: { projectId: project.id, ...demoSpec("bug-demo") }, channel: "test", actor: "t" });
+    await hub.commands.dispatch({ type: "factory.prepare", payload: { projectId: project.id, ...demoSpec("bug-demo"), limits: M09_MODELS }, channel: "test", actor: "t" });
     // The project is ASSISTED (default for a test project): asking a TRUSTED plan is refused.
     await assert.rejects(hub.commands.dispatch({ type: "envelope.propose", payload: { projectId: project.id, level: "TRUSTED" }, channel: "ui", actor: "user" }), /peste nivelul proiectului/);
     await hub.commands.dispatch({ type: "owner.autonomy.set", payload: { projectId: project.id, level: "TRUSTED" }, channel: "test", actor: "t", ownerSession: owner.reauth() });
@@ -265,7 +267,7 @@ test("M07-AC-10 the delegation covers test projects only: an agent's grant, rout
     const project = (await agent("project.register_test", { path: dir })).result;
     const g = (await agent("grant.create", { provider: "codex", projectId: project.id, access: "read-only", maxAttempts: 1, ttlMinutes: 30 })).result;
     assert.equal(g.projectId, project.id);
-    const { mission } = (await agent("factory.prepare", { projectId: project.id, ...demoSpec("bug-demo") })).result;
+    const { mission } = (await agent("factory.prepare", { projectId: project.id, ...demoSpec("bug-demo"), limits: M09_MODELS })).result;
     assert.ok(mission.id);
     // A forged extra field naming the test project never covers the real target (M07 review round 2): every field is checked.
     await assert.rejects(agent("run.start", { conversationId: conv.id, projectId: project.id, provider: "claude", access: "read-only" }), /decizi tu \(conversationId\)/);

@@ -14,6 +14,8 @@ import { replyFor, faceCommand, presentedFrom, pushLayout, STATE_TONE } from "..
 import { unlockSession, onLocalhost } from "../lib/ownerSession.js";
 import { StopAllButton } from "../shell/Shell.jsx";
 import { OwnerSetup } from "./lega/OwnerSetup.jsx";
+import { OpsPlanCard } from "./lega/OpsPlanCard.jsx";
+import { presentedPlan } from "../lib/opsLogic.js";
 import { ProjectSummary, NextStepCard, DecisionCard, MissionPlan, AgentGraph, EnvironmentCard, DiffPanel, TestPanel, ReviewPanel, Replay, Preview, Briefing, Explain, CompanyMap } from "./lega/cards.jsx";
 
 /**
@@ -65,6 +67,8 @@ function Cockpit({ projectId, go }) {
   const [department, setDepartment] = useState(null);
   // M08: the last company-intelligence answer (incident, changes, scenario, lesson…) shown as a card; "detalii" opens details.
   const [intel, setIntel] = useState(null);
+  // M10: the operation plan card on screen (desktop / Studio / capture work across apps): ONE confirmation.
+  const [opsPlan, setOpsPlan] = useState(null);
   const [detailsTick, setDetailsTick] = useState(0);
   const legaSessionId = useHub((s) => s.legaSessionId || null);
   const startView = useResource("/api/owner/start-view", { reloadOn: (e) => e.type === "settings.changed" && e.payload?.key === "startView" });
@@ -105,7 +109,7 @@ function Cockpit({ projectId, go }) {
     setBusy(true); setError(null);
     setConversation((c) => [...c.slice(-40), { role: "user", text: value, at: Date.now() }]);
     try {
-      const res = await api("/api/owner/intent", { method: "POST", body: { text: value, projectId: pid || undefined, source, presented: presentedFrom(plan?.envelope) || undefined, layout: layout || undefined, legaSessionId: legaStatus !== "off" && legaSessionId ? legaSessionId : undefined } });
+      const res = await api("/api/owner/intent", { method: "POST", body: { text: value, projectId: pid || undefined, source, presented: presentedPlan(opsPlan) || presentedFrom(plan?.envelope) || undefined, layout: layout || undefined, legaSessionId: legaStatus !== "off" && legaSessionId ? legaSessionId : undefined } });
       const face = faceCommand(res.resolved.steps);
       if (face?.shape) { setFaceShape(face.shape); setFaceHidden(false); }
       if (face?.hidden) setFaceHidden(true);
@@ -113,7 +117,13 @@ function Cockpit({ projectId, go }) {
       let intelFound = null;
       for (const r of res.results) {
         if (r.navigate?.startsWith("/cockpit/")) { const next = r.navigate.split("/")[2]; setCurrentProject(next); go(`/lega/${next}`); }
+        // M09: "deschide studioul", "arată-mi clipul X", a proposed correction (opens the clip at that second with the proposal).
+        if (r.navigate?.startsWith("/studio")) go(r.navigate);
         if (r.plan?.envelope || r.plan?.summary) setPlan(r.plan);
+        if (r.opsPlan) setOpsPlan(r.opsPlan);
+        // M10: „Pornește Lega” — the Hub checked; this page starts the voice (its microphone + the owner cookie). Never a server start.
+        if (r.legaStart) sendLegaCommand("start", { expectWebSearch: r.legaStartWebSearch || null });
+        if (r.confirmed?.plan) setOpsPlan((p) => (p && p.id === r.confirmed.plan.id ? { ...p, status: r.confirmed.plan.status } : p));
         if (r.confirmed?.envelope) setPlan((p) => p && { ...p, envelope: { ...p.envelope, status: r.confirmed.envelope.status } });
         if (r.explain) setExplain(r.explain);
         if (r.replay) setReplayMission(r.replay.missionId);
@@ -146,12 +156,12 @@ function Cockpit({ projectId, go }) {
       refresh(); cockpit.reload();
     } catch (e) { setError(e); setConversation((c) => [...c, { role: "lega", text: `Nu am putut: ${e.message}`, at: Date.now() }]); }
     finally { setBusy(false); inputRef.current?.focus({ preventScroll: true }); }
-  }, [busy, pid, plan, layout, go, changeLayout, cockpit, setCurrentProject, setFaceShape, setFaceHidden, setDiscreet, department, replayMission, history, legaStatus, legaSessionId]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [busy, pid, plan, opsPlan, layout, go, changeLayout, cockpit, setCurrentProject, setFaceShape, setFaceHidden, setDiscreet, department, replayMission, history, legaStatus, legaSessionId]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Lega's voice (GPT-Live) transcripts of YOUR words feed the same resolver, marked as provider transcripts: they can open,
   // show and stop, never confirm.
   useEffect(() => onHubEvent((e) => {
-    if (document.visibilityState === "visible" && e.type === "lega.transcript" && e.payload?.role === "user" && (/^(lega|hai|arată|arata|oprește|opreste|taci|pauză|pauza|continuă|continua|ce |de ce|îngheață|ingheata|preiau|ține|tine|reține|retine|uită|uita|ecran|deschide|următorul|urmatorul|amână|amana|simulează|simuleaza|cine |la livrarea|nu merge|pornește direct|porneste direct|detalii|cockpit)/i.test(String(e.payload.text || "").trim()) || /\b(a picat|a căzut|a cazut|s-a stricat|nu mai merge|dă eroare|da eroare)\b/i.test(String(e.payload.text || "")))) send(e.payload.text, "voice-provider");
+    if (document.visibilityState === "visible" && e.type === "lega.transcript" && e.payload?.role === "user" && (/^(lega|hai|arată|arata|oprește|opreste|taci|pauză|pauza|continuă|continua|ce |de ce|îngheață|ingheata|preiau|ține|tine|reține|retine|uită|uita|ecran|deschide|următorul|urmatorul|amână|amana|simulează|simuleaza|cine |la livrarea|nu merge|pornește direct|porneste direct|detalii|cockpit|la secund|mută|muta|taie|studio|clip|publică|publica|importă|importa|adu |înregistrează|inregistreaza|pregătește|pregateste|treci pe|unde e)/i.test(String(e.payload.text || "").trim()) || /\b(a picat|a căzut|a cazut|s-a stricat|nu mai merge|dă eroare|da eroare)\b/i.test(String(e.payload.text || "")))) send(e.payload.text, "voice-provider");
   }), [send]);
 
   const interrupt = async (kind, extra = {}) => {
@@ -231,7 +241,7 @@ function Cockpit({ projectId, go }) {
           )}
           {faceHidden && <button className="btn sm ghost" onClick={() => setFaceHidden(false)}><Eye size={12} />Arată fața</button>}
           <ol className="lega-conv" aria-label="Conversația cu Lega" aria-live="polite">
-            {!conversation.length && <li className="faint small">Spune sau scrie: „Hai să lucrăm la …”, „Doar arată-mi planul”, „Ce avem azi?”, „Ce s-a schimbat de ieri?”, „X a picat”, „Ce se întâmplă dacă luăm încă cinci clienți?”, „Ține minte că…”, „Ecran complet”, „Oprește tot”.</li>}
+            {!conversation.length && <li className="faint small">Spune sau scrie: „Hai să lucrăm la …”, „Doar arată-mi planul”, „Ce avem azi?”, „Ce s-a schimbat de ieri?”, „X a picat”, „Ce se întâmplă dacă luăm încă cinci clienți?”, „Ține minte că…”, „Deschide studioul”, „La secunda 12 mută textul mai sus”, „Deschide CapCut”, „Arată folderul exporturilor”, „Importă din folderul acesta”, „Ecran complet”, „Oprește tot”.</li>}
             {conversation.map((m, i) => (
               <li key={i} className={`lc-${m.role}`}><span className="who">{m.role === "user" ? "Tu" : "Lega"}</span><span className="lc-text">{m.text}</span>
                 {m.clarification?.options && <span className="row wrap">{m.clarification.options.map((o) => <button key={o.id} className="btn sm" onClick={() => send(m.clarification.forIntent === "confirm" ? `confirm ${o.label}` : `hai să lucrăm la ${o.label}`)}>{o.label}</button>)}</span>}</li>
@@ -256,6 +266,7 @@ function Cockpit({ projectId, go }) {
           {!pid ? <>
             {/* Company-level answers ("Ce avem azi?", a scenario, a lesson) are shown even before a project is open. */}
             {intel && <IntelResult card={{ type: "IntelResult", size: "l" }} kind={intel.kind} result={intel.result} onDismiss={() => setIntel(null)} onDone={() => setIntel(null)} />}
+            {opsPlan && <OpsPlanCard plan={opsPlan} card={{ type: "OpsPlan", size: "l" }} onClose={() => setOpsPlan(null)} />}
             <ProjectPicker projects={projects.data?.projects || []} onPick={(id) => send(`Hai să lucrăm la ${(projects.data?.projects || []).find((p) => p.id === id)?.name}`)} />
           </>
             : cockpit.loading && !c ? <Loading lines={6} /> : cockpit.error ? <ErrorNotice error={cockpit.error} onRetry={cockpit.reload} /> : (
@@ -267,7 +278,7 @@ function Cockpit({ projectId, go }) {
                     <button className="btn sm ghost" aria-pressed={Boolean(layout?.focus)} onClick={() => changeLayout({ ...layout, focus: !layout?.focus, cards: layout?.focus ? c.layout.cards : layout.cards.filter((x) => ["ProjectSummary", "NextStepCard", "DecisionCard"].includes(x.type) || x.pinned) })}><Focus size={13} />Focus</button>
                   </div>
                 </div>
-                <div className="cockpit-cards">{cards.map(renderCard)}</div>
+                <div className="cockpit-cards">{opsPlan && <OpsPlanCard plan={opsPlan} card={{ type: "OpsPlan", size: "l" }} onClose={() => setOpsPlan(null)} />}{cards.map(renderCard)}</div>
               </>
             )}
         </main>

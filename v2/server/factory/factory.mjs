@@ -17,7 +17,7 @@ import { renderChanges } from "./diff.mjs";
 import { integrityFindings } from "./integrity.mjs";
 import { buildReviewBrief, parseReview, BLOCKING_SEVERITIES } from "./review.mjs";
 import { runE2E, browserStatus } from "../tools/browser.mjs";
-import { CLAUDE_REFUSED_MODELS } from "../providers/claude.mjs";
+import { resolveRoleBindings, resolveBinding, normalizeBindingRequest, bindingLabel } from "../policy/model-binding.mjs";
 
 /**
  * Software Factory conductor (M03 §10–§21). A factory mission is an ordinary mission (template eng_*) plus one row of
@@ -57,7 +57,9 @@ export function createFactory(deps) {
   const rowToFm = (row) => row && ({ missionId: row.mission_id, workType: row.work_type, stage: row.stage, waitReason: row.wait_reason, stageReason: row.stage_reason,
     profile: row.profile, limits: parse(row.limits_json, {}), plan: parse(row.plan_json, {}), repairCycles: row.repair_cycles, approvedSpecVersion: row.approved_spec_version,
     scopeHash: row.scope_hash, scopeApprovalId: row.scope_approval_id, baseSnapshotId: row.base_snapshot_id, reviewConversationId: row.review_conversation_id,
-    cancelRequestedAt: row.cancel_requested_at, startedAt: row.started_at, deadlineAt: row.deadline_at, createdAt: row.created_at, updatedAt: row.updated_at, version: row.version });
+    cancelRequestedAt: row.cancel_requested_at, startedAt: row.started_at, deadlineAt: row.deadline_at, createdAt: row.created_at, updatedAt: row.updated_at, version: row.version,
+    // M09: the model/effort binding of each role, fixed when the scope was approved ({} before the start or for a pre-M09 mission).
+    bindings: parse(row.bindings_json, {}) || {} });
   const fm = (missionId) => rowToFm(db.prepare("SELECT * FROM factory_missions WHERE mission_id = ?").get(missionId));
   const rowToSpec = (row) => row && ({ id: row.id, missionId: row.mission_id, version: row.version, status: row.status, spec: parse(row.spec_json, {}), sha256: row.sha256,
     protected: parse(row.protected_json, {}), author: row.author, createdAt: row.created_at, approvedAt: row.approved_at });
@@ -256,13 +258,44 @@ export function createFactory(deps) {
    * engine binds this payload; at start the Hub checks it again against the current state (a spec or limit changed after the
    * approval refuses the start).
    */
-  function scopeFor(missionId) {
+  /**
+   * M09: each role's binding (explicit model + effort, resolved against the route that will run it). `bindings` overrides the
+   * resolution (a reviewer override outside an envelope recomputes only that role). Returns { bindings, problems }.
+   */
+  function bindingsOf(missionId, f = fm(missionId)) {
+    const projectId = missions.get(missionId)?.projectId;
+    const ctx = (provider) => (runs.bindingContext ? runs.bindingContext(projectId, provider) : { environment: "windows", providerState: null });
+    return resolveRoleBindings(f.limits || {}, { writer: ctx(ROUTES.writer.provider), reviewer: ctx(ROUTES.reviewer.provider) }, { now: clock() });
+  }
+
+  /**
+   * The approvable scope, or why it is incomplete: { scope, problems }. A mission without an explicit model for BOTH roles (or
+   * whose models cannot be resolved now: not in model/list, unknown effort, Claude Code not inspected) is a draft — no scope,
+   * so no approval and no envelope (PLAN_INCOMPLETE). There is no placeholder model.
+   */
+  function scopeState(missionId, { bindings = null } = {}) {
     const f = need(fm(missionId));
     const spec = latestSpec(missionId);
-    return { missionId, specVersion: spec.version, specSha: spec.sha256, planSha: f.plan.sha256, limits: f.limits,
+    const resolved = bindings ? { bindings, problems: [] } : bindingsOf(missionId, f);
+    // The scope (and so its hash, the approval and the envelope) carries the binding without evidence timestamps: a re-probe
+    // that found the same facts must not invalidate an approval (bindingHash excludes them for the same reason).
+    const stable = (b) => {
+      if (!b) return null;
+      const { probedAt: _probedAt, ...evidence } = b.resolutionEvidence || {};
+      return { ...b, resolutionEvidence: evidence };
+    };
+    const scope = { missionId, specVersion: spec.version, specSha: spec.sha256, planSha: f.plan.sha256, limits: f.limits,
       routes: { writer: { ...ROUTES.writer, model: f.limits.writerModel || "", effort: f.limits.writerEffort || "", profile: f.limits.profile },
         reviewer: { ...ROUTES.reviewer, model: f.limits.reviewerModel || "", effort: f.limits.reviewerEffort || "", profile: f.limits.profile } },
+      bindings: { writer: stable(resolved.bindings.writer), reviewer: stable(resolved.bindings.reviewer) },
       commands: spec.spec.verification };
+    return { scope: resolved.problems.length ? null : scope, problems: resolved.problems };
+  }
+  /** The approvable scope (throws the owner-facing reason when the models are not fixed). */
+  function scopeFor(missionId, opts = {}) {
+    const { scope, problems } = scopeState(missionId, opts);
+    if (!scope) throw new HubError("validation", `Modelele misiunii nu sunt fixate: ${problems.join("; ")}`, { data: { problems } });
+    return scope;
   }
 
   function assertStartable(missionId, payload) {
@@ -272,7 +305,7 @@ export function createFactory(deps) {
     const problems = spec.protected?.problems || [];
     if (problems.length) throw new HubError("validation", `Specificația v${spec.version} are probleme: ${problems.join("; ")}`);
     const scope = scopeFor(missionId);
-    if (payload && hashCanonical(payload) !== hashCanonical(scope)) throw new HubError("gate", "Scope-ul s-a schimbat după aprobare (specificație, plan, rute sau limite); aprobă din nou");
+    if (payload && hashCanonical(payload) !== hashCanonical(scope)) throw new HubError("gate", "Scope-ul s-a schimbat după aprobare (specificație, plan, rute, limite sau modelele fixate); aprobă din nou");
     const project = projects.get(missions.get(missionId).projectId);
     const problem = projectProblem(project);
     if (problem) throw new HubError("policy", problem);
@@ -297,9 +330,12 @@ export function createFactory(deps) {
       const started = clock();
       bus.transaction(() => {
         db.prepare("UPDATE factory_specs SET status = 'APPROVED', approved_at = ?, protected_json = ? WHERE id = ?").run(now(), json({ problems: [], files: protectedFiles }), spec.id);
+        // M09: the approved bindings are stored with the scope; every dispatch reads them (never the current limits_json).
         db.prepare(`UPDATE factory_missions SET approved_spec_version = ?, scope_hash = ?, scope_approval_id = ?, base_snapshot_id = ?, started_at = ?, deadline_at = ?, cancel_requested_at = NULL,
-          repair_cycles = 0 WHERE mission_id = ?`).run(spec.version, hashCanonical(scope), approvalId, base.id, started.toISOString(),
-          new Date(started.getTime() + f.limits.maxDurationMin * 60000).toISOString(), missionId);
+          repair_cycles = 0, bindings_json = ? WHERE mission_id = ?`).run(spec.version, hashCanonical(scope), approvalId, base.id, started.toISOString(),
+          new Date(started.getTime() + f.limits.maxDurationMin * 60000).toISOString(), json(scope.bindings), missionId);
+        bus.append({ type: "factory.bindings", scopeType: "mission", scopeId: missionId, source: actor, payload: Object.fromEntries(Object.entries(scope.bindings)
+          .map(([role, b]) => [role, { model: b.resolvedAlias, effort: b.effort, environment: b.environment, hash: b.bindingHash.slice(0, 16), label: bindingLabel(b) }])) });
         walkTask(stepTask(f, "spec"), "COMPLETED", `scope aprobat (spec v${spec.version})`, { manualVerification: `Scope aprobat de proprietar${approvalId ? ` (aprobare ${approvalId})` : ""}: specificația v${spec.version} sha ${spec.sha256.slice(0, 12)}` });
         missions.refreshMissionStatus(missionId);
         setStage(missionId, "BASELINE", { waitReason: "runner", reason: "Rulez testele de acceptanță înainte de orice modificare", actor });
@@ -467,12 +503,19 @@ export function createFactory(deps) {
       return setStage(missionId, "NEEDS_OWNER_DECISION", { waitReason: "owner_decision", reason: `${stage}: ${attempts} încercări folosite (limita ${f.limits.maxAttemptsPerStage}); decide dacă reiei` });
     }
     if (f.deadlineAt && new Date(f.deadlineAt) <= clock()) return setStage(missionId, "NEEDS_OWNER_DECISION", { waitReason: "owner_decision", reason: "Limita de timp a misiunii a fost atinsă" });
+    // M09: the model and effort come from the binding approved with the scope (bindings_json), never from the current limits_json.
+    // A mission started before M09 has none: it does not fall back to the account default — it waits for the owner.
+    const binding = f.bindings?.[role] || null;
+    if (!binding?.bindingHash || binding.provider !== route.provider) {
+      blockTask(taskId, "model neaprobat");
+      return setStage(missionId, "BLOCKED", { waitReason: "owner_decision", reason: `${stage}: misiunea nu are un model aprobat pentru ${role} (a pornit fără modele fixate); oprește-o și pregătește una nouă cu modele explicite — nimic nu rulează pe modelul implicit al contului` });
+    }
     if (authority) {
-      const held = authority(missionId, { stage, cycle });
+      const held = authority(missionId, { stage, cycle, role, bindingHash: binding.bindingHash });
       if (held) return setStage(missionId, "NEEDS_OWNER_DECISION", { waitReason: "owner_decision", reason: held.reason });
     }
-    const request = { stage, cycle, changeSeq, attempt: prior.length + 1, counted: attempts + 1, provider: route.provider, access: route.access, model: f.limits[`${role}Model`] || "", effort: f.limits[`${role}Effort`] || "", profile: f.limits.profile,
-      specVersion: f.approvedSpecVersion };
+    const request = { stage, cycle, changeSeq, attempt: prior.length + 1, counted: attempts + 1, provider: route.provider, access: route.access, model: binding.resolvedAlias, effort: binding.effort, profile: binding.profile,
+      specVersion: f.approvedSpecVersion, bindingHash: binding.bindingHash };
     const key = `${missionId}:${stage}:c${cycle}:cs${changeSeq}:a${prior.length + 1}`;
     const id = newId("dsp");
     const inserted = db.prepare(`INSERT OR IGNORE INTO factory_dispatches (id, mission_id, stage, task_id, idempotency_key, status, request_json, created_at, updated_at)
@@ -495,7 +538,7 @@ export function createFactory(deps) {
       // The approved acceptance tests are also refused by the export validator of an execution environment (M05 §16).
       const exportPolicy = route.access === "workspace-write" ? { protectedPaths: Object.keys(approvedSpec(f)?.protected?.files || {}) } : null;
       ({ run } = await tracked(missionId, () => runs.start({ conversationId, provider: route.provider, access: route.access, model: request.model, effort: request.effort, profile: request.profile,
-        taskId, stage: task.stage, roleId: task.roleId, actor: "factory", correlationId: id, requestedAt: f.updatedAt, exportPolicy })));
+        taskId, stage: task.stage, roleId: task.roleId, actor: "factory", correlationId: id, requestedAt: f.updatedAt, exportPolicy, binding })));
     } catch (error) {
       // A Stop / Pause that arrived while the start was in flight: the refusal is its consequence, not a new blocker.
       if (isHalted(missionId)) {
@@ -1138,14 +1181,29 @@ export function createFactory(deps) {
         if (f.stage === "NEEDS_OWNER_DECISION") throw new HubError("policy", `Misiunea așteaptă decizia ta (${String(f.stageReason || "").slice(0, 160)}); agentul reia doar o oprire de infrastructură sau o pauză pusă de el`);
         if (f.deadlineAt && new Date(f.deadlineAt) <= clock()) throw new HubError("policy", "Timpul misiunii s-a terminat; o fereastră nouă de timp e decizia ta");
       }
-      // The owner's choice of the reviewer's model (e.g. when the account's default is refused by the billing guard): an
-      // explicit Claude model alias or id; Fable, "best" and the [1m] variants are never accepted. Validated before any change.
-      const chosenReviewer = String(reviewerModel || "").trim();
-      if (chosenReviewer && (!/^(?:sonnet|opus|haiku|claude-(?:sonnet|opus|haiku)-[0-9][0-9a-z.-]{0,40})$/i.test(chosenReviewer) || CLAUDE_REFUSED_MODELS.test(chosenReviewer))) {
-        throw new HubError("validation", `Modelul „${chosenReviewer.slice(0, 40)}” nu e permis pentru reviewer (permise: sonnet, opus, haiku sau un id claude-sonnet/opus/haiku-…; Fable, „best” și variantele [1m] sunt refuzate)`);
+      // The owner's choice of another reviewer model (e.g. when the bound alias resolved to a refused model at init): an explicit
+      // Claude alias or id from the shared allowlist; Fable, "best" and the [1m] variants are never accepted. Validated before any change.
+      let chosenReviewer = String(reviewerModel || "").trim();
+      if (chosenReviewer) {
+        const check = normalizeBindingRequest({ role: "reviewer", model: chosenReviewer, effort: f.limits.reviewerEffort || "", profile: f.limits.profile });
+        if (!check.ok) throw new HubError("validation", `Modelul „${chosenReviewer.slice(0, 40)}” nu e permis pentru reviewer: ${check.problem}`);
+        chosenReviewer = check.request.model;
       }
       if (!f.approvedSpecVersion) throw new HubError("conflict", "Scope-ul nu e aprobat");
       if (missionRunIds(missionId).length) throw new HubError("conflict", "O execuție a misiunii rulează încă");
+      // M09: another reviewer model is a change of what the owner confirmed. Under an open plan (envelope) it is refused — the
+      // envelope and its grants are bound to the confirmed model; a new plan is needed. Outside a plan it is the owner's decision
+      // here (UI/owner channel): the reviewer's binding and the scope hash are recomputed and the old/new pair is recorded.
+      let override = null;
+      if (chosenReviewer && chosenReviewer !== (f.bindings?.reviewer?.requestedModel || f.limits.reviewerModel)) {
+        const underPlan = authority ? authority(missionId, { stage: "MODEL_OVERRIDE", role: "reviewer" }) : null;
+        if (underPlan) throw new HubError("policy", `Modelul reviewer-ului nu se schimbă sub planul confirmat: ${underPlan.reason}. Cere un plan nou (cu modelul ${chosenReviewer}) și confirmă-l`);
+        const ctx = runs.bindingContext ? runs.bindingContext(missions.get(missionId).projectId, ROUTES.reviewer.provider) : { environment: "windows", providerState: null };
+        const resolved = resolveBinding({ role: "reviewer", provider: ROUTES.reviewer.provider, environment: ctx.environment, requestedModel: chosenReviewer, requestedEffort: f.limits.reviewerEffort || "",
+          profile: f.limits.profile, providerState: ctx.providerState, now: clock() });
+        if (!resolved.ok) throw new HubError("validation", `Modelul reviewer-ului nu poate fi fixat: ${resolved.problem}`);
+        override = resolved.binding;
+      }
       if (proceedToQa) {
         const cs = currentCs(missionId);
         const lastReview = cs ? db.prepare("SELECT verdict FROM factory_reviews WHERE change_set_id = ? ORDER BY created_at DESC LIMIT 1").get(cs.id) : null;
@@ -1154,11 +1212,19 @@ export function createFactory(deps) {
         if (!cs || !checksOk || lastReview?.verdict !== "INCONCLUSIVE") throw new HubError("conflict", "QA direct e permis doar după verificări trecute și un review neconcludent (decizia ta)");
       }
       bus.transaction(() => db.prepare("UPDATE factory_missions SET cancel_requested_at = NULL WHERE mission_id = ?").run(missionId));
-      if (chosenReviewer && chosenReviewer !== f.limits.reviewerModel) {
-        const limits = { ...fm(missionId).limits, reviewerModel: chosenReviewer };
+      if (override) {
+        const current = fm(missionId);
+        const previous = current.bindings?.reviewer || null;
+        const limits = { ...current.limits, reviewerModel: chosenReviewer };
+        const bindings = { ...current.bindings, reviewer: override };
+        const summary = (b) => (b ? { model: b.resolvedAlias, effort: b.effort, environment: b.environment, bindingHash: b.bindingHash, label: bindingLabel(b) } : null);
         bus.transaction(() => {
           db.prepare("UPDATE factory_missions SET limits_json = ? WHERE mission_id = ?").run(json(limits), missionId);
-          bus.append({ type: "factory.model_override", scopeType: "mission", scopeId: missionId, source: actor, payload: { role: "reviewer", model: chosenReviewer, previous: f.limits.reviewerModel || "implicitul contului" } });
+          // The approved scope with the new reviewer binding (the spec cannot change after the start): its hash replaces the old one.
+          const scopeHash = hashCanonical(scopeState(missionId, { bindings }).scope);
+          db.prepare("UPDATE factory_missions SET bindings_json = ?, scope_hash = ? WHERE mission_id = ?").run(json(bindings), scopeHash, missionId);
+          bus.append({ type: "factory.model_override", scopeType: "mission", scopeId: missionId, source: actor, payload: { role: "reviewer", model: chosenReviewer,
+            previous: previous?.resolvedAlias || current.limits.reviewerModel || "—", old: summary(previous), new: summary(override), scopeHash: scopeHash.slice(0, 16) } });
         });
       }
       // Resuming after the time limit is the owner's decision to continue: a new window of the mission's duration starts.
@@ -1326,11 +1392,15 @@ export function createFactory(deps) {
     const tasks = missions.tasks(missionId);
     const waitingApproval = tasks.some((t) => t.status === "WAITING_APPROVAL");
     const spec = latestSpec(missionId);
+    // M09: in SPEC_DRAFT the scope exists only with both models fixed and resolvable; otherwise scopeProblems says what is missing.
+    const draft = f.stage === "SPEC_DRAFT" && !(spec.protected?.problems || []).length ? scopeState(missionId) : { scope: null, problems: [] };
     return {
       mission: { ...mission, progress: missions.progress(missionId) }, project: project ? { id: project.id, name: project.name, source: project.source } : null,
       factory: { ...f, waitReason: waitingApproval ? "approval" : f.waitReason },
       spec, specs: specs(missionId).map((s) => ({ version: s.version, status: s.status, sha256: s.sha256, createdAt: s.createdAt, approvedAt: s.approvedAt, problems: s.protected?.problems || [] })),
-      scope: f.stage === "SPEC_DRAFT" && !(spec.protected?.problems || []).length ? scopeFor(missionId) : null,
+      scope: draft.scope, scopeProblems: draft.problems,
+      // What the mission's model steps run with: the approved bindings after the start, the draft's resolution before it.
+      models: Object.fromEntries(["writer", "reviewer"].map((role) => { const b = f.bindings?.[role] || draft.scope?.bindings?.[role] || null; return [role, b ? { model: b.resolvedAlias, effort: b.effort, environment: b.environment, label: bindingLabel(b), approved: Boolean(f.bindings?.[role]) } : null]; })),
       plan: f.plan, tasks: tasks.map((t) => ({ id: t.id, title: t.title, roleId: t.roleId, stage: t.stage, status: t.status, statusReason: t.statusReason, access: t.access })),
       dispatches, runs: runList,
       changeSets: changeSets.map((c) => ({ ...c, diffText: c.status === "CURRENT" ? c.diffText : undefined })),

@@ -4,6 +4,7 @@ import "./styles/app.css";
 import "./styles/m02.css";
 import "./styles/m06.css";
 import "./styles/m07.css";
+import "./styles/m10.css";
 import { startHubConnection, useHub, setState } from "./store.js";
 import { api } from "./api.js";
 import { Shell } from "./shell/Shell.jsx";
@@ -32,6 +33,10 @@ const screens = {
   // M08: project autopilot & company intelligence, and the phone's own screen (rendered without the desktop shell).
   intel: lazy(() => import("./screens/Intel.jsx")),
   m: lazy(() => import("./screens/Mobile.jsx")),
+  // M09: Content Studio (#/studio, #/studio/<tab>, #/studio/<contentProjectId>?sub=…&t=12.5).
+  studio: lazy(() => import("./screens/Studio.jsx")),
+  // M10: Desktop Operator (apps, import folders, plans, recent actions).
+  desktop: lazy(() => import("./screens/Desktop.jsx")),
 };
 
 export function parseRoute(hash) {

@@ -7,6 +7,7 @@ import { fileURLToPath } from "node:url";
 import { loadConfig } from "../server/config.mjs";
 import { createHub } from "../server/hub.mjs";
 import { ATTESTATION_TEXT } from "../server/policy/billing.mjs";
+import { buildDeclaration, applyDeclaration } from "../server/policy/billing-evidence.mjs";
 import { R2_ACCEPT_TEXT } from "../server/policy/isolation.mjs";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -90,7 +91,6 @@ export async function enableLive(hub, { provider = "codex", access = "read-only"
   hub.bus.transaction(() => {
     hub.settings.set("mode", "LIVE_VALIDATION", "test");
     hub.settings.set("executionGate", { status: "open", reason: "test", changedAt: new Date().toISOString(), changedBy: "test" }, "test");
-    hub.settings.set("billingAttestations", { codex: { confirmedAt: new Date().toISOString(), text: ATTESTATION_TEXT.codex }, claude: { confirmedAt: new Date().toISOString(), text: ATTESTATION_TEXT.claude } }, "test");
     if (isolationConsent) hub.settings.set("isolationConsent", { codex: { confirmedAt: new Date().toISOString(), fingerprint: hub.codexIsolation().fingerprint } }, "test");
     // The fixture "Hub" project is a registry project: Codex needs the owner's R2 acceptance on it (M03 host isolation).
     if (r2Accept) hub.settings.set("r2Acceptance", { [project.id]: { confirmedAt: new Date().toISOString(), expiresAt: new Date(Date.now() + 86400000).toISOString(), projectPath: project.path, text: R2_ACCEPT_TEXT } }, "test");
@@ -100,6 +100,7 @@ export async function enableLive(hub, { provider = "codex", access = "read-only"
     const probe = await hub.providers[id].probe({ withUsage: true, withModels: id === "codex" });
     hub.providerState.set(id, { ...probe, installation });
   }
+  declareBillingFixture(hub);
   const grant = hub.bus.transaction(() => hub.grants.create({ provider, projectId: project.id, access, maxAttempts: attempts, maxDurationS: 600, ttlMinutes: 30 }, "test"));
   return { project, grant };
 }
@@ -142,7 +143,6 @@ export async function enrolOwner(t, { activatePolicy = true } = {}) {
 export async function prepareLiveWithoutGrants(hub) {
   hub.bus.transaction(() => {
     hub.settings.set("executionGate", { status: "open", reason: "test", changedAt: new Date().toISOString(), changedBy: "test" }, "test");
-    hub.settings.set("billingAttestations", { codex: { confirmedAt: new Date().toISOString(), text: ATTESTATION_TEXT.codex }, claude: { confirmedAt: new Date().toISOString(), text: ATTESTATION_TEXT.claude } }, "test");
     hub.settings.set("isolationConsent", { codex: { confirmedAt: new Date().toISOString(), fingerprint: hub.codexIsolation().fingerprint } }, "test");
   });
   for (const id of ["codex", "claude"]) {
@@ -150,4 +150,22 @@ export async function prepareLiveWithoutGrants(hub) {
     const probe = await hub.providers[id].probe({ withUsage: true, withModels: id === "codex" });
     hub.providerState.set(id, { ...probe, installation });
   }
+  declareBillingFixture(hub);
+}
+
+/**
+ * M09-A2: billing declarations for the fixture accounts, bound to the pseudonymous identity the fake clients' probes produced
+ * (the fake e-mails, salted). Written directly (test only), as the owner's billing.declare would record them; a later probe of
+ * another account (or a missing probe) therefore blocks exactly as in production.
+ */
+export function declareBillingFixture(hub, { providers = ["codex", "claude"], at = new Date() } = {}) {
+  hub.bus.transaction(() => {
+    let evidence = hub.settings.get("billingEvidence");
+    for (const id of providers) {
+      const identity = hub.providerState.get(id)?.auth?.accountIdentity || null;
+      evidence = applyDeclaration(evidence, id, buildDeclaration({ id: `bde_fixture_${id}`, provider: id, text: ATTESTATION_TEXT[id], identity, now: at, source: "test:fixture",
+        recordedBy: { channel: "test", actor: "test" } }));
+    }
+    hub.settings.set("billingEvidence", evidence, "test", "Fixture billing declarations");
+  });
 }

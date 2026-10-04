@@ -7,13 +7,13 @@ export const V2_ROOT = path.resolve(here, "..");
 export const HUB_ROOT = path.resolve(V2_ROOT, "..");
 export const PROJECTS_ROOT = path.resolve(HUB_ROOT, "..");
 
-export const HUB_VERSION = "2.9.0-m08"; // M08: project autopilot & company intelligence (digital twin, war room, objective plans, board meeting, simulation, performance league, skill evolution, Teach Lega, zero-menu, personal mission control, relocatable data root) // M07: activation (UI–API contract handshake, canonical origin, agent channel for delegated operations, E2E and review inside ifrim-runner, local Romanian STT and speaker verification on the Hub, voice confirmation through server-held utterances, setup orchestrator) // M06: Lega 2.0 (owner session WebAuthn, versioned voice-first policy off by default, Mission Authorization Envelopes with derived grants, project cockpit, intents, interruptions, local voice gate baseline, face) + M06-A pipeline readiness // M05: execution environments (wsl-runner: copy-in, Codex in ifrim-runner, C14-validated export, attestation C1–C17 bound to a fingerprint, policy (b) owner-only), robustness (Stop in QA, RT-07, warm-up, Lega diagnostics) // M04: Sales & Lead Generation (import → identity → evidence → audit → qualification → proposal → draft → Engineering hand-off), DRAFT_ONLY // M03: runtime readiness (explicit model/effort, run timeline, R2/R3 gate) + Software Factory (spec → change set → review → QA → bundle)
+export const HUB_VERSION = "2.11.1-m10"; // 2.11.1: Lega zero-form start (voice authority derived from the owner session for one voice session; no mode or grant by hand). M10: Desktop Operator (authenticated UIA helper, observe → act → verify, Stop / Preiau eu), zero-form operation plans (one confirmation, internal derived authority), Studio completion (project import, import folders, text target, legibility, enforced pre-migration backup). Before: 2.10.0-m09 — M09: Content / Media / Growth department (library, edit plans, local renders, QA, reviews, variants, distribution packs, analytics, Content → Sales) + core corrections (model binding, billing evidence, skill composer, voice path hardening)
 /**
  * The UI–API contract (M07): a built UI carries the number it was built against (vite define __UI_CONTRACT__) and sends it on
  * every mutating request; the server answers 409 UI_STALE when they differ, so new assets never drive an older backend (or the
  * reverse). Bump it whenever a request or response shape the UI depends on changes.
  */
-export const API_CONTRACT = 8;
+export const API_CONTRACT = 10;
 export const DEFAULT_PORT = 8011;
 export const DEFAULT_HOST = "127.0.0.1";
 
@@ -96,8 +96,28 @@ export function loadConfig(overrides = {}, env = process.env) {
     backupDir: overrides.backupDir || (testMode ? path.join(dataDir, "backups") : location.backupDir || path.join(HUB_ROOT, ".ifrim", "BACKUPS", "v2")),
     workDir: overrides.workDir || (testMode ? path.join(dataDir, "work") : location.workDir || path.join(tmpRoot, "v2")),
     attachmentsDir: path.join(dataDir, "v2-attachments"),
+    // M09 Content Studio: the media library lives under the data root (outside the repo and OneDrive once relocated; the "v2-" prefix
+    // makes it move with relocate-data). The database stores paths RELATIVE to mediaDir. Render scratch goes under the work dir.
+    mediaDir: overrides.mediaDir || path.join(dataDir, "v2-media"),
+    mediaWorkDir: overrides.mediaWorkDir || path.join(overrides.workDir || (testMode ? path.join(dataDir, "work") : location.workDir || path.join(tmpRoot, "v2")), "media"),
+    // M09: ffmpeg/ffprobe (and whisper-cli for media transcription). null = resolved on PATH at first use and pinned by version + sha256.
+    // Test mode: a node fixture proxy (tests/fixtures/ffmpeg-proxy.mjs) runs the real binary when present, so the supervisor's
+    // fixture-only rule holds; a fake (tests/fixtures/fake-ffmpeg.mjs) injects failures.
+    mediaTools: Object.freeze({ ffmpeg: overrides.mediaTools?.ffmpeg || env.HUB_V2_FFMPEG || null, ffprobe: overrides.mediaTools?.ffprobe || env.HUB_V2_FFPROBE || null,
+      launcher: overrides.mediaTools?.launcher || null }),
+    // M10: the verified copies taken before a schema migration (never overwritten; see storage/db.mjs).
+    preUpgradeDir: overrides.preUpgradeDir || path.join(dataDir, "pre-upgrade"),
+    // M10 Desktop Operator: the helper binary is built from v2/desktop/operator by `node v2/scripts/build-operator.mjs` into the work
+    // dir (outside the repo and OneDrive once relocated; writers cannot reach it). Tests use a node fixture launcher instead.
+    desktop: Object.freeze({
+      operatorExe: overrides.desktop?.operatorExe || path.join(overrides.workDir || (testMode ? path.join(dataDir, "work") : location.workDir || path.join(tmpRoot, "v2")), "desktop", "IfrimOperator.exe"),
+      launcher: overrides.desktop?.launcher || null,
+    }),
     // M08: a separate UI build can be served by a side instance (simulator) without touching the live Hub's assets.
     webDist: overrides.webDist || env.HUB_V2_WEB_DIST || path.join(V2_ROOT, "web", "dist"),
+    // M09-A3: the skills directory (default v2/skills). Tests point it at a temporary git repository; only versions git-tracked
+    // and clean in the repository holding this folder are ever injected into worker prompts.
+    skillsDir: overrides.skillsDir ? path.resolve(overrides.skillsDir) : null,
     host: DEFAULT_HOST,
     port,
     // M07: the owner's session (WebAuthn RP ID "localhost") lives only on this origin; page navigations to 127.0.0.1 are sent

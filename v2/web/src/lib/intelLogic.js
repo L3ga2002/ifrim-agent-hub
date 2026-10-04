@@ -34,6 +34,25 @@ export const CANDIDATE_TONE = { PROPOSED: "neutral", EVALUATED: "info", APPROVED
 export const OPTION_STATE_RO = { UNDECIDED: "nedecisă", APPROVED: "aprobată", APPROVED_PENDING_EXECUTION: "aprobată · de executat", EXECUTED: "executată (verificat)", REJECTED: "respinsă", DEFERRED: "amânată" };
 export const OPTION_STATE_TONE = { UNDECIDED: "approval", APPROVED: "info", APPROVED_PENDING_EXECUTION: "warn", EXECUTED: "ok", REJECTED: "neutral", DEFERRED: "neutral" };
 
+/**
+ * Decision packages (M08 A/B, M09 MEDIA_A/B/C), in the order they are decided. The heading/intro is shown only before a package is
+ * presented; a presented package shows the title the Hub stored. Each kind waits for the previous one of its chain.
+ */
+export const PACKAGE_ORDER = Object.freeze(["A", "B", "MEDIA_A", "MEDIA_B", "MEDIA_C"]);
+export const PACKAGE_INTRO = Object.freeze({
+  A: { title: "Protecția datelor și a profilului vocal", text: "Inventarul datelor sincronizate (OneDrive) și al accesului la profilul vocal, cu opțiuni reversibile." },
+  B: { title: "Pilotul real pe ProDelivery", text: "Pilotul finit pregătit; se decide după pachetul A." },
+  MEDIA_A: { title: "Studio: instalări și mediu", text: "ffmpeg/ffprobe fixate, serverul OBS WebSocket (activat de tine), fonturile presetelor. Instalările le faci tu; starea se citește din realitate." },
+  MEDIA_B: { title: "Studio: captură live și producție AI limitată", text: "Captura ecranului tău / a Hub-ului live (fiecare sesiune își cere scopul) și un buget AI limitat. Se decide după MEDIA_A." },
+  MEDIA_C: { title: "Studio: conturi și încărcare pe platforme", text: "Pe fiecare platformă: conectarea contului și încărcarea — doar decizie, niciodată aplicată dintr-un click. Se decide după MEDIA_B." },
+});
+/** "MEDIA_A" → "MEDIA A" for headings (the key stays the Hub's). */
+export const packageLabel = (kind) => String(kind || "").replace(/_/g, " ");
+/** The latest presented/decided package of each kind, in decision order (null where none was presented yet). */
+export function latestPackages(packages = []) {
+  return PACKAGE_ORDER.map((kind) => ({ kind, pkg: packages.filter((p) => p.kind === kind && ["PRESENTED", "DECIDED"].includes(p.status)).sort((a, b) => String(b.createdAt).localeCompare(String(a.createdAt)))[0] || null }));
+}
+
 export const BOARD_ITEM_TONE = { PRESENTED: "neutral", PROPOSED: "approval", DECIDED: "ok", DEFERRED: "warn", REJECTED: "neutral", NOTED: "info" };
 export const BOARD_ITEM_RO = { PRESENTED: "informativ", PROPOSED: "de decis", DECIDED: "decis", DEFERRED: "amânat", REJECTED: "respins", NOTED: "notat" };
 

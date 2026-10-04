@@ -36,6 +36,8 @@ function objectiveInput(projectId) {
   const verification = { checks: ["node --test"], acceptance: ["node --test acceptance/limits.mjs"] };
   return {
     projectId, title: "Validare robustă a solicitărilor", criteria: ["Numele din spații e refuzat", "Numele prea lung e detectat"],
+    // M09: the objective names its models; every task's mission is prepared with them explicitly.
+    models: { writer: { model: "gpt-fake-sol" }, reviewer: { model: "sonnet" } },
     tasks: [
       { key: "t2", title: "Limită de lungime pentru nume", workType: "FEATURE", objective: "Adaugă detectarea numelui prea lung (peste 80 de caractere), cu test.", dependsOn: ["t1"],
         inScope: ["src/limits.js", "teste noi"], acceptance: [{ id: "AC-1", text: "Un nume de peste 80 de caractere este detectat", verify: "test", testRef: "acceptance/limits.mjs" }, { id: "AC-2", text: "Limita e explicată și revizuită", verify: "review" }], verification, maxDurationMin: 30 },

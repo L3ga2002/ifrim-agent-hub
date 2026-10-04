@@ -1,5 +1,6 @@
 // Cockpit logic (M06 §06, §12, §13, §19): pure functions shared by the Lega screen and its tests. Every sentence Lega shows
 // here is built from data the Hub returned; nothing is invented (no progress percentage, no test count that was not measured).
+import { opsReplyLines } from "./opsLogic.js";
 
 export const STATE_TONE = Object.freeze({ NO_CONTEXT: "neutral", CONTEXT_AVAILABLE: "neutral", PLAN_READY: "info", PLAN_BLOCKED: "warn", BLOCKED_BY_ISOLATION: "warn",
   AUTHORIZED: "ok", RUNNING: "info", WAITING_OWNER: "approval", READY_FOR_REVIEW: "ok" });
@@ -54,7 +55,26 @@ export function intelLines(r) {
   if (r.view === "cockpit") out.push("Înapoi la cockpit.");
   if (r.startView) out.push(r.startView === "stage" ? "La pornire deschid ecranul complet." : "La pornire deschid cockpit-ul.");
   if (r.armed?.armed) out.push("Fereastra vocală e deschisă: spune „Da, execută planul”.");
+  out.push(...studioLines(r));
   return out.filter(Boolean);
+}
+
+const OP_RO = { move_text: "mut textul", extend_clip: "prelungesc cadrul", trim_clip: "scurtez cadrul", replace_text: "schimb textul", remove_cue: "scot subtitrarea", cut_range: "tai intervalul", edit_cue: "corectez subtitrarea" };
+const secRo = (s) => `${String(Math.round(Number(s) * 10) / 10).replace(".", ",")} s`;
+/** M09: what Lega says about a Studio step — built only from the result (a proposal is never described as applied). */
+export function studioLines(r) {
+  const s = r?.studio;
+  if (!s) return [];
+  if (s.op === "propose") {
+    const what = (s.ops || []).map((o) => OP_RO[o] || o).join(", ");
+    const head = `Am propus o corectură la ${secRo(s.atSec)} pe „${s.title}” (v${s.version})${what ? `: ${what}` : ""}.`;
+    const tail = s.clarification ? ` Am o întrebare: ${s.clarification}` : s.previewValid === false ? " Previzualizarea arată o problemă; o vezi în Studio." : "";
+    // M10: with a plan card the correction is applied (and rendered) by ONE confirmation, not by a Studio form.
+    return [`${head}${tail} ${r.opsPlan ? "Nu am aplicat nimic încă: confirmă planul o dată și aplic, randez ciorna și rulez QA." : "Nu am aplicat nimic: o aplici tu din Studio."}`];
+  }
+  if (s.op === "show" && s.contentProjectId) return [`Deschid „${s.title}” în Studio (${s.stageLabel || s.stage}).`];
+  if (s.op === "open") return [s.contentProjectId ? `Deschid Studio la „${s.title}”.` : "Deschid Studio."];
+  return [];
 }
 
 export function replyFor(response) {
@@ -87,6 +107,7 @@ export function replyFor(response) {
     if (r.recommendations) lines.push(r.recommendations.items.length ? r.recommendations.items.map((x) => x.title).slice(0, 2).join(" · ") : "Nu am recomandări susținute de istoricul tău.");
     if (r.companyMap) lines.push(`Compania: ${r.companyMap.departments.length} departamente, ${r.companyMap.activeRuns} execuții active acum.`);
     lines.push(...intelLines(r));
+    lines.push(...opsReplyLines(r));
   }
   const face = faceCommand(resolved?.steps || []);
   if (face?.shape === "FACE") lines.push("Aceasta e fața mea: linii și particule, nu chipul cuiva.");

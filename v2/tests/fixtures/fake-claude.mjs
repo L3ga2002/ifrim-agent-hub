@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 // Simulated Claude Code CLI (stream-json) for PASS_SIMULATED tests. No network, no model.
 import fs from "node:fs";
+import crypto from "node:crypto";
 
 const argv = process.argv.slice(2);
 const opt = (name, fallback = "") => (argv.find((a) => a.startsWith(`--fake-${name}=`)) || "").split("=").slice(1).join("=") || fallback;
@@ -48,7 +49,10 @@ if (argv.includes("--fake-log-env")) log({ envNames: Object.keys(process.env).so
 if (args[0] === "--version") { console.log("2.1.175 (Claude Code)"); process.exit(0); }
 if (args[0] === "--help") { console.log("--output-format --include-partial-messages --session-id --resume --permission-mode --tools --strict-mcp-config --effort --setting-sources --no-chrome"); process.exit(0); }
 if (args[0] === "auth" && args[1] === "status") {
-  const status = scenario === "apikey" ? { loggedIn: true, authMethod: "api_key", apiProvider: "firstParty" } : { loggedIn: true, authMethod: "claude.ai", apiProvider: "firstParty", email: "x@example.com", subscriptionType: "max" };
+  // M09-A2: "other-account" = another login on the same plan (another e-mail → another pseudonym); "no-email" = a CLI that
+  // prints no identity field (the Hub falls back to the weak tuple basis).
+  const status = scenario === "apikey" ? { loggedIn: true, authMethod: "api_key", apiProvider: "firstParty" }
+    : { loggedIn: true, authMethod: "claude.ai", apiProvider: "firstParty", ...(scenario === "no-email" ? {} : { email: scenario === "other-account" ? "other@example.com" : "x@example.com" }), subscriptionType: "max" };
   console.log(JSON.stringify(status));
   process.exit(0);
 }
@@ -72,11 +76,33 @@ process.stdin.setEncoding("utf8");
 process.stdin.on("data", (chunk) => { prompt += chunk; });
 process.stdin.on("end", async () => {
   const sessionArg = args.indexOf("--session-id") >= 0 ? args[args.indexOf("--session-id") + 1] : args[args.indexOf("--resume") + 1];
-  log({ args, promptLength: prompt.length, promptHead: prompt.slice(0, 200) });
-  // init-apikey: the session reports an API key source; init-fable: the session resolved to a Fable model.
-  out({ type: "system", subtype: "init", session_id: sessionArg, model: scenario === "init-fable" ? "claude-fable-5" : "claude-fake",
+  // M09-A3: the sha256 of the exact prompt received (compared with agent_runs.prompt_sha256), the skill procedure headers and
+  // any test markers (SKILL_MARKER_*), so a test can check what the reviewer side actually got without logging the whole prompt.
+  log({ args, promptLength: prompt.length, promptHead: prompt.slice(0, 200), promptSha256: crypto.createHash("sha256").update(prompt, "utf8").digest("hex"),
+    skillHeaders: [...prompt.matchAll(/^### ([a-z0-9-]+) v(\d+) \(sha ([0-9a-f]{12})\)$/gm)].map((m) => `${m[1]} v${m[2]} ${m[3]}`),
+    skillSection: prompt.includes("Hub skill procedures (approved;"), markers: [...new Set([...prompt.matchAll(/\bSKILL_MARKER_[A-Za-z0-9]+\b/g)].map((m) => m[0]))] });
+  // init-apikey: the session reports an API key source; init-fable: the session resolved to a Fable model; init-model:<id>: the
+  // session reports exactly <id> whatever was asked (a CLI that resolved the alias to another model). Otherwise the model asked
+  // with --model is echoed like the real CLI resolves it (sonnet → claude-sonnet-fake …; a dated id as is); none → "claude-fake".
+  const askedModel = args.indexOf("--model") >= 0 ? String(args[args.indexOf("--model") + 1] || "") : "";
+  const echoed = { sonnet: "claude-sonnet-fake", opus: "claude-opus-fake", haiku: "claude-haiku-fake" }[askedModel.toLowerCase()] || askedModel || "claude-fake";
+  const initModel = scenario === "init-fable" ? "claude-fable-5" : scenario.startsWith("init-model:") ? scenario.slice("init-model:".length) : echoed;
+  out({ type: "system", subtype: "init", session_id: sessionArg, model: initModel,
     apiKeySource: scenario === "init-apikey" ? "ANTHROPIC_API_KEY" : "none", tools: scenario === "init-mcp" ? ["Read", "mcp__cua__click"] : ["Read"],
     mcp_servers: scenario === "init-mcp" ? [{ name: "cua", status: "connected" }] : [], capabilities: [] });
+  // M09-A2 rate_limit_event scenarios: rate-plain = an ordinary report (no credit fields); rate-overage = the CLI reports overage
+  // in use (then would keep going — the Hub must stop it); rate-credits = the plan is exhausted and credits are required;
+  // rate-unknown = only fields the Hub does not know (never a "verified").
+  if (scenario === "rate-plain") out({ type: "rate_limit_event", rate_limit_info: { status: "allowed", resetsAt: 1790000000, rateLimitType: "five_hour", utilization: 0.42 }, session_id: sessionArg });
+  if (scenario === "rate-unknown") out({ type: "rate_limit_event", rate_limit_info: { status: "allowed", creditsOff: true, weirdFlag: "yes" }, session_id: sessionArg });
+  if (scenario === "rate-overage") {
+    out({ type: "rate_limit_event", rate_limit_info: { status: "allowed_warning", resetsAt: 1790000000, rateLimitType: "overage", isUsingOverage: true, overageStatus: "allowed", utilization: 1 }, session_id: sessionArg });
+    await new Promise((r) => setTimeout(r, 5000));
+  }
+  if (scenario === "rate-credits") {
+    out({ type: "rate_limit_event", rate_limit_info: { status: "rejected", resetsAt: 1790000000, rateLimitType: "five_hour", errorCode: "credits_required", canUserPurchaseCredits: true, hasChargeableSavedPaymentMethod: false }, session_id: sessionArg });
+    await new Promise((r) => setTimeout(r, 5000));
+  }
   if (scenario === "billing") {
     out({ type: "system", subtype: "api_retry", attempt: 1, max_retries: 3, retry_delay_ms: 1000, error_status: 402, error: "billing_error", session_id: sessionArg });
     await new Promise((r) => setTimeout(r, 5000));

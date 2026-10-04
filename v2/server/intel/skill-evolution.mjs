@@ -39,6 +39,25 @@ export function lineDiff(a, b) {
   return out;
 }
 
+/**
+ * M09-A3: the candidates whose overlay is in force for a project (ACTIVE / ACTIVE_LIMITED, scope "*" or the project), each with
+ * `stale` = its base version is no longer the skill's current version (a later git import replaced the base). A stale candidate
+ * is never applied: the new base wins until a candidate is proposed on it. Shared by overlayFor and the skill composer.
+ */
+export function activeCandidates(db, projectId) {
+  const rows = db.prepare(`SELECT c.id, c.skill_id, c.base_version, c.candidate_version, c.activation_json, c.decided_by, c.status, s.current_version
+    FROM skill_candidates c JOIN skills s ON s.id = c.skill_id WHERE c.status IN ('ACTIVE_LIMITED','ACTIVE') AND c.candidate_version IS NOT NULL ORDER BY c.updated_at DESC`).all();
+  const out = [];
+  for (const r of rows) {
+    const scope = parse(r.activation_json, {}).projectIds || [];
+    if (!(scope.includes("*") || (projectId && scope.includes(projectId)))) continue;
+    if (out.some((x) => x.skillId === r.skill_id)) continue; // one overlay per skill (activate rolls the others back)
+    out.push({ id: r.id, skillId: r.skill_id, candidateVersion: r.candidate_version, baseVersion: r.base_version, currentVersion: r.current_version,
+      decidedBy: r.decided_by || "", status: r.status, stale: r.base_version !== r.current_version });
+  }
+  return out;
+}
+
 const caseHolds = (body, c) => {
   const t = String(body || "").toLowerCase();
   return (c.mustInclude || []).every((s) => t.includes(String(s).toLowerCase())) && !(c.mustNotInclude || []).some((s) => t.includes(String(s).toLowerCase()));
@@ -109,7 +128,8 @@ export function createSkillEvolution({ db, bus, clock }) {
     const version = (db.prepare("SELECT MAX(version) AS v FROM skill_versions WHERE skill_id = ?").get(c.skillId)?.v || 0) + 1;
     bus.transaction(() => {
       db.prepare(`INSERT INTO skill_versions (skill_id, version, sha256, frontmatter_json, body, files_json, validation_json, created_by, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`)
-        .run(c.skillId, version, sha256(`${base?.frontmatter_json || ""}\n${c.body}`), base?.frontmatter_json || "{}", c.body, base?.files_json || "[]", json({ ok: true, candidate: id, errors: [], warnings: [] }), `candidate:${id}`, iso());
+        .run(c.skillId, version, sha256(`${base?.frontmatter_json || ""}\n${c.body}`), base?.frontmatter_json || "{}", c.body, base?.files_json || "[]",
+          json({ ok: true, candidate: id, errors: [], warnings: [], approvedBy: String(actor).slice(0, 80), storedBodySha256: sha256(c.body) }), `candidate:${id}`, iso());
       setStatus(id, "APPROVED", { candidate_version: version, decided_by: String(actor).slice(0, 80) }, actor);
     });
     return need(id);
@@ -120,6 +140,9 @@ export function createSkillEvolution({ db, bus, clock }) {
     if (!ownerSession) throw new HubError("authentication", "Activarea unui skill se face în sesiunea ta de proprietar");
     const c = need(id);
     if (!["APPROVED", "ACTIVE_LIMITED"].includes(c.status)) throw new HubError("conflict", "Doar un candidat aprobat poate fi activat");
+    // M09-A3: a candidate written on an older base would silently undo the newer base for its scope (it is never applied).
+    const current = db.prepare("SELECT current_version FROM skills WHERE id = ?").get(c.skillId)?.current_version;
+    if (current !== c.baseVersion) throw new HubError("conflict", `Skill-ul a primit o versiune nouă (v${current}) după propunerea pe v${c.baseVersion}: propune din nou pe versiunea curentă`);
     const scope = all ? ["*"] : [...new Set((Array.isArray(projectIds) ? projectIds : []).map(String))].slice(0, 20);
     if (!scope.length) throw new HubError("validation", "Activarea limitată cere cel puțin un proiect (sau „toate”)");
     // One active candidate per skill: another active overlay of the same skill is rolled back first (no stacked overlays).
@@ -149,26 +172,27 @@ export function createSkillEvolution({ db, bus, clock }) {
   function monitor(id, { actor = "hub" } = {}) {
     const c = need(id);
     if (!["ACTIVE_LIMITED", "ACTIVE"].includes(c.status) || !c.candidateVersion) return { candidate: c, action: "none" };
-    // Only runs that actually received the candidate's content count. Skill bodies are not injected into worker prompts yet, so no
-    // run qualifies and nothing is rolled back (or kept) on outcomes the candidate could not have caused (review M08).
-    const runs = db.prepare("SELECT status, error_category, skill_versions_json FROM agent_runs WHERE skill_versions_json LIKE ?").all(`%"${c.skillId}"%`)
-      .filter((r) => parse(r.skill_versions_json, []).some((v) => v.id === c.skillId && v.candidateActive === c.candidateVersion && v.candidateApplied === true));
-    if (!runs.length) return { candidate: c, action: "none", verdict: { runs: 0, measurable: false, reason: "Conținutul skill-urilor nu e încă injectat în instrucțiunile agenților: efectul candidatului nu se poate măsura" } };
-    const infra = new Set(["environment", "transport", "quota", "gate", "export", "auth"]);
-    const failures = runs.filter((r) => r.status !== "completed" && !infra.has(String(r.error_category || ""))).length;
+    // Only FINISHED runs that actually received the candidate's content count (M09-A3: the composer records it per run in
+    // run_skill_usage, mirrored as candidateApplied:true in skill_versions_json); a run still in progress is neither a success
+    // nor a failure. Nothing is rolled back (or kept) on outcomes the candidate could not have caused (review M08).
+    // A run the owner stopped (interrupted) or one refused before the model (blocked / pre_inference) says nothing about the
+    // candidate's text: neither counts — only a completed run or a model-side failure does.
+    const runs = db.prepare(`SELECT r.status, r.error_category FROM run_skill_usage u JOIN agent_runs r ON r.id = u.run_id
+      WHERE u.skill_id = ? AND u.source = 'candidate' AND u.candidate_id = ? AND u.version = ? AND u.applied = 1
+        AND r.status IN ('completed','failed') AND COALESCE(r.pre_inference, 0) = 0`).all(c.skillId, c.id, c.candidateVersion);
+    if (!runs.length) return { candidate: c, action: "none", verdict: { runs: 0, measurable: false, reason: "Niciun run încheiat nu a primit încă acest candidat în instrucțiuni: efectul lui nu se poate măsura" } };
+    const infra = new Set(["environment", "transport", "quota", "gate", "export", "auth", "authentication", "billing", "policy", "validation", "cancelled"]);
+    const failures = runs.filter((r) => r.status === "failed" && !infra.has(String(r.error_category || ""))).length;
     const successes = runs.filter((r) => r.status === "completed").length;
     const verdict = { runs: runs.length, failures, successes };
     if (c.activation.autoRollback && failures >= 2 && successes === 0) { rollback(id, { reason: `regulă aprobată: ${failures} eșecuri, 0 reușite`, actor }); return { candidate: need(id), action: "rolled_back", verdict }; }
     return { candidate: c, action: "none", verdict };
   }
 
-  /** The overlay the run launcher applies: { skillId: version } for this project. */
+  /** The overlay in force for this project: { skillId: version }. A stale candidate (its base was replaced) is left out (M09-A3). */
   function overlayFor(projectId) {
     const out = {};
-    for (const r of db.prepare("SELECT skill_id, candidate_version, activation_json FROM skill_candidates WHERE status IN ('ACTIVE_LIMITED','ACTIVE') AND candidate_version IS NOT NULL").all()) {
-      const scope = parse(r.activation_json, {}).projectIds || [];
-      if (scope.includes("*") || (projectId && scope.includes(projectId))) out[r.skill_id] = r.candidate_version;
-    }
+    for (const c of activeCandidates(db, projectId)) if (!c.stale) out[c.skillId] = c.candidateVersion;
     return out;
   }
 

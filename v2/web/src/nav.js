@@ -1,4 +1,4 @@
-import { AudioLines, LayoutDashboard, MessageSquare, Target, Bot, FolderGit2, Brain, ShieldCheck, Wrench, Plug, Activity, Building2, Network, Cpu, Settings, Briefcase, Radar } from "lucide-react";
+import { AudioLines, LayoutDashboard, MessageSquare, Target, Bot, FolderGit2, Brain, ShieldCheck, Wrench, Plug, Activity, Building2, Network, Cpu, Settings, Briefcase, Radar, Clapperboard, MonitorCog } from "lucide-react";
 
 export const navigate = (path) => { window.location.hash = path; };
 
@@ -16,6 +16,8 @@ export const NAV = [
   { id: "integrations", label: "Integrări", long: "Integrări & abonamente", icon: Plug, key: "9" },
   { id: "health", label: "Sănătate", long: "Utilizare & sănătate", icon: Activity },
   { id: "sales", label: "Vânzări", long: "Vânzări & lead-uri", icon: Briefcase },
+  { id: "studio", label: "Studio", long: "Content Studio", icon: Clapperboard },
+  { id: "desktop", label: "Operator", long: "Operator desktop: aplicații, foldere, planuri", icon: MonitorCog },
   { id: "company", label: "Companie", long: "Companie & Chief of Staff", icon: Building2 },
   { id: "ecosystem", label: "Ecosisteme", long: "Ecosisteme AI: audit, suprafețe, rutare", icon: Network },
   { id: "system", label: "Sistem", long: "Sistem: diagnostic, programări, politici", icon: Cpu },

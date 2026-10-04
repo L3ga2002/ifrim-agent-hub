@@ -25,7 +25,8 @@ async function factoryHub(fixture = "bug-demo", { attempts = 4, port = null } = 
 }
 
 async function prepare(t, fixture, options = {}) {
-  const view = (await dispatch(t.hub, "factory.prepare", { projectId: t.project.id, ...demoSpec(fixture, options) })).result;
+  // M09: the models are explicit (a mission without them is a draft whose scope is incomplete).
+  const view = (await dispatch(t.hub, "factory.prepare", { projectId: t.project.id, ...demoSpec(fixture, options), limits: { writerModel: "gpt-fake-sol", reviewerModel: "sonnet" } })).result;
   return view;
 }
 

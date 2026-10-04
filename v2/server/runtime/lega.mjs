@@ -7,10 +7,17 @@ import { redactText } from "../security/redact.mjs";
 import { parseVoiceCommand } from "../domain/voice.mjs";
 import { LEGA_DEFAULTS, LEGA_SCREENS, LEGA_TARGETS, LEGA_HOWTO, LEGA_WEB_SEARCH_MODES, LEGA_COST_PER_MINUTE_USD, LEGA_TASK_MAX, LEGA_MAX_PENDING_PROPOSALS, validateOfferSdp, speakable } from "../policy/lega-policy.mjs";
 import { catalogEntry } from "../policy/approval-policy.mjs";
+import { normalizeBindingRequest } from "../policy/model-binding.mjs";
 import { readProjectNotes } from "../domain/project-notes.mjs";
 
 const NEGOTIATION_TIMEOUT_MS = 20000;
 const CORROBORATION_MS = 20000;
+/**
+ * M10 zero-form start: at most this many starts with derived authority per owner session in a rolling window. Counted from the
+ * audit events (lega.authority_derived), so a Hub restart does not reset it; it bounds a loop that would spend plan quota.
+ */
+export const DERIVED_START_LIMIT = Object.freeze({ count: 6, windowMs: 15 * 60000 });
+const DERIVED_MAX_S = 1800;
 const FINISHED_MISSION = new Set(["COMPLETED", "CANCELLED", "FAILED"]);
 /** Every piece of company text sent to the model goes through here: redacted, control characters removed, bounded. */
 const clip = (text, max = 200) => {
@@ -32,6 +39,15 @@ function argsProblem(args) {
  * Lega session manager: one voice session at a time, admitted by gate.evaluateVoice (mode, gate, voice grant, consent,
  * billing route, realtime config, isolation, breaker), with a hard duration cap and an idle timeout.
  *
+ * Two admission paths (M10):
+ * - DERIVED (the owner's one click): the start arrives on the owner channel with the server-resolved owner session; the session
+ *   is re-read from the database (active, not expired, not idle, credential active, voice-first policy). The `mode` and
+ *   `voice_grant` checks are then satisfied by an authority derived for THIS voice session only: a voice grant row created and
+ *   consumed in one transaction (born exhausted: no run and no other start can use it), revoked when the session ends, bounded
+ *   by the owner session's remaining time, rate-limited, audited (lega.authority_derived / lega.authority_released). The Hub's
+ *   mode is never written: runs stay refused in BUILD_SAFE. Every other check still decides.
+ * - GRANT (the old path, no session or the legacy policy): LIVE_VALIDATION + a voice grant created by hand, unchanged.
+ *
  * How Lega acts:
  * - deterministic, fail-safe commands from the OWNER's final transcript only. Global ones (Stop All, pause) must be
  *   addressed ("Lega, oprește tot") or explicit ("oprește tot"); a bare "stop" only silences Lega;
@@ -44,7 +60,8 @@ function argsProblem(args) {
  * - results come back as a short, framed, redacted spoken summary (appendSpeech), never code.
  * Audio never passes through the Hub; only final transcript text is kept (redacted), never audio.
  */
-export function createLega({ bus, live, clock, settings, gate, grants, projects, approvals, missions, readApi = {}, missionKinds = [], runsApi, commandsApi, codexRealtime, refreshCodexConfig = () => {}, codexConfig = () => null, timeScale = 1, voiceGateCheck = null }) {
+export function createLega({ bus, live, clock, settings, gate, grants, projects, approvals, missions, readApi = {}, missionKinds = [], runsApi, commandsApi, codexRealtime, refreshCodexConfig = () => {}, codexConfig = () => null, timeScale = 1, voiceGateCheck = null,
+  ownerAuthority = () => ({ ok: false, reason: "unavailable", policyActive: false }) }) {
   const ms = (value) => Math.max(10, Math.round(value * timeScale));
   let session = null; // the single live session
   const pendingRuns = new Map(); // runId -> { sessionId, task }
@@ -58,8 +75,76 @@ export function createLega({ bus, live, clock, settings, gate, grants, projects,
     phase: s.phase || "idle", webSearch: s.webSearch || "disabled",
     // M05 §22: why it ended (detail as the provider said it, redacted), what the provider visibly did, and what happened to
     // the grant attempt (the Hub's counter, not the provider allowance).
-    endDetail: s.endDetail || null, lastError: s.lastError || null, activity: s.activity || null, attempt: s.attempt || null });
+    endDetail: s.endDetail || null, lastError: s.lastError || null, activity: s.activity || null, attempt: s.attempt || null,
+    // M10: how the session was admitted ("owner_session" = derived from the owner's session; "grant" = the old manual path).
+    authority: s.authority || "grant" });
   const legaSettings = () => ({ ...LEGA_DEFAULTS, ...(settings.get("lega") || {}) });
+
+  // ---------------------------------------------------------------- M10: authority derived from the owner session
+  const SESSION_PROBLEM = { "session-ended": "Sesiunea de proprietar s-a închis", "session-idle": "Sesiunea de proprietar a expirat din lipsă de activitate",
+    "credential-revoked": "Autentificatorul sesiunii a fost revocat", "no-session": "Nu există o sesiune de proprietar", unavailable: "Verificarea sesiunii nu e disponibilă" };
+  const needSession = (reason) => new HubError("authentication", `${SESSION_PROBLEM[reason] || "Sesiunea de proprietar nu e validă"}; deschide-o din nou (Windows Hello / cheia ta) ca să pornești Lega`,
+    { data: { needSession: true, reason } });
+  /** Derived starts of this owner session inside the window, read from the audit (a restart does not reset the count). */
+  function recentDerivedStarts(ownerSessionId) {
+    const since = clock().getTime() - DERIVED_START_LIMIT.windowMs;
+    return bus.query({ typePrefix: "lega.authority_derived", limit: 200 }).filter((e) => e.payload?.ownerSessionId === ownerSessionId && Date.parse(e.createdAt) >= since);
+  }
+  /**
+   * The authority of a start: { mode: "derived", maxDurationS } for a valid owner session under the voice-first policy, or
+   * { mode: "grant" } (the old path: no session presented, or the legacy policy). A session that WAS presented but is no longer
+   * valid throws (it never silently falls back to the old path). The duration never outlives the owner session (minus a margin).
+   */
+  function resolveAuthority(ownerSessionId, prefs, { assumeTouched = false } = {}) {
+    if (!ownerSessionId) return { mode: "grant", policyActive: Boolean(ownerAuthority(null)?.policyActive), sessionPresent: false };
+    const check = ownerAuthority(ownerSessionId, { assumeTouched }) || { ok: false, reason: "unavailable" };
+    if (!check.ok) {
+      if (check.reason === "policy-legacy") return { mode: "grant", policyActive: false, sessionPresent: true };
+      throw needSession(check.reason);
+    }
+    const left = Math.floor((check.endsAt - clock().getTime()) / 1000) - 20;
+    const maxDurationS = Math.min(DERIVED_MAX_S, prefs.maxSessionMinutes * 60, left);
+    if (maxDurationS < 60) throw new HubError("authentication", "Sesiunea ta de proprietar se termină în mai puțin de un minut; deschide-o din nou ca să pornești Lega", { data: { needSession: true, reason: "session-ending" } });
+    return { mode: "derived", maxDurationS, policyActive: true, sessionPresent: true };
+  }
+  /** A derived session whose owner session (or the voice-first policy) is gone stops at once; true when it may continue. */
+  function checkDerived(s) {
+    if (!s || s.authority !== "owner_session" || s.status === "ended" || s.stopping) return true;
+    const c = ownerAuthority(s.ownerSessionId) || { ok: false, reason: "unavailable" };
+    if (c.ok) return true;
+    stop(s.id, c.reason === "policy-legacy" ? "policy-deactivated" : "owner-session-ended", "hub").catch(() => {});
+    return false;
+  }
+  /** Seconds until a derived start is allowed again for this owner session (0 = allowed now). */
+  function derivedRetryAfter(ownerSessionId) {
+    const recent = recentDerivedStarts(ownerSessionId);
+    if (recent.length < DERIVED_START_LIMIT.count) return { left: DERIVED_START_LIMIT.count - recent.length, retryAfterS: 0 };
+    const oldest = Math.min(...recent.map((e) => Date.parse(e.createdAt)));
+    return { left: 0, retryAfterS: Math.max(1, Math.ceil((oldest + DERIVED_START_LIMIT.windowMs - clock().getTime()) / 1000)) };
+  }
+  const rateText = (s) => `Ai pornit Lega de ${DERIVED_START_LIMIT.count} ori în ${DERIVED_START_LIMIT.windowMs / 60000} minute; mai încearcă peste ${s} s`;
+  /**
+   * The gate preview for the panel or an intent: never writes, never refreshes the Codex config, never throws. It shows the start as
+   * the POST will see it (that request touches the owner session), the derived-start limit as a check, and why a presented owner
+   * session cannot derive (needSession + reason), so the page offers to reopen the session instead of the old manual path.
+   */
+  function preview({ ownerSessionId = null } = {}) {
+    const prefs = legaSettings();
+    let auth;
+    try { auth = resolveAuthority(ownerSessionId, prefs, { assumeTouched: true }); }
+    catch (error) {
+      auth = { mode: "grant", policyActive: Boolean(ownerAuthority(null)?.policyActive), sessionPresent: false, sessionProblem: error.message,
+        needSession: Boolean(error.details?.needSession), sessionReason: error.details?.reason || null };
+    }
+    const derived = auth.mode === "derived";
+    const decision = gate.evaluateVoice({ voiceActive: Boolean(session && session.status !== "ended"), ownerAuthority: derived ? { sessionId: ownerSessionId, maxDurationS: auth.maxDurationS } : null });
+    const rate = derived ? derivedRetryAfter(ownerSessionId) : null;
+    const checks = rate && rate.left === 0 ? [...decision.checks, { id: "derived_rate", ok: false, detail: rateText(rate.retryAfterS), retryAfterS: rate.retryAfterS }] : decision.checks;
+    const webSearch = LEGA_WEB_SEARCH_MODES.includes(prefs.webSearch) ? prefs.webSearch : "disabled";
+    return { ...decision, checks, allowed: decision.allowed && !(rate && rate.left === 0), authority: derived ? "owner_session" : "grant", policyActive: Boolean(auth.policyActive),
+      sessionProblem: auth.sessionProblem || null, needSession: Boolean(auth.needSession), sessionReason: auth.sessionReason || null, webSearch,
+      maxDurationS: derived ? auth.maxDurationS : null, derivedStartsLeft: rate ? rate.left : null };
+  }
   const executableProjects = () => projects.list().filter((p) => p.executionAllowed).map((p) => ({ id: p.id, name: p.name }));
   const companyProjects = () => projects.list().map((p) => ({ id: p.id, name: p.name }));
   /** A project named by the agent: exact name or slug, case-insensitive. Never a path. */
@@ -88,30 +173,73 @@ export function createLega({ bus, live, clock, settings, gate, grants, projects,
   };
   const clearTimers = (s) => { clearTimeout(s.idleTimer); clearTimeout(s.maxTimer); clearTimeout(s.negotiationTimer); };
 
-  async function start({ sdp, voice, actor = "user" }) {
+  /**
+   * `ownerSessionId` comes only from the command context (ctx.ownerSession: the owner channel's server-resolved cookie, or a test
+   * session). `expectWebSearch` is the web-search setting the page displayed: a stale page is refused instead of starting under a
+   * setting the owner did not see. Synchronous from the checks until `session = current`: two tabs cannot derive twice.
+   */
+  async function start({ sdp, voice, actor = "user", ownerSessionId = null, expectWebSearch = null }) {
     const sdpProblem = validateOfferSdp(sdp);
     if (sdpProblem) throw new HubError("validation", sdpProblem);
     if (session && session.status !== "ended") throw new HubError("conflict", "Lega are deja o sesiune activă");
     const prefs = legaSettings();
     const chosenVoice = voice || prefs.voice;
     const webSearch = LEGA_WEB_SEARCH_MODES.includes(prefs.webSearch) ? prefs.webSearch : "disabled";
-    refreshCodexConfig(); // local config.toml read (key names only), so the realtime check is current
-    const decision = gate.evaluateVoice({ voiceActive: false });
-    if (!decision.allowed) {
-      bus.emit({ type: "lega.session.refused", scopeType: "system", scopeId: "lega", source: actor, payload: { failed: decision.checks.filter((c) => !c.ok).map((c) => c.id) } });
-      throw new HubError("gate", "Poarta a refuzat sesiunea Lega", { data: { checks: decision.checks } });
+    if (expectWebSearch && expectWebSearch !== webSearch) {
+      throw new HubError("conflict", `Setarea „căutare pe internet” s-a schimbat (acum: ${webSearch}); verifică panoul Lega și pornește din nou`, { code: "LEGA_TERMS_CHANGED", data: { webSearch } });
     }
-    const grantId = decision.checks.find((c) => c.id === "voice_grant")?.grantId;
-    const grant = bus.transaction(() => grants.consumeAttempt(grantId));
-    bus.emit({ type: "lega.attempt_consumed", scopeType: "grant", scopeId: grantId, source: actor, payload: { attemptsUsed: grant.attemptsUsed, maxAttempts: grant.maxAttempts } });
+    const auth = resolveAuthority(ownerSessionId, prefs); // throws when a presented owner session is no longer valid
+    const derived = auth.mode === "derived";
+    if (derived) {
+      const rate = derivedRetryAfter(ownerSessionId);
+      if (rate.left === 0) throw new HubError("gate", rateText(rate.retryAfterS), { data: { rateLimited: true, retryAfterS: rate.retryAfterS } });
+    }
+    refreshCodexConfig(); // local config.toml read (key names only), so the realtime check is current
+    const decision = gate.evaluateVoice({ voiceActive: false, ownerAuthority: derived ? { sessionId: ownerSessionId, maxDurationS: auth.maxDurationS } : null });
+    if (!decision.allowed) {
+      const failed = decision.checks.filter((c) => !c.ok).map((c) => c.id);
+      bus.emit({ type: "lega.session.refused", scopeType: "system", scopeId: "lega", source: actor, payload: { failed, authority: derived ? "owner_session" : "grant" } });
+      // What would make the one-click path work (shown by the panel): an open owner session, or the voice-first policy.
+      const onlyAuthority = !derived && failed.length > 0 && failed.every((f) => f === "mode" || f === "voice_grant");
+      const hints = onlyAuthority ? (auth.sessionPresent ? { needPolicy: true } : auth.policyActive ? { needSession: true } : {}) : {};
+      throw new HubError("gate", "Poarta a refuzat sesiunea Lega", { data: { checks: decision.checks, ...hints } });
+    }
     const id = newId("lega");
-    const maxDurationS = Math.min(grant.maxDurationS, prefs.maxSessionMinutes * 60);
     // Empty scratch cwd outside every protected path (.ifrim/tmp is denied to the sandbox): no project file is reachable.
     const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "ifrim-hub-lega-"));
+    let grant, grantId, maxDurationS;
+    try {
+      if (derived) {
+        // ONE transaction: the derived grant is created and its single attempt consumed at once (born exhausted, never usable
+        // by another start or a run), with the audit record of who derived it for which voice session.
+        maxDurationS = auth.maxDurationS;
+        grant = bus.transaction(() => {
+          const g = grants.create({ kind: "voice", provider: "codex", projectId: projects.hub().id, access: "read-only", maxAttempts: 1, maxDurationS,
+            ttlMinutes: Math.max(5, Math.ceil(maxDurationS / 60) + 2), note: `Derivat din sesiunea de proprietar ${ownerSessionId} pentru sesiunea Lega ${id}: o sesiune, revocat la final` }, actor);
+          const used = grants.consumeAttempt(g.id);
+          bus.append({ type: "lega.authority_derived", scopeType: "grant", scopeId: g.id, source: actor,
+            payload: { ownerSessionId, legaSessionId: id, grantId: g.id, maxDurationS, expiresAt: g.expiresAt, mode: settings.get("mode") } });
+          return used;
+        });
+        grantId = grant.id;
+      } else {
+        grantId = decision.checks.find((c) => c.id === "voice_grant")?.grantId;
+        grant = bus.transaction(() => grants.consumeAttempt(grantId));
+        maxDurationS = Math.min(grant.maxDurationS, prefs.maxSessionMinutes * 60);
+      }
+    } catch (error) {
+      try { fs.rmSync(cwd, { recursive: true, force: true }); } catch { /* scratch dir; best effort */ }
+      throw error;
+    }
+    bus.emit({ type: "lega.attempt_consumed", scopeType: "grant", scopeId: grantId, source: actor, payload: { attemptsUsed: grant.attemptsUsed, maxAttempts: grant.maxAttempts } });
     const current = { id, status: "starting", voice: chosenVoice, webSearch, startedAt: clock().toISOString(), maxDurationS, idleTimeoutS: prefs.idleTimeoutS, grantId, cwd,
-      phase: "connecting", abort: new AbortController(), partial: {}, lastOwnerCommand: null, attempt: { consumed: true, refunded: false, rule: "încercare folosită la pornire" } };
+      authority: derived ? "owner_session" : "grant", ownerSessionId: derived ? ownerSessionId : null,
+      // A derived session has a hard end fixed at derivation (inside the owner session), not counted from connected().
+      authorityEndsAt: derived ? clock().getTime() + maxDurationS * 1000 : null,
+      phase: "connecting", abort: new AbortController(), partial: {}, lastOwnerCommand: null,
+      attempt: { consumed: true, refunded: false, rule: derived ? "grant derivat din sesiunea ta: o singură sesiune" : "încercare folosită la pornire" } };
     session = current;
-    bus.emit({ type: "lega.session.starting", scopeType: "system", scopeId: id, source: actor, payload: { grantId, voice: chosenVoice, maxDurationS, webSearch } });
+    bus.emit({ type: "lega.session.starting", scopeType: "system", scopeId: id, source: actor, payload: { grantId, voice: chosenVoice, maxDurationS, webSearch, authority: current.authority } });
     live.publish({ type: "lega.session", session: publicView(current) });
     current.startPromise = codexRealtime.openVoice({ sessionId: id, cwd, offerSdp: sdp, voice: chosenVoice, projects: executableProjects(),
       context: { allProjects: companyProjects(), missionKinds }, webSearch,
@@ -122,7 +250,9 @@ export function createLega({ bus, live, clock, settings, gate, grants, projects,
     } catch (error) {
       // No GPT-Live call was created: the session never happened, so its grant attempt is given back.
       // Bounded like runs: at most maxAttempts refunds per grant, so a start that keeps failing cannot loop on one grant.
-      if (!error.realtimeRequested) current.attempt = refundBounded(grantId, `Lega start failed before voice: ${String(error.message).slice(0, 120)}`);
+      // A derived grant is never refunded (a refund would make it usable again): it is revoked by finalize; a new click derives another.
+      if (current.authority === "owner_session") current.attempt = { consumed: true, refunded: false, rule: `grantul derivat pentru această pornire se revocă; apasă din nou „Pornește Lega” (se derivă altul, în limita de ${DERIVED_START_LIMIT.count} în ${DERIVED_START_LIMIT.windowMs / 60000} minute)` };
+      else if (!error.realtimeRequested) current.attempt = refundBounded(grantId, `Lega start failed before voice: ${String(error.message).slice(0, 120)}`);
       else current.attempt = { consumed: true, refunded: false, rule: "GPT-Live a fost cerut (thread/realtime/start): consumul providerului e necunoscut, încercarea nu se restituie" };
       if (current.status !== "ended" && !current.stopping) {
         finalize(current, error.category === "cancelled" ? "cancelled" : `failed: ${String(error.message).slice(0, 200)}`);
@@ -139,7 +269,7 @@ export function createLega({ bus, live, clock, settings, gate, grants, projects,
     current.status = "connecting";
     current.negotiationTimer = setTimeout(() => { if (current.status === "connecting") stop(id, "negotiation-timeout", "hub").catch(() => {}); }, ms(NEGOTIATION_TIMEOUT_MS));
     live.publish({ type: "lega.session", session: publicView(current) });
-    return { sessionId: id, answerSdp: current.handle.answerSdp, voice: chosenVoice, maxDurationS, idleTimeoutS: current.idleTimeoutS };
+    return { sessionId: id, answerSdp: current.handle.answerSdp, voice: chosenVoice, maxDurationS, idleTimeoutS: current.idleTimeoutS, authority: current.authority };
   }
 
   /** The browser reports that the peer connected (data channel open): the session clock starts here. */
@@ -147,9 +277,12 @@ export function createLega({ bus, live, clock, settings, gate, grants, projects,
     const current = session;
     if (!current || current.id !== id) throw new HubError("not_found", "Sesiune Lega necunoscută");
     if (current.status !== "connecting") return publicView(current);
+    // A derived session never starts its clock without a live owner session behind it.
+    if (current.authority === "owner_session" && !checkDerived(current)) throw new HubError("authentication", "Sesiunea ta de proprietar s-a închis; vocea Lega s-a oprit", { data: { needSession: true } });
     clearTimeout(current.negotiationTimer);
     current.status = "active"; current.connectedAt = clock().toISOString();
-    current.maxTimer = setTimeout(() => stop(current.id, "max-duration", "hub").catch(() => {}), ms(current.maxDurationS * 1000));
+    const capMs = current.authorityEndsAt ? Math.max(0, Math.min(current.maxDurationS * 1000, current.authorityEndsAt - clock().getTime())) : current.maxDurationS * 1000;
+    current.maxTimer = setTimeout(() => stop(current.id, "max-duration", "hub").catch(() => {}), ms(capMs));
     touch(current);
     setPhase(current, "listening");
     bus.emit({ type: "lega.session.connected", scopeType: "system", scopeId: id, source: "user", payload: { voice: current.voice } });
@@ -189,8 +322,21 @@ export function createLega({ bus, live, clock, settings, gate, grants, projects,
     try {
       bus.emit({ type: "lega.session.stopped", scopeType: "system", scopeId: current.id, source: actor, payload: { reason, minutes: Math.round(view.minutes * 100) / 100, costEstimateUsd: view.costEstimateUsd,
         detail: current.endDetail ? redactText(current.endDetail).slice(0, 300) : null, phase: phaseBefore, status: statusBefore,
-        connectedForS: current.connectedAt ? Math.round((new Date(current.endedAt) - new Date(current.connectedAt)) / 1000) : null, activity: current.activity, attempt: current.attempt, grantId: current.grantId } });
+        connectedForS: current.connectedAt ? Math.round((new Date(current.endedAt) - new Date(current.connectedAt)) / 1000) : null, activity: current.activity, attempt: current.attempt, grantId: current.grantId,
+        authority: current.authority || "grant" } });
     } catch { /* the database may already be closed during shutdown */ }
+    // The derived authority ends with its session, whatever the reason (the session is already "ended", so the grant.revoked
+    // event it publishes cannot loop back into a stop).
+    if (current.authority === "owner_session" && current.grantId && !current.authorityReleased) {
+      current.authorityReleased = true;
+      try {
+        bus.transaction(() => {
+          grants.revoke(current.grantId, "hub");
+          bus.append({ type: "lega.authority_released", scopeType: "grant", scopeId: current.grantId, source: "hub",
+            payload: { ownerSessionId: current.ownerSessionId, legaSessionId: current.id, grantId: current.grantId, reason } });
+        });
+      } catch { /* the database may already be closed during shutdown; the next boot closes the audit (recover) */ }
+    }
     live.publish({ type: "lega.session", session: view });
     return view;
   }
@@ -554,6 +700,8 @@ export function createLega({ bus, live, clock, settings, gate, grants, projects,
   /** Answers a `lega.*` tool call from the delegated Codex turn. Must return quickly; effects go through the command bus. */
   async function onToolCall(current, { tool, args }) {
     if (current !== session || current.status !== "active") return { ok: false, text: "Sesiunea Lega nu mai este activă." };
+    // A derived session re-checks its owner session before every tool call (idle / expiry are otherwise noticed on the next tick).
+    if (!checkDerived(current)) return { ok: false, text: "Sesiunea ta de proprietar s-a închis; mă opresc." };
     touch(current);
     bus.emit({ type: "lega.tool", scopeType: "system", scopeId: current.id, source: "lega", payload: { tool: String(tool).slice(0, 60) } });
     if (args !== undefined && (args === null || typeof args !== "object" || Array.isArray(args))) return { ok: false, text: "Argumente invalide." };
@@ -609,15 +757,19 @@ export function createLega({ bus, live, clock, settings, gate, grants, projects,
       if (redactText(task) !== task) return { ok: false, text: "Sarcina conține ceva ce pare un secret; scrie-o tu în Focus." };
       const provider = args?.provider === "claude" ? "claude" : "codex";
       const access = args?.access === "workspace-write" ? "workspace-write" : "read-only";
+      // M09: the model is part of the proposal the owner approves. Claude never runs on the account default (an explicit alias is
+      // required); an empty Codex model is the account default pinned at the start, exactly as for a manual run.
+      const requested = normalizeBindingRequest({ role: "run", provider, model: typeof args?.model === "string" ? args.model : "", effort: typeof args?.effort === "string" ? args.effort : "" });
+      if (!requested.ok) return { ok: false, text: provider === "claude" && !String(args?.model || "").trim() ? "Pentru Claude spune modelul explicit (sonnet, opus sau haiku); nu folosesc modelul implicit al contului." : `Nu pot propune: ${requested.problem}.` };
       // Refuse early when the run could not start anyway (gate, concurrency, grant) instead of after the owner's click.
       const preview = gate.evaluate({ provider, projectId: project.id, access });
       const blocking = preview.checks.filter((c) => !c.ok && c.id !== "workspace_lease");
       if (blocking.length) return { ok: false, text: `Nu pot porni acum: ${blocking.map((c) => `${c.id} (${String(c.detail).slice(0, 80)})`).join("; ")}.` };
       const result = await commandsApi.dispatch({ type: "lega.propose_run", channel: "voice", actor: "lega", intentText: task.slice(0, 500),
-        payload: { projectId: project.id, provider, access, task, legaSessionId: current.id } });
+        payload: { projectId: project.id, provider, access, task, legaSessionId: current.id, ...(requested.request.model ? { model: requested.request.model } : {}), ...(requested.request.effort ? { effort: requested.request.effort } : {}) } });
       if (!result.approvalRequired) return { ok: false, text: "Propunerea nu a putut fi pregătită." };
       live.publish({ type: "lega.proposal", sessionId: current.id, approvalId: result.approval.id, commandId: result.command.id });
-      return { ok: true, text: `Am pregătit sarcina pentru ${provider} pe „${project.name}”. Pornește doar după ce o aprobi pe ecran.` };
+      return { ok: true, text: `Am pregătit sarcina pentru ${provider}${requested.request.model ? ` (${requested.request.model})` : ""} pe „${project.name}”. Pornește doar după ce o aprobi pe ecran.` };
     }
     return { ok: false, text: "Unealtă necunoscută." };
   }
@@ -639,8 +791,16 @@ export function createLega({ bus, live, clock, settings, gate, grants, projects,
     // A live session stops when its preconditions disappear: BUILD_SAFE, its grant revoked, or all grants revoked.
     if (session && session.status !== "ended") {
       const s = session;
-      if (event.type === "settings.changed" && event.payload?.key === "mode" && settings.get("mode") !== "LIVE_VALIDATION") stop(s.id, "mode-changed", "hub").catch(() => {});
+      // A derived session never relied on LIVE_VALIDATION: a plan giving back its own mode hold (source "envelopes", written only by
+      // envelopes.mjs releaseMode/rollback/undo) does not end it; an explicit mode change (owner/user) still does, on both paths.
+      if (event.type === "settings.changed" && event.payload?.key === "mode" && settings.get("mode") !== "LIVE_VALIDATION"
+        && !(s.authority === "owner_session" && event.source === "envelopes")) stop(s.id, "mode-changed", "hub").catch(() => {});
       if ((event.type === "grant.revoked" && event.scopeId === s.grantId) || event.type === "grant.revoked_all") stop(s.id, "grant-revoked", "hub").catch(() => {});
+      // M10: a derived session ends with the owner session (logout, revoke-all, credential revoke) or the voice-first policy.
+      if (["owner.session_ended", "owner.sessions_revoked", "owner.credential_revoked"].includes(event.type)
+        || (event.type === "settings.changed" && event.payload?.key === "ownerPolicy")) checkDerived(s);
+      // A withdrawn or invalid Codex billing declaration stops voice on both paths (a new start would be refused anyway).
+      if (["billing.withdrawn", "billing.reverify_required"].includes(event.type) && event.payload?.provider === "codex") stop(s.id, "billing-withdrawn", "hub").catch(() => {});
     }
     if (!event.runId || !pendingRuns.has(event.runId)) return;
     if (!["run.completed", "run.failed", "run.interrupted", "run.blocked"].includes(event.type)) return;
@@ -656,5 +816,28 @@ export function createLega({ bus, live, clock, settings, gate, grants, projects,
     speak(session, text).catch(() => {});
   });
 
-  return { start, connected, stop, stopAll, trackRun, proposalFailed, announce, state: () => publicView(session), active: () => Boolean(session && session.status !== "ended") };
+  /** Scheduler tick (~15 s): catches an owner session that idled out or expired (no event is published for those). */
+  function tick() { if (session && session.status !== "ended") checkDerived(session); }
+
+  /**
+   * Boot: a derived authority whose session died with the process is closed in the audit (its grant is already exhausted and
+   * expires within minutes; the revoke records it). Nothing is started.
+   */
+  function recover() {
+    const released = new Set(bus.query({ typePrefix: "lega.authority_released", limit: 500 }).map((e) => e.payload?.legaSessionId).filter(Boolean));
+    let closed = 0;
+    for (const e of bus.query({ typePrefix: "lega.authority_derived", limit: 500 })) {
+      const p = e.payload || {};
+      if (!p.legaSessionId || !p.grantId || released.has(p.legaSessionId) || (session && session.id === p.legaSessionId)) continue;
+      bus.transaction(() => {
+        grants.revoke(p.grantId, "hub");
+        bus.append({ type: "lega.authority_released", scopeType: "grant", scopeId: p.grantId, source: "hub", payload: { ownerSessionId: p.ownerSessionId, legaSessionId: p.legaSessionId, grantId: p.grantId, reason: "hub-restart" } });
+      });
+      released.add(p.legaSessionId);
+      closed += 1;
+    }
+    return { closed };
+  }
+
+  return { start, connected, stop, stopAll, trackRun, proposalFailed, announce, preview, tick, recover, state: () => publicView(session), active: () => Boolean(session && session.status !== "ended") };
 }

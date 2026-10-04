@@ -15,8 +15,10 @@ import { HubError } from "../core/errors.mjs";
  * - whisper.cpp v1.9.4 Windows CUDA 12.4 build (release b5130, MIT), large-v3-turbo q8_0 weights (MIT), Romanian forced;
  * - 3D-Speaker CAM++ VoxCeleb speaker model (Apache-2.0) through sherpa-onnx-node 1.13.8 (Apache-2.0, npm, exact version).
  */
+// `cli` (M09): whisper-cli.exe of the SAME Release folder, used per file for media transcription (server/media/transcribe.mjs); it
+// is covered by the same tree hash, so no extra pin is needed.
 export const VOICE_COMPONENTS = Object.freeze({
-  whisper: { version: "1.9.4 (b5130, CUDA 12.4)", dir: "whisper-1.9.4-cu124/Release", exe: "whisper-server.exe", license: "MIT",
+  whisper: { version: "1.9.4 (b5130, CUDA 12.4)", dir: "whisper-1.9.4-cu124/Release", exe: "whisper-server.exe", cli: "whisper-cli.exe", license: "MIT",
     treeSha256: "3c80b88ee4b08d05ad001ab79e07271e327a1413aa324325545378325bde7bbc" },
   stt: { file: "models/ggml-large-v3-turbo-q8_0.bin", bytes: 874188075, sha256: "317eb69c11673c9de1e1f0d459b253999804ec71ac4c23c17ecf5fbe24e259a1", license: "MIT (OpenAI Whisper weights)" },
   sv: { file: "models/3dspeaker_speech_campplus_sv_en_voxceleb_16k.onnx", bytes: 29596978, sha256: "357a834f702b80161e5b981182c038e18553c1f2ca752ed6cec2052365d4129b", license: "Apache-2.0 (3D-Speaker)", dim: 512 },
@@ -25,7 +27,10 @@ export const VOICE_COMPONENTS = Object.freeze({
 const WORKER = path.join(path.dirname(fileURLToPath(import.meta.url)), "voice-worker.mjs");
 const READY_TIMEOUT_MS = 120000;
 const REQUEST_TIMEOUT_MS = 45000;
-const IDLE_STOP_MS = 30 * 60000;
+// M09: 5 min (was 30): whisper-server's unauthenticated port is open only while the engine runs, so an idle engine stops sooner.
+// The next segment starts it again (~10 s, measured live in M07).
+const IDLE_STOP_MS = 5 * 60000;
+export const VOICE_ENGINE_LIMITS = Object.freeze({ READY_TIMEOUT_MS, REQUEST_TIMEOUT_MS, IDLE_STOP_MS });
 /** Words that bias the Romanian transcription toward the Hub's vocabulary (names the owner says). */
 export const STT_PROMPT = "Lega, Hub, ProDelivery, Codex, Claude, misiune, plan, confirm, execută, oprește.";
 
@@ -53,14 +58,23 @@ export async function treeHash(dir) {
   return h.digest("hex");
 }
 
-export function createVoiceEngine({ config, supervisor, clock = () => new Date(), onEvent = () => {} }) {
+/**
+ * `options.randomInferencePath` (or `config.voiceRandomInferencePath === true`): per-start random whisper-server inference path.
+ * OFF by default and NOT verified on the real binary (see voice-worker-lib.mjs); switching it on needs a live check first.
+ * `testHooks.integrity` (test mode only): the result verifyIntegrity() returns, so a refused binary can be simulated.
+ */
+export function createVoiceEngine({ config, supervisor, clock = () => new Date(), onEvent = () => {}, options = {}, testHooks = {} }) {
   const fixture = config.testMode ? config.voiceWorker || null : null;
+  const integrityHook = config.testMode && testHooks.integrity ? testHooks.integrity : null;
+  const randomInferencePath = options.randomInferencePath === true || config.voiceRandomInferencePath === true;
   const root = config.voiceRoot || defaultVoiceRoot();
+  const release = path.join(root, ...VOICE_COMPONENTS.whisper.dir.split("/"));
   const paths = {
-    root, release: path.join(root, ...VOICE_COMPONENTS.whisper.dir.split("/")), whisperExe: path.join(root, ...VOICE_COMPONENTS.whisper.dir.split("/"), VOICE_COMPONENTS.whisper.exe),
+    root, release, whisperExe: path.join(release, VOICE_COMPONENTS.whisper.exe), whisperCli: path.join(release, VOICE_COMPONENTS.whisper.cli),
     stt: path.join(root, ...VOICE_COMPONENTS.stt.file.split("/")), sv: path.join(root, ...VOICE_COMPONENTS.sv.file.split("/")), publicDir: path.join(root, "empty-public"),
   };
-  let state = { status: "stopped", detail: null, gpu: null, readyAt: null, startupMs: null, lastUsedAt: null };
+  let state = { status: "stopped", detail: null, gpu: null, readyAt: null, startupMs: null, lastUsedAt: null, tamper: null };
+  let mediaGpu = null; // M09: the media transcription job currently using the GPU (reported; voice keeps priority)
   let integrity = null; // { ok, problems, checkedAt, stamp }
   let starting = null;
   let seq = 0;
@@ -90,6 +104,7 @@ export function createVoiceEngine({ config, supervisor, clock = () => new Date()
 
   /** SHA-256 of the binaries and models against the pinned values; cached until a file's size or mtime changes. */
   async function verifyIntegrity({ force = false } = {}) {
+    if (integrityHook) { const r = typeof integrityHook === "function" ? await integrityHook() : integrityHook; return { ok: Boolean(r?.ok), fixture: Boolean(fixture), problems: Array.isArray(r?.problems) ? r.problems : [] }; }
     if (fixture) return { ok: true, fixture: true, problems: [] };
     const stamp = stampOf();
     if (!force && integrity && integrity.stamp === stamp) return integrity;
@@ -121,6 +136,20 @@ export function createVoiceEngine({ config, supervisor, clock = () => new Date()
       }
       if (msg.kind === "fatal") { state = { ...state, status: "failed", detail: String(msg.error || "eroare").slice(0, 300), failedAt: clock().toISOString() }; starting?.reject(new HubError("tool", `Motorul vocal local nu a pornit: ${state.detail}`)); return; }
       if (msg.kind === "stt-exited") { state = { ...state, status: "failed", detail: "whisper-server s-a oprit; repornesc la următoarea cerere", failedAt: clock().toISOString() }; return; }
+      // M09: a model-load log line after readiness (someone called whisper-server's unauthenticated /load). Only REPORTED: the
+      // pattern is unverified on the real binary, and the worker answers only its own requests anyway.
+      if (msg.kind === "tamper_suspected") {
+        const at = clock().toISOString();
+        state = { ...state, tamper: { at, line: String(msg.line || "").slice(0, 160), count: Number(msg.count) || (state.tamper?.count || 0) + 1 } };
+        onEvent({ type: "voice.engine_tamper_suspected", at, line: state.tamper.line, count: state.tamper.count });
+        return;
+      }
+      // M09: another process listens on the engine's port; the worker refuses the request and stops itself (restart on demand).
+      if (msg.kind === "listener_mismatch") {
+        state = { ...state, detail: `port nesigur: ${String(msg.reason || "").slice(0, 200)}` };
+        onEvent({ type: "voice.engine_listener_mismatch", reason: String(msg.reason || "").slice(0, 200) });
+        return;
+      }
       const waiter = msg.id && pending.get(msg.id);
       if (waiter) { pending.delete(msg.id); clearTimeout(waiter.timer); if (msg.ok) waiter.resolve(msg); else waiter.reject(new HubError("tool", `Motorul vocal local: ${String(msg.error).slice(0, 200)}`)); }
     };
@@ -146,7 +175,7 @@ export function createVoiceEngine({ config, supervisor, clock = () => new Date()
         const previous = supervisor.get(KEY);
         if (previous && !previous.exited) await supervisor.stop(KEY, { graceMs: 2000 });
         supervisor.forget(KEY);
-        const cfg = Buffer.from(JSON.stringify({ whisperExe: paths.whisperExe, sttModel: paths.stt, svModel: paths.sv, publicDir: paths.publicDir, threads: 6, language: "ro", hubRoot: config.hubRoot })).toString("base64");
+        const cfg = Buffer.from(JSON.stringify({ whisperExe: paths.whisperExe, sttModel: paths.stt, svModel: paths.sv, publicDir: paths.publicDir, threads: 6, language: "ro", hubRoot: config.hubRoot, randomInferencePath })).toString("base64");
         fs.mkdirSync(paths.publicDir, { recursive: true });
         const record = supervisor.start({ key: KEY, label: "voce locală (whisper.cpp + CAM++)", executable: process.execPath, args: [fixture || WORKER, "--config", cfg], cwd: config.hubRoot, env: fixture ? config.voiceWorkerEnv || {} : {}, onStdoutLine: onLineOf(gen) });
         record.exit.then((exit) => {
@@ -202,13 +231,30 @@ export function createVoiceEngine({ config, supervisor, clock = () => new Date()
     if (state.status === "ready" && last && !pending.size && clock().getTime() - new Date(last).getTime() > IDLE_STOP_MS) stop().catch(() => {});
   }
 
+  /**
+   * M09: what the media transcriber needs for the GPU mutex, without starting anything: whether the engine holds its models
+   * (ready / starting / verifying) and how many owner requests are in flight. Voice keeps priority: media waits for in-flight
+   * requests and runs on the CPU while the voice engine is loaded (4 GiB VRAM on this machine).
+   */
+  function activity() {
+    const running = ["ready", "starting", "verifying"].includes(state.status) || Boolean(starting);
+    return { status: state.status, running, pending: pending.size, starting: Boolean(starting) };
+  }
+  /** M09: the media job that uses the GPU now (reported in status); returns the release function. */
+  function holdMediaGpu(label) {
+    const token = { label: String(label || "media").slice(0, 80), since: clock().toISOString() };
+    mediaGpu = token;
+    return () => { if (mediaGpu === token) mediaGpu = null; };
+  }
+
   function status() {
     const inst = installation();
     return { installed: inst.installed, missing: inst.missing, fixture: Boolean(fixture), root: fixture ? null : root, engine: state.status, detail: state.detail, gpu: state.gpu, failedAt: state.failedAt || null,
+      tamper: state.tamper || null, mediaGpu: mediaGpu ? { ...mediaGpu } : null, randomInferencePath,
       integrityStale: Boolean(integrity && !integrity.ok && integrity.stamp !== stampOf()),
       startupMs: state.startupMs, lastUsedAt: state.lastUsedAt, integrity: integrity ? { ok: integrity.ok, problems: integrity.problems, checkedAt: integrity.checkedAt } : null,
       components: { stt: `whisper.cpp ${VOICE_COMPONENTS.whisper.version} · large-v3-turbo q8_0 · română forțată`, sv: `3D-Speaker CAM++ VoxCeleb (${VOICE_COMPONENTS.sv.dim} dim) · sherpa-onnx ${VOICE_COMPONENTS.sherpa.version}` } };
   }
 
-  return { ensure, analyze, stop, tick, status, installation, verifyIntegrity, paths };
+  return { ensure, analyze, stop, tick, status, installation, verifyIntegrity, paths, activity, holdMediaGpu };
 }

@@ -117,7 +117,7 @@ export function DecisionCard({ plan, owner, onConfirmed, onCancel, detailsTick =
       <div ref={ref} tabIndex={-1} className="decision" onKeyDown={(e) => { if (e.key === "Enter" && awaiting && eligible && policyActive && !confirm.pending && e.target === ref.current) confirm.run("keyboard"); }}>
         <p className="lead">{summary.headline}</p>
         <ul className="plain decision-lines">
-          <li>{summary.where}</li><li>{summary.steps}</li><li><strong>{summary.never}</strong></li><li>{summary.stops}</li><li>{summary.cost}</li>
+          <li>{summary.where}</li><li>{summary.steps}</li>{summary.models && <li>{summary.models}</li>}<li><strong>{summary.never}</strong></li><li>{summary.stops}</li><li>{summary.cost}</li>
           {summary.mode && <li>{summary.mode}</li>}<li className="faint">{summary.files}</li><li className="faint">Nivel: {summary.autonomy}</li>
         </ul>
         {summary.blockers?.length > 0 && <Notice tone="warn" title={summary.state === "BLOCKED_BY_ISOLATION" ? "Execuție blocată de izolare" : "Nu poate porni acum"}>{summary.blockers.slice(0, 4).join(" · ")}</Notice>}
@@ -126,12 +126,14 @@ export function DecisionCard({ plan, owner, onConfirmed, onCancel, detailsTick =
           <dl className="kv small">
             <dt>Plan</dt><dd className="mono">{env.id} · hash {env.envelopeHash.slice(0, 16)} · confirmare până la {fmt.time(env.confirmBy)}</dd>
             <dt>Misiuni</dt><dd>{env.body.missions.map((m) => `${m.title} (spec v${m.specVersion}, ${m.workType})`).join(" · ")}</dd>
+            {/* M09: the exact models/efforts the plan binds (the value confirmed is the value dispatched). */}
+            <dt>Modele</dt><dd>{env.body.missions.map((m) => { const x = env.body.models?.[m.missionId]; return x ? `${env.body.missions.length > 1 ? `${m.title}: ` : ""}writer ${x.writer}; reviewer ${x.reviewer}` : `${m.title}: —`; }).join(" · ")}</dd>
             <dt>Rută</dt><dd>{env.body.workspaceScope.route} · {env.body.attestationRefs.map((a) => a.attestationId ? `atestare ${a.attestationId} ${a.status}` : a.environment).join(", ")}</dd>
             <dt>Repository</dt><dd>{env.body.baseSnapshot.kind === "repository" ? `${env.body.baseSnapshot.branch} @ ${String(env.body.baseSnapshot.head).slice(0, 10)}` : env.body.baseSnapshot.kind} · stare {env.body.baseSnapshot.stateHash || "—"}</dd>
             <dt>Roluri</dt><dd>{env.body.allowedRoles.join(", ")} · {env.body.providers.join(", ")}</dd>
             <dt>Rețea</dt><dd>{Object.entries(env.body.networkScope).map(([k, v]) => `${k}: ${v}`).join(" · ")}</dd>
             <dt>Interzis</dt><dd>{env.body.deniedEffects.join(", ")}</dd>
-            {current?.derivedGrants?.length > 0 && <><dt>Granturi derivate</dt><dd>{current.derivedGrants.map((g) => `${g.provider} ${g.access} ${g.attemptsUsed}/${g.maxAttempts} (${g.status})`).join(" · ")}</dd></>}
+            {current?.derivedGrants?.length > 0 && <><dt>Granturi derivate</dt><dd>{current.derivedGrants.map((g) => `${g.provider}${g.model ? ` ${g.model}` : ""} ${g.access} ${g.attemptsUsed}/${g.maxAttempts} (${g.status})`).join(" · ")}</dd></>}
           </dl>
         )}
         {awaiting && (

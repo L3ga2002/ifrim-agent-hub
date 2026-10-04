@@ -1,6 +1,7 @@
 import { HubError } from "../core/errors.mjs";
 import { hashCanonical } from "../core/canonical.mjs";
-import { EFFORT_PROFILES, DEFAULT_PROFILE } from "../policy/run-plan.mjs";
+import { EFFORT_PROFILES, DEFAULT_PROFILE, KNOWN_EFFORTS } from "../policy/run-plan.mjs";
+import { normalizeBindingRequest } from "../policy/model-binding.mjs";
 
 /**
  * Engineering plan and limits (M03 §12). The plan is derived deterministically from the mission template: one writer
@@ -28,14 +29,36 @@ export function normalizeLimits(input = {}) {
   const profile = input.profile || DEFAULT_PROFILE;
   if (!EFFORT_PROFILES[profile]) throw new HubError("validation", `Profil necunoscut ${profile}`);
   out.profile = profile;
+  // M09: the model and effort of each role are validated here (syntax: the role's provider, an allowed Claude model, a known
+  // effort) — an ineligible value (Fable, "best", [1m], an unknown effort) is refused before any plan or approval exists. An empty
+  // model is still accepted for a DRAFT: its scope stays incomplete (no approval, no envelope) until the owner picks one.
+  const problems = [];
   for (const role of ["writer", "reviewer"]) {
-    const model = String(input[`${role}Model`] || "").trim().slice(0, 80);
-    const effort = String(input[`${role}Effort`] || "").trim().slice(0, 20);
-    if (model) out[`${role}Model`] = model;
+    const rawModel = input[`${role}Model`];
+    const rawEffort = input[`${role}Effort`];
+    if ((rawModel !== undefined && rawModel !== null && typeof rawModel !== "string") || (rawEffort !== undefined && rawEffort !== null && typeof rawEffort !== "string")) {
+      problems.push(`${role}: modelul și efortul sunt texte`);
+      continue;
+    }
+    const model = String(rawModel || "").trim();
+    const effort = String(rawEffort || "").trim().toLowerCase();
+    if (!model && !effort) continue;
+    if (!model) {
+      if (KNOWN_EFFORTS.includes(effort)) out[`${role}Effort`] = effort;
+      else problems.push(`Efort necunoscut pentru ${role}: ${effort.slice(0, 20)} (permise: ${KNOWN_EFFORTS.join(", ")})`);
+      continue;
+    }
+    const check = normalizeBindingRequest({ role, model, effort, profile });
+    if (!check.ok) { problems.push(check.problem); continue; }
+    out[`${role}Model`] = check.request.model;
     if (effort) out[`${role}Effort`] = effort;
   }
+  if (problems.length) throw new HubError("validation", `Modele invalide: ${problems.join("; ")}`, { data: { problems } });
   return out;
 }
+
+/** Whether a mission's limits name both models (a mission without them is a DRAFT whose scope is incomplete). */
+export const limitsHaveModels = (limits = {}) => Boolean(String(limits.writerModel || "").trim() && String(limits.reviewerModel || "").trim());
 
 /**
  * Builds the plan for a mission's tasks (as created from the template, in template order). Each step: key, task id, title,
