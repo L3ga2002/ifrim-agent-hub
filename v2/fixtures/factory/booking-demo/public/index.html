@@ -1,0 +1,70 @@
+<!doctype html>
+<html lang="ro">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Programări detailing — demo</title>
+  <link rel="icon" href="data:,">
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+  <p class="demo-banner" data-demo-banner>Date sintetice · demo local</p>
+  <main class="page">
+    <header class="page-head">
+      <h1>Programări detailing</h1>
+      <p class="lead">Alege serviciul, ziua și un interval liber, apoi confirmă programarea.</p>
+    </header>
+
+    <div class="layout">
+      <section class="panel" aria-labelledby="pick-title">
+        <h2 id="pick-title" class="visually-hidden">Serviciul, ziua și intervalul</h2>
+
+        <fieldset class="group">
+          <legend class="group-title">1. Serviciul</legend>
+          <div id="services" class="services"></div>
+        </fieldset>
+
+        <div class="group" role="group" aria-labelledby="days-title">
+          <h3 id="days-title" class="group-title">2. Ziua</h3>
+          <div id="days" class="days"></div>
+        </div>
+
+        <div class="group" role="group" aria-labelledby="slots-title">
+          <h3 id="slots-title" class="group-title">3. Intervalul</h3>
+          <div id="slots" class="slots" aria-busy="true"></div>
+          <p class="hint">Intervalele ocupate sunt gri și nu pot fi alese.</p>
+        </div>
+      </section>
+
+      <section class="panel" aria-labelledby="form-title">
+        <h2 id="form-title" class="group-title">4. Programarea</h2>
+        <form id="booking-form" class="booking-form" novalidate>
+          <p id="chosen" class="chosen" data-empty="true">Niciun interval ales.</p>
+          <p id="err-start" class="field-error" data-for="start"></p>
+
+          <div class="field">
+            <label for="f-name">Nume</label>
+            <input id="f-name" name="name" type="text" autocomplete="off" autocapitalize="words" required minlength="2" maxlength="60" aria-describedby="err-name">
+            <p id="err-name" class="field-error" data-for="name"></p>
+          </div>
+
+          <div class="field">
+            <label for="f-vehicle">Vehicul</label>
+            <input id="f-vehicle" name="vehicle" type="text" autocomplete="off" required minlength="2" maxlength="60" aria-describedby="err-vehicle">
+            <p id="err-vehicle" class="field-error" data-for="vehicle"></p>
+          </div>
+
+          <button type="submit" class="primary">Confirmă programarea</button>
+          <p id="status" class="status" role="status" aria-live="polite" data-state="idle"></p>
+        </form>
+
+        <section class="day-bookings" aria-labelledby="list-title">
+          <h2 id="list-title" class="group-title">Programările zilei</h2>
+          <ul id="day-list" class="day-list"></ul>
+        </section>
+      </section>
+    </div>
+  </main>
+  <script type="module" src="/js/app.mjs"></script>
+</body>
+</html>

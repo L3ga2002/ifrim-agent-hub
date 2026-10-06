@@ -1,0 +1,378 @@
+{
+  "about": "M11 Delivery Room — JSON fixture of the aggregated view contract (GET /api/deliveries/:id, .ifrim/M11_DESIGN.md → DELIVERY ROOM UI). Synthetic data only. Two variants hold ONLY the documented fields — plus plans[].steps[].kind, which the Room reads to tell a capture step: READY (after the reference clip revision: v2 current, v1 superseded with real links) and STALE (the workspace changed after the owner's acceptance). The plan steps (kind + title), the criteria, the start command, the changed files, the label item id and the marker notes are the REAL ones of the booking fixture (server/delivery/template.mjs packageSteps / revisionSteps, server/factory/booking-demo-def.mjs, server/delivery/clip-ir.mjs); m11-ui-logic.test.mjs M11-UI-18 keeps them equal. Used by v2/tests/m11-ui-logic.test.mjs.",
+  "contract": "GET /api/deliveries/:id",
+  "apiContract": 13,
+  "variants": {
+    "READY": {
+      "delivery": {
+        "id": "dlv_mv3k9q2a_7f3a9c1e2b",
+        "title": "Demo de prezentare: programări detailing",
+        "status": "READY",
+        "statusReason": "",
+        "projectId": "prj_mv2x8d1c_a1b2c3d4e5",
+        "projectName": "Demo Livrare — Detailing (programări)",
+        "labels": ["SYNTHETIC_DATA", "LOCAL_ONLY"],
+        "generation": 1,
+        "parentId": null,
+        "childId": null,
+        "verified": { "at": "2026-10-06T09:41:12.000Z", "equal": true, "changedFiles": [] }
+      },
+      "software": {
+        "bundle": { "id": "bnd_mv3k1p0z_0d9e8f7a6b", "shaPrefix": "4c1f0a9be27d", "status": "READY_FOR_OWNER_ACCEPTANCE" },
+        "spec": { "version": 1, "shaPrefix": "9ab3e1c07f52" },
+        "changeSet": {
+          "seq": 2,
+          "shaPrefix": "e07c55d1a3f9",
+          "files": [
+            { "path": "public/js/slots-view.mjs", "status": "modified" },
+            { "path": "test/regression.test.mjs", "status": "added" }
+          ]
+        },
+        "diff": {
+          "text": "--- a/public/js/slots-view.mjs\n+++ b/public/js/slots-view.mjs\n@@ -10,8 +10,8 @@ const NOTES = Object.freeze({ booked: \"Ocupat\", past: \"Trecut\" });\n  */\n export function layoutSlots(slots, { compact = false } = {}) {\n   if (compact) {\n-    // Narrow screens: short cards, only the hour.\n-    return slots.map((s) => ({ start: s.start, time: s.time, available: s.state !== \"booked\", note: \"\" }));\n+    // Narrow screens: short cards. Only a free slot can be chosen, and a slot that cannot says why, exactly as on desktop.\n+    return slots.map((s) => ({ start: s.start, time: s.time, available: s.status === \"free\", note: NOTES[s.status] || \"\" }));\n   }\n   // Desktop: the state is written under the hour.\n   return slots.map((s) => ({ start: s.start, time: s.time, available: s.status === \"free\", note: NOTES[s.status] || \"\" }));\n--- /dev/null\n+++ b/test/regression.test.mjs\n@@ -0,0 +1,19 @@\n+// Test de regresie adăugat odată cu fixul: pe telefon și pe desktop, aceeași regulă pentru fiecare stare a unui interval.\n+import test from \"node:test\";\n+import assert from \"node:assert/strict\";\n+import { layoutSlots } from \"../public/js/slots-view.mjs\";\n+\n+const slots = [\n+  { start: \"2030-01-15T09:00\", time: \"09:00\", status: \"free\" },\n+  { start: \"2030-01-15T09:30\", time: \"09:30\", status: \"booked\" },\n+  { start: \"2030-01-15T10:00\", time: \"10:00\", status: \"past\" },\n+];\n+\n+test(\"regresie: un interval ocupat sau trecut nu poate fi ales nici pe telefon, nici pe desktop\", () => {\n+  for (const compact of [true, false]) {\n+    const view = layoutSlots(slots, { compact });\n+    assert.deepEqual(view.map((entry) => entry.available), [true, false, false], `compact=${compact}`);\n+    assert.deepEqual(view.map((entry) => entry.note), [\"\", \"Ocupat\", \"Trecut\"], `compact=${compact}`);\n+    assert.deepEqual(view.map((entry) => entry.start), slots.map((slot) => slot.start), `compact=${compact}`);\n+  }\n+});\n",
+          "truncated": false
+        },
+        "review": { "id": "frv_mv3k0x7h_5a6b7c8d9e", "verdict": "PASS" },
+        "tests": [
+          { "command": "node --test test/unit.test.mjs", "status": "PASS", "counts": { "tests": 9, "pass": 9, "fail": 0 }, "isolation": "codex sandbox (Windows, fără rețea)", "runner": "hub-runner" },
+          { "command": "node --test test/acceptance.test.mjs", "status": "PASS", "counts": { "tests": 7, "pass": 7, "fail": 0 }, "isolation": "codex sandbox (Windows, fără rețea)", "runner": "hub-runner" }
+        ],
+        "criteria": [
+          { "id": "AC-1", "text": "Pe telefon un interval ocupat apare indisponibil și nu poate fi ales", "verify": "test", "status": "PASS_EVIDENCE", "note": "" },
+          { "id": "AC-2", "text": "Pe desktop afișarea intervalelor rămâne aceeași", "verify": "test", "status": "PASS_EVIDENCE", "note": "" },
+          { "id": "AC-3", "text": "API: 201 + listă + persistență după repornire; 409 pe interval ocupat; 400 pe interval trecut / date invalide", "verify": "test", "status": "PASS_EVIDENCE", "note": "" },
+          { "id": "AC-4", "text": "Cauza și fixul sunt explicate și revizuite independent", "verify": "review", "status": "PASS_REVIEW", "note": "" },
+          { "id": "AC-5", "text": "Preview local pornit din versiunea verificată", "verify": "preview", "status": "PASS_EVIDENCE", "note": "" },
+          { "id": "AC-6", "text": "Fluxul complet în browser la lățimea unui telefon (390 px în Chromium): fără derulare orizontală, un interval ocupat este indisponibil, un interval liber se programează cu succes", "verify": "e2e", "status": "PASS_EVIDENCE", "note": "" },
+          { "id": "AC-7", "text": "Același flux în browser pe desktop (1280×800): un interval ocupat este indisponibil, un interval liber se programează cu succes", "verify": "e2e", "status": "PASS_EVIDENCE", "note": "" }
+        ]
+      },
+      "preview": {
+        "url": "http://127.0.0.1:4620/",
+        "running": true,
+        "key": "factory-preview-mis_mv3jz1aa_0011223344",
+        "startCommand": "node server.js",
+        "shots": [
+          { "criterion": "AC-6", "viewportLabel": "lățimea unui telefon 390 px, Chromium (fără touch)", "status": "PASS", "src": "/api/deliveries/dlv_mv3k9q2a_7f3a9c1e2b/evidence/fev_mv3k0b6m_11aa22bb33/screenshot" },
+          { "criterion": "AC-7", "viewportLabel": "desktop 1280×800", "status": "PASS", "src": "/api/deliveries/dlv_mv3k9q2a_7f3a9c1e2b/evidence/fev_mv3k0c1n_44cc55dd66/screenshot" }
+        ]
+      },
+      "clip": {
+        "master": {
+          "editVersionId": "mev_mv3m2a9c_b2b2b2b2b2",
+          "assetVersionId": "mav_mv3m3f1d_c2c2c2c2c2",
+          "src": "/api/media/files/mav_mv3m3f1d_c2c2c2c2c2",
+          "durationMs": 37400,
+          "label": "ORIGINAL_RECORDING",
+          "qa": {
+            "status": "PASS",
+            "kinds": { "technical": "PASS", "layout": "PASS", "editorial": "PASS", "legibility": "PASS", "factual": "PASS", "rights": "PASS" },
+            "unjustified": []
+          },
+          "creative": "CREATIVE_REVIEW_PENDING",
+          "markers": [
+            { "kind": "chapter", "note": "intro", "ms": 0 },
+            { "kind": "demo", "note": "programare desktop", "ms": 3200 },
+            { "kind": "demo", "note": "programare mobil", "ms": 10000 },
+            { "kind": "evidence", "note": "interval ocupat pe telefon", "ms": 21500 },
+            { "kind": "cta", "note": "final", "ms": 34900 }
+          ],
+          "textItems": [
+            { "id": "l-data", "text": "DATE SINTETICE · DEMO LOCAL", "start": 0, "end": 1122 },
+            { "id": "t-hook", "text": "Programări fără suprapuneri, direct de pe telefon", "start": 0, "end": 90 },
+            { "id": "t-desktop", "text": "Clientul alege serviciul și ora", "start": 96, "end": 240 },
+            { "id": "t-mobile", "text": "Ora ocupată apare ocupată și pe telefon", "start": 645, "end": 810 },
+            { "id": "t-cta", "text": "Hai să discutăm", "start": 1047, "end": 1122 }
+          ]
+        },
+        "vertical": {
+          "editVersionId": "mev_mv3m4k7e_d2d2d2d2d2",
+          "assetVersionId": "mav_mv3m5p3f_e2e2e2e2e2",
+          "src": "/api/media/files/mav_mv3m5p3f_e2e2e2e2e2",
+          "durationMs": 37400,
+          "label": "ORIGINAL_RECORDING",
+          "qa": {
+            "status": "WARN",
+            "kinds": { "technical": "PASS", "layout": "WARN", "editorial": "PASS", "legibility": "PASS", "factual": "PASS", "rights": "PASS" },
+            "unjustified": [
+              { "kind": "layout", "code": "EVIDENCE_REQUIRES_LETTERBOX", "message": "Segmentul de desktop păstrează benzi sus și jos ca să nu taie zona cu dovada." }
+            ]
+          },
+          "creative": "CREATIVE_REVIEW_PENDING",
+          "markers": [
+            { "kind": "chapter", "note": "intro", "ms": 0 },
+            { "kind": "demo", "note": "programare desktop", "ms": 3200 },
+            { "kind": "demo", "note": "programare mobil", "ms": 10000 },
+            { "kind": "evidence", "note": "interval ocupat pe telefon", "ms": 21500 },
+            { "kind": "cta", "note": "final", "ms": 34900 }
+          ],
+          "textItems": [
+            { "id": "l-data", "text": "DATE SINTETICE · DEMO LOCAL", "start": 0, "end": 1122 },
+            { "id": "t-hook", "text": "Programări fără suprapuneri, direct de pe telefon", "start": 0, "end": 90 },
+            { "id": "t-cta", "text": "Hai să discutăm", "start": 1047, "end": 1122 }
+          ]
+        },
+        "rights": {
+          "internal": "allowed",
+          "public": [
+            { "scope": "portfolio", "state": "NOT_RECORDED" },
+            { "scope": "case_study", "state": "NOT_RECORDED" },
+            { "scope": "organic", "state": "NOT_RECORDED" }
+          ]
+        }
+      },
+      "summary": {
+        "documentId": "ddoc_mv3m6t1g_f2f2f2f2f2",
+        "version": 2,
+        "sha": "7d0c3b5a9e1f42866b0a4d1c8e3f5a7b9c0d2e4f6a8b1c3d5e7f9a0b2c4d6e8f",
+        "status": "CURRENT",
+        "sections": [
+          { "id": "context", "heading": "Ce am pregătit", "text": "Demo local pentru prezentare, cu date sintetice; nu este un sistem în producție.", "source": "template", "needsReview": false },
+          { "id": "delivered", "heading": "Ce funcționează (verificat)", "text": "- Pe telefon un interval ocupat apare indisponibil și nu poate fi ales — test automat (AC-1)\n- Fluxul complet în browser la lățimea unui telefon (390 px în Chromium) — E2E (AC-6)\n- Cauza și fixul sunt explicate și revizuite independent — review independent (AC-4)", "source": "template", "needsReview": false },
+          { "id": "fixed", "heading": "Problema rezolvată", "text": "Pe telefon, intervalele ocupate apar libere. Fișiere schimbate: public/js/slots-view.mjs, test/regression.test.mjs.", "source": "template", "needsReview": false },
+          { "id": "not_verified", "heading": "Ce nu am verificat", "text": "- doar Chromium la lățimea unui telefon (fără telefoane reale sau touch)\n- date sintetice", "source": "template", "needsReview": false },
+          { "id": "video", "heading": "Materiale video", "text": "- demo-16x9-v2.mp4 — 37,4 s — ÎNREGISTRARE ORIGINALĂ a demo-ului local — QA PASS\n- demo-9x16-v2.mp4 — 37,4 s — ÎNREGISTRARE ORIGINALĂ a demo-ului local — QA WARN", "source": "template", "needsReview": false },
+          { "id": "scope", "heading": "Ce include", "text": "De stabilit (neconfigurat)", "source": "template", "needsReview": false },
+          { "id": "exclusions", "heading": "Ce nu include", "text": "De stabilit (neconfigurat)", "source": "template", "needsReview": false },
+          { "id": "price_terms", "heading": "Preț și termen", "text": "Preț: De stabilit (neconfigurat)\nTermen: De stabilit (neconfigurat)", "source": "template", "needsReview": false },
+          { "id": "next_step", "heading": "Următorul pas", "text": "O discuție de 20 de minute, la tine la atelier, în care stabilim ce vă este util.", "source": "owner", "needsReview": false },
+          { "id": "provenance", "heading": "Trasabilitate", "text": "Pachet bnd_mv3k1p0z_0d9e8f7a6b · sha 4c1f0a9be27d · change set e07c55d1a3f9 · specificația v1 · generat 2026-10-06 09:40", "source": "template", "needsReview": false }
+        ],
+        "warnings": ["Preț și termen neconfigurate: apare „De stabilit (neconfigurat)”.", "Date sintetice: demo local, nu un sistem în producție."],
+        "claimsToVerify": ["Următorul pas (editat de tine): „O discuție de 20 de minute, la tine la atelier…”"],
+        "basis": { "bundleId": "bnd_mv3k1p0z_0d9e8f7a6b", "bundleShaPrefix": "4c1f0a9be27d", "serviceRefs": [] },
+        "approval": null,
+        "exports": {
+          "md": { "file": "rezumat-v2.md", "sha256": "1a2b3c4d5e6f708192a3b4c5d6e7f8091a2b3c4d5e6f708192a3b4c5d6e7f809" },
+          "html": { "file": "rezumat-v2.html", "sha256": "9f8e7d6c5b4a39281706f5e4d3c2b1a09f8e7d6c5b4a39281706f5e4d3c2b1a0" }
+        }
+      },
+      "observations": [
+        { "kind": "qa", "severity": "warning", "text": "Varianta verticală: segmentul de desktop păstrează benzi sus și jos ca să nu taie zona cu dovada.", "ref": { "kind": "clip", "role": "vertical", "ms": 3200 } },
+        { "kind": "claim", "severity": "info", "text": "De verificat: „Următorul pas” este textul tău, nu al șablonului.", "ref": { "kind": "summary", "id": "next_step" } },
+        { "kind": "disclosure", "severity": "info", "text": "Clipul nu are sunet; verificarea s-a făcut doar în Chromium, la lățimea unui telefon (390 px), nu pe telefoane reale.", "ref": null }
+      ],
+      "decisions": {
+        "software": "PENDING",
+        "creativeMaster": "PENDING",
+        "creativeVertical": "PENDING",
+        "rightsPublic": "NOT_RECORDED",
+        "summaryReady": "PENDING",
+        "publishing": "OFF"
+      },
+      "plans": [
+        {
+          "id": "opp_mv3k9r5b_1010101010",
+          "kind": "delivery.package",
+          "status": "DONE",
+          "steps": [
+            { "seq": 1, "kind": "delivery.prepare", "title": "Verifică pachetul software și pregătește proiectul de conținut al livrării", "status": "DONE" },
+            { "seq": 2, "kind": "delivery.preview.ensure", "title": "Pornește sau refolosește preview-ul versiunii verificate (http://127.0.0.1:4620)", "status": "DONE" },
+            { "seq": 3, "kind": "delivery.capture", "title": "Filmează demo-ul pe desktop (1280×720, date sintetice, browser izolat)", "status": "DONE" },
+            { "seq": 4, "kind": "delivery.capture", "title": "Filmează demo-ul la lățimea unui telefon (390 px) în Chromium (date sintetice, browser izolat)", "status": "DONE" },
+            { "seq": 5, "kind": "delivery.edit.build", "title": "Construiește montajul 16:9 din cele două capturi (fără model)", "status": "DONE" },
+            { "seq": 6, "kind": "media.render", "title": "Randează clipul 16:9 și rulează QA automat (uz intern)", "status": "DONE" },
+            { "seq": 7, "kind": "media.variant.render", "title": "Derivă varianta verticală 9:16, randeaz-o și rulează QA automat (uz intern)", "status": "DONE" },
+            { "seq": 8, "kind": "delivery.export", "title": "Exportă local cele două clipuri în demo-programari-demo-livrare-detailing-programari-20261006 (fără publicare)", "status": "DONE" },
+            { "seq": 9, "kind": "delivery.summary.render", "title": "Scrie rezumatul comercial v1 (Markdown + HTML, fără prețuri inventate)", "status": "DONE" },
+            { "seq": 10, "kind": "delivery.finish", "title": "Leagă dovezile de versiunea verificată și încheie livrarea", "status": "DONE" }
+          ]
+        },
+        {
+          "id": "opp_mv3m1c8d_2020202020",
+          "kind": "delivery.revise",
+          "status": "DONE",
+          "steps": [
+            { "seq": 1, "kind": "delivery.revise.apply", "title": "Aplică revizuirea pe montaj (versiune nouă, cea veche rămâne)", "status": "DONE" },
+            { "seq": 2, "kind": "media.render", "title": "Randează clipul 16:9 revizuit și rulează QA automat (uz intern)", "status": "DONE" },
+            { "seq": 3, "kind": "media.variant.render", "title": "Reface varianta verticală 9:16 din montajul revizuit, cu QA automat (uz intern)", "status": "DONE" },
+            { "seq": 4, "kind": "delivery.export", "title": "Exportă local versiunile noi în demo-programari-demo-livrare-detailing-programari-20261006 (fără suprascriere, fără publicare)", "status": "DONE" },
+            { "seq": 5, "kind": "delivery.summary.render", "title": "Actualizează doar secțiunea video a rezumatului", "status": "DONE" },
+            { "seq": 6, "kind": "delivery.finish", "title": "Leagă versiunile noi și marchează-le pe cele vechi ca înlocuite", "status": "DONE" }
+          ]
+        }
+      ],
+      "revisions": [
+        { "id": "drv_mv3m0a2b_3030303030", "text": "Site-ul e bine. Clipul este prea tehnic; după secunda zece arată direct programarea.", "status": "APPLIED", "classes": ["feedback", "tone", "clip"], "planId": "opp_mv3m1c8d_2020202020" }
+      ],
+      "history": [
+        { "kind": "bundle", "role": "", "id": "dli_mv3ka001_aa00000001", "status": "CURRENT", "staleReason": "", "supersedesId": null, "createdAt": "2026-10-06T08:58:00.000Z" },
+        { "kind": "e2e_shot", "role": "AC-6", "id": "dli_mv3ka002_aa00000002", "status": "CURRENT", "staleReason": "", "supersedesId": null, "createdAt": "2026-10-06T08:58:01.000Z" },
+        { "kind": "e2e_shot", "role": "AC-7", "id": "dli_mv3ka003_aa00000003", "status": "CURRENT", "staleReason": "", "supersedesId": null, "createdAt": "2026-10-06T08:58:02.000Z" },
+        { "kind": "capture", "role": "desktop", "id": "dli_mv3ka004_aa00000004", "status": "CURRENT", "staleReason": "", "supersedesId": null, "createdAt": "2026-10-06T09:02:00.000Z" },
+        { "kind": "capture", "role": "mobile", "id": "dli_mv3ka005_aa00000005", "status": "CURRENT", "staleReason": "", "supersedesId": null, "createdAt": "2026-10-06T09:04:00.000Z" },
+        { "kind": "brief", "role": "", "id": "dli_mv3ka006_aa00000006", "status": "SUPERSEDED", "staleReason": "", "supersedesId": null, "createdAt": "2026-10-06T09:05:00.000Z" },
+        { "kind": "edit", "role": "master", "id": "dli_mv3ka007_aa00000007", "status": "SUPERSEDED", "staleReason": "", "supersedesId": null, "createdAt": "2026-10-06T09:05:30.000Z" },
+        { "kind": "render", "role": "master", "id": "dli_mv3ka008_aa00000008", "status": "SUPERSEDED", "staleReason": "", "supersedesId": null, "createdAt": "2026-10-06T09:08:00.000Z" },
+        { "kind": "variant", "role": "vertical", "id": "dli_mv3ka009_aa00000009", "status": "SUPERSEDED", "staleReason": "", "supersedesId": null, "createdAt": "2026-10-06T09:09:00.000Z" },
+        { "kind": "render", "role": "vertical", "id": "dli_mv3ka010_aa00000010", "status": "SUPERSEDED", "staleReason": "", "supersedesId": null, "createdAt": "2026-10-06T09:12:00.000Z" },
+        { "kind": "qa", "role": "master", "id": "dli_mv3ka011_aa00000011", "status": "SUPERSEDED", "staleReason": "", "supersedesId": null, "createdAt": "2026-10-06T09:08:30.000Z" },
+        { "kind": "qa", "role": "vertical", "id": "dli_mv3ka012_aa00000012", "status": "SUPERSEDED", "staleReason": "", "supersedesId": null, "createdAt": "2026-10-06T09:12:30.000Z" },
+        { "kind": "export", "role": "master", "id": "dli_mv3ka013_aa00000013", "status": "SUPERSEDED", "staleReason": "", "supersedesId": null, "createdAt": "2026-10-06T09:13:00.000Z" },
+        { "kind": "export", "role": "vertical", "id": "dli_mv3ka014_aa00000014", "status": "SUPERSEDED", "staleReason": "", "supersedesId": null, "createdAt": "2026-10-06T09:13:01.000Z" },
+        { "kind": "brief", "role": "", "id": "dli_mv3mb006_bb00000006", "status": "CURRENT", "staleReason": "", "supersedesId": "dli_mv3ka006_aa00000006", "createdAt": "2026-10-06T09:30:00.000Z" },
+        { "kind": "edit", "role": "master", "id": "dli_mv3mb007_bb00000007", "status": "CURRENT", "staleReason": "", "supersedesId": "dli_mv3ka007_aa00000007", "createdAt": "2026-10-06T09:30:10.000Z" },
+        { "kind": "render", "role": "master", "id": "dli_mv3mb008_bb00000008", "status": "CURRENT", "staleReason": "", "supersedesId": "dli_mv3ka008_aa00000008", "createdAt": "2026-10-06T09:33:00.000Z" },
+        { "kind": "variant", "role": "vertical", "id": "dli_mv3mb009_bb00000009", "status": "CURRENT", "staleReason": "", "supersedesId": "dli_mv3ka009_aa00000009", "createdAt": "2026-10-06T09:34:00.000Z" },
+        { "kind": "render", "role": "vertical", "id": "dli_mv3mb010_bb00000010", "status": "CURRENT", "staleReason": "", "supersedesId": "dli_mv3ka010_aa00000010", "createdAt": "2026-10-06T09:37:00.000Z" },
+        { "kind": "qa", "role": "master", "id": "dli_mv3mb011_bb00000011", "status": "CURRENT", "staleReason": "", "supersedesId": "dli_mv3ka011_aa00000011", "createdAt": "2026-10-06T09:33:30.000Z" },
+        { "kind": "qa", "role": "vertical", "id": "dli_mv3mb012_bb00000012", "status": "CURRENT", "staleReason": "", "supersedesId": "dli_mv3ka012_aa00000012", "createdAt": "2026-10-06T09:37:30.000Z" },
+        { "kind": "export", "role": "master", "id": "dli_mv3mb013_bb00000013", "status": "CURRENT", "staleReason": "", "supersedesId": "dli_mv3ka013_aa00000013", "createdAt": "2026-10-06T09:38:00.000Z" },
+        { "kind": "export", "role": "vertical", "id": "dli_mv3mb014_bb00000014", "status": "CURRENT", "staleReason": "", "supersedesId": "dli_mv3ka014_aa00000014", "createdAt": "2026-10-06T09:38:01.000Z" }
+      ]
+    },
+    "STALE": {
+      "delivery": {
+        "id": "dlv_mv3k9q2a_7f3a9c1e2b",
+        "title": "Demo de prezentare: programări detailing",
+        "status": "STALE",
+        "statusReason": "software-ul s-a schimbat: workspace-ul diferă de versiunea testată (2 fișiere)",
+        "projectId": "prj_mv2x8d1c_a1b2c3d4e5",
+        "projectName": "Demo Livrare — Detailing (programări)",
+        "labels": ["SYNTHETIC_DATA", "LOCAL_ONLY"],
+        "generation": 1,
+        "parentId": null,
+        "childId": null,
+        "verified": { "at": "2026-10-06T11:15:40.000Z", "equal": false, "changedFiles": ["public/js/app.mjs", "public/styles.css"] }
+      },
+      "software": {
+        "bundle": { "id": "bnd_mv3k1p0z_0d9e8f7a6b", "shaPrefix": "4c1f0a9be27d", "status": "OWNER_ACCEPTED" },
+        "spec": { "version": 1, "shaPrefix": "9ab3e1c07f52" },
+        "changeSet": {
+          "seq": 2,
+          "shaPrefix": "e07c55d1a3f9",
+          "files": [
+            { "path": "public/js/slots-view.mjs", "status": "modified" },
+            { "path": "test/regression.test.mjs", "status": "added" }
+          ]
+        },
+        "diff": { "text": "--- a/public/js/slots-view.mjs\n+++ b/public/js/slots-view.mjs\n@@ -10,8 +10,8 @@ const NOTES = Object.freeze({ booked: \"Ocupat\", past: \"Trecut\" });\n  */\n export function layoutSlots(slots, { compact = false } = {}) {\n   if (compact) {\n-    // Narrow screens: short cards, only the hour.\n-    return slots.map((s) => ({ start: s.start, time: s.time, available: s.state !== \"booked\", note: \"\" }));\n+    // Narrow screens: short cards. Only a free slot can be chosen, and a slot that cannot says why, exactly as on desktop.\n+    return slots.map((s) => ({ start: s.start, time: s.time, available: s.status === \"free\", note: NOTES[s.status] || \"\" }));\n   }\n   // Desktop: the state is written under the hour.\n   return slots.map((s) => ({ start: s.start, time: s.time, available: s.status === \"free\", note: NOTES[s.status] || \"\" }));\n--- /dev/null\n+++ b/test/regression.test.mjs\n@@ -0,0 +1,19 @@\n+// Test de regresie adăugat odată cu fixul: pe telefon și pe desktop, aceeași regulă pentru fiecare stare a unui interval.\n+import test from \"node:test\";\n+import assert from \"node:assert/strict\";\n+import { layoutSlots } from \"../public/js/slots-view.mjs\";\n+\n+const slots = [\n+  { start: \"2030-01-15T09:00\", time: \"09:00\", status: \"free\" },\n+  { start: \"2030-01-15T09:30\", time: \"09:30\", status: \"booked\" },\n+  { start: \"2030-01-15T10:00\", time: \"10:00\", status: \"past\" },\n+];\n+\n+test(\"regresie: un interval ocupat sau trecut nu poate fi ales nici pe telefon, nici pe desktop\", () => {\n+  for (const compact of [true, false]) {\n+    const view = layoutSlots(slots, { compact });\n+    assert.deepEqual(view.map((entry) => entry.available), [true, false, false], `compact=${compact}`);\n+    assert.deepEqual(view.map((entry) => entry.note), [\"\", \"Ocupat\", \"Trecut\"], `compact=${compact}`);\n+    assert.deepEqual(view.map((entry) => entry.start), slots.map((slot) => slot.start), `compact=${compact}`);\n+  }\n+});\n", "truncated": false },
+        "review": { "id": "frv_mv3k0x7h_5a6b7c8d9e", "verdict": "PASS" },
+        "tests": [
+          { "command": "node --test test/unit.test.mjs", "status": "PASS", "counts": { "tests": 9, "pass": 9, "fail": 0 }, "isolation": "codex sandbox (Windows, fără rețea)", "runner": "hub-runner" },
+          { "command": "node --test test/acceptance.test.mjs", "status": "PASS", "counts": { "tests": 7, "pass": 7, "fail": 0 }, "isolation": "codex sandbox (Windows, fără rețea)", "runner": "hub-runner" }
+        ],
+        "criteria": [
+          { "id": "AC-1", "text": "Pe telefon un interval ocupat apare indisponibil și nu poate fi ales", "verify": "test", "status": "PASS_EVIDENCE", "note": "" },
+          { "id": "AC-6", "text": "Fluxul complet în browser la lățimea unui telefon (390 px în Chromium): fără derulare orizontală, un interval ocupat este indisponibil, un interval liber se programează cu succes", "verify": "e2e", "status": "PASS_EVIDENCE", "note": "" },
+          { "id": "AC-7", "text": "Același flux în browser pe desktop (1280×800): un interval ocupat este indisponibil, un interval liber se programează cu succes", "verify": "e2e", "status": "PASS_EVIDENCE", "note": "" }
+        ]
+      },
+      "preview": {
+        "url": "http://127.0.0.1:4620/",
+        "running": false,
+        "key": "factory-preview-mis_mv3jz1aa_0011223344",
+        "startCommand": "node server.js",
+        "shots": [
+          { "criterion": "AC-6", "viewportLabel": "lățimea unui telefon 390 px, Chromium (fără touch)", "status": "PASS", "src": "/api/deliveries/dlv_mv3k9q2a_7f3a9c1e2b/evidence/fev_mv3k0b6m_11aa22bb33/screenshot" },
+          { "criterion": "AC-7", "viewportLabel": "desktop 1280×800", "status": "PASS", "src": "/api/deliveries/dlv_mv3k9q2a_7f3a9c1e2b/evidence/fev_mv3k0c1n_44cc55dd66/screenshot" }
+        ]
+      },
+      "clip": {
+        "master": {
+          "editVersionId": "mev_mv3m2a9c_b2b2b2b2b2",
+          "assetVersionId": "mav_mv3m3f1d_c2c2c2c2c2",
+          "src": "/api/media/files/mav_mv3m3f1d_c2c2c2c2c2",
+          "durationMs": 37400,
+          "label": "ORIGINAL_RECORDING",
+          "qa": {
+            "status": "PASS",
+            "kinds": { "technical": "PASS", "layout": "PASS", "editorial": "PASS", "legibility": "PASS", "factual": "PASS", "rights": "PASS" },
+            "unjustified": []
+          },
+          "creative": "CREATIVE_APPROVED",
+          "markers": [
+            { "kind": "chapter", "note": "intro", "ms": 0 },
+            { "kind": "demo", "note": "programare mobil", "ms": 10000 }
+          ],
+          "textItems": [
+            { "id": "l-data", "text": "DATE SINTETICE · DEMO LOCAL", "start": 0, "end": 1122 },
+            { "id": "t-hook", "text": "Programări fără suprapuneri, direct de pe telefon", "start": 0, "end": 90 }
+          ]
+        },
+        "vertical": {
+          "editVersionId": "mev_mv3m4k7e_d2d2d2d2d2",
+          "assetVersionId": "mav_mv3m5p3f_e2e2e2e2e2",
+          "src": "/api/media/files/mav_mv3m5p3f_e2e2e2e2e2",
+          "durationMs": 37400,
+          "label": "ORIGINAL_RECORDING",
+          "qa": {
+            "status": "WARN",
+            "kinds": { "technical": "PASS", "layout": "WARN", "editorial": "PASS", "legibility": "PASS", "factual": "PASS", "rights": "PASS" },
+            "unjustified": [
+              { "kind": "layout", "code": "EVIDENCE_REQUIRES_LETTERBOX", "message": "Segmentul de desktop păstrează benzi sus și jos ca să nu taie zona cu dovada." }
+            ]
+          },
+          "creative": "CREATIVE_REVIEW_PENDING",
+          "markers": [],
+          "textItems": []
+        },
+        "rights": {
+          "internal": "allowed",
+          "public": [
+            { "scope": "portfolio", "state": "NOT_RECORDED" }
+          ]
+        }
+      },
+      "summary": {
+        "documentId": "ddoc_mv3m6t1g_f2f2f2f2f2",
+        "version": 2,
+        "sha": "7d0c3b5a9e1f42866b0a4d1c8e3f5a7b9c0d2e4f6a8b1c3d5e7f9a0b2c4d6e8f",
+        "status": "STALE",
+        "sections": [
+          { "id": "context", "heading": "Ce am pregătit", "text": "Demo local pentru prezentare, cu date sintetice; nu este un sistem în producție.", "source": "template", "needsReview": false },
+          { "id": "price_terms", "heading": "Preț și termen", "text": "Preț: De stabilit (neconfigurat)\nTermen: De stabilit (neconfigurat)", "source": "template", "needsReview": false },
+          { "id": "next_step", "heading": "Următorul pas", "text": "O discuție de 20 de minute, la tine la atelier, în care stabilim ce vă este util.", "source": "owner", "needsReview": true }
+        ],
+        "warnings": ["Rezumatul descrie versiunea veche a software-ului."],
+        "claimsToVerify": [],
+        "basis": { "bundleId": "bnd_mv3k1p0z_0d9e8f7a6b", "bundleShaPrefix": "4c1f0a9be27d", "serviceRefs": [] },
+        "approval": { "kind": "PRESENTATION_READY", "sha": "7d0c3b5a9e1f42866b0a4d1c8e3f5a7b9c0d2e4f6a8b1c3d5e7f9a0b2c4d6e8f", "at": "2026-10-06T10:02:00.000Z" },
+        "exports": {
+          "md": { "file": "rezumat-v2.md", "sha256": "1a2b3c4d5e6f708192a3b4c5d6e7f8091a2b3c4d5e6f708192a3b4c5d6e7f809" },
+          "html": { "file": "rezumat-v2.html", "sha256": "9f8e7d6c5b4a39281706f5e4d3c2b1a09f8e7d6c5b4a39281706f5e4d3c2b1a0" }
+        }
+      },
+      "observations": [
+        { "kind": "stale", "severity": "error", "text": "Workspace-ul s-a schimbat după versiunea testată: clipurile și rezumatul nu mai dovedesc codul de acum.", "ref": null }
+      ],
+      "decisions": {
+        "software": "ACCEPTED",
+        "creativeMaster": "CREATIVE_APPROVED",
+        "creativeVertical": "PENDING",
+        "rightsPublic": "NOT_RECORDED",
+        "summaryReady": "STALE",
+        "publishing": "OFF"
+      },
+      "plans": [
+        {
+          "id": "opp_mv3k9r5b_1010101010",
+          "kind": "delivery.package",
+          "status": "DONE",
+          "steps": [
+            { "seq": 1, "kind": "delivery.prepare", "title": "Verifică pachetul software și pregătește proiectul de conținut al livrării", "status": "DONE" },
+            { "seq": 2, "kind": "delivery.preview.ensure", "title": "Pornește sau refolosește preview-ul versiunii verificate (http://127.0.0.1:4620)", "status": "DONE" },
+            { "seq": 3, "kind": "delivery.capture", "title": "Filmează demo-ul pe desktop (1280×720, date sintetice, browser izolat)", "status": "DONE" },
+            { "seq": 4, "kind": "delivery.capture", "title": "Filmează demo-ul la lățimea unui telefon (390 px) în Chromium (date sintetice, browser izolat)", "status": "DONE" },
+            { "seq": 5, "kind": "delivery.edit.build", "title": "Construiește montajul 16:9 din cele două capturi (fără model)", "status": "DONE" },
+            { "seq": 6, "kind": "media.render", "title": "Randează clipul 16:9 și rulează QA automat (uz intern)", "status": "DONE" },
+            { "seq": 7, "kind": "media.variant.render", "title": "Derivă varianta verticală 9:16, randeaz-o și rulează QA automat (uz intern)", "status": "DONE" },
+            { "seq": 8, "kind": "delivery.export", "title": "Exportă local cele două clipuri în demo-programari-demo-livrare-detailing-programari-20261006 (fără publicare)", "status": "DONE" },
+            { "seq": 9, "kind": "delivery.summary.render", "title": "Scrie rezumatul comercial v1 (Markdown + HTML, fără prețuri inventate)", "status": "DONE" },
+            { "seq": 10, "kind": "delivery.finish", "title": "Leagă dovezile de versiunea verificată și încheie livrarea", "status": "DONE" }
+          ]
+        }
+      ],
+      "revisions": [],
+      "history": [
+        { "kind": "bundle", "role": "", "id": "dli_mv3ka001_aa00000001", "status": "STALE", "staleReason": "software-ul s-a schimbat: workspace-ul diferă de versiunea testată (2 fișiere)", "supersedesId": null, "createdAt": "2026-10-06T08:58:00.000Z" },
+        { "kind": "capture", "role": "desktop", "id": "dli_mv3ka004_aa00000004", "status": "STALE", "staleReason": "software-ul s-a schimbat: workspace-ul diferă de versiunea testată (2 fișiere)", "supersedesId": null, "createdAt": "2026-10-06T09:02:00.000Z" },
+        { "kind": "brief", "role": "", "id": "dli_mv3mb006_bb00000006", "status": "CURRENT", "staleReason": "", "supersedesId": null, "createdAt": "2026-10-06T09:30:00.000Z" },
+        { "kind": "edit", "role": "master", "id": "dli_mv3mb007_bb00000007", "status": "STALE", "staleReason": "software-ul s-a schimbat: workspace-ul diferă de versiunea testată (2 fișiere)", "supersedesId": null, "createdAt": "2026-10-06T09:30:10.000Z" },
+        { "kind": "render", "role": "master", "id": "dli_mv3mb008_bb00000008", "status": "STALE", "staleReason": "software-ul s-a schimbat: workspace-ul diferă de versiunea testată (2 fișiere)", "supersedesId": null, "createdAt": "2026-10-06T09:33:00.000Z" },
+        { "kind": "variant", "role": "vertical", "id": "dli_mv3mb009_bb00000009", "status": "STALE", "staleReason": "software-ul s-a schimbat: workspace-ul diferă de versiunea testată (2 fișiere)", "supersedesId": null, "createdAt": "2026-10-06T09:34:00.000Z" },
+        { "kind": "render", "role": "vertical", "id": "dli_mv3mb010_bb00000010", "status": "STALE", "staleReason": "software-ul s-a schimbat: workspace-ul diferă de versiunea testată (2 fișiere)", "supersedesId": null, "createdAt": "2026-10-06T09:37:00.000Z" }
+      ]
+    }
+  }
+}
