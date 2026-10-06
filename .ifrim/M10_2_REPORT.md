@@ -2,7 +2,7 @@
 
 Data: 2026-10-05 · cod `2.12.0-m10.2` · contract API 11 · migrarea 11 `m10-2-work-requests` · **necomis** · **Hub-ul live rulează `2.12.0-m10.2` din 2026-10-05 04:57 UTC** (`upgrade.mjs --apply`, rularea `upg_muus3hq2`, backup verificat înainte de migrare `hub-v2.pre-migration.v10-to-v11…sqlite`, sha256 `4048d8a8…`).
 
-Închiderea P0 (2026-10-05 → 06): codul din folder e acum `2.12.1-m10.2`, contract API 12, schema 11 (fără migrare). Vezi §11. La data scrierii e necomis, iar Hub-ul live rulează încă `2.12.0-m10.2`.
+Închiderea P0 (2026-10-05 → 06): codul din folder e acum `2.12.1-m10.2`, contract API 12, schema 11 (fără migrare). Vezi §11. Comis local ca `e1a2d0d` (fără push) și activ pe Hub-ul live din 2026-10-06, 03:03 UTC (rularea `upg_muw3g5tp`).
 
 ## 1. Ce s-a întâmplat (traseul tău real, 2026-10-04, 18:42–18:50 UTC)
 
@@ -187,7 +187,7 @@ node v2/scripts/probe-m10-2.mjs --since <seq>
 
 ## 11. Închiderea P0 — `2.12.1-m10.2`
 
-Data: 2026-10-05 → 2026-10-06 · cod `2.12.1-m10.2` · contract API 12 · schema 11 (fără migrare) · pe `v2-milestone-01`, peste `e8a55ce` · **necomis la data scrierii** · **Hub-ul live rulează încă `2.12.0-m10.2`**.
+Data: 2026-10-05 → 2026-10-06 · cod `2.12.1-m10.2` · contract API 12 · schema 11 (fără migrare) · pe `v2-milestone-01`, peste `e8a55ce` · **comis local ca `e1a2d0d`** (fără push) · **activ pe Hub-ul live din 2026-10-06, 03:03 UTC** (rularea `upg_muw3g5tp`, verificat: `2.12.1-m10.2`, contract 12, BUILD_SAFE, 0 granturi active).
 
 Nimic din 2.12.1 nu a fost rulat live: niciun model, nicio sesiune Lega, niciun upgrade, niciun Windows Hello real. Toate dovezile de mai jos sunt PASS_SIMULATED; partea live e NOT_RUN.
 

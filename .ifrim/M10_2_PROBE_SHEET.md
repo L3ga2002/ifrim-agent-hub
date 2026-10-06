@@ -1,168 +1,164 @@
-# Proba ghidată M10.2 (A–G): fișa de autorizare
+# Proba ghidată M10.2 (A–G): fișa 2.12.2
 
-Stare: **aprobată de proprietar pe 2026-10-05 (~16:30 UTC)**, cu mesajul „ok continua ai toate aprobaRILE MELE”, dat ca răspuns la această fișă. O tratez ca aprobarea fișei cu toate opțiunile ei și nimic mai larg. Până la terminarea corecturilor P0 nu s-a pornit niciun model, nicio sesiune Lega și nicio operație live.
-Codul probei: `2.12.1-m10.2` (închiderea P0), contract API 12, schema 11 (fără migrare). Hub-ul live rulează încă `2.12.0-m10.2`.
+**Stare:** pregătită pe 2026-10-06, 17:55 UTC. **Neaprobată.** Proba se aprobă doar cu fraza exactă **„Aprob proba M10.2.”** După ea nu mai cer aprobări administrative pentru subpașii de aici.
 
-## 1. Ce aprobi
+Fișa 2.12.1 (aprobată pe 2026-10-05) e înlocuită de aceasta. Istoricul ei e în §9.
 
-O singură formulă acoperă tot ce e mai jos, în limitele scrise aici:
+## PROIECT
 
-> **„Aprob proba M10.2 după fișa 2.12.1”**
+- **Nume:** Factory Demo M10.2, id `prj_muw3gnxo_52bfc7470f`.
+- **Folder:** `C:\Users\mihai\OneDrive\Desktop\Ifrim Digital Proiecte\ifrim-factory-demo-m10-2`.
+- **Tip:** proiect de test (fixture bug-demo), pe ruta Windows.
+- **Problema de rezolvat:** un singur test de acceptanță, care pică.
 
-Opțiunile se adaugă la aceeași frază, de exemplu: „…, cu commit local, cu filtrul vocal, căutare cached”.
+## SCOP
 
-| Cod | Ce face | Inclus implicit |
-|---|---|---|
-| U | Upgrade-ul Hub-ului live la `2.12.1-m10.2` | da (proba cere codul nou) |
-| P | Proiectul de test „Factory Demo M10.2” | da |
-| L | O sesiune Lega, cel mult 20 de minute | da |
-| E | Un singur plan Engineering pe proiectul de test | da |
-| S | Importul proiectului video M09 în Studio și o editare locală | da |
-| C | Commit local M10.2 + P0 (fără push) | aprobat; îl fac eu după regresia completă |
-| V | Activarea filtrului vocal | aprobat; o faci tu, în sesiunea ta (nu o pot face în locul tău) |
-| W | Căutarea Lega trece pe `cached` pentru probă | setarea ta: nu o schimb eu. O schimbi tu din setările Lega, dacă vrei |
+Dovada live că:
+- proprietarul ajunge de la o cerere la un rezultat cu o singură confirmare pe plan;
+- nu completează niciun formular, nu schimbă modul manual și nu are nevoie de vreo intervenție de dezvoltator;
+- Pauza, Stop All și redeschiderea porții merg pe codul `2.12.2-m10.2`.
 
-Fără V, „Da, execută planul” și „Continuă” se dau prin click, Enter sau text. Atunci rămâne NOT_RUN doar „Continuă” rostit de la pasul F1; pauza rostită către Lega merge și fără V și rămâne pauza ta.
+Codul `2.12.2-m10.2` aduce:
+- R1: spațiile de lucru rămase rezervate se reconciliază;
+- R2: „Oprește tot” oprește doar ca poruncă;
+- R3: limita pe tură;
+- R4: contoarele cu numele cerute de tine;
+- L1–L11: reparațiile din sesiunea Lega de azi.
 
-## 2. Pregătirea (numărată separat, înainte de marcaj)
+**Rezultat:** `M10.2_CLOSED_LIVE` se declară doar pe dovezi (§7).
 
-1. **C.** Un singur commit local pe `v2-milestone-01`, fără push: M10.2 împreună cu închiderea P0 (`2.12.1-m10.2`). Corecturile P0 sunt în aceleași fișiere ca M10.2, care era necomis, deci cele două nu se mai pot despărți cinstit în două commituri.
+## Pregătirea inclusă (o fac eu după aprobare, fără alte întrebări)
 
-   Așa proba rulează pe o versiune identificată, iar M11 poate continua fără să o atingă. Push-ul îl faci tu: `git push origin v2-milestone-01`.
-2. **U. Upgrade-ul:**
-   - întâi `node v2/scripts/upgrade.mjs --plan` (doar citire);
-   - apoi `--apply`, care oprește Hub-ul, reconstruiește UI-ul pentru contractul 12, pornește Hub-ul și verifică versiunea (`2.12.1-m10.2`) și contractul (12). BUILD_SAFE și starea porții le confirm eu prin citire, cu `node v2/scripts/status.mjs`.
+1. **Backup verificat al Hub-ului**, cu mecanismul existent (`backup.run`, cu verificare prin restaurare), imediat înainte de upgrade.
+   - Backup-ul acoperă codul. Baza de date nu se schimbă la acest upgrade (nu are migrare).
+2. **Upgrade-ul:** `node v2/scripts/upgrade.mjs --plan` (doar citire), apoi `--apply`. Ținta: `2.12.2-m10.2`, contract API 12, schema 11, fără migrare.
+   - **Verific după upgrade:** versiunea, contractul, BUILD_SAFE, poarta deschisă, 0 granturi active, 0 execuții, 0 spații de lucru rezervate.
+   - **Ce trebuie să faci tu:** un tab deschis dinainte arată „Interfață veche” și trebuie reîncărcat.
+   - **Rollback:** schema rămâne aceeași, deci revenirea la 2.12.1 (commitul `e1a2d0d`) înseamnă doar cod.
+3. **Notepad:** verific că e închis, ca pasul B să dovedească o fereastră nouă. Dacă e deschis, îți cer să-l închizi.
+4. **Marcajul S1:** `node v2/scripts/probe-m10-2.mjs --mark`, după upgrade. Pregătirea nu intră în contoare.
 
-   Nu există migrare, deci nici backup automat. Un tab deschis dinainte arată „Interfață veche”: îl reîncarci. Rollback: codul `2.12.0` nu mai există separat pe disc. Revenirea se face prin corectură înainte, sau cu fanionul M10.2 `envelopeScopedLive=false`. Cu C nu apare un commit separat pentru `2.12.0`: C conține M10.2 și P0 împreună, deci la el se poate reveni doar ca stare `2.12.1`.
-3. **P. Proiectul de test:**
-   - `node v2/scripts/create-factory-fixture.mjs bug-demo --dir ifrim-factory-demo-m10-2 --name "Factory Demo M10.2" --no-register`;
-   - creează `C:\Users\mihai\OneDrive\Desktop\Ifrim Digital Proiecte\ifrim-factory-demo-m10-2`, face `git init` și un commit în acel folder;
-   - înregistrarea în Hub (proiect de test, ruta Windows) o fac pe canalul `agent`, cu referința acestei aprobări, ca să apară în jurnal ca acțiune a agentului, nu ca un click al tău.
-4. **V, dacă e ales.** O interacțiune în sesiunea ta: Lega → Configurare → Voce → pornește filtrul (profilul tău există). Apoi rostești o mostră de verificare.
-5. **W, dacă e ales.** Setarea căutării Lega devine `cached`. Altfel rămâne `live`, iar la pornire confirmi o dată căutarea live (garda serverului).
-6. **Conturile.** Dacă proba începe după 18:29 UTC (2026-10-05) și nimeni nu le-a refăcut între timp, verificările de cont au peste 24 h. Din 2.12.1 nu mai apeși nimic pentru ele:
-   - **Codex:** pornirea Lega din sesiunea ta (pasul A) reface singură verificarea învechită, o dată per pornire. E aceeași verificare fără inferență ca „Verifică contul” (D23).
-   - **Claude:** când ceri planul (pasul D), pregătirea automată reface verificările de cont mai vechi de 24 h (`provider.probe`, fără inferență, pe ruta Windows), înainte să-ți arate cardul. Rulează doar dacă pașii automați sunt singurul lucru care mai blochează planul.
-   - **Ce nu e automat:** declarația ta de facturare. Dacă lipsește sau a expirat, rămâne decizia ta, în Integrări.
-   - Dacă o verificare eșuează, e arătată cinstit. Atunci „Verifică contul” rămâne calea manuală și o notez ca abatere de la traseul normal.
-7. **Notepad** trebuie închis, ca pasul B să dovedească o fereastră nouă.
-8. **Marcajul**, făcut de mine, doar citire:
-   - `node v2/scripts/probe-m10-2.mjs --mark` dă `S0`;
-   - imediat după, `--since S0 --until S0`, ca bază pentru deriva setărilor.
+## AI
 
-## 3. Bugetul și limitele (fixe, afișate și legate în plan)
+- **Lega:** o sesiune, cel mult 3 porniri, în total cel mult 20 de minute.
+  - Vocea merge prin GPT realtime, pe abonamentul Codex.
+  - Agentul din spatele Legăi rulează cu efort mic, fixat de Hub din 2.12.2.
+  - Estimare: aproximativ 1 USD la 20 de minute. E doar o estimare; consumul real nu e raportat.
+- **Writer:** Codex `gpt-6.1-sol` · `medium`. Scrie doar în proiectul de test (sandbox Windows, rețea oprită).
+- **Reviewer:** Claude `sonnet` · `medium`, doar citire.
+- **Remedieri și încercări:** cel mult 2 cicluri de remediere și 2 încercări pe etapă. Contează doar încercările care au ajuns la model.
+- **Limita pe tură** (alta decât termenul misiunii): writer 25 min, reviewer 15 min.
+  - Peste limită, rezultatul e TIMEOUT, nu FAIL.
+  - Hub-ul reia automat o singură dată, după cel puțin 60 s, doar dacă mai sunt încercări; apoi decizia e a ta.
+  - Pauza și Stop opresc ceasul.
+- **Termenul misiunii:** 120 min de la start. Autoritatea planului ține 150 min de la confirmare.
+- **Estimarea turelor:** 2 ture (1 Codex, 1 Claude) dacă totul merge din prima; cel mult 6 ture pe rol.
+- **Fără** API billing, credite cumpărate sau servicii noi plătite (garda de facturare a Hub-ului rămâne neschimbată).
 
-**Lega (L)**
-- O sesiune, de cel mult `min(30 min, 20 min setați, timpul rămas al sesiunii tale − 20 s)`. Se oprește singură după 120 s de inactivitate.
-- O repornire după o oprire pentru inactivitate e acoperită doar dacă totalul vocal rămâne ≤ 20 min și sunt cel mult 3 porniri.
-- Vocea ta merge la OpenAI (GPT realtime), din bugetul Codex al abonamentului; estimarea e de ~1 USD la 20 min, iar consumul real nu e raportat.
+## MEDIA
 
-**Planul Engineering (E)**
-- **Modelele:**
-  - writer: Codex `gpt-6.1-sol` · `medium`, scriere doar în proiectul de test, în sandbox Windows (profil `ifrim_hub_rw`, rețea oprită);
-  - reviewer: Claude `sonnet` · `medium`, doar citire.
+- **Importul** proiectului M09 din `C:\Users\mihai\Videos\Ifrim Studio\M09 - Un plan, o confirmare\`. Se importă proiectul întreg, nu doar MP4-ul, și se lucrează pe o copie; originalele rămân neatinse.
+- **„Arată-mi clipul”** și **„La secunda 12 mută textul mai sus”** dau o versiune nouă, randare locală cu ffmpeg (versiune fixată) și QA.
+- **Nimic** nu se publică sau se încarcă. Aprobarea creativă rămâne a ta.
 
-  Modelele sunt legate în plan, niciodată cele implicite ale contului.
-- **Limitele per execuție și per încercare:**
+## EXCLUS
 
-  | Limită | Valoare |
-  |---|---|
-  | Cicluri de remediere incluse | 2 |
-  | Încercări pe etapă (contează doar cele ajunse la model) | 2 |
-  | Ture de model per rol (granturi derivate 5 + 1) | ≤ 6, deci ≤ 12 în total |
-  | Termenul misiunii | 120 min de la start |
-  | Autoritatea planului | 150 min de la confirmare |
-  | Confirmarea | în 15 min de la propunere |
-  | Timeout per tură | **niciunul**; limita efectivă e termenul de 120 min sau Stop. Marcajul „stale” apare după 10 min fără evenimente de la provider |
-  | Codex `initialize` / `thread/start` | 30 s / 120 s |
-  | Verificările runner-ului (`node --test`) | 180 s pe comandă |
-  | Concurență | o misiune activă; `maxConcurrentAiRuns` 2 (Lega numără 1) |
-  | Încercări întrerupte iertate | ≤ 3 |
-- **Estimare:** drumul curat înseamnă 2 ture (1 Codex + 1 Claude); cu o remediere, 4.
-- **Neacoperit (decizie separată):** un ciclu sau o încercare în plus (delta), alt proiect, alte modele.
-- **Interzis:**
-  - commit, push sau deploy, acceptarea pachetului, publicarea;
-  - orice modificare în ProDelivery, în repo-ul Hub-ului sau în V1;
-  - mesaje externe, bani, instalări.
+ProDelivery (și F-001), Agent Hub ca țintă de scriere, V1, OpenClaw, pachetele istorice (ProDelivery, D6, Demo B), deploy, commit, push, social media, costuri noi sau API billing, alte proiecte, pilotul M11, re-atestarea WSL.
 
-**Studio (S)**
-- Importul copiei proiectului M09 (originalele rămân neatinse).
-- O editare: versiune nouă, randare locală draft cu ffmpeg (fixat), QA.
-- Nimic publicat; aprobarea creativă rămâne a ta.
+## INTERVENȚII UMANE (doar ale tale)
 
-## 4. Pașii A–G (îi faci tu; eu doar citesc contoarele)
+- Aprobarea acestei fișe, cu fraza de la final.
+- Pașii A–G, cu vocea și comenzile tale reale, plus Windows Hello când ți-l cere Hub-ul (sesiunea, redeschiderea porții).
+- **Filtrul vocal: oprit**, decizia ta de azi („mă aude greu”).
+  - „Da, execută planul” și „Continuă” le dai din cockpit (click, Enter sau text).
+  - De aceea VOICE_CONFIRMATIONS și VOICE_CONTINUE ies NOT_RUN, iar VOICE_FLOW_VERIFIED nu se poate declara.
+  - Pauza spusă către Lega merge și fără filtru. Restul probei rămâne valabil.
 
-**A. Pornești Lega dintr-un click.**
-- Fără formular și fără grant: Hub-ul derivă autoritatea vocală din sesiunea ta.
-- Dacă verificarea contului Codex e învechită, Hub-ul o reface singur la pornire (D23). Previzualizarea o arată ca „verific singur la pornire”.
-- Dovezi: `lega.authority_derived`, `lega.session.connected`.
+## Pașii (te ghidez câte unul și aștept acțiunea ta reală)
 
-**B. „Deschide Notepad”.**
-- Hub-ul lansează Notepad și așteaptă fereastra nouă (20 s), apoi o aduce în față.
-- Dovadă: rândurile `desktop_actions` (`waitWindow` cu `hwnd`, `focus` cu `foreground=true`). Dacă Windows refuză aducerea în față, se spune cinstit.
+- **A.** Pornești Lega dintr-un click. Fără formular și fără grant.
+- **B.** „Deschide Notepad”. Verific fereastra nouă și aducerea ei în față.
+- **C.** „Hai să lucrăm la Factory Demo M10.2”. Se deschide cockpitul și nu pornește nimic.
+- **D.** „Repară testul de acceptanță din Factory Demo M10.2”. Cardul planului arată:
+  - proiectul și problema;
+  - modelele;
+  - testul protejat;
+  - încercările;
+  - limita pe tură;
+  - termenul;
+  - ce nu face.
 
-**C. „Hai să lucrăm la Factory Demo M10.2”.**
-- Se deschide cockpitul proiectului; nu pornește niciun writer.
-- Numele cu punct e recunoscut din 2.12.1.
+  Confirmi o dată, cu click sau Enter.
+- **E.** Hub-ul lucrează singur, în BUILD_SAFE. Etapele: baseline → writer → teste → review → remedieri incluse → QA → pachet DELIVERY_READY. Îți spun progresul pe înțeles. Acceptarea pachetului rămâne decizia ta separată.
+- **F.**
+  - În timpul lucrului: „Lega, pune totul pe pauză”, apoi „Continuă” scris în cockpit.
+  - După DELIVERY_READY: „Ce urmează după Stop All?” (nu trebuie să oprească nimic).
+  - Apoi „Oprește tot”, iar după el redeschiderea din cardul din cockpit, cu Windows Hello. Nimic vechi nu repornește.
+- **G.** Studio:
+  1. importul folderului M09;
+  2. „Arată-mi clipul”;
+  3. „La secunda 12 mută textul mai sus”.
 
-**D. „Repară testul de acceptanță din Factory Demo M10.2”.**
-- Apare cardul planului, fără întrebare: singurul test de acceptanță al proiectului e ales și protejat. Writer-ul repară implementarea (numele format doar din spații trebuie refuzat), nu testul.
-- Cardul nu mai promite preview sau E2E, fiindcă spec-ul nu le are.
-- Spui „Da, execută planul” (cu V) sau confirmi prin click, Enter ori text.
+## 7. Ce raportez
 
-**E. Hub-ul lucrează singur, în BUILD_SAFE, cu drepturi derivate.**
-- Etapele: baseline (testul pică din motivul așteptat) → writer → `node --test` → review → remedieri incluse → QA (hash-ul testului protejat verificat) → pachet DELIVERY_READY.
-- Acceptarea pachetului rămâne decizia ta, separată.
+Rulez `node v2/scripts/probe-m10-2.mjs --since S1`.
 
-**F1. Pauză și Continuă, cu vocea, cât timp misiunea rulează (pauza merge și fără V; „Continuă” rostit cere V).**
-- „Lega, pune totul pe pauză” devine pauza ta, cu autentificatorul înregistrat.
-- „Lega, continuă” e verificat local (filtru + whisper) și reia exact ca textul scris. Fraza contează o singură dată.
-- Transcrierea providerului nu reia nimic; poate doar opri reluarea. Un „Continuă?” spus ca întrebare nu reia.
-
-**F2. „Oprește tot” și rearmarea, după DELIVERY_READY.**
-- De ce după: Stop All anulează o misiune activă.
-- „Oprește tot” închide Lega și suspendă poarta. Închide și cardurile de plan care încă așteptau confirmarea.
-- Scrii „Redeschide poarta” (sau orice cerere nouă), ori apeși „Arată cardul de redeschidere” din bannerul cockpitului. **Primul click doar arată cardul**: ce s-a oprit, ce rămâne oprit, eventualele evenimente de securitate. Nu confirmă nimic.
-- **Decizia e butonul cardului**, „Redeschide poarta (Windows Hello)”, sau Enter cu cardul selectat. Apoi Windows Hello, dacă ultima ta verificare e mai veche de 5 minute (cazul obișnuit aici). Cu evenimente de securitate pe card, bifezi întâi „Am verificat cauza”.
-- Rezultatul: poarta se redeschide, modul rămâne BUILD_SAFE, nimic vechi nu repornește. Lega nu repornește singură.
-- **Ce înseamnă D22 pentru un plan pe pauză.** Dacă la „Oprește tot” rula un plan de operare sau o sesiune desktop, Stop All le pune pe pauză. „Continuă” pentru ele (scris, rostit, butonul de pe cardul planului, reluarea desktopului) e refuzat până la rearmare și îți arată același card („Întâi redeschiderea porții”). După rearmare nu pornesc singure: spui „Continuă”. Ce era pe pauză din alt motiv se reia ca înainte. La F2, făcut după DELIVERY_READY și înaintea pasului G, nu ar trebui să existe niciun astfel de plan.
-
-**G. Studio (text sau voce).**
-- „Importă proiectul din folderul C:\Users\mihai\Videos\Ifrim Studio\M09 - Un plan, o confirmare”: un card, apoi confirmarea.
-- „Arată-mi clipul”.
-- „La secunda 12 mută textul mai sus”: un card, apoi confirmarea; rezultă o versiune nouă, randare locală și QA.
-
-## 5. Ce măsor (`node v2/scripts/probe-m10-2.mjs --since S0 --json`)
-
-| Contor | Așteptat pe traseul normal |
+| Contor | Așteptat |
 |---|---|
-| Formulare de grant / granturi manuale | 0 / 0 |
-| Schimbări manuale de mod / OPEN GATE | 0 |
-| Navigări la Aprobări | 0 |
-| Indicații Lega spre fluxul vechi | 0 |
-| Intervenții de dezvoltator (agent, cli, test, drift) | 0 |
-| Confirmări de scope | 3 (planul E, importul, editarea) |
-| Clarificări | 0 (+1 dacă la G sunt două texte plauzibile la 12 s) |
-| Redeschideri ale porții din cockpit (Windows Hello), `gateRearms` | 1 (F2). Nu se numără ca schimbare manuală de mod |
-| Autentificări suplimentare | 1 (Windows Hello la rearmare, dacă ultima verificare e mai veche de 5 minute), plus una pentru fiecare redeschidere a sesiunii după 30 min de inactivitate |
-| Pași automați de pregătire | 0, sau pașii fără model rulați singur de Hub la cererea planului, de exemplu o verificare de cont refăcută (nu sunt intervenții ale tale) |
-
-În afișarea scriptului, rearmarea apare ca „Redeschideri ale porții din cockpit (Windows Hello)”.
+| GRANT_FORMS_OPENED | 0 |
+| MANUAL_MODE_CHANGES | 0 |
+| NAVIGATION_TO_APPROVALS | 0 |
+| NAVIGATION_TO_ADVANCED | 0 |
+| PLAN_CONFIRMATIONS | 3 (planul D, importul și editarea de la G) |
+| EXTRA_SCOPE_CONFIRMATIONS | 0 |
+| MANUAL_DEV_DB_API_INTERVENTIONS | 0 |
+| VOICE_CONFIRMATIONS | 0, NOT_RUN (filtrul e oprit) |
+| VOICE_PAUSE | 1 |
+| VOICE_CONTINUE | 0, NOT_RUN („Continuă” se dă scris) |
+| STOP_ALL | 1 |
+| CONTEXTUAL_REARM | 1 |
+| UNKNOWN_INTENTS | 0 ca țintă; raportez exact ce a ieșit |
 
 Separat raportez:
-- timpii fiecărei etape, versiunea servită și etichetele (PASS_LIVE / FAIL / BLOCKED / NOT_RUN);
-- orice intervenție făcută de mine în locul tău (țintă: niciuna).
+- timpii fiecărei etape;
+- versiunea servită;
+- consumul acestei sesiuni Claude Code, despărțit de execuțiile AI pornite prin Hub.
 
-**P0 e închis** doar dacă traseul normal are:
-- zero formulare de grant;
-- zero schimbări manuale de mod;
-- o confirmare pentru planul E;
-- niciun subpas administrativ neanunțat.
+**`M10.2_CLOSED_LIVE` se declară doar dacă toate condițiile de mai jos sunt îndeplinite:**
+- toate contoarele de mai sus sunt la valoarea așteptată;
+- „Ce urmează după Stop All?” nu a oprit nimic;
+- Stop All și redeschiderea au mers;
+- nimic vechi nu a repornit;
+- nu a existat nicio intervenție a mea în locul tău.
 
-## 6. Ce nu acoperă fișa
+Pentru orice abatere: PAS → AȘTEPTAT → REAL → CAUZĂ → FIX.
 
-- M11 (are aprobarea lui);
-- acceptarea pachetelor istorice (ProDelivery, D6, Demo B);
-- a doua sesiune Lega peste 20 de minute;
-- atestarea WSL (proba rulează pe ruta Windows; re-atestarea pe aceeași amprentă e o operație separată, fără model);
-- publicarea, MB1, MEDIA_B și MEDIA_C.
+## 8. Manifestul versiunii probei (înainte de upgrade)
+
+| Ce | Valoare |
+|---|---|
+| Ramura / HEAD / origin | `v2-milestone-01` / `e1a2d0d` (2.12.1, comis local, neîmpins) / `e8a55ce` |
+| Codul probei | `2.12.2-m10.2`, contract 12, schema 11 (fără migrare), **necomis** |
+| Delta P0 peste `e1a2d0d` | 56 de fișiere de cod: 42 modificate și 14 noi. Hash combinat `c4be2b1961e94b10…` (lista completă cu sha256 per fișier o păstrez lângă raport) |
+| Fișiere M11 | 46 necomise, neconectate la server, excluse din probă |
+| Regresie pe acest arbore | V2: 1364 teste, 1363 trec, 0 eșuează, 1 omis (T25, symlink). V1: 552 teste, 551 trec, 1 omis. M11: 104 teste, 102 trec, 2 omise |
+| Hub-ul live acum | `2.12.1-m10.2`, contract 12, BUILD_SAFE, poarta deschisă, 0 granturi active (41 istorice), 0 execuții, 0 spații de lucru rezervate |
+| Vocea | Profil `vpr_murjpbeq_3ab0dd4e54` v1, 7 mostre. Motorul local e gata (whisper.cpp large-v3-turbo, CAM++). **Filtrul e oprit** |
+| Atestarea WSL | Validă (2026-10-06, 09:22 UTC, amprenta `8f9e9eeb934b6c01`, canary `0491ff30`). Codul 2.12.2 nu schimbă versiunea canary, deci atestarea rămâne validă. Proba nu o folosește (ruta Windows) |
+| Marcajul vechi | S0 = 4522. Fereastra S0–S1 conține sesiunile Lega de azi (pregătire); proba se numără de la S1 |
+
+## 9. Istoric
+
+Fișa 2.12.1 a fost aprobată pe 2026-10-05, cu „ok continua ai toate aprobaRILE MELE”. Din ea s-au făcut:
+- commitul local `e1a2d0d`;
+- upgrade-ul la 2.12.1 (`upg_muw3g5tp`, 2026-10-06, 03:03 UTC);
+- proiectul de test;
+- marcajul S0 = 4522.
+
+Pașii A–G nu au rulat. Textul ei complet e în commitul `e1a2d0d`.
+
+Pe 2026-10-06, între 09:20 și 09:40 UTC, proprietarul a folosit Lega live (două sesiuni, 8,3 și 8,7 min, pe ProDelivery). Defectele găsite atunci (L1–L11) sunt reparate în 2.12.2. Tot atunci, proprietarul a oprit filtrul vocal.
+
+---
+
+**Spune: Aprob proba M10.2.**

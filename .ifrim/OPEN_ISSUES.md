@@ -1,6 +1,6 @@
 # Open Issues - Ifrim Agent Hub
 
-## 2026-10-05 — P0 closure of M10.2 (code `2.12.1-m10.2`, contract 12, no migration; **uncommitted at writing**; the live Hub still runs `2.12.0-m10.2`). Detail: `.ifrim/M10_2_REPORT.md` §11, `.ifrim/HANDOFF_2026-10-05_P0.md`
+## 2026-10-05 — P0 closure of M10.2 (code `2.12.1-m10.2`, contract 12, no migration; **committed locally as `e1a2d0d`, not pushed**; **live since 2026-10-06 03:03 UTC**, run `upg_muw3g5tp`; test project `prj_muw3gnxo_52bfc7470f`; probe marker S0 = 4522). Detail: `.ifrim/M10_2_REPORT.md` §11, `.ifrim/HANDOFF_2026-10-05_P0.md`
 
 This section takes precedence over the M10.2 section below where they overlap. The code is on `v2-milestone-01` over `e8a55ce`, in the same files as M10.2. Decisions D14–D23 are described in the report.
 

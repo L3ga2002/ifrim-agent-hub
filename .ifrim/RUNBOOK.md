@@ -21,7 +21,7 @@ node v2/scripts/probe-m10-2.mjs --since <seq>
 
 #### `2.12.1-m10.2` — închiderea P0 (contract 12, fără migrare)
 
-La data scrierii codul e necomis, iar Hub-ul live rulează încă `2.12.0-m10.2`. Nimic de mai jos nu a fost rulat live (NOT_RUN). Detalii și deciziile D14–D23: `M10_2_REPORT.md` §11.
+Comis local ca `e1a2d0d` și activ pe Hub-ul live din 2026-10-06, 03:03 UTC (rularea `upg_muw3g5tp`). Comportamentele de mai jos nu au fost încă exersate live (NOT_RUN până la proba A–G). Detalii și deciziile D14–D23: `M10_2_REPORT.md` §11.
 
 **După „Oprește tot”: cardul de rearmare**
 
