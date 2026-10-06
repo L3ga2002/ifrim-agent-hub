@@ -444,6 +444,13 @@ test("M09-MB-14 UI–request conflict: a manual run with another (or the same) m
     await waitFor(() => t.hub.db.prepare("SELECT 1 FROM agent_runs WHERE provider = 'codex' AND status = 'running'").get(), 30000, 100);
     const conv = (await dispatch(t.hub, "conversation.create", { projectId: t.project.id, title: "Manual în timpul planului" })).result;
     await dispatch(t.hub, "conversation.message", { conversationId: conv.id, content: "Citește README." });
+    // M10.2: the plan no longer switches the Hub to LIVE_VALIDATION (envelope-scoped authority): a manual run is refused on mode.
+    for (const model of ["opus", "sonnet"]) {
+      await assert.rejects(dispatch(t.hub, "run.start", { conversationId: conv.id, provider: "claude", model }), (e) => e.category === "gate"
+        && e.details.checks.some((c) => c.id === "mode" && !c.ok && /BUILD_SAFE: fără inferență/.test(c.detail)), model);
+    }
+    // And with the owner's manual LIVE_VALIDATION, the plan's grants still cannot serve it (the M09 guard).
+    await dispatch(t.hub, "mode.set", { mode: "LIVE_VALIDATION", confirm: "LIVE_VALIDATION" });
     for (const model of ["opus", "sonnet"]) {
       await assert.rejects(dispatch(t.hub, "run.start", { conversationId: conv.id, provider: "claude", model }), (e) => e.category === "gate"
         && e.details.checks.some((c) => c.id === "live_grant" && !c.ok && /legat de modelul confirmat în plan \(sonnet/.test(c.detail)), model);

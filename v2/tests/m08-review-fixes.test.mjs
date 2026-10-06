@@ -14,7 +14,7 @@ import { createHttpServer } from "../server/http/server.mjs";
 import { materializeFixture, demoSpec } from "../server/factory/fixtures.mjs";
 // M09: every factory mission names its models explicitly (without them it is a draft whose scope is incomplete).
 const M09_MODELS = { writerModel: "gpt-fake-sol", reviewerModel: "sonnet" };
-import { enrolVoice } from "./voice-helpers.mjs";
+import { enrolVoice, startDerivedLega } from "./voice-helpers.mjs";
 import { activeLessons } from "../server/runtime/prompt.mjs";
 import { resolveIntent } from "../server/owner/intents.mjs";
 import { parseTestOutput, testStatus, commandArgv } from "../server/factory/runner.mjs";
@@ -199,7 +199,9 @@ test("M08-RF-07 HTTP: /api/owner/intent forwards the Lega session, so a plan sho
     await dispatch(s.hub, "voice.gate", { enabled: true }, { ownerSession: owner.session });
     await dispatch(s.hub, "owner.autonomy.set", { projectId: project.id, level: "TRUSTED" }, { ownerSession: owner.reauth() });
     await dispatch(s.hub, "factory.prepare", { projectId: project.id, ...demoSpec("bug-demo"), limits: M09_MODELS });
-    const r = await s.call("POST", "/api/owner/intent", { cookie: `ifrim_owner=${owner.token}`, body: { text: "Arată-mi planul", projectId: project.id, legaSessionId: "lega_http" } });
+    // M10.2 U13: the forwarded id must be the LIVE Lega session derived from this owner session (a bare id arms nothing).
+    const legaHttp = await startDerivedLega(s, owner);
+    const r = await s.call("POST", "/api/owner/intent", { cookie: `ifrim_owner=${owner.token}`, body: { text: "Arată-mi planul", projectId: project.id, legaSessionId: legaHttp } });
     assert.equal(r.status, 200, JSON.stringify(r.json));
     assert.equal(r.json.results[0].armed.armed, true, r.json.results[0].armed.reason);
     // objective_plan → the layout carries the DecisionCard of the new plan.

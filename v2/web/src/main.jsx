@@ -1,4 +1,4 @@
-import { StrictMode, Suspense, lazy, useEffect, useState, useCallback } from "react";
+import { StrictMode, Suspense, lazy, useEffect, useState, useCallback, useRef } from "react";
 import { createRoot } from "react-dom/client";
 import "./styles/app.css";
 import "./styles/m02.css";
@@ -49,6 +49,19 @@ export function parseRoute(hash) {
   return { name: screens[name] ? name : "lega", id, query };
 }
 
+/**
+ * M10.2 probe (U03): the old-flow screen a route enters, as the fixed key owner.nav accepts (server/owner/probe.mjs NAV_SCREENS),
+ * or null. Only the screen key is ever sent — never an id, a query value or text. Integrations has no sub-route for its panels:
+ * plain #/integrations is the "Validare live" panel (mode, gate, grant form); ?panel=isolation names the isolation panel.
+ */
+export function navScreenOf(route) {
+  if (route.name === "integrations") return route.query?.panel === "isolation" ? "integrations.isolation" : "integrations.live";
+  if (route.name === "approvals") return "approvals";
+  if (route.name === "system" && route.query?.tab === "environments") return "system.environments";
+  if (route.name === "missions" && route.query?.factory) return "missions.factory";
+  if (route.name === "focus") return "focus.composer";
+  return null;
+}
 
 function App() {
   const [route, setRoute] = useState(() => parseRoute(window.location.hash));
@@ -57,6 +70,15 @@ function App() {
     window.addEventListener("hashchange", onHash);
     return () => window.removeEventListener("hashchange", onHash);
   }, []);
+  // M10.2 probe: report ENTERING one of the counted screens (once per entry, not per re-render or id change inside it). Telemetry
+  // only: a failure is ignored and never shown; the ref also absorbs StrictMode's double effect run.
+  const lastNav = useRef(null);
+  const navKey = navScreenOf(route);
+  useEffect(() => {
+    if (navKey === lastNav.current) return;
+    lastNav.current = navKey;
+    if (navKey) api("/api/owner/nav", { method: "POST", body: { screen: navKey } }).catch(() => {});
+  }, [navKey]);
   useEffect(() => startHubConnection(), []);
   // M08 Zero-Menu: a plain start (no screen in the address) opens what the owner chose — the cockpit or the big Lega screen.
   useEffect(() => {

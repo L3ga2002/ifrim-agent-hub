@@ -2,9 +2,16 @@
 // environment, whole-tree kill), with a timeout and a cancel key. Inputs are local files only: each input gets
 // `-protocol_whitelist file,pipe` (a crafted playlist cannot make ffmpeg open http/tcp/udp), filter graphs that open files or
 // sockets on their own (movie/amovie/zmq) are refused, and an output that looks like a URL is refused.
-// Production resolves the binaries on PATH (where.exe) unless config names them, and pins version + sha256 in
-// settings.mediaToolPins at the first verified use; a changed binary is reported as `tool_changed` until acknowledged, never
-// silently re-trusted. Test mode uses config.mediaTools.launcher ({ executable, prefixArgs, env } per tool).
+// Production resolves the binaries on PATH (where.exe) unless config names them. Identity (version + sha256 + shared libraries)
+// is split in three (M10.2):
+// - inspect(): reads the identity and compares it with settings.mediaToolPins → PINNED | UNPINNED | CHANGED | MISSING per tool.
+//   It NEVER writes (no setting, no row, no event): GET /api/media/tools, the editors' registry and the Studio status call it, and
+//   a read must not be the moment a binary becomes trusted. Version reads are cached by size+mtime for 60 s.
+// - pin({ actor, reason }): the explicit act (the owner's command, the MEDIA_A ceremony, or an automatic readiness step listed in
+//   a confirmed plan) that records the first identity, or records a different binary as CHANGED (previous kept, unacknowledged).
+// - resolve(): the render path. It inspects and refuses UNPINNED (TOOLS_NOT_PINNED) or an unacknowledged change (TOOL_CHANGED)
+//   before the real job spawns anything, so a binary identity change is never adopted silently.
+// Test mode uses config.mediaTools.launcher ({ executable, prefixArgs, env } per tool).
 import fs from "node:fs";
 import path from "node:path";
 import crypto from "node:crypto";
@@ -14,7 +21,11 @@ import { newId } from "../core/ids.mjs";
 import { normalizeProbe } from "./probe.mjs";
 
 export const MEDIA_TOOL_NAMES = Object.freeze(["ffmpeg", "ffprobe"]);
+/** Per-tool identity state reported by inspect(). */
+export const MEDIA_TOOL_STATES = Object.freeze(["PINNED", "UNPINNED", "CHANGED", "MISSING"]);
 export const PROTOCOL_WHITELIST = "file,pipe";
+// How long a `-version` read stays valid for an unchanged file (size + mtime): repeated GETs within it spawn nothing.
+const INSPECT_TTL_MS = 60 * 1000;
 const DEFAULT_TIMEOUT_MS = { ffmpeg: 30 * 60 * 1000, ffprobe: 60 * 1000 };
 const MAX_TIMEOUT_MS = 6 * 60 * 60 * 1000;
 const VERSION_TIMEOUT_MS = 15 * 1000;
@@ -171,8 +182,9 @@ export function createMediaTools({ config, supervisor, settings = null, bus = nu
   const running = new Map(); // key → { cancelled, timedOut }
   const identityCache = new Map(); // file → { sig, sha256 }
   const lookupCache = new Map(); // tool → absolute path found on PATH (production)
-  let resolved = null; // last resolve() result (production run() relies on it)
-  let resolving = null;
+  const versionCache = new Map(); // tool → { identityFile, sig, at, version } (a `-version` read, valid INSPECT_TTL_MS)
+  let resolved = null; // last inspect() result, in memory only (production run() and the Studio status rely on it)
+  let inspecting = null;
 
   const launcherConfig = () => config.mediaTools?.launcher || null;
 
@@ -241,70 +253,281 @@ export function createMediaTools({ config, supervisor, settings = null, bus = nu
     return dir;
   }
 
-  function writePin(tool, pin, event, payload) {
-    if (!settings || !bus) return;
-    bus.transaction(() => {
+  // ---------------------------------------------------------------- identity: inspect (read-only) / pin / acknowledge / resolve
+
+  /** The identity of one tool now: `{ path, version, sha256, libsSha256 }`, or null when absent. Never writes anything. */
+  async function identify(tool) {
+    const launcher = launcherFor(tool);
+    if (!launcher) return null;
+    let sig; let sha256; let libs;
+    try {
+      const st = fs.statSync(launcher.identityFile);
+      sig = `${st.size}:${st.mtimeMs}`;
+      sha256 = cachedSha(launcher.identityFile);
+      libs = libsSha(launcher.identityFile);
+    } catch { versionCache.delete(tool); return null; }
+    // The `-version` read is the only spawn of an inspection: reused for 60 s while the file (and its libraries) did not change,
+    // so a Studio that polls the tools list does not start a process per GET.
+    const at = clock().getTime();
+    const hit = versionCache.get(tool);
+    let version;
+    if (hit && hit.identityFile === launcher.identityFile && hit.sig === sig && hit.libsSha256 === libs && at >= hit.at && at - hit.at < INSPECT_TTL_MS) {
+      version = hit.version;
+    } else {
+      try {
+        version = await readVersion(tool, launcher);
+        versionCache.set(tool, { identityFile: launcher.identityFile, sig, libsSha256: libs, at, version });
+      } catch (error) {
+        if (error?.code === "TOOL_MISSING") { versionCache.delete(tool); return null; }
+        version = null; // e.g. a busy key: unreadable this time, not cached
+      }
+    }
+    return { path: launcher.identityFile, version, sha256, libsSha256: libs };
+  }
+
+  async function identifyAll() {
+    const ids = {};
+    for (const tool of MEDIA_TOOL_NAMES) ids[tool] = await identify(tool);
+    return ids;
+  }
+
+  const currentPins = () => (settings ? settings.get("mediaToolPins") || {} : {});
+
+  /** PINNED | UNPINNED | CHANGED (recorded = the pin already holds the new identity, awaiting acknowledgement) | MISSING. */
+  function stateOf(info, pin) {
+    if (!info) return { state: "MISSING", recorded: false };
+    if (!pin?.sha256) return { state: "UNPINNED", recorded: false };
+    // An unreadable version does not count as a change by itself (the bytes decide); a readable different one does.
+    const differs = pin.sha256 !== info.sha256 || (pin.libsSha256 || null) !== (info.libsSha256 || null) || (info.version !== null && pin.version !== info.version);
+    if (differs) return { state: "CHANGED", recorded: false };
+    if (pin.changedAt && !pin.acknowledged) return { state: "CHANGED", recorded: true };
+    return { state: "PINNED", recorded: false };
+  }
+
+  /** Builds the inspection result (the M09 resolve() shape + per-tool `state`) and keeps it in memory as lastResolved(). */
+  function summarize(ids, pins) {
+    const out = { ok: true, usable: true, problems: [], warnings: [], states: {}, inspectedAt: clock().toISOString() };
+    for (const tool of MEDIA_TOOL_NAMES) {
+      const info = ids[tool];
+      const s = stateOf(info, pins[tool]);
+      out.states[tool] = s.state;
+      out[tool] = info ? { ...info, state: s.state, ...(s.state === "CHANGED" ? { changeRecorded: s.recorded } : {}) } : null;
+      if (s.state !== "PINNED") out.usable = false;
+      if (s.state === "MISSING") { out.ok = false; out.problems.push(`${tool}_missing`); continue; }
+      if (!info.version) out.warnings.push(`${tool}_version_unreadable`);
+      if (s.state === "UNPINNED") out.problems.push("tools_not_pinned");
+      if (s.state === "CHANGED") out.problems.push("tool_changed");
+    }
+    out.problems = [...new Set(out.problems)];
+    resolved = out;
+    return out;
+  }
+
+  /**
+   * Read-only verification of both tools: present, version, sha256 (+ shared libraries), compared with the pins. Writes NO setting,
+   * row or event (a GET calls it); a different binary is reported as CHANGED, never adopted.
+   */
+  async function inspect() {
+    if (inspecting) return inspecting;
+    inspecting = (async () => summarize(await identifyAll(), currentPins()))();
+    try { return await inspecting; } finally { inspecting = null; }
+  }
+
+  const actorOf = (actor) => {
+    if (typeof actor !== "string" || !actor.trim() || actor.length > 120) throw new HubError("validation", "Lipsește autorul operației (actor).", { code: "ACTOR_REQUIRED" });
+    return actor.trim();
+  };
+  const identityOf = (info) => ({ path: info.path, version: info.version, sha256: info.sha256, libsSha256: info.libsSha256 || null });
+  const previousOf = (pin) => ({ path: pin.path || null, version: pin.version || null, sha256: pin.sha256, libsSha256: pin.libsSha256 || null, pinnedAt: pin.pinnedAt || null });
+
+  /**
+   * The explicit pin (the owner's command, the MEDIA_A ceremony, or an automatic step listed in a confirmed plan; `actor` is who,
+   * recorded on the pin and its events). All or nothing: both tools must be present and, unless already pinned, have a readable
+   * version. First identity → `media.tool.pinned`; a different binary → recorded as CHANGED (`media.tool.changed`, previous kept,
+   * unacknowledged): pinning never acknowledges a change. Already pinned / already recorded → nothing is written.
+   * `expect` (optional, M10.2 #30): the identity the owner was shown per tool ({ sha256, libsSha256, version }); when given, the pin
+   * records ONLY that identity (compared inside the pin transaction) and refuses with TOOL_CHANGED otherwise.
+   * → { pinned: [tool], changed: [tool], unchanged: [tool], tools: inspection }.
+   */
+  async function pin({ actor, reason = "", expect = null } = {}) {
+    const who = actorOf(actor);
+    if (!settings || !bus) throw new HubError("internal", "Setările nu sunt disponibile.");
+    const why = String(reason || "").slice(0, 200);
+    const shown = expectedOf(expect);
+    const ids = await identifyAll();
+    const missing = MEDIA_TOOL_NAMES.filter((t) => !ids[t]);
+    if (missing.length) {
+      summarize(ids, currentPins());
+      throw new HubError("tool", `${missing.join(" și ")} ${missing.length > 1 ? "nu sunt disponibile" : "nu este disponibil"} (instalează-l sau verifică PATH); nu am fixat nimic.`, { code: "TOOL_MISSING", data: { missing } });
+    }
+    let out;
+    try { out = pinInTransaction(ids, who, why, shown); } catch (error) { summarize(ids, currentPins()); throw error; }
+    return { ...out, tools: summarize(ids, currentPins()) };
+  }
+
+  /**
+   * M10.2 (#30): the identity the owner was shown (a plan card, the Studio → Unelte panel) → { tool: { sha256, libsSha256, version } },
+   * or null when none was given (the MEDIA_A ceremony, a bare owner command: they pin what is on disk, as before). Validated here so a
+   * malformed expectation is refused instead of silently comparing nothing.
+   */
+  function expectedOf(expect) {
+    if (expect === null || expect === undefined) return null;
+    if (typeof expect !== "object" || Array.isArray(expect)) throw new HubError("validation", "Identitatea arătată (expect) trebuie să fie un obiect.", { code: "MEDIA_EXPECT_INVALID" });
+    const out = {};
+    for (const [tool, want] of Object.entries(expect)) {
+      if (!MEDIA_TOOL_NAMES.includes(tool)) throw new HubError("validation", `Unealtă media necunoscută: ${tool}.`, { code: "MEDIA_TOOL_UNKNOWN" });
+      if (want === null || want === undefined) continue;
+      if (typeof want !== "object" || !/^[0-9a-f]{64}$/.test(String(want.sha256 || ""))) throw new HubError("validation", `Identitatea arătată pentru ${tool} nu are un sha256 valid.`, { code: "MEDIA_EXPECT_INVALID" });
+      const libs = want.libsSha256 ?? null;
+      if (libs !== null && !/^[0-9a-f]{64}$/.test(String(libs))) throw new HubError("validation", `Identitatea arătată pentru ${tool} are o amprentă a bibliotecilor invalidă.`, { code: "MEDIA_EXPECT_INVALID" });
+      out[tool] = { sha256: want.sha256, libsSha256: libs, version: want.version == null ? null : String(want.version).slice(0, 80) };
+    }
+    return out;
+  }
+  /**
+   * Whether the identity about to be recorded is exactly the one shown: sha256, the shared-library set (a missing libs field counts as
+   * "no shared libraries shown", so a DLL set swapped in after the card was drawn is refused — fail closed) and the version when both
+   * sides know it. Returns the names that differ.
+   */
+  const differsFromShown = (info, want) => [
+    ...(want.sha256 !== info.sha256 ? ["sha256"] : []),
+    ...((want.libsSha256 || null) !== (info.libsSha256 || null) ? ["biblioteci"] : []),
+    ...(want.version !== null && info.version !== null && want.version !== info.version ? ["versiune"] : []),
+  ];
+
+  function pinInTransaction(ids, who, why, shown = null) {
+    return bus.transaction(() => {
       const pins = settings.get("mediaToolPins") || {};
-      settings.set("mediaToolPins", { ...pins, [tool]: pin }, "media-tools", event);
-      bus.append({ type: event, scopeType: "media_tool", scopeId: tool, source: "media-tools", payload });
+      // M10.2 (#30): the comparison with the identity the owner was shown runs HERE, on the same `ids` that are about to be recorded,
+      // inside the transaction — not as a separate inspect() before pin() (a binary or DLL swapped between the two was pinned as the
+      // shown identity). Any difference refuses before settings.set: nothing is written.
+      if (shown) {
+        for (const tool of MEDIA_TOOL_NAMES) {
+          const s = stateOf(ids[tool], pins[tool]);
+          const writes = s.state === "UNPINNED" || (s.state === "CHANGED" && !s.recorded);
+          const want = shown[tool];
+          if (!want) {
+            if (writes) throw new HubError("conflict", `${tool} nu era printre uneltele arătate; nu fixez un binar pe care nu l-ai văzut.`, { code: "TOOL_CHANGED", data: { tools: [tool], reason: "not_shown" } });
+            continue;
+          }
+          const diff = differsFromShown(ids[tool], want);
+          if (diff.length) throw new HubError("conflict", `${tool} nu mai e binarul arătat (${diff.join(", ")} diferă de ce ai văzut); nu fixez nimic.`, { code: "TOOL_CHANGED", data: { tools: [tool], differs: diff } });
+        }
+      }
+      // A binary whose version cannot be read is not verified: it is never pinned, and a change to it is not recorded either.
+      const unverified = MEDIA_TOOL_NAMES.filter((t) => !ids[t].version && stateOf(ids[t], pins[t]).state !== "PINNED" && !stateOf(ids[t], pins[t]).recorded);
+      if (unverified.length) throw new HubError("tool", `Nu pot citi versiunea pentru ${unverified.join(", ")}; un binar neverificat nu se fixează.`, { code: "TOOL_UNVERIFIED", data: { tools: unverified } });
+      const next = { ...pins }; const events = [];
+      const result = { pinned: [], changed: [], unchanged: [] };
+      const at = clock().toISOString();
+      for (const tool of MEDIA_TOOL_NAMES) {
+        const info = ids[tool]; const cur = pins[tool]; const s = stateOf(info, cur);
+        const identity = identityOf(info);
+        if (s.state === "UNPINNED") {
+          next[tool] = { ...identity, pinnedAt: at, pinnedBy: who, ...(why ? { reason: why } : {}) };
+          result.pinned.push(tool);
+          events.push({ type: "media.tool.pinned", tool, payload: { tool, version: info.version, sha256: info.sha256, libsSha256: identity.libsSha256, actor: who, reason: why } });
+        } else if (s.state === "CHANGED" && !s.recorded) {
+          const previous = previousOf(cur);
+          next[tool] = { ...identity, pinnedAt: at, pinnedBy: who, previous, changedAt: at, acknowledged: false };
+          result.changed.push(tool);
+          events.push({ type: "media.tool.changed", tool, payload: { tool, from: { version: previous.version, sha256: previous.sha256 }, to: { version: info.version, sha256: info.sha256 }, actor: who } });
+        } else {
+          result.unchanged.push(tool);
+        }
+      }
+      if (events.length) {
+        settings.set("mediaToolPins", next, who, `media.tools.pin${why ? `: ${why}` : ""}`);
+        for (const e of events) bus.append({ type: e.type, scopeType: "media_tool", scopeId: e.tool, source: who, payload: e.payload });
+      }
+      return result;
     });
   }
 
   /**
-   * Verifies both tools: present, version readable, sha256 (+ shared libraries). Pins at the first verified use; a different
-   * binary later is recorded (previous identity kept) and reported as `tool_changed` until acknowledgeChange().
+   * The owner acknowledges a changed binary: the identity on disk NOW becomes the pin (previous kept) and the warning stops.
+   * `sha256` (optional) is the identity the owner was shown: if the binary changed again since, nothing is acknowledged.
+   * M10.2 (#30): `libsSha256` ("none" = a static build was shown) and `version`, when given, are compared the same way — the shared
+   * libraries are part of the identity, so a DLL set swapped after the Studio panel was drawn is not acknowledged as what was seen.
+   * The comparison uses the same `info` the transaction records (no second read in between).
+   */
+  async function acknowledgeChange(tool, actor = "owner", { sha256 = null, libsSha256 = undefined, version = undefined } = {}) {
+    if (!MEDIA_TOOL_NAMES.includes(tool)) throw new HubError("validation", `Unealtă media necunoscută: ${tool}.`, { code: "MEDIA_TOOL_UNKNOWN" });
+    const who = actorOf(actor);
+    if (!settings || !bus) throw new HubError("internal", "Setările nu sunt disponibile.");
+    const ids = await identifyAll();
+    const info = ids[tool];
+    if (!info) throw new HubError("tool", `${tool} nu este disponibil; nu am ce confirma.`, { code: "TOOL_MISSING" });
+    const again = [
+      ...(sha256 && sha256 !== info.sha256 ? ["sha256"] : []),
+      ...(libsSha256 !== undefined && libsSha256 !== null && (libsSha256 === "none" ? null : libsSha256) !== (info.libsSha256 || null) ? ["biblioteci"] : []),
+      ...(version !== undefined && version !== null && info.version !== null && String(version) !== info.version ? ["versiune"] : []),
+    ];
+    if (again.length) throw new HubError("conflict", `${tool} s-a schimbat din nou față de ce ți s-a arătat (${again.join(", ")}); reverifică uneltele.`, { code: "TOOL_CHANGED_AGAIN", data: { differs: again } });
+    const out = bus.transaction(() => {
+      const pins = settings.get("mediaToolPins") || {};
+      const cur = pins[tool];
+      const s = stateOf(info, cur);
+      if (s.state !== "CHANGED") return { acknowledged: false, reason: s.state === "UNPINNED" ? "not_pinned" : "nothing_to_acknowledge", state: s.state };
+      const at = clock().toISOString();
+      const ack = { acknowledged: true, acknowledgedAt: at, acknowledgedBy: who };
+      // A change already recorded by pin() keeps its record; one only seen by an inspection is recorded now, together.
+      const next = s.recorded ? { ...cur, ...ack } : { ...identityOf(info), pinnedAt: at, pinnedBy: who, previous: previousOf(cur), changedAt: at, ...ack };
+      settings.set("mediaToolPins", { ...pins, [tool]: next }, who, "media.tool.acknowledged");
+      if (!s.recorded) bus.append({ type: "media.tool.changed", scopeType: "media_tool", scopeId: tool, source: who,
+        payload: { tool, from: { version: next.previous.version, sha256: next.previous.sha256 }, to: { version: info.version, sha256: info.sha256 }, actor: who } });
+      bus.append({ type: "media.tool.acknowledged", scopeType: "media_tool", scopeId: tool, source: who,
+        payload: { tool, version: info.version, sha256: info.sha256, previous: next.previous ? { version: next.previous.version, sha256: next.previous.sha256 } : null } });
+      return { acknowledged: true, tool, version: info.version, sha256: info.sha256 };
+    });
+    summarize(ids, currentPins());
+    return out;
+  }
+
+  /** Refusal of a toolset that is not pinned or changed (shared by resolve() and the synchronous request gate). */
+  function refuseUnusable(states) {
+    const unpinned = MEDIA_TOOL_NAMES.filter((t) => states[t] === "UNPINNED");
+    if (unpinned.length) {
+      // M10.2 (#28): the two real paths — the pin step a Studio plan card lists (automatic readiness inside the one confirmation) or
+      // the Unelte panel of the Studio (#/studio?panel=tools), which exists (Studio.jsx → ToolsPanel).
+      throw new HubError("policy", `ffmpeg/ffprobe nu sunt fixate încă (versiune + sha256): ${unpinned.join(", ")}. Le fixez ca pas al planului confirmat (cere din nou randarea prin Lega: cardul listează fixarea), sau le fixezi tu în Studio → Unelte („Fixează”); randarea nu a pornit.`,
+        { code: "TOOLS_NOT_PINNED", data: { tools: unpinned } });
+    }
+    const changed = MEDIA_TOOL_NAMES.filter((t) => states[t] === "CHANGED");
+    if (changed.length) {
+      throw new HubError("policy", `${changed.join(", ")} s-a schimbat față de binarul fixat (versiune / sha256 / biblioteci). Confirmă schimbarea în Studio → Unelte („Confirmă schimbarea”, o decizie a ta, cu Windows Hello) înainte de randare; randarea nu a pornit.`,
+        { code: "TOOL_CHANGED", data: { tools: changed } });
+    }
+  }
+
+  /**
+   * The render path: a fresh inspection that refuses a missing (TOOL_MISSING), unpinned (TOOLS_NOT_PINNED) or changed and not yet
+   * acknowledged (TOOL_CHANGED) toolset before the real job spawns anything. Returns the inspection when every tool is PINNED.
    */
   async function resolve() {
-    if (resolving) return resolving;
-    resolving = (async () => {
-      const out = { ok: true, problems: [], warnings: [] };
-      const pins = settings ? settings.get("mediaToolPins") || {} : {};
-      for (const tool of MEDIA_TOOL_NAMES) {
-        const launcher = launcherFor(tool);
-        if (!launcher) { out[tool] = null; out.ok = false; out.problems.push(`${tool}_missing`); continue; }
-        let sha256 = null; let libs = null;
-        try { sha256 = cachedSha(launcher.identityFile); libs = libsSha(launcher.identityFile); }
-        catch { out[tool] = null; out.ok = false; out.problems.push(`${tool}_missing`); continue; }
-        let version = null;
-        try { version = await readVersion(tool, launcher); } catch (error) { if (error?.code === "TOOL_MISSING") { out[tool] = null; out.ok = false; out.problems.push(`${tool}_missing`); continue; } }
-        const info = { path: launcher.identityFile, version, sha256, libsSha256: libs };
-        out[tool] = info;
-        if (!version) { out.warnings.push(`${tool}_version_unreadable`); continue; } // not verified → never pinned
-        const pin = pins[tool];
-        const now = clock().toISOString();
-        if (!pin?.sha256) {
-          writePin(tool, { ...info, pinnedAt: now }, "media.tool.pinned", { tool, version, sha256, libsSha256: libs });
-        } else if (pin.sha256 !== sha256 || (pin.libsSha256 || null) !== libs || pin.version !== version) {
-          const previous = { path: pin.path, version: pin.version, sha256: pin.sha256, libsSha256: pin.libsSha256 || null, pinnedAt: pin.pinnedAt };
-          writePin(tool, { ...info, pinnedAt: now, previous, changedAt: now, acknowledged: false }, "media.tool.changed",
-            { tool, from: { version: previous.version, sha256: previous.sha256 }, to: { version, sha256 } });
-          out.problems.push("tool_changed");
-        } else if (pin.changedAt && !pin.acknowledged) {
-          out.problems.push("tool_changed");
-        }
-      }
-      out.problems = [...new Set(out.problems)];
-      resolved = out;
-      return out;
-    })();
-    try { return await resolving; } finally { resolving = null; }
+    const r = await inspect();
+    const missing = MEDIA_TOOL_NAMES.filter((t) => r.states[t] === "MISSING");
+    if (missing.length) throw new HubError("tool", `${missing.join(" și ")} ${missing.length > 1 ? "nu sunt disponibile" : "nu este disponibil"} (instalează-l sau verifică PATH).`, { code: "TOOL_MISSING", data: { missing } });
+    refuseUnusable(r.states);
+    return r;
   }
 
-  /** The owner acknowledges a changed binary (the warning stops; the new identity stays pinned). */
-  function acknowledgeChange(tool, actor = "owner") {
-    if (!MEDIA_TOOL_NAMES.includes(tool)) throw new HubError("validation", `Unealtă media necunoscută: ${tool}.`);
-    if (!settings || !bus) throw new HubError("internal", "Setările nu sunt disponibile.");
-    return bus.transaction(() => {
-      const pins = settings.get("mediaToolPins") || {};
-      const pin = pins[tool];
-      if (!pin?.changedAt || pin.acknowledged) return { acknowledged: false, reason: "nothing_to_acknowledge" };
-      settings.set("mediaToolPins", { ...pins, [tool]: { ...pin, acknowledged: true, acknowledgedAt: clock().toISOString(), acknowledgedBy: actor } }, actor, "media.tool.acknowledged");
-      bus.append({ type: "media.tool.acknowledged", scopeType: "media_tool", scopeId: tool, source: actor, payload: { tool, version: pin.version, sha256: pin.sha256 } });
-      return { acknowledged: true };
-    });
+  /**
+   * Synchronous gate for a render request (no spawn): the pins must exist, no recorded change may be unacknowledged, and the last
+   * inspection (if any) must not have seen a different binary. The run itself re-verifies through resolve().
+   */
+  function requirePinned() {
+    if (!settings) return;
+    const pins = currentPins();
+    const states = {};
+    for (const tool of MEDIA_TOOL_NAMES) {
+      const p = pins[tool];
+      states[tool] = !p?.sha256 ? "UNPINNED" : (p.changedAt && !p.acknowledged) || resolved?.states?.[tool] === "CHANGED" ? "CHANGED" : "PINNED";
+    }
+    refuseUnusable(states);
   }
 
-  /** Production: verify once per process, and again when the binary on disk changes (size/mtime). */
+  /** Production: verify presence once per process, and again when the binary on disk changes (size/mtime). Read-only. */
   async function ensureLauncher(tool) {
     const launcher = launcherFor(tool);
     if (!launcher) throw new HubError("tool", `${tool} nu este disponibil (instalează-l sau verifică PATH).`, { code: "TOOL_MISSING" });
@@ -312,7 +535,7 @@ export function createMediaTools({ config, supervisor, settings = null, bus = nu
       let sig;
       try { const st = fs.statSync(launcher.identityFile); sig = `${st.size}:${st.mtimeMs}`; } catch { throw new HubError("tool", `${tool} nu este disponibil.`, { code: "TOOL_MISSING" }); }
       const known = identityCache.get(launcher.identityFile);
-      if (!resolved || !resolved[tool] || resolved[tool].path !== launcher.identityFile || !known || known.sig !== sig) await resolve();
+      if (!resolved || !resolved[tool] || resolved[tool].path !== launcher.identityFile || !known || known.sig !== sig) await inspect();
       if (!resolved?.[tool]) throw new HubError("tool", `${tool} nu este disponibil.`, { code: "TOOL_MISSING" });
     }
     return launcher;
@@ -401,5 +624,5 @@ export function createMediaTools({ config, supervisor, settings = null, bus = nu
     return normalized;
   }
 
-  return { resolve, acknowledgeChange, run, cancel, probe, inputArgs, outputArg, prepareArgs, running: () => [...running.keys()], lastResolved: () => resolved };
+  return { inspect, pin, resolve, requirePinned, acknowledgeChange, run, cancel, probe, inputArgs, outputArg, prepareArgs, running: () => [...running.keys()], lastResolved: () => resolved };
 }

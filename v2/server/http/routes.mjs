@@ -28,6 +28,7 @@ import { registerOwnerRoutes } from "../owner/owner-routes.mjs";
 import { registerIntelRoutes } from "../intel/intel-routes.mjs";
 import { registerMediaRoutes } from "../media/media-routes.mjs";
 import { registerOpsRoutes } from "../ops/ops-routes.mjs";
+import { registerProbeRoutes } from "../owner/probe-routes.mjs";
 import { COMMAND_CHANNELS, AGENT_COMMANDS, decodeDelegation, checkDelegation } from "../runtime/commands.mjs";
 
 /** The channel a request declares: a local script ("cli"), a delegated agent ("agent", M07) or the owner's UI (default). */
@@ -77,6 +78,8 @@ export function registerRoutes(router, hub, { token }) {
   registerMediaRoutes(router, hub);
   // M10 Desktop Operator, operation plans, Studio project import / folders / capture scope / local export.
   registerOpsRoutes(router, hub);
+  // M10.2 probe counters (GET, read-only) and the owner.nav screen telemetry (v2/server/owner/probe-routes.mjs).
+  registerProbeRoutes(router, hub);
 
   // ---------- session, health, state ----------
   get("/api/health", () => ({ ok: true, version: HUB_VERSION, apiContract: API_CONTRACT, canonicalOrigin: config.canonicalOrigin, bootId: hub.bootId, mode: settings.get("mode"), gate: settings.get("executionGate").status, time: clock().toISOString(), simulation: Boolean(config.simulation) }));
@@ -105,6 +108,8 @@ export function registerRoutes(router, hub, { token }) {
     const surfaceList = surfaces.list();
     return {
       version: HUB_VERSION, bootId: hub.bootId, mode: settings.get("mode"), executionGate: settings.get("executionGate"),
+      // M10.2 (read-only): the confirmed plans whose own steps may run live while the Hub stays in its mode ("BUILD_SAFE + 1 plan activ").
+      liveScopes: hub.envelopes?.liveScopes ? hub.envelopes.liveScopes() : [],
       activeRuns: runs.activeRuns(), pendingApprovals: pending.length, approvals: pending.slice(0, 6),
       missions: activeMissions, blockedTasks, leases: leases.list(),
       providers: ["codex", "claude"].map((id) => providerSummary(id)),

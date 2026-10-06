@@ -10,6 +10,8 @@ import { ProjectDetail, ProjectPicker } from "./studio/Project.jsx";
 import { Library } from "./studio/Library.jsx";
 import { CommandCenter, Platforms } from "./studio/Overview.jsx";
 import { Analytics } from "./studio/Analytics.jsx";
+import { ToolsPanel } from "./studio/Tools.jsx";
+import { studioToolsPanelOpen, STUDIO_TOOLS_HREF } from "../lib/uiLogic.js";
 
 const ICONS = { board: KanbanSquare, project: Clapperboard, library: LibraryIcon, command: Gauge, platforms: MonitorSmartphone, analytics: LineChart };
 
@@ -52,16 +54,23 @@ function StudioTabs({ value, go }) {
  */
 export default function Studio({ id, query, go }) {
   const route = studioRoute(id, query);
-  const status = useStudio("/api/media/status", ["settings.changed", "media.render."]);
+  const status = useStudio("/api/media/status", ["settings.changed", "media.render.", "media.tool."]);
+  // M10.2 (#27): the Unelte panel (pin / acknowledge ffmpeg) opens by address (#/studio?panel=tools: a blocker, a refusal, Lega's
+  // arrow) or by itself when the last inspection says renders are refused; otherwise a link in the header reaches it.
+  const toolsOpen = studioToolsPanelOpen(query, status.data?.tools);
   return (
     <div className="page studio">
       <div className="page-head">
         <div><h1>Content Studio</h1><p>Producție video locală și distribuție pregătită manual: nimic nu se încarcă sau se publică automat, iar aprobările vin doar din sesiunea ta.</p></div>
-        {status.data && <Limitations items={status.data.limitations} compact />}
+        <div className="row wrap">
+          {status.data && <Limitations items={status.data.limitations} compact />}
+          {!toolsOpen && <a className="btn sm" href={STUDIO_TOOLS_HREF}>Unelte</a>}
+        </div>
       </div>
       <StudioTabs value={route.tab} go={go} />
       <div id="studio-panel" role="tabpanel" aria-labelledby={`studio-tab-${route.tab}`} className="studio-panel">
         {status.error && <ErrorNotice error={status.error} onRetry={status.reload} />}
+        {toolsOpen && <ToolsPanel focus={query?.panel === "tools"} onChanged={status.reload} />}
         {route.tab === "board" && <Board go={go} />}
         {route.tab === "project" && (route.projectId
           ? <ProjectDetail projectId={route.projectId} sub={route.sub} tMs={route.tMs} versionId={route.versionId} go={go} status={status.data} />

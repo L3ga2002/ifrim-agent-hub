@@ -207,6 +207,14 @@ function listFiles(dir) {
   return out.sort();
 }
 
+/** The registry id of a skill folder (the folder name when it is a valid skill name, else a slug of it). */
+const skillIdOf = (folder) => (NAME_RE.test(folder) && folder.length <= 64 ? folder
+  : folder.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 64) || "invalid-skill");
+const approvedFacts = (git) => git?.tracked === true && git?.clean === true;
+
+/** M10.2 reconcile states: one per skill folder (MISSING_ON_DISK per registry entry whose folder is gone). */
+export const RECONCILE_STATES = Object.freeze(["IN_SYNC", "NEW_CONTENT", "FACTS_STALE", "INVALID", "MISSING_ON_DISK"]);
+
 export function hashSkillDirectory(dir, files) {
   const hash = crypto.createHash("sha256");
   for (const rel of files) { hash.update(rel); hash.update("\0"); hash.update(fs.readFileSync(path.join(dir, rel))); hash.update("\0"); }
@@ -252,13 +260,12 @@ export function createSkills({ db, bus, clock, config, roleConfig }) {
   function importOne(dir, actor = "user", { snapshot = lazySnapshot() } = {}) {
     const validation = validateSkillDirectory(dir, { roles: roleConfig.roles });
     const folder = path.basename(dir);
-    const id = NAME_RE.test(folder) && folder.length <= 64 ? folder : folder.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 64) || "invalid-skill";
+    const id = skillIdOf(folder);
     const sha = hashSkillDirectory(dir, validation.files);
     const now = clock().toISOString();
     const body = validation.body.slice(0, 200000);
     const factsNow = () => (normPath(path.dirname(path.resolve(dir))) === normPath(path.resolve(skillsDir))
       ? gitFactsFor(snapshot(), folder, validation.files) : { tracked: false, clean: false, head: "", reason: "outside_skills_dir" });
-    const approvedFacts = (git) => git?.tracked === true && git?.clean === true;
     const knownVersion = () => db.prepare("SELECT version, validation_json, body FROM skill_versions WHERE skill_id = ? AND sha256 = ?").get(id, sha);
     // git runs before the transaction (never while the database is locked); only when this content still needs approval facts.
     const before = knownVersion();
@@ -296,6 +303,95 @@ export function createSkills({ db, bus, clock, config, roleConfig }) {
         payload: { version, sha256: sha, errors: validation.errors.slice(0, 10), warnings: validation.warnings.slice(0, 10), approved: approvedFacts(git), approvalReason: git.reason || null } });
       return { id, version, newVersion: true, valid: validation.ok, validation, git };
     });
+  }
+
+  /**
+   * How one folder of skillsDir stands against the registry, decided exactly the way importOne would act on it (so a folder
+   * reported as drifted is one importOne changes, and an IN_SYNC one is one it leaves alone; that is what keeps reconcile
+   * idempotent). Read-only: hashing, validation, one git view per pass, SELECTs.
+   * - NEW_CONTENT: the disk content is not the registry's current version (an edit, a new folder, or a revert importOne moves
+   *   the registry back to). INVALID instead when that content fails validation (importOne records it as `invalid`).
+   * - FACTS_STALE: the content is the current version, but its stored approval facts (validation.git) differ from what git says
+   *   now — e.g. the owner committed the folder after the Hub booted. Only importOne's own re-check rewrites them.
+   * - IN_SYNC / INVALID (no drift): nothing importOne would change; an unapproved version whose facts are still accurate stays
+   *   IN_SYNC (reconcile reports `approved:false`, it never approves).
+   */
+  function classifyFolder(dir, snapshot) {
+    const folder = path.basename(dir);
+    const id = skillIdOf(folder);
+    const validation = validateSkillDirectory(dir, { roles: roleConfig.roles });
+    const sha = hashSkillDirectory(dir, validation.files);
+    const skill = db.prepare("SELECT status, current_version FROM skills WHERE id = ?").get(id);
+    const known = db.prepare("SELECT version, validation_json FROM skill_versions WHERE skill_id = ? AND sha256 = ?").get(id, sha);
+    const status = validation.ok ? "active" : "invalid";
+    const base = { id, folder, sha256: sha, valid: validation.ok, currentVersion: skill?.current_version ?? null, deprecated: skill?.status === "deprecated" };
+    const contentState = validation.ok ? "NEW_CONTENT" : "INVALID";
+    if (!known) return { ...base, state: contentState, drift: true, reason: skill ? "content_changed" : "not_registered", ...(validation.ok ? {} : { errors: validation.errors.slice(0, 5) }) };
+    // importOne points a non-deprecated skill at a known version (a revert to older content) and fixes its status.
+    if (skill && skill.status !== "deprecated" && (skill.current_version !== known.version || skill.status !== status)) {
+      return { ...base, state: contentState, drift: true, reason: skill.current_version !== known.version ? "known_version" : "status", version: known.version };
+    }
+    const stored = parse(known.validation_json, {});
+    const steady = validation.ok ? "IN_SYNC" : "INVALID";
+    // An approved version is never re-checked by importOne (only a missing body hash is filled in).
+    if (approvedFacts(stored.git) && stored.storedBodySha256) return { ...base, state: steady, drift: false, version: known.version, approved: true };
+    const git = approvedFacts(stored.git) ? stored.git : gitFactsFor(snapshot(), folder, validation.files);
+    const stale = !stored.git || stored.git.tracked !== git.tracked || stored.git.clean !== git.clean || stored.git.reason !== git.reason || !stored.storedBodySha256;
+    return { ...base, state: stale ? "FACTS_STALE" : steady, drift: stale, version: known.version, approved: approvedFacts(stored.git),
+      ...(stale ? { approvedAfter: approvedFacts(git) } : {}), approvalReason: (stale ? git.reason : stored.git?.reason) || null };
+  }
+
+  /**
+   * M10.2 (U05): re-checks the registry against v2/skills on demand. Before, it happened only at boot (hub.mjs) or through the
+   * ui-only skill.import, so a skill committed after the Hub started stayed 'untracked' (unapproved, never injected) until the
+   * next restart. reconcile classifies every folder (see classifyFolder), plus registry entries whose folder is gone
+   * (MISSING_ON_DISK: reported only, nothing is deleted or deprecated), and, without dryRun, runs importOne ONLY for the drifted
+   * folders. It decides nothing about approval itself: approval facts still come only from gitFactsFor inside importOne (every
+   * file tracked, no skip-worktree/assume-unchanged entry, nothing modified or untracked: the owner's commit), and an owner
+   * approval of a candidate stays skill.candidate.approve on the owner channel. It never reads or writes skill candidates,
+   * activations or overlays. One `skill.reconciled` summary event, only when something changed (a second pass records nothing).
+   * Local and inference-free: file hashes, one read-only git view, SQLite.
+   */
+  function reconcile({ actor = "reconcile", dryRun = false } = {}) {
+    const snapshot = lazySnapshot();
+    const items = [];
+    if (fs.existsSync(skillsDir)) {
+      for (const entry of fs.readdirSync(skillsDir, { withFileTypes: true })) {
+        if (!entry.isDirectory()) continue;
+        const dir = path.join(skillsDir, entry.name);
+        try { items.push(classifyFolder(dir, snapshot)); }
+        // A folder that cannot even be read is reported, not imported (importAll would log skill.import_failed every pass).
+        catch (error) { items.push({ id: skillIdOf(entry.name), folder: entry.name, state: "INVALID", drift: false, error: String(error.message || error).slice(0, 300) }); }
+      }
+    }
+    const onDisk = new Set(items.map((i) => i.id));
+    for (const s of db.prepare("SELECT id, directory FROM skills ORDER BY id").all()) {
+      if (onDisk.has(s.id)) continue;
+      const abs = folderOf(s.directory);
+      if (abs && !fs.existsSync(abs)) items.push({ id: s.id, folder: path.basename(abs), state: "MISSING_ON_DISK", drift: false });
+    }
+    items.sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
+    const counts = Object.fromEntries(RECONCILE_STATES.map((s) => [s, items.filter((i) => i.state === s).length]));
+    const drifted = items.filter((i) => i.drift);
+    const applied = []; const failed = [];
+    if (!dryRun) {
+      for (const item of drifted) {
+        try {
+          const result = importOne(path.join(skillsDir, item.folder), actor, { snapshot });
+          const row = db.prepare("SELECT validation_json FROM skill_versions WHERE skill_id = ? AND version = ?").get(result.id, result.version);
+          applied.push({ id: result.id, from: item.state, version: result.version, newVersion: result.newVersion, valid: result.valid,
+            approved: approvedFacts(parse(row?.validation_json, {}).git) });
+        } catch (error) { failed.push({ id: item.id, error: String(error.message || error).slice(0, 300) }); }
+      }
+      if (applied.length || failed.length) {
+        bus.emit({ type: "skill.reconciled", scopeType: "system", scopeId: "skills", source: actor,
+          payload: { counts, applied: applied.slice(0, 50), failed: failed.slice(0, 20), missingOnDisk: items.filter((i) => i.state === "MISSING_ON_DISK").map((i) => i.id).slice(0, 50) } });
+      }
+    }
+    const message = !drifted.length ? `Registrul de skill-uri este la zi (${items.length} verificate).`
+      : dryRun ? `${drifted.length} skill-uri diferă de registru: ${drifted.map((i) => i.id).slice(0, 8).join(", ")}. Nimic nu a fost scris.`
+        : `Am actualizat ${applied.length} skill-uri: ${applied.map((a) => `${a.id} v${a.version}${a.approved ? " (aprobat prin commit)" : " (neaprobat)"}`).slice(0, 8).join(", ")}${failed.length ? `; ${failed.length} au eșuat` : ""}.`;
+    return { dryRun: Boolean(dryRun), counts, drift: drifted.length, items, applied, failed, message };
   }
 
   function list() {
@@ -363,5 +459,5 @@ export function createSkills({ db, bus, clock, config, roleConfig }) {
     return normPath(path.dirname(abs)) === normPath(path.resolve(skillsDir)) ? abs : null;
   };
 
-  return { importAll, importOne, list, versions, forRole, setOverlay, exportBundle, folderOf, dir: skillsDir };
+  return { importAll, importOne, reconcile, list, versions, forRole, setOverlay, exportBundle, folderOf, dir: skillsDir };
 }

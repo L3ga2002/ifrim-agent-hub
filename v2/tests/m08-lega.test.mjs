@@ -9,7 +9,7 @@ import { makeTestHub, waitFor, enrolOwner, prepareLiveWithoutGrants } from "./he
 import { materializeFixture, demoSpec } from "../server/factory/fixtures.mjs";
 // M09: every factory mission names its models explicitly (without them it is a draft whose scope is incomplete).
 const M09_MODELS = { writerModel: "gpt-fake-sol", reviewerModel: "sonnet" };
-import { enrolVoice, speak, OTHER_SPEAKER } from "./voice-helpers.mjs";
+import { enrolVoice, speak, OTHER_SPEAKER, startDerivedLega } from "./voice-helpers.mjs";
 import { parseLesson } from "../server/intel/teach.mjs";
 import { resolveIntent, numberOf } from "../server/owner/intents.mjs";
 import { activeLessons } from "../server/runtime/prompt.mjs";
@@ -172,15 +172,17 @@ async function voiceHub() {
 test("M08-D9-03 armed voice window: a plan shown in a Lega session is confirmed by the owner's 'Da, execută planul' through the local gate — no button; other voices, another Lega session or a vague 'da' do nothing", async () => {
   const t = await voiceHub();
   try {
-    // The plan is shown by intent in the owner's session, inside Lega session "lega_a": the Hub arms the window.
-    const shown = (await dispatch(t.hub, "owner.intent", { text: "Arată-mi planul", projectId: t.project.id, legaSessionId: "lega_a" }, { ownerSession: t.owner.session, channel: "owner" })).result;
+    // M10.2 U13: a window opens only for the LIVE Lega session derived from this owner session (a bare id is a claim, not a session).
+    const lega_a = await startDerivedLega(t, t.owner);
+    // The plan is shown by intent in the owner's session, inside that Lega session: the Hub arms the window.
+    const shown = (await dispatch(t.hub, "owner.intent", { text: "Arată-mi planul", projectId: t.project.id, legaSessionId: lega_a }, { ownerSession: t.owner.session, channel: "owner" })).result;
     const r = shown.results[0];
     assert.equal(r.plan.summary.state, "PLAN_READY", (r.plan.summary.blockers || []).join("; "));
     assert.equal(r.armed.armed, true, r.armed.reason);
     const env = r.plan.envelope;
     assert.ok(Date.parse(r.armed.expiresAt) - Date.now() <= 91000);
     const gateSay = async (text, opts = {}) => {
-      const g = await speak(t, t.owner, text, { purpose: "gate", envelopeId: env.id, legaSessionId: "lega_a", ...opts });
+      const g = await speak(t, t.owner, text, { purpose: "gate", envelopeId: env.id, legaSessionId: lega_a, ...opts });
       if (g.result === "MATCH") await waitFor(() => t.hub.db.prepare("SELECT transcript_status FROM voice_utterances WHERE id = ?").get(g.utteranceId).transcript_status !== "pending", 5000);
       await new Promise((res) => setTimeout(res, 150));
       return g;
@@ -197,11 +199,11 @@ test("M08-D9-03 armed voice window: a plan shown in a Lega session is confirmed 
     assert.equal(active.consent.modality, "voice");
     assert.equal(active.consent.voice.transcriptSource, "local");
     // The window is single-use: nothing re-arms by itself.
-    assert.equal(t.hub.envelopes.armedFor(env.id, t.owner.session.id, "lega_a"), null);
+    assert.equal(t.hub.envelopes.armedFor(env.id, t.owner.session.id, lega_a), null);
     const ownerCommands = t.hub.db.prepare("SELECT type FROM commands WHERE type IN ('grant.create','approval.decide','envelope.confirm','mode.set')").all().map((x) => x.type);
     assert.deepEqual(ownerCommands, [], "no confirm click, no grant form: the Hub confirmed from the verified utterance");
     await waitFor(() => ["DELIVERY_READY", "NEEDS_OWNER_DECISION", "BLOCKED"].includes(t.hub.factory.view(active.missionIds[0]).factory.stage), 120000, 100);
-  } finally { await t.cleanup(); }
+  } finally { await t.hub.lega.stopAll("test").catch(() => {}); await t.cleanup(); }
 });
 
 test("M08-D9-04 arming refuses without a Lega session, after the window expires, for a changed plan, and without the voice gate", async () => {
@@ -210,17 +212,19 @@ test("M08-D9-04 arming refuses without a Lega session, after the window expires,
     const shown = (await dispatch(t.hub, "owner.intent", { text: "Arată-mi planul", projectId: t.project.id }, { ownerSession: t.owner.session, channel: "owner" })).result;
     assert.equal(shown.results[0].armed.armed, false, "no Lega session → the plan waits for the cockpit");
     const env = shown.results[0].plan.envelope;
-    // Typed text through the UI channel (no session) cannot arm.
+    // Typed text through the UI channel (no session) cannot arm; nor can a Lega session id that is not a live derived session (M10.2).
     await assert.rejects(dispatch(t.hub, "envelope.arm", { envelopeId: env.id, legaSessionId: "lega_b" }, { channel: "ui", ownerSession: null }), /cannot be issued|channel/i);
-    const armed = (await dispatch(t.hub, "envelope.arm", { envelopeId: env.id, legaSessionId: "lega_b" }, { ownerSession: t.owner.session })).result;
+    await assert.rejects(dispatch(t.hub, "envelope.arm", { envelopeId: env.id, legaSessionId: "lega_b" }, { ownerSession: t.owner.session }), /sesiune Lega activă/);
+    const lega_b = await startDerivedLega(t, t.owner);
+    const armed = (await dispatch(t.hub, "envelope.arm", { envelopeId: env.id, legaSessionId: lega_b }, { ownerSession: t.owner.session })).result;
     assert.equal(armed.armed, true);
     // A sentence that is not a clean confirmation consumes nothing and confirms nothing.
-    const g = await speak(t, t.owner, "Da, dar nu porni încă planul", { purpose: "gate", envelopeId: env.id, legaSessionId: "lega_b" });
+    const g = await speak(t, t.owner, "Da, dar nu porni încă planul", { purpose: "gate", envelopeId: env.id, legaSessionId: lega_b });
     await waitFor(() => t.hub.db.prepare("SELECT transcript_status FROM voice_utterances WHERE id = ?").get(g.utteranceId).transcript_status !== "pending", 5000);
     await new Promise((res) => setTimeout(res, 200));
     assert.equal(t.hub.envelopes.get(env.id).status, "PROPOSED");
     // The voice gate turned off: arming is refused.
     await dispatch(t.hub, "voice.gate", { enabled: false }, { ownerSession: t.owner.session });
-    await assert.rejects(dispatch(t.hub, "envelope.arm", { envelopeId: env.id, legaSessionId: "lega_b" }, { ownerSession: t.owner.session }), /filtrul activ|profilul/);
-  } finally { await t.cleanup(); }
+    await assert.rejects(dispatch(t.hub, "envelope.arm", { envelopeId: env.id, legaSessionId: lega_b }, { ownerSession: t.owner.session }), /filtrul vocal|profilul/);
+  } finally { await t.hub.lega.stopAll("test").catch(() => {}); await t.cleanup(); }
 });

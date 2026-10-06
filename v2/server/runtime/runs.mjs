@@ -13,8 +13,13 @@ import { inspectionFromState } from "../policy/gate.mjs";
 import { appendReport, applyLatch, buildProviderReport } from "../policy/billing-evidence.mjs";
 import { composeSkills, COMPOSER_VERSION } from "../domain/skill-composer.mjs";
 import { sha256 } from "../core/canonical.mjs";
+import { runScopeKey } from "../domain/grants.mjs";
+import { nextSuspension } from "../policy/gate-state.mjs";
+import { stopScopeRecord } from "../owner/stop-scope.mjs";
 
 const PERSIST_INTERVAL_MS = 700;
+/** The suspension kinds a Stop All may record (D17); a pause or a plain gate suspension never comes through here. */
+const STOP_KINDS = new Set(["stop_all", "shutdown", "security"]);
 const APPROVAL_WAIT_MINUTES = 15;
 
 export const workspaceResource = (workspacePath) => `workspace:${path.resolve(workspacePath).toLowerCase()}`;
@@ -47,6 +52,9 @@ export function createRunManager(deps) {
   const active = new Map(); // runId -> { handle, conversationId, provider, leaseId, taskId }
   const approvalWaiters = new Map(); // approvalId -> resolve
   const starting = new Set(); // conversationId currently being admitted
+  // 2.12.1 (AS-01): bumped by every Stop All, synchronously, before anything else. A start still being admitted (waiting for its
+  // backup or its git state) compares it at the pre-model recheck: a stop that landed meanwhile wins, even if the gate is open again.
+  let stopEpoch = 0;
   let voice = null; // Lega session manager (late-bound): Stop All must end the voice session too
   let factory = null; // Software Factory (late-bound): Stop All stops its missions before the next stage can start
 
@@ -147,7 +155,10 @@ export function createRunManager(deps) {
     // M09: under an approved binding the binding decides (never the request's loose model/effort fields).
     const state = providerState?.get(stateKey) || null;
     // A bound run names its mission too: a grant derived for one mission of a plan serves only that mission (same model or not).
-    const plan = binding ? { ...boundPlan({ binding, provider, environment, state }), missionId: taskMission }
+    // M10.2 (U12): a run envelope's single step names its plan instead ("envrun:<id>"): the gate admits it through that plan only and
+    // its grant serves nothing else. Such a run is never a factory task (the binding comes from the envelope service, never a payload).
+    if (binding?.envelopeRunId && taskMission) throw new HubError("validation", "O execuție din planul unei singure execuții nu aparține unei sarcini Software Factory");
+    const plan = binding ? { ...boundPlan({ binding, provider, environment, state }), missionId: binding.envelopeRunId ? runScopeKey(binding.envelopeRunId) : taskMission }
       : resolveRunPlan({ provider, model, effort, profile: profile || DEFAULT_PROFILE, providerState: state });
     if (!plan.problem) timeline.mark("plan_resolved");
     if (plan.materialChange) bus.emit({ type: "run.material_change", scopeType: "conversation", scopeId: conversationId, projectId: project?.id || null, source: "hub",
@@ -166,6 +177,8 @@ export function createRunManager(deps) {
     }
     if (!adapter) throw new HubError("validation", `No adapter for ${provider} in ${environment}`);
 
+    // Everything above is synchronous: a Stop All cannot land between the gate's decision and this admission mark.
+    const admittedAtEpoch = stopEpoch;
     starting.add(conversationId);
     let lease = null;
     let grant = null;
@@ -198,6 +211,29 @@ export function createRunManager(deps) {
       // declaration, a concurrent run's report latched re-verification). The billing route is checked again here, the last moment
       // before anything reaches the provider (only that check: the lease and the attempt are already this run's).
       const recheck = gate.evaluate({ provider, projectId: project.id, access, grantId, workspaceResource: resource, plan, environment });
+      // 2.12.1 (AS-01, the kill switch): a Stop All (or any suspension of the gate, or the revocation of the grant this start took)
+      // while it waited for the backup / git state means the start never reaches its model — even when the gate was reopened in
+      // between (the stop epoch). Only these checks are read here: the lease, the concurrency slot and the attempt are already this
+      // start's own. The lease is released, the attempt given back (bounded), the refusal recorded as a blocked run, and a grant a
+      // Stop All would have revoked (an exhausted one, or one the refund made usable again) is revoked: Stop All's revocation stands.
+      const stoppedSince = stopEpoch !== admittedAtEpoch;
+      const gateNow = recheck.checks.find((c) => c.id === "execution_gate");
+      const heldGrant = grant ? grants.get(grant.id) : null;
+      const grantRevoked = Boolean(grant) && (!heldGrant || heldGrant.status === "revoked");
+      if (stoppedSince || (gateNow && !gateNow.ok) || grantRevoked) {
+        const failed = stoppedSince ? { id: "execution_gate", ok: false, detail: "Stop All în timpul admiterii: execuția nu ajunge la model" }
+          : gateNow && !gateNow.ok ? gateNow : { id: "live_grant", ok: false, detail: `Grantul ${grant.id} a fost revocat în timpul admiterii` };
+        bus.transaction(() => leases.release(lease.id, stoppedSince ? "Stop All before start" : "gate closed before start"));
+        if (grant) {
+          refundPreInference(grant.id, `${failed.id} closed before ${runId} started`);
+          const after = grants.get(grant.id);
+          if (stoppedSince && after?.status === "active") bus.transaction(() => grants.revoke(after.id, "stop-all"));
+        }
+        const run = recordBlockedRun({ conversation, provider, access, taskId, stage, roleId, inputMessageId: lastUser.id, category: "gate",
+          message: `${failed.id}: ${failed.detail}`, evidence: { gate: { checks: [failed] }, recheck: true, stopAll: stoppedSince }, timeline, plan, environment });
+        throw new HubError("gate", stoppedSince ? "Stop All landed while the run was being admitted; the model was not started" : "The execution gate closed before the run started; the model was not started",
+          { data: { runId: run.id, checks: [failed], stopAll: stoppedSince } });
+      }
       const billingNow = recheck.checks.find((c) => c.id === "billing_route");
       if (billingNow && !billingNow.ok) {
         bus.transaction(() => leases.release(lease.id, "billing evidence changed before start"));
@@ -380,8 +416,24 @@ export function createRunManager(deps) {
   async function waitForApproval({ runId, conversation, project, provider, request, taskId }) {
     const payload = request.kind === "command" ? { command: request.command, cwd: request.cwd, reason: request.reason } : { changes: request.changes, reason: request.reason };
     const actionKind = `provider.${request.kind}`;
+    // M10.2 (U11): a run admitted by a confirmed plan (its grant was derived from an envelope) never asks mid-plan. Under the
+    // workspace-write profile Codex asks only to go BEYOND it (unsandboxed, outside the workspace, network); the plan the owner
+    // confirmed is the boundary, so the request is declined at once — on the Windows route too, as the execution environments do —
+    // with a notice on the run, no approval card and no task scope granted. The step then fails or under-delivers, which becomes
+    // a finding, a repair inside the plan or an owner decision: safer than an implicit widening or a card the owner did not expect.
+    const planRun = getRun(runId);
+    const planGrant = planRun?.grantId ? grants.get(planRun.grantId) : null;
+    if (planGrant?.envelopeId) {
+      const what = request.kind === "command" ? `comanda ${JSON.stringify(request.command || "").slice(0, 120)}` : "o modificare de fișiere";
+      bus.transaction(() => {
+        bus.append({ type: "run.notice", scopeType: "conversation", scopeId: conversation.id, source: "hub", runId,
+          payload: { level: "warning", text: redactText(`${provider} a cerut aprobare pentru ${what} dincolo de profilul planului ${planGrant.envelopeId}${request.reason ? ` (${String(request.reason).slice(0, 120)})` : ""}; refuzat automat (planul confirmat e limita)`) } });
+        bus.append({ type: "approval.plan_declined", scopeType: "run", scopeId: runId, source: "policy", runId, projectId: project.id, payload: { actionKind, envelopeId: planGrant.envelopeId } });
+      });
+      return "decline";
+    }
     // Hub approval policy first; a provider/vendor approval prompt never replaces it.
-    const runEnv = getRun(runId)?.environment || "windows";
+    const runEnv = planRun?.environment || "windows";
     const policyDecision = deps.policy ? deps.policy.evaluate({ actionKind, surfaceId: surfaceOf(provider, runEnv) || "*", projectId: project.id, taskId, target: project.path }) : { decision: "ask" };
     if (policyDecision.decision === "deny" || policyDecision.decision === "allow") {
       bus.transaction(() => {
@@ -487,13 +539,28 @@ export function createRunManager(deps) {
     return entry.handle.interrupt(reason);
   }
 
-  /** Stop All: no new work (gate suspended, grants revoked), interrupt every controllable run. */
-  async function stopAll(actor = "user", reason = "Stop All") {
+  /**
+   * Stop All: no new work (gate suspended, grants revoked), interrupt every controllable run. M10.2.1 (D17): `origin` records who
+   * stopped — { kind: stop_all | shutdown | security, channel, actor, credential (hash prefix), sessionId, deviceId } — in
+   * executionGate.suspendedBy (precedence: a weaker kind keeps a stronger record). Without it the record says only the actor.
+   * 2.12.1: every start still being admitted is refused before its model (the stop epoch, AS-01); `alsoStop` (the system.stop_all
+   * command, the shutdown) stops what lives outside this manager — the desktop operator, the operation plans — and returns what it
+   * stopped; that and the missions the factory cancelled are recorded in the system.stop_all event (payload.scope, D22), so a later
+   * resume can tell work THIS stop stopped (held until the rearm, owner/stop-scope.mjs) from work paused for another reason.
+   */
+  async function stopAll(actor = "user", reason = "Stop All", origin = null, { alsoStop = null } = {}) {
+    stopEpoch += 1;
+    const admitting = starting.size;
     // The voice session ends first (the browser is told to close its microphone at once), in parallel with the run
     // interrupts; starting it before the grant revocation keeps "stop-all" as its recorded reason.
     const voicePromise = voice ? voice.stopAll("stop-all").catch((error) => ({ error: error.message })) : null;
+    const o = origin && typeof origin === "object" ? origin : {};
+    let suspension = null;
     bus.transaction(() => {
-      settings.set("executionGate", { status: "suspended", reason, changedAt: clock().toISOString(), changedBy: actor }, actor, reason);
+      const at = clock().toISOString();
+      suspension = nextSuspension(settings.get("executionGate"), { kind: STOP_KINDS.has(o.kind) ? o.kind : "stop_all", at,
+        channel: o.channel || (actor === "system" ? "system" : null), actor: o.actor || actor, credential: o.credential || null, sessionId: o.sessionId || null, deviceId: o.deviceId || null });
+      settings.set("executionGate", { status: "suspended", reason, changedAt: at, changedBy: actor, suspendedBy: suspension }, actor, reason);
       grants.revokeAll(actor, reason);
       deps.policy?.revokeTaskScopes(null, reason, actor);
     });
@@ -507,8 +574,16 @@ export function createRunManager(deps) {
     for (const [approvalId, resolve] of approvalWaiters) { approvalWaiters.delete(approvalId); resolve("decline"); }
     const voiceSession = voicePromise ? await voicePromise : null;
     const factoryMissions = factoryPromise ? await factoryPromise : [];
-    bus.emit({ type: "system.stop_all", scopeType: "system", scopeId: "hub", source: actor, payload: { reason, interrupted: interrupted.length, voiceStopped: Boolean(voiceSession), factoryMissions: factoryMissions.length } });
-    return { gate: "suspended", interrupted, voiceSession, factoryMissions, cloudTasksUnconfirmed: [], irreversibleEffects: [],
+    // What lives outside the run manager (desktop operator, operation plans): stopped by the caller's hook, its ids recorded below.
+    let others = null;
+    if (typeof alsoStop === "function") {
+      try { others = await alsoStop(); } catch (error) { others = { error: String(error?.message || error).slice(0, 300) }; }
+    }
+    const scope = stopScopeRecord({ missions: (Array.isArray(factoryMissions) ? factoryMissions : []).map((m) => m?.missionId).filter(Boolean),
+      plansPaused: others?.plansPaused, plansInterrupted: others?.plansInterrupted, desktopSessionId: others?.desktopSessionId });
+    bus.emit({ type: "system.stop_all", scopeType: "system", scopeId: "hub", source: actor, payload: { reason, interrupted: interrupted.length, voiceStopped: Boolean(voiceSession), factoryMissions: factoryMissions.length,
+      suspensionId: suspension?.id || null, kind: suspension?.kind || null, admissionsStopped: admitting, scope } });
+    return { gate: "suspended", suspensionId: suspension?.id || null, interrupted, voiceSession, factoryMissions, admissionsStopped: admitting, scope, cloudTasksUnconfirmed: [], irreversibleEffects: [],
       note: "No cloud tasks or external effects are started by this Hub build; only local provider processes were interrupted." };
   }
 
@@ -524,6 +599,8 @@ export function createRunManager(deps) {
     const stateKey = environment === "windows" ? provider : `${provider}@${environment}`;
     return { environment, stateKey, providerState: providerState?.get(stateKey) || null };
   };
-  return { start, interrupt, stopAll, resolveApproval, getRun, listRuns, activeRuns, activeCount: () => active.size + starting.size, rowToRun, attachVoice: (v) => { voice = v; }, attachFactory: (f) => { factory = f; },
+  return { start, interrupt, stopAll, resolveApproval, getRun, listRuns, activeRuns, activeCount: () => active.size + starting.size,
+    // 2.12.1 (AS-01): starts still being admitted (backup / git state); the rearm card waits for them (RUNS_ACTIVE).
+    admittingCount: () => starting.size, rowToRun, attachVoice: (v) => { voice = v; }, attachFactory: (f) => { factory = f; },
     timelineOf: (runId) => summarizeTimeline(getRun(runId)?.timeline || {}), refundPreInference, bindingContext };
 }

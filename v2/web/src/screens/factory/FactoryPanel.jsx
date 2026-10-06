@@ -59,6 +59,29 @@ function ScopeApproval({ view, reload }) {
   );
 }
 
+/**
+ * M10.2 (U15): under the voice-first policy the scope of a draft is confirmed as ONE plan (the envelope: the exact spec, models,
+ * limits and what never happens) in the cockpit — the Hub derives the grants itself and stays in BUILD_SAFE. This only PROPOSES
+ * the plan (nothing starts, no grant) and opens the cockpit, where the card is restored from the Hub and confirmed once.
+ */
+function PlanFromFactory({ view }) {
+  const propose = useAction(async () => {
+    const out = await api("/api/envelopes", { method: "POST", body: { projectId: view.mission.projectId, missionIds: [view.mission.id] } });
+    if (!out?.envelope) pushToast(`factory-plan-${view.mission.id}`, "warn", `Planul nu e complet: ${(out?.summary?.blockers || []).slice(0, 2).join(" · ") || "vezi cockpit-ul"}`);
+    window.location.hash = `#/lega/${encodeURIComponent(view.mission.projectId)}`;
+  });
+  if (!view.scope) return null;
+  return (
+    <Panel title="Planul (o singură confirmare)" icon={ShieldCheck}>
+      <div className="stack tight">
+        <p className="muted" style={{ margin: 0 }}>Îți arăt planul exact în cockpit: specificația v{view.scope.specVersion}, modelele, limitele, ce nu se face niciodată. Îl confirmi o dată (click, Enter sau vocea ta verificată local); granturile tehnice le derivă Hub-ul din plan, iar Hub-ul rămâne în BUILD_SAFE.</p>
+        <div><button className="btn primary" disabled={propose.pending} onClick={propose.run} data-lega-target="factory-plan">{propose.pending ? "Pregătesc planul…" : "Arată-mi planul (o confirmare)"}</button></div>
+        <ErrorNotice error={propose.error} />
+      </div>
+    </Panel>
+  );
+}
+
 /** A new spec version (the approved one is never edited). */
 function SpecEditor({ view, onClose, reload }) {
   const spec = view.spec.spec;
@@ -187,6 +210,9 @@ export function FactoryPanel({ missionId }) {
   const [showDiff, setShowDiff] = useState(false);
   const act = useAction(async (path, body = {}) => { await api(`/api/factory/${missionId}/${path}`, { method: "POST", body }); reload(); });
   const [reviewerModel, setReviewerModel] = useState(""); // the owner may pick an allowed reviewer model when resuming
+  // M10.2 (U15): under voice-first the draft's scope is ONE plan in the cockpit; the M03 scope approval stays reachable, collapsed.
+  const ownerStatus = useResource("/api/owner/status", { reloadOn: (e) => e.type === "settings.changed" && e.payload?.key === "ownerPolicy" });
+  const voiceFirst = Boolean(ownerStatus.data?.policy?.active);
   if (loading) return <Panel title="Software Factory" icon={Factory}><Loading /></Panel>;
   if (error) return <Panel title="Software Factory" icon={Factory}><ErrorNotice error={error} onRetry={reload} /></Panel>;
   const f = view.factory;
@@ -215,7 +241,7 @@ export function FactoryPanel({ missionId }) {
             {/* M09: the bound models (approved with the scope) or the draft's resolution; never a placeholder for the account default. */}
             <dt>Modele</dt><dd>writer: {view.models?.writer?.label || <span className="warn">nefixat</span>} · reviewer: {view.models?.reviewer?.label || <span className="warn">nefixat</span>}
               {view.models?.writer?.approved ? <span className="faint small"> (aprobate cu scope-ul; verificate din nou la fiecare pornire)</span> : <span className="faint small"> (ciornă: se fixează la aprobarea scope-ului)</span>}</dd>
-            <dt>Granturi necesare</dt><dd>{view.grantsNeeded.map((g) => `${g.provider} ${g.access} × ${g.attempts} (${g.why})`).join(" · ")}</dd>
+            <dt>{voiceFirst ? "Granturi pe care planul le derivă" : "Granturi necesare"}</dt><dd>{view.grantsNeeded.map((g) => `${g.provider} ${g.access} × ${g.attempts} (${g.why})`).join(" · ")}</dd>
           </dl>
           {["PAUSED", "BLOCKED", "NEEDS_OWNER_DECISION"].includes(f.stage) && f.approvedSpecVersion && (
             <div className="row wrap">
@@ -243,7 +269,15 @@ export function FactoryPanel({ missionId }) {
         </div>
       </Panel>
       {f.stage === "SPEC_DRAFT" && !f.approvedSpecVersion && <ModelEditor key={`${f.limits.writerModel || ""}|${f.limits.reviewerModel || ""}|${f.limits.writerEffort || ""}|${f.limits.reviewerEffort || ""}`} view={view} reload={reload} />}
-      {f.stage === "SPEC_DRAFT" && !problems.length && <ScopeApproval view={view} reload={reload} />}
+      {f.stage === "SPEC_DRAFT" && !problems.length && (ownerStatus.data || ownerStatus.error) && (voiceFirst ? (
+        <>
+          <PlanFromFactory view={view} />
+          <details className="advanced">
+            <summary className="link-btn" style={{ cursor: "pointer" }}>Avansat: aprobare fără plan (calea M03: aprobare prin click, apoi grant pe execuție)</summary>
+            <div style={{ marginTop: 8 }}><ScopeApproval view={view} reload={reload} /></div>
+          </details>
+        </>
+      ) : <ScopeApproval view={view} reload={reload} />)}
 
       {view.runs.length > 0 && (
         <Panel title="Execuții și timpul pe etape" icon={Timer}>

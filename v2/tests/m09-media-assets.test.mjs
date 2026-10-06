@@ -194,13 +194,19 @@ test("M09-AS-05: timeout and cancel stop a hanging ffmpeg (process tree killed, 
   } finally { env.cleanup(); }
 });
 
-test("M09-AS-06: a missing tool is TOOL_MISSING for run/probe, resolve() reports it and an import records nothing", async () => {
+test("M09-AS-06: a missing tool is TOOL_MISSING for run/probe, inspect() reports it (resolve() and pin() refuse) and an import records nothing", async () => {
   const missing = { executable: process.execPath, prefixArgs: [FFMPEG_PROXY], env: { IFRIM_REAL_TOOL: "" } };
   const { env, tools, assets, put, inbox, paths } = setup({ launchers: { available: false, ffmpeg: missing, ffprobe: missing, paths: {} } });
   try {
-    const r = await tools.resolve();
+    // M10.2: inspect() is the read-only report; resolve() (the render path) and pin() refuse a missing tool.
+    const r = await tools.inspect();
     assert.equal(r.ok, false);
     assert.deepEqual(r.problems.sort(), ["ffmpeg_missing", "ffprobe_missing"]);
+    assert.deepEqual(r.states, { ffmpeg: "MISSING", ffprobe: "MISSING" });
+    await rejectsCode(tools.resolve(), "TOOL_MISSING");
+    await rejectsCode(tools.pin({ actor: "test" }), "TOOL_MISSING");
+    assert.equal(events(env.db, "settings.changed").filter((e) => e.scope_id === "mediaToolPins").length, 0, "nothing pinned");
+    assert.deepEqual(env.settings.get("mediaToolPins"), {});
     await rejectsCode(tools.run({ tool: "ffmpeg", args: ["-i", "a.mp4", "b.mp4"] }), "TOOL_MISSING");
     await rejectsCode(tools.probe(put("x.mp4", fakeMp4("m"))), "TOOL_MISSING");
     await rejectsCode(assets.ingestFile({ sourcePath: put("y.mp4", fakeMp4("n")), allowedRoots: [inbox], actor: "owner" }), "TOOL_MISSING");
@@ -686,11 +692,18 @@ function realSetup(t) {
   return setup({ launchers });
 }
 
-test("M09-AS-R1: resolve() reads the real version, pins version + sha256 once, and reports a changed binary until acknowledged", async (t) => {
+test("M09-AS-R1: inspect() reads the real version without writing; pin() pins version + sha256 once; a changed binary is reported until acknowledged", async (t) => {
   const s = realSetup(t);
   if (!s) return;
   const { env, tools } = s;
   try {
+    // M10.2: reading never pins; the pin is the explicit act.
+    const seen = await tools.inspect();
+    assert.deepEqual(seen.states, { ffmpeg: "UNPINNED", ffprobe: "UNPINNED" });
+    assert.deepEqual(seen.problems, ["tools_not_pinned"]);
+    assert.equal(events(env.db, "media.tool.pinned").length, 0, "inspect() writes nothing");
+    await rejectsCode(tools.resolve(), "TOOLS_NOT_PINNED");
+    assert.deepEqual((await tools.pin({ actor: "owner" })).pinned, ["ffmpeg", "ffprobe"]);
     const r = await tools.resolve();
     assert.equal(r.ok, true, JSON.stringify(r));
     assert.deepEqual(r.problems, []);
@@ -701,15 +714,21 @@ test("M09-AS-R1: resolve() reads the real version, pins version + sha256 once, a
     assert.equal(pins.ffmpeg.sha256, r.ffmpeg.sha256);
     assert.equal(pins.ffprobe.version, r.ffprobe.version);
     assert.equal(events(env.db, "media.tool.pinned").length, 2);
+    assert.deepEqual((await tools.pin({ actor: "owner" })).pinned, [], "pinning again writes nothing");
     assert.deepEqual((await tools.resolve()).problems, []);
     assert.equal(events(env.db, "media.tool.pinned").length, 2, "pinned once");
-    // Simulate a different binary pinned earlier: the change is recorded and reported, never silently re-trusted.
+    // Simulate a different binary pinned earlier: the change is reported (never silently re-trusted), recorded by a pin, and
+    // stays a refusal for renders until the owner acknowledges it.
     env.bus.transaction(() => env.settings.set("mediaToolPins", { ...pins, ffmpeg: { ...pins.ffmpeg, sha256: "0".repeat(64), version: "7.0" } }, "test"));
-    assert.deepEqual((await tools.resolve()).problems, ["tool_changed"]);
+    assert.deepEqual((await tools.inspect()).problems, ["tool_changed"]);
+    assert.equal(events(env.db, "media.tool.changed").length, 0, "a read records nothing");
+    await rejectsCode(tools.resolve(), "TOOL_CHANGED");
+    assert.deepEqual((await tools.pin({ actor: "owner" })).changed, ["ffmpeg"], "a pin records the change, unacknowledged");
     assert.equal(events(env.db, "media.tool.changed").length, 1);
     assert.equal(env.settings.get("mediaToolPins").ffmpeg.previous.sha256, "0".repeat(64));
-    assert.deepEqual((await tools.resolve()).problems, ["tool_changed"], "sticky until acknowledged");
-    assert.equal(tools.acknowledgeChange("ffmpeg", "owner").acknowledged, true);
+    assert.deepEqual((await tools.inspect()).problems, ["tool_changed"], "sticky until acknowledged");
+    await rejectsCode(tools.resolve(), "TOOL_CHANGED");
+    assert.equal((await tools.acknowledgeChange("ffmpeg", "owner")).acknowledged, true);
     assert.deepEqual((await tools.resolve()).problems, []);
   } finally { env.cleanup(); }
 });
@@ -722,7 +741,7 @@ test("M09-AS-R2: production mode finds the tools on PATH (where.exe), never a .c
     const config = { ...env.config, testMode: false, mediaTools: { ffmpeg: null, ffprobe: null, launcher: null } };
     const supervisor = createSupervisor({ config });
     const tools = createMediaTools({ config, supervisor, settings: env.settings, bus: env.bus, clock: env.clock });
-    const r = await tools.resolve();
+    const r = (await tools.pin({ actor: "owner" })).tools; // M10.2: pinning is the explicit act
     assert.equal(r.ok, true, JSON.stringify(r));
     assert.equal(r.ffmpeg.path.toLowerCase(), realTool("ffmpeg").toLowerCase());
     assert.ok(!/\.(cmd|bat)$/i.test(r.ffmpeg.path));

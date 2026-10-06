@@ -7,6 +7,7 @@ import { redactText } from "../security/redact.mjs";
 import { ACTIVE_STAGES } from "../factory/factory.mjs";
 import { ROUTES } from "../factory/plan.mjs";
 import { AUTONOMY_LABELS } from "./envelopes.mjs";
+import { classifySuspension, STOPPED_BY } from "../policy/gate-state.mjs";
 
 /**
  * ProjectContextService + ExplainService (M06 §06, §12, §23, §24, §26).
@@ -20,6 +21,7 @@ export const PROJECT_STATES = Object.freeze({
   NO_CONTEXT: "Fără context încă",
   CONTEXT_AVAILABLE: "Context disponibil",
   PLAN_READY: "Plan pregătit",
+  PLAN_READY_AFTER_READINESS: "Plan pregătit (fac singur pregătirea după confirmare)",
   PLAN_BLOCKED: "Plan blocat",
   BLOCKED_BY_ISOLATION: "Execuție blocată de izolare",
   AUTHORIZED: "Autorizat",
@@ -31,9 +33,22 @@ const FINISHED_MISSION = new Set(["COMPLETED", "CANCELLED", "FAILED"]);
 const STALE_MS = 2 * 60000;
 
 const clip = (text, n) => { const s = redactText(String(text ?? "")).replace(/\s+/g, " ").trim(); return s.length > n ? `${s.slice(0, n - 1)}…` : s; };
+/**
+ * Who suspended the execution gate (review M10.2 #4; M10.2.1 D17): the class from the ONE classifier (policy/gate-state.mjs), read from
+ * the recorded suspension, never from the reason text. Only a pause that recorded the owner's credential is "owner_pause" — the one
+ * „Continuă” reopens; every other class (stop_all, suspend, pause_unowned, shutdown, security, first_start, legacy_unknown) is
+ * reopened by the rearm card in the cockpit. null when the gate is open.
+ */
+export function gateSuspendedBy(gate) {
+  const cls = classifySuspension(gate).cls;
+  return cls === "open" ? null : cls;
+}
 
 export function createCockpit({ db, bus, clock, settings, projects, missions, runs, factory, factoryRunner, envelopes, environments, providerState, company }) {
   const iso = () => clock().toISOString();
+  // M10.2.1: the rearm service (owner/gate-rearm.mjs) is created after the cockpit (it needs the preserved requests); hub.mjs attaches it.
+  let gateRearm = null;
+  const attachGateRearm = (service) => { gateRearm = service && typeof service.eligibility === "function" ? service : null; };
 
   /** Next-step lines found in the project's own notes (NEXT_SESSION / OPEN_ISSUES), quoted as notes, never as facts. */
   function roadmapFromNotes(project) {
@@ -93,6 +108,62 @@ export function createCockpit({ db, bus, clock, settings, projects, missions, ru
     return { codex: { ...describe("codex"), role: "writer", why: "Writer-ul unic (scriere în workspace prin sandbox)" }, claude: { ...describe("claude"), role: "reviewer", why: "Reviewer independent, doar citire" } };
   }
 
+  // ---------- M10.2 (U15): what a reload / the end of the voice session must not lose ----------
+  // Read-only. The ops plans and the preserved requests are read straight from their tables (the cockpit is built before those
+  // services in hub.mjs); the armed windows live in memory in their own service, so the cockpit reports only what the envelopes
+  // service says for an envelope and, for an operation plan, the last window event recorded SINCE THIS BOOT (a restart closes every
+  // window, so an older "armed" event never counts). Nothing here opens, extends or confirms anything.
+  const tableExists = (name) => { try { return Boolean(db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?").get(name)); } catch { return false; } };
+  function armedEnvelopeUntil(envelopeId) {
+    try { return envelopes.view(envelopeId)?.armedUntil || null; } catch { return null; }
+  }
+  const ARMED_OPS_EVENTS = ["ops.plan.confirmation_armed", "ops.plan.confirmation_disarmed", "ops.plan.armed_refused", "ops.plan.consent"];
+  // One boot per process: the boot marker is looked up once it exists (the events table has no index on type), then cached.
+  let bootSeq = null;
+  const bootMarker = () => {
+    if (bootSeq !== null) return bootSeq;
+    const s = db.prepare("SELECT MAX(seq) AS s FROM events WHERE type = 'system.booted'").get()?.s || 0;
+    if (s) bootSeq = s;
+    return s;
+  };
+  function armedOpsUntil(planId) {
+    try {
+      const rows = db.prepare(`SELECT type, payload_json FROM events WHERE scope_type = 'ops_plan' AND scope_id = ? AND seq > ? AND type IN (${ARMED_OPS_EVENTS.map(() => "?").join(",")}) ORDER BY seq DESC LIMIT 8`).all(planId, bootMarker(), ...ARMED_OPS_EVENTS);
+      for (const r of rows) {
+        const p = parse(r.payload_json, {});
+        // A refused sentence that did not close the window (an unclear "Da?") leaves the window as it was: look further back.
+        if (r.type === "ops.plan.armed_refused" && !p.closed) continue;
+        if (r.type !== "ops.plan.confirmation_armed") return null;
+        return p.expiresAt && new Date(p.expiresAt) > clock() ? p.expiresAt : null;
+      }
+      return null;
+    } catch { return null; }
+  }
+  /** The newest operation plan still waiting for the owner (company-wide: an ops plan has no project), or null. */
+  function proposedOpsPlan() {
+    if (!tableExists("ops_plans")) return null;
+    const r = db.prepare("SELECT id, kind, title, confirm_by FROM ops_plans WHERE status = 'PROPOSED' AND confirm_by > ? ORDER BY created_at DESC LIMIT 1").get(iso());
+    return r ? { planId: r.id, kind: r.kind, title: clip(r.title, 200), confirmBy: r.confirm_by, armedUntil: armedOpsUntil(r.id) } : null;
+  }
+  const LIVE_REQUESTS = ["OPEN", "BLOCKED", "PLANNED", "CONFIRMED"];
+  /**
+   * The requests the Hub kept for this project (and the company-wide ones, e.g. a Studio clip), still live and unexpired: the
+   * owner's words (already redacted when stored), the cause codes and the options as kind/code/label — the page maps each option to
+   * ONE next action (web/src/lib/uiLogic.js blockerAction). Never the consent body or anything the owner did not say.
+   */
+  function workRequestsOf(projectId) {
+    if (!tableExists("work_requests")) return [];
+    return db.prepare(`SELECT id, text_redacted, intent, status, project_id, explanation_json, plan_ref, created_at, expires_at FROM work_requests
+      WHERE status IN (${LIVE_REQUESTS.map(() => "?").join(",")}) AND expires_at > ? AND (project_id = ? OR project_id IS NULL) ORDER BY updated_at DESC LIMIT 5`)
+      .all(...LIVE_REQUESTS, iso(), projectId).map((r) => {
+        const ex = parse(r.explanation_json, {});
+        const ref = parse(r.plan_ref, null);
+        return { id: r.id, text: clip(r.text_redacted, 300), intent: r.intent, status: r.status, company: !r.project_id, cause: ex.cause || null, causes: Array.isArray(ex.causes) ? ex.causes.slice(0, 8) : [],
+          options: (Array.isArray(ex.options) ? ex.options : []).slice(0, 8).map((o) => ({ kind: String(o.kind || ""), code: String(o.code || ""), label: clip(o.label, 240) })),
+          automaticOnly: Boolean(ex.automaticOnly), planRef: ref && /^(envelope|ops)$/.test(ref.kind) ? { kind: ref.kind, id: ref.id } : null, createdAt: r.created_at, expiresAt: r.expires_at };
+      });
+  }
+
   /**
    * The cockpit of one project: what is done (with evidence), what is open or blocked, the last session, the recommended
    * next step separated from what is already approved or running, the agents and environments really available and the
@@ -137,7 +208,7 @@ export function createCockpit({ db, bus, clock, settings, projects, missions, ru
     else if (readyForReview.length) state = "READY_FOR_REVIEW";
     else if (open_envelope?.status === "WAITING_OWNER" || blocked.length) state = "WAITING_OWNER";
     else if (open_envelope) state = "AUTHORIZED";
-    else if (draftViews.some((v) => v.scope)) state = readiness.eligible ? "PLAN_READY" : readiness.blockers.some((b) => b.kind === "isolation") ? "BLOCKED_BY_ISOLATION" : "PLAN_BLOCKED";
+    else if (draftViews.some((v) => v.scope)) state = readiness.eligible ? "PLAN_READY" : readiness.afterReadiness ? "PLAN_READY_AFTER_READINESS" : readiness.blockers.some((b) => b.kind === "isolation") ? "BLOCKED_BY_ISOLATION" : "PLAN_BLOCKED";
     else if (!all.length && !roadmap.files.length && !done.length) state = "NO_CONTEXT";
 
     const missing = [];
@@ -154,7 +225,11 @@ export function createCockpit({ db, bus, clock, settings, projects, missions, ru
       running: { runs: active.map((r) => ({ runId: r.runId, provider: r.provider, environment: r.environment, phase: r.phase, startedAt: r.startedAt, lastEventAt: r.lastEventAt })),
         missions: runningFactory.map((f) => ({ missionId: f.missionId, title: f.title, stage: f.stage, reason: clip(f.stageReason, 200), at: f.updatedAt })) },
       approved: open_envelope ? { envelopeId: open_envelope.id, status: open_envelope.status, level: open_envelope.autonomyLevel, missions: open_envelope.missionIds, confirmedAt: open_envelope.confirmedAt, expiresAt: open_envelope.expiresAt } : null,
-      proposedPlan: proposed ? { envelopeId: proposed.id, headline: proposed.summary.headline, confirmBy: proposed.confirmBy } : null,
+      // M10.2 (U15): a plan waiting for the owner survives a reload and the end of the voice session — including its armed window
+      // (until when, never its nonces) — and so do the operation plan on screen and the requests the Hub kept while blocked.
+      proposedPlan: proposed ? { envelopeId: proposed.id, headline: proposed.summary.headline, confirmBy: proposed.confirmBy, armedUntil: armedEnvelopeUntil(proposed.id) } : null,
+      proposedOpsPlan: proposedOpsPlan(),
+      workRequests: workRequestsOf(project.id),
       next, lastSession: lastSessionOf(project.id), repo: repoState, decisions: decisionsOf(project.id), roadmap,
       agents: agentsOf(), environments: stageMap ? { route: stageMap.route, realProjectEligible: stageMap.realProjectEligible, stages: stageMap.stages.map((s) => ({ stage: s.stage, label: s.label, where: s.where, boundary: s.boundary, boundaryLabel: s.boundaryLabel })), blockers: stageMap.blockers } : null,
       isolation: { realProjectEligible: Boolean(stageMap?.realProjectEligible), testProject: project.source === "hub-test", blockers: readiness.blockers.filter((b) => b.kind === "isolation").map((b) => b.detail) },
@@ -242,15 +317,31 @@ export function createCockpit({ db, bus, clock, settings, projects, missions, ru
       out.push({ what: `„${target.mission.title}” · ${f.stage}${f.waitReason ? ` (așteaptă: ${f.waitReason})` : ""}`, rule: clip(f.stageReason, 400), source: "factory_missions", at: f.updatedAt,
         action: f.waitReason === "grant" ? "Planul confirmat a rămas fără autoritate: confirmă din nou planul (granturile se derivă singure)"
           : f.waitReason === "gate" ? "Poarta de execuție e suspendată sau o verificare a porții eșuează: vezi lista de mai jos"
-            : f.stage === "NEEDS_OWNER_DECISION" ? "Decizia ta: reia (eventual cu un ciclu în plus) sau oprește" : f.stage === "PAUSED" ? "Reia misiunea" : "Verifică motivul de mai sus" });
+            : f.stage === "NEEDS_OWNER_DECISION" ? "Decizia ta: reia (eventual cu un ciclu în plus) sau oprește" : f.stage === "PAUSED" ? "Spune „Continuă”: o reiau în limitele planului confirmat (fără plan în vigoare, „Continuă misiunea …” pregătește un plan de continuare)" : "Verifică motivul de mai sus" });
     }
-    const project = projects.get(projectId || target?.project?.id);
+    // „De ce e blocat?” asked outside a project (voice, the company view) still explains the gate instead of failing on a missing id.
+    const pid = projectId || target?.project?.id || null;
+    const project = pid ? projects.get(pid) : null;
     if (project) {
       const r = envelopes.readiness(project, []);
       for (const b of r.blockers) out.push({ what: b.id, rule: b.detail, source: "poarta de execuție", at: iso(), action: b.kind === "isolation" ? "Izolarea se închide prin pașii M06-A (mediu atestat + politica (b)); nu o ocolește nicio confirmare" : "Rezolvă verificarea porții indicată" });
     }
     const gateState = settings.get("executionGate");
-    if (gateState.status !== "open") out.push({ what: "Poarta de execuție", rule: `Suspendată: ${gateState.reason}`, source: "settings", at: gateState.changedAt, action: "Redeschide poarta din Sistem (tastezi OPEN GATE)" });
+    if (gateState.status !== "open") {
+      // Review M10.2 #4 / M10.2.1 D14: who suspended the gate decides the smallest action, read from the recorded suspension (never the
+      // reason text), with the same classifier and words as the readiness facts / blockers.mjs GATE_SUSPENDED: after the owner's OWN
+      // pause „Continuă” reopens it (interrupts.resumeOwnPause); anything else is reopened here, in the cockpit, by the rearm card (owner
+      // session + a fresh Windows Hello) once the stop is confirmed — never an administration pointer.
+      const by = gateSuspendedBy(gateState);
+      let rearm = null;
+      try { rearm = gateRearm ? gateRearm.eligibility() : null; } catch { rearm = null; }
+      const unowned = by === "pause_unowned" ? "Hub-ul a fost pus pe pauză fără sesiunea ta de proprietar. " : "";
+      const action = by === "owner_pause" ? "Spune sau scrie „Continuă”: redeschid poarta după pauza ta"
+        : rearm && !rearm.eligible && rearm.code !== "OPEN" ? `${unowned}${rearm.reason}`
+          : `${unowned}Poarta e oprită ${STOPPED_BY[by] || STOPPED_BY.legacy_unknown}: o redeschid aici, în cockpit, cu Windows Hello (cardul „Redeschide poarta”); nimic vechi nu repornește singur${rearm?.code === "SECURITY" ? ". Cardul îți arată întâi evenimentele de securitate din jurul opririi" : ""}`;
+      out.push({ what: "Poarta de execuție", rule: `Suspendată: ${gateState.reason}`, source: "settings", at: gateState.changedAt, suspendedBy: by,
+        rearm: rearm ? { eligible: rearm.eligible, code: rearm.code } : null, action });
+    }
     return { at: iso(), items: out, blocked: out.length > 0 };
   }
 
@@ -339,5 +430,5 @@ export function createCockpit({ db, bus, clock, settings, projects, missions, ru
     };
   }
 
-  return { projectCockpit, delta, markVisit, status, whyBlocked, whyRoute, estimate, replay, companyMap, roadmapFromNotes };
+  return { projectCockpit, delta, markVisit, status, whyBlocked, whyRoute, estimate, replay, companyMap, roadmapFromNotes, attachGateRearm };
 }

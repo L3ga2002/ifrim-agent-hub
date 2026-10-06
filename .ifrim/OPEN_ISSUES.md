@@ -1,5 +1,77 @@
 # Open Issues - Ifrim Agent Hub
 
+## 2026-10-05 — P0 closure of M10.2 (code `2.12.1-m10.2`, contract 12, no migration; **uncommitted at writing**; the live Hub still runs `2.12.0-m10.2`). Detail: `.ifrim/M10_2_REPORT.md` §11, `.ifrim/HANDOFF_2026-10-05_P0.md`
+
+This section takes precedence over the M10.2 section below where they overlap. The code is on `v2-milestone-01` over `e8a55ce`, in the same files as M10.2. Decisions D14–D23 are described in the report.
+
+Evidence:
+- Integration set: 506/506 twice, plus 132/132 extra. PASS_SIMULATED: throwaway test Hubs, fixture providers, simulated distro; the browser E2Es ran in headless Chromium.
+- Full regression: V2 **1246 tests · 1245 PASS · 0 FAIL · 1 SKIP** (T25 symlink, unchanged; 128 files without `m11-*`, UI built separately, 55 min, 2026-10-06 00:21–01:17 UTC); V1 **552 · 551 PASS · 0 FAIL · 1 SKIP**.
+- Live: NOT_RUN. Nothing live was run for `2.12.1`: no upgrade, no model, no Lega session.
+
+1. **M10 still closes only after the owner's guided probe A–G.** Sheet: `.ifrim/M10_2_PROBE_SHEET.md`, approved by the owner on 2026-10-05 (~16:30 UTC).
+   - Nothing of the probe has run yet. Steps A–G are NOT_RUN.
+   - The approval covers the sheet and nothing wider: one local commit (M10.2 + P0), the upgrade to `2.12.1-m10.2`, the test project „Factory Demo M10.2”, one Lega session of at most 20 min, one Engineering plan, the Studio import and one edit.
+   - It does not cover a push, the M11 pilot or the historical bundles (ProDelivery, D6, Demo B).
+   - Order: full regression → local commit → `upgrade.mjs --plan`, then `--apply` → test project → `probe-m10-2.mjs --mark` → the owner's steps A–G.
+2. **Closed from the M10.2 list: the two leftovers of the old flow.**
+   - **Reopening after „Oprește tot” was an admin path** (the typed OPEN GATE in Integrări → Avansat; M10.2's D13). Now it is the rearm card in the cockpit (D14–D17, `v2/server/owner/gate-rearm.mjs`). With it, Stop All closes the waiting engineering and run plan cards (envelopes; D15, `v2/server/owner/envelopes.mjs:1565-1575`; also at a shutdown that interrupts a run, and at boot while the gate is still suspended by a stop, `v2/server/owner/stop-scope.mjs:162-196`; operation-plan cards are not closed, they still need their own confirmation and expire), and what the stop itself paused resumes only after the rearm, on every path (D22, `stop-scope.mjs:125-133`; `v2/server/ops/plans.mjs:384`; `v2/server/desktop/operator.mjs:269`).
+   - **„Continuă” worked only typed.** No client sent the locally verified segment, and Lega refused the provider's word (voice-path map). Now the owner's locally verified spoken „Continuă” runs the same executor as the typed one, once per utterance, and the provider transcript can only veto (D18, `v2/server/owner/intake.mjs:1345-1404`; `v2/server/owner/voice.mjs:53`, `:394`). PASS_SIMULATED only: live it needs the voice filter on.
+3. **Open, not fixed in this closure.**
+   - **A retained lease blocks every reopening path and has no release in the cockpit (SM-04; older than P0).**
+     - A lease is retained when a stopped run's provider process does not confirm its exit (`v2/server/runtime/runs.mjs:516`) or when the Hub restarts mid-run (`v2/server/runtime/recovery.mjs:30`).
+     - While one exists, the rearm card answers LEASES (`v2/server/owner/gate-rearm.mjs:175-176`), „Continuă” after the owner's own pause is refused (`v2/server/owner/interrupts.mjs:143-144`) and the typed OPEN GATE is refused (`v2/server/runtime/command-catalog.mjs:318-319`).
+     - The only release command is `computer.release` (`command-catalog.mjs:589-590`). Its only caller in the UI is the computer-locks panel (`v2/web/src/screens/Tools.jsx:55`).
+     - **Decide:** a reconcile step on the rearm card (run ended and process gone → release, under the same fresh verification).
+   - **Sentences that name Stop All after „după” without a reopen verb still resolve to `stop_all`.**
+     - Checked with the pure resolver: „Ce urmează după Stop All?” and „Ce s-a oprit după Stop All” both give `stop_all`.
+     - The round-2 defence applies only when the clause also holds a reopen or resume verb (`v2/server/owner/intents.mjs:278-279`, pattern at `:287`).
+     - The effect is one more Stop All: it closes the waiting plan cards and makes a shown rearm card stale. Nothing starts.
+     - **Decide:** should „stop all” right after „după” never be read as the command?
+   - **The legacy typed OPEN GATE needs only the per-boot token for a non-security stop (AS-03; owner decision).**
+     - `gate.set open` takes the `ui` channel and the typed `OPEN GATE` (`command-catalog.mjs:312-317`). A request without `X-Hub-Channel` counts as `ui` (`v2/server/http/routes.mjs:35`), and its only credential is the per-boot token (`v2/server/http/server.mjs:63`, `:89`).
+     - It has no owner session, no fresh Windows Hello, no compare-and-set and no BUILD_SAFE reset. It records `via: "open_gate"` (`command-catalog.mjs:341`), so the sweep of preserved requests is not skipped (`v2/server/owner/work-requests.mjs:313` skips only a rearm).
+     - It does refuse retained leases and a stop next to a security event (`command-catalog.mjs:318-333`). D14 keeps it as the diagnostic path.
+     - **Decide:** require the owner session there under voice-first, or leave it as it is.
+   - **The agent channel can attest a new WSL fingerprint (PF-07; owner decision).**
+     - `environment.attest` is delegated to agents (`v2/server/runtime/commands.mjs:14`). Outside the `automation` channel the fingerprint pin is optional (`v2/server/environments/environment-commands.mjs:61`). A delegated call, or the manual UI button, therefore attests whatever a fresh inspection finds.
+     - It cannot approve (b): that command is owner-only (`environment-commands.mjs:85`). For a hub-test project, though, a valid attestation alone satisfies the environment route (`v2/server/policy/isolation.mjs:264-266`).
+     - D21 guards only the setup's automatic step and the `automation` channel.
+     - **Decide:** on `agent`, require the fingerprint of the latest PASS, or remove the delegation.
+   - **No per-turn wall-clock timeout for writer or reviewer turns.** A turn is bounded only by the mission deadline (set at `v2/server/factory/factory.mjs:416-418`, enforced at dispatch `:587`, `:695` and by the tick `:1469-1474`) and by the plan's expiry. `run.stale` is only a flag after 10 min without provider events (`v2/server/runtime/recovery.mjs:54`, `:71-73`). In the probe a hung turn ends at the 120-min deadline or at the owner's Stop (sheet §3).
+   - **Two labels for the same closure.** The boot defence closes a stale PROPOSED plan through `envelopes.revoke` (`stop-scope.mjs:189`), which records CANCELLED (`envelopes.mjs:1455`). The live stop records REVOKED (`envelopes.mjs:1574`). Both are owner closures for the preserved requests (`work-requests.mjs:46`), so only the history label differs. A fix needs a closure helper in `envelopes.mjs`.
+   - **A restart with only a no-model operation plan running records no stop (observation on D17/D22).** `stopForShutdown` calls `runs.stopAll` only when a model run is active or in admission (`stop-scope.mjs:164`; `runs.mjs:602`). Otherwise no `shutdown` suspension is written; the boot sets the plan to NEEDS_OWNER (`v2/server/ops/plans.mjs:508-513`) and nothing holds it. **Decide:** should a shutdown without model runs count as a stop too?
+   - **The voice filter is off on the live Hub** (last recorded state, not re-read for this section; the default is off, `v2/server/domain/settings.mjs:51`). The verified spoken „Continuă” (D18) and the spoken plan confirmation therefore cannot be validated live until the filter is on. The owner's spoken pause (D19) does not need the filter, only a Lega session started from the owner session. All three are NOT_RUN live and PASS_SIMULATED in tests (fixture voice worker). The owner approved turning the filter on for the probe (sheet option V) and does it himself; without it, the spoken „Continuă” of step F1 stays NOT_RUN.
+4. **WSL attestation: still invalid (`canary_changed`, same fingerprint `8f9e9eeb934b6c01` as last recorded).** The probe does not need it.
+   - **Real cause.** M09 added an opt-in `streamPaths` option to the request guard in `v2/server/tools/browser-core.mjs` (`:44-48`, `:78-82`). That file is one of the preview-host files copied into the sandbox (`v2/server/environments/sandbox-profiles.mjs:93-97`), and their contents are hashed into `CANARY_VERSION` (`v2/server/environments/canary.mjs:30-33`).
+     - Attested version: `m05-canary-1+e1fde725` (the inputs of `09f50b4`…`ae3aa48`, as measured by the attestation analysis). Current version: `m05-canary-1+0491ff30` (`72d6964` and `e8a55ce` in the same analysis; re-computed from the working tree for this section, so `2.12.1` does not change it again).
+     - The only caller that passes `streamPaths` is the Windows Studio capture (`v2/server/media/capture.mjs:844`). The sandboxed E2E path does not (`browser-core.mjs:231`), so the new branch is not reached inside ifrim-runner.
+   - **What a re-attestation needs.** The same fingerprint, no model and no new approval (b): (b) is bound to the fingerprint, not to the canary version (`isolation.mjs:267`).
+     - By hand, in System → Medii: first „Inspectează” and check that the fingerprint is unchanged (the manual route passes no fingerprint pin, `v2/server/http/routes.mjs:432`), then „Rulează atestarea C1–C17”, then „Verifică contul prin mediu (C16)” (`v2/web/src/screens/system/Environments.jsx:46`, `:70`, `:67`). The attestation's own C16 refreshes only the Codex check (`v2/server/environments/wsl-runner.mjs:283`).
+     - Or automatically (D3), as a pre-step of the first plan confirmed on a wsl-routed project.
+     - It restarts the distro at C15 and is a live-Hub operation of its own. The probe sheet does not cover it (sheet §6).
+     - The current attestation would also expire around 2026-10-16 (14 days, `wsl-runner.mjs:31`).
+   - **Known weaknesses.**
+     - **The `CANARY_VERSION` scope is narrower than the launch path.** It hashes `canary.sh`, `c14.mjs`, `reap.sh`, `canary.mjs`, `sandbox-profiles.mjs`, the three host files and the generated prelude (`canary.mjs:30-33`). It does not hash `wsl.mjs`, `wsl-runner.mjs`, `wsl-factory-runner.mjs`, `tar.mjs`, `workspace.mjs` or the other scripts (`inspect.sh`, `prepare.sh`, `release.sh`, `reviewer-cleanup.sh`). A change there neither invalidates the attestation nor is measured again. Example: this closure edited `wsl-runner.mjs` and the version did not move.
+     - **C18–C20 are optional** (`canary.mjs:39`, `:214`; `wsl-runner.mjs:60-65`). A failure there still gives PASS_LOCAL with fewer stages, and the automatic re-attestation accepts any `PASS*` status (`v2/server/owner/readiness-runner.mjs:210`). Coverage can shrink without a new decision. Real-project factory plans are then blocked by the stage check (`v2/server/factory/routed-runner.mjs:88`, `envelopes.mjs:171`); hub-test projects are not.
+     - **Line endings.** The hash is over raw bytes. This machine has `core.autocrlf=true`, and `.gitattributes` pins only the fixtures and `*.sh` to LF (`.gitattributes:1-6`), not the hashed `.mjs` files. They are LF in the working tree now. A re-checkout could flip them to CRLF and change the version with no code change.
+     - **TOCTOU between the label and the scripts.** The version label and the host files are fixed when the module loads (`canary.mjs:30-33`, `sandbox-profiles.mjs:93-97`), but `canary.sh` and `reap.sh` are read again from disk at attestation time (`canary.mjs:63`, `:90`). The live Hub runs from the working tree, so an edit made after the Hub started is attested under the old label until the next restart.
+   - **The probe runs on the Windows route.** A new hub-test project has no environment route, so `routeFor` returns `windows` (`v2/server/environments/registry.mjs:14-21`). It needs neither the attestation nor C16. That route is the weaker boundary (R2 open; test data only).
+5. **M11 wave 0 exists as new, unwired files.** They are uncommitted, not loaded by the Hub or the built UI, and not part of the P0 commit: the booking demo fixture, `v2/server/delivery/*`, the Delivery Room screens and the `m11-*` tests. Design, file list and the post-probe checklist: `.ifrim/M11_DESIGN.md` (appendices A and B). M11 units that change existing files start only after the owner's probe A–G.
+
+## 2026-10-05 — M10.2 (code `2.12.0-m10.2`, contract 11, migration 11; **uncommitted**; **live since 2026-10-05 04:57 UTC**, run `upg_muus3hq2`). Detail: `.ifrim/M10_2_REPORT.md`
+
+1. **M10 closes only after the owner's live probe** (prompt §14–§15). The automated suites pass: V2 1110 · 1109 PASS · 0 FAIL · 1 SKIP; V1 552 · 551 PASS. The single guided probe sheet (A–G, scope, budget) is in the closure report.
+2. **WSL attestation is invalid (`canary_changed`, same fingerprint).** Since M10.2 it is announced at boot. The re-attestation runs automatically as a pre-step after the owner confirms a plan on a wsl-runner project (D3), or by hand through System → Medii → „Rulează atestarea C1–C17”. Corrected on 2026-10-05: the button „Rulează pașii automați” is on Lega → Configurare (`#/lega/setup`), not in System → Medii, and from `2.12.1` it re-attests only the same fingerprint (D21). A new fingerprint is never approved automatically. Cause, steps and known weaknesses: the P0 closure section above, item 4.
+3. **The voice filter is off.** With it off, spoken confirmation („Da, execută planul”) is unavailable, so plans are confirmed by click, Enter or typed „Da”. Enabling it is one owner decision. From `2.12.1` the spoken „Continuă” (D18) needs it too. The spoken pause counted as the owner's own (D19) does not: it needs only a Lega session started from the owner session. See the P0 closure section above, item 3.
+4. **Lega web search is `live`** (owner setting). Every start now needs the server-side confirmation (D9). The setting was not changed.
+5. **Dead drafts from the old flow**, left for the owner (D11): `mis_muu64evt` (promo video, project_management on the Hub), `mis_muppcs5g` (AROBS) and `mis_mupy0no5` (phone validation, SPEC_DRAFT).
+6. **Not done (documented):**
+   - an expiring owner-only live-search setting and the taint rule (decision 9 follow-up);
+   - the media AI role / generated plates (D5);
+   - a plan offer drawn inside the Lega stage for plans from another tab;
+   - a MEDIA_A card button for acknowledging a changed tool (the Studio → Unelte panel has it).
+
 ## 2026-10-04 — Open items after M10 (code `2.11.1-m10`, contract 10, migration 10; **committed as `72d6964`** on `v2-milestone-01`, together with M09, over `ae3aa48`; push pending: the owner runs `git push origin v2-milestone-01`; **the live Hub runs `2.11.0-m10` since 2026-10-04 13:53 UTC**). Detail: `.ifrim/M10_REPORT.md` (takes precedence over the M09 section below where they overlap)
 
 0. **M10.1 — Lega one-click start (`2.11.1-m10`, no migration) is LIVE since 2026-10-04 18:12 UTC.** Owner's approval: "abrob upgrade la 2 11 1". Claude ran `upgrade.mjs --apply`, run `upg_muu51x09`, verified: `2.11.1-m10`, BUILD_SAFE, 0 active grants, 0 runs.

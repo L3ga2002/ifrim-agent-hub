@@ -16,9 +16,12 @@ import { enrolVoice, speak, OTHER_SPEAKER } from "./voice-helpers.mjs";
 const dispatch = (hub, type, payload, extra = {}) => hub.commands.dispatch({ type, payload, channel: "test", actor: "test", ...extra });
 const SETTLED = ["DELIVERY_READY", "NEEDS_OWNER_DECISION", "BLOCKED", "PAUSED", "CANCELLED", "ACCEPTED", "REJECTED"];
 
-async function ownerHub({ level = "TRUSTED", fixture = "bug-demo", policy = true } = {}) {
+// M10.2: `scopedLive: false` runs the legacy mode-hold path (settings.envelopeScopedLive = false, the rollback switch); the M07
+// hold tests below exercise exactly that path, which still exists for holds written before the upgrade.
+async function ownerHub({ level = "TRUSTED", fixture = "bug-demo", policy = true, scopedLive = true } = {}) {
   const t = await makeTestHub({ queues: true });
   await prepareLiveWithoutGrants(t.hub);
+  if (!scopedLive) t.hub.bus.transaction(() => t.hub.settings.set("envelopeScopedLive", false, "test", "legacy mode-hold path"));
   const dir = path.join(t.dataDir, `factory-${fixture}`);
   materializeFixture(fixture, dir);
   const project = (await dispatch(t.hub, "project.register_test", { path: dir })).result;
@@ -42,7 +45,10 @@ test("M06-EN-01 plan preview: exact summary, nothing runs, no grant, works under
     assert.match(out.summary.cost, /abonamentele incluse/);
     assert.ok(out.envelope.body.deniedEffects.includes("deploy") && out.envelope.body.deniedEffects.includes("owner.accept"));
     assert.equal(out.envelope.body.subscriptionPolicy, "INCLUDED_SUBSCRIPTION_ONLY");
-    assert.equal(out.envelope.body.modeTransition !== null, true, "BUILD_SAFE → LIVE_VALIDATION is shown, not hidden");
+    assert.equal(out.envelope.body.modeTransition !== null, true, "how the plan runs relative to BUILD_SAFE is shown, not hidden");
+    // M10.2: envelope-scoped authority — only this plan's steps run live, the Hub stays in BUILD_SAFE (shown and hashed).
+    assert.match(out.envelope.body.modeTransition, /rămâne în BUILD_SAFE/);
+    assert.match(out.summary.mode, /rămâne în BUILD_SAFE/);
     assert.equal(t.hub.grants.list().length, 0, "a preview creates no grant");
     assert.equal(t.hub.db.prepare("SELECT COUNT(*) AS n FROM agent_runs").get().n, 0, "a preview starts nothing");
     assert.equal(t.hub.settings.get("mode"), "BUILD_SAFE");
@@ -59,7 +65,9 @@ test("M06-EN-02 one confirmation → derived grants (never wider) → full facto
     t.queue("claude", "review:pass");
     const confirmed = (await confirm(t, envelope)).result;
     assert.equal(confirmed.envelope.status, "ACTIVE");
-    assert.equal(t.hub.settings.get("mode"), "LIVE_VALIDATION", "the envelope entered LIVE_VALIDATION as shown");
+    // M10.2: the plan admits its own steps; the Hub's mode is never written (it was LIVE_VALIDATION before, M06–M10).
+    assert.equal(t.hub.settings.get("mode"), "BUILD_SAFE", "the Hub stays in BUILD_SAFE as shown");
+    assert.deepEqual(t.hub.settings.get("envelopeModeHold"), {}, "no mode hold is written");
     const derived = t.hub.grants.ofEnvelope(envelope.id);
     assert.equal(derived.length, 2);
     assert.deepEqual(derived.map((g) => `${g.provider}:${g.access}`).sort(), ["claude:read-only", "codex:workspace-write"]);
@@ -173,25 +181,25 @@ test("M06-EN-06 a derived grant wider than the plan is refused (attempts, role, 
   } finally { await t.cleanup(); }
 });
 
-test("M06-EN-07 ASSISTED: a repair waits for the owner's delta confirmation, then the same envelope continues to DELIVERY_READY", async () => {
+// M10.2 (U11, owner decision 6): an ASSISTED plan pre-authorizes the repair cycles SHOWN on its card (the mission's limit); only a
+// cycle beyond them is a confirmed delta (covered in m10-2-lifecycle LC-05). Before M10.2 the card showed 0 cycles and every repair
+// waited for envelope.confirm_delta.
+test("M06-EN-07 ASSISTED: the repair shown on the card runs without another confirmation; the same envelope continues to DELIVERY_READY", async () => {
   const t = await ownerHub({ level: "ASSISTED" });
   try {
-    const { envelope } = await propose(t);
-    assert.equal(envelope.body.limits.maxRepairCycles[t.mission.id], 0);
+    const { envelope, summary } = await propose(t);
+    const limit = t.hub.factory.view(t.mission.id).factory.limits.maxRepairCycles;
+    assert.ok(limit >= 1);
+    assert.equal(envelope.body.limits.maxRepairCycles[t.mission.id], limit, "the card shows the mission's repair cycles");
+    assert.equal(envelope.body.continuationPolicy.repairsWithoutConfirmation, true);
+    assert.match(summary.steps, /cicluri de remediere incluse în această confirmare/);
     t.queue("codex", "factory-write:bug-fix", "factory-write:bug-fix-v2");
     t.queue("claude", "review:changes-dedupe", "review:pass");
     await confirm(t, envelope);
-    const waiting = await untilStage(t, t.mission.id, SETTLED);
-    assert.equal(waiting.factory.stage, "NEEDS_OWNER_DECISION");
-    assert.match(waiting.factory.stageReason, /cere confirmarea ta/);
-    assert.equal(waiting.factory.repairCycles, 0, "the cycle is not counted before the owner confirms");
-    await untilEnvelope(t, envelope.id, ["WAITING_OWNER"]);
-    await dispatch(t.hub, "envelope.confirm_delta", { envelopeId: envelope.id, missionId: t.mission.id }, { ownerSession: t.owner.session });
-    await dispatch(t.hub, "factory.resume", { missionId: t.mission.id }, { channel: "owner", ownerSession: t.owner.session });
     const done = await untilStage(t, t.mission.id, ["DELIVERY_READY", "NEEDS_OWNER_DECISION", "BLOCKED"]);
     assert.equal(done.factory.stage, "DELIVERY_READY", done.factory.stageReason);
     assert.equal(done.factory.repairCycles, 1);
-    assert.ok(t.hub.bus.query({ typePrefix: "envelope.delta_confirmed", limit: 5 }).length === 1);
+    assert.equal(t.hub.bus.query({ typePrefix: "envelope.delta_confirmed", limit: 5 }).length, 0, "no second confirmation for a stage already in the plan");
   } finally { await t.cleanup(); }
 });
 
@@ -334,7 +342,7 @@ async function pausedMission(t, { by = "agent" } = {}) {
 test("M07-EN-14 a restart only suspends the plan's LIVE_VALIDATION; an explicit resume restores exactly that, and the plan's end returns to BUILD_SAFE", async () => {
   // Found live (M07 D6): after a Hub restart the mission's resume ran with the mode back in BUILD_SAFE and no hold; the first fix
   // then wrote the restored mode as the agent, which the listener read as a manual change (the Hub stayed LIVE afterwards).
-  const t = await ownerHub({ level: "TRUSTED" });
+  const t = await ownerHub({ level: "TRUSTED", scopedLive: false });
   try {
     const envelope = await pausedMission(t);
     const suspended = await simulateBoot(t);
@@ -357,7 +365,7 @@ test("M07-EN-14 a restart only suspends the plan's LIVE_VALIDATION; an explicit 
 });
 
 test("M07-EN-15 two open plans: their LIVE_VALIDATION returns to BUILD_SAFE only when the LAST one closes, whichever closes first", async () => {
-  const t = await ownerHub({ level: "TRUSTED" });
+  const t = await ownerHub({ level: "TRUSTED", scopedLive: false });
   try {
     const dir2 = path.join(t.dataDir, "factory-service-request");
     materializeFixture("service-request", dir2);
@@ -393,7 +401,7 @@ test("M07-EN-15 two open plans: their LIVE_VALIDATION returns to BUILD_SAFE only
 });
 
 test("M07-EN-16 a resume never restores a LIVE_VALIDATION the owner gave up by hand or under an expired plan; a stale deferred drop never erases a newer hold", async () => {
-  const t = await ownerHub({ level: "TRUSTED" });
+  const t = await ownerHub({ level: "TRUSTED", scopedLive: false });
   try {
     const envelope = await pausedMission(t);
     // The owner chooses BUILD_SAFE by hand: the plan no longer owns the mode — at once, in the same transaction — and no resume
@@ -435,7 +443,7 @@ test("M07-EN-16 a resume never restores a LIVE_VALIDATION the owner gave up by h
 });
 
 test("M07-EN-17 an agent resumes only inside what the owner confirmed: not the owner's pause, not a new time window, not one more attempt; a refused resume leaves no LIVE_VALIDATION behind", async () => {
-  const t = await ownerHub({ level: "TRUSTED" });
+  const t = await ownerHub({ level: "TRUSTED", scopedLive: false });
   try {
     await pausedMission(t, { by: "owner" });
     await simulateBoot(t);
@@ -460,7 +468,7 @@ test("M07-EN-17 an agent resumes only inside what the owner confirmed: not the o
     await waitFor(() => t.hub.runs.activeRuns().length === 0, 15000);
   } finally { await t.cleanup(); }
   // Exhausted attempts: a writer turn that keeps failing ends at NEEDS_OWNER_DECISION; one more attempt is the owner's call.
-  const u = await ownerHub({ level: "TRUSTED" });
+  const u = await ownerHub({ level: "TRUSTED", scopedLive: false });
   try {
     const { envelope } = await propose(u);
     for (let i = 0; i < 3; i += 1) u.queue("codex", "factory-write:none");
@@ -479,7 +487,7 @@ test("M07-EN-17 an agent resumes only inside what the owner confirmed: not the o
 });
 
 test("M07-EN-18 only the plans that hold LIVE_VALIDATION keep it: after the owner's manual choice, a later plan's end returns to BUILD_SAFE even with an older plan open", async () => {
-  const t = await ownerHub({ level: "TRUSTED" });
+  const t = await ownerHub({ level: "TRUSTED", scopedLive: false });
   try {
     const dir2 = path.join(t.dataDir, "factory-service-request");
     materializeFixture("service-request", dir2);
@@ -527,7 +535,7 @@ async function suspendedThenNewPlan(t) {
 }
 
 test("M07-EN-19 a plan confirmed after a boot holds LIVE_VALIDATION alone; when it ends, the plans the boot suspended stay suspended (BUILD_SAFE)", async () => {
-  const t = await ownerHub({ level: "TRUSTED" });
+  const t = await ownerHub({ level: "TRUSTED", scopedLive: false });
   try {
     const { x, a } = await suspendedThenNewPlan(t);
     assert.equal(t.hub.settings.get("mode"), "LIVE_VALIDATION");
@@ -547,7 +555,7 @@ test("M07-EN-19 a plan confirmed after a boot holds LIVE_VALIDATION alone; when 
 });
 
 test("M07-EN-20 a suspended plan resumed while a newer plan holds LIVE_VALIDATION joins the holders; the mode then lasts until the last of them ends", async () => {
-  const t = await ownerHub({ level: "TRUSTED" });
+  const t = await ownerHub({ level: "TRUSTED", scopedLive: false });
   try {
     const { x, a } = await suspendedThenNewPlan(t);
     t.queue("codex", "hang");

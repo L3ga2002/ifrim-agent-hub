@@ -1,4 +1,4 @@
-// Migration dry run on a COPY of the live V2 database (M05: migration 5; M08: migration 8) before a Hub restart. Run from the Hub root:
+// Migration dry run on a COPY of the live V2 database (M05: migration 5; M08: migration 8; M10.2: migration 11) before a Hub restart. Run from the Hub root:
 //   node v2/scripts/migration-dry-run.mjs
 // The live database is opened read-only and copied with SQLite's online backup into <dataDir>/upgrade/dry-run; the migrations run on the
 // copy only; the output is counts and versions (no row content); the copy is deleted. The live Hub may keep running.
@@ -41,12 +41,15 @@ try {
   // M10 (migration 10): operation plans, the Desktop Operator registry / sessions / actions, project imports and import folders.
   const M10 = ["ops_plans", "ops_plan_steps", "desktop_apps", "desktop_sessions", "desktop_actions", "media_project_imports", "media_import_grants"];
   const m10Tables = migrated.prepare(`SELECT name FROM sqlite_master WHERE type = 'table' AND name IN (${M10.map(() => "?").join(",")})`).all(...M10).map((r) => r.name);
+  // M10.2 (migration 11): preserved work requests (new and empty after the migration).
+  const M11 = ["work_requests"];
+  const m11Tables = migrated.prepare(`SELECT name FROM sqlite_master WHERE type = 'table' AND name IN (${M11.map(() => "?").join(",")})`).all(...M11).map((r) => r.name);
   const integrity = migrated.prepare("PRAGMA integrity_check").get();
   const copyCounts = counts(migrated);
   migrated.close();
   console.log(JSON.stringify({
     schemaBefore: before, schemaAfter: after, latestKnown: MIGRATIONS.at(-1).version, durationMs: Date.now() - started,
-    agentRunsHasEnvironment: cols.includes("environment"), environmentTables: tables, ownerTables, liveGrantsHasEnvelope: grantCols.includes("envelope_id"), m08Tables, m09Tables, m09Complete: m09Tables.length === M09.length && missionCols.includes("bindings_json") && grantCols.includes("binding_json") && cols.includes("prompt_sha256"), m08Complete: m08Tables.length === M08.length, m10Tables, m10Complete: m10Tables.length === M10.length,
+    agentRunsHasEnvironment: cols.includes("environment"), environmentTables: tables, ownerTables, liveGrantsHasEnvelope: grantCols.includes("envelope_id"), m08Tables, m09Tables, m09Complete: m09Tables.length === M09.length && missionCols.includes("bindings_json") && grantCols.includes("binding_json") && cols.includes("prompt_sha256"), m08Complete: m08Tables.length === M08.length, m10Tables, m10Complete: m10Tables.length === M10.length, m11Tables, m11Complete: m11Tables.length === M11.length,
     integrity: Object.values(integrity)[0],
     rowCountsUnchanged: JSON.stringify(liveCounts) === JSON.stringify(copyCounts), rowCounts: copyCounts,
   }, null, 2));

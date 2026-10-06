@@ -234,8 +234,13 @@ test("M07-VO-07 a spoken confirmation counts once, for the plan it named, in the
     const done = (await confirm(fresh, yes.utteranceId)).result;
     assert.equal(done.envelope.status, "ACTIVE");
     assert.equal(done.envelope.consent.voice.heard, "Da. Execută planul.");
-    await assert.rejects(confirm(fresh, yes.utteranceId), /nu mai așteaptă|deja/);
+    // M10.2 U13: a spoken confirmation is keyed by its utterance (voice:<id>), so the same segment sent again for the same plan (a retry,
+    // the armed path and the page path, a second tab) is the SAME confirmation: duplicate, nothing new starts, nothing consumed twice.
+    const again = (await confirm(fresh, yes.utteranceId)).result;
+    assert.equal(again.duplicate, true);
+    assert.equal(again.envelope.id, fresh.id);
     assert.equal(t.hub.db.prepare("SELECT COUNT(*) AS n FROM voice_utterances WHERE consumed_at IS NOT NULL").get().n, 1, "one segment consumed, once");
+    assert.equal(t.hub.db.prepare("SELECT COUNT(*) AS n FROM events WHERE type = 'envelope.confirmed' AND scope_id = ?").get(fresh.id).n, 1, "confirmed once");
   } finally { await t.cleanup(); }
 });
 

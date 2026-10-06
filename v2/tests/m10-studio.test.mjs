@@ -199,6 +199,7 @@ test("M10-ST-06 legibility QA on the real frame: text over a busy background wit
   const t = await makeTestHub({ configOverrides: { mediaTools: { launcher: launchers } } });
   try {
     const owner = await enrolOwner(t);
+    await as(t, owner, "media.tools.pin", {}); // M10.2: renders need pinned tools; pinning is an explicit act
     const root = path.join(tempDir("m10-leg"), "Videos");
     makeSyntheticMedia(root, { name: "busy.mp4", seconds: 2, width: 640, height: 360 });
     setPolicy(t, { importRoots: [root], diskReserveGb: 0, interactivePriority: false });
@@ -280,6 +281,7 @@ test("M10-ST-09 „La secunda 1 mută textul mai sus” → proposal + ONE plan 
   const t = await makeTestHub({ configOverrides: { mediaTools: { launcher: launchers } } });
   try {
     const owner = await enrolOwner(t);
+    await as(t, owner, "media.tools.pin", {}); // M10.2: renders need pinned tools; pinning is an explicit act
     const root = path.join(tempDir("m10-voiceedit"), "Videos");
     setPolicy(t, { importRoots: [root], diskReserveGb: 0, interactivePriority: false });
     const inbox = path.join(root, "in");
@@ -333,6 +335,7 @@ test("M10-ST-11 D5 + D7 ONE plan with a simulated OBS: record → stop → impor
   const t = await makeDesktopHub({ hub: { configOverrides: { mediaTools: { launcher: launchers } } } });
   try {
     const owner = await readyDesktop(t);
+    await t.hub.commands.dispatch({ type: "media.tools.pin", payload: {}, channel: "test", actor: "owner:test" }); // M10.2: renders need pinned tools
     makeSyntheticMedia(recRoot, { name: "demo-obs.mp4", seconds: 2, width: 640, height: 360 }); // what OBS "wrote"
     setPolicy(t, { importRoots: [recRoot], diskReserveGb: 0, interactivePriority: false, liveCapture: true, obs: { recordingRoot: recRoot, url: obs.url, defaultDurationSec: 1 } });
     const r = await asOwner(t, owner, "owner.intent", { text: "Înregistrează demonstrația cu OBS și pregătește varianta verticală, fără să publici", source: "typed" });

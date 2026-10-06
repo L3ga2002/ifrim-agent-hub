@@ -13,12 +13,17 @@ import { json, parse } from "../storage/db.mjs";
 import { classifyAction, insideAny, isSecretPath } from "../policy/action-policy.mjs";
 import { createOperatorClient } from "./operator-client.mjs";
 import { createAppRegistry } from "./apps.mjs";
+import { createStopScope, STOP_HOLD_CLASSES } from "../owner/stop-scope.mjs";
+import { classifySuspension } from "../policy/gate-state.mjs";
 
 /** Helper errors that mean "the owner (or the system) intervened": the session pauses and waits for the owner. */
 const SUSPEND_CODES = new Set(["USER_INPUT", "SECURE_DESKTOP", "PAUSED", "STOPPED", "NOT_FOREGROUND", "IDENTITY_CHANGED", "OCCLUDED"]);
 const DIRECT_CHANNELS = new Set(["owner", "test"]);
 
-export function createDesktopOperator({ db, bus, clock, config, supervisor, settings, trust = null, media = null, live = null }) {
+export function createDesktopOperator({ db, bus, clock, config, supervisor, settings, trust = null, media = null, live = null,
+  // 2.12.1 (D22): what the current Stop All / shutdown / security suspension itself stopped (owner/stop-scope.mjs) — the reader, or a
+  // function returning it (hub.stopScope once wired); without one a private read-only reader over the same database.
+  stopScope = null }) {
   const now = () => clock().toISOString();
   const apps = createAppRegistry({ db, bus, clock, config });
   const client = createOperatorClient({ config, supervisor, clock, onEvent: (e) => live?.publish?.({ type: e.type, data: e }) });
@@ -249,10 +254,55 @@ export function createDesktopOperator({ db, bus, clock, config, supervisor, sett
     const s = setSession("TAKEN_OVER", "Preiau eu", actor);
     return { takenOver: true, session: s, note: "Controlul e al tău. Când spui „Continuă”, verific din nou fereastra și documentul înainte de orice pas." };
   }
-  /** Resume after Stop / Preiau eu / an intervention: the helper is un-paused only after the caller verified the state again. */
+  // ---------------------------------------------------------------- 2.12.1 (D22): a session a Stop All itself paused waits for the rearm
+  let ownScope = null;
+  const scope = () => (typeof stopScope === "function" ? stopScope() : stopScope) || (ownScope ||= createStopScope({ db, settings }));
+  const REARM_FIRST = "după ce redeschizi poarta aici, în cockpit, pe cardul „Redeschide poarta”, cu Windows Hello, îl reiei cu „Continuă”";
+  const rearmRequired = (reason, cls) => new HubError("gate", reason, { code: "GATE_REARM_REQUIRED", data: { code: "GATE_REARM_REQUIRED", rearm: true, kind: "desktop", cls: cls || null } });
+  const stopClass = () => classifySuspension(settings.get("executionGate") || {}).cls;
+  /**
+   * Every resume path (desktop.resume, the typed or spoken „Continuă”) refuses the session the CURRENT Stop All / shutdown / security
+   * suspension itself paused until the owner rearms the gate in the cockpit ({ code GATE_REARM_REQUIRED, rearm: true }); a session an
+   * intervention, „Stop” or „Preiau eu” paused keeps its resume, also under a suspended gate. Evidence only (the stop's own record,
+   * owner/stop-scope.mjs); unreadable while a stop holds the gate → refused (fail-closed), never guessed.
+   */
+  function holdIfStopped(sessionId) {
+    let h = null;
+    try { h = scope().heldByStop({ kind: "desktop", id: sessionId }); }
+    catch {
+      const cls = stopClass();
+      if (STOP_HOLD_CLASSES.has(cls)) throw rearmRequired(`Nu pot verifica dacă operatorul desktop a fost oprit de oprirea porții; ${REARM_FIRST}.`, cls);
+      return;
+    }
+    if (h?.held) throw rearmRequired(h.reason || `Operatorul desktop a fost oprit de Stop All; ${REARM_FIRST}.`, h.cls);
+  }
+  /** The latest stop / pause / end recorded for a desktop session (index-backed: scope desktop/<id>); 0 when there was none. */
+  const lastStopOf = (sessionId) => Number(db.prepare("SELECT COALESCE(MAX(seq), 0) AS seq FROM events WHERE scope_type = 'desktop' AND scope_id = ? AND type IN ('desktop.session.paused','desktop.stopped','desktop.session.taken_over','desktop.session.ended')")
+    .get(String(sessionId || ""))?.seq || 0);
+
+  /**
+   * Resume after Stop / Preiau eu / an intervention: the helper is un-paused only after the caller verified the state again.
+   * 2.12.1 (D22): a session the current Stop All itself paused waits for the rearm (holdIfStopped). A stop that lands while the helper is
+   * being un-paused (Stop All, „Stop”, an intervention) wins: the helper's input is stopped again (fail-safe), the session stays paused.
+   */
   async function resume({ actor = "owner" } = {}) {
+    const before = toSession(sessionRow());
+    if (before?.status === "PAUSED") holdIfStopped(before.id);
+    const mark = before ? lastStopOf(before.id) : 0;
+    const gateAt = String(settings.get("executionGate")?.changedAt || "");
     if (client.running()) await client.request("resume", {});
     const s = toSession(sessionRow());
+    const g = settings.get("executionGate") || {};
+    const stoppedSince = Boolean(s && before && s.id === before.id && lastStopOf(s.id) > mark);
+    // A Stop All writes the gate FIRST and pauses the operator at its end: a new stop-class suspension counts before its pause lands.
+    const gateStopped = g.status !== "open" && String(g.changedAt || "") !== gateAt && STOP_HOLD_CLASSES.has(classifySuspension(g).cls);
+    if (stoppedSince || gateStopped) {
+      if (client.running()) { try { await client.stopInput(); } catch { /* reported by status */ } }
+      bus.transaction(() => bus.append({ type: "desktop.resume_refused", scopeType: "desktop", scopeId: s?.id || before?.id || "none", source: actor,
+        payload: { reason: gateStopped ? "stop_all" : "stopped_during_resume" } }));
+      if (gateStopped) throw rearmRequired(`Între timp ai oprit tot (Stop All), așa că operatorul desktop rămâne oprit; ${REARM_FIRST}.`, classifySuspension(g).cls);
+      throw new HubError("conflict", "Operatorul a fost oprit din nou în timp ce îl reluam, așa că rămâne pe pauză; verifică starea și spune din nou „Continuă”.", { code: "DESKTOP_STOPPED_DURING_RESUME" });
+    }
     if (s && s.status === "PAUSED") bus.transaction(() => db.prepare("UPDATE desktop_sessions SET status = 'ACTIVE', end_reason = NULL, updated_at = ? WHERE id = ?").run(now(), s.id));
     return { resumed: true, session: toSession(db.prepare("SELECT * FROM desktop_sessions WHERE id = ?").get(s?.id || "")) };
   }

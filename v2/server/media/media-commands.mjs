@@ -188,6 +188,31 @@ export function registerMediaCommands(register, hub) {
     schema: { masterVersionId: { required: true, max: 80 }, platformKey: { required: true, max: 40 }, overrides: { type: "object", default: () => ({}) } },
     execute: (input, ctx) => media.variants.derive({ ...input, actor: ctx.actor }) });
 
+  // ---------- media tools (M10.2): pinning is an explicit act, never a side effect of a read ----------
+  // media.tools.pin: the owner's interface, or the `automation` channel for an automatic readiness step of a CONFIRMED ops plan.
+  // On automation the Hub checks itself that the named plan is RUNNING with a media.tools.pin step in progress (authority comes
+  // from the plan's one confirmation in the owner session, never from the channel label); the plan id is recorded as the actor.
+  // A different binary is recorded as CHANGED, never acknowledged by a pin.
+  reg("media.tools.pin", { describe: "Fixează ffmpeg/ffprobe (versiune + sha256); un binar schimbat rămâne de confirmat", channels: [...OWNER_UI, "automation"], async: true,
+    // `expect` (M10.2 #30): the identity the caller showed (the Studio → Unelte panel, a plan step); compared inside the pin transaction.
+    schema: { reason: { max: 200, default: "" }, planId: { max: 80 }, expect: { type: "object" } },
+    execute: async (input, ctx) => {
+      let actor = ctx.actor;
+      if (ctx.channel === "automation") {
+        const plan = input.planId ? hub.opsPlans?.view?.(input.planId) : null;
+        const step = plan?.status === "RUNNING" ? (plan.steps || []).find((s) => s.kind === "media.tools.pin" && s.status === "RUNNING") : null;
+        if (!step) throw new HubError("policy", "Fixarea automată a uneltelor media rulează doar ca pas în curs al unui plan confirmat.", { code: "PIN_NOT_IN_PLAN" });
+        actor = plan.id;
+      }
+      const r = await media.tools.pin({ actor, reason: input.reason || (ctx.channel === "automation" ? "pas de pregătire al planului confirmat" : ""), expect: input.expect || null });
+      return { pinned: r.pinned, changed: r.changed, unchanged: r.unchanged, states: r.tools.states, problems: r.tools.problems, actor };
+    } });
+  reg("media.tools.acknowledge", { describe: "Confirmă un binar ffmpeg/ffprobe schimbat (identitatea nouă devine cea fixată)", channels: OWNER, async: true,
+    // The identity the owner was shown (sha256, shared libraries — "none" for a static build — and version): a binary that changed
+    // again since the panel was drawn is refused (TOOL_CHANGED_AGAIN), never acknowledged as what was seen.
+    schema: { tool: { required: true, enum: ["ffmpeg", "ffprobe"] }, sha256: { max: 64 }, libsSha256: { max: 64 }, version: { max: 80 } },
+    execute: (input, ctx) => media.tools.acknowledgeChange(input.tool, ctx.actor, { sha256: input.sha256 || null, libsSha256: input.libsSha256 ?? undefined, version: input.version ?? undefined }) });
+
   // ---------- renders, QA, exports ----------
   reg("media.render.request", { describe: "Cere o randare locală (schiță sau finală)", channels: OWNER_UI,
     schema: { editVersionId: { required: true, max: 80 }, profile: { enum: ["draft", "final"], default: "draft" } },

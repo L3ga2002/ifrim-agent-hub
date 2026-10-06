@@ -56,6 +56,7 @@ test("M09-SB-01 Content Studio in a real browser: renders without console errors
       makeSyntheticMedia(inbox, { name: "a.mp4", seconds: 2, width: 640, height: 360 });
       makeSyntheticMedia(inbox, { name: "b.mp4", seconds: 2, width: 640, height: 360 });
       setPolicy(s.hub, { importRoots: [inbox], diskReserveGb: 0, interactivePriority: false });
+      await dispatch(s.hub, "media.tools.pin", {}); // M10.2: renders need pinned tools; pinning is an explicit act
       const imp = (name) => dispatch(s.hub, "media.asset.import", { sourcePath: path.join(inbox, name), title: name, category: "screen_recording", origin: "OWNED", captureLabel: "SIMULATION", contentProjectId: projectId });
       const a = await imp("a.mp4");
       const b = await imp("b.mp4");

@@ -305,6 +305,19 @@ async function legaScript() {
     for (let i = 0; i < calls.length; i += 1) { await delegatedTurn(calls[i].tool, calls[i].args || {}, i + 1); await sleep(50); }
     return log({ callsDone: calls.length });
   }
+  // M10.2 `lega-script:<base64url JSON [{sleep: ms} | {say: text, role?} | {tool, args}]>`: owner words (final transcripts), delegated
+  // tool calls and pauses, in order (the voice bridge tests feed the owner's sentences through the provider's real event shape).
+  if (scenario.startsWith("lega-script:")) {
+    const script = JSON.parse(Buffer.from(scenario.slice("lega-script:".length), "base64url").toString("utf8"));
+    let n = 0;
+    for (const item of script) {
+      if (item.sleep) await sleep(item.sleep);
+      else if (item.say) said(item.role || "user", item.say);
+      else if (item.tool) { n += 1; await delegatedTurn(item.tool, item.args || {}, n); }
+      await sleep(30);
+    }
+    return log({ scriptDone: script.length });
+  }
   if (scenario === "lega-web") {
     const turnId = "turn_web";
     send({ method: "turn/started", params: { threadId, turn: { id: turnId, status: "inProgress", items: [] } } });

@@ -298,6 +298,88 @@ export function createFactory(deps) {
     return scope;
   }
 
+  // ---------- M10.2 (U11): what a plan needs to continue a started mission ----------
+  /** The attempts one stage may use: the mission's limit, or the one more a confirmed plan difference gave THAT stage (review #11). */
+  function attemptLimit(f, stage) { return Math.max(f.limits.maxAttemptsPerStage, Number(f.limits.stageAttempts?.[stage]) || 0); }
+  /** The step a resume would repeat because its confirmed attempts are spent ({ stage, counted, limit }), or null. */
+  function exhaustedStep(missionId, f = fm(missionId)) {
+    const last = rowToDispatch(db.prepare("SELECT * FROM factory_dispatches WHERE mission_id = ? ORDER BY created_at DESC LIMIT 1").get(missionId));
+    if (!f || f.stage !== "NEEDS_OWNER_DECISION" || !last || ["DONE", "DONE_LATE"].includes(last.status)) return null;
+    const { counted } = modelAttempts(missionId, last.stage, last.request.cycle, last.request.changeSeq);
+    const limit = attemptLimit(f, last.stage);
+    return counted >= limit ? { stage: last.stage, counted, limit } : null;
+  }
+  /**
+   * The scope a CONTINUATION plan covers for a started mission (PAUSED / BLOCKED / NEEDS_OWNER_DECISION): the approved spec and plan
+   * (immutable after the start), the current limits and the role bindings RE-RESOLVED now from the same requested models — so a
+   * changed Claude Code version or model list is shown and hashed instead of failing again at dispatch. Also what remains of the
+   * mission (repair cycles, an exhausted step) and which role bindings would change. Read-only.
+   */
+  function continuationScope(missionId) {
+    const f = need(fm(missionId));
+    const base = { stage: f.stage, repairCycles: f.repairCycles, limits: f.limits };
+    if (!RESUMABLE.has(f.stage)) return { ...base, scope: null, problems: [`misiunea e în etapa ${f.stage}`] };
+    if (!f.approvedSpecVersion || !f.bindings?.writer?.bindingHash || !f.bindings?.reviewer?.bindingHash) return { ...base, scope: null, problems: ["misiunea nu are un scope aprobat cu modele fixate"] };
+    const resolved = bindingsOf(missionId, f);
+    if (resolved.problems.length) return { ...base, scope: null, problems: resolved.problems };
+    const { scope, problems } = scopeState(missionId, { bindings: resolved.bindings });
+    if (!scope) return { ...base, scope: null, problems };
+    const changedRoles = ["writer", "reviewer"].filter((role) => scope.bindings[role]?.bindingHash !== f.bindings?.[role]?.bindingHash);
+    return { ...base, scope, problems: [], changedRoles, remainingCycles: Math.max(0, f.limits.maxRepairCycles - f.repairCycles), exhausted: exhaustedStep(missionId, f),
+      deadlinePassed: Boolean(f.deadlineAt && new Date(f.deadlineAt) <= clock()), title: missions.get(missionId)?.title || missionId };
+  }
+  /**
+   * A continuation plan's rebind (M10.2): the role bindings the owner confirmed in that plan replace the old ones and the scope hash
+   * is recomputed — the same audited path as the owner's reviewer override (factory.model_override, old/new pair), with the plan
+   * named. Only a resumable mission, only roles whose binding really changed; the spec and plan never change here.
+   */
+  function rebindForPlan(missionId, { bindings, actor = "envelopes", envelopeId }) {
+    const current = need(fm(missionId));
+    if (!RESUMABLE.has(current.stage)) throw new HubError("conflict", `Misiunea e în ${current.stage}`);
+    if (missionRunIds(missionId).length) throw new HubError("conflict", "O execuție a misiunii rulează încă");
+    const changed = ["writer", "reviewer"].filter((role) => bindings?.[role]?.bindingHash && bindings[role].bindingHash !== current.bindings?.[role]?.bindingHash);
+    if (!changed.length) return { changed: [], scopeHash: current.scopeHash };
+    const summary = (b) => (b ? { model: b.resolvedAlias, effort: b.effort, environment: b.environment, bindingHash: b.bindingHash, label: bindingLabel(b) } : null);
+    const next = { ...current.bindings, ...Object.fromEntries(changed.map((role) => [role, bindings[role]])) };
+    return bus.transaction(() => {
+      const scopeHash = hashCanonical(scopeState(missionId, { bindings: next }).scope);
+      db.prepare("UPDATE factory_missions SET bindings_json = ?, scope_hash = ? WHERE mission_id = ?").run(json(next), scopeHash, missionId);
+      for (const role of changed) {
+        bus.append({ type: "factory.model_override", scopeType: "mission", scopeId: missionId, source: actor, payload: { role, model: next[role].resolvedAlias,
+          previous: current.bindings?.[role]?.resolvedAlias || "—", old: summary(current.bindings?.[role]), new: summary(next[role]), scopeHash: scopeHash.slice(0, 16), envelopeId, via: "continuation" } });
+      }
+      return { changed, scopeHash };
+    });
+  }
+  /**
+   * Raises a mission's own limits by the difference the owner just confirmed in a plan (one more repair cycle, one more attempt of
+   * the exhausted step). Synchronous: the envelope service calls it inside the SAME transaction that raises the plan's limit, so the
+   * factory limit and the plan limit can never disagree (the M06 deadlock: each pointed at the other). Recorded like the owner's
+   * own extra cycle / extra attempt, with the plan named.
+   */
+  function raiseLimits(missionId, { cycle = false, attempt = false, actor = "envelopes", envelopeId = null }) {
+    const f = need(fm(missionId));
+    const limits = { ...f.limits };
+    const out = {};
+    if (cycle) { limits.maxRepairCycles = Math.max(f.limits.maxRepairCycles, f.repairCycles + 1); out.maxRepairCycles = limits.maxRepairCycles; }
+    if (attempt) {
+      // M10.2 review #11: the confirmed difference is ONE more attempt of the exhausted step, so only that stage's limit grows
+      // (limits.stageAttempts); raising maxAttemptsPerStage gave every later stage an extra attempt the plan's budget (+1) never had.
+      const step = exhaustedStep(missionId, f);
+      out.stage = step?.stage || null;
+      if (step) {
+        limits.stageAttempts = { ...(f.limits.stageAttempts || {}), [step.stage]: Math.max(attemptLimit(f, step.stage), step.counted + 1) };
+        out.maxAttemptsPerStage = limits.stageAttempts[step.stage];
+      }
+    }
+    bus.transaction(() => {
+      db.prepare("UPDATE factory_missions SET limits_json = ? WHERE mission_id = ?").run(json(limits), missionId);
+      if (cycle) bus.append({ type: "factory.extra_cycle", scopeType: "mission", scopeId: missionId, source: actor, payload: { maxRepairCycles: limits.maxRepairCycles, envelopeId } });
+      if (attempt && out.stage) bus.append({ type: "factory.extra_attempt", scopeType: "mission", scopeId: missionId, source: actor, payload: { stage: out.stage, maxAttemptsPerStage: out.maxAttemptsPerStage, envelopeId } });
+    });
+    return out;
+  }
+
   function assertStartable(missionId, payload) {
     const f = need(fm(missionId));
     if (f.stage !== "SPEC_DRAFT") throw new HubError("conflict", `Misiunea e deja în etapa ${f.stage}`);
@@ -498,9 +580,9 @@ export function createFactory(deps) {
     const f = fm(missionId);
     const route = ROUTES[role];
     const { prior, counted: attempts } = modelAttempts(missionId, stage, cycle, changeSeq);
-    if (attempts >= f.limits.maxAttemptsPerStage) {
+    if (attempts >= attemptLimit(f, stage)) {
       blockTask(taskId, "încercări epuizate");
-      return setStage(missionId, "NEEDS_OWNER_DECISION", { waitReason: "owner_decision", reason: `${stage}: ${attempts} încercări folosite (limita ${f.limits.maxAttemptsPerStage}); decide dacă reiei` });
+      return setStage(missionId, "NEEDS_OWNER_DECISION", { waitReason: "owner_decision", reason: `${stage}: ${attempts} încercări folosite (limita ${attemptLimit(f, stage)}); decide dacă reiei` });
     }
     if (f.deadlineAt && new Date(f.deadlineAt) <= clock()) return setStage(missionId, "NEEDS_OWNER_DECISION", { waitReason: "owner_decision", reason: "Limita de timp a misiunii a fost atinsă" });
     // M09: the model and effort come from the binding approved with the scope (bindings_json), never from the current limits_json.
@@ -513,6 +595,10 @@ export function createFactory(deps) {
     if (authority) {
       const held = authority(missionId, { stage, cycle, role, bindingHash: binding.bindingHash });
       if (held) return setStage(missionId, "NEEDS_OWNER_DECISION", { waitReason: "owner_decision", reason: held.reason });
+      // M10.2 (U11): under a confirmed plan, a role whose derived grant is spent gets the REST of the plan's attempt budget as a new
+      // bound grant before the start — so a step inside the confirmed limits never waits at BLOCKED "grant" for a manual grant (which
+      // a plan step could not use anyway). Beyond the budget nothing is issued and the gate refuses as before. Never holds the step.
+      authority(missionId, { stage: "GRANT", role, bindingHash: binding.bindingHash });
     }
     const request = { stage, cycle, changeSeq, attempt: prior.length + 1, counted: attempts + 1, provider: route.provider, access: route.access, model: binding.resolvedAlias, effort: binding.effort, profile: binding.profile,
       specVersion: f.approvedSpecVersion, bindingHash: binding.bindingHash };
@@ -664,6 +750,9 @@ export function createFactory(deps) {
         // (a resume may already be running). A result that completed anyway is kept for the next resume.
         const keep = run.status === "completed" && RESUMABLE.has(f.stage) && !f.cancelRequestedAt;
         db.prepare("UPDATE factory_dispatches SET status = ?, updated_at = ? WHERE id = ?").run(keep ? "DONE_LATE" : run.status === "completed" ? "DONE" : "INTERRUPTED", now(), dispatch.id);
+        // M10.2 review #11: not an attempt here (modelAttempts skips INTERRUPTED), so the plan this step ran under gives its grant
+        // attempt back (bounded, recorded; envelopes.forgiveInterrupted). Outside a plan nothing happens.
+        if (authority && run.status === "interrupted" && run.grantId) authority(dispatch.missionId, { stage: "INTERRUPTED", grantId: run.grantId, runId });
         bus.emit({ type: "factory.late_result", scopeType: "mission", scopeId: f.missionId, source: "factory", runId, payload: { stage: dispatch.stage, runStatus: run.status, note: "Oprit de tine: arhivat, fără efect acum" } });
         return f.cancelRequestedAt ? confirmCancel(f.missionId) : null;
       }
@@ -1163,7 +1252,7 @@ export function createFactory(deps) {
    * Resume after PAUSED / BLOCKED / NEEDS_OWNER_DECISION: re-checks the approved scope, then continues from the last
    * recorded result. `allowExtraCycle` is the owner's explicit decision to grant one more repair cycle (beyond the limit).
    */
-  async function resume(missionId, { actor = "user", allowExtraCycle = false, proceedToQa = false, reviewerModel = "", byAgent = false } = {}) {
+  async function resume(missionId, { actor = "user", allowExtraCycle = false, proceedToQa = false, reviewerModel = "", byAgent = false, planDelta = null } = {}) {
     return serial(missionId, async () => {
       const f = need(fm(missionId));
       if (!RESUMABLE.has(f.stage)) throw new HubError("conflict", `Misiunea e în ${f.stage}`);
@@ -1180,6 +1269,22 @@ export function createFactory(deps) {
         // (BLOCKED) or a pause it made itself.
         if (f.stage === "NEEDS_OWNER_DECISION") throw new HubError("policy", `Misiunea așteaptă decizia ta (${String(f.stageReason || "").slice(0, 160)}); agentul reia doar o oprire de infrastructură sau o pauză pusă de el`);
         if (f.deadlineAt && new Date(f.deadlineAt) <= clock()) throw new HubError("policy", "Timpul misiunii s-a terminat; o fereastră nouă de timp e decizia ta");
+      }
+      // M10.2 (U11): a mission under an open plan (envelope) resumes only INSIDE what the owner confirmed. One more repair cycle or
+      // one more attempt of an exhausted step is a difference to confirm in the owner session (envelope.confirm_delta), never a side
+      // effect of „Reia”; a new time window never outlives the plan. `planDelta` is passed only by the envelope service, right after
+      // the owner confirmed exactly that difference (no command schema carries it).
+      const underPlan = authority ? authority(missionId, { stage: "RESUME" }) : null;
+      const plan = underPlan?.plan || null;
+      if (plan) {
+        if (Date.parse(plan.expiresAt) <= clock().getTime()) throw new HubError("policy", `Timpul planului ${plan.envelopeId} s-a terminat; confirmă continuarea (îți arăt doar ce rămâne)`, { code: "PLAN_EXPIRED" });
+        if (allowExtraCycle && planDelta !== plan.envelopeId) throw new HubError("policy", `Misiunea rulează sub planul ${plan.envelopeId}: un ciclu de remediere în plus se confirmă ca diferență în sesiunea ta (confirmă diferența), nu din „Reia”`, { code: "PLAN_DELTA_REQUIRED" });
+        if (allowExtraCycle && !(Number(plan.maxCycles) >= f.repairCycles + 1)) throw new HubError("policy", "Diferența confirmată nu acoperă acest ciclu de remediere; confirmă diferența din nou", { code: "PLAN_DELTA_REQUIRED" });
+        const lastPlanDispatch = rowToDispatch(db.prepare("SELECT * FROM factory_dispatches WHERE mission_id = ? ORDER BY created_at DESC LIMIT 1").get(missionId));
+        if (f.stage === "NEEDS_OWNER_DECISION" && !proceedToQa && lastPlanDispatch && !["DONE", "DONE_LATE"].includes(lastPlanDispatch.status)
+          && modelAttempts(missionId, lastPlanDispatch.stage, lastPlanDispatch.request.cycle, lastPlanDispatch.request.changeSeq).counted >= attemptLimit(f, lastPlanDispatch.stage)) {
+          throw new HubError("policy", `Etapa ${lastPlanDispatch.stage} și-a folosit încercările confirmate în planul ${plan.envelopeId}; o încercare în plus se confirmă ca diferență în sesiunea ta (confirmă diferența)`, { code: "PLAN_DELTA_REQUIRED" });
+        }
       }
       // The owner's choice of another reviewer model (e.g. when the bound alias resolved to a refused model at init): an explicit
       // Claude alias or id from the shared allowlist; Fable, "best" and the [1m] variants are never accepted. Validated before any change.
@@ -1229,13 +1334,16 @@ export function createFactory(deps) {
       }
       // Resuming after the time limit is the owner's decision to continue: a new window of the mission's duration starts.
       if (f.deadlineAt && new Date(f.deadlineAt) <= clock()) {
-        const deadlineAt = new Date(clock().getTime() + f.limits.maxDurationMin * 60000).toISOString();
+        // Under a plan the new window ends no later than the plan itself (M10.2): a resume never extends the owner's confirmed time.
+        const windowEnd = clock().getTime() + f.limits.maxDurationMin * 60000;
+        const deadlineAt = new Date(plan ? Math.min(windowEnd, Date.parse(plan.expiresAt)) : windowEnd).toISOString();
         bus.transaction(() => {
           db.prepare("UPDATE factory_missions SET deadline_at = ? WHERE mission_id = ?").run(deadlineAt, missionId);
-          bus.append({ type: "factory.deadline_extended", scopeType: "mission", scopeId: missionId, source: actor, payload: { from: f.deadlineAt, to: deadlineAt } });
+          bus.append({ type: "factory.deadline_extended", scopeType: "mission", scopeId: missionId, source: actor, payload: { from: f.deadlineAt, to: deadlineAt, ...(plan ? { cappedByPlan: plan.envelopeId } : {}) } });
         });
       }
-      if (allowExtraCycle) {
+      // A plan delta already raised the factory limit in the same transaction as the plan's own (envelopes.confirmDelta).
+      if (allowExtraCycle && !(plan && planDelta === plan.envelopeId)) {
         const limits = { ...fm(missionId).limits, maxRepairCycles: Math.max(f.limits.maxRepairCycles, f.repairCycles + 1) };
         bus.transaction(() => {
           db.prepare("UPDATE factory_missions SET limits_json = ? WHERE mission_id = ?").run(json(limits), missionId);
@@ -1248,7 +1356,8 @@ export function createFactory(deps) {
       if (f.stage === "NEEDS_OWNER_DECISION" && !proceedToQa && lastDispatch && !["DONE", "DONE_LATE"].includes(lastDispatch.status)) {
         const { counted } = modelAttempts(missionId, lastDispatch.stage, lastDispatch.request.cycle, lastDispatch.request.changeSeq);
         const current = fm(missionId).limits;
-        if (counted >= current.maxAttemptsPerStage) {
+        // A stage a confirmed plan difference already gave one more attempt (stageAttempts, review #11) is not exhausted again here.
+        if (counted >= attemptLimit({ limits: current }, lastDispatch.stage)) {
           const limits = { ...current, maxAttemptsPerStage: counted + 1 };
           bus.transaction(() => {
             db.prepare("UPDATE factory_missions SET limits_json = ? WHERE mission_id = ?").run(json(limits), missionId);
@@ -1488,6 +1597,7 @@ export function createFactory(deps) {
   }
 
   return { initialize, reviseSpec, setLimits, scopeFor, assertStartable, startApproved, onRunFinished, stop, pause, resume, accept, reject, stopAll, recover, tick, idle, close,
+    continuationScope, rebindForPlan, raiseLimits, exhaustedStep: (missionId) => exhaustedStep(missionId),
     attachAuthority: (fn) => { authority = typeof fn === "function" ? fn : null; },
     setFindingStatus, view, list, summary: (missionId) => { const v = view(missionId); return v && { stage: v.factory.stage, waitReason: v.factory.waitReason, reason: v.factory.stageReason, spec: specSummary(v.spec.spec) }; } };
 }

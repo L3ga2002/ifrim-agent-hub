@@ -26,7 +26,8 @@ import { getPreset, resolveFonts, PRESETS } from "./visual-bible.mjs";
 import { freeBytesAt } from "./paths.mjs";
 import { compileRenderPlan, parseLoudnormJson, COMPILE_VERSION, RENDER_PROFILES } from "./compile.mjs";
 
-export const RENDER_FAILURE_CODES = Object.freeze(["DISK_RESERVE", "DISK_FULL", "TOOL_MISSING", "INPUT_MISSING", "INVALID_OUTPUT", "TIMEOUT", "CANCELLED", "TOOL_FAILED", "IR_INVALID"]);
+// M10.2: TOOLS_NOT_PINNED / TOOL_CHANGED — the run re-verifies the pinned ffmpeg/ffprobe identity and refuses before spawning the job.
+export const RENDER_FAILURE_CODES = Object.freeze(["DISK_RESERVE", "DISK_FULL", "TOOL_MISSING", "TOOLS_NOT_PINNED", "TOOL_CHANGED", "INPUT_MISSING", "INVALID_OUTPUT", "TIMEOUT", "CANCELLED", "TOOL_FAILED", "IR_INVALID"]);
 export const ACTIVE_RENDER_STATUSES = Object.freeze(["CLAIMED", "RUNNING", "VALIDATING", "CANCEL_REQUESTED"]);
 export const TERMINAL_RENDER_STATUSES = Object.freeze(["DONE", "FAILED", "CANCELLED", "INTERRUPTED"]);
 const RETRYABLE = new Set(["FAILED", "CANCELLED", "INTERRUPTED"]);
@@ -42,6 +43,8 @@ const FAILURE_TEXT = {
   DISK_RESERVE: "Spațiul liber pe disc este sub rezerva configurată; randarea nu a pornit.",
   DISK_FULL: "Discul s-a umplut în timpul randării.",
   TOOL_MISSING: "ffmpeg/ffprobe nu sunt disponibile.",
+  TOOLS_NOT_PINNED: "ffmpeg/ffprobe nu sunt fixate (versiune + sha256); randarea nu a pornit.",
+  TOOL_CHANGED: "ffmpeg/ffprobe s-au schimbat față de binarele fixate; confirmă schimbarea înainte de randare.",
   INPUT_MISSING: "Un fișier de intrare lipsește sau nu poate fi folosit.",
   INVALID_OUTPUT: "Fișierul produs nu a trecut validarea.",
   TIMEOUT: "ffmpeg a depășit timpul alocat.",
@@ -50,7 +53,8 @@ const FAILURE_TEXT = {
   IR_INVALID: "Editarea (IR) nu poate fi randată.",
 };
 
-const renderError = (code, message, data) => new HubError(code === "CANCELLED" ? "task" : code === "IR_INVALID" ? "validation" : code === "INPUT_MISSING" ? "not_found" : code === "DISK_RESERVE" || code === "DISK_FULL" ? "quota" : "tool",
+const renderError = (code, message, data) => new HubError(code === "CANCELLED" ? "task" : code === "IR_INVALID" ? "validation" : code === "INPUT_MISSING" ? "not_found" : code === "DISK_RESERVE" || code === "DISK_FULL" ? "quota"
+  : code === "TOOLS_NOT_PINNED" || code === "TOOL_CHANGED" ? "policy" : "tool",
   message || FAILURE_TEXT[code], { code, data });
 
 /** Maps any error to one of RENDER_FAILURE_CODES (+ a message without file paths from the user). */
@@ -133,6 +137,17 @@ export function createRenderQueue({ db, bus, live = null, clock = () => new Date
 
   // ------------------------------------------------------------------ request / retry
 
+  /**
+   * M10.2: a render needs a pinned, unchanged ffmpeg/ffprobe. Refused at the request (no job row, nothing spawned) with
+   * TOOLS_NOT_PINNED / TOOL_CHANGED; the run re-verifies through tools.resolve(). Pinning is never a side effect of a render or a
+   * read: it is the owner's command or a step listed in a confirmed plan. `resolveToolVersion` (the queue's test seam) replaces
+   * the whole tool verification, so it skips this gate too.
+   */
+  function toolGate() {
+    if (resolveToolVersion || typeof tools.requirePinned !== "function") return;
+    tools.requirePinned();
+  }
+
   /** Queues a render. Duplicate idempotency keys return the existing job (`duplicate: true`). */
   function request({ editVersionId, profile, actor, idempotencyKey = null } = {}) {
     const who = requireActor(actor);
@@ -140,6 +155,7 @@ export function createRenderQueue({ db, bus, live = null, clock = () => new Date
     if (!RENDER_PROFILES[profile]) throw new HubError("validation", "Profilul de randare trebuie să fie „draft” sau „final”.", { code: "PROFILE_INVALID" });
     const key = idempotencyKey === null || idempotencyKey === undefined || idempotencyKey === "" ? `render:${editVersionId}:${profile}` : idempotencyKey;
     if (typeof key !== "string" || !KEY_RE.test(key)) throw new HubError("validation", "Cheia de idempotență este invalidă (1–200 caractere tipăribile, fără spații).", { code: "FIELD_INVALID" });
+    toolGate();
     const edit = selEdit.get(editVersionId);
     if (!edit) throw new HubError("not_found", "Versiunea de editare nu există.", { code: "EDIT_VERSION_MISSING" });
     return insertJob({ editVersionId, profile, key, actor: who, request: { editVersionId, profile, irSha256: edit.ir_sha256, compileVersion } });
@@ -169,6 +185,7 @@ export function createRenderQueue({ db, bus, live = null, clock = () => new Date
     const old = selJob.get(String(jobId || ""));
     if (!old) throw new HubError("not_found", "Randarea nu există.", { code: "RENDER_MISSING" });
     if (!RETRYABLE.has(old.status)) throw new HubError("conflict", `Doar o randare eșuată, anulată sau întreruptă poate fi reluată (stare: ${old.status}).`, { code: "RENDER_NOT_RETRYABLE" });
+    toolGate();
     if (!selEdit.get(old.edit_version_id)) throw new HubError("not_found", "Versiunea de editare nu mai există.", { code: "EDIT_VERSION_MISSING" });
     return insertJob({ editVersionId: old.edit_version_id, profile: old.profile, key: `retry:${old.id}`, actor: who,
       request: { ...parse(old.request_json, {}), retryOf: old.id, compileVersion } });
@@ -302,8 +319,13 @@ export function createRenderQueue({ db, bus, live = null, clock = () => new Date
   }
 
   async function defaultToolVersion() {
-    const r = await tools.resolve();
-    if (!r.ffmpeg || !r.ffprobe) throw renderError("TOOL_MISSING", "ffmpeg sau ffprobe nu sunt disponibile; randarea nu poate porni.");
+    // resolve() refuses a missing, unpinned or changed-unacknowledged toolset before any segment spawns (only `-version` ran).
+    let r;
+    try { r = await tools.resolve(); } catch (error) {
+      if (["TOOL_MISSING", "TOOLS_NOT_PINNED", "TOOL_CHANGED"].includes(error?.code)) throw renderError(error.code, error.message, error.details);
+      throw error;
+    }
+    if (!r?.ffmpeg || !r?.ffprobe) throw renderError("TOOL_MISSING", "ffmpeg sau ffprobe nu sunt disponibile; randarea nu poate porni.");
     return `ffmpeg-${r.ffmpeg.version || "necunoscut"}+${String(r.ffmpeg.sha256).slice(0, 16)}${r.ffmpeg.libsSha256 ? `+${r.ffmpeg.libsSha256.slice(0, 16)}` : ""}`;
   }
 

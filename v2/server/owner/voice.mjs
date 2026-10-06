@@ -44,6 +44,44 @@ const VERIFY = Object.freeze({ minSpeechMs: 600, minSnrDb: 6, floorMatch: 0.35, 
 const UTTERANCE_TTL_MS = 2 * 60000; // a spoken "yes" counts for this long, once
 const RATE = Object.freeze({ perMinute: 40 });
 
+/**
+ * M10.2.1 (D18): whether a sentence the owner SAID is exactly the resume — „Continuă”, „Lega, continuă”, „Ok, continuă”, „Continuă
+ * acum”, „Reia” — and nothing else: ONE step of the ops_continue grammar (owner/intents.mjs), no question mark, no quotation, no
+ * condition, no second clause („Da. Continuă.” is two clauses), no clarification and no refusal. "continue" | "question" | "other".
+ * Pure; the same rule for the Lega gate segments, owner.intent {utteranceId} and Lega's provider transcript (which never resumes).
+ */
+export function classifyContinueSentence(transcript) {
+  const raw = String(transcript || "").slice(0, 500).trim();
+  if (!raw) return "other";
+  if (/\?/.test(raw)) return "question";
+  if (/[„“”«»"]/.test(raw)) return "other";
+  let out;
+  try { out = resolveIntent(raw, { projects: [], missions: [], departments: [], pendingEnvelopes: [], source: "voice-local" }); } catch { return "other"; }
+  const steps = out?.steps || [];
+  if (steps.length !== 1 || out.clarification || (out.refused || []).length || out.quotedConfirm) return "other";
+  const step = steps[0];
+  if (step.intent !== "ops_continue" || step.constraints?.conditional || step.args?.planId) return "other";
+  return "continue";
+}
+
+/**
+ * 2.12.1 (VOICE-01): what Lega's PROVIDER transcript of a sentence says about a resume. It is only ever a VETO over the owner's locally
+ * verified „Continuă” of the same moment (it never adds authority, never resumes): "continue" (the whole resume, as above), "question" (a
+ * resume asked — „Continuă?”, „Pot să continui?”, a „?” on a neighbouring clause, a condition: the resolver's one ops_continue question),
+ * "mixed" (a resume among other words — „Continuă. Mulțumesc.”, „Da. Continuă.”), or null (nothing about resuming: „Ce urmează?”). Pure.
+ */
+export function continueCopyKind(transcript) {
+  const raw = String(transcript || "").slice(0, 500).trim();
+  if (!raw) return null;
+  if (classifyContinueSentence(raw) === "continue") return "continue";
+  let out;
+  try { out = resolveIntent(raw, { projects: [], missions: [], departments: [], pendingEnvelopes: [], source: "voice-provider" }); } catch { return null; }
+  const steps = out?.steps || [];
+  if (out?.clarification?.forIntent === "ops_continue" || steps.some((s) => s.args?.continueQuestion || s.args?.held === "ops_continue")) return "question";
+  if (steps.some((s) => s.intent === "ops_continue")) return "mixed";
+  return null;
+}
+
 /** Word overlap of what was heard and what was shown (diacritics and punctuation ignored): 0..1. */
 export function phraseMatch(heard, expected) {
   const words = (s) => normalizeText(s).replace(/[^a-z0-9\s-]+/g, " ").split(/\s+/).filter((w) => w.length > 1);
@@ -220,7 +258,14 @@ export function createVoice({ db, bus, clock, settings, config, trust, engine })
     const base = { id, owner_session_id: s.id, purpose, lega_session_id: legaSessionId ? String(legaSessionId).slice(0, 80) : null, envelope_id: envelopeId ? String(envelopeId).slice(0, 80) : null };
     let m;
     let decision;
-    if (!profile || !stored?.centroid) {
+    // M10.2 U13: a recording that already served a confirmation is a replay (a microphone never produces the same bytes twice): it is
+    // neither released to Lega nor transcribed, and it can never confirm anything again.
+    const replayed = (purpose === "gate" || purpose === "confirm") && Boolean(db.prepare("SELECT 1 FROM voice_utterances WHERE audio_sha256 = ? AND purpose IN ('gate','confirm') AND consumed_at IS NOT NULL LIMIT 1").get(sha256(buffer)));
+    if (replayed) {
+      const pcm = decodePcm16(buffer);
+      m = { quality: analyseQuality(pcm), audioSha256: sha256(buffer), transcript: null, sttMs: null, svMs: null, sttEngine: null };
+      decision = { result: "UNCERTAIN", reason: "aceeași înregistrare a fost deja folosită pentru o confirmare (reluare)", suspicious: ["înregistrare reluată"] };
+    } else if (!profile || !stored?.centroid) {
       const pcm = decodePcm16(buffer);
       const quality = analyseQuality(pcm);
       m = { quality, audioSha256: sha256(buffer), transcript: null, sttMs: null, svMs: null, sttEngine: null };
@@ -240,6 +285,18 @@ export function createVoice({ db, bus, clock, settings, config, trust, engine })
       }
     }
     const created = iso(); // the decision time (after the local analysis), which the bypass check compares with
+    // M10.2 U13: a gate segment of a Lega session is bound on the SERVER to the plan armed for that Lega session and this owner session
+    // (at the decision time: a segment recorded before the window opened is never bound). The page's tag is advisory: a different tag
+    // is flagged and binds no plan; without an armed plan the tag stays (the page path, checked again by claimForConfirmation).
+    let armedPlan = null;
+    if (purpose === "gate" && base.lega_session_id && typeof armedResolver === "function") {
+      try { armedPlan = armedResolver({ ownerSessionId: s.id, legaSessionId: base.lega_session_id }) || null; } catch { armedPlan = null; }
+      if (armedPlan && base.envelope_id && base.envelope_id !== armedPlan) {
+        decision = { ...decision, suspicious: [...(decision.suspicious || []), "eticheta planului din pagină diferă de planul armat"] };
+        base.envelope_id = null;
+        armedPlan = null;
+      } else if (armedPlan) base.envelope_id = armedPlan;
+    }
     // Only the owner's matched speech is ever transcribed and kept as text.
     const transcript = decision.result === "MATCH" && m.transcript !== null ? m.transcript : null;
     const transcriptStatus = decision.result !== "MATCH" ? "skipped" : purpose === "gate" ? "pending" : transcript ? "final" : "empty";
@@ -255,12 +312,22 @@ export function createVoice({ db, bus, clock, settings, config, trust, engine })
         let text = String(out.transcript || "").trim().slice(0, 500);
         if (isLikelyHallucination(text, m.quality)) text = "";
         db.prepare("UPDATE voice_utterances SET transcript = ?, transcript_status = ?, stt_engine = ?, stt_ms = ?, updated_at = ? WHERE id = ?").run(text || null, text ? "final" : "empty", out.sttEngine || null, out.sttMs ?? null, iso(), id);
-        // M08 §17: an armed plan may be confirmed by this segment; the envelope service re-checks everything (no authority here).
-        if (text && base.envelope_id) bus.emit({ type: "voice.gate_final", scopeType: "owner", scopeId: "voice", source: "owner", payload: { utteranceId: id, envelopeId: base.envelope_id, sessionId: base.owner_session_id, legaSessionId: base.lega_session_id } });
+        // M08 §17 / M10.2: an armed plan may be confirmed by this segment (bound above by the server, even when the page did not tag it);
+        // the plan's service re-checks everything (no authority here).
+        if (text && base.envelope_id) bus.emit({ type: "voice.gate_final", scopeType: "owner", scopeId: "voice", source: "owner", payload: { utteranceId: id, envelopeId: base.envelope_id, sessionId: base.owner_session_id, legaSessionId: base.lega_session_id, armed: Boolean(armedPlan) } });
+        // M10.2.1 (D18): the owner's own verified „Continuă” (the whole sentence, local transcript) in a Lega session goes to the intake,
+        // which re-checks everything on the server and runs the typed executor as the owner session (intake.continueFromVoice). No
+        // authority here. A plan armed in this session keeps its window: the window ignores this sentence and the intake answers the
+        // plan first; a plan's "Da" is never a resume (it is not the ops_continue grammar).
+        if (text && base.lega_session_id && classifyContinueSentence(text) === "continue") {
+          bus.emit({ type: "voice.continue_heard", scopeType: "owner", scopeId: "voice", source: "owner", payload: { utteranceId: id, ownerSessionId: base.owner_session_id, legaSessionId: base.lega_session_id, planBound: Boolean(armedPlan) } });
+        }
       }).catch(() => { try { db.prepare("UPDATE voice_utterances SET transcript_status = 'failed', updated_at = ? WHERE id = ?").run(iso(), id); } catch { /* closing */ } });
     }
+    // `boundPlanId` / `armed`: the page only observes an armed plan (the Hub confirms it from this row) instead of posting a second path.
     return { utteranceId: id, purpose, result: decision.result, reason: decision.reason, flags: decision.suspicious, transcript: purpose === "gate" ? null : transcript, final: transcriptStatus !== "pending",
-      transcriptStatus, sttMs: transcript !== null ? m.sttMs : null, svMs: m.svMs, quality: { speechMs: m.quality.speechMs, snrDb: m.quality.snrDb }, authority: false, verifier: VERIFIER.id, profileVersion: profile?.version || null };
+      transcriptStatus, sttMs: transcript !== null ? m.sttMs : null, svMs: m.svMs, quality: { speechMs: m.quality.speechMs, snrDb: m.quality.snrDb }, authority: false, verifier: VERIFIER.id, profileVersion: profile?.version || null,
+      boundPlanId: base.envelope_id, armed: Boolean(armedPlan) };
   }
 
   function getUtterance({ id, session }) {
@@ -277,16 +344,20 @@ export function createVoice({ db, bus, clock, settings, config, trust, engine })
    * segment not recorded for this plan, not the owner (MATCH with the CURRENT profile), no final local transcript, expired,
    * already used, or a sentence that is not an unambiguous "yes" to exactly this plan (negations, quotes, two plans waiting).
    */
-  function claimForConfirmation({ utteranceId, session, envelope, pendingEnvelopes = [] }) {
+  function claimForConfirmation({ utteranceId, session, envelope, pendingEnvelopes = [], notBefore = null }) {
     const row = utteranceRow(db.prepare("SELECT * FROM voice_utterances WHERE id = ?").get(String(utteranceId || "")));
     const refuse = (why) => { throw new HubError("policy", `Confirmarea vocală nu e valabilă: ${why}. Confirmă cu tasta sau butonul, ori repetă „Da, execută planul”.`); };
     if (!row) refuse("segmentul nu există");
     if (row.ownerSessionId !== session.id) refuse("segmentul a fost înregistrat în altă sesiune");
-    // "confirm" = recorded with the plan's mic button; "gate" = spoken to Lega while the page showed THIS plan (the page tags
-    // the segment with the plan on screen). Either way the segment must name this plan.
+    // "confirm" = recorded with the plan's mic button; "gate" = spoken to Lega while THIS plan was armed (bound by the server) or shown
+    // on the page (the page's tag). Either way the segment must name this plan.
     if (!["confirm", "gate"].includes(row.purpose) || row.envelopeId !== envelope.id) refuse("segmentul nu a fost înregistrat pentru planul acesta");
     if (row.consumedAt) refuse("fraza a fost deja folosită");
     if (new Date(row.expiresAt).getTime() < now()) refuse("au trecut mai mult de 2 minute de la frază");
+    // M10.2 U13 (defence in depth): a sentence recorded before the plan existed cannot be an answer to it, and the same recording (its
+    // audio hash) confirms at most once, whatever row it arrives in.
+    if (notBefore && row.createdAt < notBefore) refuse("fraza a fost spusă înainte ca planul să fie prezentat");
+    if (db.prepare("SELECT 1 FROM voice_utterances WHERE audio_sha256 = ? AND id != ? AND consumed_at IS NOT NULL LIMIT 1").get(row.audioSha256, row.id)) refuse("aceeași înregistrare a fost deja folosită pentru o confirmare");
     const profile = active();
     if (row.result !== "MATCH" || !profile || row.profileId !== profile.id) refuse(row.result === "MATCH" ? "profilul vocal s-a schimbat între timp" : `vocea nu a fost recunoscută (${row.result})`);
     if (row.transcriptStatus !== "final" || !row.transcript) refuse("nu am o transcriere locală finală a frazei");
@@ -312,6 +383,40 @@ export function createVoice({ db, bus, clock, settings, config, trust, engine })
     return { evidence, consume };
   }
 
+  /**
+   * M10.2.1 (D18): the server-held evidence that the owner SAID „Continuă” — the whole sentence — for ONE resume. Refuses: no row (a
+   * media transcript `mtr_…` is never an utterance), another session's segment, a purpose not allowed (the Lega path: "gate"; owner.intent
+   * {utteranceId}: "gate" | "confirm"; "probe" never), another Lega session, already used, expired, said before `notBefore` or too long
+   * before now (`maxAgeMs`), the same recording already used elsewhere, not MATCH with the CURRENT profile, any flag the page or the server
+   * raised (Lega's voice in the microphone, playback, a plan tag conflict), no final local transcript, a sentence that is not exactly the
+   * resume (classifyContinueSentence). The caller consumes it (`continue:<id>`) BEFORE it runs anything: exactly once.
+   */
+  function claimForContinue({ utteranceId, session, purposes = ["gate"], legaSessionId = null, notBefore = null, maxAgeMs = null }) {
+    const row = utteranceRow(db.prepare("SELECT * FROM voice_utterances WHERE id = ?").get(String(utteranceId || "")));
+    const refuse = (why) => { throw new HubError("policy", `„Continuă” spus nu se ia în seamă: ${why}. Scrie „Continuă” în cockpit sau repetă-l.`); };
+    if (!row) refuse("segmentul vocal nu există");
+    if (!session?.id || row.ownerSessionId !== session.id) refuse("segmentul a fost înregistrat în altă sesiune");
+    if (!purposes.includes(row.purpose)) refuse(`segmentul nu e o frază spusă către Hub (scop „${row.purpose}”)`);
+    if (legaSessionId && row.legaSessionId !== legaSessionId) refuse("segmentul nu vine din sesiunea Lega de acum");
+    if (row.consumedAt) refuse("fraza a fost deja folosită");
+    const t = now();
+    if (new Date(row.expiresAt).getTime() < t) refuse("au trecut mai mult de 2 minute de la frază");
+    if (notBefore && row.createdAt < notBefore) refuse("fraza a fost spusă înainte de sesiunea Lega de acum");
+    if (Number.isFinite(maxAgeMs) && maxAgeMs > 0 && t - Date.parse(row.createdAt) > maxAgeMs) refuse("transcrierea locală a întârziat prea mult față de momentul frazei");
+    if (db.prepare("SELECT 1 FROM voice_utterances WHERE audio_sha256 = ? AND id != ? AND consumed_at IS NOT NULL LIMIT 1").get(row.audioSha256, row.id)) refuse("aceeași înregistrare a fost deja folosită");
+    const profile = active();
+    if (row.result !== "MATCH" || !profile || row.profileId !== profile.id) refuse(row.result === "MATCH" ? "profilul vocal s-a schimbat între timp" : `vocea nu a fost recunoscută (${row.result})`);
+    if ((row.flags || []).length) refuse(`semnale suspecte la înregistrare (${row.flags.slice(0, 2).join(", ")})`);
+    if (row.transcriptStatus !== "final" || !row.transcript) refuse("nu am o transcriere locală finală a frazei");
+    const cls = classifyContinueSentence(row.transcript);
+    if (cls !== "continue") refuse(cls === "question" ? `am auzit o întrebare („${row.transcript.slice(0, 80)}”), nu „Continuă”` : `„Continuă” se ia doar ca propoziție întreagă, fără alte cuvinte; am auzit „${row.transcript.slice(0, 80)}”`);
+    const evidence = { utteranceId: row.id, purpose: row.purpose, speaker: row.result, verifier: row.verifier, profileVersion: row.profileVersion, transcriptSource: "local", sttEngine: row.sttEngine,
+      heard: row.transcript.slice(0, 120), audioSha256: row.audioSha256.slice(0, 16), recordedAt: row.createdAt };
+    const consume = (by) => db.prepare("UPDATE voice_utterances SET consumed_by = ?, consumed_at = ?, updated_at = ? WHERE id = ? AND consumed_at IS NULL AND owner_session_id = ?")
+      .run(String(by).slice(0, 80), iso(), iso(), row.id, session.id).changes;
+    return { evidence, consume };
+  }
+
   /** owner.intent from a spoken sentence: the text and the "voice-local" source come from the server-held row. */
   function utteranceForIntent({ utteranceId, session }) {
     const row = utteranceRow(db.prepare("SELECT * FROM voice_utterances WHERE id = ?").get(String(utteranceId || "")));
@@ -321,6 +426,19 @@ export function createVoice({ db, bus, clock, settings, config, trust, engine })
     if (new Date(row.expiresAt).getTime() < now()) throw new HubError("conflict", "Segmentul a expirat");
     return row;
   }
+
+  /**
+   * M10.2 U13 (internal, no route): the server-held facts of one utterance the armed window needs (who, which Lega session, the local
+   * transcript and when it was spoken). No authority: the confirmation still goes through claimForConfirmation.
+   */
+  function peekUtterance(utteranceId) {
+    const row = utteranceRow(db.prepare("SELECT * FROM voice_utterances WHERE id = ?").get(String(utteranceId || "")));
+    return row ? { id: row.id, ownerSessionId: row.ownerSessionId, legaSessionId: row.legaSessionId, purpose: row.purpose, envelopeId: row.envelopeId, result: row.result,
+      transcript: row.transcript, transcriptStatus: row.transcriptStatus, createdAt: row.createdAt, consumedAt: row.consumedAt } : null;
+  }
+  /** M10.2 U13: hub.mjs binds the armed-window registry (planFor) here, late (it is created after this service). */
+  let armedResolver = null;
+  const setArmedResolver = (fn) => { armedResolver = typeof fn === "function" ? fn : null; };
 
   /** The bypass check (M07 §14): a released (MATCH) gate segment of this Lega session in the last window. */
   function recentGateRelease(legaSessionId, windowMs = 30000) {
@@ -346,6 +464,12 @@ export function createVoice({ db, bus, clock, settings, config, trust, engine })
   function setGate({ enabled, session }) {
     trust.requireSession(session, "schimbarea filtrului vocal");
     if (enabled && !active()) throw new HubError("validation", "Înscrie întâi profilul vocal");
+    // M10.2 U13: a filter whose matched sentences cannot be transcribed locally would hold every spoken confirmation forever (and the
+    // owner would believe it works): it is turned on only with the local engine usable. Turning it OFF is always allowed.
+    if (enabled) {
+      const lt = status().localTranscription;
+      if (!lt?.available) throw new HubError("policy", `Filtrul vocal cere transcrierea locală, care nu e disponibilă acum (${lt?.reason || "motorul local nu e utilizabil"}); repară motorul din Lega → Configurare, apoi pornește filtrul`);
+    }
     // The filter is strict or off: a "non-strict" mode that lets everything through would only look like a filter.
     const value = { ...settings.get("voiceGate"), enabled: Boolean(enabled), strict: true };
     bus.transaction(() => settings.set("voiceGate", value, "owner", "Voice gate settings"));
@@ -380,5 +504,6 @@ export function createVoice({ db, bus, clock, settings, config, trust, engine })
     try { engine.tick(); } catch { /* engine state is reported by status */ }
   }
 
-  return { enrollSample, enrollReset, enrollFinish, analyzeUtterance, getUtterance, claimForConfirmation, utteranceForIntent, recentGateRelease, remove, setGate, status, tick, active };
+  return { enrollSample, enrollReset, enrollFinish, analyzeUtterance, getUtterance, claimForConfirmation, claimForContinue, utteranceForIntent, recentGateRelease, remove, setGate, status, tick, active,
+    peekUtterance, setArmedResolver };
 }

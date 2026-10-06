@@ -143,10 +143,14 @@ test("M09-LG-03 a spoken correction (voice-provider, filter off) is proposed on 
     const n = reviews();
     const noTime = await dispatch(t.hub, "owner.intent", { text: "Mută titlul mai sus" }, { ownerSession: owner.session, channel: "owner" });
     assert.match(noTime.results[0].message, /La ce secundă/); assert.equal(reviews(), n);
-    // Two open clips and no reference → which one? (nothing proposed); a reference picks it.
+    // Two open clips and no reference: a conversation with no last target asks which one (nothing proposed) …
     seedClip(t.hub, "Alt clip de test");
-    const two = await dispatch(t.hub, "owner.intent", { text: "La secunda 12 mută textul mai sus" }, { ownerSession: owner.session, channel: "owner" });
+    const two = await dispatch(t.hub, "owner.intent", { text: "La secunda 12 mută textul mai sus" }, { channel: "ui", actor: "user" });
     assert.match(two.results[0].message, /Pe care clip/); assert.equal(reviews(), n);
+    // … while in the owner's conversation the clip last acted on is the target (M10.2 U10: the server-held last target, no question).
+    const last = await dispatch(t.hub, "owner.intent", { text: "La secunda 12 mută textul mai sus" }, { ownerSession: owner.session, channel: "owner" });
+    assert.equal(last.results[0].studio?.contentProjectId, project.id, JSON.stringify(last.results[0])); assert.equal(reviews(), n + 1);
+    // A reference picks it.
     const named = await dispatch(t.hub, "owner.intent", { text: "La secunda 12 în clipul demo checkout mută textul mai sus" }, { ownerSession: owner.session, channel: "owner" });
     assert.equal(named.results[0].studio?.contentProjectId, project.id, JSON.stringify(named.results[0]));
   } finally { await t.cleanup(); }

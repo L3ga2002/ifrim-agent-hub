@@ -63,6 +63,10 @@ export function registerOpsCommands(reg, hub) {
     execute: (input, ctx) => opsPlans.cancel(input.planId, { reason: input.reason, actor: ctx.actor }) });
   reg("ops.plan.resume", { describe: "Continuă planul exact (aceleași limite; pașii incerți se verifică întâi)", async: true, channels: OWNER, schema: { planId: { required: true, max: 80 } },
     execute: (input, ctx) => opsPlans.resume(input.planId, { session: session(ctx), actor: ctx.actor }) });
+  // M10.2 (U11): the plan's session closed — the same credential confirms only the difference (the new session); same limits.
+  reg("ops.plan.reconfirm", { describe: "Confirmi doar diferența (sesiunea nouă) a unui plan oprit; aceleași limite", async: true, channels: OWNER,
+    schema: { planId: { required: true, max: 80 }, nonce: { required: true, max: 64 }, displayedHash: { required: true, max: 64 }, modality: { enum: ["click", "keyboard", "typed"], default: "click" } },
+    execute: (input, ctx) => opsPlans.reconfirm({ planId: input.planId, nonce: input.nonce, displayedHash: input.displayedHash, session: session(ctx), modality: input.modality, actor: ctx.actor }) });
 
   // ---------------------------------------------------------------- Studio: project import, folders, capture scope, local export
   reg("media.project.export", { describe: "Exportă proiectul Studio ca pachet (manifest cu hash-uri + surse)", channels: OWNER_UI,

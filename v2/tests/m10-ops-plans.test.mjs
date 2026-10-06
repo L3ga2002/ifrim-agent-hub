@@ -198,7 +198,9 @@ test("M10-OP-06 pause / cancel are fail-safe from every channel; resume needs th
     assert.equal(paused.status, "PAUSED");
     await t.hub.opsPlans.idle(p.id);
     const other = await enrolOwnerAgain(t, owner);
-    await assert.rejects(asOwner(t, other, "ops.plan.resume", { planId: p.id }), (e) => e.code === "SESSION_CHANGED");
+    // M10.2 (U11): another session of the SAME credential is asked to confirm only the difference (the new session), never resumed
+    // silently; the full re-confirmation path is covered in m10-2-lifecycle LC-12.
+    await assert.rejects(asOwner(t, other, "ops.plan.resume", { planId: p.id }), (e) => e.code === "RECONFIRM_DELTA" && Boolean(e.details?.reconfirm?.nonce));
     await assert.rejects(asChannel(t, "ui", "ops.plan.resume", { planId: p.id }), /cannot be issued through ui/);
     gate.open = true;
     const resumed = await asOwner(t, owner, "ops.plan.resume", { planId: p.id });

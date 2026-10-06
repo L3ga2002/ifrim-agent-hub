@@ -56,7 +56,16 @@ export function registerMediaRoutes(router, hub) {
 
   // ---------- status & catalogs ----------
   get("/api/media/status", () => ({ ...media.status(), limitations: limitations() }));
-  get("/api/media/tools", async () => ({ tools: await media.tools.resolve(), editors: await media.editors.inspectAll() }));
+  // M10.2: a GET never mutates. inspect() compares the binaries with the pins (PINNED / UNPINNED / CHANGED / MISSING) and writes
+  // no setting or event; pinning is the media.tools.pin command (or a step of a confirmed plan), a change needs media.tools.acknowledge.
+  get("/api/media/tools", async () => {
+    const tools = await media.tools.inspect();
+    const pins = hub.settings.get("mediaToolPins") || {};
+    const pinView = (p) => (p?.sha256 ? { version: p.version || null, sha256: p.sha256, libsSha256: p.libsSha256 || null, path: p.path || null, pinnedAt: p.pinnedAt || null,
+      pinnedBy: p.pinnedBy || null, changedAt: p.changedAt || null, acknowledged: p.changedAt ? Boolean(p.acknowledged) : null,
+      previous: p.previous ? { version: p.previous.version || null, sha256: p.previous.sha256 || null } : null } : null);
+    return { tools, pins: { ffmpeg: pinView(pins.ffmpeg), ffprobe: pinView(pins.ffprobe) }, editors: await media.editors.inspectAll() };
+  });
   get("/api/media/profiles", () => ({ profiles: media.PLATFORM_PROFILES }));
   get("/api/media/presets", () => ({ presets: media.presets.list() }));
   get("/api/media/presets/:id", ({ params, query }) => {
@@ -148,6 +157,12 @@ export function registerMediaRoutes(router, hub) {
   post("/api/media/edit-versions/:id/divergence", cmd("media.edit.divergence.record", ({ params, body }) => ({ ...body, editVersionId: params.id })));
   post("/api/media/edit-versions/:id/decision", cmd("media.review.decide", ({ params, body }) => ({ ...body, editVersionId: params.id })));
   post("/api/media/edit-versions/:id/variants", cmd("media.variant.derive", ({ params, body }) => ({ ...body, masterVersionId: params.id })));
+  // M10.2 (#27): the Studio → Unelte panel posts the identity it displayed, so the pin / acknowledgement covers exactly what the owner
+  // saw (compared server-side; a binary or DLL set swapped meanwhile is refused). The planId of an automation pin never comes from HTTP.
+  post("/api/media/tools/pin", cmd("media.tools.pin", ({ body }) => ({ reason: String(body?.reason || "").slice(0, 200),
+    ...(body?.expect && typeof body.expect === "object" && !Array.isArray(body.expect) ? { expect: body.expect } : {}) })));
+  post("/api/media/tools/:tool/acknowledge", cmd("media.tools.acknowledge", ({ params, body }) => ({ tool: params.tool, ...(body?.sha256 ? { sha256: body.sha256 } : {}),
+    ...(typeof body?.libsSha256 === "string" && body.libsSha256 ? { libsSha256: body.libsSha256 } : {}), ...(typeof body?.version === "string" && body.version ? { version: body.version } : {}) })));
   post("/api/media/renders", cmd("media.render.request"));
   post("/api/media/renders/:id/retry", cmd("media.render.retry", ({ params }) => ({ jobId: params.id })));
   post("/api/media/renders/:id/cancel", cmd("media.render.cancel", ({ params }) => ({ jobId: params.id })));

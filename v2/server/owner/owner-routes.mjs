@@ -77,15 +77,29 @@ export function registerOwnerRoutes(router, hub) {
   // ---------- natural language, envelopes, autonomy, interruptions ----------
   post("/api/owner/intent", ({ req, body }) => dispatch(req, "owner.intent", { text: body.text || "", projectId: body.projectId || undefined, source: body.source || "typed", utteranceId: body.utteranceId || undefined, presented: body.presented || undefined, layout: body.layout || undefined,
     // M08: the Lega session the plan is shown in (the Hub arms the short voice window only for it; review M08: it was dropped here).
-    legaSessionId: typeof body.legaSessionId === "string" && body.legaSessionId ? body.legaSessionId.slice(0, 80) : undefined }));
+    legaSessionId: typeof body.legaSessionId === "string" && body.legaSessionId ? body.legaSessionId.slice(0, 80) : undefined,
+    // M10.2: a clarification button answers with the option id the Hub offered (checked against the server-held question).
+    choice: body.choice && typeof body.choice === "object" && !Array.isArray(body.choice) ? { forIntent: String(body.choice.forIntent || "").slice(0, 40), id: String(body.choice.id || "").slice(0, 80) } : undefined }));
   get("/api/envelopes", ({ query }) => ({ envelopes: query.projectId ? envelopes.forProject(projects.get(query.projectId)?.id || query.projectId, 20).map((e) => envelopes.view(e.id)) : envelopes.pending().map((e) => envelopes.view(e.id)) }));
   get("/api/envelopes/:id", ({ params }) => { const v = envelopes.view(params.id); if (!v) throw new HubError("not_found", "Plan necunoscut"); return v; });
   post("/api/envelopes", ({ req, body }) => dispatch(req, "envelope.propose", { projectId: body.projectId, missionIds: body.missionIds || [], level: body.level || undefined, constraints: body.constraints || {} }));
   post("/api/envelopes/:id/confirm", ({ req, params, body }) => dispatch(req, "envelope.confirm", { envelopeId: params.id, nonce: body.nonce, displayedHash: body.displayedHash, modality: body.modality || "click", utteranceId: body.utteranceId || undefined }, { requireOwner: true }));
   post("/api/envelopes/:id/delta", ({ req, params, body }) => dispatch(req, "envelope.confirm_delta", { envelopeId: params.id, missionId: body.missionId, modality: body.modality || "click" }, { requireOwner: true }));
   post("/api/envelopes/:id/revoke", ({ req, params, body }) => dispatch(req, "envelope.revoke", { envelopeId: params.id, reason: body.reason || "Revocat de proprietar" }));
-  post("/api/owner/autonomy", ({ req, body }) => dispatch(req, "owner.autonomy.set", { projectId: body.projectId, level: body.level }));
+  // M10.2: the preserved requests (cockpit card) — give one up, or confirm once the plan of a request blocked only by automatic
+  // readiness steps (owner session, the exact nonce + hash shown); and the per-project model defaults (owner session, Windows Hello).
+  post("/api/work-requests/:id/cancel", ({ req, params }) => dispatch(req, "work.request.cancel", { workRequestId: params.id }));
+  post("/api/work-requests/:id/confirm-readiness", ({ req, params, body }) => dispatch(req, "work.request.confirm_readiness", { workRequestId: params.id, envelopeId: body.envelopeId,
+    nonce: body.nonce, displayedHash: body.displayedHash, modality: body.modality || "click" }, { requireOwner: true }));
+  post("/api/projects/:id/model-defaults", ({ req, params, body }) => dispatch(req, "factory.defaults.set", { projectId: params.id, writerModel: body.writerModel || "", writerEffort: body.writerEffort || "",
+    reviewerModel: body.reviewerModel || "", reviewerEffort: body.reviewerEffort || "", clear: Boolean(body.clear) }, { requireOwner: true }));
+  post("/api/owner/autonomy", ({ req, body }) => dispatch(req, "owner.autonomy.set", { projectId: body.projectId, level: body.level, ...(body.atLeast === true ? { atLeast: true } : {}) }));
   post("/api/owner/interrupt", ({ req, body }) => dispatch(req, "owner.interrupt", { kind: body.kind, projectId: body.projectId || undefined, provider: body.provider || undefined, reason: body.reason || "" }));
+  // M10.2.1 (D14): the contextual gate rearm — the card (what stopped, what stays stopped) and the rearm itself, both in the owner
+  // session; the rearm also needs a fresh Windows Hello (the UI's withReauth retries once with the same body).
+  post("/api/owner/gate/rearm/card", ({ req, body }) => dispatch(req, "gate.rearm.card", { requestId: typeof body.requestId === "string" && body.requestId ? body.requestId.slice(0, 80) : undefined }, { requireOwner: true }));
+  post("/api/owner/gate/rearm", ({ req, body }) => dispatch(req, "gate.rearm", { nonce: body.nonce, hash: body.hash, requestId: typeof body.requestId === "string" && body.requestId ? body.requestId.slice(0, 80) : undefined,
+    ackSecurity: body.ackSecurity === true, modality: typeof body.modality === "string" ? body.modality.slice(0, 20) : "click" }, { requireOwner: true }));
   post("/api/owner/unfreeze", ({ req, body }) => dispatch(req, "owner.unfreeze", { projectId: body.projectId }));
   get("/api/owner/attention", ({ query }) => advisor.attention({ afterSeq: Number(query.after) || 0 }));
   post("/api/owner/prefs", ({ req, body }) => dispatch(req, "owner.prefs", body || {}));

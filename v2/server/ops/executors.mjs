@@ -128,7 +128,11 @@ export function createExecutors({ desktop = null, media = null, settings, live =
         let grant = null;
         if (params.access) {
           grant = media.importAccess.authorize({ dir: params.folder, mode: "once", previewSha256: params.access.previewSha256, planId, ownerSessionId: plan?.authority?.sessionId || null, actor: `plan:${planId}` });
-          const p = media.bundles.preview({ dir: params.folder, actor: `plan:${planId}` });
+          // M10.2: the one-time access is consumed on EVERY failure after it was granted (an unreadable or invalid manifest threw
+          // before, leaving the folder an import root until its expiry).
+          let p;
+          try { p = media.bundles.preview({ dir: params.folder, actor: `plan:${planId}` }); }
+          catch (error) { media.importAccess.markUsed(grant.grantId); throw error; }
           if (p.problems.length) { media.importAccess.markUsed(grant.grantId); throw new HubError("validation", `Pachetul are probleme: ${p.problems.slice(0, 4).join("; ")}`, { code: "BUNDLE_PROBLEMS" }); }
           ({ importId, previewHash } = p);
         }
@@ -213,6 +217,34 @@ export function createExecutors({ desktop = null, media = null, settings, live =
       describe: ({ assetVersionId, name = null }) => ({ title: `Exportă local în ${media.exportsDir() || "folderul de exporturi"}${name ? ` ca „${name}”` : ""} (fără publicare)`, params: { assetVersionId, name },
         folders: media.exportsDir() ? [media.exportsDir()] : [], ops: [{ op: "export.local", destination: media.exportsDir() ? path.join(media.exportsDir(), "x.mp4") : undefined }], observed: [], transmitted: [], outputs: ["fișier local nou (fără suprascriere)"] }),
       run: async ({ params, planId, authorize }) => { authorize({ op: "export.local" }); const r = media.exportLocal({ assetVersionId: params.assetVersionId, name: params.name, actor: `plan:${planId}` }); return { result: r }; },
+    },
+    // M10.2 (U10): the automatic readiness step a Studio plan lists when ffmpeg/ffprobe are not pinned yet (blockers.mjs
+    // MEDIA_TOOLS_UNPINNED → "fixez ca pas al planului confirmat"). The card shows the exact identity seen at proposal (version +
+    // sha256); the run re-inspects and pins ONLY that identity — a binary replaced in between stops the plan (nothing written), and a
+    // change is never acknowledged here (that stays media.tools.acknowledge, the owner's decision). No file or desktop operation: it
+    // writes the Hub's own pin record, authorized by the plan's one confirmation (status, expiry, session, budget checked first).
+    "media.tools.pin": {
+      // M10.2 (#30): the shown identity carries the shared-library set (libsSha256) and the version too — the DLLs next to a shared
+      // ffmpeg build are where decoding happens, so they are part of what the owner confirms; the card prefixes the libs hash.
+      describe: ({ expect = null } = {}) => {
+        const shown = expect && typeof expect === "object" ? Object.fromEntries(["ffmpeg", "ffprobe"].filter((t) => expect[t]?.sha256)
+          .map((t) => [t, { version: expect[t].version || null, sha256: String(expect[t].sha256), libsSha256: expect[t].libsSha256 ? String(expect[t].libsSha256) : null }])) : null;
+        const label = shown && Object.keys(shown).length
+          ? Object.entries(shown).map(([t, v]) => `${t} ${v.version || "?"} (sha256 ${v.sha256.slice(0, 12)}…${v.libsSha256 ? `, biblioteci ${v.libsSha256.slice(0, 8)}…` : ""})`).join(", ") : "ffmpeg și ffprobe";
+        return { title: `Fixează uneltele de randare: ${label}`, params: { expect: shown }, ops: [], observed: ["versiunea, sha256 și bibliotecile ffmpeg/ffprobe (fără conținut)"], transmitted: [],
+          outputs: ["identitatea uneltelor fixată; orice binar schimbat ulterior îți e arătat, nu adoptat"] };
+      },
+      run: async ({ params, planId, authorize }) => {
+        authorize({});
+        if (!media?.tools?.pin) throw new HubError("tool", "Uneltele media nu sunt disponibile.", { code: "TOOL_MISSING" });
+        // The expected identity is compared INSIDE the pin transaction, on the identity being recorded (no inspect() → pin() gap): a
+        // binary or DLL set replaced after the card was drawn refuses with TOOL_CHANGED and writes nothing.
+        const r = await media.tools.pin({ actor: `plan:${planId}`, reason: "pas de pregătire al planului confirmat", expect: params.expect || null });
+        if (r.changed.length) throw new HubError("conflict", `${r.changed.join(", ")} s-a schimbat față de identitatea fixată: schimbarea e înregistrată și o confirmi tu în Studio → Unelte („Confirmă schimbarea”).`, { code: "TOOL_CHANGED" });
+        return { result: { pinned: r.pinned, unchanged: r.unchanged, states: r.tools?.states || {} } };
+      },
+      // Pinning is idempotent (an already-pinned identity writes nothing), so a retry after a crash is safe.
+      reconcile: async () => ({ outcome: "retry" }),
     },
     "media.edit.from_capture": {
       describe: ({ assetVersionId, title, hook = "", label = "SIMULARE · Hub de test cu date sintetice" }) => ({ title: `Montaj din captură: „${title}” (etichetă „${label}”)`, params: { assetVersionId, title, hook, label },

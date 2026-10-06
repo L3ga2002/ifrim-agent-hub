@@ -11,7 +11,7 @@ import { createHttpServer } from "../server/http/server.mjs";
 import { materializeFixture, demoSpec } from "../server/factory/fixtures.mjs";
 // M09: every factory mission names its models explicitly (without them it is a draft whose scope is incomplete).
 const M09_MODELS = { writerModel: "gpt-fake-sol", reviewerModel: "sonnet" };
-import { enrolVoice, speak } from "./voice-helpers.mjs";
+import { enrolVoice, speak, startDerivedLega } from "./voice-helpers.mjs";
 import { API_CONTRACT } from "../server/config.mjs";
 
 const dispatch = (hub, type, payload, extra = {}) => hub.commands.dispatch({ type, payload, channel: "test", actor: "test", ...extra });
@@ -80,17 +80,19 @@ test("M08-ADV-04 the armed window closes after three sentences that are not a cl
     await dispatch(t.hub, "owner.autonomy.set", { projectId: project.id, level: "TRUSTED" }, { ownerSession: owner.reauth() });
     await dispatch(t.hub, "factory.prepare", { projectId: project.id, ...demoSpec("bug-demo"), limits: M09_MODELS });
     const env = (await dispatch(t.hub, "envelope.propose", { projectId: project.id })).result.envelope;
-    await dispatch(t.hub, "envelope.arm", { envelopeId: env.id, legaSessionId: "lega_c" }, { ownerSession: owner.session });
+    // M10.2 U13: windows exist only for a live Lega session derived from this owner session.
+    const lega_c = await startDerivedLega(t, owner);
+    await dispatch(t.hub, "envelope.arm", { envelopeId: env.id, legaSessionId: lega_c }, { ownerSession: owner.session });
     const say = async (text) => {
-      const g = await speak(t, owner, text, { purpose: "gate", envelopeId: env.id, legaSessionId: "lega_c" });
+      const g = await speak(t, owner, text, { purpose: "gate", envelopeId: env.id, legaSessionId: lega_c });
       await waitFor(() => t.hub.db.prepare("SELECT transcript_status FROM voice_utterances WHERE id = ?").get(g.utteranceId).transcript_status !== "pending", 5000);
       await new Promise((r) => setTimeout(r, 150));
     };
     for (const s of ["Da?", "Da", "Da, dar nu porni planul"]) await say(s);
-    assert.equal(t.hub.envelopes.armedFor(env.id, owner.session.id, "lega_c"), null, "closed after 3 refused sentences");
+    assert.equal(t.hub.envelopes.armedFor(env.id, owner.session.id, lega_c), null, "closed after 3 refused sentences");
     await say("Da, execută planul");
     assert.equal(t.hub.envelopes.get(env.id).status, "PROPOSED", "a closed window confirms nothing; the button or a new view remains");
-  } finally { await t.cleanup(); }
+  } finally { await t.hub.lega.stopAll("test").catch(() => {}); await t.cleanup(); }
 });
 
 test("M08-ADV-05 something changes between two autopilot tasks (the project is frozen): the next task does not start; the plan waits for the owner", async () => {

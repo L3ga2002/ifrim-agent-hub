@@ -1,6 +1,6 @@
 import { evaluateRoute } from "./billing.mjs";
 import { billingInputs } from "./billing-evidence.mjs";
-import { evaluateIsolation, evaluateHostIsolation, evaluateEnvironmentRoute, evaluateEnvironmentProfile, evaluateEnvironmentReviewer } from "./isolation.mjs";
+import { evaluateIsolation, evaluateHostIsolation, evaluateEnvironmentRoute, evaluateEnvironmentProfile, evaluateEnvironmentReviewer, CODEX_PROFILE_BY_ACCESS } from "./isolation.mjs";
 import { LEGA_CONSENT_VERSION } from "./lega-policy.mjs";
 
 const INSPECTION_MAX_AGE_H = 24;
@@ -8,27 +8,58 @@ const INSPECTION_MAX_AGE_H = 24;
 /**
  * Builds the billing inspection from stored provider state: installation/config facts come from the
  * local inspection, identity/plan/usage only from an account check younger than 24 h.
+ * D23 `assumeFresh` (an outlook, never an admission — evaluateVoice `accountOutlook` is its only caller): the account facts of the
+ * last check that SUCCEEDED are read whatever its age — identity, plan and sandbox; never the usage measurement (hours old by then).
  */
-export function inspectionFromState(state, now) {
+export function inspectionFromState(state, now, { assumeFresh = false } = {}) {
   if (!state) return null;
   const probeAgeH = state.probedAt ? (now.getTime() - new Date(state.probedAt).getTime()) / 3600000 : Infinity;
   const probeFresh = probeAgeH <= INSPECTION_MAX_AGE_H && state.ok !== false;
-  if (!state.installation && !probeFresh) return null;
+  const facts = probeFresh || (assumeFresh === true && Number.isFinite(probeAgeH) && state.ok !== false);
+  if (!state.installation && !facts) return null;
   return {
     installed: state.installation ? state.installation.installed !== false : undefined,
     binary: state.installation?.binary, version: state.installation?.version,
-    auth: probeFresh ? state.auth : null,
+    auth: facts ? state.auth : null,
     config: state.config || null,
     usage: probeFresh && state.usage && !state.usage.error ? state.usage : null,
-    sandbox: probeFresh ? state.sandbox || null : null,
+    sandbox: facts ? state.sandbox || null : null,
   };
 }
+
+/**
+ * D23: where a provider's account check stands, by the same rule inspectionFromState applies — "fresh" | "stale" (it succeeded, more
+ * than 24 h ago) | "failed" (the last check did not succeed) | "missing" (never run) — and when it ran. No account data.
+ */
+export function accountCheckState(state, now) {
+  const at = state?.probedAt ? new Date(state.probedAt).getTime() : NaN;
+  if (!Number.isFinite(at)) return { state: "missing", checkedAt: null, ageHours: null };
+  const ageH = (now.getTime() - at) / 3600000;
+  return { state: state.ok === false ? "failed" : ageH <= INSPECTION_MAX_AGE_H ? "fresh" : "stale", checkedAt: new Date(at).toISOString(), ageHours: Math.round(ageH * 10) / 10 };
+}
+
+/** D23 (outlook only): the sandbox facts a successful account check reports, assumed where no check has ever supplied them. */
+const ASSUMED_SANDBOX = Object.freeze({ readiness: "ready", profiles: Object.freeze([Object.freeze({ id: CODEX_PROFILE_BY_ACCESS["read-only"], allowed: true })]) });
+/** A billing sub-check that only an account check can settle: the unread identity, and a declaration that lacks nothing but the account to compare with. */
+const settledByAccountCheck = (c) => (c.id === "identity" && c.status === "unverified")
+  || (c.id === "provider_side_overage_setting" && c.status === "unverified" && (c.evidence?.reasons || []).length > 0 && c.evidence.reasons.every((r) => r === "identity_unavailable"));
 
 /**
  * Execution gate: every check is evaluated and reported, the run is admitted only when all pass.
  * The gate is the single place that decides; UI, companion, voice and automations all go through it.
  */
 export function createGate({ db, settings, projects, backups, leases, grants, breakers, providerState, clock, activeRunCount, codexIsolation = null, environments = null }) {
+  /*
+   * M10.2 envelope-scoped live authority, late-bound by hub.mjs once the envelope service exists (it needs the gate first).
+   * (missionId, bindingHash, { provider, projectId, access }) → null (no plan of this mission in force) or { envelopeId, grantId }
+   * for an OPEN, unexpired envelope whose ACTIVE derived grant is bound to exactly that binding and mission ({ envelopeId,
+   * grantId: null, problem } when the plan is in force but cannot admit this step). It is asked only for a run under an approved
+   * binding with a mission — what runs.boundPlan produces for a Software Factory step — so in BUILD_SAFE every other run (manual,
+   * shadow, Lega, schedules, a legacy factory mission) is still refused on `mode`.
+   */
+  let envelopeAuthority = null;
+  function attachEnvelopeAuthority(fn) { envelopeAuthority = typeof fn === "function" ? fn : null; }
+
   /** `environment` defaults to the project route (M05): the gate decides with the same route the run manager will use. */
   function evaluate({ provider, projectId, access = "read-only", grantId = null, workspaceResource, plan = null, environment = null }) {
     const route = environment || (environments ? environments.routeFor(projectId, provider) : "windows");
@@ -41,7 +72,18 @@ export function createGate({ db, settings, projects, backups, leases, grants, br
     add("execution_gate", gateState.status === "open", gateState.status === "open" ? "Deschisă" : `Suspendată: ${gateState.reason}`);
 
     const mode = settings.get("mode");
-    add("mode", mode === "LIVE_VALIDATION" || mode === "OPERATIONAL", mode === "BUILD_SAFE" ? "BUILD_SAFE: fără inferență și fără efecte externe" : mode);
+    // M10.2: in BUILD_SAFE a step of a confirmed plan is admitted by THAT plan (the Hub's mode is never written); the plan's
+    // derived grant is then the live_grant below, so its attempt is still consumed and every other check still decides.
+    let authority = null;
+    if (mode === "BUILD_SAFE" && envelopeAuthority && plan?.bindingHash && plan?.missionId) {
+      try { authority = envelopeAuthority(plan.missionId, plan.bindingHash, { provider, projectId, access }); }
+      catch (error) { authority = { envelopeId: null, grantId: null, problem: `autoritatea planului nu a putut fi verificată (${String(error?.message || error).slice(0, 120)})` }; }
+    }
+    const scoped = Boolean(authority?.envelopeId && authority?.grantId && !authority.problem);
+    add("mode", mode === "LIVE_VALIDATION" || mode === "OPERATIONAL" || scoped,
+      scoped ? `BUILD_SAFE; pas admis de planul ${authority.envelopeId}`
+        : mode === "BUILD_SAFE" ? (authority ? `BUILD_SAFE: ${authority.envelopeId ? `planul ${authority.envelopeId}` : "planul"} nu admite acest pas (${authority.problem || "fără grant derivat activ"})` : "BUILD_SAFE: fără inferență și fără efecte externe") : mode,
+      scoped ? { authority: `envelope:${authority.envelopeId}` } : {});
 
     const project = projects.get(projectId);
     // The folder is checked again at every run: a link or junction swapped in after the owner enabled it is refused.
@@ -51,12 +93,12 @@ export function createGate({ db, settings, projects, backups, leases, grants, br
     const frozen = project ? settings.get("projectFreeze")?.[project.id] || null : null;
     add("project_frozen", !frozen, frozen ? `Proiect înghețat (${frozen.at}); dezgheață-l ca să pornească pași noi` : "Nu este înghețat");
 
-    if (mode === "LIVE_VALIDATION") {
+    if (mode === "LIVE_VALIDATION" || scoped) {
       // M09: a grant derived from an envelope serves only the binding it names (the run's approved model/effort hash); a manual
-      // run, a shadow review or a run with another model cannot consume it.
+      // run, a shadow review or a run with another model cannot consume it. M10.2: and a plan step uses only its plan's grant.
       const bindingHash = plan?.bindingHash || null;
       const missionId = plan?.bindingHash ? plan.missionId || null : null;
-      const grant = grantId ? grants.get(grantId) : grants.findUsable(provider, projectId, access, "run", { bindingHash, missionId });
+      const grant = grantId ? grants.get(grantId) : scoped ? grants.get(authority.grantId) : grants.findUsable(provider, projectId, access, "run", { bindingHash, missionId });
       const reason = grants.problem(grant, { provider, projectId, access, now, bindingHash, missionId });
       add("live_grant", !reason, reason || `Grant ${grant.id}: ${grant.maxAttempts - grant.attemptsUsed} încercări rămase, expiră ${grant.expiresAt}`, { grantId: grant?.id || null });
     } else if (mode === "OPERATIONAL") {
@@ -125,8 +167,17 @@ export function createGate({ db, settings, projects, backups, leases, grants, br
    * session (hub.mjs → ownerAuthority: active, not expired, not idle, credential active, voice-first policy). With it, the M10
    * zero-form path: the `mode` and `voice_grant` checks are satisfied by an authority derived for ONE voice session (the Hub's
    * mode is never written; runs stay refused in BUILD_SAFE). Every other check decides exactly as without it.
+   *
+   * D23 `accountOutlook` (read-only; it never changes a check's `ok` nor `allowed`): the result also carries `account` (the state of
+   * the Codex account check: fresh | stale | failed | missing, when it ran) and, when that check is not fresh, `refreshable: true` on
+   * each failing check that fails ONLY for want of it:
+   *  - stale: the check passes on the last known account facts read as if fresh (identity, plan, sandbox; never the usage numbers);
+   *  - failed / missing (no account facts to read): everything in the check that does not come from the account check passes
+   *    (billing: nothing blocks but the unread identity and a declaration lacking only the account to compare with; isolation:
+   *    the consent for the current deny list, with the sandbox facts assumed).
+   * A caller may refresh the account check and evaluate AGAIN; an admission is always this evaluation on the real freshness.
    */
-  function evaluateVoice({ voiceActive = false, ownerAuthority = null } = {}) {
+  function evaluateVoice({ voiceActive = false, ownerAuthority = null, accountOutlook = false } = {}) {
     const checks = [];
     const add = (id, ok, detail, extra = {}) => checks.push({ id, ok, detail, ...extra });
     const now = clock();
@@ -147,14 +198,16 @@ export function createGate({ db, settings, projects, backups, leases, grants, br
     }
     const consent = settings.get("legaConsent") || {};
     add("lega_consent", consent.version === LEGA_CONSENT_VERSION, consent.version === LEGA_CONSENT_VERSION ? `Acord înregistrat ${consent.confirmedAt}` : "Acordul pentru Lega (audio la OpenAI, consum din plan) nu este înregistrat");
-    const inspection = inspectionFromState(providerState.get("codex"), now);
+    const codexState = providerState.get("codex");
+    const inspection = inspectionFromState(codexState, now);
     const route = evaluateRoute("codex", inspection, billingInputs(settings, inspection, now));
     add("billing_route", route.allowed, route.allowed ? "Rută inclusă în abonament verificată" : route.blockingReasons.join(" · "), { route });
     const realtime = inspection?.config?.realtime;
     const risky = realtime?.riskyKeys || [];
     add("realtime_config", Boolean(realtime) && risky.length === 0, !realtime ? "Configurația Codex nu a fost inspectată (Integrări → Inspectează instalarea)" : risky.length ? `Chei care ar redirecționa vocea: ${risky.join(", ")}` : `Fără redirecționări de voce${realtime.mcpServers ? `; ${realtime.mcpServers} servere MCP dezactivate per proces (enabled=false), verificate la pornire` : ""}`);
-    const isolation = evaluateIsolation({ provider: "codex", access: "read-only", sandbox: inspection?.sandbox || null,
+    const isolationWith = (sandbox) => evaluateIsolation({ provider: "codex", access: "read-only", sandbox,
       consent: settings.get("isolationConsent")?.codex || null, fingerprint: codexIsolation ? codexIsolation().fingerprint : null });
+    const isolation = isolationWith(inspection?.sandbox || null);
     add("isolation", isolation.ok, isolation.detail, { level: isolation.level });
     const breaker = breakers.state("codex");
     add("circuit_breaker", breaker.state !== "open", breaker.state === "open" ? `Deschis până la ${breaker.until}` : "Închis");
@@ -162,10 +215,31 @@ export function createGate({ db, settings, projects, backups, leases, grants, br
     const running = activeRunCount();
     const limit = settings.get("maxConcurrentAiRuns");
     add("concurrency", running < limit, `${running}/${limit} execuții AI active`);
-    return { allowed: checks.every((c) => c.ok), checks, evaluatedAt: now.toISOString() };
+    const decision = { allowed: checks.every((c) => c.ok), checks, evaluatedAt: now.toISOString() };
+    if (accountOutlook !== true) return decision;
+    // D23: marks only. `decision.allowed` and every `ok` above were computed on the real freshness and are not touched below.
+    const account = accountCheckState(codexState, now);
+    if (account.state !== "fresh") {
+      const would = { billing_route: false, isolation: false };
+      if (account.state === "stale") {
+        const assumed = inspectionFromState(codexState, now, { assumeFresh: true });
+        would.billing_route = evaluateRoute("codex", assumed, billingInputs(settings, assumed, now)).allowed;
+        would.isolation = isolationWith(assumed?.sandbox || null).ok;
+      } else {
+        // The verdict of the billing policy itself (its blocking reasons are "<sub-check id>: detail"), never a second rule here.
+        const blockingIds = new Set(route.blockingReasons.map((r) => r.slice(0, r.indexOf(":"))));
+        would.billing_route = route.checks.filter((c) => blockingIds.has(c.id)).every(settledByAccountCheck);
+        would.isolation = isolationWith(ASSUMED_SANDBOX).ok;
+      }
+      for (const c of checks) if (!c.ok && would[c.id] === true) c.refreshable = true;
+    }
+    return { ...decision, account };
   }
 
-  return { evaluate, evaluateVoice };
+  /** D23 (read-only): where the Codex account check stands now — the same `account` evaluateVoice's outlook reports. No account data. */
+  const accountState = () => accountCheckState(providerState.get("codex"), clock());
+
+  return { evaluate, evaluateVoice, attachEnvelopeAuthority, accountState };
 }
 
 /** Consecutive infrastructure failures (transport/authentication) open the breaker for a cool-down. */

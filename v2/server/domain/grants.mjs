@@ -6,6 +6,19 @@ import { json, parse } from "../storage/db.mjs";
 export const VOICE_GRANT_TOOL = "voice.lega";
 export const grantKind = (tools = []) => (Array.isArray(tools) && tools.includes(VOICE_GRANT_TOOL) ? "voice" : "run");
 
+/*
+ * M10.2 (U12) run envelopes: a plan for ONE bounded model step (no Software Factory mission). Its derived grant names the plan in
+ * binding.envelopeRunId, and the run it admits carries the same plan as its scope key "envrun:<envelopeId>" where a factory step
+ * carries its missionId (runs.mjs → plan.missionId → gate → grants). Matching on that key keeps the two plan kinds in ONE rule: a
+ * plan step uses only the grant its plan derived for exactly this scope and binding, and nothing else uses that grant.
+ */
+export const RUN_SCOPE_PREFIX = "envrun:";
+export const runScopeKey = (envelopeId) => `${RUN_SCOPE_PREFIX}${String(envelopeId || "")}`;
+/** The run envelope a scope key names, or null (a mission id, an empty key). */
+export const runEnvelopeIdOf = (scope) => (typeof scope === "string" && scope.startsWith(RUN_SCOPE_PREFIX) && scope.length > RUN_SCOPE_PREFIX.length ? scope.slice(RUN_SCOPE_PREFIX.length) : null);
+/** The scope a bound grant serves: its mission, or its run envelope's key (null = unscoped). */
+const scopeOfGrant = (grant) => grant?.binding?.missionId || (grant?.binding?.envelopeRunId ? runScopeKey(grant.binding.envelopeRunId) : null);
+
 /**
  * LIVE_VALIDATION grants: the only way a model can run while validating. Each grant names the
  * provider, project, access level, tools, number of attempts and expiry — never "anything".
@@ -49,7 +62,10 @@ export function createGrants({ db, bus, clock }) {
     const end = expiresAt ? Math.min(ttlEnd, Date.parse(expiresAt)) : ttlEnd;
     if (!(end > now.getTime())) throw new HubError("validation", "The grant would already be expired");
     const bound = binding ? { role: String(binding.role || ""), provider: binding.provider, model: String(binding.model).trim().slice(0, 80), effort: String(binding.effort || "").slice(0, 20), bindingHash: binding.bindingHash,
-      ...(binding.missionId ? { missionId: String(binding.missionId).slice(0, 80) } : {}) } : null;
+      ...(binding.missionId ? { missionId: String(binding.missionId).slice(0, 80) } : {}),
+      // M10.2 (U12): a run envelope's grant names its plan instead of a mission (never both: one scope per grant).
+      ...(binding.envelopeRunId && !binding.missionId ? { envelopeRunId: String(binding.envelopeRunId).slice(0, 80) } : {}) } : null;
+    if (bound?.envelopeRunId && bound.envelopeRunId !== envelopeId) throw new HubError("validation", "Grantul unei execuții din plan poate numi doar planul care l-a derivat");
     db.prepare(`INSERT INTO live_grants (id, provider, project_id, max_attempts, tools_json, access, max_duration_s, expires_at, status, note, created_at, envelope_id, binding_json)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?, ?, ?)`).run(id, provider, projectId, maxAttempts, json(tools), access, maxDurationS,
       new Date(end).toISOString(), note, now.toISOString(), envelopeId, bound ? json(bound) : null);
@@ -60,14 +76,39 @@ export function createGrants({ db, bus, clock }) {
 
   const get = (id) => rowTo(db.prepare("SELECT * FROM live_grants WHERE id = ?").get(id));
 
+  /**
+   * M10.2: a mission whose authority was ever derived from a plan (an envelope-derived grant names it in its binding, whatever
+   * that grant's status now). Its bound runs are PLAN runs: they may use only a grant the plan derived for them — never a manual
+   * LIVE_VALIDATION grant lying around on the same project (the live residue grant_muu67o8g showed exactly that asymmetry: a
+   * bound grant could not serve a manual run, but a manual grant could serve a plan run). A Software Factory mission approved
+   * through Approvals (legacy policy, no envelope) is also bound (M09), but it was never a plan's: it keeps using the manual
+   * grants the owner created for it, as in M03–M09.
+   */
+  // M10.2 (U12): a run envelope's scope key is a plan step by construction (only the run envelope's own start carries it).
+  const planMission = (missionId) => Boolean(runEnvelopeIdOf(missionId)) || Boolean(missionId) && Boolean(db.prepare("SELECT 1 FROM live_grants WHERE envelope_id IS NOT NULL AND json_extract(binding_json, '$.missionId') = ? LIMIT 1").get(String(missionId)));
+
   /** `bindingHash` (M09): the approved binding of the run asking (null = a run with no binding: manual, shadow, Lega). */
   function findUsable(provider, projectId, access, kind = "run", { bindingHash = null, missionId = null } = {}) {
     const rows = db.prepare("SELECT * FROM live_grants WHERE provider = ? AND project_id = ? AND status = 'active' ORDER BY created_at DESC").all(provider, projectId)
       .map(rowTo).filter((g) => g.kind === kind);
-    return rows.find((g) => !problem(g, { provider, projectId, access, now: clock(), kind, bindingHash, missionId })) || rows[0] || null;
+    const planRun = Boolean(bindingHash) && planMission(missionId);
+    const ctx = { provider, projectId, access, now: clock(), kind, bindingHash, missionId, planRun };
+    if (planRun) {
+      // M10.2: only the plan's own grants for exactly this binding and mission are candidates — no fallback to another row, so a
+      // plan step with no derived grant left is refused (and its reason names the plan's grant), never served by a manual one.
+      const bound = rows.filter((g) => g.binding?.bindingHash === bindingHash && scopeOfGrant(g) === missionId);
+      return bound.find((g) => !problem(g, ctx)) || bound[0] || null;
+    }
+    return rows.find((g) => !problem(g, ctx)) || rows[0] || null;
   }
 
-  function problem(grant, { provider, projectId, access, now, kind = "run", bindingHash = null, missionId = null }) {
+  /**
+   * `planRun` (M10.2): the run is a step of a plan (see planMission); computed here when the caller does not pass it, so every
+   * caller — the gate with an explicit grantId included — gets the same answer.
+   */
+  function problem(grant, { provider, projectId, access, now, kind = "run", bindingHash = null, missionId = null, planRun = undefined }) {
+    const isPlanRun = planRun === undefined ? Boolean(bindingHash) && planMission(missionId) : Boolean(planRun);
+    if (!grant && isPlanRun) return "Execuția planului folosește doar grantul derivat din plan; planul nu mai are unul activ pentru acest pas";
     if (!grant) return kind === "voice" ? "Niciun grant de voce (Lega) activ" : "Niciun grant de validare live pentru acest provider și proiect";
     if (grant.kind !== kind) return kind === "voice" ? "Grantul este pentru execuții, nu pentru Lega" : "Grantul este pentru Lega (voce), nu pentru execuții";
     if (grant.status === "expired" || (grant.status === "active" && new Date(grant.expiresAt) <= now)) return "Grantul a expirat";
@@ -77,14 +118,20 @@ export function createGrants({ db, bus, clock }) {
     if (access === "workspace-write" && grant.access !== "workspace-write") return "Grantul permite doar citire";
     if (new Date(grant.expiresAt) <= now) return "Grantul a expirat";
     if (grant.attemptsUsed >= grant.maxAttempts) return "Încercările grantului sunt epuizate";
+    // M10.2: a plan step never consumes a grant the plan did not derive for it (a manual grant, or a bound grant of another
+    // mission/binding): the manual LIVE_VALIDATION path and the plan path stay separate in both directions.
+    if (isPlanRun && !grant.binding?.bindingHash) return "Execuția planului folosește doar grantul derivat din plan";
+    if (isPlanRun && scopeOfGrant(grant) !== missionId) return `Grantul a fost derivat pentru ${scopeLabel(grant)}, nu pentru această execuție`;
     // M09: a grant bound to the model the owner confirmed in a plan serves only a run dispatched under that exact binding.
     if (grant.binding?.bindingHash && grant.binding.bindingHash !== bindingHash) {
       return `Grantul este legat de modelul confirmat în plan (${grant.binding.model} · ${grant.binding.effort || "—"}); ${bindingHash ? "execuția cere alt model sau alt efort" : "o execuție fără modelul aprobat (manuală, shadow, Lega) nu îl poate folosi"}`;
     }
     // …and only the mission it was derived for: another mission with the same model has its own authority (or none).
-    if (grant.binding?.missionId && grant.binding.missionId !== missionId) return `Grantul a fost derivat pentru misiunea ${grant.binding.missionId}, nu pentru această execuție`;
+    // M10.2 (U12): the same for a run envelope's grant: only the run its plan started (scope "envrun:<id>").
+    if (scopeOfGrant(grant) && scopeOfGrant(grant) !== missionId) return `Grantul a fost derivat pentru ${scopeLabel(grant)}, nu pentru această execuție`;
     return null;
   }
+  const scopeLabel = (grant) => (grant?.binding?.missionId ? `misiunea ${grant.binding.missionId}` : grant?.binding?.envelopeRunId ? `execuția planului ${grant.binding.envelopeRunId}` : "misiunea —");
 
   /** Atomically takes one attempt; fails if another request consumed the last one. */
   function consumeAttempt(id) {

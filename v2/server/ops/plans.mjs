@@ -14,12 +14,28 @@ import { newId } from "../core/ids.mjs";
 import { hashCanonical } from "../core/canonical.mjs";
 import { json, parse } from "../storage/db.mjs";
 import { classifyAction, insideAny } from "../policy/action-policy.mjs";
+import { createArmedWindows } from "../owner/armed-window.mjs";
+import { createStopScope, STOP_HOLD_CLASSES } from "../owner/stop-scope.mjs";
+import { classifySuspension } from "../policy/gate-state.mjs";
 
 export const PLAN_LIMITS = Object.freeze({ confirmWindowMin: 15, slackMin: 30, maxSteps: 12, defaultMaxDurationMin: 30, maxDurationMin: 240, maxActionsPerStep: 200 });
 export const NEVER_IN_PLANS = Object.freeze(["publicare pe platforme", "încărcare (upload)", "trimiterea de mesaje", "plăți sau cumpărături", "ștergeri externe", "schimbarea setărilor de securitate"]);
 const ACTIVE = new Set(["CONFIRMED", "RUNNING"]);
+/**
+ * M10.2 review #40: the secrets a step needs at confirmation (typed in the plan card, memory only, never in the body, hash, DB or a log),
+ * derived from the step kinds — the same list for the plan view, the card shape and confirm(), so a typed, spoken or armed-window
+ * „Da” without them is refused BEFORE the confirmation is used up (the OBS step would otherwise fail mid-plan with no password).
+ */
+export const SECRETS_BY_STEP = Object.freeze({ "capture.obs_record": "obsPassword" });
+export const secretsNeeded = (steps = []) => [...new Set((Array.isArray(steps) ? steps : []).map((s) => SECRETS_BY_STEP[s?.kind]).filter(Boolean))];
+const missingSecrets = (steps, given) => secretsNeeded(steps).filter((k) => !(given && typeof given === "object" && typeof given[k] === "string" && given[k].length > 0 && given[k].length <= 1024));
 
-export function createOpsPlans({ db, bus, clock, settings, trust, voice = null, apps = null, executors = {}, folderContext = () => ({ allowed: [], forbidden: [] }), live = null, desktop = null }) {
+export function createOpsPlans({ db, bus, clock, settings, trust, voice = null, apps = null, executors = {}, folderContext = () => ({ allowed: [], forbidden: [] }), live = null, desktop = null,
+  // M10.2 U13: the armed-window registry shared with the envelopes (hub.mjs); standalone → its own, with no Lega check (never arms).
+  armedWindows = createArmedWindows({ clock, bus }),
+  // 2.12.1 (D22): what the current Stop All / shutdown / security suspension itself stopped (owner/stop-scope.mjs) — the reader, or a
+  // function returning it (hub.stopScope once wired); without one a private read-only reader over the same database.
+  stopScope = null }) {
   const now = () => clock().toISOString();
   const runs = new Map(); // planId → { promise, abort }
   const used = new Map(); // planId → actions used (also persisted in progress_json)
@@ -49,9 +65,14 @@ export function createOpsPlans({ db, bus, clock, settings, trust, voice = null, 
   function view(id) {
     const r = row(id);
     if (!r) return null;
-    return { id: r.id, kind: r.kind, title: r.title, status: r.status, statusReason: r.status_reason, body: parse(r.body_json, {}), summary: parse(r.summary_json, {}), hash: r.plan_hash,
+    const body = parse(r.body_json, {});
+    return { id: r.id, kind: r.kind, title: r.title, status: r.status, statusReason: r.status_reason, body, summary: parse(r.summary_json, {}), hash: r.plan_hash,
+      // Review #40: which secrets the confirmation must carry (names only, never values), for every shape of the card.
+      needsSecrets: secretsNeeded(body.steps),
       nonce: r.status === "PROPOSED" ? r.nonce : undefined, confirmBy: r.confirm_by, expiresAt: r.expires_at, consent: parse(r.consent_json, null), authority: parse(r.authority_json, null),
-      progress: parse(r.progress_json, {}), steps: stepsOf(r.id), proposedBy: r.proposed_by, proposedVia: r.proposed_via, createdAt: r.created_at, updatedAt: r.updated_at };
+      progress: parse(r.progress_json, {}), steps: stepsOf(r.id), proposedBy: r.proposed_by, proposedVia: r.proposed_via, createdAt: r.created_at, updatedAt: r.updated_at,
+      // M10.2 U13: until when the plan is armed for a spoken confirmation (ISO, or null); never the window's nonces.
+      armedUntil: r.status === "PROPOSED" ? armedWindows.armedUntil(r.id) : null };
   }
   function setStatus(id, status, reason = "", extra = {}, from = null) {
     const sets = ["status = ?", "status_reason = ?", "updated_at = ?", "version = version + 1", ...Object.keys(extra).map((k) => `${k} = ?`)];
@@ -110,7 +131,10 @@ export function createOpsPlans({ db, bus, clock, settings, trust, voice = null, 
       for (const x of d.transmitted || []) transmitted.add(x);
       outputs.push(...(d.outputs || []));
       if (d.model) model = d.model;
-      described.push({ seq: i + 1, kind: s.kind, title: String(s.title || d.title || s.kind).slice(0, 160), params: d.params || s.params || {}, ops });
+      // M10.2 (U11): each step keeps its OWN apps and folders, so the authority derived at confirmation is per step (an operation of
+      // step 2 attempted while step 1 runs is out of plan, even though the plan as a whole includes it).
+      described.push({ seq: i + 1, kind: s.kind, title: String(s.title || d.title || s.kind).slice(0, 160), params: d.params || s.params || {}, ops,
+        apps: [...new Set([...(d.apps || []), ...ops.map((o) => o.appId).filter(Boolean)])], folders: [...new Set(d.folders || [])] });
     }
     if (refused.length) throw new HubError("policy", `Planul conține operații pe care nu le fac: ${refused.join(" · ")}`, { code: "PLAN_REFUSED", data: { refused } });
     const appList = [...appIds].map((id) => { const a = apps?.get(id); return a ? { id: a.id, name: a.displayName, version: a.version, exeSha256: a.exeSha256, authorized: a.authorized } : { id }; });
@@ -147,6 +171,8 @@ export function createOpsPlans({ db, bus, clock, settings, trust, voice = null, 
   // ---------------------------------------------------------------- confirm
   async function confirm({ planId, nonce, displayedHash, session, modality = "click", utteranceId = null, idempotencyKey = null, secrets: given = null }) {
     const s = trust.requireSession(session, "confirmarea planului");
+    // M10.2 U13: a spoken confirmation is keyed by its utterance (the armed window and the page path find the same key → duplicate).
+    if (modality === "voice" && utteranceId) idempotencyKey = `voice:${String(utteranceId).slice(0, 80)}`;
     let p = view(planId);
     if (!p) throw new HubError("not_found", "Plan necunoscut");
     if (p.status !== "PROPOSED") {
@@ -156,13 +182,18 @@ export function createOpsPlans({ db, bus, clock, settings, trust, voice = null, 
     if (new Date(p.confirmBy) <= clock()) { bus.transaction(() => setStatus(planId, "EXPIRED", "Confirmarea a venit după termen", {}, ["PROPOSED"])); throw new HubError("conflict", "Planul a expirat; cere-l din nou ca să vezi starea actuală."); }
     if (nonce !== row(planId).nonce || displayedHash !== p.hash) throw new HubError("conflict", "Confirmarea nu corespunde planului afișat (altă versiune); reîncarcă planul.");
     if (!["click", "keyboard", "typed", "voice"].includes(modality)) throw new HubError("validation", "Modalitate necunoscută");
+    // Review #40: a step that needs a secret typed in the card (the OBS WebSocket password) cannot run without it: refused here, before
+    // the spoken segment is claimed and before CONFIRMED — the plan stays PROPOSED and the owner's one confirmation is not used up.
+    const missing = missingSecrets(p.body.steps, given);
+    if (missing.length) throw new HubError("validation", "Planul are nevoie de parola OBS WebSocket: scrie-o în card și apasă Enter sau „Confirmă planul” (parola nu trece prin conversație). Planul rămâne afișat; nimic nu a pornit.",
+      { code: "OBS_PASSWORD_NEEDED", data: { needsSecrets: missing } });
     // Decisions inside the card (new app / folder) widen access: they need a fresh re-authentication (step-up), not a new form.
     if (p.body.decisions.length) trust.requireFresh(s, "planul care autorizează o aplicație sau un folder nou");
     let spoken = null;
     if (modality === "voice") {
       if (!voice?.claimForConfirmation) throw new HubError("policy", "Confirmarea vocală nu e disponibilă; confirmă cu tasta sau butonul.");
       if (!utteranceId) throw new HubError("validation", "Confirmarea vocală trebuie să indice segmentul vocal înregistrat pentru plan.");
-      spoken = voice.claimForConfirmation({ utteranceId, session: s, envelope: { id: planId }, pendingEnvelopes: [{ id: planId, title: p.title }] });
+      spoken = voice.claimForConfirmation({ utteranceId, session: s, envelope: { id: planId }, pendingEnvelopes: [{ id: planId, title: p.title }], notBefore: p.createdAt });
     }
     // Nothing may have changed since it was shown (apps, binaries, folders, policy).
     const rebuilt = await buildBody({ kind: p.kind, title: p.body.title, steps: p.steps.map((st) => ({ kind: st.kind, title: st.title, params: st.params })), limits: p.body.limits }).catch((error) => ({ error }));
@@ -173,8 +204,7 @@ export function createOpsPlans({ db, bus, clock, settings, trust, voice = null, 
     }
     const consent = { channel: "owner_session", modality, sessionId: s.id, credential: String(s.credentialId || "").slice(0, 10), planHash: p.hash, confirmedAt: now(),
       idempotencyKey: idempotencyKey ? String(idempotencyKey).slice(0, 120) : null, voice: spoken ? spoken.evidence : null, decisions: p.body.decisions.map((d) => d.label) };
-    const authority = { planId, sessionId: s.id, expiresAt: p.expiresAt, apps: p.body.apps.map((a) => a.id), folders: p.body.folders,
-      ops: [...new Set(p.body.steps.flatMap((st) => st.ops.map((o) => o.op)))], maxActions: p.body.limits.maxActions };
+    const authority = authorityOf(p, s.id);
     bus.transaction(() => {
       if (spoken && spoken.consume(planId) !== 1) throw new HubError("conflict", "Fraza vocală a fost deja folosită pentru o confirmare");
       const n = setStatus(planId, "CONFIRMED", `Confirmat (${modality}) în sesiunea ${s.id}`, { consent_json: json(consent), authority_json: json(authority), owner_session_id: s.id }, ["PROPOSED"]);
@@ -189,6 +219,52 @@ export function createOpsPlans({ db, bus, clock, settings, trust, voice = null, 
   function changed(before, after) {
     const keys = ["steps", "apps", "folders", "observed", "transmitted", "outputs", "model", "decisions", "limits"];
     return keys.filter((k) => hashCanonical(before[k] ?? null) !== hashCanonical(after[k] ?? null));
+  }
+
+  // ---------------------------------------------------------------- M10.2 U13: the armed spoken confirmation (shared helper)
+  // The same window as the envelopes (owner/armed-window.mjs): opened by the SERVER when the plan was presented in a live Lega session
+  // derived from the owner session, with the local gate running; a spoken "Da, execută planul" (speaker MATCH, local final transcript,
+  // segment bound by the server to THIS plan) then confirms through confirm() with modality "voice" — never a provider transcript.
+  armedWindows.registerKind("ops", { waiting: (id, hash) => { const r = row(id); return Boolean(r && r.status === "PROPOSED" && r.plan_hash === hash && new Date(r.confirm_by) > clock()); } });
+  /** Arms a presented plan (`session`: the owner session of the cockpit request, which must be the Lega session's own). */
+  function armForLega({ planId, legaSessionId, session = null, dryRun = false, via = "lega" }) {
+    if (!trust.policy?.()?.active) throw new HubError("policy", "Politica voice-first nu este activă");
+    const r = row(planId);
+    if (!r || r.status !== "PROPOSED" || new Date(r.confirm_by) <= clock()) throw new HubError("conflict", "Planul nu mai așteaptă confirmarea");
+    // Review #40: a spoken „Da” can never carry the OBS password (it is typed in the card), so such a plan is not armed for the voice.
+    if (secretsNeeded(parse(r.body_json, {}).steps).length) throw new HubError("policy", "Nu deschid fereastra vocală: planul are nevoie de parola OBS, pe care o scrii în card (apoi Enter sau „Confirmă planul”)", { code: "OBS_PASSWORD_NEEDED" });
+    const check = armedWindows.lega(legaSessionId, session?.id || null);
+    if (!check.ok) throw new HubError("policy", `Nu deschid fereastra vocală: ${check.reason}`);
+    const s = trust.requireSession({ id: check.ownerSessionId }, "fereastra de confirmare vocală");
+    // A plan that authorizes a new app or folder needs a fresh re-authentication at confirmation (step-up): by voice only while the
+    // session is still fresh from Windows Hello; otherwise the click (with Windows Hello) stays the way.
+    if (parse(r.body_json, {}).decisions?.length) trust.requireFresh(s, "confirmarea vocală a unui plan care autorizează o aplicație sau un folder nou (altfel confirmă cu butonul și Windows Hello)");
+    if (dryRun) return { planId: r.id, armed: false, eligible: true };
+    const w = armedWindows.arm({ kind: "ops", planId: r.id, projectId: null, ownerSessionId: s.id, legaSessionId, hash: r.plan_hash, nonce: r.nonce, via });
+    return { planId: r.id, armed: true, armedAt: w.armedAt, expiresAt: w.expiresAt, say: w.say };
+  }
+  async function confirmFromArmed({ utteranceId, planId, sessionId, legaSessionId = null }) {
+    const out = await armedWindows.confirmFrom({ planId, utteranceId, sessionId, legaSessionId },
+      (w) => confirm({ planId, nonce: w.nonce, displayedHash: w.hash, session: { id: sessionId }, modality: "voice", utteranceId }));
+    return out.confirmed ? { confirmed: true, duplicate: out.duplicate, plan: out.result?.plan || view(planId) } : out;
+  }
+  const armedFor = (planId, sessionId, legaSessionId = null) => armedWindows.armedFor(planId, sessionId, legaSessionId);
+
+  /**
+   * The authority a confirmation derives (M10.2 U11): the plan-wide lists stay (older readers, the union), plus `steps`: what EACH step
+   * may touch (its operations, its apps, its folders), keyed by seq — authorize() checks the running step's own entry. A folder the
+   * owner opened for this plan in the card (a folder.plan decision) is part of the folders of the plan and of the step that touches it
+   * (M10 refused it at run time because only body.folders was stored).
+   */
+  function authorityOf(p, sessionId) {
+    const decided = (p.body.decisions || []).filter((d) => d.kind === "folder.plan" && d.folder).map((d) => d.folder);
+    const steps = Object.fromEntries(p.body.steps.map((st) => {
+      const targets = st.ops.flatMap((o) => [o.path, o.destination]).filter(Boolean);
+      const folders = [...new Set([...(st.folders || []), ...decided.filter((f) => targets.some((t) => insideAny([f], t)))])];
+      return [String(st.seq), { ops: [...new Set(st.ops.map((o) => o.op))], apps: [...new Set([...(st.apps || []), ...st.ops.map((o) => o.appId).filter(Boolean)])], folders }];
+    }));
+    return { planId: p.id, sessionId, expiresAt: p.expiresAt, apps: p.body.apps.map((a) => a.id), folders: [...new Set([...(p.body.folders || []), ...decided])],
+      ops: [...new Set(p.body.steps.flatMap((st) => st.ops.map((o) => o.op)))], maxActions: p.body.limits.maxActions, steps };
   }
 
   // ---------------------------------------------------------------- authority (checked at EVERY operation)
@@ -207,9 +283,13 @@ export function createOpsPlans({ db, bus, clock, settings, trust, voice = null, 
     catch { stop("Sesiunea de proprietar în care ai confirmat planul s-a închis; pașii noi s-au oprit.", "SESSION_CLOSED", "NEEDS_OWNER"); }
     const st = db.prepare("SELECT * FROM ops_plan_steps WHERE id = ? AND plan_id = ?").get(String(stepId || ""), planId);
     if (!st || st.status !== "RUNNING") stop("Pasul nu e în execuție.", "STEP_NOT_RUNNING");
+    // Per step (M10.2): the running step's own operations, apps and folders; a plan confirmed before M10.2 has only the union.
+    const own = a.steps ? a.steps[String(st.seq)] || { ops: [], apps: [], folders: [] } : null;
     if (action.op && !a.ops.includes(action.op)) stop(`Operația „${action.op}” nu e în planul confirmat.`, "OUT_OF_PLAN");
+    if (action.op && own && !own.ops.includes(action.op)) stop(`Operația „${action.op}” nu face parte din pasul ${st.seq} al planului confirmat.`, "OUT_OF_PLAN");
     if (action.appId && !a.apps.includes(action.appId)) stop(`Aplicația „${action.appId}” nu e în planul confirmat.`, "OUT_OF_PLAN");
-    const folders = [...folderContext().allowed, ...(a.folders || [])];
+    if (action.appId && own && !own.apps.includes(action.appId)) stop(`Aplicația „${action.appId}” nu face parte din pasul ${st.seq} al planului confirmat.`, "OUT_OF_PLAN");
+    const folders = [...folderContext().allowed, ...(own ? own.folders : a.folders || [])];
     for (const p of [action.path, action.destination].filter(Boolean)) if (!insideAny(folders, p)) stop("Fișierul e în afara folderelor planului.", "OUT_OF_PLAN");
     const n = (used.get(planId) ?? parse(r.progress_json, {}).actionsUsed ?? 0) + 1;
     if (n > a.maxActions) stop(`Planul și-a folosit toate cele ${a.maxActions} operații; pașii noi s-au oprit.`, "PLAN_BUDGET", "NEEDS_OWNER");
@@ -286,17 +366,70 @@ export function createOpsPlans({ db, bus, clock, settings, trust, voice = null, 
     });
     return view(planId);
   }
+  // ---------------------------------------------------------------- 2.12.1 (D22): what a Stop All itself paused waits for the rearm
+  let ownScope = null;
+  const scope = () => (typeof stopScope === "function" ? stopScope() : stopScope) || (ownScope ||= createStopScope({ db, settings }));
+  const REARM_FIRST = "după ce redeschizi poarta aici, în cockpit, pe cardul „Redeschide poarta”, cu Windows Hello, îl reiei cu „Continuă”";
+  const rearmRequired = (reason, cls) => new HubError("gate", reason, { code: "GATE_REARM_REQUIRED", data: { code: "GATE_REARM_REQUIRED", rearm: true, kind: "ops", cls: cls || null } });
+  /** The latest Stop All / shutdown / security stop recorded (index-backed: scope system/hub); 0 when there was none. */
+  const lastStopSeq = () => Number(db.prepare("SELECT COALESCE(MAX(seq), 0) AS seq FROM events WHERE scope_type = 'system' AND scope_id = 'hub' AND type = 'system.stop_all'").get()?.seq || 0);
+  /**
+   * Every resume path (the plan card's „Continuă”, the typed or spoken „Continuă”, a clarification choice, the re-confirmation of a new
+   * session) refuses a plan the CURRENT Stop All / shutdown / security suspension itself paused (or interrupted) until the owner rearms
+   * the gate in the cockpit: { code GATE_REARM_REQUIRED, rearm: true } — the page shows the rearm card. A plan paused for any other
+   * reason (the owner's own pause, „Preiau eu”, an intervention, its own NEEDS_OWNER) keeps its resume, also under a suspended gate;
+   * new plans after a Stop All stay allowed (M10-OP-12). Evidence only (the stop's own record, owner/stop-scope.mjs); when it cannot be
+   * read while a stop holds the gate, the resume is refused (fail-closed), never guessed.
+   */
+  function holdIfStopped(planId) {
+    let h = null;
+    try { h = scope().heldByStop({ kind: "ops", id: planId }); }
+    catch {
+      const cls = classifySuspension(settings.get("executionGate") || {}).cls;
+      if (STOP_HOLD_CLASSES.has(cls)) throw rearmRequired(`Nu pot verifica dacă planul a fost oprit de oprirea porții; ${REARM_FIRST}.`, cls);
+      return;
+    }
+    if (h?.held) throw rearmRequired(h.reason || `Planul a fost oprit de Stop All; ${REARM_FIRST}.`, h.cls);
+  }
+  /**
+   * Taken before an await of a resume path: the latest recorded stop and the gate's last change. A Stop All writes the gate FIRST and
+   * records its event LAST (after it paused what was running), so both are compared: whichever shows it first refuses the resume.
+   */
+  const stopMark = () => ({ seq: lastStopSeq(), gateAt: String(settings.get("executionGate")?.changedAt || "") });
+  /** The gate was stopped (a Stop All, or any new suspension) since `mark`: nothing starts after it — a stop asks for the rearm first. */
+  function noStopSince(mark, p) {
+    const g = settings.get("executionGate") || {};
+    const stopped = lastStopSeq() > mark.seq;
+    const suspendedSince = g.status !== "open" && String(g.changedAt || "") !== mark.gateAt;
+    if (!stopped && !suspendedSince) return;
+    const cls = classifySuspension(g).cls;
+    if (cls !== "open" && (stopped || STOP_HOLD_CLASSES.has(cls))) {
+      throw rearmRequired(`Între timp ai oprit tot (Stop All), așa că nu reiau planul „${String(p?.title || p?.id || "").slice(0, 120)}”; ${REARM_FIRST}.`, cls);
+    }
+    throw new HubError("conflict", "Între timp s-a schimbat starea porții, așa că nu am reluat planul; spune din nou „Continuă” ca să verific starea lui.", { code: "STOPPED_DURING_RESUME" });
+  }
+
   /**
    * „Continuă”: resumes the EXACT plan while its session, authority and limits still hold. An uncertain step is reconciled first by its
    * executor (did StartRecord / Save / Import actually happen?) — never repeated blindly. Nothing is widened: same expiry, same budget.
+   * 2.12.1 (D22): a plan the current Stop All itself paused waits for the rearm (holdIfStopped), and a Stop All that lands while the
+   * uncertain steps are being reconciled stops this resume too (nothing starts after it).
    */
   async function resume(planId, { session, actor = "owner" } = {}) {
     const p = view(planId);
     if (!p) throw new HubError("not_found", "Plan necunoscut");
     if (!["PAUSED", "NEEDS_OWNER"].includes(p.status)) throw new HubError("conflict", `Planul nu e oprit (${p.status}).`);
     const s = trust.requireSession(session, "reluarea planului");
-    if (p.authority?.sessionId !== s.id) throw new HubError("policy", "Planul a fost confirmat în altă sesiune; reconfirmă-l (îți arăt doar diferența).", { code: "SESSION_CHANGED" });
     if (new Date(p.expiresAt) <= clock()) throw new HubError("conflict", "Limita de timp a planului a trecut; cere planul din nou (confirmi doar diferența).", { code: "PLAN_EXPIRED" });
+    // Before the session-delta card: a re-confirmation would only move the authority of a plan that still could not resume.
+    holdIfStopped(planId);
+    const mark = stopMark();
+    if (p.authority?.sessionId !== s.id) {
+      // M10.2 (U11): the session the plan was confirmed in closed (idle, logout). The SAME credential confirms only the difference —
+      // the new session — with the same expiry, budget and steps; another credential asks for the plan again.
+      if (!sameCredential(p, s)) throw new HubError("policy", "Planul a fost confirmat cu altă cheie; cere planul din nou.", { code: "SESSION_CHANGED" });
+      throw new HubError("policy", "Sesiunea în care ai confirmat planul s-a închis; confirmă doar diferența (sesiunea nouă), cu aceleași limite.", { code: "RECONFIRM_DELTA", data: { reconfirm: reconfirmCard(p, s) } });
+    }
     for (const st of p.steps.filter((x) => x.status === "UNCERTAIN" || x.status === "BLOCKED")) {
       const ex = executors[st.kind];
       const rec = ex?.reconcile ? await ex.reconcile({ planId, stepId: st.id, params: st.params, plan: p }).catch((error) => ({ outcome: "unknown", detail: error.message })) : { outcome: "retry" };
@@ -306,10 +439,69 @@ export function createOpsPlans({ db, bus, clock, settings, trust, voice = null, 
         else throw new HubError("conflict", `Nu pot stabili ce s-a întâmplat la pasul ${st.seq} (${rec.detail || "rezultat incert"}); verifică în aplicație și spune-mi.`, { code: "OUTCOME_UNKNOWN" });
       });
     }
+    // A Stop All while the steps were being reconciled (the plan was not running, so that stop did not pause it): it still stops this
+    // resume — what was reconciled stays recorded, nothing starts. Synchronous from here to start(): nothing else can land in between.
+    noStopSince(mark, p);
     bus.transaction(() => bus.append({ type: "ops.plan.resumed", scopeType: "ops_plan", scopeId: planId, source: actor, payload: { session: s.id } }));
     start(planId);
     return view(planId);
   }
+  // ---------------------------------------------------------------- M10.2 (U11): delta re-confirmation in a new owner session
+  // Memory only (a restart drops it: fail-safe, the owner asks again): planId → { nonce, sessionId, hash, until }.
+  const reconfirms = new Map();
+  const RECONFIRM_WINDOW_MS = PLAN_LIMITS.confirmWindowMin * 60000;
+  /** Same credential (the consent keeps the credential's first 10 characters, as every M06+ consent does). */
+  const sameCredential = (p, s) => Boolean(p.consent?.credential) && p.consent.credential === String(s.credentialId || "").slice(0, 10);
+  /** The difference shown for a re-confirmation: only the session changes; expiry, budget and steps stay exactly as confirmed. */
+  function reconfirmCard(p, s) {
+    const nonce = crypto.randomBytes(12).toString("hex");
+    const until = new Date(clock().getTime() + RECONFIRM_WINDOW_MS).toISOString();
+    reconfirms.set(p.id, { nonce, sessionId: s.id, hash: p.hash, until });
+    return { planId: p.id, nonce, hash: p.hash, confirmBy: until, changed: ["sesiunea de proprietar (aceeași cheie, sesiune nouă)"],
+      unchanged: { expiresAt: p.expiresAt, maxActions: p.authority?.maxActions ?? p.body.limits.maxActions, actionsUsed: used.get(p.id) ?? p.progress?.actionsUsed ?? 0, steps: p.steps.map((st) => st.title) },
+      text: `Continui „${p.title}” în sesiunea nouă: aceleași limite (expiră ${p.expiresAt}), același buget de operații; nimic nu se lărgește.` };
+  }
+  /**
+   * The owner confirms the difference (the new session) of a stopped plan: the authority moves to this session — same expiry, same
+   * action budget, same per-step lists — and the plan resumes through the ordinary resume (uncertain steps reconciled first). Only the
+   * same credential, only for the card the Hub itself showed in THIS session (nonce, hash, 15 minutes), never widened.
+   */
+  async function reconfirm({ planId, nonce, displayedHash, session, modality = "click", actor = "owner" }) {
+    const s = trust.requireSession(session, "reconfirmarea planului");
+    const p = view(planId);
+    if (!p) throw new HubError("not_found", "Plan necunoscut");
+    if (!["PAUSED", "NEEDS_OWNER"].includes(p.status)) throw new HubError("conflict", `Planul nu e oprit (${p.status}).`);
+    if (!["click", "keyboard", "typed"].includes(modality)) throw new HubError("validation", "Modalitate necunoscută pentru o reconfirmare");
+    if (!sameCredential(p, s)) throw new HubError("policy", "Planul a fost confirmat cu altă cheie; cere planul din nou.", { code: "SESSION_CHANGED" });
+    const pending = reconfirms.get(planId);
+    if (!pending || pending.nonce !== nonce || pending.sessionId !== s.id || new Date(pending.until) <= clock() || displayedHash !== p.hash || pending.hash !== p.hash) {
+      throw new HubError("conflict", "Reconfirmarea nu corespunde diferenței afișate în această sesiune; cere din nou „Continuă”.");
+    }
+    if (new Date(p.expiresAt) <= clock()) throw new HubError("conflict", "Limita de timp a planului a trecut; cere planul din nou.", { code: "PLAN_EXPIRED" });
+    // 2.12.1 (D22): a plan the current Stop All itself paused waits for the rearm — checked BEFORE the authority moves to this session.
+    // The card stays valid (its nonce is used only by a successful re-confirmation), so after the rearm the same card confirms it.
+    holdIfStopped(planId);
+    const mark = stopMark();
+    if (p.body.decisions.length) trust.requireFresh(s, "planul care autorizează o aplicație sau un folder nou");
+    // Nothing else may have changed since the plan was confirmed (apps, binaries, folders, policy): otherwise it is a new plan.
+    const rebuilt = await buildBody({ kind: p.kind, title: p.body.title, steps: p.steps.map((st) => ({ kind: st.kind, title: st.title, params: st.params })), limits: p.body.limits }).catch((error) => ({ error }));
+    if (rebuilt.error || hashCanonical(rebuilt) !== p.hash) {
+      const diff = rebuilt.error ? [rebuilt.error.message] : changed(p.body, rebuilt);
+      throw new HubError("conflict", `Planul s-a schimbat de la confirmare (${diff.join(", ")}); cere-l din nou.`, { data: { changed: diff } });
+    }
+    // A Stop All while the plan was being rebuilt: the authority does not move and nothing resumes.
+    noStopSince(mark, p);
+    const authority = { ...(p.authority || authorityOf(p, s.id)), sessionId: s.id };
+    bus.transaction(() => {
+      const n = db.prepare("UPDATE ops_plans SET authority_json = ?, consent_json = ?, owner_session_id = ?, updated_at = ?, version = version + 1 WHERE id = ? AND status IN ('PAUSED','NEEDS_OWNER')")
+        .run(json(authority), json({ ...p.consent, reconfirmations: [...(p.consent?.reconfirmations || []), { sessionId: s.id, modality, at: now() }].slice(-10) }), s.id, now(), planId).changes;
+      if (n !== 1) throw new HubError("conflict", "Planul și-a schimbat starea între timp.");
+      bus.append({ type: "ops.plan.reconfirmed", scopeType: "ops_plan", scopeId: planId, source: "owner", payload: { session: s.id, previousSession: p.authority?.sessionId || null, modality, expiresAt: p.expiresAt } });
+    });
+    reconfirms.delete(planId);
+    return resume(planId, { session: s, actor });
+  }
+
   const list = ({ limit = 20, status = null } = {}) => db.prepare(`SELECT id FROM ops_plans ${status ? "WHERE status = ?" : ""} ORDER BY created_at DESC LIMIT ?`).all(...(status ? [status] : []), Math.min(100, limit)).map((r) => view(r.id));
   const active = () => db.prepare("SELECT id FROM ops_plans WHERE status IN ('CONFIRMED','RUNNING','PAUSED','NEEDS_OWNER') ORDER BY updated_at DESC").all().map((r) => view(r.id));
   /** Boot: a plan that was running when the Hub stopped is NOT resumed: it waits for the owner (its running step is uncertain). */
@@ -325,5 +517,6 @@ export function createOpsPlans({ db, bus, clock, settings, trust, voice = null, 
     return { waitingOwner: left.map((r) => r.id) };
   }
   async function idle(planId) { await runs.get(planId)?.promise; return view(planId); }
-  return { propose, confirm, authorize, pause, cancel, resume, view, list, active, recover, idle, buildBody };
+  return { propose, confirm, authorize, pause, cancel, resume, reconfirm, view, list, active, recover, idle, buildBody, armForLega, confirmFromArmed, armedFor,
+    disarm: (planId, reason) => armedWindows.disarm(planId, reason) };
 }

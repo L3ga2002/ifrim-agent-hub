@@ -2,7 +2,7 @@
 // here is built from data the Hub returned; nothing is invented (no progress percentage, no test count that was not measured).
 import { opsReplyLines } from "./opsLogic.js";
 
-export const STATE_TONE = Object.freeze({ NO_CONTEXT: "neutral", CONTEXT_AVAILABLE: "neutral", PLAN_READY: "info", PLAN_BLOCKED: "warn", BLOCKED_BY_ISOLATION: "warn",
+export const STATE_TONE = Object.freeze({ NO_CONTEXT: "neutral", CONTEXT_AVAILABLE: "neutral", PLAN_READY: "info", PLAN_READY_AFTER_READINESS: "info", PLAN_BLOCKED: "warn", BLOCKED_BY_ISOLATION: "warn",
   AUTHORIZED: "ok", RUNNING: "info", WAITING_OWNER: "approval", READY_FOR_REVIEW: "ok" });
 
 /** Local face commands never go to the Hub as effects: they change only the view. */
@@ -90,7 +90,7 @@ export function replyFor(response) {
     if (r.cockpit) lines.push(cockpitSummary(r.cockpit));
     if (r.plan) {
       if (r.plan.error) lines.push(`Nu pot pregăti planul: ${r.plan.error}`);
-      else if (r.plan.summary) lines.push(`Planul: ${r.plan.summary.headline}. ${r.plan.summary.state === "PLAN_READY" ? "Îl vezi în dreapta; nimic nu a pornit." : `Execuția e blocată: ${(r.plan.summary.blockers || []).slice(0, 2).join(" · ")}`}`);
+      else if (r.plan.summary) lines.push(`Planul: ${r.plan.summary.headline}. ${r.plan.summary.state === "PLAN_READY" ? "Îl vezi în dreapta; nimic nu a pornit." : r.plan.summary.state === "PLAN_READY_AFTER_READINESS" ? "Îl vezi în dreapta; după confirmare fac singur pașii de pregătire, apoi pornesc. Nimic nu a pornit." : `Execuția e blocată: ${(r.plan.summary.blockers || []).slice(0, 2).join(" · ")}`}`);
       if (r.note) lines.push(r.note);
     }
     if (r.confirmed?.envelope) lines.push(`Confirmat. ${r.confirmed.envelope.status === "ACTIVE" ? "Misiunea a pornit; urmărește graful." : `Stare: ${r.confirmed.envelope.status}.`}`);

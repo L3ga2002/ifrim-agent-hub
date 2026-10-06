@@ -14,6 +14,7 @@ try {
   const owner = await enrolOwner(t);
   t.hub.bus.transaction(() => t.hub.settings.set("mediaPolicy", { ...t.hub.settings.get("mediaPolicy"), importRoots: [path.dirname(dir)], diskReserveGb: 0, interactivePriority: false }, "harness"));
   const as = (type, payload, channel = "test") => t.hub.commands.dispatch({ type, payload, channel, actor: `owner:${owner.session.id}`, ownerSession: owner.session }).then((r) => r.result);
+  await as("media.tools.pin", { reason: "harness" }); // M10.2: renders need pinned tools
   const pv = await as("media.project.preview", { dir });
   console.log(JSON.stringify({ preview: { format: pv.format, title: pv.title, assets: pv.assets.map((a) => ({ file: a.file, ok: a.ok })), versions: pv.edits.reduce((n, e) => n + e.versions, 0), labels: pv.labels, problems: pv.problems, missing: pv.missing, approvals: pv.approvals } }, null, 2));
   const imp = await as("media.project.import", { importId: pv.importId, previewHash: pv.previewHash }, "owner");

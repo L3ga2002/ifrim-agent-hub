@@ -2,6 +2,7 @@ import { HubError } from "../core/errors.mjs";
 import { hashCanonical } from "../core/canonical.mjs";
 import { EFFORT_PROFILES, DEFAULT_PROFILE, KNOWN_EFFORTS } from "../policy/run-plan.mjs";
 import { normalizeBindingRequest } from "../policy/model-binding.mjs";
+import { PILOT_MODELS } from "../intel/packages.mjs";
 
 /**
  * Engineering plan and limits (M03 §12). The plan is derived deterministically from the mission template: one writer
@@ -59,6 +60,35 @@ export function normalizeLimits(input = {}) {
 
 /** Whether a mission's limits name both models (a mission without them is a DRAFT whose scope is incomplete). */
 export const limitsHaveModels = (limits = {}) => Boolean(String(limits.writerModel || "").trim() && String(limits.reviewerModel || "").trim());
+
+/**
+ * M10.2 (owner decision 4): the explicit role defaults an engineering plan the Hub prepares from the owner's words is built with —
+ * the same models the ProDelivery pilot ran with (one source: intel/packages.mjs PILOT_MODELS). They are never applied silently:
+ * they go into the mission's limits, so they are part of the scope hash, shown in the plan card ("Modele: …") and hashed into the
+ * envelope the owner confirms. The account default model is never used (an empty model is not a binding; Claude needs an alias).
+ * A project may carry the owner's own override (settings.factoryDefaultBindings, set only through factory.defaults.set in a
+ * freshly re-authenticated owner session).
+ */
+export const ROLE_DEFAULT_BINDINGS = PILOT_MODELS;
+
+/**
+ * The model limits for a new engineering draft: the project's override when the owner set one, else the role defaults. Returns
+ * { limits: { writerModel, writerEffort, reviewerModel, reviewerEffort }, source: "owner" | "role_default", label }. Validated
+ * like any limits (normalizeLimits refuses Fable, [1m], "best", an unknown effort): an override that no longer validates throws,
+ * so the owner sees why, instead of a quiet switch back to other models.
+ */
+export function defaultModelLimits(override = null) {
+  const pick = (role) => {
+    const o = override?.[role];
+    return o && String(o.model || "").trim() ? { model: String(o.model).trim(), effort: String(o.effort || "").trim().toLowerCase() || ROLE_DEFAULT_BINDINGS[role].effort } : { model: ROLE_DEFAULT_BINDINGS[role].model, effort: ROLE_DEFAULT_BINDINGS[role].effort };
+  };
+  const writer = pick("writer");
+  const reviewer = pick("reviewer");
+  const source = override && (String(override.writer?.model || "").trim() || String(override.reviewer?.model || "").trim()) ? "owner" : "role_default";
+  const checked = normalizeLimits({ writerModel: writer.model, writerEffort: writer.effort, reviewerModel: reviewer.model, reviewerEffort: reviewer.effort });
+  const limits = { writerModel: checked.writerModel, writerEffort: checked.writerEffort, reviewerModel: checked.reviewerModel, reviewerEffort: checked.reviewerEffort };
+  return { limits, source, label: `writer ${limits.writerModel} · ${limits.writerEffort}; reviewer ${limits.reviewerModel} · ${limits.reviewerEffort}` };
+}
 
 /**
  * Builds the plan for a mission's tasks (as created from the template, in template order). Each step: key, task id, title,

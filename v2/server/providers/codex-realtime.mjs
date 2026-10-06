@@ -214,6 +214,7 @@ export function createCodexRealtime({ codex, supervisor }) {
 
       const thread = await session.peer.request("thread/start", { cwd, approvalPolicy: "on-request", approvalsReviewer: "user", serviceName: "ifrim_agent_hub_lega",
         ephemeral: true, environments: [], dynamicTools: legaDynamicTools({ projects, ...context }), developerInstructions: legaAgentInstructions({ projects, ...context, webSearch }) }, 60000);
+      // M10.2: context.voiceFirst (the session's policy, decided by the Hub at start) selects the plan vocabulary; the legacy set is unchanged.
       check();
       threadId = thread?.thread?.id || "";
       if (!threadId) throw Object.assign(new Error("Codex did not return a thread id"), { category: "transport", preInference: true });
@@ -238,7 +239,7 @@ export function createCodexRealtime({ codex, supervisor }) {
       check();
       realtimeRequested = true; // from here a GPT-Live call may exist; earlier failures created none
       await session.peer.request("thread/realtime/start", { threadId, outputModality: "audio", transport: { type: "webrtc", sdp: offerSdp }, version: "v3", voice,
-        prompt: legaVoicePrompt({ ownerName, webSearch }), clientManagedHandoffs: true, includeStartupContext: false, flushTranscriptTailOnSessionEnd: false, backendReasoningStatus: false }, 30000);
+        prompt: legaVoicePrompt({ ownerName, webSearch, voiceFirst: Boolean(context.voiceFirst) }), clientManagedHandoffs: true, includeStartupContext: false, flushTranscriptTailOnSessionEnd: false, backendReasoningStatus: false }, 30000);
       const info = await withTimeout(startedD.promise, 20000, "thread/realtime/started");
       const answerSdp = await withTimeout(sdpD.promise, 20000, "thread/realtime/sdp");
       check();

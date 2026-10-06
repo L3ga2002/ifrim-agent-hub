@@ -234,8 +234,11 @@ export function createPackages({ db, bus, clock, config, settings, projects, env
     const tools = ["ffmpeg", "ffprobe"].map((name) => {
       const pin = pins[name] || null;
       const seen = last?.[name] || null;
+      // M10.2 (#27): a change seen only by the last inspection counts too, and the card names the one place that acknowledges it.
+      const changed = Boolean(pin?.changedAt && !pin?.acknowledged) || last?.states?.[name] === "CHANGED";
       return { name, pinned: Boolean(pin?.sha256), version: pin?.version || seen?.version || null, sha256: String(pin?.sha256 || seen?.sha256 || "").slice(0, 16) || null,
-        path: seen?.path || pin?.path || null, changed: Boolean(pin?.changedAt && !pin?.acknowledged), verifiedSinceBoot: Boolean(seen?.sha256 && pin?.sha256 && seen.sha256 === pin.sha256) };
+        path: seen?.path || pin?.path || null, changed, verifiedSinceBoot: Boolean(seen?.sha256 && pin?.sha256 && seen.sha256 === pin.sha256),
+        ...(changed ? { action: { label: "Confirmă schimbarea (Studio → Unelte)", where: "#/studio?panel=tools" } } : {}) };
     });
     const fonts = PRESET_IDS.map((id) => {
       let preset = null;
@@ -255,8 +258,8 @@ export function createPackages({ db, bus, clock, config, settings, projects, env
   function optionsMediaA(inv) {
     return [
       { key: "MA1", title: "ffmpeg și ffprobe prezente și fixate (versiune + sha256)",
-        changes: ["randările locale folosesc doar binarele verificate; un binar schimbat e raportat (tool_changed) până îl confirmi", "Hub-ul fixează versiunea și sha256 la prima verificare reușită"],
-        execution: ["instalarea o faci tu (pe acest PC ffmpeg e deja instalat)", "Studio → Unelte (sau „Reîmprospătează inventarul” aici): Hub-ul citește versiunea și sha256 și le fixează"],
+        changes: ["randările locale folosesc doar binarele verificate; un binar schimbat e raportat (tool_changed) până îl confirmi", "Hub-ul fixează versiunea și sha256 doar printr-o acțiune explicită: decizia acestui pachet, butonul „Fixează” sau un pas listat într-un plan confirmat (o citire nu fixează nimic)"],
+        execution: ["instalarea o faci tu (pe acest PC ffmpeg e deja instalat)", "Studio → Unelte: Hub-ul citește versiunea și sha256 (doar citire); le fixează la decizia ta (acest pachet, „Fixează” sau un pas de plan)"],
         rollback: ["înlocuiești sau dezinstalezi binarul; schimbarea e raportată, nu adoptată în tăcere"],
         limits: ["fără rețea în timpul randării", "Hub-ul nu instalează și nu descarcă nimic"], executed: Boolean(inv.toolsOk), applicable: true, external: false },
       { key: "MA2", title: "Serverul OBS WebSocket activat de tine în OBS (local, cu parolă)",

@@ -4,6 +4,113 @@
 
 Activarea completă e în `M10_ACTIVATION_SHEET.md`. Hub-ul live rulează M10 din 2026-10-04 13:53 UTC: `upgrade.mjs --apply`, rularea `upg_mutvrr79`. Backupul de dinainte de migrare e `pre-upgrade\hub-v2.pre-migration.v9-to-v10.2026-10-04T13-53-14-962Z.sqlite`.
 
+### M10.2 — fluxul fără formulare (`2.12.0-m10.2`, migrarea 11)
+
+Hub-ul live rulează M10.2 din 2026-10-05 la 04:57 UTC (rularea `upg_muus3hq2`). Backupul de dinainte de migrare e `pre-upgrade\hub-v2.pre-migration.v10-to-v11.2026-10-05T04-57-43-018Z.sqlite`.
+
+**Proba (contoarele, doar citire):**
+
+```bash
+node v2/scripts/probe-m10-2.mjs --mark
+node v2/scripts/probe-m10-2.mjs --since <seq>
+```
+
+**Dacă un plan spune „fac singur pregătirea după confirmare”:** după confirmarea ta, Hub-ul rulează verificarea contului sau re-atestarea pe aceeași amprentă (~2 min), apoi pornește. Dacă pregătirea eșuează, planul se închide cu explicația cinstită.
+
+**Rollback** (doar cu decizia ta): fanionul `envelopeScopedLive=false` revine la comportamentul M10 al planurilor (modul global). Schema 11 rămâne; backupul de mai sus e restaurarea completă.
+
+#### `2.12.1-m10.2` — închiderea P0 (contract 12, fără migrare)
+
+La data scrierii codul e necomis, iar Hub-ul live rulează încă `2.12.0-m10.2`. Nimic de mai jos nu a fost rulat live (NOT_RUN). Detalii și deciziile D14–D23: `M10_2_REPORT.md` §11.
+
+**După „Oprește tot”: cardul de rearmare**
+
+- **Ce vezi.** Cât timp poarta e oprită de altceva decât pauza ta, cockpitul arată un banner (sub politica voice-first). Butonul „Arată cardul de redeschidere” doar îți arată cardul; nu confirmă nimic. „Redeschide poarta” scris aduce același card. O cerere de lucru nouă îl aduce legat de ea, ca să fie propusă din nou după redeschidere.
+- **Ce scrie pe card:**
+  - ce a oprit poarta: cine, când, de unde;
+  - ce s-a oprit;
+  - „Ce rămâne oprit”;
+  - până când e valabil (5 minute);
+  - evenimentele de securitate din jurul opririi, cele mai noi primele, dacă există.
+- **Ce confirmi.** Butonul cardului, „Redeschide poarta (Windows Hello)”, sau Enter cu cardul selectat. Dacă ultima ta verificare e mai veche de 5 minute, apare Windows Hello o dată. Dacă sunt evenimente de securitate, bifezi întâi „Am verificat cauza”. Niciodată prin voce, de pe telefon sau printr-un agent.
+- **Ce face.** Redeschide toată poarta și readuce Hub-ul în BUILD_SAFE, dacă nu era. Doar cererea care a afișat cardul revine, ca plan; planul cere confirmarea lui.
+- **Ce rămâne oprit:**
+  - misiunile anulate de Stop All rămân anulate;
+  - autorizările revocate rămân revocate, iar planurile confirmate dinainte rămân închise („Stop All”);
+  - cardurile de plan care așteptau confirmarea au fost închise de Stop All;
+  - planurile de operare și sesiunea desktop oprite chiar de Stop All, plus misiunile rămase pe pauză sau oprite la poartă, pornesc abia când spui „Continuă” după redeschidere (misiunile anulate de Stop All rămân anulate);
+  - cererile păstrate mai vechi nu sunt propuse din nou singure;
+  - Lega nu pornește singură.
+- **Când cardul refuză.** Nimic nu se redeschide singur. După ce cauza dispare, apeși „Verifică din nou”.
+
+| Ce spune cardul | Ce faci |
+|---|---|
+| „Sesiunea vocală Lega e încă deschisă…” | Închizi Lega, apoi „Verifică din nou”. |
+| „Încă se oprește o execuție…” sau „Misiunea … încă se oprește” | Aștepți confirmarea opririi, apoi „Verifică din nou”. |
+| „…după o oprire neconfirmată (lease-uri reținute)…” | Cockpitul nu are încă eliberare pentru ele (limită cunoscută). E o operație de administrare separată, cu aprobarea ta: verificarea procesului rămas, apoi eliberarea lease-ului. Nici „Continuă”, nici `OPEN GATE` nu trec peste ele. |
+| „Ai pus Hub-ul pe pauză din sesiunea ta…” | E pauza ta: spui sau scrii „Continuă”. Nu e nevoie de card. |
+| „…înregistrează întâi autentificatorul…” | Lega → Configurare → Identitate, apoi revii la card. |
+| „Între timp poarta a fost oprită din nou…” sau „…s-a schimbat ceva…” | Citești cardul nou și confirmi din nou. |
+
+- **„Întâi redeschiderea porții”.** Apare când apeși „Continuă” pe cardul unui plan de operare, pe pagina Operator sau în bara desktop, pentru ceva oprit chiar de Stop All. Redeschizi poarta din cardul arătat, apoi „Continuă”. Planurile puse pe pauză din alt motiv se reiau ca înainte, chiar cu poarta oprită.
+- **Calea de diagnostic.** `OPEN GATE` tastat în Integrări → Avansat există încă („Deschide poarta (diagnostic)”). Nu cere sesiunea ta și nu readuce BUILD_SAFE. Refuză o oprire aflată lângă un eveniment de securitate și lease-urile reținute. Pe traseul obișnuit nu o folosi: în proba M10.2 se numără ca schimbare manuală.
+
+**„Continuă” rostit (condiții)**
+
+Reia doar dacă sunt îndeplinite toate:
+
+- sesiunea Lega a fost pornită din sesiunea ta de proprietar;
+- filtrul vocal era pornit la începutul sesiunii și e pornit și acum;
+- vocea e recunoscută local ca a ta (verificarea vorbitorului), iar transcrierea locală (whisper) e finală;
+- ai spus propoziția întreagă și nimic altceva: „Continuă”, „Lega, continuă”, „Ok, continuă”, „Reia”;
+- fraza nu a mai fost folosită: fiecare frază contează o singură dată.
+
+Ce nu reia niciodată:
+
+- „Continuă?” (o întrebare), „Da. Continuă.”, „Continuă. Mulțumesc.”;
+- transcrierea providerului. Ea poate doar opri: dacă providerul a auzit „Continuă?”, nu se reia nimic.
+
+De știut:
+
+- Face exact ce face „Continuă” scris: redeschide pauza ta și reia ce era oprit.
+- După „Oprește tot”, vocea nu redeschide poarta. Lega e închisă de Stop All, iar redeschiderea se face doar din card.
+- Dacă un plan își așteaptă răspunsul rostit, el are prioritate: spui „Da, execută planul” sau „Nu acum”.
+- După un plan expirat, „Continuă” îți arată fraza potrivită: Reia misiunea „X”.
+- Cu filtrul vocal oprit, Lega spune cinstit că filtrul e oprit și că ia „Continuă” scris, în cockpit.
+
+**Upgrade la `2.12.1-m10.2` (fără migrare)**
+
+```bash
+node v2/scripts/upgrade.mjs --plan      # doar citire: versiunea și contractul codului, dry run (nicio migrare în așteptare)
+node v2/scripts/upgrade.mjs --apply     # preflight → dry run → stop → build (UI + helper) → start → verify
+node v2/scripts/status.mjs              # version, apiContract, mode, gate
+```
+
+- **Nu se face backup automat.** Serverul face backupul de dinainte de migrare doar când baza are migrări în așteptare. Schema rămâne 11, deci ultimul backup automat e cel de la M10.2 (v10 → v11).
+- **UI-ul se reconstruiește pentru contractul 12**, de către runner, după oprirea Hub-ului. Nu rula `npm run build:v2` de mână cât timp Hub-ul vechi rulează: o pagină pentru contractul 12 nu poate comanda un server cu contractul 11.
+- **Verificarea versiunii.** Runner-ul verifică singur că Hub-ul servește `2.12.1-m10.2` cu contractul 12. BUILD_SAFE și starea porții le vezi cu `status.mjs` (`mode`, `gate`).
+- **Un tab deschis dinainte** arată „Interfață veche”: reîncarci pagina. Până atunci comenzile sunt oprite; Stop și Pauză merg.
+- **O poartă oprită înainte de upgrade** prin Stop All sau printr-o suspendare nu are înregistrat cine a oprit-o. Cardul o arată ca „suspendată (originea opririi nu a fost înregistrată)” și o poate redeschide la fel. O pauză a ta dinainte rămâne pauza ta: „Continuă”.
+- **Un card de plan rămas neconfirmat peste upgrade** poate fi refuzat la confirmare, fiindcă planul afișat nu mai corespunde (cardul nu mai promite preview / E2E inexistente): îl ceri din nou.
+- **Preflight-ul refuză** cât timp rulează ceva: o execuție, un grant activ, o misiune în lucru, o randare sau o sesiune desktop.
+- **Rollback:** codul `2.12.0` nu există separat, nici pe disc, nici ca commit (M10.2 și închiderea P0 intră în același commit). Revenirea se face prin corectură înainte; fanionul `envelopeScopedLive=false` de mai sus rămâne disponibil. Baza de date nu se schimbă la acest upgrade.
+
+**Pornirea Lega: verificarea automată a contului (D23)**
+
+- Dacă verificarea contului Codex e învechită, pornirea Lega din sesiunea ta o reface singură, o dată per pornire. E aceeași verificare fără inferență ca butonul „Verifică contul”.
+- Previzualizarea pornirii rămâne doar citire. Arată o astfel de verificare ca „verific singur la pornire”, nu ca blocaj.
+- Dacă verificarea eșuează, cauza e arătată cinstit. „Verifică contul” (Integrări) rămâne calea manuală.
+- D23 privește doar verificarea de cont învechită. Celelalte blocaje ale pornirii (poarta, acordul, declarația Codex, limita de porniri) sunt cele descrise la M10.1.
+- Verificarea contului Claude nu ține de pornirea Lega. O reface pregătirea automată, fără inferență, când ceri un plan și doar pașii automați îl mai blochează.
+- Testele D23: `v2/tests/m10-2-p0-lega-autoprobe.test.mjs` (17). „Oprește” în timpul verificării automate anulează pornirea înainte de orice grant sau apel GPT-Live.
+
+**„Rulează pașii automați”: unde e și ce face**
+
+- Butonul e pe **Lega → Configurare** (`#/lega/setup`, panoul „Pașii”), nu în Sistem → Medii. Unele note mai vechi îl plasau greșit acolo. Apare doar când există pași automați în așteptare.
+- Rulează, în ordine și fără model: backupul Hub-ului (dacă nu există unul verificat din ultimele 24 h), inspecția mediului `ifrim-runner`, verificarea conturilor prin mediu (Codex C16 și reviewer-ul Claude), atestarea.
+- Din 2.12.1, pasul de atestare **re-atestă doar aceeași amprentă** ca ultima atestare trecută, verificată pe o inspecție proaspătă. Pentru prima atestare sau pentru o amprentă nouă, pasul arată „decizie separată (Sistem → Medii)” și nu atestă nimic.
+- **Sistem → Medii** are butoanele lui, separate: „Inspectează”, „Verifică contul prin mediu (C16)” și „Rulează atestarea C1–C17”.
+
 ### După un restart al PC-ului (pornire automată la logare)
 
 Din 2026-10-04, Hub-ul V2 pornește singur la logarea în Windows, după boot sau restart. Îl pornește sarcina programată **„Ifrim Agent Hub V2”**:
@@ -27,7 +134,7 @@ powershell -ExecutionPolicy Bypass -File "v2\scripts\autostart.ps1" -Uninstall
 - **Verificat pe 2026-10-04:**
   - rulată cu Hub-ul pornit: „deja pornit”, rezultat 0, un singur Hub;
   - rulată după `stop.mjs`: Hub-ul a pornit în ~6 s (`2.11.1-m10`, BUILD_SAFE) și a rămas pornit după terminarea sarcinii.
-  - Declanșatorul real de logare se vede la următorul restart.
+  - Declanșatorul real de logare confirmat: după repornirea PC-ului din 2026-10-05 de la 06:34 UTC, Hub-ul a pornit singur la 06:36 UTC (`2.12.0-m10.2`, BUILD_SAFE).
 
 ### M10.1 — Lega dintr-un click (`2.11.1-m10`, fără migrare)
 

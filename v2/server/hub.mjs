@@ -56,6 +56,8 @@ import { createWslClaudeAdapter } from "./providers/claude-wsl.mjs";
 import { newId } from "./core/ids.mjs";
 import { createTrust, SESSION_DEFAULTS } from "./owner/trust.mjs";
 import { createEnvelopes } from "./owner/envelopes.mjs";
+import { registerRunPlanner } from "./owner/planners/run.mjs";
+import { createArmedWindows } from "./owner/armed-window.mjs";
 import { createCockpit } from "./owner/cockpit.mjs";
 import { createInterrupts } from "./owner/interrupts.mjs";
 import { createAdvisor } from "./owner/advisor.mjs";
@@ -77,6 +79,13 @@ import { createDesktopOperator } from "./desktop/operator.mjs";
 import { createExecutors } from "./ops/executors.mjs";
 import { createOpsPlans } from "./ops/plans.mjs";
 import { setExtraCommands } from "./factory/spec.mjs";
+import { createProbe, registerProbeCommands } from "./owner/probe.mjs";
+import { createWorkRequests, registerWorkRequestCommands } from "./owner/work-requests.mjs";
+import { createReadinessRunner, collectFacts } from "./owner/readiness-runner.mjs";
+import { explain as explainBlockers } from "./owner/blockers.mjs";
+import { createBlockedRecorder } from "./owner/planners/engineering.mjs";
+import { createGateRearm } from "./owner/gate-rearm.mjs"; // M10.2.1: contextual gate rearm (wired below, after the preserved requests)
+import { createStopScope } from "./owner/stop-scope.mjs"; // 2.12.1 (D22): what a stop itself stopped (wired with the gate rearm)
 
 /** Live (non-persisted) channel for token deltas; persisted state is always reloadable from the API. */
 function createLiveChannel() {
@@ -196,7 +205,9 @@ export function createHub(config, { providerOverrides = {}, homeDir, browserLaun
     // Late-bound below: the factory is created after Lega (it needs the run manager's voice hook first).
     factorySummary: null,
   };
-  lega = createLega({ config, bus, live, clock, settings, gate, grants, projects, approvals, missions, missionKinds: Object.keys(MISSION_TEMPLATES),
+  // M10.2: the intake, the preserved requests and the blocker explainer are created after Lega; filled after registerCommands.
+  const legaLate = { intake: null, recordBlocked: null, explain: null, cockpitBrief: null };
+  lega = createLega({ config, bus, live, clock, settings, gate, grants, projects, approvals, missions, missionKinds: Object.keys(MISSION_TEMPLATES), db, late: legaLate,
     readApi: legaRead,
     runsApi: { activeRuns: () => runs.activeRuns(), getRun: (id) => runs.getRun(id), admitCodexUsage: (snapshot) => usage.admit("codex", snapshot),
       messageText: (id) => db.prepare("SELECT content FROM messages WHERE id = ?").get(id)?.content || "" },
@@ -224,8 +235,37 @@ export function createHub(config, { providerOverrides = {}, homeDir, browserLaun
   // envelopes, which consume a spoken confirmation's utterance in the same transaction that confirms the plan.
   const voiceEngine = createVoiceEngine({ config, supervisor, clock, onEvent: (event) => live.publish(event) });
   voice = createVoice({ db, bus, clock, settings, config, trust, engine: voiceEngine });
-  const envelopes = createEnvelopes({ db, bus, clock, settings, projects, missions, grants, gate, approvals, commands, trust, factory, factoryRunner, environments, config, voice });
+  /*
+   * M10.2 U13: ONE armed-window registry for envelopes and operation plans (owner/armed-window.mjs). Whether a plan may be armed for a
+   * Lega session is decided HERE over server facts only: the voice-first policy; the live Lega session read from Lega's internals
+   * (active, derived from an owner session that is still valid — never a page's claim); that owner session being the confirming one;
+   * the global local voice gate on (owner decision 8) and this session started with it; an active profile of the current verifier;
+   * local transcription available. Nothing is written by this check.
+   */
+  const armedWindows = createArmedWindows({ clock, bus,
+    readUtterance: (id) => voice.peekUtterance(id),
+    verifyLega: (legaSessionId, ownerSessionId = null) => {
+      if (!trust.policy()?.active) return { ok: false, reason: "politica voice-first nu este activă" };
+      const a = lega?.authorityOf ? lega.authorityOf(legaSessionId) : null;
+      if (!a || a.status !== "active" || a.stopping) return { ok: false, reason: "fereastra vocală se deschide doar într-o sesiune Lega activă" };
+      if (a.authority !== "owner_session" || !a.ownerSessionId) return { ok: false, reason: "sesiunea Lega nu e pornită din sesiunea ta de proprietar (calea veche, cu grant, nu confirmă prin voce)" };
+      if (ownerSessionId && a.ownerSessionId !== ownerSessionId) return { ok: false, reason: "sesiunea Lega aparține altei sesiuni de proprietar" };
+      const auth = legaOwnerAuthority(a.ownerSessionId);
+      if (!auth.ok) return { ok: false, reason: "sesiunea ta de proprietar nu mai e validă" };
+      const vs = voice.status();
+      if (!vs.profile) return { ok: false, reason: "lipsește profilul tău vocal" };
+      if (!vs.gate?.enabled || !a.gated) return { ok: false, reason: "filtrul vocal local nu rulează în această sesiune Lega" };
+      if (!vs.localTranscription?.available) return { ok: false, reason: "transcrierea locală nu e disponibilă acum" };
+      return { ok: true, ownerSessionId: a.ownerSessionId };
+    } });
+  // Gate segments of a Lega session are bound by the server to the plan armed for it (the page's tag is only advisory).
+  voice.setArmedResolver((q) => armedWindows.planFor(q));
+  const envelopes = createEnvelopes({ db, bus, clock, settings, projects, missions, grants, gate, approvals, commands, trust, factory, factoryRunner, environments, config, voice, armedWindows });
   factory.attachAuthority((missionId, step) => envelopes.authorityFor(missionId, step));
+  // M10.2 (U12): a confirmed run plan starts its ONE step through the ordinary run manager (no approval, no factory).
+  envelopes.attachRuns({ runs, conversations });
+  // M10.2: a confirmed plan admits its own bound steps in BUILD_SAFE (the gate is created before the envelopes, so late-bound).
+  gate.attachEnvelopeAuthority((missionId, bindingHash, ctx) => envelopes.liveAuthority(missionId, bindingHash, ctx));
   const cockpit = createCockpit({ db, bus, clock, settings, projects, missions, runs, factory, factoryRunner, envelopes, environments, providerState, company });
   const interrupts = createInterrupts({ db, bus, clock, settings, runs, factory, envelopes, checkpoints, projects, live });
   const advisor = createAdvisor({ db, bus, clock, settings, approvals, envelopes, runs, factory, conversations, projects, grants });
@@ -251,24 +291,92 @@ export function createHub(config, { providerOverrides = {}, homeDir, browserLaun
   const media = createMedia({ db, bus, live, clock, config, settings, supervisor, sales, runs, voiceEngine });
   // M10 Lega PC Operator + zero-form plans: the Desktop Operator is the one gate to the owner's desktop (a helper in the interactive
   // session, started on first use, never at boot); operation plans are shown once, confirmed once, and every step re-authorized.
-  const desktop = createDesktopOperator({ db, bus, clock, config, supervisor, settings, trust, media, live });
+  // 2.12.1 (D22): both read what a stop itself stopped through hub.stopScope (created below with the gate rearm; until then — and in a
+  // partial hub — each falls back to its own read-only reader over the same database).
+  let stopScopeRef = null;
+  const desktop = createDesktopOperator({ db, bus, clock, config, supervisor, settings, trust, media, live, stopScope: () => stopScopeRef });
   const executors = createExecutors({ desktop, media, settings, live });
-  const opsPlans = createOpsPlans({ db, bus, clock, settings, trust, voice, apps: desktop.apps, executors, live, desktop,
-    folderContext: () => ({ allowed: desktop.allowedFolders(), forbidden: desktop.forbiddenFolders() }) });
+  const opsPlans = createOpsPlans({ db, bus, clock, settings, trust, voice, apps: desktop.apps, executors, live, desktop, armedWindows,
+    folderContext: () => ({ allowed: desktop.allowedFolders(), forbidden: desktop.forbiddenFolders() }), stopScope: () => stopScopeRef });
+  // M10.2 U13: Lega arms a plan it has just SPOKEN (its bridge or its plan tool); the plan's service re-checks everything. A plan already
+  // armed in this Lega session keeps its window (re-arming would make a "Da" said in between count as said before the window).
+  legaLate.armPresented = ({ legaSessionId, planId, dryRun = false }) => {
+    const ownerSessionId = lega.authorityOf(legaSessionId)?.ownerSessionId || null;
+    const open = ownerSessionId ? armedWindows.armedFor(planId, ownerSessionId, legaSessionId) : null;
+    if (open && !dryRun) return { armed: true, expiresAt: open.expiresAt, already: true };
+    if (/^opp_/.test(String(planId))) return opsPlans.armForLega({ planId, legaSessionId, dryRun });
+    if (/^env_/.test(String(planId))) return envelopes.armForLega({ envelopeId: planId, legaSessionId, dryRun });
+    return { armed: false, reason: "plan necunoscut" };
+  };
 
   const hub = { config, db, bus, live, settings, projects, conversations, missions, approvals, policy, leases, grants, providerState, usage, memory, leads, sales,
     company, chiefOfStaff, surfaces, schedules, computer, skills, artifacts, integrations, nativeSessions, telemetry, router, commands, checkpoints,
     breakers, supervisor, backups, providers, gate, runs, handoffs, tools, roleConfig, skillConfig, capabilityConfig, codexIsolation, lega, refreshCodexConfig, factory, factoryRunner,
-    environments, wslRunner, trust, envelopes, cockpit, interrupts, advisor, voice, voiceEngine,
+    environments, wslRunner, trust, envelopes, armedWindows, cockpit, interrupts, advisor, voice, voiceEngine,
     twin, warroom, autopilot, simulations, league, skillEvolution, teach, packages, board, devices, media, desktop, opsPlans, executors };
   registerCommands(commands, hub);
+  // M10.2 (U12): the "run" planner (one bounded model step → ONE run envelope; propose_run's replacement under voice-first).
+  if (hub.intake) hub.runPlanner = registerRunPlanner(hub, hub.intake);
+  // M10.2 probe counters (read-only, from the logs) + the owner.nav screen telemetry; observability only, no authority.
+  hub.probe = createProbe({ db, bus, config }); registerProbeCommands((type, def) => commands.register(type, def));
+  // M10.2 U06: preserved work requests (a blocked request is kept and re-proposed, never run by itself) and the automatic readiness
+  // runner (inference-free steps on the automation channel; a same-fingerprint re-attestation only after a plan's confirmation).
+  hub.workRequests = createWorkRequests({ db, bus, clock, live, trust, envelopes });
+  hub.readiness = createReadinessRunner(hub, { workRequests: hub.workRequests });
+  hub.workRequests.attachExplainer((request) => hub.readiness.explainRequest(request));
+  registerWorkRequestCommands((type, def) => commands.register(type, def), hub);
+  // ---------------------------------------------------------------- M10.2.1: contextual gate rearm (D14–D16)
+  // The rearm service reads the recorded suspension and the preserved requests (it re-proposes only the request that showed the
+  // card), so it is created after hub.workRequests and hub.envelopes; the commands gate.rearm.card / gate.rearm (owner-commands.mjs)
+  // read it at execution time, and the cockpit's „De ce e blocat?” reads its eligibility. Nothing here opens the gate.
+  hub.gateRearm = createGateRearm(hub);
+  // 2.12.1 (D22): ONE read-only reader of what the current suspension's own stop stopped (the rearm card's facts, the intake's
+  // „Continuă”, the plan and desktop resumes); it pauses, resumes and reopens nothing.
+  hub.stopScope = stopScopeRef = createStopScope(hub);
+  cockpit.attachGateRearm(hub.gateRearm);
+  // ---------------------------------------------------------------- end M10.2.1 gate rearm
+  // M10.2 U08: Lega on the intake. The voice bridge and lega.request_work reach the same planners as the owner's typed words; a
+  // refusal Lega explains itself (propose_run) is kept with the same recorder the intake uses for a planner's "blocked" answer
+  // (owner/planners/engineering.mjs: one live request per words, the one-time explanation of work-requests).
+  const legaRecorder = createBlockedRecorder(hub);
+  legaLate.intake = hub.intake;
+  legaLate.recordBlocked = (request) => legaRecorder.recordBlocked(request);
+  legaLate.explain = async ({ projectId, intent = "engineering" }) => explainBlockers(await collectFacts(hub, { projectId, intent }));
+  // D23: a DERIVED Lega start refreshes a stale / failed / missing Codex account check by itself. This is the SAME inference-free
+  // command as „Verifică contul”, issued as an automatic readiness step (channel "automation", actor "readiness:lega-start": the
+  // probe counts it under automaticReadinessSteps). Only lega.start calls it — it decides when (derived starts only, once per
+  // attempt, bounded and rate-limited; runtime/lega.mjs) and audits it; the ordinary admission then runs on the real facts.
+  // The command is dispatched under the start's correlation id (lega.mjs lends it from its audit record), so the start row, this row
+  // and its events join; the row exists before dispatch's first await, so its id is returned at once — the audit names it even when
+  // the check fails or outlives the start's wait.
+  const READINESS_ACTOR = "readiness:lega-start";
+  legaLate.refreshAccount = ({ correlationId = null } = {}) => {
+    const done = commands.dispatch({ type: "provider.probe", payload: { provider: "codex", withModels: true }, channel: "automation", actor: READINESS_ACTOR, correlationId,
+      intentText: "pas automat de pregătire: verificarea contului Codex înainte de pornirea Lega (fără inferență)" });
+    const row = commands.list({ type: "provider.probe", limit: 10 }).find((c) => c.correlationId === correlationId && c.actor === READINESS_ACTOR);
+    return { commandId: row?.id || null, done };
+  };
+  // D13: a spoken „Pauză” in a session derived from the owner session is the owner's pause (credential recorded), audited as such.
+  // lega.mjs verified the derived authority; the owner session is re-read here (a revoked one throws → the plain suspension runs).
+  legaLate.ownerPause = async ({ ownerSessionId, legaSessionId }) => {
+    const session = trust.requireSession({ id: ownerSessionId }, "pauza spusă către Lega");
+    bus.emit({ type: "lega.owner_pause", scopeType: "system", scopeId: legaSessionId, source: "voice", payload: { ownerSessionId } });
+    return interrupts.pause({ actor: `voice:${legaSessionId}`, reason: "Pauză (spusă către Lega)", session });
+  };
+  // The cockpit shows the environment's invalidation and the project's preserved requests (live facts, read-only).
+  const baseProjectCockpit = cockpit.projectCockpit;
+  cockpit.projectCockpit = async (projectId) => {
+    const data = await baseProjectCockpit(projectId);
+    if (data) { try { data.notices = hub.readiness.noticesFor(data.project.id); } catch { data.notices = []; } }
+    return data;
+  };
   // M07: the resumable setup (ordered real steps; the automatic ones run on the Hub through the ordinary commands).
   hub.setup = createSetup(hub);
 
   const scheduler = createScheduler({ db, bus, clock, approvals, leases, runs,
     extraTick: () => Promise.all([schedules.tick((cmd) => commands.dispatch({ ...cmd, channel: "schedule", actor: "scheduler" }).then((r) => r.result)), factory.tick(), Promise.resolve().then(() => sales.tick()),
       Promise.resolve().then(() => envelopes.tick()), Promise.resolve().then(() => voice.tick()), Promise.resolve().then(() => media.tick()),
-      Promise.resolve().then(() => lega.tick())]) });
+      Promise.resolve().then(() => lega.tick()), Promise.resolve().then(() => hub.workRequests.tick())]) });
   hub.scheduler = scheduler;
 
   // Post-commit reactions (each in its own transaction; never inside the writer's transaction).
@@ -282,12 +390,44 @@ export function createHub(config, { providerOverrides = {}, homeDir, browserLaun
         try { bus.emit({ type: "factory.error", scopeType: "run", scopeId: event.runId, source: "factory", payload: { message: String(error.message).slice(0, 300) } }); } catch { /* shutting down */ }
       });
     }
-    // M08 §17: a gate segment's local transcript is final; the envelope service confirms only an ARMED plan, after all its checks.
+    // M08 §17 / M10.2 U13: a gate segment's local transcript is final; the plan's service confirms only an ARMED plan, after all its
+    // checks — routed by the plan id's prefix (env_ → envelopes, opp_ → operation plans).
     if (event.type === "voice.gate_final" && event.payload?.envelopeId) {
       const p = event.payload;
-      setImmediate(() => { envelopes.confirmFromArmed({ utteranceId: p.utteranceId, envelopeId: p.envelopeId, sessionId: p.sessionId, legaSessionId: p.legaSessionId || null }).catch(() => {}); });
+      const planId = String(p.envelopeId);
+      setImmediate(() => {
+        const q = { utteranceId: p.utteranceId, sessionId: p.sessionId, legaSessionId: p.legaSessionId || null };
+        const out = /^opp_/.test(planId) ? opsPlans.confirmFromArmed({ ...q, planId }) : /^env_/.test(planId) ? envelopes.confirmFromArmed({ ...q, envelopeId: planId }) : null;
+        // The outcome is said in the Hub's own words (never model text): a confirmation, or why a confirmation-like sentence did not count.
+        Promise.resolve(out).then((r) => {
+          if (!r || !p.legaSessionId) return;
+          if (r.confirmed && !r.duplicate) lega.announce(p.legaSessionId, "Am auzit „Da, execută planul”: am confirmat planul și pornesc.").catch(() => {});
+          else if (!r.confirmed && r.failures) lega.announce(p.legaSessionId, `Nu am confirmat planul: ${String(r.reason || "").replace(/\s+/g, " ").slice(0, 220)}${r.closed ? " Fereastra vocală s-a închis; confirmă cu butonul." : ""}`).catch(() => {});
+        }).catch(() => {});
+      });
+    }
+    // M10.2.1 (D18): the owner's verified spoken „Continuă” (a gate segment's final LOCAL transcript, the whole sentence) — the intake
+    // re-checks everything and runs the typed executor as the owner session, once per utterance; the Hub says the outcome in its own
+    // words (describeResults → speak). 2.12.1: ONE line per sentence, in the intake's words — `say` (a refused claim, a veto the bridge did
+    // not already answer, a pointer to the cockpit, a plan waiting) or the intake's prefix (what was heard) + the description of the
+    // result; a silent outcome (a duplicate, the session checks Lega's own line answers, a veto the bridge answered) says nothing.
+    if (event.type === "voice.continue_heard" && event.payload?.utteranceId) {
+      const p = event.payload;
+      setImmediate(() => {
+        Promise.resolve().then(() => hub.intake?.continueFromVoice?.({ utteranceId: p.utteranceId, ownerSessionId: p.ownerSessionId || null, legaSessionId: p.legaSessionId || null }))
+          .then((out) => {
+            if (!out || out.duplicate || !p.legaSessionId) return null;
+            if (out.say) return lega.announce(p.legaSessionId, out.say, { heard: out.heard || "", intents: ["ops_continue"], outcome: out.outcome || "message" });
+            if (out.silent || !out.result) return null;
+            return lega.announceResults(p.legaSessionId, [out.result], { prefix: out.prefix || "", heard: out.heard || "", intents: ["ops_continue"] });
+          }).catch(() => {});
+      });
     }
     if (event.type === "settings.changed" && event.payload?.key === "factoryExtraCommands") setExtraCommands(settings.get("factoryExtraCommands") || []);
+    // M10.2 U06: an event that may clear a blocker re-explains the preserved requests (a re-proposal at most); a confirmed plan's
+    // mission blocked on its environment gets one inference-free readiness pass.
+    try { hub.workRequests.onEvent(event); } catch { /* a re-plan never breaks the writer */ }
+    try { hub.readiness.onEvent(event); } catch { /* idem */ }
     if (event.scopeType === "task" && ["task.completed", "task.cancelled", "task.failed"].includes(event.type)) {
       try { telemetry.recordTaskOutcome(event.scopeId); } catch { /* ignore */ }
       try { bus.transaction(() => policy.revokeTaskScopes(event.scopeId, `task ${event.type.split(".")[1]}`)); } catch { /* ignore */ }
@@ -333,6 +473,8 @@ export function createHub(config, { providerOverrides = {}, homeDir, browserLaun
     const skillImport = skills.importAll("seed");
     surfaces.refreshAvailability();
     bootReport = await recoverOnBoot({ db, bus, clock, settings, approvals });
+    // M10.2 review #10: a run plan whose one turn died with the previous process frees the project's open-plan slot now (grant revoked).
+    try { bootReport.runEnvelopes = envelopes.recoverRuns(); } catch (error) { bootReport.runEnvelopes = { error: String(error?.message || error).slice(0, 300) }; }
     // M10: a derived Lega authority whose voice session died with the previous process is closed in the audit (nothing starts).
     try { bootReport.lega = lega.recover(); } catch (error) { bootReport.lega = { error: String(error?.message || error).slice(0, 300) }; }
     bootReport.billing = convertLegacyBilling();
@@ -341,6 +483,9 @@ export function createHub(config, { providerOverrides = {}, homeDir, browserLaun
     try { bootReport.media = media.boot(); } catch (error) { bootReport.media = { error: String(error?.message || error).slice(0, 300) }; }
     // Workspaces a crash left in the environment are marked orphaned and kept for inspection (never deleted at boot).
     bootReport.environments = { "wsl-runner": wslRunner.recover() };
+    // M10.2: an attestation that this code no longer accepts (canary version, age) or a stale account check is ANNOUNCED once
+    // (event + attention item + cockpit notice), never fixed at boot: no inspection, probe or attestation runs here (decision 3).
+    try { bootReport.readiness = hub.readiness.announceAtBoot(); } catch (error) { bootReport.readiness = { error: String(error?.message || error).slice(0, 300) }; }
     // M10: a desktop session or a running plan left by a stop is ended / waits for the owner (never resumed by the boot).
     bootReport.desktop = desktop.recover();
     bootReport.ops = opsPlans.recover();

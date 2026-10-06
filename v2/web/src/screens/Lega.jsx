@@ -1,8 +1,9 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AudioLines, Send, Settings2, Lock, LockOpen, VolumeX, Pause, Hand, Snowflake, Square, Undo2, Focus, Eye, EyeOff, Minimize2, Circle, Network, Maximize2, Radar } from "lucide-react";
 import { api } from "../api.js";
-import { useHub, useResource, onHubEvent, pushToast, usePref, refresh, setState } from "../store.js";
-import { markArmed } from "../lib/voiceContext.js";
+import { useHub, useResource, onHubEvent, onLive, pushToast, usePref, refresh, setState, getState } from "../store.js";
+import { markArmed, looksLikeConfirmation } from "../lib/voiceContext.js";
+import { planRefOfLive, cockpitPlanAction } from "../lib/uiLogic.js";
 import { intelResultKind } from "../lib/intelLogic.js";
 import { IntelResult } from "./lega/IntelCard.jsx";
 import { Chip, Notice, ErrorNotice, Loading } from "../components/ui.jsx";
@@ -15,8 +16,10 @@ import { unlockSession, onLocalhost } from "../lib/ownerSession.js";
 import { StopAllButton } from "../shell/Shell.jsx";
 import { OwnerSetup } from "./lega/OwnerSetup.jsx";
 import { OpsPlanCard } from "./lega/OpsPlanCard.jsx";
-import { presentedPlan } from "../lib/opsLogic.js";
-import { ProjectSummary, NextStepCard, DecisionCard, MissionPlan, AgentGraph, EnvironmentCard, DiffPanel, TestPanel, ReviewPanel, Replay, Preview, Briefing, Explain, CompanyMap } from "./lega/cards.jsx";
+import { presentedPlan, planNeedsObsPassword } from "../lib/opsLogic.js";
+import { ProjectSummary, NextStepCard, DecisionCard, MissionPlan, AgentGraph, EnvironmentCard, DiffPanel, TestPanel, ReviewPanel, Replay, Preview, Briefing, Explain, CompanyMap, BlockerActions, WorkRequestsCard } from "./lega/cards.jsx";
+import { RearmCard } from "./lega/RearmCard.jsx";
+import { rearmSlotFrom, rearmOutcome, gateRearmHint } from "../lib/rearmLogic.js";
 
 /**
  * Lega 2.0 — the cockpit you drive by intent (M06 §06, §12, §13). One sentence ("Hai să lucrăm la ProDelivery") opens the
@@ -45,6 +48,9 @@ function SetupPage({ go }) {
 }
 
 const CARD_COMPONENTS = { ProjectSummary, NextStepCard, DecisionCard, MissionPlan, AgentGraph, EnvironmentCard, DiffPanel, TestPanel, ReviewPanel, Replay, Preview, Briefing, Explain, CompanyMap, IntelResult };
+/** 2.12.1 (UI-02): the rearm slot's ids and one-shot trigger numbers — page-wide and monotonic, so a remounted cockpit never reuses one. */
+let rearmSlotCounter = 0;
+let rearmTriggerCounter = 0;
 
 function Cockpit({ projectId, go }) {
   const hub = useHub((s) => s.hub);
@@ -83,12 +89,22 @@ function Cockpit({ projectId, go }) {
   useEffect(() => { if (projectId && projectId !== currentProject) setCurrentProject(projectId); }, [projectId]); // eslint-disable-line react-hooks/exhaustive-deps
   // A new project = its default layout; the conversation stays (one Lega, context per project).
   useEffect(() => { if (cockpit.data && (!layout || layout.projectId !== cockpit.data.project.id)) { setLayout({ ...cockpit.data.layout, projectId: cockpit.data.project.id }); setHistory([]); } }, [cockpit.data]); // eslint-disable-line react-hooks/exhaustive-deps
-  // A plan still waiting for your answer survives a reload: it is read back from the Hub (never re-created).
+  // A plan still waiting for your answer survives a reload: it is read back from the Hub (never re-created). M10.2: so do its armed
+  // voice window (the Hub's own "until", never page memory) and the operation plan on screen (Studio / desktop work).
   useEffect(() => {
     const pending = cockpit.data?.proposedPlan;
-    if (!pending || (plan?.envelope?.id === pending.envelopeId)) return;
+    if (!pending) return;
+    if (pending.armedUntil) markArmed(pending.envelopeId, pending.armedUntil);
+    if (plan?.envelope?.id === pending.envelopeId) return;
     api(`/api/envelopes/${pending.envelopeId}`).then((env) => { if (env?.status === "PROPOSED") setPlan({ envelope: env, summary: env.summary }); }).catch(() => {});
-  }, [cockpit.data?.proposedPlan?.envelopeId]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [cockpit.data?.proposedPlan?.envelopeId, cockpit.data?.proposedPlan?.armedUntil]); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => {
+    const pending = cockpit.data?.proposedOpsPlan;
+    if (!pending) return;
+    if (pending.armedUntil) markArmed(pending.planId, pending.armedUntil);
+    if (opsPlan?.id === pending.planId) return;
+    loadOpsPlan(pending.planId);
+  }, [cockpit.data?.proposedOpsPlan?.planId, cockpit.data?.proposedOpsPlan?.armedUntil]); // eslint-disable-line react-hooks/exhaustive-deps
   // Visit marker for "what changed since my last visit" (recorded when you leave the cockpit of a project).
   useEffect(() => () => { if (pid) api(`/api/cockpit/${pid}/visit`, { method: "POST", body: {} }).catch(() => {}); }, [pid]);
 
@@ -103,24 +119,156 @@ function Cockpit({ projectId, go }) {
     } catch (e) { setError(e); }
   }, [pid, layout, cockpit.data, changeLayout]);
 
-  const send = useCallback(async (sentence, source = "typed") => {
+  // M10.2 (U15): a plan announced by the Hub (`lega.plan`: the voice bridge, a typed request in another tab, a kept request that
+  // became plannable) is read back through its own route and shown here; only a PROPOSED plan is shown; nothing is confirmed here.
+  // Review #37/#38: the focus goes to ONE named card ({ kind, id, tick, at }), never a counter shared by every card (an ops plan just
+  // announced and a DecisionCard on screen both reacted, and the later one won: Enter confirmed the other plan), and only for a plan
+  // THIS tab asked for (cockpitPlanAction). Review #41: never while the full-screen stage covers the cockpit (a hidden card with focus
+  // turns Enter into a confirmation the owner cannot see); the shell closes the stage first for this tab's own voice plan.
+  const [focusTarget, setFocusTarget] = useState(null);
+  const focusSeq = useRef(0);
+  // Review #39: this tab's send() is in flight (the plan's live event can come before the HTTP answer; a typed request has no sessionId).
+  const sendingRef = useRef(false);
+  // A focus asked for during this send keeps the card focused: the end of the send does not put the focus back in the composer.
+  const planFocusPending = useRef(false);
+  const requestFocus = useCallback((kind, id) => {
+    if (getState()?.stageOpen) return;
+    setFocusTarget({ kind, id, tick: ++focusSeq.current, at: Date.now() });
+  }, []);
+  const loadOpsPlan = useCallback(async (id, { focus = false } = {}) => {
+    try {
+      const p = await api(`/api/ops/plans/${id}`);
+      if (p?.status !== "PROPOSED") return;
+      // Review #40: the secrets the plan needs at confirmation (the Hub's derived list, or the steps) stay in the trimmed shape, so a
+      // typed „Da” for a plan that needs the OBS password goes to the card's password field instead of the conversation.
+      setOpsPlan({ id: p.id, kind: p.kind, title: p.title, status: p.status, summary: p.summary, hash: p.hash, nonce: p.nonce, confirmBy: p.confirmBy, decisions: p.body?.decisions || [],
+        needsSecrets: Array.isArray(p.needsSecrets) ? p.needsSecrets : planNeedsObsPassword(p) ? ["obsPassword"] : [] });
+      if (p.armedUntil) markArmed(p.id, p.armedUntil);
+      if (focus) requestFocus("ops", p.id);
+    } catch { /* the plan is gone or not readable: nothing to show */ }
+  }, [requestFocus]);
+  const showEnvelope = useCallback(async (id, { focus = false } = {}) => {
+    try {
+      const env = await api(`/api/envelopes/${id}`);
+      if (env?.status !== "PROPOSED") return;
+      setPlan({ envelope: env, summary: env.summary });
+      if (env.armedUntil) markArmed(env.id, env.armedUntil);
+      const base = layout || cockpit.data?.layout;
+      if (base && !(base.cards || []).some((c) => c.type === "DecisionCard")) changeLayout({ ...base, cards: [{ type: "DecisionCard", ref: { kind: "envelope", id: env.id }, size: "l" }, ...(base.cards || [])] });
+      if (focus) requestFocus("envelope", env.id);
+    } catch { /* not readable: nothing to show */ }
+  }, [layout, cockpit.data, changeLayout, requestFocus]);
+  const planHandler = useRef(null);
+  // 2.12.1 (UI-07): the kept requests a rearm card was just confirmed for (requestId → when): the plan the Hub re-proposes for one of them
+  // — through the rearm's answer or its live `lega.plan` — is never focused and never switches the project, whatever is in flight.
+  const rearmRequests = useRef(new Map());
+  const REARM_REPROPOSAL_MS = 120000;
+  const isRearmReproposal = (ref) => {
+    const at = ref?.workRequestId ? rearmRequests.current.get(ref.workRequestId) : null;
+    return Boolean(at && Date.now() - at < REARM_REPROPOSAL_MS);
+  };
+  planHandler.current = (ref, { explicit = false, reproposed = false } = {}) => {
+    const decision = cockpitPlanAction({ ref, pid, legaSessionId, sendInFlight: sendingRef.current, explicit, reproposed: reproposed || isRearmReproposal(ref),
+      presentedId: presentedPlan(opsPlan)?.planId || presentedFrom(plan?.envelope)?.envelopeId || null });
+    if (decision.action === "ignore") return undefined;
+    // A plan of another project: its own cockpit shows it (restored from the Hub there, never re-created) — only when this tab asked
+    // for it and no other plan is on screen; otherwise the same „Deschide planul” offer as the shell (the owner chooses when to leave).
+    if (decision.action === "navigate") { setCurrentProject(ref.projectId); go(decision.path); return undefined; }
+    if (decision.action === "toast") { pushToast(`plan-${ref.id}`, "info", "Un plan te așteaptă în cockpit (o singură confirmare)", { openPath: decision.path, openLabel: "Deschide planul" }); return undefined; }
+    if (decision.focus && sendingRef.current) planFocusPending.current = true;
+    return ref.kind === "ops" ? loadOpsPlan(ref.id, { focus: decision.focus }) : showEnvelope(ref.id, { focus: decision.focus });
+  };
+  useEffect(() => onLive((e) => { const ref = planRefOfLive(e); if (ref) planHandler.current(ref); }), []);
+
+  // M10.2.1 (D14–D16): ONE rearm card in the cockpit. It comes from the Hub's answer to a request that met the stopped gate (the card
+  // bound to that request), from a blocker option („Arată cardul de redeschidere”: the same card, asked, shown and confirmed here), or — under voice-first,
+  // while the gate is suspended by anything but the owner's own pause — as a standing banner. The Hub decides everything (the card, the
+  // fresh Windows Hello, the exact suspension); the page never reopens the gate and nothing old restarts.
+  // 2.12.1 (UI-02): the slot is { id, card, requestId, wait, trigger, handled }. A click elsewhere (an option „Arată cardul de
+  // redeschidere”, a refused resume) is a ONE-SHOT trigger — a sequence number — and the card records it as handled in the slot, so a
+  // remount never replays it. The slot lives in the app store, above the cockpit (a project switch remounts the whole cockpit: the
+  // card bound to a kept request stays the same card), and is rendered at ONE stable place, outside the loading / error branches.
+  const rearmSlot = useHub((s) => s.rearmSlot || null);
+  const setRearmSlot = useCallback((next) => setState((s) => ({ rearmSlot: typeof next === "function" ? next(s.rearmSlot || null) : next })), []);
+  const gateState = hub?.executionGate || null;
+  const gateHint = gateRearmHint(gateState);
+  // An open gate (the rearm, the owner's „Continuă”, another tab) leaves nothing to reopen.
+  useEffect(() => { if (gateState?.status === "open") setRearmSlot(null); }, [gateState?.status]);
+  const openRearm = useCallback((requestId = null) => {
+    const rid = requestId || null;
+    const trigger = ++rearmTriggerCounter;
+    const id = ++rearmSlotCounter;
+    setRearmSlot((s) => (s && (s.requestId || null) === rid ? { ...s, trigger } : { id, card: null, requestId: rid, wait: null, trigger, handled: 0 }));
+  }, []);
+  // D22: a resume the Hub refused until the rearm (an operation plan's „Continuă”) brings the card on screen — the slot already there
+  // (whatever request it is bound to: the same gate decision) or a new one bound to no request.
+  const revealRearm = useCallback(() => {
+    const trigger = ++rearmTriggerCounter;
+    const id = ++rearmSlotCounter;
+    setRearmSlot((s) => (s ? { ...s, trigger } : { id, card: null, requestId: null, wait: null, trigger, handled: 0 }));
+  }, []);
+  const rearmTriggerHandled = useCallback((slotId, seq) => setRearmSlot((s) => (s && s.id === slotId ? { ...s, handled: Math.max(Number(s.handled) || 0, Number(seq) || 0) } : s)), []);
+  // UI-03: the kept request the card was bound to is no longer active — the slot no longer names it.
+  const rearmRequestDropped = useCallback((slotId) => setRearmSlot((s) => (s && s.id === slotId ? { ...s, requestId: null } : s)), []);
+  const rearmApplying = useCallback((requestId) => {
+    if (!requestId) return;
+    const now = Date.now();
+    for (const [id, at] of rearmRequests.current) if (now - at > REARM_REPROPOSAL_MS) rearmRequests.current.delete(id);
+    rearmRequests.current.set(requestId, now);
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+  const onRearmed = (res) => {
+    const out = rearmOutcome(res);
+    setRearmSlot(null);
+    setConversation((cv) => [...cv.slice(-40), { role: "lega", text: out.text, at: Date.now() }]);
+    pushToast("gate-rearm", "ok", out.toast);
+    refresh(); cockpit.reload();
+    // The request the card was shown for became a PROPOSED plan: the plan-card flow shows it (never focused, never confirmed here, and
+    // never a project switch — UI-07: whatever this tab is sending at that moment).
+    if (out.planRef?.kind === "envelope") api(`/api/envelopes/${out.planRef.id}`).then((env) => planHandler.current({ kind: "envelope", id: out.planRef.id, projectId: env?.projectId || null }, { reproposed: true })).catch(() => {});
+    else if (out.planRef?.kind === "ops") planHandler.current({ kind: "ops", id: out.planRef.id, projectId: null }, { reproposed: true });
+  };
+  // Without a project open, an operation plan still waiting is read back too (an ops plan belongs to the company, not a project).
+  useEffect(() => {
+    if (pid) return;
+    api("/api/ops/plans?status=PROPOSED&limit=1").then((r) => { const p = (r?.plans || [])[0]; if (p && new Date(p.confirmBy) > new Date()) loadOpsPlan(p.id); }).catch(() => {});
+  }, [pid, loadOpsPlan]);
+
+  // M10.2: a clarification button sends `choice` (the option id the Hub offered), never a synthesized sentence.
+  const send = useCallback(async (sentence, source = "typed", extra = {}) => {
     const value = String(sentence || "").trim();
     if (!value || busy) return;
+    // M10.2 (U15): a plan that needs the OBS password is confirmed only from its card (the password is typed there and sent with that
+    // one confirmation, never through the conversation or the command log). A typed „Da” focuses the card instead.
+    if (source === "typed" && opsPlan?.status === "PROPOSED" && planNeedsObsPassword(opsPlan) && looksLikeConfirmation(value)) {
+      setConversation((c) => [...c.slice(-40), { role: "user", text: value, at: Date.now() }, { role: "lega", text: "Planul are nevoie de parola OBS: scrie-o în card și apasă Enter sau „Confirmă planul”. Parola nu trece prin conversație.", at: Date.now() }]);
+      requestFocus("ops", opsPlan.id);
+      return;
+    }
     setBusy(true); setError(null);
+    sendingRef.current = true; planFocusPending.current = false;
     setConversation((c) => [...c.slice(-40), { role: "user", text: value, at: Date.now() }]);
     try {
-      const res = await api("/api/owner/intent", { method: "POST", body: { text: value, projectId: pid || undefined, source, presented: presentedPlan(opsPlan) || presentedFrom(plan?.envelope) || undefined, layout: layout || undefined, legaSessionId: legaStatus !== "off" && legaSessionId ? legaSessionId : undefined } });
+      const res = await api("/api/owner/intent", { method: "POST", body: { text: value, projectId: pid || undefined, source, presented: presentedPlan(opsPlan) || presentedFrom(plan?.envelope) || undefined, layout: layout || undefined, legaSessionId: legaStatus !== "off" && legaSessionId ? legaSessionId : undefined, choice: extra.choice || undefined } });
       const face = faceCommand(res.resolved.steps);
       if (face?.shape) { setFaceShape(face.shape); setFaceHidden(false); }
       if (face?.hidden) setFaceHidden(true);
       if (face?.discreet) setDiscreet(true);
       let intelFound = null;
+      // M10.2: a blocked request comes back with the server's explanation and its options (one next action each, never raw ids).
+      // M10.2.1: with the preserved request's id, so an „Arată cardul de redeschidere” option binds the rearm card to THAT request.
+      const blockedResult = res.results.find((r) => r.blockedBy) || null;
+      const blocker = blockedResult ? { ...blockedResult.blockedBy, requestId: blockedResult.workRequest?.id || null } : null;
+      // M10.2.1 (D14): the stopped gate answered in context — the Hub's rearm card (or why not yet) goes to the ONE rearm slot.
+      const rearmFx = rearmSlotFrom(res.results);
+      if (rearmFx.action === "set") setRearmSlot({ id: ++rearmSlotCounter, ...rearmFx.slot, trigger: 0, handled: 0 });
+      else if (rearmFx.action === "clear") setRearmSlot(null);
       for (const r of res.results) {
         if (r.navigate?.startsWith("/cockpit/")) { const next = r.navigate.split("/")[2]; setCurrentProject(next); go(`/lega/${next}`); }
         // M09: "deschide studioul", "arată-mi clipul X", a proposed correction (opens the clip at that second with the proposal).
         if (r.navigate?.startsWith("/studio")) go(r.navigate);
         if (r.plan?.envelope || r.plan?.summary) setPlan(r.plan);
-        if (r.opsPlan) setOpsPlan(r.opsPlan);
+        // Review #40: a card shape without the derived secrets list is read back in full (the guard above needs it); no focus here.
+        if (r.opsPlan) { setOpsPlan(r.opsPlan); if (!Array.isArray(r.opsPlan.needsSecrets) && r.opsPlan.status === "PROPOSED") loadOpsPlan(r.opsPlan.id); }
         // M10: „Pornește Lega” — the Hub checked; this page starts the voice (its microphone + the owner cookie). Never a server start.
         if (r.legaStart) sendLegaCommand("start", { expectWebSearch: r.legaStartWebSearch || null });
         if (r.confirmed?.plan) setOpsPlan((p) => (p && p.id === r.confirmed.plan.id ? { ...p, status: r.confirmed.plan.status } : p));
@@ -152,15 +300,28 @@ function Cockpit({ projectId, go }) {
         else window.history.back();
       }
       if (res.resolved.steps.some((s) => s.intent === "live")) setReplayMission(null);
-      setConversation((c) => [...c, { role: "lega", text: replyFor(res), at: Date.now(), clarification: res.resolved.clarification }]);
+      setConversation((c) => [...c, { role: "lega", text: replyFor(res), at: Date.now(), clarification: res.resolved.clarification, blocker }]);
       refresh(); cockpit.reload();
     } catch (e) { setError(e); setConversation((c) => [...c, { role: "lega", text: `Nu am putut: ${e.message}`, at: Date.now() }]); }
-    finally { setBusy(false); inputRef.current?.focus({ preventScroll: true }); }
-  }, [busy, pid, plan, opsPlan, layout, go, changeLayout, cockpit, setCurrentProject, setFaceShape, setFaceHidden, setDiscreet, department, replayMission, history, legaStatus, legaSessionId]); // eslint-disable-line react-hooks/exhaustive-deps
+    finally {
+      sendingRef.current = false; setBusy(false);
+      // The plan this sentence produced keeps the focus (Enter confirms it); otherwise the composer is ready for the next sentence.
+      if (!planFocusPending.current) inputRef.current?.focus({ preventScroll: true });
+      planFocusPending.current = false;
+    }
+  }, [busy, pid, plan, opsPlan, layout, go, changeLayout, cockpit, setCurrentProject, setFaceShape, setFaceHidden, setDiscreet, department, replayMission, history, legaStatus, legaSessionId, requestFocus, loadOpsPlan]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Lega's voice (GPT-Live) transcripts of YOUR words feed the same resolver, marked as provider transcripts: they can open,
-  // show and stop, never confirm.
+  // show and stop, never confirm. M10.2 (U15): under the voice-first policy, or in a Lega session derived from the owner session, the
+  // Hub's own voice bridge (runtime/lega.mjs) already sends every final owner sentence to the intake — on the server, whether or not
+  // this page is open — so the page never forwards it a second time (two plans for one sentence). This first-word forwarder stays
+  // only for the legacy policy, unchanged.
+  const legaAuthority = useHub((s) => s.legaAuthority || null);
+  // Unknown policy (status not loaded yet) counts as the server bridge: missing a forward is harmless, a double plan is not.
+  const serverBridge = !owner.data || Boolean(owner.data.policy?.active) || legaAuthority === "owner_session";
+  const serverBridgeRef = useRef(serverBridge); serverBridgeRef.current = serverBridge;
   useEffect(() => onHubEvent((e) => {
+    if (serverBridgeRef.current) return;
     if (document.visibilityState === "visible" && e.type === "lega.transcript" && e.payload?.role === "user" && (/^(lega|hai|arată|arata|oprește|opreste|taci|pauză|pauza|continuă|continua|ce |de ce|îngheață|ingheata|preiau|ține|tine|reține|retine|uită|uita|ecran|deschide|următorul|urmatorul|amână|amana|simulează|simuleaza|cine |la livrarea|nu merge|pornește direct|porneste direct|detalii|cockpit|la secund|mută|muta|taie|studio|clip|publică|publica|importă|importa|adu |înregistrează|inregistreaza|pregătește|pregateste|treci pe|unde e)/i.test(String(e.payload.text || "").trim()) || /\b(a picat|a căzut|a cazut|s-a stricat|nu mai merge|dă eroare|da eroare)\b/i.test(String(e.payload.text || "")))) send(e.payload.text, "voice-provider");
   }), [send]);
 
@@ -182,7 +343,7 @@ function Cockpit({ projectId, go }) {
     switch (card.type) {
       case "ProjectSummary": case "EnvironmentCard": return <Comp {...p} cockpit={c} />;
       case "NextStepCard": return <Comp {...p} cockpit={c} onPlan={proposePlan} />;
-      case "DecisionCard": return plan ? <Comp {...p} plan={plan} owner={owner.data} detailsTick={detailsTick} onConfirmed={() => cockpit.reload()} onCancel={() => setPlan(null)} /> : null;
+      case "DecisionCard": return plan ? <Comp {...p} plan={plan} owner={owner.data} detailsTick={detailsTick} focusTarget={focusTarget} projectLevel={c.autonomy?.level || null} onReplan={() => proposePlan(plan?.envelope?.missionIds?.[0])} onConfirmed={() => cockpit.reload()} onCancel={() => setPlan(null)} /> : null;
       case "IntelResult": return intel ? <IntelResult {...p} kind={intel.kind} result={intel.result} onDone={() => { setIntel(null); cockpit.reload(); }} /> : null;
       case "MissionPlan": return <Comp {...p} projectId={c.project.id} onPlan={proposePlan} />;
       case "Briefing": return <Comp {...p} projectId={c.project.id} />;
@@ -193,6 +354,15 @@ function Cockpit({ projectId, go }) {
     }
   };
   const cards = (layout?.cards || []).concat(replayMission && !(layout?.cards || []).some((x) => x.type === "Replay") ? [{ type: "Replay", ref: { kind: "mission", id: replayMission }, size: "l" }] : []);
+  // The one rearm card: the slot (an answer, an option, a refused resume) or, under voice-first, the standing banner while the gate is
+  // suspended by anything but the owner's own pause (that one is „Continuă”). Never both. Rendered at ONE stable place (UI-02).
+  const noAuthenticator = Boolean(owner.data?.bootstrapNeeded);
+  const slotId = rearmSlot?.id;
+  const rearmView = rearmSlot
+    ? <RearmCard key={`rearm-${rearmSlot.id}`} card={rearmSlot.card} requestId={rearmSlot.requestId} wait={rearmSlot.wait} trigger={rearmSlot.trigger || 0} handled={rearmSlot.handled || 0}
+      noAuthenticator={noAuthenticator} onTriggerHandled={(seq) => rearmTriggerHandled(slotId, seq)} onRequestDropped={() => rearmRequestDropped(slotId)} onApply={rearmApplying}
+      onDone={onRearmed} onClose={() => setRearmSlot(null)} onSay={(t) => send(t)} />
+    : gateHint?.kind === "rearm" && owner.data?.policy?.active ? <RearmCard key="rearm-standing" hint={gateHint.text} noAuthenticator={noAuthenticator} onApply={rearmApplying} onDone={onRearmed} onSay={(t) => send(t)} /> : null;
 
   return (
     <div className={`page cockpit ${layout?.focus ? "is-focus" : ""}`}>
@@ -244,7 +414,8 @@ function Cockpit({ projectId, go }) {
             {!conversation.length && <li className="faint small">Spune sau scrie: „Hai să lucrăm la …”, „Doar arată-mi planul”, „Ce avem azi?”, „Ce s-a schimbat de ieri?”, „X a picat”, „Ce se întâmplă dacă luăm încă cinci clienți?”, „Ține minte că…”, „Deschide studioul”, „La secunda 12 mută textul mai sus”, „Deschide CapCut”, „Arată folderul exporturilor”, „Importă din folderul acesta”, „Ecran complet”, „Oprește tot”.</li>}
             {conversation.map((m, i) => (
               <li key={i} className={`lc-${m.role}`}><span className="who">{m.role === "user" ? "Tu" : "Lega"}</span><span className="lc-text">{m.text}</span>
-                {m.clarification?.options && <span className="row wrap">{m.clarification.options.map((o) => <button key={o.id} className="btn sm" onClick={() => send(m.clarification.forIntent === "confirm" ? `confirm ${o.label}` : `hai să lucrăm la ${o.label}`)}>{o.label}</button>)}</span>}</li>
+                {m.clarification?.options?.length > 0 && <span className="row wrap">{m.clarification.options.map((o) => <button key={o.id} className="btn sm" onClick={() => send(o.label, "typed", { choice: { forIntent: m.clarification.forIntent, id: o.id } })}>{o.label}</button>)}</span>}
+                {m.blocker?.options?.length > 0 && <BlockerActions options={m.blocker.options} projectId={pid || null} projectLevel={c?.autonomy?.level || null} requestId={m.blocker.requestId || null} onSay={(t) => send(t)} onDone={() => cockpit.reload()} onRearm={openRearm} />}</li>
             ))}
           </ol>
           <form className="lega-composer" onSubmit={(e) => { e.preventDefault(); const v = text; setText(""); send(v); }}>
@@ -263,10 +434,13 @@ function Cockpit({ projectId, go }) {
           </div>
         </aside>
         <main className="cockpit-main" aria-label="Cockpit">
+          {/* 2.12.1 (UI-02): the ONE rearm card lives here, outside the loading / error / no-project branches, so a failed cockpit reload
+              or a project switch never unmounts (and never replays) it. */}
+          {rearmView && <div className="rearm-slot">{rearmView}</div>}
           {!pid ? <>
             {/* Company-level answers ("Ce avem azi?", a scenario, a lesson) are shown even before a project is open. */}
-            {intel && <IntelResult card={{ type: "IntelResult", size: "l" }} kind={intel.kind} result={intel.result} onDismiss={() => setIntel(null)} onDone={() => setIntel(null)} />}
-            {opsPlan && <OpsPlanCard plan={opsPlan} card={{ type: "OpsPlan", size: "l" }} onClose={() => setOpsPlan(null)} />}
+            {intel &&<IntelResult card={{ type: "IntelResult", size: "l" }} kind={intel.kind} result={intel.result} onDismiss={() => setIntel(null)} onDone={() => setIntel(null)} />}
+            {opsPlan && <OpsPlanCard plan={opsPlan} card={{ type: "OpsPlan", size: "l" }} focusTarget={focusTarget} onClose={() => setOpsPlan(null)} onRearm={revealRearm} />}
             <ProjectPicker projects={projects.data?.projects || []} onPick={(id) => send(`Hai să lucrăm la ${(projects.data?.projects || []).find((p) => p.id === id)?.name}`)} />
           </>
             : cockpit.loading && !c ? <Loading lines={6} /> : cockpit.error ? <ErrorNotice error={cockpit.error} onRetry={cockpit.reload} /> : (
@@ -278,7 +452,13 @@ function Cockpit({ projectId, go }) {
                     <button className="btn sm ghost" aria-pressed={Boolean(layout?.focus)} onClick={() => changeLayout({ ...layout, focus: !layout?.focus, cards: layout?.focus ? c.layout.cards : layout.cards.filter((x) => ["ProjectSummary", "NextStepCard", "DecisionCard"].includes(x.type) || x.pinned) })}><Focus size={13} />Focus</button>
                   </div>
                 </div>
-                <div className="cockpit-cards">{opsPlan && <OpsPlanCard plan={opsPlan} card={{ type: "OpsPlan", size: "l" }} onClose={() => setOpsPlan(null)} />}{cards.map(renderCard)}</div>
+                <div className="cockpit-cards">
+                  {opsPlan &&<OpsPlanCard plan={opsPlan} card={{ type: "OpsPlan", size: "l" }} focusTarget={focusTarget} onClose={() => setOpsPlan(null)} onRearm={revealRearm} />}
+                  {/* M10.2: requests the Hub kept while blocked survive a reload; each cause shows ONE next action. */}
+                  {c.workRequests?.length > 0 && <WorkRequestsCard card={{ type: "WorkRequests", size: "m" }} requests={c.workRequests} projectId={c.project.id} projectLevel={c.autonomy?.level || null} onSay={(t) => send(t)} onDone={() => cockpit.reload()}
+                    onOpenPlan={(ref) => planHandler.current({ ...ref, projectId: ref.kind === "envelope" ? c.project.id : null }, { explicit: true })} onRearm={openRearm} />}
+                  {cards.map(renderCard)}
+                </div>
               </>
             )}
         </main>

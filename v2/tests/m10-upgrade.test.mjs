@@ -12,6 +12,8 @@ import { MIGRATIONS } from "../server/storage/migrations.mjs";
 import { dryRunMigration, createUpgradeState, rowCounts, UPGRADE_STEPS } from "../server/storage/upgrade.mjs";
 
 const UPTO9 = MIGRATIONS.filter((m) => m.version <= 9);
+// M10.2 added migration 11: the expectations follow the latest known migration instead of a fixed 10.
+const LATEST = MIGRATIONS.at(-1).version;
 
 function schema9Db(dir) {
   const file = path.join(dir, "hub-v2.sqlite");
@@ -30,11 +32,11 @@ test("M10-UP-01 a pending migration on an existing database is preceded by a ver
   const db = openDatabase(file, { preMigrationBackupDir: backups, appVersion: "test" });
   const b = preMigrationBackupOf(db);
   assert.ok(b, "a backup was taken");
-  assert.equal(b.schemaVersion, 9); assert.equal(b.toVersion, 10); assert.equal(b.integrity, "ok");
+  assert.equal(b.schemaVersion, 9); assert.equal(b.toVersion, LATEST); assert.equal(b.integrity, "ok");
   assert.match(b.sha256, /^[0-9a-f]{64}$/);
   assert.ok(fs.existsSync(b.file) && fs.existsSync(b.manifestFile));
   assert.deepEqual(JSON.parse(fs.readFileSync(b.manifestFile, "utf8")).sha256, b.sha256);
-  assert.equal(schemaState(db).current, 10, "then migrated");
+  assert.equal(schemaState(db).current, LATEST, "then migrated");
   db.close();
   assert.ok(!tablesOf(b.file).includes("ops_plans"), "the copy is the schema before the migration");
   const copy = new DatabaseSync(b.file, { readOnly: true });
@@ -68,16 +70,16 @@ test("M10-UP-04 an injected defective migration rolls back; the backup taken bef
   const dir = tempDir("m10-up4");
   const file = schema9Db(dir);
   const backups = path.join(dir, "pre-upgrade");
-  const db10 = openDatabase(file, { preMigrationBackupDir: backups }); // → 10 (with its own backup)
+  const db10 = openDatabase(file, { preMigrationBackupDir: backups }); // → LATEST (with its own backup)
   db10.prepare("INSERT INTO settings (key, value_json, updated_at) VALUES ('after-10', '1', ?)").run(new Date().toISOString());
   const before = rowCounts(db10, ["settings", "events"]);
   db10.close();
-  const broken = [...MIGRATIONS, { version: 11, name: "broken", up(d) { d.exec("CREATE TABLE half_done (x INTEGER)"); throw new Error("injected failure"); } }];
+  const broken = [...MIGRATIONS, { version: LATEST + 1, name: "broken", up(d) { d.exec("CREATE TABLE half_done (x INTEGER)"); throw new Error("injected failure"); } }];
   assert.throws(() => openDatabase(file, { preMigrationBackupDir: backups, migrations: broken }), /injected failure/);
-  assert.equal(versionOf(file), 10, "the failed migration was rolled back");
+  assert.equal(versionOf(file), LATEST, "the failed migration was rolled back");
   assert.ok(!tablesOf(file).includes("half_done"), "nothing half-applied");
-  const v11 = fs.readdirSync(backups).filter((n) => /v10-to-v11.*\.sqlite$/.test(n));
-  assert.equal(v11.length, 1, "the backup for 10 → 11 exists");
+  const v11 = fs.readdirSync(backups).filter((n) => n.includes(`v${LATEST}-to-v${LATEST + 1}`) && n.endsWith(".sqlite"));
+  assert.equal(v11.length, 1, "the backup for LATEST → LATEST+1 exists");
   // Restore (Hub stopped): the copy replaces the database; every row is there.
   const restored = path.join(dir, "restored.sqlite");
   fs.copyFileSync(path.join(backups, v11[0]), restored);
@@ -103,8 +105,9 @@ test("M10-UP-06 dry run on a copy: 9 → 10, integrity ok, row counts unchanged,
   const dir = tempDir("m10-up6");
   const file = schema9Db(dir);
   const r = await dryRunMigration({ dbPath: file, tmpDir: path.join(dir, "tmp") });
-  assert.equal(r.schemaBefore, 9); assert.equal(r.schemaAfter, 10); assert.equal(r.integrity, "ok"); assert.equal(r.rowCountsUnchanged, true);
-  assert.deepEqual(r.pending, ["10:m10-operator-plans"]);
+  assert.equal(r.schemaBefore, 9); assert.equal(r.schemaAfter, LATEST); assert.equal(r.integrity, "ok"); assert.equal(r.rowCountsUnchanged, true);
+  assert.deepEqual(r.pending, MIGRATIONS.filter((m) => m.version > 9).map((m) => `${m.version}:${m.name}`));
+  assert.ok(r.pending.includes("10:m10-operator-plans") && r.pending.includes("11:m10-2-work-requests"));
   assert.equal(versionOf(file), 9, "the source stays at 9");
 });
 
@@ -134,7 +137,7 @@ test("M10-UP-08 the Hub booting on a schema-9 database takes the backup before m
   try {
     const report = t.hub.getBootReport().storage.preMigrationBackup;
     assert.ok(report, "reported");
-    assert.equal(report.fromVersion, 9); assert.equal(report.toVersion, 10); assert.equal(report.integrity, "ok");
+    assert.equal(report.fromVersion, 9); assert.equal(report.toVersion, LATEST); assert.equal(report.integrity, "ok");
     assert.ok(report.file.startsWith(path.join(dir, "pre-upgrade")));
     const ev = t.hub.db.prepare("SELECT payload_json FROM events WHERE type = 'storage.pre_migration_backup'").get();
     assert.ok(ev && JSON.parse(ev.payload_json).fromVersion === 9);

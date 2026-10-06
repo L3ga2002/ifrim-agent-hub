@@ -82,7 +82,8 @@ test("M06-CK-03 explanations come from telemetry and records; no estimate withou
     assert.equal(idle.idle, true);
     t.hub.bus.transaction(() => t.hub.settings.set("executionGate", { status: "suspended", reason: "test", changedAt: new Date().toISOString(), changedBy: "test" }, "test"));
     const why = t.hub.cockpit.whyBlocked({ projectId: t.project.id });
-    assert.ok(why.items.some((i) => /Poarta/.test(i.what) && /OPEN GATE/.test(i.action)));
+    // M10.2.1 (D14): a suspended gate is reopened in the cockpit (rearm card, Windows Hello), never by a typed OPEN GATE pointer.
+    assert.ok(why.items.some((i) => /Poarta/.test(i.what) && /Windows Hello/.test(i.action) && !/OPEN GATE/.test(i.action)), JSON.stringify(why.items));
     const route = t.hub.cockpit.whyRoute({ worker: "claude" });
     assert.equal(route.role, "reviewer"); assert.match(route.reason, /independent/);
     const est = t.hub.cockpit.estimate({ stage: "coding", provider: "codex" });

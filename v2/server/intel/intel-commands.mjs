@@ -161,7 +161,9 @@ export function registerIntelCommands(reg, hub) {
     schema: { kind: { enum: [...PACKAGE_KINDS], required: true } },
     execute: async (input, ctx) => {
       // MEDIA_A: "executed" comes from a fresh verification of ffmpeg/ffprobe (version + sha256), never from the click.
-      if (input.kind === "MEDIA_A" && hub.media?.tools?.resolve) { try { await hub.media.tools.resolve(); } catch { /* the inventory reports what is known */ } }
+      // M10.2: presenting MEDIA_A is the owner's explicit ceremony, so it pins (first identity; a different binary is recorded as
+      // CHANGED, never acknowledged here). A read elsewhere (GET /api/media/tools) never pins.
+      if (input.kind === "MEDIA_A" && hub.media?.tools?.pin) { try { await hub.media.tools.pin({ actor: ctx.actor, reason: "pachetul MEDIA_A" }); } catch { /* the inventory reports what is known */ } }
       return packages.present(input.kind, { actor: ctx.actor });
     } });
   reg("package.decide", { describe: "Decizia ta, opțiune cu opțiune (sesiune proaspătă)", channels: OWNER, async: true,

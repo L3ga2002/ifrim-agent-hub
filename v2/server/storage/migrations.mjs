@@ -1014,4 +1014,24 @@ export const MIGRATIONS = [
       `);
     },
   },
+  {
+    // M10.2: preserved work requests. A request the Hub cannot run yet (a blocker) is kept instead of dropped: its redacted text,
+    // where it came from, the blocker signature and when the full explanation was given (spoken once per request + signature),
+    // and the plan it became. It never executes by itself: when its blockers clear it is only re-proposed as a plan that still
+    // needs the owner's one confirmation. Expires after 7 days.
+    version: 11,
+    name: "m10-2-work-requests",
+    up(db) {
+      db.exec(`
+        CREATE TABLE work_requests (id TEXT PRIMARY KEY, text_redacted TEXT NOT NULL DEFAULT '', source TEXT NOT NULL, channel TEXT NOT NULL,
+          project_id TEXT, intent TEXT NOT NULL, effect_class TEXT NOT NULL DEFAULT '',
+          status TEXT NOT NULL DEFAULT 'OPEN' CHECK (status IN ('OPEN','BLOCKED','PLANNED','CONFIRMED','DONE','CANCELLED','EXPIRED')),
+          blocker_signature TEXT NOT NULL DEFAULT '', explained_at TEXT, explanation_json TEXT NOT NULL DEFAULT '{}', plan_ref TEXT,
+          consent_json TEXT, created_by TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, expires_at TEXT NOT NULL,
+          version INTEGER NOT NULL DEFAULT 1);
+        CREATE INDEX idx_work_requests_status ON work_requests(status, updated_at);
+        CREATE INDEX idx_work_requests_project ON work_requests(project_id, status);
+      `);
+    },
+  },
 ];

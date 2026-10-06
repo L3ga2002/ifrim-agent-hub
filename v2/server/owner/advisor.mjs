@@ -29,7 +29,11 @@ export function classifyEvent(event) {
   }
   if (event.type === "run.failed" && !event.taskId) return { reason: "BLOCKED", title: "O execuție a eșuat", key: `run:${event.runId || event.scopeId}` };
   if (["system.stop_all", "lega.session.violation", "backup.failed", "owner.credential_registered", "owner.credential_revoked"].includes(event.type)) return { reason: "RISK", title: event.type, key: `${event.type}:${event.scopeId}` };
-  if (event.type === "environment.attestation" && p.status && !/^PASS/.test(p.status)) return { reason: "RISK", title: `Atestarea mediului: ${p.status}`, key: `env:${event.scopeId}` };
+  // M10.2: the service emits "environment.attested" (M05–M10 listened for a type that never existed, so a FAILED attestation never
+  // reached the owner); an invalidation announced at boot is a risk item too, and a preserved request re-planned is a decision.
+  if (event.type === "environment.attested" && p.status && !/^PASS/.test(p.status)) return { reason: "RISK", title: `Atestarea mediului: ${p.status}`, key: `env:${event.scopeId}` };
+  if (event.type === "environment.attestation_invalid") return { reason: "RISK", title: p.code === "account_check_stale" ? "Verificarea contului prin mediul izolat e mai veche de 24 h" : p.code === "expired" ? "Atestarea mediului izolat a expirat" : "Atestarea mediului izolat nu mai e valabilă (verificările Hub-ului s-au schimbat)", key: `env:${event.scopeId}` };
+  if (event.type === "lega.plan") return { reason: "DECISION_REQUIRED", title: "Planul cererii tale poate porni acum; așteaptă confirmarea ta", key: `work_request:${event.scopeId}` };
   return null;
 }
 

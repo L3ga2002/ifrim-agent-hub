@@ -13,8 +13,12 @@ export const STEP_STATUS_LABELS = Object.freeze({ PENDING: "urmează", RUNNING: 
 export const planTone = (status) => ({ DONE: "ok", FAILED: "error", NEEDS_OWNER: "warn", PAUSED: "warn", RUNNING: "info", CONFIRMED: "info", PROPOSED: "attention" }[status] || "neutral");
 export const stepTone = (status) => ({ DONE: "ok", FAILED: "error", UNCERTAIN: "warn", BLOCKED: "warn", RUNNING: "info" }[status] || "neutral");
 
-/** Steps whose run needs a secret typed at confirmation (never stored): the OBS WebSocket password. */
-export const planNeedsObsPassword = (plan) => (plan?.body?.steps || []).some((s) => s.kind === "capture.obs_record");
+/**
+ * Steps whose run needs a secret typed at confirmation (never stored): the OBS WebSocket password. M10.2 review #40: the cockpit's
+ * trimmed plan shape has no body, so the Hub's derived `needsSecrets` (plan view / plan card) counts as well as the steps themselves.
+ */
+export const planNeedsObsPassword = (plan) => (Array.isArray(plan?.needsSecrets) && plan.needsSecrets.includes("obsPassword"))
+  || (plan?.body?.steps || []).some((s) => s.kind === "capture.obs_record");
 /** The plan's decisions widen access: confirming them asks Windows Hello again (step-up). */
 export const planNeedsStepUp = (plan) => (plan?.body?.decisions || []).length > 0;
 

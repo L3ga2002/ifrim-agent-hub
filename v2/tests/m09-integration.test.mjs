@@ -82,6 +82,7 @@ test("M09-IN-03 real production through the commands: import → rights → edit
     makeSyntheticMedia(inbox, { name: "a.mp4", seconds: 2, width: 640, height: 360 });
     makeSyntheticMedia(inbox, { name: "b.mp4", seconds: 2, width: 640, height: 360 });
     setPolicy(t, { importRoots: [inbox], diskReserveGb: 0, interactivePriority: false });
+    await as(t, "media.tools.pin", {}); // M10.2: renders need pinned tools; pinning is an explicit act
     const project = await as(t, "content.project.create", { fields: { title: "Test integrare", format: "short", platforms: ["instagram", "youtube"] } });
     const projectId = project.id || project.project?.id;
     assert.ok(projectId);

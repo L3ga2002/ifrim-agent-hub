@@ -1,7 +1,7 @@
 // M09 editor adapters and interchange exports.
 // - EDITOR_ADAPTERS: what each backend can do HERE, inspected (never assumed): `ffmpeg` (the real render backend, availability
-//   from tools.resolve()), `premiere` (detects an installation; nothing is automated), `capcut` (detects an installation and its
-//   version; ASSISTED only: the Hub prepares a folder for the owner and never opens, writes or patches CapCut project files),
+//   from tools.inspect(), read-only: listing editors never pins a binary), `premiere` (detects an installation; nothing is
+//   automated), `capcut` (detects an installation and its version; ASSISTED only: the Hub prepares a folder for the owner and never opens, writes or patches CapCut project files),
 //   `otio` and `edl` (file exports).
 // - exportOtio(ir, assetsMap): OpenTimelineIO JSON (Timeline.1 → Stack.1 → Track.1 with Clip.2 / Transition.1 / Gap.1,
 //   ExternalReference.1 with file:// URLs). Cuts and dissolves are native; everything OTIO has no schema for (zoom/pan
@@ -84,10 +84,14 @@ export const EDITOR_ADAPTERS = Object.freeze({
     id: "ffmpeg", kind: "render_backend", label: "ffmpeg (randare locală)",
     async inspectCapabilities({ tools } = {}) {
       let r = null;
-      try { r = tools ? await tools.resolve() : null; } catch { r = null; }
+      // M10.2: inspect() never writes (no pin, no event); whether a render may run (pinned, unchanged) is reported beside it.
+      try { r = tools ? await (tools.inspect || tools.resolve)() : null; } catch { r = null; }
       const ok = Boolean(r?.ffmpeg && r?.ffprobe);
+      const note = !ok ? "ffmpeg/ffprobe nu sunt disponibile." : r.usable === false
+        ? (r.problems?.includes("tool_changed") ? "Randare reală, locală — un binar s-a schimbat; confirmă schimbarea înainte de randare." : "Randare reală, locală — fixează întâi ffmpeg/ffprobe (versiune + sha256).")
+        : "Randare reală, locală.";
       return { id: "ffmpeg", kind: "render_backend", status: ok ? "AVAILABLE" : "MISSING", mode: "RENDER", version: r?.ffmpeg?.version || null,
-        problems: r?.problems || ["ffmpeg_missing"], note: ok ? "Randare reală, locală." : "ffmpeg/ffprobe nu sunt disponibile.", ops: CAPABILITIES.ffmpeg.ops };
+        states: r?.states || null, problems: r?.problems || ["ffmpeg_missing"], note, ops: CAPABILITIES.ffmpeg.ops };
     },
   }),
   premiere: Object.freeze({

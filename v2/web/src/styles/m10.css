@@ -17,3 +17,15 @@
 .studio-target { min-width: 200px; }
 .studio-options { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; }
 @media (max-width: 720px) { .op-app { grid-template-columns: 1fr; } .desktop-bar { top: 0; } }
+/* M10.2.1: the gate rearm card (cockpit / Lega panel). */
+.rearm-security { margin: 4px 0 6px; display: grid; gap: 4px; }
+.rearm-ack { display: flex; align-items: center; gap: 6px; margin-top: 4px; font-weight: 500; cursor: pointer; }
+.rearm-inline { margin-top: var(--sp-2); padding: var(--sp-2); border-left: 3px solid var(--approval); background: var(--approval-soft); border-radius: var(--r); }
+/* 2.12.1: the security list as a plain region with its heading (not a live region); the cockpit's ONE rearm slot at a stable place; the
+   rearm card a refused resume opens next to the operator bar. */
+.rearm-security-block { margin: var(--sp-2) 0; }
+.rearm-security-block .h3 { margin: 0 0 4px; }
+.rearm-slot { margin-bottom: var(--sp-3); }
+.rearm-slot > .panel { margin: 0; }
+.desktop-bar-rearm { padding: var(--sp-2) var(--sp-3); border-bottom: 1px solid var(--line); background: var(--surface-2); position: relative; }
+.desktop-bar-rearm > .row { justify-content: flex-end; }

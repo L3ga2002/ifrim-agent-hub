@@ -7,13 +7,16 @@ export const V2_ROOT = path.resolve(here, "..");
 export const HUB_ROOT = path.resolve(V2_ROOT, "..");
 export const PROJECTS_ROOT = path.resolve(HUB_ROOT, "..");
 
-export const HUB_VERSION = "2.11.1-m10"; // 2.11.1: Lega zero-form start (voice authority derived from the owner session for one voice session; no mode or grant by hand). M10: Desktop Operator (authenticated UIA helper, observe → act → verify, Stop / Preiau eu), zero-form operation plans (one confirmation, internal derived authority), Studio completion (project import, import folders, text target, legibility, enforced pre-migration backup). Before: 2.10.0-m09 — M09: Content / Media / Growth department (library, edit plans, local renders, QA, reviews, variants, distribution packs, analytics, Content → Sales) + core corrections (model binding, billing evidence, skill composer, voice path hardening)
+export const HUB_VERSION = "2.12.1-m10.2"; // 2.12.1 (M10.2 probe fixes, no migration): every gate suspension records its origin (suspendedBy, one classifier, precedence); the gate is reopened contextually in the cockpit (rearm card, owner session + fresh Windows Hello, bound to the exact suspension, nothing old restarts, BUILD_SAFE kept); Stop All also closes proposed plans; spoken „Continuă” only from the locally verified voice; probe-blocking fixes. 2.12.0 (M10.2): one command path for voice/text/UI with server-side effect classes; Lega proposals become one-confirmation plans (envelope / ops / run) instead of approval cards + manual mode/grant; plan steps admitted in BUILD_SAFE by envelope-scoped authority with bound-only derived grants; honest one-time blocker explanations with preserved requests and automatic readiness; auto-armed spoken confirmation; server-side live web-search guard; skills reconcile; media tools GET without mutation; probe counters; migration 11 work_requests. 2.11.1: Lega zero-form start (voice authority derived from the owner session for one voice session; no mode or grant by hand). M10: Desktop Operator (authenticated UIA helper, observe → act → verify, Stop / Preiau eu), zero-form operation plans (one confirmation, internal derived authority), Studio completion (project import, import folders, text target, legibility, enforced pre-migration backup). Before: 2.10.0-m09 — M09: Content / Media / Growth department (library, edit plans, local renders, QA, reviews, variants, distribution packs, analytics, Content → Sales) + core corrections (model binding, billing evidence, skill composer, voice path hardening)
 /**
  * The UI–API contract (M07): a built UI carries the number it was built against (vite define __UI_CONTRACT__) and sends it on
  * every mutating request; the server answers 409 UI_STALE when they differ, so new assets never drive an older backend (or the
  * reverse). Bump it whenever a request or response shape the UI depends on changes.
  */
-export const API_CONTRACT = 10;
+// 12 (2.12.1): the gate rearm routes (POST /api/owner/gate/rearm/card, /api/owner/gate/rearm), the intake fields gateRearm / gateStopped /
+// expiredPlans, executionGate.suspendedBy, the blocker option kind 'rearm', the security list newest first. 11 (M10.2): plan cards
+// (lega.plan), intake choice/clarification, work requests, liveScopes, media tools pin/acknowledge.
+export const API_CONTRACT = 12;
 export const DEFAULT_PORT = 8011;
 export const DEFAULT_HOST = "127.0.0.1";
 

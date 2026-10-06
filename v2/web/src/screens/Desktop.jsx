@@ -1,11 +1,13 @@
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { MonitorCog, Search, ShieldCheck, ShieldOff, FolderOpen, ListChecks, History, Play, Square, Hand } from "lucide-react";
 import { api, fmt } from "../api.js";
-import { useResource, useAction, pushToast, refresh } from "../store.js";
+import { useHub, useResource, useAction, pushToast, refresh } from "../store.js";
 import { Panel, Chip, Notice, ErrorNotice, Loading, Empty } from "../components/ui.jsx";
 import { withReauth } from "../lib/ownerSession.js";
 import { APP_STATE_LABELS, LEVEL_LABELS, PLAN_STATUS_LABELS, planTone } from "../lib/opsLogic.js";
+import { rearmRequiredOf, rearmOutcome } from "../lib/rearmLogic.js";
 import { OpsPlanCard } from "./lega/OpsPlanCard.jsx";
+import { RearmCard } from "./lega/RearmCard.jsx";
 
 /**
  * M10 Desktop Operator page: which applications the operator knows (found → signed → authorized, never merged), what each operation
@@ -23,6 +25,23 @@ export default function DesktopScreen() {
   const revoke = useAction(async (id) => { await api("/api/desktop/apps/revoke", { method: "POST", body: { apps: [id], reason: "retras din pagina Operator" } }); status.reload(); });
   const stop = useAction(async (path) => { await api(path, { method: "POST", body: { reason: "pagina Operator" } }); status.reload(); });
   const revokeFolder = useAction(async (id) => { await api(`/api/media/import-folders/${id}/revoke`, { method: "POST", body: {} }); folders.reload(); });
+  // 2.12.1 (D22): the operator session the current Stop All itself paused resumes only after the rearm — the Hub refuses „Continuă”
+  // with GATE_REARM_REQUIRED and the page shows why and the same rearm card; the rearm restarts nothing („Continuă” afterwards does).
+  const [rearmNeed, setRearmNeed] = useState(null);
+  const rearmSeq = useRef(0);
+  const gateStatus = useHub((st) => st.hub?.executionGate?.status || null);
+  useEffect(() => { if (gateStatus === "open") setRearmNeed(null); }, [gateStatus]);
+  const resume = useAction(async () => {
+    setRearmNeed(null);
+    try { await withReauth(() => api("/api/desktop/resume", { method: "POST", body: {} })); }
+    catch (e) {
+      const need = rearmRequiredOf(e);
+      if (!need) throw e;
+      setRearmNeed({ reason: need.reason, trigger: ++rearmSeq.current, handled: 0 });
+      return;
+    }
+    status.reload();
+  });
   const s = status.data;
   return (
     <div className="page">
@@ -87,7 +106,16 @@ export default function DesktopScreen() {
             <tbody>{actions.data.actions.map((a) => <tr key={a.id}><td>{fmt.ago(a.at)}</td><td className="mono">{a.op}</td><td>{a.app || "—"}</td><td>{a.class}</td><td><Chip tone={a.status === "DONE" ? "ok" : a.status === "SUSPENDED" ? "warn" : a.status === "REFUSED" ? "neutral" : "error"}>{a.status}</Chip>{a.error && <span className="faint block">{a.error}</span>}</td></tr>)}</tbody></table>
         )}
       </Panel>
-      {s?.session?.status === "PAUSED" && <Notice tone="warn" title="Operatorul așteaptă">Verifică aplicația; apoi spune „Continuă” sau apasă <button className="btn sm primary" onClick={() => withReauth(() => api("/api/desktop/resume", { method: "POST", body: {} })).then(() => status.reload()).catch((e) => pushToast("desk-resume", "error", e.message))}><Play size={12} aria-hidden="true" />Continuă</button></Notice>}
+      {s?.session?.status === "PAUSED" && <Notice tone="warn" title="Operatorul așteaptă">Verifică aplicația; apoi spune „Continuă” sau apasă <button className="btn sm primary" disabled={resume.pending} onClick={() => resume.run()}><Play size={12} aria-hidden="true" />Continuă</button></Notice>}
+      <ErrorNotice error={resume.error} />
+      {rearmNeed && s?.session?.status === "PAUSED" && (
+        <div className="stack tight">
+          <Notice tone="warn" title="Întâi redeschiderea porții">{rearmNeed.reason}</Notice>
+          <RearmCard compact trigger={rearmNeed.trigger} handled={rearmNeed.handled}
+            onTriggerHandled={(seq) => setRearmNeed((r) => (r ? { ...r, handled: Math.max(r.handled || 0, seq) } : r))}
+            onDone={(res) => { pushToast("gate-rearm", "ok", `${rearmOutcome(res).toast} Operatorul îl reiei cu „Continuă”.`); setRearmNeed(null); status.reload(); refresh(); }} />
+        </div>
+      )}
     </div>
   );
 }

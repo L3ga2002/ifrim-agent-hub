@@ -148,9 +148,12 @@ test("M07-AC-05 the setup lists the real steps in order; the automatic ones run 
     // Every automatic step either finished, or the FIRST failure is shown with its cause and the later ones say they were not run.
     const firstFail = auto.findIndex((s) => s.status !== "DONE_AUTO");
     if (firstFail >= 0) {
-      assert.equal(auto[firstFail].status, "RECOVERABLE_ERROR", `${auto[firstFail].id}: ${auto[firstFail].status}`);
+      // M10.2.1 (D21): the first attestation (no PASS covers this fingerprint) is the owner's decision in System → Medii, never the button's.
+      if (auto[firstFail].id === "env_attested" && auto[firstFail].status === "NEEDS_OWNER") assert.match(auto[firstFail].detail, /decizie separată \(Sistem → Medii\)/);
+      else assert.equal(auto[firstFail].status, "RECOVERABLE_ERROR", `${auto[firstFail].id}: ${auto[firstFail].status}`);
       assert.ok(auto[firstFail].detail.length > 3);
-      for (const s of auto.slice(firstFail + 1)) assert.match(s.detail, /nerulat: oprit după eroarea/, s.id);
+      // (M10.2.1: an attestation the button would never run — a first or changed fingerprint — says it is the owner's decision instead.)
+      for (const s of auto.slice(firstFail + 1)) assert.match(s.detail, s.id === "env_attested" && s.status === "NEEDS_OWNER" ? /decizie separată \(Sistem → Medii\)/ : /nerulat: oprit după eroarea/, s.id);
     }
     const agentRows = hub.db.prepare("SELECT COUNT(*) AS n FROM commands WHERE actor = 'agent' AND channel = 'agent' AND type IN ('backup.run','environment.inspect','environment.probe','environment.attest')").get().n;
     assert.ok(agentRows >= 3, "the delegated runs are recorded as the agent");

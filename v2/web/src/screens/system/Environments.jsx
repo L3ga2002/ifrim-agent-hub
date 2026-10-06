@@ -65,7 +65,8 @@ function EnvironmentPanel({ env, policyText, reload }) {
         )}
         <div className="row wrap">
           <button className="btn sm" disabled={busy || !env.inspection?.installed} onClick={probe.run}><UserCheck size={14} />{probe.pending ? "Se verifică…" : "Verifică contul prin mediu (C16)"}</button>
-          <button className="btn sm" disabled={busy || !env.inspection?.installed || env.inUse?.length > 0} onClick={attest.run} title={env.inUse?.length ? "Mediul e folosit acum" : ""}>
+          {/* M10.2 (U15): Lega's arrow and the blocker explainer point here (attestation; never automatic for a new fingerprint). */}
+          <button className="btn sm" data-lega-target="environment-attest" disabled={busy || !env.inspection?.installed || env.inUse?.length > 0} onClick={attest.run} title={env.inUse?.length ? "Mediul e folosit acum" : ""}>
             <FlaskConical size={14} />{attest.pending ? "Atestarea rulează (câteva minute)…" : "Rulează atestarea C1–C17"}</button>
         </div>
         <p className="muted small" style={{ margin: 0 }}>Verificarea contului și atestarea nu pornesc niciun model: handshake, cont, limite, profiluri, lista de modele; canary-ul folosește fișiere fictive și repornește distribuția la C15 (doar când nu rulează nimic în ea).</p>
@@ -120,7 +121,8 @@ function ProjectRoutes({ projects, reload }) {
   const set = useAction(async ({ id, environment }) => { await api(`/api/projects/${encodeURIComponent(id)}/environment`, { method: "POST", body: { environment } }); reload(); });
   if (!projects.length) return null;
   return (
-    <Panel title="Ruta Codex pe proiect și harta etapelor" icon={Route}>
+    // M10.2 (U15): the real fix for host isolation (route → wsl-runner + attestation + approval (b)); Lega's arrow points here.
+    <Panel title="Ruta Codex pe proiect și harta etapelor" icon={Route} data-lega-target="environment-route">
       <div className="stack">
         <p className="muted small" style={{ margin: 0 }}>Ruta e decizia ta pentru fiecare proiect. „wsl-runner” nu slăbește poarta: dacă mediul nu e atestat (și, pentru proiecte reale, aprobat), execuția e refuzată, nu mutată pe Windows.</p>
         {projects.map((p) => (

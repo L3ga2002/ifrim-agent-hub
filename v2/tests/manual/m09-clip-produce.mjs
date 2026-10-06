@@ -29,6 +29,7 @@ const AUTHOR = "Claude (sesiunea de dezvoltare M09)";
 const t = await makeTestHub({ configOverrides: { mediaTools: { launcher: launchers } } });
 const { media } = t.hub;
 const d = (type, payload) => t.hub.commands.dispatch({ type, payload, channel: "test", actor: "owner:test" }).then((r) => r.result);
+await d("media.tools.pin", { reason: "harness" }); // M10.2: renders need pinned tools (an explicit act, never a side effect)
 const report = { startedAt: new Date().toISOString(), steps: [] };
 const step = (name, data) => { report.steps.push({ name, at: new Date().toISOString(), ...data }); log(name, JSON.stringify(data).slice(0, 400)); };
 try {

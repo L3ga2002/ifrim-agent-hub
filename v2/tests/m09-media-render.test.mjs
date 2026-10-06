@@ -84,6 +84,8 @@ async function realSetup(t, { queueOpts = {}, fps } = {}) {
   const paths = createMediaPaths({ config: env.config });
   paths.ensure();
   const tools = createMediaTools({ config: env.config, supervisor: env.supervisor, settings: env.settings, bus: env.bus, clock: env.clock });
+  // M10.2: a render needs pinned tools and pinning is an explicit act (never a side effect of the render or a read).
+  await tools.pin({ actor: "test" });
   const assets = createMediaAssets({ db: env.db, bus: env.bus, clock: env.clock, paths, tools, settings: env.settings });
   const rights = createMediaRights({ db: env.db, bus: env.bus, clock: env.clock });
   const inbox = path.join(env.dir, "inbox");

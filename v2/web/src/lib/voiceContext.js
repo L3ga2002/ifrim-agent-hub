@@ -30,6 +30,23 @@ export const isArmed = (envelopeId, now = Date.now()) => (armed.get(envelopeId) 
 export const armedUntil = (envelopeId) => armed.get(envelopeId) || null;
 export function onArmed(fn) { armedListeners.add(fn); return () => armedListeners.delete(fn); }
 
+/**
+ * M10.2 U13: the Hub's own events say which plan is armed (any tab, after a reload, while Lega navigated away): the window opened
+ * ({ id, until }), or closed ({ id, until: null }: disarmed, closed after refusals, the plan left PROPOSED). Anything else → null.
+ * Pure (tested in uiLogic-style tests); the page applies it with markArmed.
+ */
+export function armedEventEffect(event) {
+  const type = String(event?.type || "");
+  const id = event?.scopeId || null;
+  if (!id) return null;
+  if (type === "envelope.confirmation_armed" || type === "ops.plan.confirmation_armed") return event.payload?.expiresAt ? { id, until: event.payload.expiresAt } : null;
+  if (type === "envelope.confirmation_disarmed" || type === "ops.plan.confirmation_disarmed") return { id, until: null };
+  if ((type === "envelope.armed_refused" || type === "ops.plan.armed_refused") && event.payload?.closed) return { id, until: null };
+  if (type === "envelope.status" && event.payload?.status && event.payload.status !== "PROPOSED") return { id, until: null };
+  if (type === "envelope.confirmed" || type === "ops.plan.consent") return { id, until: null };
+  return null;
+}
+
 /** The card's own voice confirmation is running: Lega's gate leaves that plan to it (no second, racing confirmation). */
 export const beginCapture = (envelopeId) => capturing.add(envelopeId);
 export const endCapture = (envelopeId) => capturing.delete(envelopeId);
