@@ -109,7 +109,8 @@ test("LI-02 voice-first request_work: a promo clip with an empty library → the
     assert.match(r[0].text, /Biblioteca media e goală/);
     assert.match(r[0].text, /păstrată/);
     assert.doesNotMatch(r[0].text, OLD_FLOW);
-    assert.match(r[1].text, /^Încă blocat .*cererea ta e păstrată\.$/, "the second mention is one line");
+    // 2.12.2 (L3, m10-2-p0r5-lega-honesty.test.mjs): the Hub's factual tail ends every non-plan answer; here it says the request is kept.
+    assert.match(r[1].text, /^Încă blocat .*cererea ta e păstrată\. \(Cererea e păstrată de Hub\.\)$/, "the second mention is one line");
     assert.ok(r[1].text.length < r[0].text.length / 2);
     const wr = t.hub.db.prepare("SELECT * FROM work_requests").all();
     assert.equal(wr.length, 1, "one kept request for the same words");

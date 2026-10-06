@@ -86,6 +86,7 @@ import { explain as explainBlockers } from "./owner/blockers.mjs";
 import { createBlockedRecorder } from "./owner/planners/engineering.mjs";
 import { createGateRearm } from "./owner/gate-rearm.mjs"; // M10.2.1: contextual gate rearm (wired below, after the preserved requests)
 import { createStopScope } from "./owner/stop-scope.mjs"; // 2.12.1 (D22): what a stop itself stopped (wired with the gate rearm)
+import { createLeaseReconciler } from "./runtime/lease-reconcile.mjs"; // 2.12.2 (P0-R1): retained-lease reconciliation (wired below, after the scheduler)
 
 /** Live (non-persisted) channel for token deltas; persisted state is always reloadable from the API. */
 function createLiveChannel() {
@@ -378,6 +379,14 @@ export function createHub(config, { providerOverrides = {}, homeDir, browserLaun
       Promise.resolve().then(() => envelopes.tick()), Promise.resolve().then(() => voice.tick()), Promise.resolve().then(() => media.tick()),
       Promise.resolve().then(() => lega.tick()), Promise.resolve().then(() => hub.workRequests.tick())]) });
   hub.scheduler = scheduler;
+  // ---------------------------------------------------------------- 2.12.2 (P0-R1): retained-lease reconciliation
+  // A workspace lease kept after an unconfirmed stop (runs.finalize) or a restart (recovery) is released once its run is finished and its
+  // provider process is provably gone: a bounded follow-up after lease.retained and the boot pass (system.recovered) — both subscribed by
+  // the reconciler itself — and one more inference-free scheduler pass. It never relaunches anything. The gate rearm reads it at
+  // evaluation time (hub.leaseReconciler): what cannot be proven becomes a step of the owner's card. Stop All never waits for it.
+  hub.leaseReconciler = createLeaseReconciler(hub);
+  scheduler.addTick(() => hub.leaseReconciler.tick());
+  // ---------------------------------------------------------------- end 2.12.2 lease reconciliation
 
   // Post-commit reactions (each in its own transaction; never inside the writer's transaction).
   bus.subscribe((event) => {

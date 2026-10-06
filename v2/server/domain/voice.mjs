@@ -16,7 +16,9 @@ const words = (text) => String(text || "").replace(/[^a-z0-9\s]/g, " ").replace(
 const normalize = (text) => words(stripFillers(normalizeIntentText(text)));
 
 const COMMANDS = [
-  { id: "stop_all", patterns: [/^(opreste|stop|opreste tot|stop all|opriti tot)( tot| totul)?$/, /^(?:stop )?(?:opreste|opriti|stop) (?:tot|totul|toate)(?: acum| imediat| ce (?:ruleaza|merge|lucreaza|porneste))?$/] },
+  { id: "stop_all", patterns: [/^(opreste|stop|opreste tot|stop all|opriti tot)( tot| totul)?$/, /^(?:stop )?(?:opreste|opriti|stop) (?:tot|totul|toate)(?: acum| imediat| ce (?:ruleaza|merge|lucreaza|porneste))?$/,
+    // 2.12.2 (P0-R2): „Stop all now” is the same command (anchored like the others).
+    /^stop all (?:now|acum|imediat)$/] },
   { id: "pause", patterns: [/^(pauza|pune pe pauza|pause)$/] },
   { id: "show_approvals", path: "/approvals", patterns: [/^(arata|deschide)( mi)? aprobarile$/, /^show approvals$/] },
   { id: "open_focus", path: "/conversations", patterns: [/^(intra|treci|deschide)( in)? focus$/, /^deschide conversatiile$/] },
@@ -33,9 +35,17 @@ const FORBIDDEN = /\b(aprob|aproba|approve|confirm|deploy|publica|publish|push|s
  * forms (the word "tot / totul / toate" makes it explicit), "stop all", "pune pe pauză". A bare "oprește" / "stop" never is.
  */
 const EXPLICIT = new Set(["stop all", "pune pe pauza"]);
-const isExplicit = (command, text) => EXPLICIT.has(text) || (command === "stop_all" && /\b(tot|totul|toate)\b/.test(text));
+const isExplicit = (command, text) => EXPLICIT.has(text) || (command === "stop_all" && /\b(tot|totul|toate|all)\b/.test(text));
+/**
+ * 2.12.2 (P0-R2): the normalization above drops punctuation, so „Oprește tot?” and a quoted „„Oprește tot”” read like the command. A stop
+ * or a pause is a command only when it IS one: with a question mark or quotation marks in the transcript it is never taken here — it goes
+ * on as an ordinary message (under voice-first the intake answers it; nothing stops). Mute and the fixed screens are unaffected.
+ */
+const TALK_MARKS = /[?„“”«»"]/;
+const GLOBAL = new Set(["stop_all", "pause"]);
 
 export function parseVoiceCommand(transcript, { legaPrefix = false } = {}) {
+  const talk = TALK_MARKS.test(String(transcript || ""));
   let text = normalize(transcript);
   let addressed = false;
   if (legaPrefix) {
@@ -46,6 +56,7 @@ export function parseVoiceCommand(transcript, { legaPrefix = false } = {}) {
   }
   if (!text) return { kind: "empty" };
   for (const command of COMMANDS) {
+    if (talk && GLOBAL.has(command.id)) continue;
     if (command.patterns.some((pattern) => pattern.test(text))) return { kind: "command", command: command.id, normalized: text, addressed, explicit: isExplicit(command.id, text), ...(command.path ? { path: command.path } : {}) };
   }
   if (FORBIDDEN.test(text)) {

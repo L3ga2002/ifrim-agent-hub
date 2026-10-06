@@ -20,6 +20,13 @@
  *   the rearm card; a „Stop All” named right after „după” next to a reopen or resume verb is the suspension being talked about, never a
  *   second Stop All. A name part with a digit or a dot is never dropped to reach a shorter project name. „Ce urmează? Continuă” holds
  *   the resume with a neutral sentence (the question was about something else).
+ * - 2.12.2 (P0-R2): an interruption (Stop All, and by the same rule a pause, „Oprește Codex”, „Preiau eu”, „Îngheață …”) runs only on a
+ *   clear imperative: the clause, after „Lega,” and polite words, STARTS with the command and no condition follows it. A question, a
+ *   negation, a condition, reported speech or a quotation of the same words becomes explain_stop (a read the Hub answers), never the stop.
+ * - 2.12.2 (P0-R6, the owner's live session): a request to change the Hub's mode („Treci pe live”, „Pune Hub-ul în modul live”,
+ *   „Activează LIVE_VALIDATION”) is explain_mode — a read the Hub answers (the mode is never changed from a sentence, and a plan does not
+ *   need it); a question about the mode („Ești în build safe?”) and „Ce a rămas în <proiect>?” are status reads. A request that only also
+ *   talks about the stop („Deschide ProDelivery, nu opri tot”) keeps the request (review R2-F6).
  *
  * Pure function; the caller supplies the context (projects, current project, missions, pending envelopes, and — only from the
  * server — the last target the owner acted on).
@@ -60,6 +67,11 @@ export const INTENT_EFFECTS = Object.freeze({
   // M10.2.1 (D14): „Redeschide poarta” / „Rearmează Hub-ul” only shows the rearm card in the cockpit (navigation); reopening the gate
   // is its own owner-session command (fresh authenticator, bound to the exact suspension), never a sentence.
   gate_rearm: "navigate",
+  // 2.12.2 (P0-R2): words that only TALK about an interruption (a question, a negation, a condition, reported speech, a quotation) — a
+  // read the Hub answers with the matching sentence; nothing is stopped, paused or taken over.
+  explain_stop: "read",
+  // 2.12.2 (P0-R6, L11): a request to change the Hub's mode by voice or text — answered (modeAnswer), never done: nothing is written.
+  explain_mode: "none",
 });
 
 /** The apps the operator knows by name (normalized words → catalog id). Anything else is not a desktop target. */
@@ -122,6 +134,9 @@ export function normalize(text) {
     .normalize("NFKD").replace(/[̀-ͯ]/g, "")
     .replace(/[„“”«»"]/g, " \u0001 ").replace(/[^a-z0-9\u0001;.!?,\s-]/g, " ").replace(/\s+/g, " ").trim();
 }
+
+/** A name reduced to its letters and digits („Pro-Delivery” = „ProDelivery” = „pro delivery”), for exact name comparisons. */
+const flatName = (v) => normalize(v).replace(/[^a-z0-9]/g, "");
 
 /** Removes quoted passages (a "confirm" quoted from a document or a page is not the owner's consent). */
 function unquote(norm) {
@@ -261,8 +276,10 @@ export function matchRef(ref, items, opts = {}) {
  * „Redeschide poarta (de execuție) după Stop All”, „Rearmează Hub-ul după Stop All”, „Continuă / Reia lucrul după Stop All” and the
  * leading „După Stop All, redeschide poarta”. Nothing here resumes anything: the card is shown, the owner decides on it (D22: work the
  * Stop All paused resumes only after the rearm).
+ * 2.12.2 review R2-F7: „după ce am / ai oprit tot” names the same suspension („Redeschide poarta după ce ai oprit tot” shows the card; it
+ * was read as a conditional stop).
  */
-const STOP_NAME = String.raw`(?:stop[ -]?all(?:-ul|ul)?|oprirea totala|oprirea de urgenta|oprirea generala|opreste tot)`;
+const STOP_NAME = String.raw`(?:stop[ -]?all(?:-ul|ul)?|oprirea totala|oprirea de urgenta|oprirea generala|opreste tot|ce (?:am|ai|ati|a|au) oprit (?:tot|totul|toate))`;
 const GATE_REARM = new RegExp([
   String.raw`^(?:redeschide|deschide|rearmeaza|reactiveaza|deblocheaza|reporneste|porneste)(?: din nou| iar)? (?:poarta|poarta de executie)(?: dupa ${STOP_NAME})?$`,
   String.raw`^rearmeaza(?: (?:hub-ul|hubul|hub|poarta|tot|totul|sistemul|executia))?(?: dupa ${STOP_NAME})?$`,
@@ -277,6 +294,388 @@ const GATE_REARM = new RegExp([
  */
 const REOPEN_VERB = String.raw`(?:re)?deschi(?:de|deti|zi|d)|rearm[a-z]*|reactiv[a-z]*|debloc[a-z]*|(?:re)?porn[a-z]*|reia[a-z]*|relu[a-z]*|continu[a-z]*`;
 const NOT_NAMED_AFTER_REOPEN = String.raw`(?<!\b(?:${REOPEN_VERB})\b.*\bdupa )(?!(?<=\bdupa ).*\b(?:${REOPEN_VERB})\b)`;
+/** The same PF-01 case, as a test on the whole clause: a reopen or resume verb with the Stop All named right after „după”. */
+const NAMED_AFTER_REOPEN = new RegExp(String.raw`\b(?:${REOPEN_VERB})\b.*\bdupa ${STOP_NAME}|\bdupa ${STOP_NAME}.*\b(?:${REOPEN_VERB})\b`);
+
+// ---------------------------------------------------------------- 2.12.2 (P0-R2): an interruption runs only on a clear imperative
+/**
+ * The owner's requirement: „Oprește tot” stops only when it IS the command. A clause runs an interruption when, after an optional address
+ * („Lega,”), polite words and interjections („te rog”, „vă rog”, „acum”, „imediat”, „ok”, „gata”, „stai”), one of its comma-separated
+ * parts STARTS with the command — „Oprește / Opriți tot (totul, toate)”, „Stop all”, „Stop, oprește tot”, „Pune totul pe pauză”,
+ * „Pauză”, … — no condition follows it and no condition, report or question leads into it. Anything else that names it only TALKS about
+ * it and never runs it:
+ *  - a question: a „?” in the clause, an interrogative opener (ce, cum, când, unde, de ce, oare, explică-mi …) or a modal one. „Poți să
+ *    oprești tot?” is often a polite request in Romanian, but a stop must be unambiguous: the answer asks for the command itself
+ *    („Spune „Oprește tot” și opresc imediat.”), which costs one sentence;
+ *  - a negation before the verb („Nu opri tot”, „Nu, nu opri nimic”, „Să nu oprești tot”);
+ *  - a condition („Dacă pică testele, oprește tot”, „Oprește tot după ce termini testul”): the Hub never schedules a stop;
+ *  - reported or historical speech („Ieri am spus oprește tot”, „Când am spus Oprește tot?”, „Am zis oprește tot din greșeală”);
+ *  - a quotation („„Oprește tot””: removed with the other quoted words, then answered);
+ *  - a mention that starts no part of the clause („Butonul oprește tot”): another intent of the clause may take it, never the stop.
+ * Such a clause becomes explain_stop { mood, about } — a read the intake answers (stopTalkAnswer). Pure and synchronous: a real command
+ * costs a few regular expressions more, nothing awaits, and the stop itself is dispatched exactly as before.
+ *
+ * Review round (2.12.2, R2-F1…F5) — when unsure, the rule fails toward the stop (Stop All only reduces activity):
+ *  - F1: a condition holds the command only when it DIRECTLY follows it („Oprește tot dacă pică testele”); „până când”, „chiar dacă”,
+ *    „indiferent dacă”, „dacă tot”, a polite „când poți” / „imediat ce poți”, a past event („…, după ce am văzut logurile nu mai am
+ *    încredere”) and a later clause with its own verb („…, a dat eroare când a rulat testele”) never hold it;
+ *  - F2: a „?” belongs to the chained clause it closes („Oprește tot și arată-mi ce s-a executat?” stops, then answers);
+ *  - F3: a command that starts the sentence followed by a tag or a question of its own („Oprește tot, da?”, „Oprește tot, ce faci?”),
+ *    an exclamation leading into it („Ce naiba faci, oprește tot!”) and a bare repeated lead-in („Ți-am zis, oprește tot!”, „Am zis
+ *    oprește tot!”) are the command. Decided by the review in the safe direction; the owner's confirmation is pending (the only
+ *    decision the owner made is „Poți să oprești tot?” → ask). An indicative „Oprești tot, da?” still asks;
+ *  - F4: a leading interjection without its comma (provider transcripts: „Te rog mult oprește tot”, „Băi oprește tot”) still stops; the
+ *    command after other words stays a mention only behind a subject or a frame („Butonul oprește tot”, „La secunda 5 oprește tot sunetul”);
+ *  - F5: the command's NAME used in a statement („Stop All-ul nu merge”, „Oprește tot n-a eliberat lease-urile”, „Stop All e în bara de
+ *    sus”, „Pauza de masă e la 12”) is a mention or a report, never the stop or the pause.
+ */
+// Review F1 (2.12.2): a leading contrast word („dar”, „însă”, „ci”) is dropped like an interjection, so „…, dar oprește tot” has a part
+// that STARTS with the command (interruptMood splits a part before it as well).
+const SOFT_LEAD = /^(?:(?:(?:hei|hey|buna|alo|bai|mai) )?lega|dar|insa|ci|te rog(?: frumos| mult)?|va rog(?: frumos| mult)?|please|okay|ok|bine|bun|da|haide|hai(?: repede)?|gata|destul|stai|alo|hei|hey|bai|deci|asa|uite|lasa|asculta|auzi|doamne|mult|si acum|chiar acum|acum|imediat ce poti|imediat ce puteti|imediat(?! ce\b)|repede|urgent|mai bine|cand poti|cand puteti|cat poti de repede|cat mai repede)(?:[\s,!.:;]+|$)/;
+const SOFT_TAIL = /(?:^|[\s,!.:;-]+)(?:te rog(?: frumos| mult)?|va rog(?: frumos| mult)?|please|acum|imediat|right now|now|repede|urgent|lega|cat mai repede|cat poti de repede|daca se poate|daca poti|daca puteti|daca vrei|daca nu te superi|cand poti|cand puteti|imediat ce poti|imediat ce puteti)$/;
+/** A clause without its address, polite words and interjections at either end (what is left must start with the command). */
+function softTrim(text) {
+  let s = String(text || "").replace(/\s+/g, " ").trim();
+  for (let i = 0; i < 8; i++) {
+    const next = s.replace(SOFT_LEAD, "").replace(SOFT_TAIL, "").replace(/^[\s,!.:;-]+|[\s,!.:;-]+$/g, "").trim();
+    if (next === s) break;
+    s = next;
+  }
+  return s;
+}
+const STOP_OBJECT = String.raw`(?: (?:acum|imediat|absolut|chiar|repede))? (?:tot|totul|toate)\b`;
+/**
+ * Stop All said as the command at the start of a part („oprește tot”, „opriți totul”, „stop, oprește tot”, „oprește imediat tot”, „stop
+ * all”). R2-F5: never its name with the article („Stop All-ul …” is the button or the command spoken about).
+ */
+const STOP_START = new RegExp(String.raw`^(?:(?:stop|opreste|opriti)[\s,!]+)*(?:(?:opreste|opriti|stop)${STOP_OBJECT}|stop[ -]?all\b(?!-?ul\b))`);
+/** The same command anywhere in the clause („Dacă pică testele oprește tot”, said without the comma). */
+const STOP_COMMAND = new RegExp(String.raw`\b(?:(?:opreste|opriti|stop)${STOP_OBJECT}|stop[ -]?all\b(?!-?ul\b))`);
+/** Any talk of stopping everything: the command, a conjugated or negated form („nu opri nimic”, „să opresc tot”), its name. */
+const STOP_MENTION = new RegExp(String.raw`\b(?:(?:opreste|opriti|opri|opresti|opresc|oprim|opreasca|stop)(?: (?:acum|imediat|absolut|chiar|repede))? (?:tot|totul|toate|nimic)\b|(?:am|ai|a|ati|au) oprit (?:tot|totul|toate)\b|stop[ -]?all(?:-?ul)?\b|oprirea (?:totala|de urgenta|generala)\b)`);
+const MODAL = String.raw`(?:poti|puteti|pot|putem|ai putea|ati putea|as putea|am putea|ar trebui|se poate|vrei|vreti|ai vrea|ati vrea|oare)`;
+const MODAL_ASK = new RegExp(String.raw`^${MODAL}\b`);
+/** A question whose words are the command itself („Oprești tot?”, „Poți să oprești tot?”, „Să opresc tot?”): the hint, not the explanation. */
+const STOP_ASK = new RegExp(String.raw`^(?:${MODAL}(?: sa)? )?(?:sa )?(?:opreste|opriti|opri|opresti|opresc|oprim|opreasca|stop)(?: (?:acum|imediat|absolut|chiar|repede))? (?:tot|totul|toate)\b|^stop[ -]?all\b`);
+const STOP_COND_WORDS = String.raw`(?:daca|cand|in caz ca|in cazul in care|dupa ce|doar daca|numai daca|imediat ce|de indata ce|indata ce|odata ce)`;
+const COND_ANY = new RegExp(String.raw`\b${STOP_COND_WORDS}\b`);
+const COND_START = new RegExp(String.raw`^${STOP_COND_WORDS}\b`);
+const REPORTED = /\b(?:(?:am|ai|a|ati|au|ti-am|v-am|i-am|mi-ai|mi-a)(?: mai)? (?:spus|zis|cerut|apasat|dat|strigat)|ziceam|spuneam|ziceai|spuneai|zicea|spunea|cand am|cand ai|data trecuta|ultima data|ultima oara|alaltaieri|ieri|aseara|mai devreme|adineauri|azi dimineata|de dimineata)\b/;
+const ASK_START = /^(?:ce|cum|cand|unde|de ce|oare|cine|care|cat|cata|cati|cate|explica(?:-mi)?|spune-mi|zi-mi|descrie|lamureste-ma|vreau sa stiu|as vrea sa stiu|ma intreb|intreb|stii|stiti)\b/;
+/** Exclamations that may lead into the command („Ce naiba, oprește tot!”): not a question about it. */
+const EXCLAMATION = /^(?:ce naiba|ce dracu(?:lui)?|ce faci|ce se intampla|ce-i asta|ce e asta|cum adica)$/;
+/** R2-F3: the same exclamations with words after them („Ce naiba faci, oprește tot!”, „Ce se întâmplă aici, oprește tot!”). */
+const EXCLAMATION_LEAD = /^(?:ce naiba|ce dracu(?:lui)?|ce faci|ce se intampla|ce-i asta|ce e asta|cum adica)\b/;
+const NEGATION = /\b(?:nu|niciodata)\b|(?:^|[\s,])n-/;
+/** R2-F1: words that look like a condition but make the stop unconditional or are not one („până când”, „chiar dacă”, „dacă tot”). */
+const NOT_COND = /\b(?:pana (?:cand|ce)|chiar (?:si )?daca|indiferent (?:daca|cand|ce)|daca tot)\b/g;
+const hasCond = (s) => COND_ANY.test(String(s || "").replace(NOT_COND, " "));
+/** R2-F1: a condition word that directly follows the command (the remainder of its part, softTrimmed). */
+const STOP_COND_LEAD = new RegExp(String.raw`^(?:(?:doar|numai) )?${STOP_COND_WORDS}\b`);
+/** R2-F1: a temporal word followed by a past tense („după ce am văzut”, „când a rulat”): an event that happened — a reason, not a condition. */
+const PAST_EVENT = /^(?:cand|dupa ce|imediat ce|de indata ce|indata ce|odata ce) (?:(?:l|i|le|o|ne|v|te|m)-)?(?:am|ai|a|ati|au)(?: mai)? [a-z]+(?:at|ut|it|st|zut|s|t)\b/;
+function trailingCondition(tail) {
+  const r = softTrim(String(tail || "").replace(NOT_COND, " "));
+  return STOP_COND_LEAD.test(r) && !PAST_EVENT.test(r);
+}
+const leadingCondition = (part) => hasCond(part) && !PAST_EVENT.test(softTrim(part));
+/** R2-F3: what makes reported speech a report: a time word, „din greșeală”, a past habit — a bare „(Ți-)am zis,” repeats the command. */
+const REPORTED_CONTEXT = /\b(?:data trecuta|ultima data|ultima oara|alaltaieri|ieri|aseara|mai devreme|adineauri|azi dimineata|de dimineata|saptamana trecuta|atunci|din greseala|ziceam|spuneam|ziceai|spuneai|zicea|spunea)\b/;
+const REPEAT_LEAD = /^(?:cum )?(?:(?:ti|v)-)?am (?:mai )?(?:zis|spus)(?: deja)?[\s,!.:;-]+/;
+const BARE_REPEAT = /^(?:cum )?(?:(?:ti|v)-)?am (?:mai )?(?:zis|spus)(?: deja)?$/;
+/** R2-F3: a tag after the command („…, da?”, „…, ok?”, „…, m-ai auzit?”): the „?” is the tag's. */
+const TAG = /^(?:da|ok|okay|bine|nu|clar|gata|auzi|ma auzi|m-ai auzit|ai auzit|intelegi|ai inteles|da sau nu)$/;
+/** R2-F3: a later question that asks about the command itself („…, ce înseamnă?”): the whole clause stays a question. */
+const ABOUT_IT = /^(?:ce (?:inseamna|face|presupune|e asta|este asta|e aia)|cum functioneaza|ce se intampla (?:dupa|daca|cand|atunci)|ce urmeaza dupa)\b/;
+/** R2-F5: the command's name as the subject of a statement („Oprește tot n-a eliberat…”, „Stop All e în bara de sus”). */
+const PREDICATE = /^(?:-?ul\b|(?:e|este|era|a fost) (?:in|pe|la|acolo|aici|sus|jos|[a-z]{2,}(?:ul|ului|lor))\b|n-(?:a|au)\b|nu (?:a|au)\b|(?:a|au) (?:mers|functionat|oprit|lasat|blocat|eliberat|picat|reusit)\b)/;
+/** R2-F4: a subject or a frame before the command („Butonul…”, „Codex…”, „La secunda 5…”, „…în care Lega…”): a mention, not the command. */
+const SUBJECT_OR_FRAME = /\b(?:[a-z]{2,}(?:ul|ului|lor)|codex|claude|lega|asta|aceasta|acesta|aia|ala|el|ea|ei|ele|cine|ce|care|cum|unde|cat|cand|nimeni|fiecare|orice|comanda|functia|fraza|optiunea|tasta|eu|noi|voi|la|pe|in|din|de|cu|despre|pentru|prin|dupa|inainte|fara|ca|sa|daca)\b|-(?:ul|ului|lor|le)\b/;
+/** R2-F3: an indicative first verb („Oprești tot, da?”, „Pui totul pe pauză, da?”) asks, whatever follows. */
+const CONJUGATED_INTERRUPT = /^(?:opresti|pui|iei)\b/;
+/**
+ * The interruptions under the rule. `strict`: the command must start a part of the clause (Stop All and the global pause); for the
+ * narrower ones (a named worker, a takeover, a project freeze) a mention with no question, negation, condition or report still runs,
+ * as before. `start` — the command at the start of a part; `command` — the command anywhere; `verb` — where a negation must stand before.
+ */
+const INTERRUPT_FORMS = Object.freeze({
+  stop_all: { strict: true, start: STOP_START, command: STOP_COMMAND, verb: /\b(?:opreste|opriti|opri|opresti|opresc|oprim|opreasca|oprit|stop)\b/, ask: STOP_ASK },
+  // R2-F5: „Pauză” is the command only alone (or with „acum”, „la tot”, „totul”): „Pauza de masă e la 12” names a pause.
+  pause: { strict: true, start: /^(?:(?:pauza|pause)(?: (?:acum|imediat|la tot|tot|totul|te rog))?$|pune(?: (?:tot|totul|toate))? pe pauza\b|pune pauza\b|ia o pauza\b)/, command: /\b(?:pune(?: (?:tot|totul|toate))? pe pauza|pune pauza|ia o pauza)\b/,
+    verb: /\b(?:pune|pun|pui|puneti|puna|ia|iau|iei|pauza)\b/, ask: new RegExp(String.raw`^(?:${MODAL}(?: sa)? )?(?:sa )?(?:pune|pun|pui|puneti|puna|ia|iau|iei)\b.*\bpauza\b|^pauza\b`) },
+  // Review F1: „Oprește doar Codex” / „numai Claude” names the worker too („…, nu opri tot, oprește doar Codex”).
+  stop_worker: { strict: false, start: /^opreste (?:(?:doar|numai) )?(?:codex|claude|writerul|writer|reviewerul|reviewer|agentul|workerul)\b/, command: /\bopreste (?:(?:doar|numai) )?(?:codex|claude|writerul|writer|reviewerul|reviewer|agentul|workerul)\b/, verb: /\bopr[a-z]*\b/, ask: null },
+  takeover: { strict: false, start: /^(?:preiau eu|preiau (?:controlul|de aici)|las(?:a|ati)[- ]ma pe mine)\b/, command: /\b(?:preiau eu|preiau (?:controlul|de aici)|las(?:a|ati)[- ]ma pe mine)\b/, verb: /\b(?:preiau|preia|las(?:a|ati)?)\b/, ask: null },
+  freeze_project: { strict: false, start: /^ingheata\b/, command: /\bingheata\b/, verb: /\bingheat[a-z]*\b/, ask: null },
+});
+const INTERRUPT_INTENTS = new Set(Object.keys(INTERRUPT_FORMS));
+/** What leads into an interruption and makes it talk (a split never separates the two: „Dacă pică testele, oprește tot”). */
+function leadsIntoTalk(text) {
+  const s = softTrim(text);
+  return COND_START.test(s) || REPORTED.test(s) || ((ASK_START.test(s) || MODAL_ASK.test(s)) && !EXCLAMATION.test(s));
+}
+
+/**
+ * The mood of one clause that names an interruption (normalized text, quotes already removed): "imperative" — run it; otherwise "ask"
+ * (a question whose words are the command), "question", "negation", "conditional", "reported" or "mention". `asks`: the clause carried a
+ * „?”; `modal`: the sentence opened with a modal question („Poți să…”) the polite-word stripper already removed; `conjugated`: the
+ * clause's first verb was indicative („Oprești tot…”) before prepClause turned it into the imperative. Pure.
+ */
+export function interruptMood(clause, { asks = false, modal = false, intent = "stop_all", conjugated = false } = {}) {
+  const form = INTERRUPT_FORMS[intent] || INTERRUPT_FORMS.stop_all;
+  let s = softTrim(clause);
+  if (!s) return "mention";
+  // R2-F3: a bare lead-in that repeats the command („Ți-am zis, oprește tot!”, „Am zis oprește tot!”) — never with a time word,
+  // „din greșeală” or a past habit („Ieri am zis…”, „Am zis oprește tot din greșeală” stay reports).
+  if (REPEAT_LEAD.test(s) && !REPORTED_CONTEXT.test(s)) {
+    const rest = softTrim(s.replace(REPEAT_LEAD, ""));
+    if (rest && form.start.test(rest)) s = rest;
+  }
+  // Review F1: a contrast word also opens a part („Nu mai deschide ProDelivery dar oprește tot”); the word stays at the start of its raw
+  // part and softTrim drops it, so the command after it is judged by commandMood (a condition, report or question leading in still holds it).
+  const PART = /\s*[,;:]\s*|\s+-\s+|\s+(?=(?:dar|insa|ci)\s)/;
+  const raw = s.split(PART).map((p) => p.trim()).filter(Boolean);
+  // Each part as said (`raw`: a leading „imediat ce …” keeps its condition) and without its polite words (`soft`); empty ones dropped.
+  const kept = raw.map((r) => ({ raw: r, soft: softTrim(r) })).filter((x) => x.soft);
+  const parts = kept.map((x) => x.soft);
+  const at = parts.findIndex((p) => form.start.test(p));
+  const before = at > 0 ? kept.slice(0, at) : [];
+  if (asks || modal || MODAL_ASK.test(s)) {
+    if (at < 0 && REPORTED.test(s)) return "reported";
+    // R2-F3: the command starts the sentence (no modal opener, an imperative verb) and the „?” can only be a later part's — a tag
+    // („…, da?”, „…, ok?”) or a question of its own („…, ce faci?”): the command, judged like one without a „?”. A later question about
+    // the command itself („…, ce înseamnă?”) keeps the clause a question.
+    if (at === 0 && asks && !modal && !conjugated && !MODAL_ASK.test(s)) {
+      const later = raw.slice(raw.findIndex((p) => form.start.test(softTrim(p))) + 1).map((p) => p.replace(/[!.?]+$/g, "").trim()).filter(Boolean);
+      const tagOrOwnQuestion = (p) => TAG.test(p) || ASK_START.test(softTrim(p)) || EXCLAMATION_LEAD.test(p);
+      if (later.length && later.some(tagOrOwnQuestion) && !later.some((p) => ABOUT_IT.test(softTrim(p)) || STOP_MENTION.test(p))) return commandMood(form, parts, at, before);
+    }
+    return at >= 0 || (form.ask || form.start).test(s) ? "ask" : "question";
+  }
+  if (at >= 0) return commandMood(form, parts, at, before);
+  // Review F1: a negation counts only inside the verb's own part („Nu, nu opri tot” → „nu opri tot”): a „nu” of another request („Nu mai
+  // deschide ProDelivery, …”) or a bare „Nu,” before the words never turns them into a negated stop.
+  const vPart = (intent === "stop_all" ? parts.find((p) => STOP_MENTION.test(p)) : null) ?? parts.find((p) => form.verb.test(p)) ?? s;
+  const v = vPart.search(form.verb);
+  if (NEGATION.test(v >= 0 ? vPart.slice(0, v) : vPart)) return "negation";
+  if (REPORTED.test(s)) return "reported";
+  if (COND_START.test(s) && form.command.test(s)) return "conditional";
+  if (ASK_START.test(s) || MODAL_ASK.test(s) || COND_START.test(s)) return "question";
+  if (hasCond(s)) return "conditional";
+  // R2-F4: the command after words that are no subject and no frame (an interjection a transcript wrote without its comma: „Bre oprește
+  // tot”), with nothing or „ce …” after it, is the command; „Butonul oprește tot”, „La secunda 5 oprește tot sunetul” stay mentions.
+  if (intent === "stop_all") {
+    const m = s.match(STOP_COMMAND);
+    if (m) {
+      const lead = softTrim(s.slice(0, m.index));
+      const tail = softTrim(s.slice(m.index + m[0].length));
+      if (lead && !SUBJECT_OR_FRAME.test(lead) && (!tail || /^ce\b/.test(tail)) && !PREDICATE.test(tail)) return "imperative";
+    }
+  }
+  return "mention";
+}
+
+/**
+ * The verdict for a clause one of whose parts STARTS with the command (part `at`). R2-F5: the command's name followed by a predicate
+ * („… n-a eliberat …”, „… e în bara de sus”) is a report or a mention. R2-F1: a condition holds it only when it directly follows the
+ * command (the rest of its part, or the next part) or leads into it — never „până când”, „chiar dacă”, a past event or a later clause
+ * with its own verb. A report or a question leading into it holds it too, except a bare repeated „(Ți-)am zis,” and an exclamation
+ * („Ce naiba faci, …”). A plain „Nu, oprește tot” stays the command.
+ */
+function commandMood(form, parts, at, before) {
+  const cmd = parts[at];
+  const m = cmd.match(form.start);
+  const restSame = softTrim(m ? cmd.slice(m.index + m[0].length) : "");
+  if (restSame && PREDICATE.test(restSame)) return REPORTED_CONTEXT.test(restSame) ? "reported" : "mention";
+  if (trailingCondition(restSame || parts[at + 1] || "")) return "conditional";
+  if (before.some((x) => leadingCondition(x.raw))) return "conditional";
+  if (before.some((x) => REPORTED.test(x.soft) && !BARE_REPEAT.test(x.soft))) return "reported";
+  if (before.some((x) => (ASK_START.test(x.soft) || MODAL_ASK.test(x.soft)) && !EXCLAMATION_LEAD.test(x.soft) && !BARE_REPEAT.test(x.soft))) return "question";
+  return "imperative";
+}
+
+/** Interruptions skipped when another intent of a merely mentioning clause may take it („La secunda 5 oprește tot sunetul”). */
+const MENTION_SKIP = new Set([...INTERRUPT_INTENTS]);
+/**
+ * 2.12.2 review R2-F6: the reads whose subject is their own (runs, deliveries, tests, changes, a review, a preview, a failure replay) — a
+ * question that names the stop only as a moment („Ce s-a executat înainte de Stop All?”) is still that read. The generic questions
+ * (next_step, simulate, status, help, an analysis) stay about the stop itself („Ce urmează după Stop All?”).
+ */
+const STOP_TIME_READS = new Set(["last_run", "last_delivery", "show_changes", "show_tests", "show_review", "show_preview", "replay", "twin_changes"]);
+/**
+ * R2-F6: whether a clause that only TALKS about an interruption keeps another request it holds: a navigation, a plan proposal or a local
+ * action (never under a question: a question never proposes a plan) or one of the reads above. Never an interruption, a confirmation or
+ * anything NEVER_A_HALF names (consent and authority are never read out of a sentence about a stop).
+ */
+const keepsRequest = (intent, mood) => Boolean(intent) && !INTERRUPT_INTENTS.has(intent) && intent !== "explain_stop" && !NEVER_A_HALF.has(intent)
+  && (STOP_TIME_READS.has(intent) || (mood !== "question" && mood !== "ask" && ["navigate", "plan", "local"].includes(INTENT_EFFECTS[intent])));
+/** R2-F6: the clause without its parts that talk about the stop („deschide prodelivery, nu opri tot” → „deschide prodelivery”), or null. */
+function withoutStopTalk(t) {
+  const parts = String(t || "").split(/\s*[,;:]\s*|\s+(?:dar|insa|ci)\s+/).map((p) => p.trim()).filter(Boolean);
+  if (parts.length < 2) return null;
+  // Review F5: a part that opens with a condition („…, dar doar dacă pică testele”) is the stop's condition, never a request of its own.
+  const kept = parts.filter((p) => !STOP_MENTION.test(p) && !STOP_COND_LEAD.test(softTrim(p)));
+  return kept.length && kept.length < parts.length ? kept.join(", ").replace(/[\s,]+(?:dar|insa|ci|iar|si)$/, "").trim() || null : null;
+}
+/**
+ * Review F5: the stop talk said INLINE at the end of a one-part clause, right after its own negation or condition word („deschide
+ * prodelivery după ce oprești tot”, „… dacă oprești tot”, „… nu opri tot”) → the words before it, so a kept request never carries the stop
+ * words (a project named „prodelivery dupa ce opresti tot”). Never when those words describe the stop (a topic or a relative clause: „fă un
+ * clip despre ce se întâmplă când oprești tot” keeps its whole topic). null otherwise.
+ */
+const INLINE_STOP_TALK = new RegExp(String.raw`^(?<head>[^,;:]+?) (?:(?:sa )?(?:nu|niciodata)(?: mai)?|(?:(?:doar|numai) )?${STOP_COND_WORDS}) (?:${STOP_MENTION.source})$`);
+function inlineRequest(t) {
+  const m = softTrim(t).match(INLINE_STOP_TALK);
+  const head = m ? m.groups.head.trim() : "";
+  return head && !TOPIC_MARK.test(head) && !RELATIVE_MARK.test(head) ? head : null;
+}
+/** Review F1: intents whose own words carry the negation („Nu mai merge X” is an incident, „Nu acum” a hold): never refused for it. */
+const NEGATION_AWARE = new Set(["not_yet", "reject_plan", "mute", "quiet", "incident_open", "notify_normal", "explain_stop", "unknown"]);
+/** Review F1: words said under their own negation: „nu (mai) …”, „să nu …”, „n-…” at their start (a contrast word or „și” may lead). */
+const NEG_LEAD = /^(?:(?:dar|insa|ci|si) )?(?:(?:sa )?(?:nu|niciodata)\b|n-)/;
+/** The stop talk with its own negation („nu opri tot”, „să nu oprești tot”) — the stop's negation is never the request's. */
+const NEG_STOP = new RegExp(String.raw`(?:\b(?:sa )?(?:nu|niciodata)(?: mai)? )?(?:${STOP_MENTION.source})`, "g");
+/**
+ * Review F1: whether the request part of a clause is itself negated („Nu mai deschide ProDelivery, nu opri tot”, „Nu pregăti planul, dar
+ * oprește tot”): the owner said NOT to do it, so it is never kept or split off as a step of its own. `intent` is what the words matched.
+ */
+const negatedRequest = (intent, text) => !NEGATION_AWARE.has(intent) && NEG_LEAD.test(softTrim(String(text || "").replace(NEG_STOP, " ")));
+/** R2-F7: „De ce ai oprit tot?” asks for the reason of a stop that happened — the reported answer (when, from where, the gate), not the definition. */
+const WHY_STOPPED = /^(?:(?:dar|si|deci|bine) )?de ce (?:(?:ai|a|ati|au|am|s-a|sa|ti-ai|v-ati) )?(?:mai )?(?:oprit|opresti) (?:tot|totul|toate)\b/;
+/**
+ * Applies the rule to one clause's match (`found`, or null). A clause that names Stop All is judged by its words whatever pattern took
+ * it (an unanchored one, or next_step / simulate / status for „Ce urmează / Ce se întâmplă dacă …”); the PF-01 case („Redeschide poarta
+ * după Stop All”, no „?”) keeps the match it had. Another interruption is judged when its own pattern matched. → the step's
+ * { intent, args }: the interruption unchanged (imperative), another intent (a strict mention another pattern explains), or explain_stop.
+ * R2-F6: a clause that is a request of its own and only also talks about the stop keeps the request („Deschide ProDelivery, nu opri tot”,
+ * „Fă un clip despre ce se întâmplă când oprești tot”, „Ce s-a executat înainte de Stop All?”); a negated stop adds its answer as a second
+ * read (`alsoExplain`: „Bine, nu opresc nimic.”). Nothing here can make a stop out of a non-imperative clause.
+ */
+function imperativeOnly(found, t, { asks, modal, conjugated = false }) {
+  const talksStop = STOP_MENTION.test(t) && !(found && found.intent !== "stop_all" && !asks && !modal && NAMED_AFTER_REOPEN.test(t));
+  const intent = talksStop ? "stop_all" : found && INTERRUPT_INTENTS.has(found.intent) ? found.intent : null;
+  if (!intent) return found;
+  const mood = interruptMood(t, { asks, modal, intent, conjugated });
+  if (mood === "imperative" || (mood === "mention" && !INTERRUPT_FORMS[intent].strict)) {
+    if (intent !== "stop_all") return found;
+    return { intent: "stop_all", args: found?.intent === "stop_all" ? found.args : {} };
+  }
+  // R2-F6: the request the clause holds besides the stop talk. A negated stop in its own part („…, nu opri tot”, „… dar nu opri tot”) is
+  // cut away first, so the request keeps clean arguments (a mission's name never carries „nu opri tot”).
+  // Review F5: a conditional or reported stop is cut away the same way (also said inline: „Deschide ProDelivery după ce oprești tot”) and
+  // answered as a second read too, so the owner hears that nothing was stopped. Review F1: a request said under its own negation („Nu mai
+  // deschide ProDelivery, nu opri tot”) is never kept — neither from the cut words nor from the clause's own match.
+  const also = mood === "negation" ? { alsoExplain: { mood, about: intent } } : {};
+  if (mood === "negation" || mood === "conditional" || mood === "reported") {
+    const rest = withoutStopTalk(t) ?? inlineRequest(t);
+    if (rest && mood !== "negation") also.alsoExplain = { mood, about: intent };
+    // Review F1: the cut words may be a command of their own („Oprește Codex, dar nu opri tot”): a narrower interruption said as one runs.
+    const own = rest ? matchPattern(rest) : null;
+    if (own && own.intent !== intent && INTERRUPT_INTENTS.has(own.intent) && own.intent !== "stop_all") {
+      const ownMood = interruptMood(rest, { intent: own.intent });
+      if (ownMood === "imperative" || (ownMood === "mention" && !INTERRUPT_FORMS[own.intent].strict)) return { intent: own.intent, args: own.args, ...also };
+    }
+    const said = rest ? matchPattern(rest, MENTION_SKIP) : null;
+    const other = said && !negatedRequest(said.intent, rest) ? said : null;
+    if (other && keepsRequest(other.intent, mood)) return { intent: other.intent, args: other.args, ...also };
+  }
+  if (found && !INTERRUPT_INTENTS.has(found.intent) && negatedRequest(found.intent, t)) found = null;
+  if (found && keepsRequest(found.intent, mood)) return { intent: found.intent, args: found.args, ...also };
+  // R2-F7: „De ce ai oprit tot?” — when it happened and what holds the gate now.
+  if (intent === "stop_all" && (mood === "question" || mood === "ask") && WHY_STOPPED.test(softTrim(t))) return { intent: "explain_stop", args: { mood: "reported", about: intent, why: true } };
+  if (mood === "mention" || mood === "question") {
+    const other = matchPattern(t, MENTION_SKIP);
+    // Review F1: never a request the same clause negates („Nu mai deschide ProDelivery, butonul oprește tot”).
+    if (other && !negatedRequest(other.intent, t) && (mood === "mention" || keepsRequest(other.intent, mood))) return { intent: other.intent, args: other.args };
+  }
+  return { intent: "explain_stop", args: { mood, about: intent, ...(intent === "stop_worker" && found?.args?.worker ? { worker: found.args.worker } : {}) } };
+}
+
+const STOP_TALK_COMMAND = Object.freeze({ stop_all: "Oprește tot", pause: "Pune totul pe pauză", takeover: "Preiau eu", freeze_project: "Îngheață proiectul" });
+const MONTHS_RO = Object.freeze(["ianuarie", "februarie", "martie", "aprilie", "mai", "iunie", "iulie", "august", "septembrie", "octombrie", "noiembrie", "decembrie"]);
+/** What „Oprește tot” does and what happens after it (the server's answer to a question about it; no administration pointer). */
+export const STOP_EXPLANATION = "„Oprește tot” oprește imediat tot ce rulează: suspendă poarta de execuție, revocă autorizările, întrerupe execuțiile și misiunile, oprește planurile de operare și operatorul desktop, închide planurile neconfirmate și sesiunea vocală Lega. Apoi totul rămâne oprit: poarta o redeschizi tu, în cockpit, pe cardul „Redeschide poarta”, cu Windows Hello (nu prin voce), și nici după aceea nu repornește nimic singur; ce vrei reluat îmi ceri tu, de exemplu cu „Continuă”. Ca să opresc acum, spune „Oprește tot”.";
+const whenRo = (iso) => {
+  const d = new Date(iso);
+  if (!Number.isFinite(d.getTime())) return null;
+  return `${d.getDate()} ${MONTHS_RO[d.getMonth()]}, la ${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
+};
+/** R2-F7: where the newest owner Stop All came from (the channel the intake read from its event; enum keys only). */
+const STOP_VIA_RO = Object.freeze({ voice: "prin voce", owner: "din sesiunea ta", companion: "de pe telefon", ui: "din interfața Hub-ului" });
+/**
+ * The Hub's answer to an explain_stop step ({ mood, about, worker, why }). `facts` (the intake reads them, for "reported" only):
+ * `lastStopAt` (ISO time of the newest owner Stop All in the event log, or null), `lastStopVia` (its channel: voice | owner | companion |
+ * ui, or null) and `gate` ("stop_all" when a Stop All still holds the gate, "open", or "other"). Romanian, speakable, short; it never points
+ * at an administration path and never says anything was stopped. R2-F7: `why` („De ce ai oprit tot?”) answers when and from where the last
+ * Stop All came, and what holds the gate; a named worker that is neither Codex nor Claude is „agentul”.
+ */
+export function stopTalkAnswer({ mood = "question", about = "stop_all", worker = null, why = false, partial = false } = {}, { lastStopAt = null, lastStopVia = null, gate = null } = {}) {
+  if (about === "stop_all") {
+    // Review F1: `partial` — the same sentence also named a narrower stop the Hub runs („…, nu opri tot, oprește doar Codex”).
+    if (mood === "negation") return partial ? "Bine, nu opresc tot; fac doar ce ai cerut." : "Bine, nu opresc nimic.";
+    if (mood === "conditional") return "Nu pun opriri condiționate, așa că nu am oprit nimic acum. Spune „Oprește tot” când vrei să opresc.";
+    if (mood === "ask") return "Ai întrebat, așa că nu am oprit nimic. Spune „Oprește tot” și opresc imediat.";
+    if (mood === "quote") return "Ai pus „Oprește tot” între ghilimele, ca citat, așa că nu am oprit nimic. Ca să opresc, spune „Oprește tot” fără ghilimele.";
+    if (mood === "mention") return "Nu am oprit nimic: „oprește tot” nu era comanda de la începutul frazei. Ca să opresc, spune „Oprește tot” și opresc imediat.";
+    if (mood === "reported") {
+      const when = lastStopAt ? whenRo(lastStopAt) : null;
+      const gateLine = gate === "stop_all" ? " Poarta e încă oprită de el: o redeschizi în cockpit, pe cardul „Redeschide poarta”, cu Windows Hello (nu prin voce)."
+        : gate === "open" ? " Poarta de execuție e deschisă acum." : "";
+      if (why) {
+        const via = STOP_VIA_RO[lastStopVia] || null;
+        const other = gate === "other" ? " Poarta de execuție e oprită acum din alt motiv; îl vezi în cockpit." : "";
+        return when ? `Ultimul „Oprește tot” a fost pe ${when}, cerut ${via || "printr-o comandă"}.${gateLine}${other}` : `Nu găsesc niciun „Oprește tot” în jurnalul Hub-ului.${gateLine}${other}`;
+      }
+      return when
+        ? `Ultimul „Oprește tot” a fost pe ${when}.${gateLine} O frază despre ce s-a spus nu oprește nimic; dacă vrei să opresc acum, spune „Oprește tot”.`
+        : "Nu găsesc niciun „Oprește tot” în jurnalul Hub-ului. O frază despre ce s-a spus nu oprește nimic; dacă vrei să opresc acum, spune „Oprește tot”.";
+    }
+    return STOP_EXPLANATION;
+  }
+  const command = about === "stop_worker" ? `Oprește ${worker === "claude" ? "Claude" : worker === "codex" ? "Codex" : "agentul"}` : STOP_TALK_COMMAND[about] || "Oprește tot";
+  if (mood === "negation") return about === "pause" ? "Bine, nu pun nimic pe pauză." : about === "freeze_project" ? "Bine, nu îngheț nimic." : about === "stop_worker" ? "Bine, nu opresc niciun agent." : "Bine, nu opresc nimic.";
+  if (mood === "conditional") return `Nu fac opriri condiționate, așa că nu am făcut nimic acum. Spune „${command}” când vrei.`;
+  const because = { ask: "ai întrebat", question: "a fost o întrebare", reported: "ai povestit ce s-a spus", quote: "era un citat", mention: "comanda nu era la începutul frazei" }[mood] || "nu era o comandă";
+  return `Nu am făcut nimic: ${because}. Spune „${command}” când vrei și o fac imediat.`;
+}
+
+// ---------------------------------------------------------------- 2.12.2 (P0-R6, L11): the Hub's mode named in a sentence
+/**
+ * The owner asked live „Pune-l pe live activation” and heard „În regulă, mă ocup acum.” (nothing could happen). The mode is never changed
+ * from a sentence, and a plan does not need it (it starts from BUILD_SAFE after its one confirmation). The targets, normalized („_” is a
+ * space): „live”, „live validation / activation / validare / activare / mode”, „validare live”, „build safe”, „operational”.
+ */
+const MODE_TARGET = String.raw`(?:live(?: (?:validation|activation|validare|activare|mode))?|validare live|activare live|build safe|operational)`;
+/**
+ * A change verb, an optional object that is the Hub or its mode (never „căutarea”, „Lega” or another noun: the Lega web-search setting
+ * stays its own), an optional „pe / în / la”, an optional „modul”, then the target alone: „Treci pe live”, „Pune Hub-ul în modul live”,
+ * „Pune-l pe live activation”, „Activează LIVE_VALIDATION”, „Schimbă modul pe live”.
+ */
+const MODE_CHANGE = new RegExp(String.raw`^(?:pune|puneti|treci|trece|treceti|schimba|schimbati|comuta|comutati|seteaza|setati|activeaza|activati|porneste|porniti|muta|mutati|intra|intrati|du)(?:-l|-o|-ne|-ma)?(?: (?:hub-ul|hubul|hub|sistemul|totul|tot))?(?: (?:modul|mod|regimul|regim)(?: (?:hub-ului|hubului))?)?(?: (?:pe|in|la))?(?: (?:modul|mod|regimul|regim))? (?<target>${MODE_TARGET})(?: (?:acum|imediat))?$`);
+/** „Ești în build safe?”, „Suntem în BUILD_SAFE?”, „Hub-ul e pe live?”, „În ce mod e Hub-ul?”, „Care e modul acum?”: a status read. */
+const MODE_QUESTION = new RegExp([
+  String.raw`^(?:(?:esti|este|e|suntem|sunt|lucrezi|lucram|rulezi|rulam)(?: (?:hub-ul|hubul|hub))?|(?:hub-ul|hubul|hub) (?:e|este|ruleaza|lucreaza))(?: (?:acum|inca|tot|deja))? (?:in|pe) (?:(?:modul|mod|regimul) )?${MODE_TARGET}$`,
+  String.raw`^(?:in|pe) ce (?:mod|regim) (?:e|este|esti|suntem|lucreaza|lucrezi|lucram|ruleaza|rulezi|merge|functioneaza)(?: (?:acum|hub-ul|hubul|hub))*$`,
+  String.raw`^(?:ce|care) (?:e|este) modul(?: (?:hub-ului|hubului|curent|acum))*$`,
+  String.raw`^ce mod (?:e|este|ai|are|avem)(?: (?:hub-ul|hubul|acum|activ|setat))*$`,
+].join("|"));
+/** „Ce a rămas în ProDelivery?”, „Ce-a mai rămas de făcut la pro-delivery?”, „Ce a mai rămas?”: status for that project (or the open one). */
+const REMAINING = /^(?:(?:si|dar|deci) )?ce(?:-a| a)?(?: mai)?(?: a)? ramas(?: (?:de facut|de lucru|nefacut|neterminat))?(?: (?:in|la|pe|din|pentru) (?:proiectul )?(?<ref>[a-z0-9 -](?:[a-z0-9 -]|\.(?=[a-z0-9])){1,59}))?$/;
+const HUB_MODES = new Set(["BUILD_SAFE", "LIVE_VALIDATION", "OPERATIONAL"]);
+/**
+ * The Hub's answer to explain_mode (a change asked) or to a mode question (`question: true`), from the mode the server reads (`mode`).
+ * `spoken`: the words came by voice („prin voce”); typed words get „dintr-o frază”. Romanian, speakable, never an administration pointer.
+ */
+export function modeAnswer({ question = false } = {}, { mode = null, spoken = true } = {}) {
+  const m = HUB_MODES.has(mode) ? mode : null;
+  if (question) {
+    if (m === "BUILD_SAFE") return "Hub-ul e în BUILD_SAFE, modul obișnuit: un plan pornește de aici după ce îl confirmi o dată în cockpit.";
+    if (m) return `Hub-ul e în ${m}. Pentru un plan nu trebuie schimbat nimic: pornește după ce îl confirmi o dată în cockpit.`;
+    return "Nu pot citi acum modul Hub-ului.";
+  }
+  const base = `Modul Hub-ului nu se schimbă ${spoken ? "prin voce" : "dintr-o frază"} și nici nu e nevoie: un plan pornește din BUILD_SAFE după ce îl confirmi o dată în cockpit.`;
+  return m && m !== "BUILD_SAFE" ? `${base} Acum Hub-ul e în ${m}.` : base;
+}
 
 // Pattern table: [intent, regex on the normalized clause, (match, clause) => args]. First match wins per clause.
 // M10.2.1 (D21): a free reference may hold a dot INSIDE a word ("factory demo m10.2", "v2.1"): `\.(?=[a-z0-9])`, never as its first
@@ -295,7 +694,7 @@ const P = [
     () => ({ reason: REFUSE_EXECUTE_REASON })],
   ["freeze_project", /\bingheata (?<ref>.+)/, (m) => ({ projectRef: m.groups.ref })],
   ["unfreeze_project", /\bdezgheata (?<ref>.+)/, (m) => ({ projectRef: m.groups.ref })],
-  ["stop_worker", /\bopreste (?<who>codex|claude|writerul|writer|reviewerul|reviewer|agentul|workerul)\b/, (m) => ({ worker: /claude|review/.test(m.groups.who) ? "claude" : /codex|writer/.test(m.groups.who) ? "codex" : "any" })],
+  ["stop_worker", /\bopreste (?:(?:doar|numai) )?(?<who>codex|claude|writerul|writer|reviewerul|reviewer|agentul|workerul)\b/, (m) => ({ worker: /claude|review/.test(m.groups.who) ? "claude" : /codex|writer/.test(m.groups.who) ? "codex" : "any" })],
   // M09: live capture off (MEDIA_B rollback) — only reduces activity, so it is accepted from every channel.
   ["capture_off", /\b(opreste|stop|opriti|inchide) (captura|capturile|captura live|inregistrarea ecranului|filmarea ecranului|filmarea)\b/],
   ["mute", /^(taci|liniste|nu mai vorbi|gata cu vorba|opreste vocea|mut)\b|\bnu mai vorbi\b|\btaci\b/],
@@ -328,6 +727,12 @@ const P = [
   ["pause", /^(pauza|pune pe pauza|pune pauza)\b|\bpune (totul )?pe pauza\b|\bia o pauza\b/],
   ["quiet", /\bnu ma deranja\b|\bfara notificari\b|\bmod linistit\b/, (m, c) => ({ onlyDecisions: /\bdecat (pentru|daca|la) (o )?decizi/.test(c) || /\bdoar (pentru|la) decizi/.test(c) })],
   ["notify_normal", /\b(poti sa ma (anunti|deranjezi)|notificari normale|anunta-ma)\b/],
+  // 2.12.2 (P0-R6, L11), before `live` („mod live” = back to now) and open_project („Treci pe live” is no project): the Hub's mode named
+  // as a target of a change verb is explain_mode (answered, never done); a question about the mode and „Ce (mai) a rămas (de făcut) în X”
+  // are status reads. Anchored on the whole clause: „căutarea pe live”, „Pornește Lega”, a project named „Live Demo” never match.
+  ["explain_mode", MODE_CHANGE, (m) => ({ target: m.groups.target })],
+  ["status", MODE_QUESTION, () => ({ modeQuestion: true })],
+  ["status", REMAINING, (m) => ({ remaining: true, ...(m.groups.ref ? { projectRef: m.groups.ref.trim() } : {}) })],
   ["face_show", /\barata(-ti|ti)? fata\b|\barata-te\b|\bfata ta\b/],
   ["face_core", /\brevino la nucleu\b|\binapoi la nucleu\b|\bnucleul\b/],
   ["face_discreet", /\bmai discret\b|\bmai mic\b|\bcompact\b/],
@@ -526,10 +931,14 @@ function constraintsOf(clause) {
   return c;
 }
 
-/** First pattern that matches (with a retry where commas count as spaces, so "Hai la Factory Demo, A2" still reads its reference). */
-function matchPattern(text) {
+/**
+ * First pattern that matches (with a retry where commas count as spaces, so "Hai la Factory Demo, A2" still reads its reference).
+ * `skip` (2.12.2): intents not to consider (a clause that only mentions an interruption is read by the other patterns).
+ */
+function matchPattern(text, skip = null) {
   for (const candidate of text.includes(",") ? [text, text.replace(/\s*,\s*/g, " ").trim()] : [text]) {
     for (const [intent, re, argsOf] of P) {
+      if (skip && skip.has(intent)) continue;
       const m = candidate.match(re);
       if (m) return { intent, args: argsOf ? argsOf(m, candidate) : {}, text: candidate };
     }
@@ -617,18 +1026,27 @@ function splitClause(clause, context, depth = 0) {
   if (whole && NEVER_SPLIT.has(whole.intent)) return [clause];
   // Character ranges covered by a known name with "și" in it ("Mobila și Deschide Ușa" is ONE project).
   const names = [...(context.projects || []).flatMap((p) => [p.name, p.slug]), ...(context.missions || []).map((m) => m.title)]
-    .filter(Boolean).map((n) => normalize(n).replace(/[^a-z0-9 -]/g, " ").replace(/\s+/g, " ").trim()).filter((n) => /\bsi\b/.test(n));
+    .filter(Boolean).map((n) => normalize(n).replace(/[^a-z0-9 -]/g, " ").replace(/\s+/g, " ").trim()).filter((n) => /\b(?:si|dar|insa|ci)\b/.test(n));
   const guarded = [];
   for (const n of names) { let at = clause.indexOf(n); while (at >= 0) { guarded.push([at, at + n.length]); at = clause.indexOf(n, at + 1); } }
-  for (const m of clause.matchAll(/\s*,\s*(?:si\s+)?|\s+si\s+/g)) {
+  // Review F1: a contrast word joins two requests like „și” („Repară testul de login, dar oprește tot” is the request AND the stop).
+  for (const m of clause.matchAll(/\s*,\s*(?:(?:si|dar|insa|ci)\s+)?|\s+(?:si|dar|insa|ci)\s+/g)) {
     if (guarded.some(([a, b]) => m.index > a && m.index < b)) continue;
     const left = clause.slice(0, m.index).trim();
     const right = clause.slice(m.index + m[0].length).trim();
     if (!left || !right) continue;
     const r = prepClause(right).text;
     if (!RIGHT_VERB.test(r)) continue;
-    const lm = matchPattern(prepClause(left).text);
+    const l = prepClause(left).text;
     const rm = matchPattern(r);
+    // Review F1: words that only talk about the stop („Nu opri tot, oprește doar Codex”) are a half of their own next to an interruption.
+    const lm = matchPattern(l) || (rm && INTERRUPT_INTENTS.has(rm.intent) && STOP_MENTION.test(l) ? { intent: "explain_stop", args: {} } : null);
+    // 2.12.2 (P0-R2): an interruption is never split away from the condition, the report or the question that leads into it („Dacă pică
+    // testele, oprește tot” was two clauses, the second a bare Stop All); the whole clause is judged by interruptMood.
+    if (rm && INTERRUPT_INTENTS.has(rm.intent) && leadsIntoTalk(left)) continue;
+    // Review F1: a request said under its own negation never becomes a step next to an interruption („Nu mai deschide ProDelivery, dar
+    // oprește tot”): the whole clause is judged — the stop runs, the negated request does not.
+    if (rm && INTERRUPT_INTENTS.has(rm.intent) && lm && negatedRequest(lm.intent, l)) continue;
     if (lm && rm && !NEVER_A_HALF.has(lm.intent) && !NEVER_A_HALF.has(rm.intent)) return [left, ...splitClause(right, context, depth + 1)];
   }
   return [clause];
@@ -652,8 +1070,12 @@ export function resolveIntent(text, context = {}) {
   // (the same rule as on voice: a bare "stop" with her name stops; without it, it does not).
   const addressed = LEGA_PREFIX.test(full) || LEGA_PREFIX.test(stripFillers(full));
   let norm = stripFillers(stripFillers(full).replace(LEGA_PREFIX, ""));
+  // 2.12.2 (P0-R2): a modal opening („Poți să oprești tot?”) the polite-word stripper removes below still makes the first clause a question.
+  const modalLead = MODAL_ASK.test(softTrim(full.replace(/\u0001/g, " ").replace(LEGA_PREFIX, "")));
   const quotedParts = norm.split("\u0001").filter((_, i) => i % 2 === 1).join(" ");
   const quotedConfirm = /\b(da|confirm|confirma|executa|porneste)\b/.test(quotedParts);
+  // P0-R2: a Stop named inside quotes is a quotation (answered below when nothing else in the sentence is understood), never the command.
+  const quotedStop = STOP_MENTION.test(quotedParts);
   norm = unquote(norm);
   const steps = [];
   const forget = norm.match(FORGET);
@@ -684,14 +1106,16 @@ export function resolveIntent(text, context = {}) {
     const asks = pieces[i + 1] === "? " || /\?[.!?\s]*$/.test(pieces[i]);
     const part = pieces[i].replace(/[.,!?]+$/g, "").trim();
     if (!part) continue;
-    for (const s of splitClause(part, context)) {
-      const text = s.replace(/[.,!?]+$/g, "").trim();
-      if (text) clauses.push({ text, asks });
-    }
+    // 2.12.2 review R2-F2: the „?” belongs to the chained clause it closes (the last one of the piece): „Oprește tot și arată-mi ce s-a
+    // executat?” stops, then answers. The D20 resume hold below still reads the sentence-wide `asked`.
+    const subs = splitClause(part, context).map((s) => s.replace(/[.,!?]+$/g, "").trim()).filter(Boolean);
+    subs.forEach((text, j) => clauses.push({ text, asks: asks && j === subs.length - 1 }));
   }
   const askedSteps = new WeakSet();
   const globalConstraints = constraintsOf(norm);
-  for (const { text: clause, asks } of clauses) {
+  for (const [index, { text: clause, asks }] of clauses.entries()) {
+    // P0-R2: the modal opening of the sentence belongs to its first clause; a later clause may carry its own („…, apoi poți să…”).
+    const modal = (index === 0 && modalLead) || MODAL_ASK.test(softTrim(clause));
     const prep = prepClause(clause);
     const t = prep.text;
     const matchedConstraints = constraintsOf(t);
@@ -703,10 +1127,25 @@ export function resolveIntent(text, context = {}) {
     }
     let found = null;
     // Typed "Lega, stop" = the same as on voice: a bare stop WITH her name stops everything; without it, it stays a plain word.
-    if (addressed && clauses.length === 1 && /^(?:stop|opreste|opriti)(?: acum| imediat)?$/.test(t)) found = { intent: "stop_all", args: { addressed: true } };
+    // P0-R2: „Lega, stop?” asks — the hint, never the stop.
+    if (addressed && clauses.length === 1 && /^(?:stop|opreste|opriti)(?: acum| imediat)?$/.test(t)) {
+      found = asks || modal ? { intent: "explain_stop", args: { mood: "ask", about: "stop_all" } } : { intent: "stop_all", args: { addressed: true } };
+    }
     // "Deschide-l", "Mai deschide-l o dată", "Încă o dată": the last target (resolved from the server's lastTarget in resolveRefs).
     if (!found && (((prep.refIt || prep.again) && REOPEN.test(t)) || (prep.again && !t))) found = { intent: "reopen_last", args: { ref: "it" } };
     if (!found && t) { const m = matchPattern(t); if (m) found = { intent: m.intent, args: m.args }; }
+    // P0-R6 (L11): „Treci pe live” names a project when one is called exactly so; otherwise it is the mode, answered (explain_mode).
+    if (found?.intent === "explain_mode" && (context.projects || []).some((p) => flatName(p.name) === flatName(found.args.target) || flatName(p.slug) === flatName(found.args.target))) {
+      found = { intent: "open_project", args: { projectRef: found.args.target } };
+    }
+    // 2.12.2 (P0-R2): an interruption runs only on a clear imperative; a clause that only talks about one becomes explain_stop. The rearm
+    // card (D21: „Redeschide poarta după Stop All” before any stop), the last-target repeat and the addressed bare stop keep their rules.
+    // R2-F3: whether the clause's first verb was indicative („Oprești tot, da?”) before prepClause made it the imperative.
+    const conjugated = CONJUGATED_INTERRUPT.test(softTrim(stripFillers(clause)));
+    if (t && !(found && (found.intent === "gate_rearm" || found.intent === "reopen_last" || found.args?.addressed))) found = imperativeOnly(found, t, { asks, modal, conjugated });
+    // R2-F6: a negated stop next to a request keeps the request and answers the negation as a second read („Bine, nu opresc nimic.”).
+    const alsoExplain = found?.alsoExplain || null;
+    if (alsoExplain) found = { intent: found.intent, args: found.args };
     // Review M10.2 #19: a start verb on "planul" that is not a clean confirmation ("Ok, execută planul, fără deploy", "Pornește planul
     // de marketing") is ONE question about the plan on screen — never show_plan's new card, never a silent nothing.
     if (!found && t && PLAN_START.test(t) && /\bplanul\b/.test(t)) found = { intent: "unknown", args: { planStartUnclear: true } };
@@ -718,8 +1157,20 @@ export function resolveIntent(text, context = {}) {
     const step = { intent: found.intent, args: found.args, constraints: { ...matchedConstraints }, effect: INTENT_EFFECTS[found.intent] || "none", text: t };
     if (asks) askedSteps.add(step);
     steps.push(step);
+    if (alsoExplain) steps.push({ intent: "explain_stop", args: { ...alsoExplain }, constraints: {}, effect: INTENT_EFFECTS.explain_stop, text: t });
   }
   if (!steps.length) steps.push({ intent: "unknown", args: {}, constraints: {}, effect: "none", text: "" });
+  // Review F1: „…, nu opri tot, oprește doar Codex” — next to a narrower stop the Hub runs, the negated Stop All is answered „nu opresc tot”.
+  if (steps.some((s) => INTERRUPT_INTENTS.has(s.intent) && s.intent !== "stop_all")) {
+    for (const s of steps) if (s.intent === "explain_stop" && s.args?.mood === "negation" && s.args?.about === "stop_all") s.args = { ...s.args, partial: true };
+  }
+  // P0-R2: „Am zis „Oprește tot” din greșeală”, „„Oprește tot””, „Ce face „Stop All”?” — the quoted words were removed above, so nothing
+  // stops; when nothing else in the sentence is understood, the Hub answers what the quotation was about (one read, no question).
+  if (quotedStop && steps.every((s) => s.intent === "unknown" && !s.args?.refusedConfirmation)) {
+    const rest = softTrim(norm);
+    const mood = REPORTED.test(rest) ? "reported" : asked || ASK_START.test(rest) || /\bce (?:face|inseamna)\b/.test(rest) ? "question" : "quote";
+    steps.splice(0, steps.length, { intent: "explain_stop", args: { mood, about: "stop_all" }, constraints: {}, effect: INTENT_EFFECTS.explain_stop, text: rest });
+  }
   // A decrease anywhere in the sentence ("…luăm doi clienți, apoi pierdem unul") makes every scenario step a question, not numbers.
   if (SCENARIO_DECREASE.test(norm)) for (const s of steps) if (s.intent === "simulate") s.args = { scenario: s.args.scenario, unsupported: true };
   for (const step of steps) Object.assign(step.constraints, globalConstraints);
@@ -845,7 +1296,9 @@ function missingNumberedPart(ref, item, { extra = () => [] } = {}) {
 
 function resolveRefs(step, context) {
   const projects = context.projects || [];
-  const needsProject = ["open_project", "freeze_project", "unfreeze_project"].includes(step.intent) || (step.intent === "autonomy" && step.args.projectRef);
+  // P0-R6 (L11): „Ce a rămas în ProDelivery?” (status) names its project like „Hai la ProDelivery” — the same matching, diacritics and
+  // hyphens ignored („pro-delivery”), one question for two plausible names, unknownRef for none.
+  const needsProject = ["open_project", "freeze_project", "unfreeze_project"].includes(step.intent) || ((step.intent === "autonomy" || step.intent === "status") && step.args.projectRef);
   if (needsProject) {
     const ref = step.args.projectRef;
     const opts = { extra: (p) => [p.slug] };

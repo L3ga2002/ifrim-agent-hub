@@ -19,6 +19,18 @@ export const EFFORT_PROFILES = Object.freeze({
 });
 export const DEFAULT_PROFILE = "BALANCED";
 
+/**
+ * 2.12.2 (P0-R3): the wall-clock limit of ONE model turn, in minutes, per Software Factory role and effort profile — separate from the
+ * mission's deadline (factory limits maxDurationMin). A writer turn edits and runs commands (observed live: first command 14 s, 145 s on
+ * a cold Windows sandbox after a reboot); a reviewer only reads. BALANCED is the default (writer 25 min, reviewer 15 min), far below the
+ * 120-minute mission deadline. A mission stores the resolved values in its limits (factory/plan.mjs normalizeLimits), so they are part
+ * of the scope hash and of the plan the owner confirms; the run manager enforces them (runtime/runs.mjs, turnTimeoutMs).
+ */
+export const TURN_TIMEOUTS = Object.freeze({
+  writer: Object.freeze({ ECONOMIC: 15, BALANCED: 25, DEEP: 45 }),
+  reviewer: Object.freeze({ ECONOMIC: 8, BALANCED: 15, DEEP: 25 }),
+});
+
 /** Every effort value the Hub may send (validated before it reaches a `-c` override or a CLI flag). */
 export const KNOWN_EFFORTS = Object.freeze(["minimal", "low", "medium", "high", "xhigh", "max"]);
 
@@ -100,4 +112,6 @@ export function assertRunPlan(plan) {
 export const planRecord = (plan) => ({ profile: plan.profile, requestedModel: plan.requestedModel, model: plan.model, modelSource: plan.modelSource,
   requestedEffort: plan.requestedEffort, effort: plan.effort, effortSource: plan.effortSource, supportedEfforts: plan.supportedEfforts, verification: plan.verification,
   ...(plan.bindingHash ? { bindingHash: plan.bindingHash, bindingRole: plan.bindingRole || null, resolvedAlias: plan.resolvedAlias, resolutionEvidence: plan.resolutionEvidence } : {}),
-  ...(plan.materialChange ? { materialChange: plan.materialChange } : {}) });
+  ...(plan.materialChange ? { materialChange: plan.materialChange } : {}),
+  // 2.12.2 (P0-R3): the per-turn wall-clock limit this run was started with (absent = none: a manual run keeps the old behaviour).
+  ...(plan.turnTimeoutMs ? { turnTimeoutMs: plan.turnTimeoutMs } : {}) });

@@ -6,6 +6,7 @@ import { Panel, Notice, ErrorNotice, Chip, Loading } from "../../components/ui.j
 import { webauthnAvailable, onLocalhost, localhostUrl, registerAuthenticator, unlockSession, lockSession, withReauth } from "../../lib/ownerSession.js";
 import { recordSegment, listMicrophones, sendSegment } from "../../lib/voiceGate.js";
 import { preferredMic, setPreferredMic } from "../../lib/voiceContext.js";
+import { GATE_TOGGLE_RESULT } from "../../lib/voiceGateApply.js";
 
 /**
  * The resumable setup of Lega 2.0 (M07 §07, §21): the REAL steps, in order, from the Hub's own state (a refresh shows the
@@ -199,7 +200,10 @@ function VoicePanel({ owner }) {
   const finish = useAction(async () => { await withReauth(() => api("/api/voice/enroll/finish", { method: "POST", body: { consentText: voice.data.consentText } })); setLast(null); voice.reload(); });
   const reset = useAction(async () => { await api("/api/voice/enroll/reset", { method: "POST", body: {} }); setLast(null); voice.reload(); });
   const remove = useAction(async () => { await withReauth(() => api("/api/voice/delete", { method: "POST", body: { reason: "din configurare" } })); setProbe(null); voice.reload(); });
-  const gate = useAction(async (enabled) => { await withReauth(() => api("/api/voice/gate", { method: "POST", body: { enabled } })); voice.reload(); });
+  // L1 (2.12.2): the toggle says what it did; it applies at once, also to a running Lega session (the Lega panel swaps the sent audio).
+  // Kept as the state it set: shown only while the Hub still reports that state (a change from elsewhere hides it).
+  const [gateSet, setGateSet] = useState(null);
+  const gate = useAction(async (enabled) => { setGateSet(null); await withReauth(() => api("/api/voice/gate", { method: "POST", body: { enabled } })); setGateSet(Boolean(enabled)); voice.reload(); });
   const v = voice.data;
   if (!v) return <Panel title="4 · Vocea ta (local)" icon={Mic2}><Loading lines={2} /><ErrorNotice error={voice.error} /></Panel>;
   const recorded = v.draft?.phrases || [];
@@ -243,6 +247,7 @@ function VoicePanel({ owner }) {
             <button className="btn sm danger" disabled={remove.pending} onClick={remove.run}><Trash2 size={13} />Șterge profilul</button>
           </div>
           {rec.active && <div className="mic-level" aria-hidden="true"><span style={{ width: `${Math.round(rec.level * 100)}%` }} /></div>}
+          {gateSet !== null && gateSet === v.gate.enabled && <p className="small" role="status">{gateSet ? GATE_TOGGLE_RESULT.on : GATE_TOGGLE_RESULT.off}</p>}
           {probe && <p className="small">Rezultat: <strong>{probe.result}</strong> ({probe.reason}){probe.transcript ? <> · am auzit: <b>„{probe.transcript}”</b></> : null}</p>}
         </div>
       ) : (

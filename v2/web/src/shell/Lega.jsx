@@ -9,6 +9,7 @@ import { isAppShortcut, approvedNotStarted, legaStartReadiness, legaCheckHint, p
   LEGA_ACCOUNT_AUTO_HINT, LEGA_START_CHECKING } from "../lib/uiLogic.js";
 import { unlockSession } from "../lib/ownerSession.js";
 import { continueVoiceNotice, rearmOutcome, rearmOfferFor, REARM_SETUP } from "../lib/rearmLogic.js";
+import { faceElsewhere } from "../lib/cockpitLogic.js";
 import { RearmCard } from "../screens/lega/RearmCard.jsx";
 
 // M10: the web-search setting the Lega panel last displayed; the start sends it, so a stale page never starts under a setting the
@@ -16,6 +17,7 @@ import { RearmCard } from "../screens/lega/RearmCard.jsx";
 let shownWebSearch = null;
 import { createVoiceGate } from "../lib/voiceGate.js";
 import { presentedPlan, looksLikeConfirmation, isCapturing, preferredMic, isArmed, markArmed, armedEventEffect } from "../lib/voiceContext.js";
+import { GATE_APPLY, decideGateApply, gateStateOf, isGateSettingEvent, gateFailClosedText, runGateApply, GATE_START_NO_PROFILE, GATE_READ_TIMEOUT_MS } from "../lib/voiceGateApply.js";
 
 /**
  * Lega — the Hub's voice assistant (GPT-Live via Codex, ChatGPT plan).
@@ -75,6 +77,31 @@ const stopRequest = (id, reason) => ensureToken().then((token) => fetch(`/api/le
 /** D23: a start refusal whose message names check ids carries their texts in `details.reasonDetail`: shown with the message. */
 const withReasonDetail = (error) => (error?.details?.reasonDetail ? { ...error, status: error.status, category: error.category, message: `${error.message} — ${error.details.reasonDetail}` } : error);
 
+/**
+ * The local voice filter's options, shared by the start and by a filter turned on during the session (L1): the Lega session and the
+ * plan on screen at the end of each sentence (the Hub binds the segment to both), and what each decision does.
+ */
+function gateOptions(refs, setGateLog) {
+  return {
+    context: () => ({ legaSessionId: refs.current.sessionId, envelopeId: presentedPlan()?.envelopeId || null }),
+    // M10.2 U13: a segment the Hub bound to an ARMED plan is confirmed by the Hub itself (even when no card is on screen): the
+    // page only reports the outcome. Otherwise (a plan shown here, not armed) the page path forwards the segment, as in M07.
+    onDecision: (d) => {
+      setGateLog((log) => [...log.slice(-5), { at: Date.now(), ...d }]);
+      if (d.result !== "MATCH") return;
+      if (d.armed && d.boundPlanId) { if (!isCapturing(d.boundPlanId)) observeArmedConfirmation(d); return; }
+      if (d.envelopeId && !isCapturing(d.envelopeId)) followSpokenConfirmation(d);
+    },
+  };
+}
+
+/** GET /api/voice bounded in time: a read that never answers counts as failed (the caller fails closed), never as a hang. */
+function readVoiceState() {
+  let timer = null;
+  const timeout = new Promise((_, reject) => { timer = setTimeout(() => reject(new Error("fără răspuns de la Hub")), GATE_READ_TIMEOUT_MS); });
+  return Promise.race([api("/api/voice"), timeout]).finally(() => clearTimeout(timer));
+}
+
 export function Lega({ go }) {
   const [open, setOpen] = useState(false);
   const [status, setStatus] = useState("off"); // off | preparing | connecting | active | stopping
@@ -92,7 +119,10 @@ export function Lega({ go }) {
   // Under the voice-first policy Lega's legacy proposal cards are the old path: still shown (and decidable) but labelled as such.
   const ownerPolicy = useResource("/api/owner/status", { reloadOn: (e) => e.type === "settings.changed" && e.payload?.key === "ownerPolicy" });
   const voiceFirst = Boolean(ownerPolicy.data?.policy?.active);
-  const refs = useRef({ pc: null, mic: null, gate: null, audio: null, sessionId: null, pendingId: null, posting: false, seq: 0, meters: [], connectedAt: 0, lossTimer: null, bootId: null, openLine: {} });
+  // L1: `sender` is the RTCRtpSender of the sent audio (its track is swapped when the filter changes during the session); `gateChain`
+  // runs those swaps one at a time; `gateDirty` marks a filter change seen while a start was still in flight (applied once committed).
+  const refs = useRef({ pc: null, mic: null, gate: null, sender: null, audio: null, sessionId: null, pendingId: null, posting: false, seq: 0, meters: [], connectedAt: 0, lossTimer: null, bootId: null, openLine: {},
+    gateChain: Promise.resolve(), gateQueued: false, gateDirty: false });
   // M06: the local voice gate in front of the transport (null = not enabled: everything the microphone hears goes to OpenAI).
   const [gateInfo, setGateInfo] = useState(null);
   const [gateLog, setGateLog] = useState([]);
@@ -103,6 +133,8 @@ export function Lega({ go }) {
   const serverTime = useHub((s) => s.hub?.serverTime);
   const statusRef = useRef(status); statusRef.current = status;
   const openRef = useRef(open); openRef.current = open;
+  // L1: schedules one application of the Hub's current filter setting to this tab's session (set below, on every render).
+  const gateApplyRef = useRef(null);
 
   const setPhase = (legaPhase) => setState({ legaPhase });
   const toOff = () => { setStatus("off"); setPhase("off"); setState({ legaAuthority: null }); };
@@ -115,7 +147,7 @@ export function Lega({ go }) {
     r.gate?.close();
     if (r.audio) { r.audio.srcObject = null; r.audio.muted = false; }
     legaLevels.muted = false;
-    r.pc = null; r.mic = null; r.gate = null; r.openLine = {};
+    r.pc = null; r.mic = null; r.gate = null; r.sender = null; r.gateDirty = false; r.openLine = {};
     clearTimeout(r.lossTimer);
     setPhase("off");
   }, []);
@@ -147,7 +179,7 @@ export function Lega({ go }) {
     if (statusRef.current !== "off") return;
     const seq = ++r.seq;
     const alive = () => r.seq === seq;
-    setError(null); setLines([]); setMicMuted(false); setLegaMuted(false); setStatus("preparing"); setPhase("connecting");
+    setError(null); setLines([]); setGateLog([]); setMicMuted(false); setLegaMuted(false); setStatus("preparing"); setPhase("connecting");
     r.bootId = bootId || null; r.openLine = {};
     let mic = null; let pc = null; let gate = null;
     const dispose = () => { mic?.getTracks().forEach((t) => t.stop()); gate?.close(); try { pc?.close(); } catch { /* closed */ } };
@@ -179,30 +211,26 @@ export function Lega({ go }) {
       // M06: with the voice gate enabled, the track sent to OpenAI is the gate's output (each sentence held until the local
       // speaker check), never the raw microphone. If the enabled gate cannot start, Lega does not start unfiltered.
       // Fail closed: if the filter state cannot be read, Lega does not start with the raw microphone.
+      // L1: a filter change from here on is applied once the session is committed (`gateDirty`), never lost between read and commit.
+      r.gateDirty = false;
       let voice;
-      try { voice = await api("/api/voice"); }
+      try { voice = await readVoiceState(); }
       catch (e) { throw new Error(`Nu pot citi starea filtrului vocal (${e.message}); Lega nu pornește nefiltrată`); }
+      const gateState = gateStateOf(voice);
+      const gateStart = decideGateApply({ sessionActive: true, gateRunning: false, ...gateState });
+      // An answer without the filter's state, or the filter on without a voice profile: never started on the raw microphone.
+      if (gateStart === GATE_APPLY.FAIL_CLOSED) throw new Error(gateState.known ? GATE_START_NO_PROFILE : "Nu pot citi starea filtrului vocal; Lega nu pornește nefiltrată");
       let sendTrack = mic.getAudioTracks()[0];
-      if (voice?.gate?.enabled && voice.profile) {
+      if (gateStart === GATE_APPLY.START) {
         try {
-          gate = await createVoiceGate(mic, {
-            // The Lega session and the plan on screen at the end of each sentence (the Hub binds the segment to both).
-            context: () => ({ legaSessionId: refs.current.sessionId, envelopeId: presentedPlan()?.envelopeId || null }),
-            // M10.2 U13: a segment the Hub bound to an ARMED plan is confirmed by the Hub itself (even when no card is on screen): the
-            // page only reports the outcome. Otherwise (a plan shown here, not armed) the page path forwards the segment, as in M07.
-            onDecision: (d) => {
-              setGateLog((log) => [...log.slice(-5), { at: Date.now(), ...d }]);
-              if (d.result !== "MATCH") return;
-              if (d.armed && d.boundPlanId) { if (!isCapturing(d.boundPlanId)) observeArmedConfirmation(d); return; }
-              if (d.envelopeId && !isCapturing(d.envelopeId)) followSpokenConfirmation(d);
-            },
-          });
+          gate = await createVoiceGate(mic, gateOptions(refs, setGateLog));
           sendTrack = gate.track;
-          setGateInfo({ enabled: true, strict: true, verifier: voice.verifier.id });
+          setGateInfo({ enabled: true, strict: true, verifier: gateState.verifier });
         } catch (e) { throw new Error(`Filtrul vocal local nu a pornit (${e.message}); Lega nu pornește nefiltrată cât timp filtrul e activat`); }
       } else setGateInfo({ enabled: false });
       if (!alive()) return dispose();
-      pc.addTrack(sendTrack, new MediaStream([sendTrack]));
+      // L1: the sender is kept, so the filter can be put in front of the microphone (or taken away) during the session.
+      const sender = pc.addTrack(sendTrack, new MediaStream([sendTrack]));
       const dc = pc.createDataChannel("oai-events"); // required by the offer; the app-server sideband controls the session
       // M05: an error event on the data channel (when the provider sends one) is shown and kept with the stop reason.
       dc.onmessage = (event) => { try { const m = JSON.parse(String(event.data)); if (m?.type === "error") r.peerError = String(m.error?.message || m.message || "eroare").slice(0, 200); } catch { /* not JSON */ } };
@@ -242,8 +270,13 @@ export function Lega({ go }) {
       await pc.setRemoteDescription({ type: "answer", sdp: result.answerSdp });
       if (!alive()) { dispose(); await stopRequest(result.sessionId, "cancelled-during-start"); return; }
       // The attempt is committed: from here the refs own the microphone and the peer.
-      r.mic = mic; r.pc = pc; r.gate = gate; r.sessionId = result.sessionId; r.pendingId = null; r.committedAt = Date.now();
+      r.mic = mic; r.pc = pc; r.gate = gate; r.sender = sender; r.sessionId = result.sessionId; r.pendingId = null; r.committedAt = Date.now();
+      // Review F4: whether the Hub admitted this session WITH the filter (its U13 rule closes one that started without it when the
+      // filter is turned on); the page's own start decision when the Hub did not say.
+      r.startedGated = typeof result.gated === "boolean" ? result.gated : Boolean(gate);
       r.meters.push(attachMeter(mic, micBar, "mic"));
+      // L1: the filter changed while this start was in flight: applied now, to the committed session.
+      if (r.gateDirty) gateApplyRef.current?.();
       setSession({ id: result.sessionId, maxDurationS: result.maxDurationS, voice: result.voice });
       setState({ legaAuthority: result.authority || "grant" });
       setStatus("connecting");
@@ -285,6 +318,43 @@ export function Lega({ go }) {
       await stop("start-failed");
     }
   }, [stop, bootId, showFailure]);
+
+  // L1 (2.12.2): the voice filter follows its setting during the session. A change (Lega → Configurare, a deleted profile, another tab)
+  // is applied at once to THIS tab's committed session: the filter's output or the raw microphone goes to the kept sender. Fail closed:
+  // while the raw microphone flows, the sender is muted until the new state is known; a filter that should run and cannot start (or a
+  // state that cannot be read) ends the session with the reason — the raw microphone never keeps flowing while the filter is on.
+  const sessionLine = (text) => { setLines((ls) => [...ls.slice(-60), { id: `vg-${Date.now()}-${ls.length}`, role: "system", text, final: true }]); setAnnounce(text); };
+  const applyGateNow = async () => {
+    const r = refs.current;
+    const { pc, sessionId: sid, sender, mic } = r;
+    // Not committed yet: a start in flight applies it once committed (its own read may predate the change).
+    if (!pc || !sid || !sender || !mic) { if (statusRef.current === "preparing" || statusRef.current === "connecting") r.gateDirty = true; return; }
+    r.gateDirty = false;
+    const same = () => r.pc === pc && r.sessionId === sid && r.sender === sender;
+    const endSession = async (text) => { if (!same()) return; showFailure(new Error(text), "Lega s-a oprit"); await stop("voice-gate-unavailable"); };
+    try {
+      // The order (mute the raw microphone first, start-then-send, close-after-replace) lives in runGateApply (lib/voiceGateApply.js).
+      const out = await runGateApply({ sender, rawTrack: mic.getAudioTracks()[0] || null, gate: r.gate, readState: readVoiceState,
+        createGate: () => createVoiceGate(mic, gateOptions(refs, setGateLog)), same, startedGated: r.startedGated === true });
+      if (out.outcome === "end") { await endSession(out.text); return; }
+      // Review F4: the filter turned on for a session that started without it: the microphone stays muted and the session closes (the
+      // Hub closes it too); the owner restarts Lega, now with the filter.
+      if (out.outcome === "close") { if (same()) { sessionLine(out.text); await stop("voice-gate-enabled"); } return; }
+      if (!same()) { if (out.outcome === "started") out.gate.close(); return; }
+      if (out.outcome === "started") { r.gate = out.gate; setGateInfo({ enabled: true, strict: true, verifier: out.verifier }); setGateLog([]); sessionLine(out.text); }
+      else if (out.outcome === "stopped") { r.gate = null; setGateInfo({ enabled: false }); setGateLog([]); sessionLine(out.text); }
+      else if (out.outcome === "kept") sessionLine(out.text);
+    } catch (e) { await endSession(gateFailClosedText({ detail: e?.message })); }
+  };
+  gateApplyRef.current = () => {
+    const r = refs.current;
+    if (r.gateQueued) return r.gateChain; // a run not started yet reads the newest state anyway
+    r.gateQueued = true;
+    r.gateChain = r.gateChain.then(() => { r.gateQueued = false; return applyGateNow(); }).catch(() => {});
+    return r.gateChain;
+  };
+  // L1: the Hub announced a change of the voice filter (its value is read back from GET /api/voice): applied to this tab's session.
+  useEffect(() => onHubEvent((e) => { if (isGateSettingEvent(e)) gateApplyRef.current?.(); }), []);
 
   // Pending Lega proposals are approvals: they survive the session, a reload and an SSE drop.
   const proposals = useResource("/api/approvals?status=pending", { reloadOn: (e) => e.type.startsWith("approval.") || e.type.startsWith("command.") || e.type === "lega.proposal" });
@@ -357,6 +427,16 @@ export function Lega({ go }) {
     }
     else if (e.type === "lega.delegation") setLines((ls) => [...ls.slice(-60), { id: `d-${Date.now()}`, role: "system", text: `→ Predat agentului: „${e.text}”`, final: true }]);
     else if (e.type === "lega.navigate" && e.path) go(e.path);
+    // Review F7 (L8): a face command heard by voice while the Lega screen is not on display — the cockpit applies it itself when shown.
+    // Elsewhere the view preferences it reads are stored and, for a face or the core, the Lega screen opens: what the Hub reports („Am
+    // arătat fața Legăi pe ecran”) is what the owner sees. View only: no authority, nothing sent to the Hub.
+    else if (e.type === "lega.face") {
+      const fx = faceElsewhere(e, sid, { onCockpit: isCockpitHash(window.location.hash) });
+      if (fx) {
+        for (const [key, value] of fx.prefs) { try { localStorage.setItem(`hub.v2.${key}`, JSON.stringify(value)); } catch { /* storage unavailable: the cockpit keeps its own view */ } }
+        if (fx.navigate) { go(fx.navigate); setAnnounce("Lega își arată fața pe ecranul Lega."); }
+      }
+    }
     // M10.2 U13: the Hub armed the plan it just said; the card (wherever it is) hides its mic button and shows the window.
     else if (e.type === "lega.plan_armed" && e.planId) { markArmed(e.planId, e.expiresAt); setAnnounce("Fereastra vocală e deschisă: spune „Da, execută planul” ca să pornească, sau „Nu acum”."); }
     // "Arată-mi unde…": open the screen, then the arrow finds the marked element once it is rendered. M10.2 (U15): never away from
@@ -529,7 +609,7 @@ function ActiveView({ status, elapsed, session, micMuted, legaMuted, onMic, onSo
       {gateInfo && (gateInfo.enabled
         ? <p className="small" style={{ margin: 0 }}><ShieldCheck size={12} aria-hidden="true" /> Filtru vocal local strict: fiecare propoziție e reținută până când Hub-ul o recunoaște ca a ta, apoi trimisă (întârziere = durata propoziției + ~1 s) · verificator {gateInfo.verifier} (local; nu autorizează nimic singur)
             {gateLog.length > 0 && gateLog[gateLog.length - 1].result !== "MATCH" && <span> · <strong>ultima propoziție nu a trecut:</strong> {gateLog[gateLog.length - 1].reason}</span>}{gateLog.length > 0 && <span className="faint"> · ultimele decizii: {gateLog.map((d) => d.result === "MATCH" ? "trimis" : d.result === "INSUFFICIENT_AUDIO" ? "prea scurt" : d.result === "NON_MATCH" ? "altă voce, aruncat" : "incert, aruncat").join(", ")}</span>}</p>
-        : <p className="faint small" style={{ margin: 0 }}>Fără filtru vocal local: tot ce aude microfonul ajunge la OpenAI. Îl activezi din Lega → Configurare.</p>)}
+        : <p className="faint small" style={{ margin: 0 }}>Fără filtru vocal local: tot ce aude microfonul ajunge la OpenAI. Îl activezi din Lega → Configurare; are efect imediat.</p>)}
       <ol className="lega-lines" ref={listRef} aria-label="Transcriere">
         {lines.length === 0 && <li className="faint small">Spune ceva, de exemplu „Lega, ce se întâmplă?” sau „Lega, oprește tot”.</li>}
         {lines.map((l) => (

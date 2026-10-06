@@ -112,6 +112,9 @@ export function createWslClaudeAdapter({ environment, config, supervisor }) {
         if (inner.pid) { try { onEvent({ type: "pid", pid: inner.pid }); } catch { /* the record never breaks a run */ } }
         const result = await inner.done;
         innerDone = true;
+        // 2.12.2 (review R3-F5): the reviewer's turn has settled — the run manager ends the turn's deadline here (the reap and the session
+        // cleanup below are not the turn and are never cut as a timeout).
+        try { onEvent({ type: "turn_settled" }); } catch { /* the deadline then falls back to the supervisor record */ }
         // 5. Nothing of the run may outlive it: the client is gone (supervisor), then every process of this workspace.
         report.reap = await environment.reap(wsId, { marker: wsId, all: environment.inUse().length <= 1 }).catch((error) => ({ ok: false, error: error.message }));
         // 6. The session's files (transcript, per-session state) hold excerpts of the reviewed code: deleted from the config dir.

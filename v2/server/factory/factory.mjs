@@ -11,7 +11,7 @@ import { workspaceResource } from "../runtime/runs.mjs";
 import { summarizeTimeline } from "../runtime/timeline.mjs";
 import { MISSION_TEMPLATES } from "../domain/missions.mjs";
 import { checkSpec, normalizeSpec, specHash, protectedTestRefs, specSummary, e2eStepLines } from "./spec.mjs";
-import { buildPlan, normalizeLimits, ROUTES } from "./plan.mjs";
+import { buildPlan, normalizeLimits, turnTimeoutsOf, ROUTES } from "./plan.mjs";
 import { takeSnapshot, diffManifests, readGitEntry, gitEntryHash } from "./snapshot.mjs";
 import { renderChanges } from "./diff.mjs";
 import { integrityFindings } from "./integrity.mjs";
@@ -41,6 +41,13 @@ export const ACTIVE_STAGES = Object.freeze(new Set(["BASELINE", "IMPLEMENTING", 
 const FINAL_STAGES = new Set(["ACCEPTED", "REJECTED", "CANCELLED"]);
 const RESUMABLE = new Set(["PAUSED", "BLOCKED", "NEEDS_OWNER_DECISION"]);
 const E2E_STEP_TIMEOUT_MS = 10000;
+/**
+ * 2.12.2 (P0-R3): after a model turn ran out of its per-turn time, the ONE automatic re-dispatch the plan's attempts allow waits at
+ * least this long (clock time, fired by tick(): never immediately, never a loop that burns the attempts at once).
+ */
+export const TURN_RETRY_COOLDOWN_MS = 60000;
+/** The role whose per-turn limit a model stage runs under. */
+const ROLE_OF_STAGE = Object.freeze({ IMPLEMENTING: "writer", REPAIRING: "writer", REVIEWING: "reviewer" });
 
 export function createFactory(deps) {
   const { db, bus, clock, config, settings, projects, conversations, missions, runs, supervisor, runner, leases, browserLaunch = null } = deps;
@@ -49,7 +56,15 @@ export function createFactory(deps) {
   let closed = false; // set when the Hub shuts down: queued steps stop touching the (closing) database
   // M06: the owner's authority over model steps (Mission Authorization Envelopes). null = no envelope layer (M03–M05 behaviour).
   let authority = null;
+  // 2.12.2 (P0-R3): test mode only (setTurnTimeScaleForTests) — shrinks the per-turn limits sent to the run manager so a timeout can be
+  // exercised in seconds; the minutes recorded, shown and hashed stay the plan's own. Always 1 outside test mode.
+  let turnTimeScale = 1;
   const now = () => clock().toISOString();
+  /** The per-turn limit a role of this mission runs with: the minutes of its (hashed) limits, and the milliseconds sent to runs.start. */
+  function turnLimitOf(f, role) {
+    const t = turnTimeoutsOf(f?.limits || {});
+    return { min: t[role], source: t.source, ms: Math.max(1, Math.round(t[role] * 60000 * turnTimeScale)) };
+  }
   const workRoot = (missionId) => path.join(config.workDir, "factory", missionId);
   const blobDir = (missionId) => path.join(workRoot(missionId), "blobs");
 
@@ -563,6 +578,7 @@ export function createFactory(deps) {
    * Attempts of one step (stage, cycle, change set) that reached the model. Not attempts: the owner's interruptions (Pause,
    * Stop, the time limit), claims cancelled before a start, and starts stopped before the model (gate or grant refusal,
    * billing guard, MCP at init): no turn was sent, so nothing was spent and a retry is the owner's normal next step.
+   * 2.12.2 (P0-R3): a turn cut by its per-turn limit after it was sent IS an attempt (FAILED with turn_sent).
    */
   function modelAttempts(missionId, stage, cycle, changeSeq) {
     const prior = db.prepare("SELECT status, run_id FROM factory_dispatches WHERE mission_id = ? AND stage = ? AND request_json LIKE ?")
@@ -600,8 +616,10 @@ export function createFactory(deps) {
       // a plan step could not use anyway). Beyond the budget nothing is issued and the gate refuses as before. Never holds the step.
       authority(missionId, { stage: "GRANT", role, bindingHash: binding.bindingHash });
     }
+    // 2.12.2 (P0-R3): the role's per-turn limit from the mission's (hashed) limits; recorded with the dispatch, enforced by runs.start.
+    const turn = turnLimitOf(f, role);
     const request = { stage, cycle, changeSeq, attempt: prior.length + 1, counted: attempts + 1, provider: route.provider, access: route.access, model: binding.resolvedAlias, effort: binding.effort, profile: binding.profile,
-      specVersion: f.approvedSpecVersion, bindingHash: binding.bindingHash };
+      specVersion: f.approvedSpecVersion, bindingHash: binding.bindingHash, turnTimeoutMin: turn.min };
     const key = `${missionId}:${stage}:c${cycle}:cs${changeSeq}:a${prior.length + 1}`;
     const id = newId("dsp");
     const inserted = db.prepare(`INSERT OR IGNORE INTO factory_dispatches (id, mission_id, stage, task_id, idempotency_key, status, request_json, created_at, updated_at)
@@ -624,7 +642,7 @@ export function createFactory(deps) {
       // The approved acceptance tests are also refused by the export validator of an execution environment (M05 §16).
       const exportPolicy = route.access === "workspace-write" ? { protectedPaths: Object.keys(approvedSpec(f)?.protected?.files || {}) } : null;
       ({ run } = await tracked(missionId, () => runs.start({ conversationId, provider: route.provider, access: route.access, model: request.model, effort: request.effort, profile: request.profile,
-        taskId, stage: task.stage, roleId: task.roleId, actor: "factory", correlationId: id, requestedAt: f.updatedAt, exportPolicy, binding })));
+        taskId, stage: task.stage, roleId: task.roleId, actor: "factory", correlationId: id, requestedAt: f.updatedAt, exportPolicy, binding, turnTimeoutMs: turn.ms })));
     } catch (error) {
       // A Stop / Pause that arrived while the start was in flight: the refusal is its consequence, not a new blocker.
       if (isHalted(missionId)) {
@@ -749,6 +767,19 @@ export function createFactory(deps) {
         // Interrupted by the owner (Pause, Stop, the time limit): archived, never evaluated now and never resets the stage
         // (a resume may already be running). A result that completed anyway is kept for the next resume.
         const keep = run.status === "completed" && RESUMABLE.has(f.stage) && !f.cancelRequestedAt;
+        // Review R3-F4: the per-turn deadline fired BEFORE the owner's Pause / Stop landed (the turn was already being cut when the
+        // dispatch was marked INTERRUPTED): the run is a timed-out attempt that reached the model (its grant attempt spent, never
+        // forgiven), so the factory counts it too — FAILED, no automatic retry (the mission is paused or stopping). Before, the resumed
+        // step was counted again as the same attempt while the run and the grant said otherwise.
+        const timedOut = run.status === "failed" && run.errorCategory === "turn_timeout" && Boolean(run.timeline?.turn_sent);
+        if (timedOut) {
+          const limitMin = Number(fresh.request?.turnTimeoutMin) || null;
+          db.prepare("UPDATE factory_dispatches SET status = 'FAILED', error = ?, updated_at = ? WHERE id = ?")
+            .run(`turn_timeout: limita${limitMin ? ` de ${limitMin} min` : ""} pe tură, depășită înainte de oprirea ta (încercarea se numără)`, now(), dispatch.id);
+          bus.emit({ type: "factory.late_result", scopeType: "mission", scopeId: f.missionId, source: "factory", runId,
+            payload: { stage: dispatch.stage, runStatus: run.status, errorCategory: "turn_timeout", counted: true, note: "Limita pe tură a fost depășită înainte de oprirea ta: încercarea se numără, fără reîncercare automată" } });
+          return f.cancelRequestedAt ? confirmCancel(f.missionId) : null;
+        }
         db.prepare("UPDATE factory_dispatches SET status = ?, updated_at = ? WHERE id = ?").run(keep ? "DONE_LATE" : run.status === "completed" ? "DONE" : "INTERRUPTED", now(), dispatch.id);
         // M10.2 review #11: not an attempt here (modelAttempts skips INTERRUPTED), so the plan this step ran under gives its grant
         // attempt back (bounded, recorded; envelopes.forgiveInterrupted). Outside a plan nothing happens.
@@ -768,6 +799,8 @@ export function createFactory(deps) {
         return null;
       }
       if (run.status !== "completed") {
+        // 2.12.2 (P0-R3): the turn ran out of its per-turn time — TIMEOUT, its own outcome (never the generic failure below).
+        if (run.errorCategory === "turn_timeout") return afterTurnTimeout(f, fresh, run);
         const reason = `${dispatch.stage}: execuția ${run.status}${run.errorCategory ? ` (${run.errorCategory})` : ""}${run.errorMessage ? ` — ${run.errorMessage.slice(0, 300)}` : ""}`;
         // A refused or conflicting export from an execution environment: nothing reached the project; the owner decides
         // (the quarantined export is in the run evidence), never an automatic repair on an unknown state.
@@ -778,6 +811,105 @@ export function createFactory(deps) {
       if (dispatch.stage === "REVIEWING") return afterReview(f.missionId, run);
       return null;
     });
+  }
+
+  /**
+   * 2.12.2 (P0-R3): a model step that ran out of its per-turn time. A turn that reached the model is an attempt (counted, never forgiven
+   * like an owner's interruption). While the stage still has attempts inside the confirmed limit, ONE re-dispatch is scheduled after a
+   * cooldown (≥ TURN_RETRY_COOLDOWN_MS) and fired by tick() through the ordinary dispatch path — halts, the mission deadline, the plan's
+   * authority and the gate all decide again. Exhausted: the owner decides (a plan's "one more attempt" difference applies: exhaustedStep).
+   * A turn stopped before it reached the model is an infrastructure stop: BLOCKED, nothing counted, never retried by itself.
+   */
+  function afterTurnTimeout(f, dispatch, run) {
+    const role = ROLE_OF_STAGE[dispatch.stage] || "writer";
+    const limitMin = Number(dispatch.request?.turnTimeoutMin) || turnLimitOf(f, role).min;
+    const payload = { stage: dispatch.stage, role, limitMin, dispatchId: dispatch.id, limitMs: run.evidence?.turnTimeout?.limitMs ?? null, elapsedMs: run.evidence?.turnTimeout?.elapsedMs ?? null };
+    // The dispatch row says TIMEOUT too (its status stays FAILED: modelAttempts counts it only when the turn had been sent).
+    db.prepare("UPDATE factory_dispatches SET error = ?, updated_at = ? WHERE id = ?").run(`turn_timeout: limita de ${limitMin} min pe tură (${role})`, now(), dispatch.id);
+    if (run.status !== "failed") {
+      blockTask(dispatch.taskId, "limita pe tură, înainte de model");
+      bus.emit({ type: "factory.turn_timeout", scopeType: "mission", scopeId: f.missionId, source: "factory", runId: run.id, payload: { ...payload, reachedModel: false, retry: false } });
+      return setStage(f.missionId, "BLOCKED", { waitReason: "owner_decision",
+        reason: `Etapa ${dispatch.stage} (${role}): providerul nu a trimis tura modelului în limita de ${limitMin} min pe tură; nimic nu a ajuns la model, încercarea nu se numără. Verifică providerul, apoi reia` });
+    }
+    const { counted } = modelAttempts(f.missionId, dispatch.stage, dispatch.request.cycle, dispatch.request.changeSeq);
+    const limit = attemptLimit(f, dispatch.stage);
+    const base = `Etapa ${dispatch.stage} (${role}) a depășit limita de ${limitMin} min pe tură (încercarea ${counted} din ${limit})`;
+    // Review R3-F3: ONE automatic re-dispatch per step (stage, cycle, change set), whatever maxAttemptsPerStage allows: after it, a
+    // further timeout of the same step waits for the owner even with attempts left (the texts promise „o singură dată”).
+    if (counted < limit && turnRetriesFired(f.missionId, dispatch.stage, dispatch.request.cycle, dispatch.request.changeSeq) > 0) {
+      const left = limit - counted;
+      blockTask(dispatch.taskId, "limita pe tură; reîncercarea automată a fost folosită");
+      bus.emit({ type: "factory.turn_timeout", scopeType: "mission", scopeId: f.missionId, source: "factory", runId: run.id,
+        payload: { ...payload, reachedModel: true, attempt: counted, limit, retry: false, autoRetryUsed: true } });
+      return setStage(f.missionId, "NEEDS_OWNER_DECISION", { waitReason: "owner_decision",
+        reason: `${base}; am reluat-o deja automat o dată, așa că nu o mai reiau singur — decide dacă o reiei (în limita confirmată ${left === 1 ? "mai e o încercare" : `mai sunt ${left} încercări`})` });
+    }
+    if (counted < limit) {
+      const retryAt = new Date(clock().getTime() + TURN_RETRY_COOLDOWN_MS).toISOString();
+      bus.transaction(() => {
+        db.prepare("UPDATE factory_missions SET wait_reason = 'retry', stage_reason = ?, updated_at = ? WHERE mission_id = ?")
+          .run(`${base}; o reiau o singură dată peste ${Math.round(TURN_RETRY_COOLDOWN_MS / 1000)} s, prin aceleași verificări (poartă, plan, termenul misiunii)`, now(), f.missionId);
+        bus.append({ type: "factory.turn_timeout", scopeType: "mission", scopeId: f.missionId, source: "factory", runId: run.id,
+          payload: { ...payload, reachedModel: true, attempt: counted, limit, retry: true, retryAt } });
+      });
+      return view(f.missionId);
+    }
+    blockTask(dispatch.taskId, "limita pe tură; încercări epuizate");
+    bus.emit({ type: "factory.turn_timeout", scopeType: "mission", scopeId: f.missionId, source: "factory", runId: run.id, payload: { ...payload, reachedModel: true, attempt: counted, limit, retry: false } });
+    return setStage(f.missionId, "NEEDS_OWNER_DECISION", { waitReason: "owner_decision", reason: `${base}; încercările confirmate s-au epuizat — decide dacă reiei (o încercare în plus)` });
+  }
+
+  /**
+   * R3-F3: how many automatic turn-timeout re-dispatches already fired for one step (stage, cycle, change set) of a mission — read from
+   * factory.turn_retry (its own cycle / change set, or, for a record written before they were added, the dispatch it followed). Read-only.
+   */
+  function turnRetriesFired(missionId, stage, cycle, changeSeq) {
+    let n = 0;
+    for (const row of db.prepare("SELECT payload_json FROM events WHERE type = 'factory.turn_retry' AND scope_type = 'mission' AND scope_id = ? ORDER BY seq").all(missionId)) {
+      const p = parse(row.payload_json, {});
+      if (p.stage !== stage) continue;
+      let step = Number.isFinite(p.cycle) && Number.isFinite(p.changeSeq) ? { cycle: p.cycle, changeSeq: p.changeSeq } : null;
+      if (!step && p.afterDispatch) step = rowToDispatch(db.prepare("SELECT * FROM factory_dispatches WHERE id = ?").get(p.afterDispatch))?.request || null;
+      if (step && step.cycle === cycle && step.changeSeq === changeSeq) n += 1;
+    }
+    return n;
+  }
+
+  /** 2.12.2 (P0-R3): the missions whose one turn-timeout retry is due (still waiting for exactly it, cooldown passed). Read-only. */
+  function dueTurnRetries() {
+    const out = [];
+    const rows = db.prepare("SELECT mission_id, stage FROM factory_missions WHERE wait_reason = 'retry' AND cancel_requested_at IS NULL AND stage IN ('IMPLEMENTING','REPAIRING','REVIEWING')").all();
+    for (const row of rows) {
+      const p = parse(db.prepare("SELECT payload_json FROM events WHERE type = 'factory.turn_timeout' AND scope_type = 'mission' AND scope_id = ? ORDER BY seq DESC LIMIT 1").get(row.mission_id)?.payload_json, {});
+      if (!p.retry || p.stage !== row.stage || !p.retryAt || Date.parse(p.retryAt) > clock().getTime()) continue;
+      out.push({ missionId: row.mission_id, schedule: p });
+    }
+    return out;
+  }
+
+  /**
+   * Fires one scheduled retry (serialized per mission). Claimed by compare-and-set on the exact wait it was scheduled from: a Pause, a
+   * Stop, Stop All, the mission deadline, a plan's pause or another tick moved it, and nothing happens. A gate suspended meanwhile is
+   * never waited out or reopened: the step goes BLOCKED at the gate and the owner continues it. Otherwise the same step again
+   * (redispatch: same task, cycle and change set), through dispatchRun — attempts, deadline, plan authority, then runs.start's gate.
+   */
+  function fireTurnRetry(missionId, schedule) {
+    const f = fm(missionId);
+    if (!f || f.stage !== schedule.stage || f.waitReason !== "retry" || f.cancelRequestedAt) return null;
+    const last = rowToDispatch(db.prepare("SELECT * FROM factory_dispatches WHERE mission_id = ? ORDER BY created_at DESC LIMIT 1").get(missionId));
+    if (!last || last.id !== schedule.dispatchId || last.status !== "FAILED") return null;
+    const claimed = db.prepare("UPDATE factory_missions SET wait_reason = 'runner', stage_reason = ?, updated_at = ? WHERE mission_id = ? AND stage = ? AND wait_reason = 'retry' AND cancel_requested_at IS NULL")
+      .run(`Reiau etapa ${last.stage} după depășirea limitei pe tură (singura reîncercare automată)`, now(), missionId, schedule.stage).changes;
+    if (claimed !== 1) return null;
+    const gateState = settings.get("executionGate");
+    if (gateState?.status !== "open") {
+      blockTask(last.taskId, "poarta de execuție e suspendată");
+      return setStage(missionId, "BLOCKED", { waitReason: "gate", reason: `Reîncercarea etapei ${last.stage} nu pornește: poarta de execuție e suspendată (${String(gateState?.reason || "—").slice(0, 120)}); o reiei tu după redeschidere` });
+    }
+    bus.emit({ type: "factory.turn_retry", scopeType: "mission", scopeId: missionId, source: "factory",
+      payload: { stage: last.stage, cycle: last.request?.cycle ?? null, changeSeq: last.request?.changeSeq ?? null, afterDispatch: last.id, scheduledAt: schedule.retryAt } });
+    return redispatch(missionId, last);
   }
 
   async function afterWriter(missionId, run) {
@@ -1474,6 +1606,9 @@ export function createFactory(deps) {
       const paused = await pause(missionId, { actor: "deadline" }).then(() => true, () => false);
       if (paused && fm(missionId)?.stage === "PAUSED") setStage(missionId, "NEEDS_OWNER_DECISION", { waitReason: "owner_decision", reason: "Limita de timp a misiunii a fost atinsă; execuția a fost oprită" });
     }
+    // 2.12.2 (P0-R3): after the deadline pass (a mission it paused is no longer waiting), the turn-timeout retries whose cooldown passed.
+    // In the background, serialized per mission: tick never waits for a model start (and never deadlocks inside a mission's own step).
+    for (const { missionId, schedule } of dueTurnRetries()) background(missionId, () => fireTurnRetry(missionId, schedule));
     return late;
   }
 
@@ -1518,6 +1653,9 @@ export function createFactory(deps) {
       evidence: db.prepare("SELECT * FROM factory_evidence WHERE mission_id = ? ORDER BY created_at").all(missionId).map(rowToEvidence),
       bundles: db.prepare("SELECT id, change_set_id, change_set_sha, spec_version, sha256, status, file_path, decided_at, decision_note, created_at FROM factory_bundles WHERE mission_id = ? ORDER BY created_at").all(missionId),
       grantsNeeded: grantsNeeded(f),
+      // 2.12.2 (P0-R3): the per-turn limits the model steps run with (separate from the mission's deadline) and a scheduled retry.
+      turnLimits: { ...turnTimeoutsOf(f.limits), missionMin: f.limits?.maxDurationMin ?? null },
+      turnRetry: f.waitReason === "retry" ? (() => { const p = parse(db.prepare("SELECT payload_json FROM events WHERE type = 'factory.turn_timeout' AND scope_type = 'mission' AND scope_id = ? ORDER BY seq DESC LIMIT 1").get(missionId)?.payload_json, {}); return p.retry ? { stage: p.stage, retryAt: p.retryAt, attempt: p.attempt, limit: p.limit } : null; })() : null,
       runnerReadiness: runner.readiness(project),
       stageEnvironments: runner.stageMap ? runner.stageMap(project) : null,
     };
@@ -1599,6 +1737,14 @@ export function createFactory(deps) {
   return { initialize, reviseSpec, setLimits, scopeFor, assertStartable, startApproved, onRunFinished, stop, pause, resume, accept, reject, stopAll, recover, tick, idle, close,
     continuationScope, rebindForPlan, raiseLimits, exhaustedStep: (missionId) => exhaustedStep(missionId),
     attachAuthority: (fn) => { authority = typeof fn === "function" ? fn : null; },
+    /** 2.12.2 (P0-R3), test mode only: scales the per-turn limits sent to the run manager (0 < scale ≤ 1); refused outside test mode. */
+    setTurnTimeScaleForTests: (scale) => {
+      if (!config.testMode) throw new HubError("policy", "Scala limitelor pe tură există doar în modul de test");
+      const n = Number(scale);
+      if (!(Number.isFinite(n) && n > 0 && n <= 1)) throw new HubError("validation", "Scala limitelor pe tură e între 0 și 1");
+      turnTimeScale = n;
+      return n;
+    },
     setFindingStatus, view, list, summary: (missionId) => { const v = view(missionId); return v && { stage: v.factory.stage, waitReason: v.factory.waitReason, reason: v.factory.stageReason, spec: specSummary(v.spec.spec) }; } };
 }
 

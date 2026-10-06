@@ -133,7 +133,8 @@ test("M10.2-EP-03 not verifiable → ONE question (no draft); the answer (a choi
     const drafts = count(t, "SELECT COUNT(*) AS n FROM factory_missions");
     const q = await plan(t, { text: "Adaugă verificarea numelui: spațiile trec de verificare", projectId: t.project.id });
     assert.ok(q.clarification, JSON.stringify(q));
-    assert.match(q.clarification.question, /test de acceptanță/);
+    // 2.12.2 (P0-R6, L4): plain words — the tests found, one picked as the proof (no file to name or write).
+    assert.match(q.clarification.question, /am găsit testele automate „test\/acceptance\.test\.mjs” și „test\/unit\.test\.mjs”\. Pe care îl folosesc ca dovadă că cerința e gata\?/);
     assert.deepEqual(q.clarification.options.map((o) => o.id), ["test/acceptance.test.mjs", "test/unit.test.mjs"], "existing tests, acceptance first");
     assert.equal(q.clarification.forIntent, "engineering");
     assert.equal(count(t, "SELECT COUNT(*) AS n FROM factory_missions"), drafts, "a question creates no draft");

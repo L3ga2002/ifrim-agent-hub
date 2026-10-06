@@ -11,7 +11,8 @@
 // - The Hub's own repository is refused, always (decision 10), and a project without execution rights is refused, before any
 //   draft exists; other blockers are explained once from verified state (owner/blockers.mjs) and the request is preserved.
 // - A request that cannot be made verifiable (no existing acceptance test to bind) gets ONE question, never a draft that can
-//   only end as PLAN_INCOMPLETE. M10.2.1 (D21): a request that names „testul de acceptanță” or describes a bug without naming a
+//   only end as PLAN_INCOMPLETE — or, 2.12.2 (P0-R6, L4), when the project has no test file at all, ONE plain message (nothing to choose:
+//   the Hub cannot prove the change works, the owner does not write the test, nothing is kept). M10.2.1 (D21): a request that names „testul de acceptanță” or describes a bug without naming a
 //   test file binds the project's ONLY acceptance test (a file named …acceptance… / …acceptanță…) with no question; with none or
 //   several, the one question stays. The bound test is protected: the writer repairs the implementation, never the test (said on
 //   the card and in the spec the writer reads). A test file the owner named that does not exist is never replaced by another one.
@@ -27,7 +28,7 @@ import { hashCanonical } from "../../core/canonical.mjs";
 import { redactText } from "../../security/redact.mjs";
 import { normalize } from "../intents.mjs";
 import { checkSpec, isAllowedCommand, protectedTestRefs } from "../../factory/spec.mjs";
-import { defaultModelLimits, ROLE_DEFAULT_BINDINGS, limitsHaveModels } from "../../factory/plan.mjs";
+import { defaultModelLimits, ROLE_DEFAULT_BINDINGS, limitsHaveModels, turnTimeoutsOf } from "../../factory/plan.mjs";
 import { collectFacts, onlyAfterConfirmation, readinessPassFor } from "../readiness-runner.mjs";
 import { explain } from "../blockers.mjs";
 
@@ -306,11 +307,21 @@ export function registerEngineeringPlanner(hub, intake) {
     }
     if (!built.testRef) {
       const candidates = testCandidates(project.path);
+      // Kept either way: a programmer's bare test path (or a choice id) still completes this request through the open question.
       remember(key, { text: words, args, projectId: project.id, awaiting: "test", options: candidates });
+      // 2.12.2 (P0-R6, L4): plain words for the owner, who is not a programmer — live he asked four times what „numește fișierul” meant.
+      // No test at all: a message (not a question he cannot answer) that says why nothing starts, that he does not write the test, and that
+      // nothing is kept. Tests found: he picks one of them (never names or writes a file); the chosen one is protected, as before.
+      if (!candidates.length) {
+        return { kind: "message", projectId: project.id,
+          text: `Pe ${project.name} nu există încă un test automat care să arate când cerința e gata, iar fără el Hub-ul nu pornește o schimbare de cod: n-ar putea dovedi că merge. Nu trebuie să-l scrii tu: pasul în care Hub-ul scrie singur testul vine curând (M11). Acum nu pot propune planul; nimic nu e păstrat.` };
+      }
+      const named = candidates.map((c) => `„${c}”`);
+      const listed = named.length === 1 ? named[0] : `${named.slice(0, -1).join(", ")} și ${named[named.length - 1]}`;
       return { kind: "question", projectId: project.id, forIntent: "engineering", options: candidates.map((c) => ({ id: c, label: c })),
-        question: candidates.length
-          ? `Ce test de acceptanță verifică asta pe ${project.name}? Îl fixez (protejat) înainte de implementare: ${candidates.length === 1 ? `„${candidates[0]}”` : "alege unul"}, sau numește alt fișier de test existent.`
-          : `Pe ${project.name} nu găsesc niciun test de acceptanță existent (test/…test.mjs). Un plan pornește doar cu un test care există deja și verifică cerința: numește fișierul sau adaugă-l întâi.` };
+        question: candidates.length === 1
+          ? `Pe ${project.name} am găsit un singur test automat, ${listed}. Alege-l ca dovadă că cerința e gata și îl protejez: se repară codul, nu testul.`
+          : `Pe ${project.name} am găsit testele automate ${listed}. Pe care îl folosesc ca dovadă că cerința e gata? Îl protejez: se repară codul, nu testul.` };
     }
     if (built.problems.length) {
       remember(key, { text: words, args, projectId: project.id, awaiting: "text", options: [] });
@@ -404,8 +415,11 @@ export function registerEngineeringPlanner(hub, intake) {
     const guard = !guarded.length ? ""
       : guarded.length === 1 ? ` Testul de acceptanță ${quoted}${autoBound === guarded[0] ? " (singurul test de acceptanță al proiectului, ales fără întrebare)" : ""} e protejat: writer-ul repară implementarea, nu testul; o modificare a testului oprește misiunea.`
         : ` Testele de acceptanță ${quoted} sunt protejate: writer-ul repară implementarea, nu testele; o modificare a lor oprește misiunea.`;
+    // 2.12.2 (P0-R3): the per-turn limits and the mission's deadline the plan binds (the same values the card shows and the dispatch uses).
+    const turn = turnTimeoutsOf(view.factory.limits || {});
+    const limitsNote = ` Limită pe tură: writer ${turn.writer} min, reviewer ${turn.reviewer} min; termen misiune ${view.factory.limits?.maxDurationMin ?? "—"} min (legate în plan).`;
     return { kind: "envelope", proposal, projectId: project.id,
-      note: `Ciornă de engineering + un singur plan de confirmat. Modele ${whose}: ${label} (afișate și legate în plan; nu folosesc implicitul contului).${guard} Nimic nu a pornit și niciun grant nu a fost creat.${proposal.summary?.state === "PLAN_READY_AFTER_READINESS" ? " După confirmare fac singur pasul de pregătire afișat (fără model), apoi pornesc." : ""}` };
+      note: `Ciornă de engineering + un singur plan de confirmat. Modele ${whose}: ${label} (afișate și legate în plan; nu folosesc implicitul contului).${guard}${limitsNote} Nimic nu a pornit și niciun grant nu a fost creat.${proposal.summary?.state === "PLAN_READY_AFTER_READINESS" ? " După confirmare fac singur pasul de pregătire afișat (fără model), apoi pornesc." : ""}` };
   }
 
   // ---------- draft cleanup (post-commit; never inside the writer's transaction) ----------

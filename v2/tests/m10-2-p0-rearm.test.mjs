@@ -430,7 +430,7 @@ test("RA-07 security events around the stop (from 15 minutes before the chain st
 });
 
 // ------------------------------------------------------------------------------------------------------------------------------ RA-08
-test("RA-08 not eligible while a lease is retained, a run is still active, a mission is still cancelling or Lega is active — each with its Romanian reason; never an admin pointer", async () => {
+test("RA-08 not eligible while a run is still active, a mission is still cancelling or Lega is active — each with its Romanian reason; a retained lease is a step of the card (2.12.2); never an admin pointer", async () => {
   const t = await ownerHub();
   try {
     // A run still active under a plain suspension (gate.set suspend lets running work finish).
@@ -457,14 +457,19 @@ test("RA-08 not eligible while a lease is retained, a run is still active, a mis
     await waitFor(() => (t.hub.factory.list().find((f) => f.missionId === t.mission.id)?.stage === "CANCELLED" ? true : null), 20000, 50);
     const ok = await card(t);
     assert.equal(ok.code, "ELIGIBLE");
-    // A retained lease (holder state unknown): no rearm, and a card shown before is refused with the same reason.
+    // A retained lease (holder state unknown). 2.12.2 (P0-R1, deliberate change): no longer a dead end — the card stays rearmable and
+    // INCLUDES the lease as a step whose outcome cannot be proven (no run behind it: the owner's acknowledgement is required); a card
+    // shown before it appeared is refused as changed (the hash binds the lease list). The full flow: m10-2-p0r1-leases.test.mjs.
     const lease = t.hub.bus.transaction(() => { const l = t.hub.leases.acquire({ resource: "workspace:test-rearm", holder: "test" }); t.hub.leases.retain(l.id, "test"); return l; });
-    const held = await card(t);
-    assert.deepEqual([held.eligible, held.code], [false, "LEASES"]);
-    assert.match(held.reason, /Un spațiu de lucru e încă rezervat/);
-    assert.equal(t.hub.gateRearm.eligibility().code, "LEASES");
-    await assert.rejects(rearm(t, ok), (e) => e.category === "conflict" && e.details?.code === "LEASES");
+    await assert.rejects(rearm(t, ok), (e) => e.category === "conflict" && e.details?.code === "CARD_CHANGED");
     assert.equal(gate(t).status, "suspended");
+    const held = await card(t);
+    assert.deepEqual([held.eligible, held.code], [true, "ELIGIBLE"]);
+    assert.deepEqual(held.leases.steps.map((s) => [s.leaseId, s.verdict, s.ack]), [[lease.id, "unknown", true]]);
+    assert.equal(held.leases.ackRequired, true);
+    assert.match(held.leases.steps[0].text, /nu e legată de nicio execuție înregistrată/);
+    assert.equal(t.hub.gateRearm.eligibility().code, "ELIGIBLE");
+    assert.equal(t.hub.gateRearm.eligibility().leases.ackRequired, true);
     t.hub.bus.transaction(() => t.hub.leases.release(lease.id, "test"));
     // A mission whose cancellation is not confirmed yet.
     t.hub.db.prepare("UPDATE factory_missions SET stage = 'CANCEL_REQUESTED' WHERE mission_id = ?").run(t.mission.id);
@@ -480,7 +485,7 @@ test("RA-08 not eligible while a lease is retained, a run is still active, a mis
       assert.deepEqual([lega.eligible, lega.code], [false, "LEGA_ACTIVE"]);
       assert.match(lega.reason, /Sesiunea vocală Lega e încă deschisă/);
     } finally { t.hub.lega.active = active; }
-    for (const r of [running, held, cancelling]) assert.doesNotMatch(r.reason, ADMIN_POINTERS);
+    for (const text of [running.reason, held.headline, ...held.lines, ...held.leases.steps.map((s) => s.text), cancelling.reason]) assert.doesNotMatch(text, ADMIN_POINTERS);
     const final = await card(t);
     assert.equal((await rearm(t, final)).reopened, true);
   } finally { await t.cleanup(); }

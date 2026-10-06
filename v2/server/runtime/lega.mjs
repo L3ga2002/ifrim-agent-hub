@@ -6,13 +6,15 @@ import { newId } from "../core/ids.mjs";
 import { redactText } from "../security/redact.mjs";
 import { parseVoiceCommand } from "../domain/voice.mjs";
 import { LEGA_DEFAULTS, LEGA_SCREENS, LEGA_TARGETS, LEGA_WEB_SEARCH_MODES, LEGA_COST_PER_MINUTE_USD, LEGA_TASK_MAX, LEGA_MAX_PENDING_PROPOSALS, validateOfferSdp, speakable,
-  LEGA_LEGACY_ONLY_TARGETS, LEGA_LEGACY_ONLY_TOOLS, LEGA_WORK_KINDS, LEGA_REQUEST_MAX, legaHowTo } from "../policy/lega-policy.mjs";
+  LEGA_LEGACY_ONLY_TARGETS, LEGA_LEGACY_ONLY_TOOLS, LEGA_WORK_KINDS, LEGA_REQUEST_MAX, legaHowTo, LEGA_WORK_TAILS, legaFaceCommand, legaFaceText } from "../policy/lega-policy.mjs";
 import { catalogEntry } from "../policy/approval-policy.mjs";
+import { factoryWaitText } from "../policy/factory-wait.mjs";
 import { normalizeBindingRequest } from "../policy/model-binding.mjs";
 import { readProjectNotes } from "../domain/project-notes.mjs";
 import { resolveIntent } from "../owner/intents.mjs";
 // Review M10.2 #5: the intake's own map of resolver intents → planner kinds (one source for what "bounded work" is).
-import { PLANNER_FOR_INTENT } from "../owner/intake.mjs";
+// 2.12.2 (L6): the intake's clarification window is also how long a repeated request_work after the Hub's question is refused.
+import { PLANNER_FOR_INTENT, INTAKE_LIMITS } from "../owner/intake.mjs";
 // Review M10.2 #13/#23: the armed window's own sentence classes (a spoken yes during an armed window is the local gate's to decide).
 import { classifyArmedSentence } from "../owner/armed-window.mjs";
 // M10.2.1 (D18): the resume grammar a spoken sentence must be WHOLE to count (the same rule the local gate segment is judged by);
@@ -25,6 +27,11 @@ const CORROBORATION_MS = 20000;
 const HUB_ACTIONS_MAX = 20;
 /** A plan the voice bridge just proposed from the owner's words is not planned a second time by the agent's request_work. */
 const BRIDGE_DEDUPE_MS = 30000;
+/**
+ * Reads whose answer the Hub says itself after the bridge (sayStopTalk), in its own words: talk about a stop (2.12.2 P0-R2) and a request
+ * to change the Hub's mode (P0-R6, L11). Every other read is answered by the agent through its own tools (no double answer).
+ */
+const HUB_SPOKEN_READS = new Set(["explain_stop", "explain_mode"]);
 /** The spoken warning before the hard duration cap (only for sessions longer than two minutes). */
 const END_WARNING_MS = 60000;
 /** M10.2 U13: a plan the agent's tool presented is armed when that turn's answer was spoken, if the turn ends within this time. */
@@ -36,6 +43,15 @@ const PENDING_ARM_MS = 60000;
 const VOICE_CONTINUE_QUIET_MS = 10000;
 /** VOICE-01: the continue-related provider copies kept per session (newest last) for the intake's veto check. */
 const PROVIDER_COPIES_MAX = 10;
+/**
+ * 2.12.2 (L6): after the Hub ASKED its one question for a request_work (same project and planner kind), the same words again within the
+ * question's window are not planned again (live 2026-10-06: three request_work calls, the same question back each time). The window is the
+ * intake's clarification window (the Hub waits that long for the answer); the question kept per session per (project, kind) is the latest.
+ */
+const REPEAT_QUESTION_MS = INTAKE_LIMITS.clarificationTtlMs;
+const WORK_QUESTIONS_MAX = 10;
+/** An answer to the Hub's question carries a test file path (the engineering planner's question) or one of the question's choices. */
+const TEST_PATH_IN_WORDS = /(?:^|[\s„"'(])(?:\.\/)?[\w-]+(?:\/[\w.-]+)*\.(?:test|spec)\.(?:mjs|cjs|js|ts)(?=$|[\s.,;:!?”"')])/i;
 /** Intake planner kind per lega.request_work hint (studio → the Content Studio planner; mission → start/resume decided by the words). */
 const WORK_KIND = Object.freeze({ engineering: "engineering", studio: "studio_create", run: "run", mission: "start_mission" });
 const PLANNER_OF_INTENT = new Set(["studio_create", "start_mission", "resume_mission", "engineering", "run"]);
@@ -524,7 +540,9 @@ export function createLega({ bus, live, clock, settings, gate, grants, projects,
     current.status = "connecting";
     current.negotiationTimer = setTimeout(() => { if (current.status === "connecting") stop(id, "negotiation-timeout", "hub").catch(() => {}); }, ms(NEGOTIATION_TIMEOUT_MS));
     live.publish({ type: "lega.session", session: publicView(current) });
-    return { sessionId: id, answerSdp: current.handle.answerSdp, voice: chosenVoice, maxDurationS, idleTimeoutS: current.idleTimeoutS, authority: current.authority };
+    // Review F4: `gated` tells the page whether this session started with the local voice filter (only such a session may switch the
+    // filter on live; one started without it is closed when the filter is turned on — the U13 rule below).
+    return { sessionId: id, answerSdp: current.handle.answerSdp, voice: chosenVoice, maxDurationS, idleTimeoutS: current.idleTimeoutS, authority: current.authority, gated: Boolean(current.gated) };
   }
 
   /** The browser reports that the peer connected (data channel open): the session clock starts here. */
@@ -548,7 +566,9 @@ export function createLega({ bus, live, clock, settings, gate, grants, projects,
     }
     touch(current);
     setPhase(current, "listening");
-    bus.emit({ type: "lega.session.connected", scopeType: "system", scopeId: id, source: "user", payload: { voice: current.voice } });
+    // 2.12.2 (L9): the model id and reasoning effort Codex reported for Lega's thread (non-secret; null when it reported none).
+    const backend = current.handle?.backend || null;
+    bus.emit({ type: "lega.session.connected", scopeType: "system", scopeId: id, source: "user", payload: { voice: current.voice, model: backend?.model ?? null, effort: backend?.effort ?? null } });
     live.publish({ type: "lega.session", session: publicView(current) });
     return publicView(current);
   }
@@ -710,6 +730,11 @@ export function createLega({ bus, live, clock, settings, gate, grants, projects,
       await stop(current.id, `forbidden:${event.itemType}`, "hub").catch(() => {});
     } else if (event.type === "quota") {
       await stop(current.id, "quota", "hub").catch(() => {});
+    } else if (event.type === "notice") {
+      // 2.12.2 (L9): a provider warning that does not end the session (Lega's thread reported another reasoning effort than the Hub set):
+      // shown to the owner as the Hub's own text, never fatal; the reported value is in lega.session.connected.
+      const text = clip(event.text, 300);
+      if (text) live.publish({ type: "lega.notice", sessionId: current.id, level: event.level === "info" ? "info" : "warning", text });
     } else if (event.type === "error") {
       // Kept on the session and persisted (redacted): the UI and the journal show what the provider said (M05 §22).
       const text = redactText(String(event.message || "")).slice(0, 300);
@@ -786,13 +811,32 @@ export function createLega({ bus, live, clock, settings, gate, grants, projects,
       // Under voice-first the intake's effect-class matrix already refuses what a provider transcript must not do (a confirmation, a
       // downloaded file, publishing, consent) with the real reason, and lets through what it may ("Rulează testele", "Șterge logo-ul de
       // la secunda 5" as a correction proposal): the sentence goes to the bridge instead of the old click notice. Legacy: unchanged.
-      if (isVoiceFirst(current)) { await bridge(current, text, transcriptId); return; }
+      if (isVoiceFirst(current)) { await sayStopTalk(current, text, await bridge(current, text, transcriptId)); return; }
       live.publish({ type: "lega.notice", sessionId: current.id, level: "warning", text: "Lega nu aprobă și nu șterge nimic: confirmă acțiunea exactă prin click." });
       return;
     }
     // M10.2: everything else the owner said reaches the intake (voice-first only; the legacy path is unchanged). The fast path above
     // already handled Stop / pause / mute / fixed screens, so a Stop is dispatched once, never twice.
-    if (parsed.kind === "message" && isVoiceFirst(current)) await bridge(current, text, transcriptId);
+    if (parsed.kind === "message" && isVoiceFirst(current)) await sayStopTalk(current, text, await bridge(current, text, transcriptId));
+  }
+  /**
+   * 2.12.2 (P0-R2): a sentence that only TALKS about a stop or a pause („Ce urmează după Stop All?”, „Nu opri tot”, „Dacă pică testele,
+   * oprește tot”, „Ieri am spus oprește tot”) reached the intake, which answered explain_stop (a read, so the bridge left it to the agent).
+   * The Hub says that answer itself, in its own words — the agent must neither stop nor promise a conditional stop — and keeps it for
+   * lega.hub_actions. Runs only after the bridge, never on the Stop fast path above (a real Stop is dispatched before any of this).
+   * 2.12.2 (P0-R6, L11): the same for a request to change the Hub's mode („Pune-l pe live activation”, „Treci pe live”): explain_mode is
+   * a read too, so without this the agent improvised the answer (live 2026-10-06: „În regulă, mă ocup acum.”); the Hub says its own.
+   */
+  async function sayStopTalk(current, text, out) {
+    if (!out || out.duplicate) return;
+    const answered = (out.results || []).filter((r) => HUB_SPOKEN_READS.has(r?.intent) && r.message && !r.refused && !r.error);
+    const lines = [...new Set(answered.map((r) => clip(r.message, 600)))];
+    if (!lines.length || current !== session || !isLive(current)) return;
+    const said = lines.join(" ");
+    const intents = [...new Set(answered.map((r) => r.intent))];
+    recordAction(current, { heard: clip(redactText(String(text || "")), 160), intents, outcome: "message", said: said.slice(0, 900) });
+    bus.emit({ type: "lega.hub_action", scopeType: "system", scopeId: current.id, source: "hub", payload: { intents, outcome: "message", planId: null, workRequestId: null } });
+    await speak(current, said);
   }
   // ---------------------------------------------------------------- 2.12.1 (VOICE-01): provider copies of a spoken „Continuă”
   let copySeq = 0;
@@ -942,13 +986,22 @@ export function createLega({ bus, live, clock, settings, gate, grants, projects,
       // The resolver's intents plus the intents the Hub actually executed (a sentence that only names a project can complete a request
       // still waiting for its project — review #5 — and then the executed intent is the request's, not open_project).
       const intents = [...new Set([...(out.resolved?.steps || []).map((s) => s.intent), ...(out.results || []).map((r) => r?.intent).filter(Boolean)])].slice(0, 6);
+      // 2.12.2 (L8): a face sentence („Arată-ți fața”, „Ascunde fața”, „Arată-mi compania”) becomes the view command the typed cockpit
+      // applies, published for the web Lega screen (view only, no authority) and reported by lega.hub_actions — never spoken (like a
+      // navigation), so the agent reports it instead of saying Lega has no face. Only intents the intake answered without a refusal count.
+      const answered = new Set(results.filter((r) => r && !r.refused && !r.error).map((r) => r.intent));
+      const face = legaFaceCommand((out.resolved?.steps || []).filter((s) => answered.has(s?.intent)));
+      const shown = legaFaceText(face);
       // Nothing the owner can see (an unknown sentence, a read the agent answers with its own tools): no Hub action, no speech.
-      if (!d.say && !d.navigate) return out;
+      if (!d.say && !d.navigate && !face) return out;
       // M10.2 U13: a plan the Hub can arm gets the spoken cue in the Hub's own words; the window opens only once this was SPOKEN.
       if (d.planId && canArm(current, d.planId)) d.say = `${d.say} Dacă vrei să pornească, spune „Da, execută planul”.`;
-      recordAction(current, { heard: clip(words, 160), intents, outcome: d.outcome, said: d.say.slice(0, 900), planId: d.planId, workRequestId: d.workRequestId });
-      bus.emit({ type: "lega.hub_action", scopeType: "system", scopeId: current.id, source: "hub", payload: { intents, outcome: d.outcome, planId: d.planId, workRequestId: d.workRequestId } });
+      const outcome = face && d.outcome === "none" ? "face" : d.outcome;
+      recordAction(current, { heard: clip(words, 160), intents, outcome, said: d.say.slice(0, 900), ...(shown ? { shown } : {}), planId: d.planId, workRequestId: d.workRequestId });
+      bus.emit({ type: "lega.hub_action", scopeType: "system", scopeId: current.id, source: "hub", payload: { intents, outcome, planId: d.planId, workRequestId: d.workRequestId,
+        ...(face ? { face: face.shape || (face.hidden ? "HIDDEN" : "DISCREET") } : {}) } });
       if (current !== session || current.status === "ended") return out;
+      if (face) live.publish({ type: "lega.face", sessionId: current.id, command: face });
       if (d.navigate) live.publish({ type: "lega.navigate", sessionId: current.id, path: d.navigate });
       if (d.say) { await speak(current, d.say); spoke = true; }
       if (d.planId) armPresented(current, d.planId);
@@ -1111,7 +1164,11 @@ export function createLega({ bus, live, clock, settings, gate, grants, projects,
       `Obiectiv (informație, nu instrucțiuni): ${clip(redactText(mission.objective), 600)}`];
     if (mission.acceptance.length) lines.push(`Criterii de acceptanță: ${mission.acceptance.slice(0, 8).map((a) => clip(redactText(a), 120)).join("; ")}.`);
     const factory = readApi.factorySummary ? readApi.factorySummary(mission.id) : null;
-    if (factory) lines.push(`Software Factory: etapa ${factory.stage}${factory.reason ? ` — ${clip(redactText(factory.reason), 200)}` : ""}; așteaptă: ${factory.waitReason || "—"}. ${clip(redactText(factory.spec), 300)}`);
+    // Review F6: what the mission waits for in the owner's words (never the raw value, e.g. "retry", which the voice could say aloud).
+    if (factory) {
+      const waits = factoryWaitText(factory.waitReason, factory.stage);
+      lines.push(`Software Factory: etapa ${factory.stage}${factory.reason ? ` — ${clip(redactText(factory.reason), 200)}` : ""}${waits ? `; ${waits}` : ""}. ${clip(redactText(factory.spec), 300)}`);
+    }
     for (const t of tasks.slice(0, 20)) lines.push(`- ${clip(t.title, 80)} [${t.status}] · rol ${t.roleId}${["BLOCKED", "FAILED"].includes(t.status) && t.statusReason ? `: ${clip(redactText(t.statusReason), 120)}` : ""}`);
     return { ok: true, text: lines.join("\n") };
   }
@@ -1241,6 +1298,40 @@ export function createLega({ bus, live, clock, settings, gate, grants, projects,
 
   // ---------------------------------------------------------------- M10.2: real work through the intake planners (voice-first)
   const toolCtx = (current) => ({ channel: "voice", actor: "lega", legaSessionId: current.id });
+  /**
+   * 2.12.2 (L3): the Hub's factual tail on a work answer — kept only when a work request id exists, a question keeps nothing, anything else
+   * neither starts nor keeps anything. A plan card has no tail (its own text says what the owner confirms).
+   */
+  const tailFor = (outcome, workRequestId = null) => (outcome === "plan" ? ""
+    : outcome === "blocked" && workRequestId ? LEGA_WORK_TAILS.kept : outcome === "question" ? LEGA_WORK_TAILS.question : LEGA_WORK_TAILS.nothing);
+  const withTail = (text, tail) => (tail ? `${String(text || "").trim()} ${tail}` : String(text || ""));
+  /** A work request refused before any planner ran: nothing started, nothing kept, and the answer says so. */
+  const refusedWork = (reply) => ({ ...reply, ok: false, text: withTail(reply?.text, LEGA_WORK_TAILS.nothing) });
+  /** What the agent hears about work the bridge already did from the owner's words: a question is never "prepared", and the tail says what is kept. */
+  const recentWorkReply = (recent) => (recent.outcome === "question"
+    ? { ok: true, text: withTail(`Hub-ul a întrebat deja din cuvintele tale: ${recent.said}`, LEGA_WORK_TAILS.question) }
+    : { ok: true, text: withTail(`Hub-ul a pregătit deja asta din cuvintele tale: ${recent.said}`, tailFor(recent.outcome, recent.workRequestId)) });
+  /** 2.12.2 (L6): words compared for a repeat (case, diacritics, punctuation and spacing ignored). */
+  const sameWords = (text) => normalizeWords(text).replace(/\s+/g, " ").trim();
+  /** Keeps the latest question the Hub asked per (project, planner kind) in this session; any other outcome for that pair clears it. */
+  function noteWorkQuestion(current, { kind, projectId, text, outcome, question, options }) {
+    const key = `${projectId || ""}|${kind}`;
+    const rest = (current.workQuestions || []).filter((q) => q.key !== key);
+    current.workQuestions = outcome !== "question" ? rest : [...rest, { key, at: clock().getTime(), words: sameWords(text), question: clip(question, 300),
+      options: (Array.isArray(options) ? options : []).slice(0, 8).flatMap((o) => [sameWords(o?.id), sameWords(o?.label)]).filter((w) => w.length >= 3) }].slice(-WORK_QUESTIONS_MAX);
+  }
+  /**
+   * The question the Hub asked moments ago for THIS request (same project, same planner kind, the same words, inside the window), or null.
+   * An answer — a test file path or one of the question's choices — is never a repeat, even in the same words.
+   */
+  function repeatedQuestion(current, { kind, projectId, request }) {
+    const q = (current.workQuestions || []).find((x) => x.key === `${projectId || ""}|${kind}`);
+    if (!q || clock().getTime() - q.at >= REPEAT_QUESTION_MS) return null;
+    const words = sameWords(request);
+    if (!words || words !== q.words) return null;
+    if (TEST_PATH_IN_WORDS.test(request) || q.options.some((o) => ` ${words} `.includes(` ${o} `))) return null;
+    return q;
+  }
   /** The server's explanation for a refused request, kept as a work request (said in full once per signature, then one line). */
   async function explainAndKeep(current, { projectId, intent, text, kind }) {
     if (typeof late.explain !== "function") return null;
@@ -1250,7 +1341,7 @@ export function createLega({ bus, live, clock, settings, gate, grants, projects,
     let kept = null;
     try { kept = typeof late.recordBlocked === "function" ? late.recordBlocked({ text, source: "voice-provider", channel: "voice", projectId, intent: kind, effectClass: "BOUNDED_WORKFLOW", blocker: explanation, actor: "lega" }) : null; } catch { kept = null; }
     bus.emit({ type: "lega.work_request", scopeType: "system", scopeId: current.id, source: "lega", payload: { kind, projectId: projectId || null, outcome: "blocked", signature: explanation.signature, workRequestId: kept?.id || null } });
-    return { ok: false, text: kept?.text || explanation.text, blocked: true };
+    return { ok: false, text: withTail(kept?.text || explanation.text, tailFor("blocked", kept?.id || null)), blocked: true };
   }
   /**
    * Bounded work → intake.plan (the same planner, effect-class gate, card / blocker / question handling and lega.plan announcement as
@@ -1259,7 +1350,7 @@ export function createLega({ bus, live, clock, settings, gate, grants, projects,
    */
   async function planThroughIntake(current, { kind, text, projectId = null, args = {}, explained = false }) {
     const intake = intakeOf();
-    if (!intake?.plan) return { ok: false, text: "Planificatorul Hub-ului nu e disponibil acum." };
+    if (!intake?.plan) return refusedWork({ text: "Planificatorul Hub-ului nu e disponibil acum." });
     const known = typeof intake.planners === "function" ? intake.planners().includes(kind) : true;
     if (!known && !explained && (kind === "engineering" || kind === "run") && projectId) {
       const blocked = await explainAndKeep(current, { projectId, intent: "engineering", text, kind });
@@ -1267,9 +1358,11 @@ export function createLega({ bus, live, clock, settings, gate, grants, projects,
     }
     let r;
     try { r = await intake.plan({ kind, text, projectId, args, source: "voice-provider", legaSessionId: current.id }, toolCtx(current)); }
-    catch (error) { return { ok: false, text: `Nu am putut pregăti planul: ${clip(error.message, 200)}` }; }
+    catch (error) { return refusedWork({ text: `Nu am putut pregăti planul: ${clip(error.message, 200)}` }); }
     const d = describeResults([r]);
     bus.emit({ type: "lega.work_request", scopeType: "system", scopeId: current.id, source: "lega", payload: { kind, projectId: projectId || null, outcome: d.outcome, planId: d.planId, workRequestId: d.workRequestId } });
+    // 2.12.2 (L6): the Hub's question for this request is remembered (a repeat of the same words is then refused for its window).
+    noteWorkQuestion(current, { kind, projectId, text, outcome: d.outcome, question: r.clarification?.question || d.say, options: r.clarification?.options });
     if (d.navigate) live.publish({ type: "lega.navigate", sessionId: current.id, path: d.navigate });
     // M10.2 U13: the agent says the plan in this turn; the Hub arms it after the turn's answer was spoken (turn.completed).
     if (d.planId && canArm(current, d.planId)) {
@@ -1278,7 +1371,8 @@ export function createLega({ bus, live, clock, settings, gate, grants, projects,
     }
     const text0 = d.say || clip(r.message || "", 600) || "Nu am putut pregăti un plan pentru asta.";
     // ok = the Hub produced a plan card or asked its one question; a refusal, a kept blocker or "no planner yet" is not a success.
-    return { ok: known && !["refused", "blocked"].includes(d.outcome) && !r.refused && !r.error, text: text0 };
+    // 2.12.2 (L3): every answer that is not a plan card ends with the Hub's factual tail on what was kept (a plan's text is unchanged).
+    return { ok: known && !["refused", "blocked"].includes(d.outcome) && !r.refused && !r.error, text: withTail(text0, tailFor(d.outcome, d.workRequestId)) };
   }
   /** The planner kind and its arguments for a request: the hint, else what the resolver reads in the words, else the topic words. */
   function workOf(request, hint, project) {
@@ -1303,19 +1397,28 @@ export function createLega({ bus, live, clock, settings, gate, grants, projects,
 
   async function requestWork(current, args) {
     const request = String(args?.request || "").replace(/\s+/g, " ").trim();
-    if (request.length < 3) return { ok: false, text: "Spune-mi ce lucrare vrei." };
-    if (request.length > LEGA_REQUEST_MAX) return { ok: false, text: `Cererea are peste ${LEGA_REQUEST_MAX} caractere; spune-o mai scurt.` };
-    if (hasSecret(request)) return { ok: false, text: "Cererea conține ceva ce pare un secret; scrie-o tu în cockpit." };
+    // 2.12.2 (L3): a request refused here kept nothing and started nothing, and its answer says so (refusedWork).
+    if (request.length < 3) return refusedWork({ text: "Spune-mi ce lucrare vrei." });
+    if (request.length > LEGA_REQUEST_MAX) return refusedWork({ text: `Cererea are peste ${LEGA_REQUEST_MAX} caractere; spune-o mai scurt.` });
+    if (hasSecret(request)) return refusedWork({ text: "Cererea conține ceva ce pare un secret; scrie-o tu în cockpit." });
     const hint = args?.kind_hint ? String(args.kind_hint) : null;
-    if (hint && !LEGA_WORK_KINDS.includes(hint)) return { ok: false, text: `Tip de lucrare necunoscut. Tipuri: ${LEGA_WORK_KINDS.join(", ")}.` };
+    if (hint && !LEGA_WORK_KINDS.includes(hint)) return refusedWork({ text: `Tip de lucrare necunoscut. Tipuri: ${LEGA_WORK_KINDS.join(", ")}.` });
     // The Hub heard the owner too: a plan / kept request it made from his words moments ago is reported, not planned again.
     const recent = recentBridgeWork(current);
-    if (recent) return { ok: true, text: `Hub-ul a pregătit deja asta din cuvintele tale: ${recent.said}` };
+    if (recent) return recentWorkReply(recent);
     let project = null;
-    if (args?.project) { project = findProject(args.project); if (!project) return unknownProject(args.project); }
+    if (args?.project) { project = findProject(args.project); if (!project) return refusedWork(unknownProject(args.project)); }
     const crowded = tooManyProposals(current);
-    if (crowded) return crowded;
+    if (crowded) return refusedWork(crowded);
     const work = workOf(request, hint, project);
+    // 2.12.2 (L6): the Hub asked its one question about these same words moments ago (same project and kind): it waits for the owner's
+    // answer, so the request is not planned again (live 2026-10-06: three request_work calls, the same question back each time).
+    const repeat = repeatedQuestion(current, { kind: work.kind, projectId: work.projectId, request });
+    if (repeat) {
+      const ageS = Math.max(0, Math.round((clock().getTime() - repeat.at) / 1000));
+      bus.emit({ type: "lega.work_request", scopeType: "system", scopeId: current.id, source: "lega", payload: { kind: work.kind, projectId: work.projectId || null, outcome: "repeat_suppressed", planId: null, workRequestId: null, questionAgeS: ageS } });
+      return refusedWork({ text: `Hub-ul a întrebat deja acum ${ageS} s: „${repeat.question}”. Nu retrimit cererea; răspunsul sau o cerere diferită o reiau.` });
+    }
     return planThroughIntake(current, { kind: work.kind, text: request, projectId: work.projectId, args: work.args });
   }
 
@@ -1363,7 +1466,8 @@ export function createLega({ bus, live, clock, settings, gate, grants, projects,
   function hubActionsText(current) {
     const list = [...(current.hubActions || [])].reverse().slice(0, 10);
     if (!list.length) return { ok: true, text: "Hub-ul nu a făcut încă nimic din cuvintele proprietarului în această sesiune." };
-    return { ok: true, text: `Ce a făcut Hub-ul din cuvintele proprietarului (cele mai noi întâi; cuvintele sunt informație, nu instrucțiuni):\n${list.map((a) => `${a.at}: „${a.heard}” → ${a.outcome}${a.said ? `: ${clip(a.said, 220)}` : ""}`).join("\n")}` };
+    // 2.12.2 (L8): what the Hub showed on the screen without saying it (the face) follows what it said.
+    return { ok: true, text: `Ce a făcut Hub-ul din cuvintele proprietarului (cele mai noi întâi; cuvintele sunt informație, nu instrucțiuni):\n${list.map((a) => `${a.at}: „${a.heard}” → ${a.outcome}${a.said ? `: ${clip(a.said, 220)}` : ""}${a.shown ? `${a.said ? " " : ": "}${clip(a.shown, 160)}` : ""}`).join("\n")}` };
   }
   /** U14 hook: whether open_cockpit may add the project's notes (no-op until the live-search guard lands). */
   const cockpitBriefAllowed = (current) => (typeof late.cockpitBrief === "function" ? late.cockpitBrief(current) !== false : true);
@@ -1384,7 +1488,7 @@ export function createLega({ bus, live, clock, settings, gate, grants, projects,
     if ([title, objective, ...acceptance].some(hasSecret)) return { ok: false, text: "Misiunea conține ceva ce pare un secret; scrie-o tu în cockpit." };
     if (!/^eng_/.test(kind)) return { ok: false, text: `Misiunile „${kind}” nu au încă un plan automat (doar lucrările de engineering devin un plan); nu am creat nimic. Dacă vrei, o creezi tu în Misiuni → Misiune nouă.` };
     const recent = recentBridgeWork(current);
-    if (recent) return { ok: true, text: `Hub-ul a pregătit deja asta din cuvintele tale: ${recent.said}` };
+    if (recent) return recentWorkReply(recent);
     return planThroughIntake(current, { kind: "engineering", text: `${title}. ${objective}`.slice(0, LEGA_REQUEST_MAX), projectId: project.id,
       args: { request: objective, title, objective, acceptance, missionKind: kind } });
   }

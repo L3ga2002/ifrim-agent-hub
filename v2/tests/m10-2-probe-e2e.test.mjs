@@ -354,7 +354,8 @@ test("M10.2-E2E-C a request on the Hub's own project → the honest explanation 
     assert.match(r[0].text, /wsl-runner/, "the real option (environment route), not a mode / gate / grant step");
     assert.doesNotMatch(r[0].text, OLD_FLOW_TEXT);
     assert.doesNotMatch(r[0].text, /host_isolation|workspace_lease|execution_gate \(|live_grant/, "no raw gate ids");
-    assert.match(r[1].text, /^Încă blocat .*cererea ta e păstrată\.$/, "explained once; the second mention is one line");
+    // 2.12.2 (L3, m10-2-p0r5-lega-honesty.test.mjs): the Hub's factual tail ends every non-plan answer; here it says the request is kept.
+    assert.match(r[1].text, /^Încă blocat .*cererea ta e păstrată\. \(Cererea e păstrată de Hub\.\)$/, "explained once; the second mention is one line");
     const how = replies(t).find((x) => x.tool === "how_to");
     assert.doesNotMatch(how.text, /tastezi LIVE_VALIDATION|tastezi OPEN GATE|apasă tu „Creează grant”/);
     const kept = t.hub.db.prepare("SELECT * FROM work_requests").all();

@@ -8,6 +8,7 @@ import { ACTIVE_STAGES } from "../factory/factory.mjs";
 import { ROUTES } from "../factory/plan.mjs";
 import { AUTONOMY_LABELS } from "./envelopes.mjs";
 import { classifySuspension, STOPPED_BY } from "../policy/gate-state.mjs";
+import { factoryWaitText } from "../policy/factory-wait.mjs";
 
 /**
  * ProjectContextService + ExplainService (M06 §06, §12, §23, §24, §26).
@@ -314,7 +315,9 @@ export function createCockpit({ db, bus, clock, settings, projects, missions, ru
     const out = [];
     if (target) {
       const f = target.factory;
-      out.push({ what: `„${target.mission.title}” · ${f.stage}${f.waitReason ? ` (așteaptă: ${f.waitReason})` : ""}`, rule: clip(f.stageReason, 400), source: "factory_missions", at: f.updatedAt,
+      // Review F6 (2.12.2): what it waits for in the owner's words — never the raw value ("retry", "owner_decision").
+      const waits = factoryWaitText(f.waitReason, f.stage);
+      out.push({ what: `„${target.mission.title}” · ${f.stage}${waits ? ` (${waits})` : ""}`, rule: clip(f.stageReason, 400), source: "factory_missions", at: f.updatedAt,
         action: f.waitReason === "grant" ? "Planul confirmat a rămas fără autoritate: confirmă din nou planul (granturile se derivă singure)"
           : f.waitReason === "gate" ? "Poarta de execuție e suspendată sau o verificare a porții eșuează: vezi lista de mai jos"
             : f.stage === "NEEDS_OWNER_DECISION" ? "Decizia ta: reia (eventual cu un ciclu în plus) sau oprește" : f.stage === "PAUSED" ? "Spune „Continuă”: o reiau în limitele planului confirmat (fără plan în vigoare, „Continuă misiunea …” pregătește un plan de continuare)" : "Verifică motivul de mai sus" });

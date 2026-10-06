@@ -316,7 +316,8 @@ export function registerCommands(commands, hub) {
         if (ctx.channel !== "ui" && ctx.channel !== "test") throw new HubError("policy", "The gate can only be opened from the UI");
         if (input.confirm !== "OPEN GATE") throw new HubError("validation", "Type OPEN GATE to confirm");
         const retained = hub.leases.list().filter((l) => l.status === "retained");
-        if (retained.length) throw new HubError("gate", `Reconcile ${retained.length} retained lease(s) before opening the gate`);
+        // 2.12.2 (P0-R1): the owner's way out is the cockpit card, never a developer action.
+        if (retained.length) throw new HubError("gate", `${retained.length === 1 ? "Un spațiu de lucru e încă rezervat" : `${retained.length} spații de lucru sunt încă rezervate`} după o oprire neconfirmată (lease-uri reținute): ${retained.length === 1 ? "îl eliberezi" : "le eliberezi"} din cockpit, pe cardul „Redeschide poarta”, cu Windows Hello — oprește procesul rămas pornit de Hub sau eliberează rezervarea, apoi redeschide poarta.`);
         // 2.12.1 (D16): a suspension next to a security event is never reopened by the typed admin path (a per-boot token is not the
         // owner): only the cockpit rearm, in the owner session, with a fresh verification and the acknowledged events.
         const security = settings.get("executionGate")?.status === "open" ? null : hub.gateRearm?.eligibility?.()?.security;

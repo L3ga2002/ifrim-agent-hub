@@ -93,9 +93,12 @@ export function registerOwnerCommands(reg, hub) {
     logResult: (r) => ({ kind: r?.kind || null, eligible: r?.eligible !== false, code: r?.code || null, cls: r?.cls || null, hash: r?.hash ? String(r.hash).slice(0, 16) : null, expiresAt: r?.expiresAt || null }),
     execute: (input, ctx) => rearmService().cardFor({ ownerSession: session(ctx), requestId: input.requestId || null }) });
   reg("gate.rearm", { describe: "Redeschizi poarta după Stop All / o suspendare (sesiunea ta, Windows Hello proaspăt, legată de cardul afișat; nimic vechi nu repornește)", async: true, channels: OWNER,
-    schema: { nonce: { required: true, max: 64 }, hash: { required: true, max: 64 }, requestId: { max: 80 }, ackSecurity: { type: "boolean", default: false }, modality: { max: 20, default: "click" } },
-    logPayload: (i) => ({ hash: String(i.hash || "").slice(0, 16), requestId: i.requestId || null, ackSecurity: i.ackSecurity === true, modality: i.modality }),
-    execute: (input, ctx) => rearmService().apply({ ownerSession: session(ctx), nonce: input.nonce, hash: input.hash, requestId: input.requestId || null, ackSecurity: input.ackSecurity === true, modality: input.modality }) });
+    // 2.12.2 (P0-R1): ackLeases — the owner's acknowledgement for a reserved workspace whose outcome the card says it cannot prove.
+    schema: { nonce: { required: true, max: 64 }, hash: { required: true, max: 64 }, requestId: { max: 80 }, ackSecurity: { type: "boolean", default: false }, ackLeases: { type: "boolean", default: false },
+      modality: { max: 20, default: "click" } },
+    logPayload: (i) => ({ hash: String(i.hash || "").slice(0, 16), requestId: i.requestId || null, ackSecurity: i.ackSecurity === true, ackLeases: i.ackLeases === true, modality: i.modality }),
+    execute: (input, ctx) => rearmService().apply({ ownerSession: session(ctx), nonce: input.nonce, hash: input.hash, requestId: input.requestId || null, ackSecurity: input.ackSecurity === true,
+      ackLeases: input.ackLeases === true, modality: input.modality }) });
 
   // Unfreezing allows work again: not from the voice route.
   reg("owner.unfreeze", { describe: "Dezgheață un proiect (misiunile rămân pe pauză până le reiei)", channels: ["ui", "owner", "test"], schema: { projectId: { required: true, max: 80 } },

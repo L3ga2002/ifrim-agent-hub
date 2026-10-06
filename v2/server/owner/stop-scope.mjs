@@ -185,8 +185,11 @@ export function closeProposalsFromBeforeStop(hub) {
   const stoppedAt = stopEvent?.created_at || c.at;
   if (!stoppedAt) return { closed: [], cls: c.cls };
   const closed = [];
+  // 2.12.2 (D1): the boot's own suspension after a crash (channel "recovery") closes the plans proposed before it too (nothing from
+  // before the restart is confirmed into the reopened gate), but the owner never pressed Stop: the reason says what happened.
+  const reason = c.channel === "recovery" && !stopEvent ? "Hub-ul a repornit în timpul unei execuții" : "Stop All";
   for (const r of hub.db.prepare("SELECT id FROM mission_envelopes WHERE status = 'PROPOSED' AND created_at <= ? ORDER BY created_at").all(stoppedAt)) {
-    try { if (hub.envelopes.revoke(r.id, { actor: "recovery", reason: "Stop All" })?.status !== "PROPOSED") closed.push(r.id); } catch { /* reported by the plan's own status */ }
+    try { if (hub.envelopes.revoke(r.id, { actor: "recovery", reason })?.status !== "PROPOSED") closed.push(r.id); } catch { /* reported by the plan's own status */ }
   }
   if (closed.length) {
     hub.bus.emit({ type: "recovery.stop_proposals_closed", scopeType: "system", scopeId: "gate", source: "recovery",

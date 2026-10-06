@@ -4,7 +4,7 @@ import { api, fmt } from "../../api.js";
 import { useResource, useAction, pushToast, refresh } from "../../store.js";
 import { Panel, Empty, Loading, ErrorNotice, StatusChip, Notice, Chip, DiffView } from "../../components/ui.jsx";
 import { STATE_TONE, missionGraph } from "../../lib/cockpitLogic.js";
-import { FACTORY_STAGE_RO, blockerAction, cardFocusWanted, holdsTypedText, autonomyRaiseOffered } from "../../lib/uiLogic.js";
+import { FACTORY_STAGE_RO, blockerAction, cardFocusWanted, holdsTypedText, autonomyRaiseOffered, factoryWaitSuffix as waitSuffix } from "../../lib/uiLogic.js";
 import { withReauth } from "../../lib/ownerSession.js";
 import { recordSegment, sendSegment } from "../../lib/voiceGate.js";
 import { setPresentedPlan, clearPresentedPlan, beginCapture, endCapture, preferredMic, armedUntil, onArmed } from "../../lib/voiceContext.js";
@@ -131,7 +131,9 @@ export function DecisionCard({ plan, owner, onConfirmed, onCancel, onReplan, det
       <div ref={ref} tabIndex={-1} className="decision" onKeyDown={(e) => { if (e.key === "Enter" && awaiting && eligible && policyActive && !confirm.pending && e.target === ref.current) confirm.run("keyboard"); }}>
         <p className="lead">{summary.headline}</p>
         <ul className="plain decision-lines">
-          <li>{summary.where}</li><li>{summary.steps}</li>{summary.models && <li>{summary.models}</li>}<li><strong>{summary.never}</strong></li><li>{summary.stops}</li><li>{summary.cost}</li>
+          <li>{summary.where}</li><li>{summary.steps}</li>{summary.models && <li>{summary.models}</li>}<li><strong>{summary.never}</strong></li><li>{summary.stops}</li>
+          {/* 2.12.2 (P0-R3): the per-turn limits and the mission's deadline the plan binds (hashed in body.limits.turnTimeoutMin). */}
+          {summary.limits && <li>{summary.limits}</li>}<li>{summary.cost}</li>
           {summary.mode && <li>{summary.mode}</li>}<li className="faint">{summary.files}</li><li className="faint">Nivel: {summary.autonomy}</li>
         </ul>
         {summary.blockers?.length > 0 && <Notice tone="warn" title={summary.state === "BLOCKED_BY_ISOLATION" ? "Execuție blocată de izolare" : "Nu poate porni acum"}>{summary.blockers.slice(0, 4).join(" · ")}
@@ -367,7 +369,7 @@ export function AgentGraph({ missionId, ...rest }) {
           <ol className="agent-graph" aria-label="Etapele execuției">
             {nodes.map((n) => <li key={n.key} className={`ag-node ${NODE_TONE[n.status]}`}><span className="ag-dot" aria-hidden="true" /><strong>{n.label}</strong><span className="small">{n.status === "DONE" ? "gata" : n.status === "RUNNING" ? "rulează" : n.status === "FAILED" ? "a eșuat" : n.status === "BLOCKED" ? "blocat" : "așteaptă"}</span><span className="faint small">{n.where}</span></li>)}
           </ol>
-          <p className="small">Etapa: <strong>{FACTORY_STAGE_RO[v.data.factory.stage] || v.data.factory.stage}</strong>{v.data.factory.waitReason ? ` · așteaptă: ${v.data.factory.waitReason}` : ""}</p>
+          <p className="small">Etapa: <strong>{FACTORY_STAGE_RO[v.data.factory.stage] || v.data.factory.stage}</strong>{waitSuffix(v.data.factory.waitReason, v.data.factory.stage)}</p>
           {v.data.factory.stageReason && <p className="faint small">{v.data.factory.stageReason}</p>}
           <Src>Legăturile se aprind doar pe evenimente reale; un rol configurat nu e un worker activ. Mediul arătat e cel în care etapa A RULAT (din dovezi).</Src>
         </>
@@ -517,7 +519,7 @@ export function CompanyMap({ departmentKey, onDepartment, ...rest }) {
       {map.loading ? <Loading lines={3} /> : !focus ? (
         <ul className="plain company-list">{depts.map((d) => <li key={d.key}><button className="link-btn" onClick={() => onDepartment(d.key)}>{d.name}</button> <Src>{d.rolesConfigured} roluri configurate · {d.missions.length} misiuni · {d.activeExecutions} execuții active</Src></li>)}</ul>
       ) : (
-        <ul className="plain">{focus.missions.length ? focus.missions.map((m) => <li key={m.id}><a href={`#/missions/${m.id}`}>{m.title}</a> <Src>{m.stage || m.status}{m.waitReason ? ` · așteaptă ${m.waitReason}` : ""}</Src>{m.executions.map((x) => <div key={x.runId} className="small">↳ {x.provider} · {x.environment} · {x.phase}</div>)}</li>) : <li className="faint small">Nicio misiune în departament.</li>}</ul>
+        <ul className="plain">{focus.missions.length ? focus.missions.map((m) => <li key={m.id}><a href={`#/missions/${m.id}`}>{m.title}</a> <Src>{m.stage || m.status}{waitSuffix(m.waitReason, m.stage)}</Src>{m.executions.map((x) => <div key={x.runId} className="small">↳ {x.provider} · {x.environment} · {x.phase}</div>)}</li>) : <li className="faint small">Nicio misiune în departament.</li>}</ul>
       )}
       <Src>{map.data?.note}</Src>
     </CardShell>

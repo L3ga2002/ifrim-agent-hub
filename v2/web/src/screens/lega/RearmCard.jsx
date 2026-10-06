@@ -5,7 +5,7 @@ import { Panel, Notice, ErrorNotice } from "../../components/ui.jsx";
 import { withReauth } from "../../lib/ownerSession.js";
 import { REARM_CARD_PATH, REARM_PATH, REARM_BUTTON_LABEL, REARM_SHOW_LABEL, SECURITY_ACK_LABEL, REARM_CHANGED_NOTICE, REARM_REQUEST_GONE_NOTICE, REARM_SETUP,
   isRearmCard, rearmReady, rearmRequestBody, continueAfterFetch, rearmErrorAction, rearmCardExpired, sameDisplayedCard, rearmTriggerDue, rearmRequestRefused,
-  noAuthenticatorError } from "../../lib/rearmLogic.js";
+  noAuthenticatorError, LEASES_ACK_LABEL, REARM_LEASES_BUTTON_LABEL, rearmLeaseSteps, rearmLeasesAckRequired, rearmLeasesOnly } from "../../lib/rearmLogic.js";
 
 /**
  * M10.2.1 (D14–D16): the ONE card that reopens the execution gate after Stop All (or any suspension that is not the owner's own pause),
@@ -24,12 +24,17 @@ import { REARM_CARD_PATH, REARM_PATH, REARM_BUTTON_LABEL, REARM_SHOW_LABEL, SECU
  * `onRequestDropped` (UI-03): the kept request the card was asked for is no longer active — the card is asked without it.
  * `onApply(requestId)` (UI-07): told right before the rearm is sent, so the caller never focuses the plan it re-proposes.
  * `noAuthenticator` (UI-06): no enrolled authenticator — the setup step instead of a card that cannot work.
+ * 2.12.2 (P0-R1): a workspace still reserved after an unconfirmed stop is a step INCLUDED in the card, as the Hub wrote it (stop the
+ * process the Hub left behind, or release the reservation); when the Hub cannot prove its outcome, „Am înțeles, eliberează spațiul de
+ * lucru” must be ticked first (bound to that card, like the security acknowledgement). Under the owner's own pause the card only
+ * releases the reservation; „Continuă” reopens the pause afterwards.
  */
 export function RearmCard({ card: given = null, requestId = null, wait: givenWait = null, hint = null, trigger = 0, handled = 0, compact = false, noAuthenticator = false,
   onDone, onClose, onSay, onTriggerHandled, onRequestDropped, onApply }) {
   const [card, setCard] = useState(() => (isRearmCard(given) ? given : null));
   const [wait, setWait] = useState(givenWait || null);
   const [ack, setAck] = useState(false);
+  const [ackLeases, setAckLeases] = useState(false); // P0-R1: the reservation acknowledgement, bound to the card on screen
   const [phase, setPhase] = useState("idle"); // idle | fetching | applying
   const [notice, setNotice] = useState(null);
   const [error, setError] = useState(null);
@@ -39,6 +44,7 @@ export function RearmCard({ card: given = null, requestId = null, wait: givenWai
   const box = useRef(null);
   const cardRef = useRef(card); cardRef.current = card;
   const ackRef = useRef(ack); ackRef.current = ack;
+  const ackLeasesRef = useRef(ackLeases); ackLeasesRef.current = ackLeases;
   // The kept request the card is asked for (UI-03: dropped once the Hub says it is no longer active).
   const ridRef = useRef(requestId || null);
   useEffect(() => { ridRef.current = requestId || null; }, [requestId]);
@@ -48,11 +54,12 @@ export function RearmCard({ card: given = null, requestId = null, wait: givenWai
   const howId = `${ids}-how`;
   const ackHintId = `${ids}-ack`;
   const secHeadId = `${ids}-sec`;
+  const leaseHeadId = `${ids}-leases`;
   useEffect(() => { alive.current = true; return () => { alive.current = false; }; }, []);
   // A newer card from the Hub (another answer for the same slot) replaces the one on screen; the acknowledgement belongs to a card.
   useEffect(() => {
     if (!isRearmCard(given) || given.nonce === cardRef.current?.nonce) return;
-    if (!sameDisplayedCard(cardRef.current, given)) setAck(false);
+    if (!sameDisplayedCard(cardRef.current, given)) { setAck(false); setAckLeases(false); }
     setCard(given); setWait(null); setNotice(null); setError(null);
   }, [given?.nonce]); // eslint-disable-line react-hooks/exhaustive-deps
   useEffect(() => { if (givenWait) { setWait(givenWait); setCard(null); } }, [givenWait?.code, givenWait?.reason]); // eslint-disable-line react-hooks/exhaustive-deps
@@ -76,22 +83,24 @@ export function RearmCard({ card: given = null, requestId = null, wait: givenWai
   /** The Hub's "not here, not now" ({ eligible: false, code, reason }): the gate is already open, or the honest reason. */
   const notEligible = (out) => {
     if (out?.code === "OPEN") { onDone?.({ alreadyOpen: true }); return; }
-    setCard(null); setAck(false);
+    setCard(null); setAck(false); setAckLeases(false);
     setWait({ code: String(out?.code || "NOT_ELIGIBLE"), reason: String(out?.reason || "Poarta nu se poate redeschide acum.") });
   };
   /** Shows a new card; the acknowledgement survives only for the same facts. Returns the acknowledgement that applies to it. */
   const show = (next, previous = cardRef.current) => {
     const same = sameDisplayedCard(previous, next);
-    if (!same) setAck(false);
+    if (!same) { setAck(false); setAckLeases(false); }
     setCard(next); setWait(null);
     return same ? ackRef.current : false;
   };
+  /** P0-R1: the reservation acknowledgement that applies to a card asked again (only for the same facts). */
+  const leasesAckFor = (next, previous) => (sameDisplayedCard(previous, next) ? ackLeasesRef.current : false);
 
   /** One rearm request; a card that is no longer the live one is asked again ONCE and re-sent only when its facts are the same. */
-  const applyCard = async (c, modality, ackNow) => {
-    const send = (x, a) => { onApply?.(x.requestId || null); return withReauth(() => api(REARM_PATH, { method: "POST", body: rearmRequestBody(x, { ackSecurity: a, modality }) })); };
+  const applyCard = async (c, modality, ackNow, ackLeasesNow = false) => {
+    const send = (x, a, al = false) => { onApply?.(x.requestId || null); return withReauth(() => api(REARM_PATH, { method: "POST", body: rearmRequestBody(x, { ackSecurity: a, ackLeases: al, modality }) })); };
     let res;
-    try { res = await send(c, ackNow); }
+    try { res = await send(c, ackNow, ackLeasesNow); }
     catch (e) {
       const act = rearmErrorAction(e);
       if (!alive.current) return;
@@ -100,10 +109,11 @@ export function RearmCard({ card: given = null, requestId = null, wait: givenWai
         if (!alive.current) return;
         if (!isRearmCard(next)) { notEligible(next); return; }
         const same = sameDisplayedCard(c, next);
+        const al = leasesAckFor(next, c);
         const a = show(next, c);
         if (dropped) { setNotice(REARM_REQUEST_GONE_NOTICE); return; }
-        if (!(act.retry && same && (!next.security || a))) { setNotice(`${act.message} Verifică cardul de mai jos și confirmă din nou.`); return; }
-        res = await send(next, a);
+        if (!(act.retry && same && (!next.security || a) && (!rearmLeasesAckRequired(next) || al))) { setNotice(`${act.message} Verifică cardul de mai jos și confirmă din nou.`); return; }
+        res = await send(next, a, al);
       } else if (act.action === "wait" || act.action === "pause") { setCard(null); setWait({ code: act.code, reason: act.message }); return; }
       else if (act.action === "ack") { setNotice(act.message); return; }
       else if (act.action === "opened") { onDone?.({ alreadyOpen: true }); return; }
@@ -121,6 +131,7 @@ export function RearmCard({ card: given = null, requestId = null, wait: givenWai
     if (dropped) setNotice(REARM_REQUEST_GONE_NOTICE);
     else if (isRearmCard(previous) && !sameDisplayedCard(previous, next)) setNotice(REARM_CHANGED_NOTICE);
     else if (next.security && !a) setNotice("Înainte de redeschidere: citește evenimentele de securitate, bifează „Am verificat cauza”, apoi confirmă.");
+    else if (rearmLeasesAckRequired(next) && !leasesAckFor(next, previous)) setNotice(`Înainte de redeschidere: citește pasul inclus pentru spațiul de lucru rămas rezervat, bifează „${LEASES_ACK_LABEL}”, apoi confirmă.`);
     return a;
   };
 
@@ -134,20 +145,26 @@ export function RearmCard({ card: given = null, requestId = null, wait: givenWai
     try {
       let c = cardRef.current;
       let ackNow = ackRef.current;
+      let ackLeasesNow = ackLeasesRef.current;
       if (!isRearmCard(c) || rearmCardExpired(c)) {
         setPhase("fetching");
         const { next, dropped } = await fetchCard();
         if (!alive.current) return;
         if (!isRearmCard(next)) { notEligible(next); return; }
-        const go = !dropped && continueAfterFetch({ previous: c, next, ack: ackNow });
+        const go = !dropped && continueAfterFetch({ previous: c, next, ack: ackNow, ackLeases: ackLeasesNow });
         if (!go) { showFetched(next, c, dropped); return; }
+        ackLeasesNow = leasesAckFor(next, c);
         ackNow = show(next, c);
         c = next;
       }
-      const ready = rearmReady(c, { ack: ackNow });
-      if (!ready.ready) { if (ready.why === "ack") setNotice("Bifează întâi „Am verificat cauza”: poarta nu se redeschide peste evenimente de securitate nevăzute."); return; }
+      const ready = rearmReady(c, { ack: ackNow, ackLeases: ackLeasesNow });
+      if (!ready.ready) {
+        if (ready.why === "ack") setNotice("Bifează întâi „Am verificat cauza”: poarta nu se redeschide peste evenimente de securitate nevăzute.");
+        else if (ready.why === "ack_leases") setNotice(`Bifează întâi „${LEASES_ACK_LABEL}”: spațiul de lucru rămas rezervat se eliberează doar cu confirmarea ta.`);
+        return;
+      }
       setPhase("applying");
-      await applyCard(c, modality, ackNow);
+      await applyCard(c, modality, ackNow, ackLeasesNow);
     } catch (e) { failed(e); }
     finally { busy.current = false; if (alive.current) setPhase("idle"); }
   };
@@ -179,8 +196,14 @@ export function RearmCard({ card: given = null, requestId = null, wait: givenWai
 
   const pending = phase !== "idle";
   const security = card?.security || null;
-  const ackMissing = Boolean(security && !ack);
+  // P0-R1: the steps the Hub included for a workspace still reserved (as it wrote them) and their acknowledgement.
+  const leaseSteps = rearmLeaseSteps(card);
+  const leasesAck = rearmLeasesAckRequired(card);
+  const leasesOnly = rearmLeasesOnly(card);
+  const ackMissing = Boolean(security && !ack) || Boolean(leasesAck && !ackLeases);
+  const missingLabels = [security && !ack ? SECURITY_ACK_LABEL : null, leasesAck && !ackLeases ? LEASES_ACK_LABEL : null].filter(Boolean).map((l) => `„${l}”`).join(" și ");
   const label = phase === "applying" ? "Redeschid poarta…" : phase === "fetching" ? "Citesc starea porții…" : card ? REARM_BUTTON_LABEL : REARM_SHOW_LABEL;
+  const buttonLabel = leasesOnly ? (phase === "applying" ? "Eliberez spațiul de lucru…" : phase === "fetching" ? label : REARM_LEASES_BUTTON_LABEL) : label;
   // UI-10: Enter on the focused group is the same decision as the button (only for a card on screen; without one it only shows it).
   const onKeyDown = (e) => {
     if (e.key === "Enter" && e.target === box.current && !pending && !wait && !setup) { e.preventDefault(); if (card) run("keyboard"); else check(); }
@@ -219,6 +242,17 @@ export function RearmCard({ card: given = null, requestId = null, wait: givenWai
               </div>
             </section>
           )}
+          {/* P0-R1: a workspace still reserved after an unconfirmed stop — the step is part of this decision (the Hub's own words). */}
+          {leaseSteps.length > 0 && (
+            <section className="notice warn rearm-leases-block" aria-labelledby={leaseHeadId}>
+              <Lock size={16} aria-hidden="true" />
+              <div>
+                <h3 className="h3" id={leaseHeadId}>{leasesOnly ? "Ce fac acum" : "Inclus în redeschidere"}</h3>
+                <ul className="plain small rearm-leases">{leaseSteps.map((s, i) => <li key={s.leaseId || i}>{s.text}</li>)}</ul>
+                {leasesAck && <label className="rearm-ack"><input type="checkbox" checked={ackLeases} disabled={pending} onChange={(e) => setAckLeases(e.target.checked)} /> {LEASES_ACK_LABEL}</label>}
+              </div>
+            </section>
+          )}
         </>
       ) : wait ? (
         <Notice tone={wait.code === "OWNER_PAUSE" ? "info" : "warn"} title={wait.code === "OWNER_PAUSE" ? "E pauza ta" : "Încă nu pot redeschide poarta"}>{wait.reason}</Notice>
@@ -228,13 +262,13 @@ export function RearmCard({ card: given = null, requestId = null, wait: givenWai
       {notice && <Notice tone="info">{notice}</Notice>}
       <div className="row wrap">
         {!wait && <button className={`btn ${compact ? "sm " : ""}primary`} disabled={pending || ackMissing} aria-describedby={ackMissing ? `${ackHintId} ${howId}` : howId}
-          onClick={(e) => (card ? run(e.detail === 0 ? "keyboard" : "click") : check())}>{card ? <Lock size={compact ? 13 : 15} /> : <Eye size={compact ? 13 : 15} />}{label}</button>}
+          onClick={(e) => (card ? run(e.detail === 0 ? "keyboard" : "click") : check())}>{card ? <Lock size={compact ? 13 : 15} /> : <Eye size={compact ? 13 : 15} />}{buttonLabel}</button>}
         {wait && wait.code !== "OWNER_PAUSE" && <button className="btn sm" disabled={pending} onClick={check}><RefreshCw size={13} />{phase === "fetching" ? "Verific…" : "Verifică din nou"}</button>}
         {wait?.code === "OWNER_PAUSE" && onSay && <button className="btn sm" onClick={() => onSay("Continuă")}>„Continuă”</button>}
         {card
           ? <span className="faint small" id={howId}>valabil până la {fmt.time(card.expiresAt)} · legat de oprirea afișată · se confirmă cu click sau Enter, nu prin voce</span>
           : <span className="faint small" id={howId}>Primul click doar îți arată cardul (ce s-a oprit, ce rămâne oprit); redeschizi din card, cu click sau Enter, nu prin voce.</span>}
-        {ackMissing && <span className="faint small" id={ackHintId}>Butonul se activează după ce bifezi „{SECURITY_ACK_LABEL}”.</span>}
+        {ackMissing && <span className="faint small" id={ackHintId}>Butonul se activează după ce bifezi {missingLabels}.</span>}
       </div>
       <ErrorNotice error={error} />
     </div>

@@ -99,7 +99,7 @@ export function registerOwnerRoutes(router, hub) {
   // session; the rearm also needs a fresh Windows Hello (the UI's withReauth retries once with the same body).
   post("/api/owner/gate/rearm/card", ({ req, body }) => dispatch(req, "gate.rearm.card", { requestId: typeof body.requestId === "string" && body.requestId ? body.requestId.slice(0, 80) : undefined }, { requireOwner: true }));
   post("/api/owner/gate/rearm", ({ req, body }) => dispatch(req, "gate.rearm", { nonce: body.nonce, hash: body.hash, requestId: typeof body.requestId === "string" && body.requestId ? body.requestId.slice(0, 80) : undefined,
-    ackSecurity: body.ackSecurity === true, modality: typeof body.modality === "string" ? body.modality.slice(0, 20) : "click" }, { requireOwner: true }));
+    ackSecurity: body.ackSecurity === true, ackLeases: body.ackLeases === true, modality: typeof body.modality === "string" ? body.modality.slice(0, 20) : "click" }, { requireOwner: true }));
   post("/api/owner/unfreeze", ({ req, body }) => dispatch(req, "owner.unfreeze", { projectId: body.projectId }));
   get("/api/owner/attention", ({ query }) => advisor.attention({ afterSeq: Number(query.after) || 0 }));
   post("/api/owner/prefs", ({ req, body }) => dispatch(req, "owner.prefs", body || {}));

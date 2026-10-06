@@ -141,7 +141,9 @@ export function createInterrupts({ db, bus, clock, settings, runs, factory, enve
     const stopAll = db.prepare("SELECT seq FROM events WHERE type = 'system.stop_all' AND created_at >= ? ORDER BY seq DESC LIMIT 1").get(String(by.at || ""));
     if (stopAll) return none(`După pauza ta a urmat un Stop All: ${REARM_HERE}.`, "STOP_ALL_AFTER", true);
     const retained = db.prepare("SELECT COUNT(*) AS n FROM leases WHERE status = 'retained'").get().n;
-    if (retained) return none(`${retained === 1 ? "Un spațiu de lucru e încă rezervat" : `${retained} spații de lucru sunt încă rezervate`} după o oprire neconfirmată (lease-uri reținute); până nu sunt eliberate nu redeschid poarta.`, "LEASES");
+    // 2.12.2 (P0-R1): never a dead end — the cockpit card (Windows Hello) stops the process the Hub left behind or releases the reservation
+    // (owner/gate-rearm.mjs, scope "leases" under this pause); `rearm` lets the caller show it. „Continuă” then reopens the pause.
+    if (retained) return none(`${retained === 1 ? "Un spațiu de lucru e încă rezervat" : `${retained} spații de lucru sunt încă rezervate`} după o oprire neconfirmată, așa că nu redeschid încă poarta. ${retained === 1 ? "Îl eliberezi" : "Le eliberezi"} aici, în cockpit, pe cardul de redeschidere, cu Windows Hello (oprește procesul rămas pornit de Hub sau eliberează rezervarea); apoi spui din nou „Continuă”.`, "LEASES", true);
     const opened = { status: "open", reason: "Continuă după pauza ta", changedAt: iso(), changedBy: actor, reopenedAfter: { at: by.at, sessionId: session.id } };
     // Compare-and-set: a Stop All (or any other write) landing meanwhile is never overwritten.
     const done = bus.transaction(() => {

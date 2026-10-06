@@ -11,7 +11,7 @@ import { LegaFace } from "../components/face/LegaFace.jsx";
 import { deriveCoreState } from "../lib/coreState.js";
 import { buildStageGraph } from "../lib/stageGraph.js";
 import { sendLegaCommand } from "../lib/legaLevels.js";
-import { replyFor, faceCommand, presentedFrom, pushLayout, STATE_TONE } from "../lib/cockpitLogic.js";
+import { replyFor, faceCommand, faceFromLiveEvent, presentedFrom, pushLayout, STATE_TONE, clarificationOf } from "../lib/cockpitLogic.js";
 import { unlockSession, onLocalhost } from "../lib/ownerSession.js";
 import { StopAllButton } from "../shell/Shell.jsx";
 import { OwnerSetup } from "./lega/OwnerSetup.jsx";
@@ -180,6 +180,17 @@ function Cockpit({ projectId, go }) {
   };
   useEffect(() => onLive((e) => { const ref = planRefOfLive(e); if (ref) planHandler.current(ref); }), []);
 
+  // A face command changes only the view, typed here or heard by voice. 2.12.2 (L8): a face sentence the Hub heard from the owner in
+  // THIS tab's Lega session („Arată-ți fața”) arrives as `lega.face` and is applied exactly like a typed one.
+  const applyFace = (face) => {
+    if (face?.shape) { setFaceShape(face.shape); setFaceHidden(false); }
+    if (face?.hidden) setFaceHidden(true);
+    if (face?.discreet) setDiscreet(true);
+  };
+  const faceLive = useRef(null);
+  faceLive.current = { sessionId: legaStatus !== "off" ? legaSessionId : null, apply: applyFace };
+  useEffect(() => onLive((e) => { const face = faceFromLiveEvent(e, faceLive.current.sessionId); if (face) faceLive.current.apply(face); }), []);
+
   // M10.2.1 (D14–D16): ONE rearm card in the cockpit. It comes from the Hub's answer to a request that met the stopped gate (the card
   // bound to that request), from a blocker option („Arată cardul de redeschidere”: the same card, asked, shown and confirmed here), or — under voice-first,
   // while the gate is suspended by anything but the owner's own pause — as a standing banner. The Hub decides everything (the card, the
@@ -249,10 +260,7 @@ function Cockpit({ projectId, go }) {
     setConversation((c) => [...c.slice(-40), { role: "user", text: value, at: Date.now() }]);
     try {
       const res = await api("/api/owner/intent", { method: "POST", body: { text: value, projectId: pid || undefined, source, presented: presentedPlan(opsPlan) || presentedFrom(plan?.envelope) || undefined, layout: layout || undefined, legaSessionId: legaStatus !== "off" && legaSessionId ? legaSessionId : undefined, choice: extra.choice || undefined } });
-      const face = faceCommand(res.resolved.steps);
-      if (face?.shape) { setFaceShape(face.shape); setFaceHidden(false); }
-      if (face?.hidden) setFaceHidden(true);
-      if (face?.discreet) setDiscreet(true);
+      applyFace(faceCommand(res.resolved.steps));
       let intelFound = null;
       // M10.2: a blocked request comes back with the server's explanation and its options (one next action each, never raw ids).
       // M10.2.1: with the preserved request's id, so an „Arată cardul de redeschidere” option binds the rearm card to THAT request.
@@ -300,7 +308,8 @@ function Cockpit({ projectId, go }) {
         else window.history.back();
       }
       if (res.resolved.steps.some((s) => s.intent === "live")) setReplayMission(null);
-      setConversation((c) => [...c, { role: "lega", text: replyFor(res), at: Date.now(), clarification: res.resolved.clarification, blocker }]);
+      // Review F2 (L4): a planner's question with choices („am găsit un singur test automat”) gets its buttons too, not only the resolver's.
+      setConversation((c) => [...c, { role: "lega", text: replyFor(res), at: Date.now(), clarification: clarificationOf(res), blocker }]);
       refresh(); cockpit.reload();
     } catch (e) { setError(e); setConversation((c) => [...c, { role: "lega", text: `Nu am putut: ${e.message}`, at: Date.now() }]); }
     finally {

@@ -75,8 +75,14 @@ test("M10.2-PROBE-01 synthetic flows give exact counters: today's flow, the prom
 
     const a = hub.probe.report({ sinceSeq: m0, untilSeq: m1 });
     // M10.2.1: gateRearms (the owner's rearms of the gate in the cockpit) is a counter of its own; none in today's flow.
-    assert.deepEqual(a.counters, { grantFormsOpened: 3, manualGrantCreates: 1, manualModeChanges: 1, approvalsNavigations: 3, scopeConfirmations: 0,
-      clarifications: 0, extraAuthentications: 0, developerInterventions: 0, automaticReadinessSteps: 0, legaOldFlowPointers: 2, gateRearms: 0 }, JSON.stringify(a.evidence));
+    // 2.12.2 (R4): entering Integrations → Validare live is navigationToAdvanced, no longer a grant form (3 → 2: Lega's preparation and
+    // her arrow at the form); the owner's §7 counters follow the old keys.
+    assert.deepEqual(a.counters, { grantFormsOpened: 2, manualGrantCreates: 1, manualModeChanges: 1, approvalsNavigations: 3, scopeConfirmations: 0,
+      clarifications: 0, extraAuthentications: 0, developerInterventions: 0, automaticReadinessSteps: 0, legaOldFlowPointers: 2, gateRearms: 0,
+      navigationToAdvanced: 1, planConfirmations: 0, extraScopeConfirmations: 0, voiceConfirmations: 0, voicePause: 0, voiceContinue: 0, stopAll: 0,
+      contextualRearm: 0, unknownIntents: 0, manualDevDbApiInterventions: 0 }, JSON.stringify(a.evidence));
+    assert.deepEqual(a.evidence.navigationToAdvanced.items.map((i) => i.screen), ["integrations.live"]);
+    assert.ok(!a.evidence.grantFormsOpened.items.some((i) => i.screen), "the grant form count holds only Lega's preparation and arrow");
     assert.equal(a.evidence.approvalsNavigations.items.filter((i) => i.type === "approval.decide").length, 2, "two old-card clicks");
     assert.deepEqual(a.evidence.legaOldFlowPointers.items.map((i) => i.target).sort(), ["grant-create", "live-mode"]);
 
@@ -84,6 +90,9 @@ test("M10.2-PROBE-01 synthetic flows give exact counters: today's flow, the prom
     assert.deepEqual(pick(b, ["grantFormsOpened", "manualModeChanges", "approvalsNavigations", "manualGrantCreates", "legaOldFlowPointers"]),
       { grantFormsOpened: 0, manualModeChanges: 0, approvalsNavigations: 0, manualGrantCreates: 0, legaOldFlowPointers: 0 });
     assert.equal(b.counters.scopeConfirmations, 1);
+    // R4: that consent is the plan's one confirmation (by click: not a spoken one).
+    assert.deepEqual(pick(b, ["planConfirmations", "extraScopeConfirmations", "voiceConfirmations", "unknownIntents"]),
+      { planConfirmations: 1, extraScopeConfirmations: 0, voiceConfirmations: 0, unknownIntents: 0 });
     assert.equal(b.counters.clarifications, 1);
     assert.equal(b.counters.automaticReadinessSteps, 1);
     assert.equal(b.counters.developerInterventions, 0);
@@ -96,7 +105,10 @@ test("M10.2-PROBE-01 synthetic flows give exact counters: today's flow, the prom
     const all = hub.probe.report({ sinceSeq: m0 });
     assert.equal(all.window.untilSeq, m3);
     assert.equal(all.counters.scopeConfirmations, 2);
-    assert.equal(all.counters.grantFormsOpened, 3);
+    assert.equal(all.counters.grantFormsOpened, 2, "R4: the Validare live navigation is navigationToAdvanced");
+    assert.equal(all.counters.navigationToAdvanced, 1);
+    assert.equal(all.counters.planConfirmations, 2, "the ops consent and the envelope confirmation are two different plans");
+    assert.deepEqual(all.ownerList.GRANT_FORMS_OPENED, all.counters.grantFormsOpened);
     // No PII: the report carries ids, enum keys and counts — never a payload's text.
     assert.ok(!JSON.stringify(all).includes("SECRET-OWNER-TEXT"));
     assert.deepEqual(Object.keys(all.counters), [...PROBE_COUNTERS]);
@@ -109,10 +121,14 @@ test("M10.2-PROBE-01 synthetic flows give exact counters: today's flow, the prom
     logCommand(hub, { type: "approval.decide", channel: "agent", actor: "agent" });
     const d = hub.probe.report({ sinceSeq: m4 });
     assert.equal(d.counters.scopeConfirmations, 1);
+    // R4: the delta is a further confirmation inside the plan, never a plan's first; a suspension on the UI channel is not a spoken pause.
+    assert.deepEqual(pick(d, ["extraScopeConfirmations", "planConfirmations", "voicePause"]), { extraScopeConfirmations: 1, planConfirmations: 0, voicePause: 0 });
     assert.equal(d.counters.manualModeChanges, 1);
     assert.equal(d.counters.manualGrantCreates, 0);
     assert.equal(d.counters.approvalsNavigations, 0, "only UI clicks on old cards count as approval clicks");
     assert.equal(d.counters.developerInterventions, 1, "a delegated agent command is a developer intervention");
+    assert.equal(d.counters.manualDevDbApiInterventions, d.counters.developerInterventions, "the owner's name is an alias of the old key");
+    assert.equal(d.evidence.manualDevDbApiInterventions.aliasOf, "developerInterventions");
     assert.throws(() => hub.probe.report({ sinceSeq: -1 }), /sinceSeq/);
     assert.throws(() => hub.probe.report({ sinceSeq: 5, untilSeq: 2 }), /untilSeq/);
   } finally { await t.cleanup(); }
@@ -248,7 +264,8 @@ test("M10.2-PROBE-06 HTTP: the probe GET writes nothing; /api/owner/nav logs the
     const got = await call("GET", `/api/owner/probe?sinceSeq=${m0}`, { cookie });
     assert.equal(got.status, 200);
     assert.equal(got.json.counters.manualModeChanges, 1);
-    assert.equal(got.json.counters.grantFormsOpened, 3);
+    assert.equal(got.json.counters.grantFormsOpened, 2, "R4: the Validare live navigation is NAVIGATION_TO_ADVANCED");
+    assert.equal(got.json.ownerList.NAVIGATION_TO_ADVANCED, 1);
     await call("GET", "/api/owner/probe?mark=1");
     assert.deepEqual(counts(t.hub), before, "the probe GET performs no write (commands, events, settings, sessions unchanged)");
     assert.equal((await call("GET", "/api/owner/probe?sinceSeq=abc")).status, 400);
@@ -275,9 +292,11 @@ test("M10.2-PROBE-06 HTTP: the probe GET writes nothing; /api/owner/nav logs the
     const { stdout } = await execFileAsync(process.execPath, [script, "--since", String(m0), "--json"], { env, timeout: 30000 });
     const printed = JSON.parse(stdout);
     assert.equal(printed.counters.approvalsNavigations, 4, "today's flow (3) + the anonymous Approvals navigation");
-    assert.equal(printed.counters.grantFormsOpened, 3);
+    assert.equal(printed.counters.grantFormsOpened, 2);
+    assert.equal(printed.ownerList.NAVIGATION_TO_APPROVALS, 4);
     const text = await execFileAsync(process.execPath, [script, "--since", String(m0)], { env, timeout: 30000 });
     assert.match(text.stdout, /Schimbări manuale de mod/);
+    assert.match(text.stdout, /^NAVIGATION_TO_ADVANCED\s+1 {2}Navigări la Integrări/m);
     await assert.rejects(execFileAsync(process.execPath, [script, "--since", "x"], { env, timeout: 30000 }), (e) => e.code === 2);
   } finally {
     await new Promise((r) => server.close(r));

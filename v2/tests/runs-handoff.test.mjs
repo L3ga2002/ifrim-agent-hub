@@ -136,7 +136,7 @@ test("T11 handoff waits at the safe point while a run is active", async () => {
   } finally { await t.cleanup(); }
 });
 
-test("T16 crash mid-run: restart marks run interrupted, retains the lease, blocks the task and never retries", async () => {
+test("T16 crash mid-run: restart marks run interrupted, retains the lease (2.12.2 review R1-F2: a dead PID is no proof), blocks the task and never retries", async () => {
   const t = await makeTestHub({ codex: "hang" });
   try {
     const { hub } = t;
@@ -157,7 +157,12 @@ test("T16 crash mid-run: restart marks run interrupted, retains the lease, block
     const report = await restarted.boot();
     assert.equal(report.runs[0].status, "interrupted_unknown");
     assert.equal(restarted.runs.getRun(run.id).status, "interrupted_unknown");
+    // 2.12.2, review R1-F2: PID 999999 is not alive, but a dead provider PID proves nothing about the commands it started (no tree-kill
+    // ran at the crash) — the lease stays retained, as before 2.12.2; the owner's rearm card releases it with the acknowledgement
+    // (m10-2-p0r1-leases.test.mjs LR-07, m10-2-p0r-review-fixes.test.mjs RF-02).
     assert.equal(restarted.leases.list()[0].status, "retained");
+    assert.deepEqual(report.leasesReconciled, []);
+    assert.equal(restarted.db.prepare("SELECT COUNT(*) AS n FROM events WHERE type = 'lease.reconciled' AND run_id = ?").get(run.id).n, 0);
     assert.equal(restarted.missions.task(plan.id).status, "BLOCKED");
     assert.equal(restarted.settings.get("mode"), "BUILD_SAFE");
     assert.equal(t.readLog("codex").filter((e) => e.method === "turn/start").length, startsBefore, "no automatic retry");

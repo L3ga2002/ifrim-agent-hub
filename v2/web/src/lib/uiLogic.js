@@ -315,8 +315,20 @@ export function factoryWaitLabel(waitReason, stage) {
     case "runner": return stage === "BLOCKED" ? "Runner-ul sau browserul nu au putut rula (fără model); remediază cauza, apoi Reia" : "Runner-ul Hub rulează verificările (fără model)";
     case "owner_decision": return stage === "SPEC_DRAFT" ? "Completează și aprobă specificația" : "Așteaptă decizia ta";
     case "cancel": return "Oprire cerută; aștept confirmarea că nimic nu mai rulează";
+    // 2.12.2 (P0-R3): a turn ran out of its per-turn limit; the factory re-dispatches it ONCE by itself after the cooldown.
+    case "retry": return "Tura a depășit limita pe tură; o reiau automat o singură dată, după cel puțin un minut (Pauză și Stop rămân disponibile)";
     default: return stage === "ACCEPTED" ? "Acceptat local; commit/push/deploy rămân acțiuni separate" : "—";
   }
+}
+
+/**
+ * Review F6 (2.12.2): the „ · <what it waits for>” tail the Lega cards print after a stage — factoryWaitLabel's words, never the raw
+ * waitReason ("retry", "owner_decision"); nothing for no reason or an unknown one.
+ */
+export function factoryWaitSuffix(waitReason, stage) {
+  if (!waitReason) return "";
+  const label = factoryWaitLabel(waitReason, stage);
+  return label && label !== "—" ? ` · ${label}` : "";
 }
 
 /** Index of each stage on the main path (side states map to where the mission stopped). */

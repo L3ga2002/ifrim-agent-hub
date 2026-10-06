@@ -17,7 +17,7 @@
 //   a security stop) and the missions, which need the open gate; work stopped for any other reason resumes as before, gate or not.
 import { HubError } from "../core/errors.mjs";
 import { parse } from "../storage/db.mjs";
-import { resolveIntent, matchRef, normalize, stripFillers, INTENT_EFFECTS, CONTINUE_QUESTION } from "./intents.mjs";
+import { resolveIntent, matchRef, normalize, stripFillers, INTENT_EFFECTS, CONTINUE_QUESTION, stopTalkAnswer, modeAnswer } from "./intents.mjs";
 import { layoutForIntent } from "./layout.mjs";
 import { localDayStart } from "../intel/twin.mjs";
 import { PACKAGE_KINDS } from "../intel/packages.mjs";
@@ -54,7 +54,8 @@ const BARE_VERBS = Object.freeze({ deschide: "Ce să deschid?", "arata-mi": "Ce 
 const LEGA_PREFIX = /^(hei |hey |buna )?lega[,!. ]+/;
 /** "Anulează planul" withdraws the plan (CANCELLED); "Nu" / "Nu acum" / "Nu vreau planul" only hold it (nothing starts, the card stays). */
 const CANCEL_WORDS = /\b(anuleaza|anulati|renunta|renunt|abandoneaza|arunca)\b/;
-const PROJECT_CHOICE = new Set(["open_project", "switch_project", "freeze_project", "unfreeze_project", "autonomy"]);
+// P0-R6 (L11): „Ce a rămas în …” with two plausible project names asks which one (the resolver's question, forIntent status).
+const PROJECT_CHOICE = new Set(["open_project", "switch_project", "freeze_project", "unfreeze_project", "autonomy", "status"]);
 const MISSION_CHOICE = new Set(["continue_work", "start_mission", "resume_mission", "show_plan"]);
 /** Bounded requests whose open question was about the PROJECT (review #5): the choice id is a project id. */
 const REQUEST_PROJECT_CHOICE = new Set(["engineering_request", "analysis_request"]);
@@ -89,8 +90,62 @@ const REOPEN_SPOKEN = "o redeschizi în cockpit, pe cardul „Redeschide poarta�
 const VETO_MIXED = "Lega a auzit „Continuă” împreună cu alte cuvinte, așa că nu reiau nimic acum; ca să reiau, spune „Continuă” singur.";
 const NOTHING_HELD = Object.freeze({ cls: "open", ops: new Set(), desktop: false, missions: new Set() });
 const capitalize = (text) => (text ? `${text.charAt(0).toLocaleUpperCase("ro-RO")}${text.slice(1)}` : text);
+/**
+ * 2.12.2 (P0-R6, L7): the reads and plans that need a project and ask for it when none is known. The question is remembered like the
+ * planners' (rememberProjectQuestion), so a following sentence that only names a project completes it within the clarification TTL.
+ */
+const PROJECT_QUESTION_TEXT = Object.freeze({ show_plan: "Pe ce proiect să-ți arăt planul?", continue_work: "Pe ce proiect continui?", status: "Pe ce proiect să mă uit?" });
+/** R4-F8: the owner's own Stop All in the event log — its own stop kind when recorded, else any stop that is not the Hub's shutdown. */
+const OWNER_STOP_ALL_SQL = `SELECT created_at, source FROM events WHERE scope_type = 'system' AND scope_id = 'hub' AND type = 'system.stop_all'
+  AND (json_extract(payload_json, '$.stopKind') = 'stop_all' OR (json_extract(payload_json, '$.stopKind') IS NULL AND source <> 'system')) ORDER BY seq DESC LIMIT 1`;
+/** R2-F7: the channel a Stop All came from, from its event source (runs.stopAll stamps the command's actor); enum keys only. */
+const stopVia = (source) => {
+  const s = String(source || "");
+  if (s === "voice" || s.startsWith("voice:")) return "voice";
+  if (s.startsWith("owner:")) return "owner";
+  if (s.startsWith("device:")) return "companion";
+  return s === "user" ? "ui" : null;
+};
+/**
+ * R4 (UNKNOWN_INTENTS, exact): whether the Hub answered an unknown step — with its own words (a message, a question, a refusal, an error,
+ * an explanation) or with the resolver's refusal / question for it (a confirmation it could not take, „Continuă?”, a plan start it could
+ * not read, a bare verb's question). A step left with none of these is a sentence the Hub did not understand and said nothing about.
+ */
+const answeredUnknown = (step, r, resolved) => Boolean(step?.args?.refusedConfirmation || step?.args?.pendingVerb
+  || ((step?.args?.continueQuestion || step?.args?.planStartUnclear) && resolved?.clarification)
+  || r?.message || r?.clarification || r?.refused || r?.error || r?.explain);
 /** VOICE-05: the owner's own words, quoted as heard (bounded; the closing punctuation dropped). */
 const heardQuote = (heard) => String(heard || "").replace(/[\s.!…]+$/u, "").slice(0, 120) || "Continuă";
+/**
+ * Review F2 (L4): the planner questions a plain pick may answer (the engineering planner's „am găsit un singur test automat… Alege-l”,
+ * an analysis planner's, or the request they were asked for). Only when the question offered exactly ONE option.
+ */
+const PICK_FOR = new Set(["engineering", "run", "engineering_request", "analysis_request"]);
+/** „Alege-l”, „Folosește-l”, „Primul”, „Pe acela”, „Da, alege-l” (normalized). Never a bare „Da”: that word confirms a plan. */
+const PLAIN_PICK = /^(?:(?:da|ok|okay|bine|sigur)[\s,]+)?(?:alege(?:-l|-o)?|foloseste(?:-l|-o)?|ia(?:-l|-o)|primul|prima|pe primul|pe prima|acela|acesta|pe acela|pe acesta|pe el|pe ala|asta|pe asta)(?:[\s,]+(?:pe el|pe ea|pe acela|pe acesta|pe asta|te rog|ca dovada))*$/;
+const PICK_WORDS = /\b(?:alege-l|alege-o|alege|foloseste-l|foloseste-o|foloseste|testul|test|fisierul|fisier|pe|cel|da|ok|te rog)\b/g;
+const flatWords = (v) => normalize(v).replace(/[^a-z0-9]/g, "");
+/**
+ * Review F2 (L4): the choice a plain sentence makes for the ONE option the open planner question offered — { forIntent, id } — or null.
+ * The option's own name counts too: its label („test/acceptance.test.mjs”), its file name, or the name before the first dot
+ * („testul acceptance”). It only names the option the Hub itself offered (answerChoice re-checks it); it never confirms a plan. A project
+ * named alone keeps its own path (`isProject`: the request waiting for its project, review #5), so only „Alege-l” picks a project here.
+ */
+function singleOptionPick(pending, text, nowMs, isProject = () => false) {
+  if (!pending || !PICK_FOR.has(pending.forIntent) || !Array.isArray(pending.options) || pending.options.length !== 1) return null;
+  if (nowMs - Number(pending.at || 0) > INTAKE_LIMITS.clarificationTtlMs) return null;
+  const bare = stripFillers(stripFillers(normalize(text)).replace(LEGA_PREFIX, "")).replace(/[.,!?]+$/g, "").trim();
+  if (!bare) return null;
+  const option = pending.options[0];
+  const pick = { forIntent: pending.forIntent, id: String(option.id) };
+  if (PLAIN_PICK.test(bare)) return pick;
+  if (isProject(pick.id)) return null;
+  const label = String(option.label || option.id || "");
+  const file = label.split(/[\\/]/).pop() || "";
+  const names = new Set([label, file, file.split(".")[0]].map(flatWords).filter(Boolean));
+  // As said („acceptance.test.mjs”) or without the pick words around it („testul acceptance”, „folosește acceptance”).
+  return [flatWords(bare), flatWords(bare.replace(PICK_WORDS, " "))].some((said) => said && names.has(said)) ? pick : null;
+}
 
 export function createIntake(hub) {
   const { trust, envelopes, cockpit, interrupts, advisor, voice, projects, missions, factory, company, bus, db } = hub;
@@ -174,7 +229,7 @@ export function createIntake(hub) {
     if (!conv || !clarification || !Array.isArray(clarification.options) || !clarification.options.length) return;
     conv.clarification = { question: clarification.question, forIntent: clarification.forIntent, options: clarification.options.map((o) => ({ id: String(o.id), label: o.label })),
       step: step ? { intent: step.intent, effect: step.effect, effectClass: step.effectClass, args: { ...step.args }, constraints: { ...step.constraints }, text: step.text } : null,
-      projectId: projectId || null, at: nowMs() };
+      projectId: projectId || null, about: clarification.about === "project" ? "project" : null, at: nowMs() };
   }
   /**
    * Review M10.2 #5: bounded work waiting for its PROJECT („Pe ce proiect lucrez?”, or the one question when the cockpit's project and
@@ -186,6 +241,21 @@ export function createIntake(hub) {
     if (!conv || !step) return;
     conv.projectQuestion = { step: { intent: step.intent, effect: step.effect, effectClass: step.effectClass, args: { ...step.args }, constraints: { ...step.constraints }, text: step.text },
       text: String(text || "").slice(0, 2000), at: nowMs() };
+  }
+  /**
+   * 2.12.2 (P0-R6, L7): „Arată-mi planul” (or „Ce a rămas?”) with no project known — ONE question with the projects as options, remembered
+   * twice: as the open clarification (a button answers it with the project's id) and as the request waiting for its project (a sentence
+   * that only names one completes it, under the request's own effect-class check). Live, „Pe ce proiect?” was forgotten, so „ProDelivery”
+   * only opened the project and the plan was never shown. The Hub's own project and retired ones are not offered; real projects first.
+   */
+  function askProject(r, step, { conv, input }) {
+    const hubId = (() => { try { return projects.hub?.()?.id || null; } catch { return null; } })();
+    const options = projects.list().filter((p) => p.id !== hubId && p.status !== "retired")
+      .sort((a, b) => Number(a.source === "hub-test") - Number(b.source === "hub-test")).slice(0, 6).map((p) => ({ id: p.id, label: p.name }));
+    r.message = PROJECT_QUESTION_TEXT[step.intent] || "Pe ce proiect?";
+    r.clarification = { question: r.message, options, forIntent: step.intent, about: "project" };
+    rememberClarification(conv, r.clarification, step, null);
+    rememberProjectQuestion(conv, step, input?.text);
   }
 
   // ---------------------------------------------------------------- M10.2.1: the suspended gate, answered in context (D14/D15)
@@ -260,7 +330,12 @@ export function createIntake(hub) {
     if (code === "OWNER_PAUSE") {
       return { cls, gateStopped: { code: "OWNER_PAUSE", reason: voiceChannel ? "Ai pus Hub-ul pe pauză: „Continuă” îl reia, scris în cockpit sau spus cu vocea ta verificată local." : e.reason } };
     }
-    if (code === "LEASES" && otherPause) return { cls, gateStopped: { code, reason: "Un spațiu de lucru e încă rezervat după o oprire neconfirmată (lease-uri reținute); până nu e eliberat, poarta nu se redeschide." } };
+    // 2.12.2 (P0-R1): never a dead end — the cockpit card shows the reserved workspace as a step of the same decision (or why it waits);
+    // an open Lega session is named first, as laterHow does (the card refuses while it is open).
+    if (code === "LEASES" && otherPause) {
+      const first = hub.lega?.active?.() ? "după ce închizi Lega, " : "";
+      return { cls, gateStopped: { code, reason: `Poarta e oprită ${by} și un spațiu de lucru e încă rezervat după o oprire neconfirmată: ${first}${REOPEN_SPOKEN}. Pe card vezi și ce fac cu spațiul rezervat.` } };
+    }
     if (code === "ELIGIBLE" || code === "SECURITY") {
       const how = voiceChannel ? "o redeschizi în cockpit, în sesiunea ta, cu Windows Hello — nu prin voce." : "o redeschizi în cockpit, în sesiunea ta de proprietar, cu Windows Hello (cardul „Redeschide poarta”).";
       return { cls, gateStopped: { code: "OWNER_SESSION", reason: `Poarta e oprită ${by}: ${how}` }, how: voiceChannel ? how : null };
@@ -817,7 +892,7 @@ export function createIntake(hub) {
         else r.message = step.args.unknownRef ? `Nu găsesc proiectul „${step.args.unknownRef}”.` : "Spune-mi proiectul.";
       } else if (["show_plan", "continue_work"].includes(step.intent)) {
         if (source === "voice-local" && awaiting) { r.refused = "Planul afișat așteaptă răspunsul tău; spune „Da, execută planul” sau „Nu acum” (nu pregătesc alt plan peste el)"; }
-        else if (!projectId) { r.message = "Pe ce proiect?"; }
+        else if (!projectId) askProject(r, step, env);
         else {
           const proposal = await envelopes.propose({ projectId, missionIds: step.args.missionId ? [step.args.missionId] : [], constraints: step.constraints, actor: ctx.actor, via: ctx.channel })
             .catch((error) => ({ error: error.message }));
@@ -857,7 +932,23 @@ export function createIntake(hub) {
           r.message = target ? "Bine, nu pornesc nimic. Planul rămâne afișat; îl confirmi când vrei sau spui „Anulează planul”." : "Bine, nu pornesc nimic.";
         }
       } else if (step.intent === "reorder") r.message = "Nu pot reordona pașii unui plan dintr-o frază. Spune ce faci întâi, pregătesc planul pentru acel pas, apoi pe următorul.";
-      else if (step.intent === "status") r.explain = cockpit.status({ projectId, worker: step.args.worker || null });
+      else if (step.intent === "status") {
+        // P0-R6 (L11): „Ești în build safe?” is answered with the mode the server reads; „Ce a rămas în ProDelivery?” is the status of the
+        // project it names (shown, with its next step), or ONE question when no project is known. Reads only: nothing changes.
+        if (step.args.unknownRef) r.message = `Nu găsesc proiectul „${step.args.unknownRef}”.`;
+        else if (step.args.remaining && !step.args.projectId && !projectId) askProject(r, step, env);
+        else {
+          if (step.args.projectId && projects.get(step.args.projectId)) {
+            if (step.args.projectId !== projectId) r.navigate = `/cockpit/${step.args.projectId}`;
+            projectId = step.args.projectId;
+          }
+          r.explain = cockpit.status({ projectId, worker: step.args.worker || null });
+          if (step.args.modeQuestion) r.message = modeAnswer({ question: true }, { mode: hub.settings.get("mode") });
+          else if (step.args.remaining && projectId) { r.cockpit = await cockpit.projectCockpit(projectId); r.next = r.cockpit?.next || null; }
+        }
+      }
+      // P0-R6 (L11): a request to change the Hub's mode („Treci pe live”, „Activează LIVE_VALIDATION”) — answered, never done.
+      else if (step.intent === "explain_mode") r.message = modeAnswer({}, { mode: hub.settings.get("mode"), spoken: source === "voice-provider" || source === "voice-local" });
       else if (step.intent === "why_blocked") r.explain = cockpit.whyBlocked({ projectId, missionId: step.args.missionId || null });
       else if (step.intent === "why_route") r.explain = cockpit.whyRoute({ worker: step.args.worker });
       else if (step.intent === "replay") { const mid = step.args.missionId || (projectId && factory.list().find((f) => f.projectId === projectId)?.missionId); r.replay = mid ? cockpit.replay(mid) : null; if (!mid) r.message = "Nu am o misiune de reluat pe acest proiect."; }
@@ -1067,6 +1158,21 @@ export function createIntake(hub) {
         if (!attachGate(r, ctx, { judge: localSession })) r.message = "Poarta de execuție e deschisă; nu e nimic de redeschis.";
         else r.message = r.gateRearm ? r.gateRearm.headline : r.gateStopped?.reason || "Poarta e oprită; o redeschizi în cockpit, în sesiunea ta, cu Windows Hello.";
       }
+      // ---------- 2.12.2 (P0-R2): words that only TALK about an interruption (a question, a negation, a condition, reported speech, a
+      // quotation) — the Hub's own answer, a read: nothing is stopped, paused or reopened, and no question is asked (no clarification).
+      // For reported speech (and R2-F7's „De ce ai oprit tot?”), the newest owner Stop All in the event log, where it came from and whether
+      // a Stop All still holds the gate. R4-F8: the stop's own kind (payload.stopKind, runs.stopAll) decides, never the suspension record's
+      // precedence kind; a stop recorded before that field counts unless the Hub's shutdown wrote it (source "system").
+      else if (step.intent === "explain_stop") {
+        let facts = {};
+        if (step.args?.mood === "reported") {
+          let row = null;
+          try { row = db.prepare(OWNER_STOP_ALL_SQL).get(); } catch { row = null; }
+          const g = gateNow();
+          facts = { lastStopAt: row?.created_at || null, lastStopVia: stopVia(row?.source), gate: g.status === "open" ? "open" : classifySuspension(g).cls === "stop_all" ? "stop_all" : "other" };
+        }
+        r.message = stopTalkAnswer(step.args || {}, facts);
+      }
       else if (step.intent === "fullscreen") r.view = "stage";
       else if (step.intent === "cockpit_view") r.view = "cockpit";
       else if (step.intent === "details") r.view = "details";
@@ -1182,7 +1288,14 @@ export function createIntake(hub) {
     }
     const base = pending.step || { intent: forIntent, effect: "none", args: {}, constraints: {}, text: "" };
     const step = { ...base, args: { ...base.args }, constraints: { ...base.constraints } };
-    if (PROJECT_CHOICE.has(forIntent)) { step.args.projectId = id; delete step.args.unknownRef; }
+    // P0-R6 (L7): the project asked for „Arată-mi planul” / „Ce a rămas?” (askProject) — an offered project id, re-read here; the request
+    // then runs on it exactly as if it had been open (never as a mission id: show_plan is also a mission choice elsewhere).
+    if (pending.about === "project" && projects.get(id)) {
+      env.state.projectId = id; step.projectConfirmed = true;
+      if (step.intent === "status") step.args.projectId = id;
+      if (env.conv) env.conv.projectQuestion = null;
+    }
+    else if (PROJECT_CHOICE.has(forIntent)) { step.args.projectId = id; delete step.args.unknownRef; }
     // Review M10.2 #5: a code / analysis request whose project was asked (several matched the name, or the named one differs from
     // the cockpit's) runs on the project chosen — an offered id, re-read here — not on the cockpit's project.
     else if (REQUEST_PROJECT_CHOICE.has(forIntent) && projects.get(id)) {
@@ -1232,6 +1345,12 @@ export function createIntake(hub) {
     const env = { input, ctx, source, presented, presentedPlanId, planWaiting, awaiting, voiceWaiting, derived, conv, state, pendingForProject, stepCount: 0, cleanText: "" };
     const reply = (resolvedOut, results) => ({ projectId: state.projectId, resolved: resolvedOut, results, layout: state.layout, channel: ctx.channel, source });
 
+    // Review F2 (L4): „Alege-l” (or the test's name) answers the ONE test the planner offered — the owner never names a file. It picks;
+    // the plan card that follows still needs its own one confirmation, and the step keeps its own effect-class check for this source.
+    if (!(input.choice && typeof input.choice === "object")) {
+      const pick = singleOptionPick(conv.clarification, input.text, nowMs(), (id) => { try { return Boolean(projects.get(id)); } catch { return false; } });
+      if (pick) input.choice = pick;
+    }
     if (input.choice && typeof input.choice === "object") {
       const out = await answerChoice(input.choice, env);
       bus.emit({ type: "owner.intent", scopeType: "owner", scopeId: current?.id || "global", source: ctx.actor, payload: { channel: ctx.channel, source, steps: out.steps.map((s) => s.intent), clarification: false, refused: 0, choice: true } });
@@ -1272,7 +1391,10 @@ export function createIntake(hub) {
     // from the raw words here — only when the resolver found nothing else (a deictic „din folderul acesta” stays studio_import_here).
     const folderImport = resolved.steps.length === 1 && resolved.steps[0].intent === "unknown" && !resolved.clarification && !resolved.refused.length ? parseImportFolder(input.text) : null;
     if (folderImport) resolved.steps = [{ intent: "studio_import_folder", effect: "plan", effectClass: "BOUNDED_WORKFLOW", args: { folderRef: folderImport.folderRef }, constraints: {}, text: String(input.text).slice(0, 400) }];
-    bus.emit({ type: "owner.intent", scopeType: "owner", scopeId: current?.id || "global", source: ctx.actor, payload: { channel: ctx.channel, source, steps: resolved.steps.map((s) => s.intent), clarification: Boolean(resolved.clarification), refused: resolved.refused.length } });
+    // R4 (UNKNOWN_INTENTS, exact): a sentence with an unknown step announces (`outcome: true`) the owner.intent_outcome written after its
+    // steps ran, with how many unknown steps the Hub left without any answer (probe.mjs counts that number; older events stay estimated).
+    const unknownSteps = resolved.steps.filter((s) => s.intent === "unknown").length;
+    const intentEvent = bus.emit({ type: "owner.intent", scopeType: "owner", scopeId: current?.id || "global", source: ctx.actor, payload: { channel: ctx.channel, source, steps: resolved.steps.map((s) => s.intent), clarification: Boolean(resolved.clarification), refused: resolved.refused.length, ...(unknownSteps ? { outcome: true } : {}) } });
     if (resolved.clarification) rememberClarification(conv, resolved.clarification, resolved.steps.find((s) => s.intent === resolved.clarification.forIntent) || null, state.projectId);
     // Review #5: a resolver question about a request's PROJECT (several projects match the name) is answerable by naming one, too.
     if (resolved.clarification && REQUEST_PROJECT_CHOICE.has(resolved.clarification.forIntent)) {
@@ -1290,6 +1412,14 @@ export function createIntake(hub) {
       // resolver's own clarification is already counted on owner.intent.
       if (r.clarification) bus.emit({ type: "intake.question", scopeType: "owner", scopeId: current?.id || "global", source: ctx.actor, payload: { intent: step.intent, options: (r.clarification.options || []).length } });
       results.push(r);
+    }
+    if (unknownSteps) {
+      const unanswered = resolved.steps.filter((s, i) => s.intent === "unknown" && !answeredUnknown(s, results[i], resolved)).length;
+      // Enum fields and counts only (never the words); a failure here never changes the answer the owner gets.
+      try {
+        bus.emit({ type: "owner.intent_outcome", scopeType: "owner", scopeId: current?.id || "global", source: ctx.actor,
+          payload: { intentEventId: intentEvent?.id || null, channel: ctx.channel, source, unknown: unknownSteps, unknownUnanswered: unanswered } });
+      } catch { /* observability only */ }
     }
     return reply({ steps: resolved.steps.map((s) => ({ intent: s.intent, effect: s.effect, args: s.args, constraints: s.constraints })), clarification: resolved.clarification, refused: resolved.refused }, results);
   }

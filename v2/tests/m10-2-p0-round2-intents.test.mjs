@@ -49,7 +49,9 @@ test("R2B-01 every natural rearm phrase with „după Stop All” shows the card
   // A following request keeps its own step; the rearm part is still only the card.
   assert.deepEqual(intents("Redeschide poarta după Stop All și arată-mi ce urmează"), ["gate_rearm", "next_step"]);
   // The neighbours keep their meaning: the stop words alone stop, „Deschide Hub-ul” is the Hub's project, a refusal is not a request.
-  for (const text of ["Oprește tot", "Stop all", "Lega, stop all", "Te rog, oprește tot", "Opriți tot", "Oprește tot după ce termini testul"]) assert.deepEqual(intents(text), ["stop_all"], text);
+  for (const text of ["Oprește tot", "Stop all", "Lega, stop all", "Te rog, oprește tot", "Opriți tot"]) assert.deepEqual(intents(text), ["stop_all"], text);
+  // 2.12.2 (P0-R2): a deferred stop is a condition — never run now (the Hub answers that it does not schedule stops).
+  assert.deepEqual(intents("Oprește tot după ce termini testul"), ["explain_stop"]);
   assert.notEqual(intents("Deschide Hub-ul")[0], "gate_rearm");
   assert.notEqual(intents("Repornește Hub-ul")[0], "gate_rearm");
   assert.ok(!intents("Nu redeschide poarta după Stop All").includes("gate_rearm"));

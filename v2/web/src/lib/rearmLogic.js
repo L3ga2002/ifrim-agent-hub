@@ -10,6 +10,14 @@ export const REARM_PATH = "/api/owner/gate/rearm";
 export const REARM_MODALITIES = Object.freeze(["click", "keyboard", "typed"]);
 export const REARM_BUTTON_LABEL = "Redeschide poarta (Windows Hello)";
 /**
+ * 2.12.2 (P0-R1): a workspace still reserved after an unconfirmed stop is a step the Hub INCLUDES in the card (owner/gate-rearm.mjs,
+ * runtime/lease-reconcile.mjs): an orphaned process the Hub started is stopped, or — when its outcome cannot be proven — the reservation
+ * is released only with this acknowledgement (the same words as the Hub's LEASES_ACK_LABEL).
+ */
+export const LEASES_ACK_LABEL = "Am înțeles, eliberează spațiul de lucru";
+/** Under the owner's own pause the card only releases the reservation (scope "leases"); „Continuă” then reopens the pause. */
+export const REARM_LEASES_BUTTON_LABEL = "Eliberează spațiul de lucru (Windows Hello)";
+/**
  * 2.12.1 (UI-01, the owner's decision): the full card is ALWAYS on screen before the decision. Without a card (the cockpit banner, a
  * blocker option, a refused resume) the first click only asks the Hub's card and shows it — this is its label; the card's own button
  * (REARM_BUTTON_LABEL) or Enter on the focused card is the decision.
@@ -75,40 +83,59 @@ export function rearmSlotFrom(results = []) {
 export const isRearmOption = (option) => option?.kind === "rearm" && option?.code === "GATE_SUSPENDED";
 
 /**
- * Whether the card may be confirmed now: a live card, and — when the Hub listed security events around the stop (D16) — the owner's
- * explicit „Am verificat cauza”. → { ready, why } (why: "no_card" | "expired" | "ack").
+ * P0-R1: the steps the Hub included in this card for workspaces still reserved (each { leaseId, verdict, text, ack, pid?, label? }) —
+ * shown as the Hub wrote them; [] when there is none.
  */
-export function rearmReady(card, { ack = false, now = Date.now() } = {}) {
+export function rearmLeaseSteps(card) {
+  const steps = card && typeof card === "object" && card.leases && typeof card.leases === "object" ? card.leases.steps : null;
+  return Array.isArray(steps) ? steps.filter((s) => s && typeof s === "object" && typeof s.text === "string" && s.text.trim()).slice(0, 20) : [];
+}
+/** P0-R1: the card releases a reservation whose outcome the Hub cannot prove — only with the owner's „Am înțeles…” ticked. */
+export const rearmLeasesAckRequired = (card) => Boolean(card && typeof card === "object" && card.leases && typeof card.leases === "object" && card.leases.ackRequired === true);
+/** P0-R1: the card of the owner's own pause that only releases the reservation (the pause stays; „Continuă” reopens it). */
+export const rearmLeasesOnly = (card) => Boolean(card && typeof card === "object" && card.scope === "leases");
+
+/**
+ * Whether the card may be confirmed now: a live card, and — when the Hub listed security events around the stop (D16) — the owner's
+ * explicit „Am verificat cauza”; P0-R1: when a reservation's outcome cannot be proven, „Am înțeles, eliberează spațiul de lucru”.
+ * → { ready, why } (why: "no_card" | "expired" | "ack" | "ack_leases").
+ */
+export function rearmReady(card, { ack = false, ackLeases = false, now = Date.now() } = {}) {
   if (!isRearmCard(card)) return { ready: false, why: "no_card" };
   if (rearmCardExpired(card, now)) return { ready: false, why: "expired" };
   if (card.security && ack !== true) return { ready: false, why: "ack" };
+  if (rearmLeasesAckRequired(card) && ackLeases !== true) return { ready: false, why: "ack_leases" };
   return { ready: true, why: null };
 }
 
 /**
  * The body of POST /api/owner/gate/rearm: the card's own nonce + hash (never edited), the request the card was issued for (never another
  * one), the security acknowledgement only when the owner ticked it for a card that asks for it, and the gesture. Anything but a click,
- * Enter or typed confirmation is refused here, before anything is sent (the Hub refuses it too).
+ * Enter or typed confirmation is refused here, before anything is sent (the Hub refuses it too). P0-R1: `ackLeases` is sent only for a
+ * card that asks for it, and is true only when the owner ticked it.
  */
-export function rearmRequestBody(card, { ackSecurity = false, modality = "click" } = {}) {
+export function rearmRequestBody(card, { ackSecurity = false, ackLeases = false, modality = "click" } = {}) {
   if (!REARM_MODALITIES.includes(modality)) throw new Error("Redeschiderea porții se confirmă doar cu un click, Enter sau tastat, în sesiunea ta — niciodată prin voce.");
   if (!isRearmCard(card)) throw new Error("Nu am un card de redeschidere valabil; îl cer din nou.");
   const requestId = requestIdOf(card.requestId);
-  return { nonce: card.nonce, hash: card.hash, ...(requestId ? { requestId } : {}), ackSecurity: Boolean(card.security) && ackSecurity === true, modality };
+  return { nonce: card.nonce, hash: card.hash, ...(requestId ? { requestId } : {}), ackSecurity: Boolean(card.security) && ackSecurity === true,
+    ...(rearmLeasesAckRequired(card) ? { ackLeases: ackLeases === true } : {}), modality };
 }
 
 /** The card shows the same facts as before (same suspension, same security events): a refreshed copy keeps the owner's decision. */
-export const sameDisplayedCard = (a, b) => isRearmCard(a) && isRearmCard(b) && a.hash === b.hash && Boolean(a.security) === Boolean(b.security);
+export const sameDisplayedCard = (a, b) => isRearmCard(a) && isRearmCard(b) && a.hash === b.hash && Boolean(a.security) === Boolean(b.security)
+  && rearmLeasesAckRequired(a) === rearmLeasesAckRequired(b);
 
 /**
  * After the page asked for a card in the SAME gesture, may it go on to the rearm without another click? 2.12.1 (UI-01, the owner's
  * decision): the full card is always on screen before the decision, so only for a refreshed copy (same hash, same security facts — and,
  * with security events, the acknowledgement already ticked) of a card the owner clicked ON. A first card — from the cockpit banner, a
  * blocker option, a refused resume — is only shown, whatever the session's freshness: its own button or Enter is the decision.
+ * P0-R1: the same for a card that needs the reservation acknowledgement (`ackLeases` already ticked).
  */
-export function continueAfterFetch({ previous = null, next = null, ack = false } = {}) {
+export function continueAfterFetch({ previous = null, next = null, ack = false, ackLeases = false } = {}) {
   if (!isRearmCard(next) || !isRearmCard(previous)) return false;
-  return sameDisplayedCard(previous, next) && (!next.security || ack === true);
+  return sameDisplayedCard(previous, next) && (!next.security || ack === true) && (!rearmLeasesAckRequired(next) || ackLeases === true);
 }
 
 /**
@@ -175,6 +202,9 @@ export function rearmErrorAction(error) {
   if (code === "CARD_STALE" || code === "CARD_SESSION") return { action: "refresh", retry: true, code, message };
   if (["SUSPENSION_CHANGED", "CARD_CHANGED", "CARD_HASH", "CARD_REQUEST"].includes(code)) return { action: "refresh", retry: false, code, message };
   if (code === "SECURITY_ACK" || error?.details?.securityAckRequired) return { action: "ack", retry: false, code: "SECURITY_ACK", message };
+  // P0-R1: the reservation acknowledgement is missing (the card stays usable); another rearm is in flight (wait for it, then check again).
+  if (code === "LEASES_ACK" || error?.details?.leasesAckRequired) return { action: "ack", retry: false, code: "LEASES_ACK", message };
+  if (code === "REARM_BUSY") return { action: "wait", retry: false, code, message };
   if (REARM_WAIT_CODES.includes(code)) return { action: "wait", retry: false, code, message };
   if (code === "OPEN") return { action: "opened", retry: false, code, message };
   if (code === "OWNER_PAUSE") return { action: "pause", retry: false, code, message };
@@ -190,6 +220,11 @@ export function rearmOutcome(result) {
   const r = result && typeof result === "object" ? result : {};
   // Someone else opened it meanwhile (another tab, the owner's „Continuă”): this card changed nothing.
   if (r.alreadyOpen) return { text: "Poarta e deja deschisă; nu am schimbat nimic.", toast: "Poarta e deja deschisă; nu am schimbat nimic.", planRef: null, requestKept: null };
+  // P0-R1: the owner's own pause — the card released the reservation only; the pause stays until „Continuă”.
+  if (r.scope === "leases" && r.reopened === false) {
+    const text = typeof r.summary === "string" && r.summary.trim() ? r.summary.trim() : "Am eliberat spațiul de lucru rezervat. Poarta rămâne pe pauza ta: spune „Continuă” și reiau în aceleași limite.";
+    return { text, toast: "Spațiul de lucru e eliberat. Poarta rămâne pe pauza ta: spune „Continuă” ca să reiei.", planRef: null, requestKept: null };
+  }
   const text = typeof r.summary === "string" && r.summary.trim() ? r.summary.trim() : "Am redeschis poarta. Nimic vechi nu repornește singur: ce e pe pauză reiei cu „Continuă”.";
   const p = r.reproposed && typeof r.reproposed === "object" ? r.reproposed : null;
   const env = p && typeof p.envelopeId === "string" && PLAN_ID.test(p.envelopeId) ? { kind: "envelope", id: p.envelopeId } : null;

@@ -17,6 +17,52 @@ export function faceCommand(steps = []) {
   return null;
 }
 
+const FACE_SHAPES = new Set(["FACE", "CORE", "GRAPH"]);
+/**
+ * 2.12.2 (L8): a face sentence the Hub heard from the owner in a Lega session („Arată-ți fața”) comes as the live event
+ * { type: "lega.face", sessionId, command } where `command` is what faceCommand() returns. Only THIS tab's session counts, and only
+ * the exact shapes faceCommand() produces (a fresh object, nothing else carried): the view changes, nothing is authorised.
+ */
+export function faceFromLiveEvent(event, currentSessionId) {
+  if (!event || event.type !== "lega.face") return null;
+  if (typeof currentSessionId !== "string" || !currentSessionId || event.sessionId !== currentSessionId) return null;
+  const c = event.command;
+  if (!c || typeof c !== "object" || Array.isArray(c)) return null;
+  if (c.shape !== undefined) return typeof c.shape === "string" && FACE_SHAPES.has(c.shape) && c.hidden === false ? { shape: c.shape, hidden: false } : null;
+  if (c.discreet === true) return { discreet: true };
+  if (c.hidden === true) return { hidden: true };
+  return null;
+}
+
+/**
+ * Review F2 (L4): the question whose choices the conversation draws as buttons — the resolver's when it offers choices, else the first
+ * step result's that does (a planner's „am găsit un singur test automat… Alege-l”), else the resolver's own (no buttons). A button
+ * sends `choice` with that question's forIntent and the option id the Hub offered.
+ */
+export function clarificationOf(response) {
+  const resolved = response?.resolved?.clarification || null;
+  if (Array.isArray(resolved?.options) && resolved.options.length) return resolved;
+  const step = (Array.isArray(response?.results) ? response.results : []).map((r) => r?.clarification).find((c) => Array.isArray(c?.options) && c.options.length && c.forIntent);
+  return step || resolved;
+}
+
+/**
+ * Review F7 (L8): a face command heard by voice while the Lega screen is NOT on display. The cockpit applies `lega.face` itself when it
+ * is shown (faceFromLiveEvent); elsewhere the panel stores the same view preferences the cockpit reads when it opens and — for a face
+ * or the core, the commands that SHOW something — opens the Lega screen, so what the Hub reports („Am arătat fața Legăi pe ecran”) is
+ * what the owner sees. Hiding or a discreet face is only stored (nothing to show). The graph comes with its own company view. → null
+ * (another session, an invalid command, the cockpit on display) | { prefs: [[key, value]], navigate: "/lega" | null }.
+ */
+export function faceElsewhere(event, currentSessionId, { onCockpit = false } = {}) {
+  const face = faceFromLiveEvent(event, currentSessionId);
+  if (!face || onCockpit) return null;
+  const prefs = [];
+  if (face.shape) prefs.push(["lega.face", face.shape], ["lega.faceHidden", false]);
+  if (face.hidden) prefs.push(["lega.faceHidden", true]);
+  if (face.discreet) prefs.push(["lega.discreet", true]);
+  return { prefs, navigate: face.shape === "FACE" || face.shape === "CORE" ? "/lega" : null };
+}
+
 const plural = (n, one, many) => `${n} ${n === 1 ? one : many}`;
 
 /** A short spoken/written summary of a project cockpit, from its data only. */

@@ -12,6 +12,7 @@ import { bindingLabel, grantBindingOf, resolveBinding } from "../policy/model-bi
 import { runEnvelopeIdOf, runScopeKey } from "../domain/grants.mjs";
 import { redactText } from "../security/redact.mjs";
 import { createArmedWindows } from "./armed-window.mjs";
+import { profileTurnTimeouts, turnTimeoutsOf } from "../factory/plan.mjs";
 
 /**
  * Mission Authorization Envelopes (M06 §17–§22) and the CapabilityIssuer.
@@ -81,6 +82,20 @@ const labelOf = (key) => CHANGE_LABELS[key];
  * attested environment; never on the Hub's own repository nor on a real project on the Windows route (R2 open); Claude only reads.
  */
 export const RUN_ENVELOPE_LIMITS = Object.freeze({ maxDurationMin: 30, taskMin: 3, taskMax: 1000, attempts: 1 });
+/**
+ * 2.12.2 (P0-R3): the per-turn limit of a run plan's ONE turn, in minutes — the Software Factory role it resembles under the binding's
+ * profile (default BALANCED): a read-only analysis like a reviewer (15 min), a write turn like a writer (25 min). Both inside the plan's
+ * 30 minutes; hashed in body.limits.turnTimeoutMin, shown on the card and enforced by the run manager (runs.start turnTimeoutMs).
+ */
+export const runTurnTimeoutMin = (access, binding = null) => profileTurnTimeouts(binding?.profile)[access === "workspace-write" ? "writer" : "reviewer"];
+/** The card's line for a mission plan: the per-turn limits (the largest over its missions) and the mission's own deadline. */
+function turnLimitsLine(body) {
+  const t = body?.limits?.turnTimeoutMin;
+  if (!t || typeof t !== "object") return null;
+  const durations = [...new Set((body.missions || []).map((m) => Number(m.limits?.maxDurationMin)).filter((n) => n > 0))];
+  const mission = durations.length === 1 ? `${durations[0]} min` : durations.length ? `cel mult ${Math.max(...durations)} min` : "—";
+  return `Limită pe tură: writer ${t.writer} min, reviewer ${t.reviewer} min; termen misiune ${mission}. O tură care depășește limita e oprită; o reiau automat doar în încercările din plan, după cel puțin un minut.`;
+}
 const RUN_PROVIDERS = new Set(["codex", "claude"]);
 const RUN_ACCESS = new Set(["read-only", "workspace-write"]);
 const RUN_END = new Set(["completed", "failed", "interrupted", "blocked"]);
@@ -311,7 +326,10 @@ export function createEnvelopes({ db, bus, clock, settings, projects, missions, 
       allowedTools: { writer: "Codex: fișierele proiectului (scriere), comenzile din sandbox", reviewer: "Claude: Read/Glob/Grep, fără scriere", runner: "comenzile aprobate din specificație" },
       filesystemScope: route === "windows" ? "proiectul, prin sandbox-ul Codex de pe Windows (R2 deschis)" : `o copie a proiectului în ${route}; exportul validat (C14) se aplică după verificarea conflictelor`,
       networkScope: { writer: "doar furnizorul modelului (abonament)", reviewer: "doar furnizorul modelului (abonament)", runner: route === "windows" ? "sandbox Codex Windows" : `${route}: fără rețea`, preview: "doar loopback local" },
-      limits: { maxDurationMin: totalMinutes, maxAttemptsPerStage: Math.max(...entries.map((e) => e.limits.maxAttemptsPerStage)), maxRepairCycles: Object.fromEntries(entries.map((e) => [e.missionId, repairs(e)])), maxConcurrency: 1 },
+      limits: { maxDurationMin: totalMinutes, maxAttemptsPerStage: Math.max(...entries.map((e) => e.limits.maxAttemptsPerStage)), maxRepairCycles: Object.fromEntries(entries.map((e) => [e.missionId, repairs(e)])), maxConcurrency: 1,
+        // 2.12.2 (P0-R3): the per-turn limits the steps run with, resolved like the dispatch resolves them (a mission whose limits
+        // predate them runs with its profile's), so the value confirmed is the value enforced; the largest over the plan's missions.
+        turnTimeoutMin: { writer: Math.max(...entries.map((e) => turnTimeoutsOf(e.limits).writer)), reviewer: Math.max(...entries.map((e) => turnTimeoutsOf(e.limits).reviewer)) } },
       allowedEffects: ["workspace.write (proiectul de mai sus)", "teste locale", "review doar-citire", "remedieri în limită", "QA", ...(hasPreview ? ["preview local"] : []), ...(hasE2E ? ["E2E local"] : [])],
       deniedEffects: [...DENIED_EFFECTS], ownerConstraints: Object.keys(constraints).filter((k) => constraints[k]).sort(),
       subscriptionPolicy: "INCLUDED_SUBSCRIPTION_ONLY",
@@ -353,6 +371,8 @@ export function createEnvelopes({ db, bus, clock, settings, projects, missions, 
       models: `Modele: ${[...new Set(m.map((e) => `writer ${bindingLabel(e.bindings?.writer)}; reviewer ${bindingLabel(e.bindings?.reviewer)}`))].join(" | ")}. Verificate din nou înainte de fiecare pornire; o schimbare oprește execuția înainte de model.`,
       never: "Fără deploy, commit, push, mesaje, bani, schimbări de acces sau izolare, instalări, ștergeri de date reale.",
       stops: `Mă opresc la ${body.limits.maxDurationMin} min, ${body.limits.maxAttemptsPerStage} încercări pe etapă, sau când livrarea e gata de verificarea ta (nu accept singur). Continui și dacă închizi pagina, dar numai în aceste limite; nu încep alte misiuni${body.continuationPolicy.nextMissionWithoutConfirmation ? " decât pe cele din acest plan" : ""}.`,
+      // 2.12.2 (P0-R3): the per-turn limits (hashed in body.limits.turnTimeoutMin), next to the mission's own deadline.
+      limits: turnLimitsLine(body),
       cost: "Doar din abonamentele incluse; niciun API plătit, nicio extra usage.",
       mode: body.modeTransition === SCOPED_LIVE_TRANSITION ? "Doar pașii acestui plan rulează live; Hub-ul rămâne în BUILD_SAFE (execuțiile manuale rămân refuzate)."
         : body.modeTransition ? "Hub-ul trece din BUILD_SAFE în LIVE_VALIDATION pe durata misiunii și revine apoi." : null,
@@ -527,7 +547,8 @@ export function createEnvelopes({ db, bus, clock, settings, projects, missions, 
         ? (req.provider === "claude" ? "proiectul, doar citire (citirile în afara lui sunt refuzate de Claude Code)" : write ? "proiectul de test, prin sandbox-ul Codex de pe Windows" : "proiectul, prin sandbox-ul Codex doar-citire")
         : `o copie a proiectului în ${route}${write ? "; exportul validat (C14) se aplică după verificarea conflictelor" : ""}`,
       networkScope: { run: "doar furnizorul modelului (abonament)" },
-      limits: { maxDurationMin: RUN_ENVELOPE_LIMITS.maxDurationMin, maxAttemptsPerStage: RUN_ENVELOPE_LIMITS.attempts, maxRepairCycles: {}, maxRuns: 1, maxConcurrency: 1 },
+      limits: { maxDurationMin: RUN_ENVELOPE_LIMITS.maxDurationMin, maxAttemptsPerStage: RUN_ENVELOPE_LIMITS.attempts, maxRepairCycles: {}, maxRuns: 1, maxConcurrency: 1,
+        turnTimeoutMin: runTurnTimeoutMin(req.access, binding) },
       allowedEffects: write ? ["workspace.write (proiectul de mai sus)", "un singur turn de model"] : ["citire în proiect", "un singur turn de model"],
       deniedEffects: [...DENIED_EFFECTS], ownerConstraints: Object.keys(constraints).filter((k) => constraints[k]).sort(),
       subscriptionPolicy: "INCLUDED_SUBSCRIPTION_ONLY",
@@ -550,6 +571,8 @@ export function createEnvelopes({ db, bus, clock, settings, projects, missions, 
       models: `Model: ${body.models.run}. Verificat din nou înainte de pornire; o schimbare oprește execuția înainte de model.`,
       never: "Fără deploy, commit, push, mesaje, bani, schimbări de acces sau izolare, instalări, ștergeri de date reale.",
       stops: `Mă opresc după un singur turn sau la ${body.limits.maxDurationMin} min; rezultatul rămâne în conversație, nimic nu se aplică sau se livrează singur.`,
+      // 2.12.2 (P0-R3): the turn's own limit (hashed in body.limits.turnTimeoutMin); a turn cut there is not retried (one turn per plan).
+      limits: body.limits.turnTimeoutMin ? `Limită pe tură: ${body.limits.turnTimeoutMin} min; termen plan ${body.limits.maxDurationMin} min. O tură care depășește limita e oprită și nu se reia singură.` : null,
       cost: "Doar din abonamentele incluse; niciun API plătit, nicio extra usage.",
       mode: body.modeTransition === SCOPED_LIVE_TRANSITION ? "Doar pasul acestui plan rulează live; Hub-ul rămâne în BUILD_SAFE (execuțiile manuale rămân refuzate)."
         : body.modeTransition ? "Hub-ul trece din BUILD_SAFE în LIVE_VALIDATION pe durata execuției și revine apoi." : null,
@@ -657,8 +680,10 @@ export function createEnvelopes({ db, bus, clock, settings, projects, missions, 
     bus.transaction(() => conversationsApi.addMessage({ conversationId: conversation.id, role: "user", content: r.task }, `owner:${session.id}`));
     const setDerived = (patch) => bus.transaction(() => db.prepare("UPDATE mission_envelopes SET derived_json = ?, updated_at = ? WHERE id = ?").run(json({ ...(get(env.id).derived || {}), ...patch }), iso(), env.id));
     setDerived({ conversationId: conversation.id });
+    // 2.12.2 (P0-R3): the per-turn limit the owner confirmed (body.limits.turnTimeoutMin); a plan without it (confirmed before) keeps none.
+    const turnMin = Number(env.body.limits?.turnTimeoutMin) || 0;
     const started = await runsApi.start({ conversationId: conversation.id, provider: r.provider, access: r.access, binding: { ...fresh.binding, envelopeRunId: env.id },
-      actor: `owner:${session.id}`, correlationId: env.id });
+      actor: `owner:${session.id}`, correlationId: env.id, ...(turnMin > 0 ? { turnTimeoutMs: turnMin * 60000 } : {}) });
     setDerived({ runId: started.run.id });
     bus.emit({ type: "envelope.run_started", scopeType: "envelope", scopeId: env.id, projectId: env.projectId, source: "envelopes",
       payload: { runId: started.run.id, conversationId: conversation.id, provider: r.provider, access: r.access, model: r.binding?.resolvedAlias || null, effort: r.binding?.effort || null } });

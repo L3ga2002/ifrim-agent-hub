@@ -21,6 +21,20 @@ const PERSIST_INTERVAL_MS = 700;
 /** The suspension kinds a Stop All may record (D17); a pause or a plain gate suspension never comes through here. */
 const STOP_KINDS = new Set(["stop_all", "shutdown", "security"]);
 const APPROVAL_WAIT_MINUTES = 15;
+/** 2.12.2 (P0-R3): the longest per-turn limit a caller may ask for (a Software Factory writer turn allows at most 60 min). */
+const TURN_TIMEOUT_MAX_MS = 6 * 3600000;
+/**
+ * A failure the adapter reports with a more specific cause than the deadline (a billing / quota / policy stop, a refused export…) keeps
+ * that cause when both arrive together; only an interruption or a transport/task end the deadline itself caused becomes the timeout.
+ */
+const TIMEOUT_KEEPS = new Set(["billing", "quota", "policy", "authentication", "validation", "export", "tool", "model"]);
+/**
+ * Review R3-F5: on an execution environment the per-turn deadline bounds the provider's TURN, not the adapter's own work after it (reap,
+ * post-inspection, export validation, apply: providers/codex-wsl.mjs, claude-wsl.mjs). When the deadline passes there while the
+ * provider's process is still ending, it waits at most this long (once) for that process to go before it interrupts the turn.
+ */
+const ENV_TURN_SETTLE_GRACE_MS = 5000;
+const fmtLimit =(ms) => (ms % 60000 === 0 ? `${ms / 60000} min` : ms >= 60000 ? `${(ms / 60000).toFixed(1).replace(".", ",")} min` : `${Math.max(1, Math.round(ms / 1000))} s`);
 
 export const workspaceResource = (workspacePath) => `workspace:${path.resolve(workspacePath).toLowerCase()}`;
 
@@ -113,10 +127,19 @@ export function createRunManager(deps) {
    * `profile` picks the Hub effort profile when no explicit effort is given (M03 §09); `requestedAt` / `approval` let the
    * timeline start at the owner's request instead of at admission (M03 §08). Both are optional for older callers.
    * `binding` (M09): the approved model/effort binding of a Software Factory role; it overrides model/effort/profile.
+   * `turnTimeoutMs` (2.12.2, P0-R3): an absolute wall-clock limit for this turn (absent = none, the behaviour before). It is armed when
+   * the run is admitted — a backstop for the phases before the turn — and armed again, once and with the FULL limit, when the turn
+   * reaches the model (turn_sent). At the deadline the adapter's own interruption ends the turn; the run is recorded `failed` with
+   * errorCategory `turn_timeout` (an attempt: it reached the model) — or, when the turn never reached the model, `blocked` before
+   * inference (its grant attempt given back). A Pause, a Stop, an interruption and Stop All clear it; it never fires after the run ended.
    */
   async function start({ conversationId, provider, access = "read-only", model = "", effort = "", profile = DEFAULT_PROFILE, taskId = null, stage = "assist", roleId = "", grantId = null,
-    actor = "user", correlationId = null, requestedAt = null, approval = null, exportPolicy = null, binding = null }) {
+    actor = "user", correlationId = null, requestedAt = null, approval = null, exportPolicy = null, binding = null, turnTimeoutMs = null }) {
     if (!providers[provider]) throw new HubError("validation", `Unknown provider ${provider}`);
+    const turnLimitMs = turnTimeoutMs === null || turnTimeoutMs === undefined ? null : Number(turnTimeoutMs);
+    if (turnLimitMs !== null && !(Number.isFinite(turnLimitMs) && turnLimitMs >= 1 && turnLimitMs <= TURN_TIMEOUT_MAX_MS)) {
+      throw new HubError("validation", `Limita pe tură trebuie să fie între 1 ms și ${TURN_TIMEOUT_MAX_MS / 3600000} h`);
+    }
     const conversation = conversations.get(conversationId);
     if (!conversation) throw new HubError("not_found", "Conversation not found");
     let taskMission = null;
@@ -160,6 +183,7 @@ export function createRunManager(deps) {
     if (binding?.envelopeRunId && taskMission) throw new HubError("validation", "O execuție din planul unei singure execuții nu aparține unei sarcini Software Factory");
     const plan = binding ? { ...boundPlan({ binding, provider, environment, state }), missionId: binding.envelopeRunId ? runScopeKey(binding.envelopeRunId) : taskMission }
       : resolveRunPlan({ provider, model, effort, profile: profile || DEFAULT_PROFILE, providerState: state });
+    if (turnLimitMs) plan.turnTimeoutMs = Math.round(turnLimitMs); // recorded with the plan (plan_json): the limit this turn ran under
     if (!plan.problem) timeline.mark("plan_resolved");
     if (plan.materialChange) bus.emit({ type: "run.material_change", scopeType: "conversation", scopeId: conversationId, projectId: project?.id || null, source: "hub",
       payload: { provider, role: binding?.role || null, bindingHash: binding?.bindingHash || null, reasons: plan.materialChange.reasons.slice(0, 5) } });
@@ -279,7 +303,7 @@ export function createRunManager(deps) {
         if (taskId) transitionTask(db, bus, clock, { taskId, to: "RUNNING", reason: `Run ${runId} started on ${provider}`, actor });
         bus.append({ type: "run.started", scopeType: "conversation", scopeId: conversationId, projectId: project.id, source: actor, runId,
           payload: { provider, environment, model: plan.model, effort: plan.effort, effortSource: plan.effortSource, modelSource: plan.modelSource, profile: plan.profile, access, backupId: backup.backup.id, backupCreated: Boolean(backup.created),
-            grantId: grant?.id || null, codeVersion: git.head, bindingHash: plan.bindingHash || null,
+            grantId: grant?.id || null, codeVersion: git.head, bindingHash: plan.bindingHash || null, turnTimeoutMs: plan.turnTimeoutMs || null,
             skills: skillPlan.records.filter((r) => r.applied).map((r) => ({ id: r.id, version: r.version, source: r.source, applied: true })), promptSha256 } });
       });
 
@@ -298,7 +322,10 @@ export function createRunManager(deps) {
           if (Date.now() - lastPersist > PERSIST_INTERVAL_MS) { conversations.updateStreaming(outputMessage.id, content); lastPersist = Date.now(); }
         }),
       });
-      active.set(runId, { handle, conversationId, provider, environment, leaseId: lease.id, taskId, outputMessageId: outputMessage.id, promptPackage: prompt.packageRef, startedAt: clock().toISOString(), lastEventAt: null, firstOutputAt: null, timeline });
+      active.set(runId, { handle, conversationId, provider, environment, leaseId: lease.id, taskId, outputMessageId: outputMessage.id, promptPackage: prompt.packageRef, startedAt: clock().toISOString(), lastEventAt: null, firstOutputAt: null, timeline,
+        turnLimitMs: plan.turnTimeoutMs || null, turnDeadline: null });
+      // 2.12.2 (P0-R3): armed now (the backstop before the turn); onProviderEvent arms it again with the full limit at turn_sent.
+      if (plan.turnTimeoutMs) armTurnDeadline(runId, timeline.has("turn_sent") ? "turn" : "admission");
       if (handle.pid) markPhase(runId, "process_spawned");
       db.prepare("UPDATE agent_runs SET pid = ?, pid_started_at = ? WHERE id = ?").run(handle.pid || null, clock().toISOString(), runId);
       handle.done.then((result) => finalize(runId, result, () => content)).catch((error) => finalize(runId, { status: "failed", errorCategory: "internal", error: error.message, output: content }, () => content));
@@ -319,6 +346,120 @@ export function createRunManager(deps) {
     const entry = active.get(runId);
     if (!entry?.timeline) return;
     if (entry.timeline.mark(phase, at)) db.prepare("UPDATE agent_runs SET timeline_json = ? WHERE id = ?").run(json(entry.timeline.toJSON()), runId);
+  }
+
+  // ---------- 2.12.2 (P0-R3): the per-turn deadline ----------
+  /**
+   * Arms the turn's deadline: "admission" when the run is admitted (a backstop: a process start, an account or thread check that
+   * hangs is bounded too), then "turn" ONCE when the turn reaches the model, with the full limit from that moment. A deadline that
+   * fired, or that an interruption cleared, is never armed again (a resumed step is a new run with a fresh deadline).
+   */
+  function armTurnDeadline(runId, phase) {
+    const entry = active.get(runId);
+    if (!entry?.turnLimitMs || stoppedRuns.has(runId)) return null;
+    const prev = entry.turnDeadline;
+    if (prev && (prev.fired || prev.cleared || prev.phase === "turn")) return prev;
+    if (prev?.timer) clearTimeout(prev.timer);
+    const at = clock();
+    const deadline = { phase, limitMs: entry.turnLimitMs, armedAt: at.toISOString(), deadlineAt: new Date(at.getTime() + entry.turnLimitMs).toISOString(),
+      startedPerf: performance.now(), fired: false, cleared: false, clearedBy: null, timer: null };
+    deadline.timer = setTimeout(() => onTurnDeadline(runId, deadline), entry.turnLimitMs);
+    deadline.timer.unref?.();
+    entry.turnDeadline = deadline;
+    return deadline;
+  }
+
+  /** Ends a deadline that has not fired (Pause, Stop, an interruption, Stop All, the run's own end): its timer can no longer fire. */
+  function clearTurnDeadline(entry, by) {
+    const d = entry?.turnDeadline;
+    if (!d || d.fired || d.cleared) return;
+    if (d.timer) clearTimeout(d.timer);
+    d.timer = null;
+    d.cleared = true;
+    d.clearedBy = String(by || "").slice(0, 40);
+  }
+
+  /**
+   * The deadline passed on a run that is still this deadline's (never after its end, an interruption, Stop All or a re-arm): the turn
+   * is interrupted through the adapter's own path (Codex: turn/interrupt, then the process after its grace; Claude: the process), as a
+   * Stop would, and a provider approval it still waits for is declined. The lease follows the run's end (released, or retained and
+   * reconciled by runtime/lease-reconcile.mjs); a turn whose answer never arrives after its process is gone is settled by the bounded
+   * lost-turn follow-up. Nothing is retried or relaunched here: a retry is the caller's decision (the factory's, bounded by its plan).
+   */
+  function onTurnDeadline(runId, deadline) {
+    const entry = active.get(runId);
+    if (!entry || entry.turnDeadline !== deadline || deadline.cleared || deadline.fired || stoppedRuns.has(runId)) return;
+    // Review R3-F5: an execution environment's adapter keeps working after its provider's turn settled (reap, post-inspection, export
+    // validation, apply). Interrupting it then would quarantine a COMPLETED writer's export and record a timeout — on Windows a
+    // completed turn always stays completed (TT-09). The provider's own process (the supervisor record the inner adapter keeps under
+    // the run's key and forgets only after its turn settled) decides: gone → the turn settled, the deadline ends here ("turn_settled");
+    // still ending → one bounded wait for it, then the turn is cut as before. Before the turn reached the model the backstop is unchanged.
+    if ((entry.environment || "windows") !== "windows" && (deadline.phase === "turn" || entry.timeline?.has("turn_sent"))) {
+      const settled = providerTurnSettled(entry);
+      if (settled) { clearTurnDeadline(entry, "turn_settled"); return; }
+      if (settled === false && !deadline.graceMs) {
+        deadline.graceMs = Math.max(1, Math.min(ENV_TURN_SETTLE_GRACE_MS, deadline.limitMs));
+        deadline.timer = setTimeout(() => onTurnDeadline(runId, deadline), deadline.graceMs);
+        deadline.timer.unref?.();
+        return;
+      }
+    }
+    deadline.fired = true;
+    deadline.timer = null;
+    deadline.elapsedMs = Math.round(performance.now() - deadline.startedPerf);
+    deadline.turnSent = deadline.phase === "turn" || Boolean(entry.timeline?.has("turn_sent"));
+    try { deadline.firedAt = clock().toISOString(); } catch { deadline.firedAt = null; }
+    try { Promise.resolve(entry.handle.interrupt("turn-timeout")).catch(() => {}); } catch { /* the lost-turn follow-up below settles it */ }
+    try {
+      for (const [approvalId, resolve] of [...approvalWaiters]) {
+        if (approvals.get(approvalId)?.scopeId === runId) { approvalWaiters.delete(approvalId); resolve("decline"); }
+      }
+    } catch { /* the database is closing */ }
+    try {
+      bus.emit({ type: "run.turn_timeout", scopeType: "conversation", scopeId: entry.conversationId, source: "hub", runId,
+        payload: { provider: entry.provider, environment: entry.environment || "windows", limitMs: deadline.limitMs, elapsedMs: deadline.elapsedMs, phase: deadline.phase,
+          turnSent: deadline.turnSent, deadlineAt: deadline.deadlineAt, ...(deadline.graceMs ? { settleGraceMs: deadline.graceMs } : {}) } });
+    } catch { /* the database is closing: the run ends with its process */ }
+    try { scheduleLostTurnChecks([runId]); } catch { /* timers only */ }
+  }
+
+  /**
+   * R3-F5: whether an environment run's provider turn has settled — true when the provider's process (supervisor record under the run's
+   * key) is gone or exited, false while it still runs, null when this manager cannot tell (no supervisor access: the deadline then cuts
+   * the turn as before — never a silent loss of the limit).
+   */
+  function providerTurnSettled(entry) {
+    if (typeof deps.supervisorRecord !== "function") return null;
+    let record;
+    try { record = deps.supervisorRecord(entry.handle?.key); } catch { return null; }
+    return !record || Boolean(record.exited);
+  }
+
+  /** At the run's end: the deadline that fired (the outcome is a timeout), or null — a deadline still armed is cleared here. */
+  function settleTurnDeadline(entry) {
+    const d = entry?.turnDeadline;
+    if (!d) return null;
+    if (d.fired) return d;
+    clearTurnDeadline(entry, "finished");
+    return null;
+  }
+
+  /**
+   * The outcome of a run whose deadline fired. A COMPLETED turn stays completed (its answer arrived while the process was ending: never
+   * a timeout); a more specific stop the adapter reported keeps its cause; anything else — the interruption the deadline caused — is
+   * `turn_timeout`: an attempt when the turn had reached the model (failed, counted, never forgiven like an owner's interruption), a stop
+   * before inference otherwise (blocked, the grant attempt given back). The evidence { limitMs, elapsedMs, … } is kept on the run.
+   */
+  function turnTimeoutOutcome(result, d, entry) {
+    const r = result || {};
+    const reached = Boolean(d.turnSent) || Boolean(entry?.timeline?.has("turn_sent"));
+    const evidence = { limitMs: d.limitMs, elapsedMs: d.elapsedMs ?? null, phase: d.phase, turnSent: reached, armedAt: d.armedAt, deadlineAt: d.deadlineAt, firedAt: d.firedAt || null };
+    if (r.status === "completed") return { ...r, turnTimeout: { ...evidence, outcome: "completed" } };
+    if (r.status === "failed" && TIMEOUT_KEEPS.has(r.errorCategory)) return { ...r, turnTimeout: { ...evidence, outcome: r.errorCategory } };
+    return { ...r, status: "failed", errorCategory: "turn_timeout", preInference: !reached,
+      error: reached ? `Tura a depășit limita de ${fmtLimit(d.limitMs)} pe tură; procesul providerului a fost oprit (încercarea a ajuns la model)`
+        : `Providerul nu a trimis tura modelului în limita de ${fmtLimit(d.limitMs)}; procesul a fost oprit înainte de model (nimic nu a ajuns la model)`,
+      turnTimeout: { ...evidence, outcome: "turn_timeout" } };
   }
 
   /**
@@ -367,7 +508,15 @@ export function createRunManager(deps) {
     // Observable phase only (no progress is inferred): waiting for the provider until the first output arrives.
     const entry = active.get(runId);
     if (entry) { entry.lastEventAt = now; if (event.type === "delta" && !entry.firstOutputAt) entry.firstOutputAt = now; }
-    if (event.type === "phase") { markPhase(runId, event.phase, event.at || null); return; }
+    if (event.type === "phase") {
+      markPhase(runId, event.phase, event.at || null);
+      // 2.12.2 (P0-R3): the turn reached the model: its deadline restarts once, with the full limit from now.
+      if (event.phase === "turn_sent") armTurnDeadline(runId, "turn");
+      return;
+    }
+    // Review R3-F5: an adapter that says its provider's turn has settled (the work after it — an environment's reap and export — is
+    // not the turn) ends the turn's deadline at once. Never a run status of its own.
+    if (event.type === "turn_settled") { if (entry) clearTurnDeadline(entry, "turn_settled"); return; }
     // An environment adapter starts its provider process after the workspace is ready: its pid arrives as an event.
     if (event.type === "pid") { db.prepare("UPDATE agent_runs SET pid = ?, pid_started_at = ? WHERE id = ?").run(event.pid || null, now, runId); markPhase(runId, "process_spawned"); return; }
     if (entry?.timeline?.has("turn_acknowledged") && event.type !== "usage") markPhase(runId, "first_event");
@@ -416,6 +565,11 @@ export function createRunManager(deps) {
   async function waitForApproval({ runId, conversation, project, provider, request, taskId }) {
     const payload = request.kind === "command" ? { command: request.command, cwd: request.cwd, reason: request.reason } : { changes: request.changes, reason: request.reason };
     const actionKind = `provider.${request.kind}`;
+    // 2.12.2 (P0-R1, LR-06): a provider callback arriving after its run ended (finalized) or after a Stop All interrupted it never brings
+    // the run back: no approval card, no waiting_approval status, no task transition — declined at once.
+    if (!active.has(runId) || stoppedRuns.has(runId)) return "decline";
+    // 2.12.2 (P0-R3): nor after its turn ran out of time (the deadline fired; the turn is being interrupted).
+    if (active.get(runId)?.turnDeadline?.fired) return "decline";
     // M10.2 (U11): a run admitted by a confirmed plan (its grant was derived from an envelope) never asks mid-plan. Under the
     // workspace-write profile Codex asks only to go BEYOND it (unsandboxed, outside the workspace, network); the plan the owner
     // confirmed is the boundary, so the request is declined at once — on the Windows route too, as the execution environments do —
@@ -488,6 +642,10 @@ export function createRunManager(deps) {
   function finalize(runId, result, getContent) {
     const entry = active.get(runId);
     active.delete(runId);
+    stoppedRuns.delete(runId); // from here on the run is no longer active: a late callback is refused by that (waitForApproval)
+    // 2.12.2 (P0-R3): the turn's deadline ends with the run; one that fired makes the outcome a timeout (turnTimeoutOutcome).
+    const firedDeadline = settleTurnDeadline(entry);
+    if (firedDeadline) result = turnTimeoutOutcome(result, firedDeadline, entry);
     const run = getRun(runId);
     if (!run || !["running", "waiting_approval", "starting"].includes(run.status)) return;
     const content = result.output || getContent() || "";
@@ -503,7 +661,8 @@ export function createRunManager(deps) {
       db.prepare(`UPDATE agent_runs SET status = ?, error_category = ?, error_message = ?, pre_inference = ?, finished_at = ?, native_thread_id = COALESCE(native_thread_id, ?),
         native_turn_id = COALESCE(native_turn_id, ?), usage_json = ?, evidence_json = ? WHERE id = ?`)
         .run(status, result.errorCategory || null, result.error ? redactText(String(result.error)).slice(0, 2000) : null, pre ? 1 : 0, clock().toISOString(),
-          result.threadId || result.sessionId || null, result.turnId || null, json(result.usage || run.usage), json({ ...run.evidence, permissionDenials: result.permissionDenials, numTurns: result.numTurns, promptPackage: entry?.promptPackage, ...(result.environment ? { environment: result.environment } : {}) }), runId);
+          result.threadId || result.sessionId || null, result.turnId || null, json(result.usage || run.usage), json({ ...run.evidence, permissionDenials: result.permissionDenials, numTurns: result.numTurns, promptPackage: entry?.promptPackage, ...(result.environment ? { environment: result.environment } : {}),
+          ...(result.turnTimeout ? { turnTimeout: result.turnTimeout } : {}) }), runId);
       if (entry?.outputMessageId) {
         conversations.finalize(entry.outputMessageId, { content: content || (result.error ? `Run ${status}: ${redactText(String(result.error))}` : ""), status: status === "completed" ? "final" : status,
           metadata: { runStatus: status, errorCategory: result.errorCategory || null, preInference: pre } });
@@ -513,7 +672,9 @@ export function createRunManager(deps) {
       if (nativeId && (status === "completed" || status === "interrupted") && (entry?.environment || "windows") === "windows") conversations.upsertProviderSession(run.conversationId, run.provider, nativeId, runId, surfaceOf(run.provider));
       if (entry?.leaseId) {
         if (processGone) leases.release(entry.leaseId, `run ${status}`);
-        else leases.retain(entry.leaseId, "provider process did not confirm exit");
+        // 2.12.2 (P0-R1): the reconciler (runtime/lease-reconcile.mjs) follows lease.retained and releases the lease once the process
+        // is provably gone; the supervisor key tells it which process to watch. Nothing here waits for it.
+        else leases.retain(entry.leaseId, "provider process did not confirm exit", { processKey: entry.handle?.key || null, environment: entry.environment || "windows" });
       }
       conversations.update(run.conversationId, { status: status === "completed" ? "idle" : "attention" }, "hub");
       if (run.taskId) {
@@ -536,7 +697,37 @@ export function createRunManager(deps) {
   async function interrupt(runId, reason = "user") {
     const entry = active.get(runId);
     if (!entry) throw new HubError("conflict", "Run is not active in this Hub process");
+    // 2.12.2 (P0-R3): an interruption (Pause, Stop, „Oprește”, a plan's own pause) ends the turn's deadline first: no timeout after it.
+    clearTurnDeadline(entry, reason);
     return entry.handle.interrupt(reason);
+  }
+
+  /**
+   * 2.12.2 (P0-R1, LR-03): after Stop All, a Windows run whose provider process is provably gone but whose turn never settled (its final
+   * answer was lost) would keep its slot and its lease for good — the rearm card waits for it (RUNS_ACTIVE). A bounded follow-up
+   * (timers only: nothing in Stop All's path waits for it) ends such a run as interrupted, as its adapter would have: an uncertain
+   * outcome (no grant refund), the lease released (or retained when the process is not provably gone), nothing retried or relaunched.
+   * A run whose process still runs is left to its own turn, and so is an environment run (its reap and export outlive the process).
+   */
+  const LOST_TURN_CHECKS_MS = [3000, 30000];
+  const stoppedRuns = new Set(); // runs a Stop All interrupted: a provider callback arriving afterwards never asks the owner again
+  const pidAlive = (pid) => { if (!Number.isInteger(pid) || pid <= 0) return false; try { process.kill(pid, 0); return true; } catch (error) { return error?.code === "EPERM"; } };
+  function settleLostTurn(runId) {
+    const entry = active.get(runId);
+    if (!entry || (entry.environment || "windows") !== "windows") return false;
+    const record = deps.supervisorRecord?.(entry.handle?.key) || null;
+    if (record ? !record.exited : pidAlive(Number(entry.handle?.pid) || 0)) return false;
+    const sofar = entry.outputMessageId ? db.prepare("SELECT content FROM messages WHERE id = ?").get(entry.outputMessageId)?.content || "" : "";
+    finalize(runId, { status: "interrupted", errorCategory: null, preInference: false, output: sofar,
+      error: "interrupted (stop-all): procesul providerului s-a oprit, dar răspunsul lui final nu a mai sosit" }, () => sofar);
+    return true;
+  }
+  function scheduleLostTurnChecks(runIds) {
+    if (!runIds.length) return;
+    for (const ms of LOST_TURN_CHECKS_MS) {
+      const timer = setTimeout(() => { for (const id of runIds) { try { settleLostTurn(id); } catch { /* the database is closing */ } } }, ms);
+      timer.unref?.();
+    }
   }
 
   /**
@@ -555,15 +746,28 @@ export function createRunManager(deps) {
     // interrupts; starting it before the grant revocation keeps "stop-all" as its recorded reason.
     const voicePromise = voice ? voice.stopAll("stop-all").catch((error) => ({ error: error.message })) : null;
     const o = origin && typeof origin === "object" ? origin : {};
+    // Review R4-F8 (2.12.2): the kind THIS stop asked for (the Hub's shutdown passes "shutdown"; anything unknown is a Stop All). The
+    // suspension record may keep a stronger one (precedence), so the system.stop_all event carries both: `kind` (the record's) and
+    // `stopKind` (this stop's own) — the probe and „ieri am spus oprește tot” read stopKind, never a shutdown as the owner's Stop All.
+    const stopKind = STOP_KINDS.has(o.kind) ? o.kind : "stop_all";
     let suspension = null;
     bus.transaction(() => {
       const at = clock().toISOString();
-      suspension = nextSuspension(settings.get("executionGate"), { kind: STOP_KINDS.has(o.kind) ? o.kind : "stop_all", at,
+      suspension = nextSuspension(settings.get("executionGate"), { kind: stopKind, at,
         channel: o.channel || (actor === "system" ? "system" : null), actor: o.actor || actor, credential: o.credential || null, sessionId: o.sessionId || null, deviceId: o.deviceId || null });
       settings.set("executionGate", { status: "suspended", reason, changedAt: at, changedBy: actor, suspendedBy: suspension }, actor, reason);
       grants.revokeAll(actor, reason);
       deps.policy?.revokeTaskScopes(null, reason, actor);
     });
+    // 2.12.2 (P0-R1), after the suspension and the revocation: the runs this stop interrupts are marked (a late provider callback — an
+    // approval request — never brings them back) and given the lost-turn follow-up. Timers only; never awaited here.
+    try {
+      const stopping = [...active.keys()];
+      for (const id of stopping) stoppedRuns.add(id);
+      scheduleLostTurnChecks(stopping);
+    } catch { /* never in the way of the stop */ }
+    // 2.12.2 (P0-R3): no turn deadline fires after Stop All (the interruptions below are the stop's own, never a timeout). Synchronous.
+    try { for (const entry of active.values()) clearTurnDeadline(entry, "stop-all"); } catch { /* never in the way of the stop */ }
     // Factory missions are marked cancelled FIRST, so a run that ends below cannot trigger the next stage.
     const factoryPromise = factory ? factory.stopAll(reason).catch((error) => [{ error: error.message }]) : null;
     const interrupted = [];
@@ -582,14 +786,16 @@ export function createRunManager(deps) {
     const scope = stopScopeRecord({ missions: (Array.isArray(factoryMissions) ? factoryMissions : []).map((m) => m?.missionId).filter(Boolean),
       plansPaused: others?.plansPaused, plansInterrupted: others?.plansInterrupted, desktopSessionId: others?.desktopSessionId });
     bus.emit({ type: "system.stop_all", scopeType: "system", scopeId: "hub", source: actor, payload: { reason, interrupted: interrupted.length, voiceStopped: Boolean(voiceSession), factoryMissions: factoryMissions.length,
-      suspensionId: suspension?.id || null, kind: suspension?.kind || null, admissionsStopped: admitting, scope } });
+      suspensionId: suspension?.id || null, kind: suspension?.kind || null, stopKind, admissionsStopped: admitting, scope } });
     return { gate: "suspended", suspensionId: suspension?.id || null, interrupted, voiceSession, factoryMissions, admissionsStopped: admitting, scope, cloudTasksUnconfirmed: [], irreversibleEffects: [],
       note: "No cloud tasks or external effects are started by this Hub build; only local provider processes were interrupted." };
   }
 
   const activeRuns = () => [...active.entries()].map(([runId, entry]) => ({ runId, provider: entry.provider, environment: entry.environment || "windows", conversationId: entry.conversationId, pid: entry.handle.pid, taskId: entry.taskId || null,
     startedAt: entry.startedAt || null, lastEventAt: entry.lastEventAt || null, firstOutputAt: entry.firstOutputAt || null, phase: entry.firstOutputAt ? "streaming" : "waiting_provider",
-    timeline: entry.timeline ? entry.timeline.toJSON() : {} }));
+    timeline: entry.timeline ? entry.timeline.toJSON() : {},
+    // 2.12.2 (P0-R3): when this turn is cut (null: no limit, or an interruption already cleared it).
+    turnDeadline: entry.turnDeadline && !entry.turnDeadline.cleared ? { at: entry.turnDeadline.deadlineAt, phase: entry.turnDeadline.phase, limitMs: entry.turnDeadline.limitMs, fired: entry.turnDeadline.fired } : null }));
   /**
    * M09: the route and provider facts a run of `provider` on this project would use NOW (the same route and state key start()
    * uses), so a binding is resolved against the installation that will run it.

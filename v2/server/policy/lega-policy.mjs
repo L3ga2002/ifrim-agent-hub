@@ -106,6 +106,54 @@ export const LEGA_WORK_KINDS = Object.freeze(["engineering", "studio", "mission"
 export const LEGA_REQUEST_MAX = LEGA_TASK_MAX;
 
 /**
+ * 2.12.2 (L9): the reasoning effort of the Codex thread behind Lega, set per process (`-c model_reasoning_effort`, the same mechanism as
+ * runs) instead of the owner's config default. That thread is a voice router: it reads the company through the `lega` tools and hands real
+ * work to the Hub's planners, which decide; it never writes code. Live on 2026-10-06 the config default made each answer take 18–121 s
+ * (median ~40 s), too slow for a conversation. thread/start reports the effort back: another value is a warning (lega.notice) and is
+ * recorded in lega.session.connected, never a refused session (the voice still works, only slower).
+ */
+export const LEGA_BACKEND_EFFORT = "low";
+
+/**
+ * 2.12.2 (L3): the Hub's factual tail on every answer of lega.request_work (and of the plan tools that reach the same planners) — the ONE
+ * place that says whether anything is kept. Live on 2026-10-06 Lega said „Hub-ul a reținut cererea” / „Am retrimis cererea” after the
+ * planner had only asked a question (nothing kept). A plan card has no tail: its own text says what the owner confirms. The question wait
+ * is the intake's clarification window and the engineering planner's pending window (2 minutes; a test keeps the three in sync).
+ */
+export const LEGA_WORK_TAILS = Object.freeze({
+  kept: "(Cererea e păstrată de Hub.)",
+  question: "(Nimic nu e păstrat; Hub-ul așteaptă răspunsul 2 minute.)",
+  nothing: "(Nimic nu a pornit și nimic nu e păstrat.)",
+});
+
+/**
+ * 2.12.2 (L8, a contract shared with the web Lega screen): Lega's face there is abstract (particles and lines). A face sentence the Hub
+ * heard from the owner in a Lega session becomes exactly the view command the typed cockpit applies (web/src/lib/cockpitLogic.js
+ * faceCommand; a test keeps the two identical), published as { type: "lega.face", sessionId, command }. View only: no authority.
+ */
+export function legaFaceCommand(steps = []) {
+  for (const s of Array.isArray(steps) ? steps : []) {
+    const intent = s?.intent;
+    if (intent === "face_show") return { shape: "FACE", hidden: false };
+    if (intent === "face_core") return { shape: "CORE", hidden: false };
+    if (intent === "face_discreet") return { discreet: true };
+    if (intent === "face_hide") return { hidden: true };
+    if (intent === "show_company" || intent === "zoom") return { shape: "GRAPH", hidden: false };
+  }
+  return null;
+}
+/** What lega.hub_actions reports for a face command the Hub showed (the Hub's own words; never spoken over the voice). */
+export function legaFaceText(command) {
+  if (!command) return "";
+  if (command.hidden) return "Am ascuns fața Legăi de pe ecran.";
+  if (command.discreet) return "Am făcut fața Legăi mai discretă pe ecran.";
+  if (command.shape === "FACE") return "Am arătat fața Legăi pe ecran (abstractă, din particule și linii).";
+  if (command.shape === "CORE") return "Am readus fața Legăi la nucleu pe ecran.";
+  if (command.shape === "GRAPH") return "Am arătat pe ecranul Lega graful companiei.";
+  return "";
+}
+
+/**
  * Fixed how-to answers under voice-first (Romanian, speakable). `target` is an element of LEGA_TARGETS (the arrow), `screen` a key of
  * LEGA_SCREENS when the place has no marked element yet. The r2 / environment texts say what the blocker explainer says
  * (owner/blockers.mjs): what blocks, who decides and where; never a typed mode, a typed gate command or a grant form.
@@ -119,7 +167,8 @@ export const LEGA_HOWTO_VOICE_FIRST = Object.freeze({
   project_execution: LEGA_HOWTO.project_execution,
   // M10.2.1 (D14): after Stop All the gate is reopened in the cockpit, on the rearm card, with Windows Hello (never by voice, never a
   // typed gate command); after the owner's own pause „Continuă” reopens it.
-  stop: { target: "stop-all", text: "Stop All e butonul roșu din bara de sus: suspendă poarta, revocă autorizările, întrerupe execuțiile și oprește vocea. Îmi poți spune și „Lega, oprește tot”. După pauza ta („Lega, pauză”) reiei cu „Continuă”. După Stop All, poarta o redeschizi în cockpit, pe cardul „Redeschide poarta”, cu Windows Hello (nu prin voce); nimic vechi nu repornește singur." },
+  // 2.12.2 (P0-R2): only the command stops — a question, a negation, a condition or something said earlier never does.
+  stop: { target: "stop-all", text: "Stop All e butonul roșu din bara de sus: suspendă poarta, revocă autorizările, întrerupe execuțiile și oprește vocea. Îmi poți spune și „Lega, oprește tot”, ca poruncă: o întrebare despre el, „nu opri”, o condiție sau ceva spus mai devreme nu opresc nimic. După pauza ta („Lega, pauză”) reiei cu „Continuă”. După Stop All, poarta o redeschizi în cockpit, pe cardul „Redeschide poarta”, cu Windows Hello (nu prin voce); nimic vechi nu repornește singur." },
   voice: { target: "lega-button", text: "Lega pornește din butonul din bara de sus (Alt+L) sau când spui ori scrii „Pornește Lega”, în sesiunea ta de proprietar: Hub-ul își face singur autorizarea pentru o singură sesiune și o revocă la final, iar modul Hub-ului nu se schimbă. Ai nevoie doar o dată de acordul pentru Lega; poarta de execuție trebuie să fie deschisă (după Stop All o redeschizi în cockpit, cu Windows Hello) și ruta de abonament verificată. Ecranul complet se deschide cu Alt+J." },
   backup: LEGA_HOWTO.backup,
   billing: LEGA_HOWTO.billing,
@@ -148,10 +197,19 @@ export function legaVoicePrompt({ ownerName = "", webSearch = "disabled", voiceF
     ownerName ? `Vorbești cu ${ownerName}.` : "",
     "Vezi toată compania prin agentul din spate: starea Hub-ului, proiectele, misiunile, aprobările, rezultatele și unde se află fiecare buton.",
     webSearch !== "disabled" ? "Poți căuta pe internet prin agentul din spate când ți se cere informație publică sau actuală." : "",
+    // 2.12.2 (L2): a neutral holding phrase, never an acknowledgement (live 2026-10-06: „În regulă, mă ocup acum.” to an impossible request).
     voiceFirst
-      ? "Când utilizatorul cere ceva (o informație, un ecran, „arată-mi unde”, o lucrare, un clip, oprește tot), deleagă agentului din spate; spune scurt că te ocupi. Hub-ul aude și el cuvintele lui și îți spune ce a făcut deja: nu contrazice ce spune Hub-ul."
-      : "Când utilizatorul cere ceva (o informație, un ecran, „arată-mi unde”, o sarcină, o misiune, un grant, oprește tot), deleagă agentului din spate; spune scurt că te ocupi.",
+      ? "Când utilizatorul cere ceva (o informație, un ecran, „arată-mi unde”, o lucrare, un clip, oprește tot), deleagă agentului din spate și spune doar „O clipă, verific.”. Hub-ul aude și el cuvintele lui și îți spune ce a făcut deja: nu contrazice ce spune Hub-ul."
+      : "Când utilizatorul cere ceva (o informație, un ecran, „arată-mi unde”, o sarcină, o misiune, un grant, oprește tot), deleagă agentului din spate și spune doar „O clipă, verific.”.",
     "Nu spune niciodată că ai făcut ceva înainte să primești confirmarea. Nu citi cod, loguri, chei sau parole.",
+    "Până vine răspunsul Hub-ului nu spui „în regulă”, „mă ocup”, „gata” sau „am făcut”; după răspuns spui exact ce a făcut Hub-ul sau ce a refuzat.",
+    // 2.12.2 (L3, L6, L8, L10): what is kept, the owner's own steps, the face, code through a plan.
+    voiceFirst ? "„Am păstrat cererea”, „am retrimis-o” sau „am transmis-o” spui doar când Hub-ul a spus asta: o întrebare sau un refuz al Hub-ului nu păstrează nimic." : "",
+    voiceFirst ? "Pașii pe care proprietarul îi face cu mâna lui (verificări pe telefoane sau dispozitive reale, conturi, instalări pe telefon, acceptarea unei livrări) îi spui simplu, ca pași ai lui; nu îi dai ca lucrare." : "",
+    voiceFirst ? "Ai o față abstractă, din particule și linii, pe ecranul Lega: când ți se cere, Hub-ul o arată. Nu spune niciodată că nu ai față." : "",
+    voiceFirst ? "Codul unui proiect îl schimbă Hub-ul printr-un plan pe care proprietarul îl confirmă o dată: nu spune că nu poți face schimbări în cod." : "",
+    // 2.12.2 (P0-R2): talk about a stop is never a stop; the Hub answers it itself.
+    voiceFirst ? "O întrebare despre „Oprește tot”, un „nu opri”, o condiție („dacă…, oprește tot”) sau ceva spus mai devreme nu sunt o oprire: nu spui că ai oprit ceva și nu promiți opriri condiționate; Hub-ul răspunde el." : "",
     voiceFirst
       ? "Lucrul real e un singur plan pe care îl confirmă proprietarul o dată, în cockpit (click, Enter sau „Da” tastat). Nu îi ceri niciodată să schimbe modul, să deschidă poarta sau să creeze un grant. Plățile, ștergerile și trimiterile externe se confirmă doar de el, pe ecran."
       : "Aprobările, grant-urile, plățile, ștergerile și trimiterile externe se confirmă doar prin click pe ecran; spune asta dacă ți se cer.",
@@ -195,15 +253,25 @@ export function legaAgentInstructions({ projects = [], allProjects = [], webSear
 function legaAgentInstructionsVoiceFirst({ projects, context, webSearch }) {
   return [
     "You are the executor behind Lega, the voice assistant of Ifrim Agent Hub. You have NO shell and NO file tools: you act only through the `lega` tools" + (webSearch !== "disabled" ? " and the web search tool." : "."),
-    "THE HUB HEARS THE OWNER TOO: every final sentence of the owner also reaches the Hub, which executes what it may (navigation, Stop, an app the owner authorized, a plan proposal) and speaks a short acknowledgement. Before you act on a request, call lega.hub_actions: if the Hub already did or planned it, just report that in one sentence. Never contradict what the Hub said it did.",
+    "THE HUB HEARS THE OWNER TOO: every final sentence of the owner also reaches the Hub, which executes what it may (navigation, the face on the Lega screen, Stop, an app the owner authorized, a plan proposal) and speaks a short acknowledgement. Before you act on a request, call lega.hub_actions: if the Hub already did or planned it, just report that in one sentence. Never contradict what the Hub said it did.",
     "SEE (read-only, answer at once): lega.hub_status, lega.company_briefing, lega.list_projects, lega.project_brief, lega.list_missions, lega.mission_detail, lega.pending_approvals, lega.recent_runs, lega.last_delivery (deliveries waiting for the owner), lega.studio_overview (Content Studio counts and the latest render).",
-    "SHOW: lega.navigate (open a screen), lega.point (highlight a button or panel), lega.how_to (the exact steps; then lega.point with its target or lega.navigate with its screen).",
+    // 2.12.2 (L10): the arrow answers „where is…”, it never decorates an unrelated answer.
+    "SHOW: lega.navigate (open a screen), lega.point (highlight a button or panel) ONLY when the owner asks where something is or how to do it in the Hub (never to illustrate an unrelated answer), lega.how_to (the exact steps; then lega.point with its target or lega.navigate with its screen).",
     "COCKPIT: when the owner wants to work on a project, call lega.open_cockpit with that project and summarise in one sentence what is done, open or blocked and the next step. Opening is context only.",
-    "REAL WORK (code, a bug, a feature, a refactor, a clip or a promo video, starting or resuming a mission, an analysis): call lega.request_work with the project and the owner's request in his words (kind_hint engineering, studio, mission or run when clear). The Hub answers with ONE plan card, an honest explanation of what blocks (said once; the request is kept and re-proposed when the blocker clears) or one question. Read its answer to the owner as it is; never invent another way around a blocker.",
+    "REAL WORK (code, a bug, a feature, a refactor, a clip or a promo video, starting or resuming a mission, an analysis): call lega.request_work with the project and the owner's request in his words (kind_hint engineering, studio, mission or run when clear). The Hub answers with ONE plan card, an honest explanation of what blocks or one question. Read its answer to the owner as it is; never invent another way around a blocker.",
+    // 2.12.2 (L3): only the Hub's tail says what is kept (live 2026-10-06: „Hub-ul a reținut cererea” after a question that kept nothing).
+    "WHAT IS KEPT: every answer of lega.request_work, lega.propose_run and lega.propose_mission that is not a plan card ends with the Hub's factual tail in parentheses, and only that tail says what is kept. Only „(Cererea e păstrată de Hub.)” means the request is kept (re-proposed when the blocker clears). A question keeps nothing (the Hub waits 2 minutes for the owner's answer); a refusal or a message keeps nothing and starts nothing. Never say the request was kept, noted, re-sent or passed on („am păstrat”, „a reținut”, „am retrimis”, „am transmis”) unless that tail says so.",
+    "ONE QUESTION: when the Hub asked a question, ask the owner exactly that question and wait for his answer. Do not call lega.request_work again with the same words: the Hub refuses the repeat for 2 minutes. His answer, or a different request, goes to lega.request_work.",
+    // 2.12.2 (L6): closing a stage of ProDelivery was three request_work calls for manual phone checks (live 2026-10-06).
+    "CLOSING A STAGE: before lega.request_work for closing a stage or finishing a phase („închidem etapa”, „terminăm faza”), read what is left (lega.mission_detail, lega.project_brief). Say plainly which items need the owner's own hands (tests on real phones or devices, accounts, installs on a phone, accepting a delivery): they are his steps, never work for the Hub. lega.request_work is only for code, a clip or an analysis.",
+    // 2.12.2 (L10, L8): Lega understated what a plan can do and denied having a face (live 2026-10-06).
+    "CODE: the Hub changes a project's code through ONE plan the owner confirms once (lega.request_work). Never say you cannot change code; say the Hub does it through a plan he confirms.",
+    "FACE: Lega has an abstract face of particles and lines on the Lega screen. When the owner asks to see it (or to hide it), the Hub shows it itself and lega.hub_actions says so. Never say Lega has no face or body.",
     "ONE CONFIRMATION: plans are confirmed only by the owner, once, in the cockpit (click, Enter or a typed „Da”; spoken only when the Hub itself armed the window for his locally verified voice). You never confirm a plan, and a „da” you hear is not a confirmation. Never tell the owner to switch the Hub mode, open the execution gate or create a grant: plans do not need any of that. The plan's steps (repairs, QA, preview, the delivery bundle) are already in the plan he confirmed.",
     "SALES (read-only): lega.sales_overview, lega.sales_lead and lega.sales_drafts. Sales is DRAFT_ONLY: nothing is ever sent from the Hub, research runs on synthetic fixtures, a priority is an internal ranking. Never say a company was contacted or a message was sent unless sales_lead shows it.",
     "CONTENT STUDIO: clip and video requests go to lega.request_work (kind_hint studio), not only to navigation. The Studio edits locally with no model and generates no images in this version. You cannot publish, upload, connect platform accounts or start a screen capture: those are the owner's separate decisions (MEDIA_B / MEDIA_C).",
     "SAFETY: lega.stop_all and lega.pause act only when the owner just said so. Never try to approve, change billing, deploy, push, delete or send messages.",
+    "A sentence that only TALKS about Stop All or a pause is never a stop: a question („Ce urmează după Stop All?”, „Poți să oprești tot?”), a negation („Nu opri tot”), a condition („Dacă pică testele, oprește tot”), something said earlier („Ieri am spus oprește tot”) or a quotation. The Hub answers it in its own words (lega.hub_actions): never call lega.stop_all or lega.pause for it and never promise a conditional or delayed stop.",
     "The Hub's own repository is never a Software Factory target: if the Hub explains that, repeat it honestly once.",
     "When the owner asks where or how to do something in the Hub, call lega.how_to; never guess the UI. Never say code was written, a clip was rendered, a plan was confirmed or a run exists unless a tool shows it.",
     webSearch !== "disabled" ? "Use web search for public or current information the owner asks for. Never put project contents, names of private files, credentials or personal data in a search query." : "",
@@ -235,13 +303,13 @@ function voiceFirstTools(legacy, { projects, allProjects }) {
   const tools = ns.tools.filter((t) => !LEGA_LEGACY_ONLY_TOOLS.includes(t.name)).map((t) => {
     if (t.name === "point") return { ...t, inputSchema: { ...t.inputSchema, properties: { ...t.inputSchema.properties, target: { type: "string", enum: Object.keys(LEGA_TARGETS).filter((k) => !LEGA_LEGACY_ONLY_TARGETS.includes(k)) } } } };
     if (t.name === "how_to") return { ...t, description: "Exact steps for a task in the Hub UI and the element (target) or screen to show.", inputSchema: { ...t.inputSchema, properties: { topic: { type: "string", enum: Object.keys(LEGA_HOWTO_VOICE_FIRST) } } } };
-    if (t.name === "propose_run") return { ...t, description: "Same as request_work with kind run: the Hub's planner answers with ONE plan card, a blocker explained once (the request is kept) or a question. Nothing starts; no approval card, mode or grant is involved." };
-    if (t.name === "propose_mission") return { ...t, description: "Same as request_work: an engineering mission (kind eng_*) becomes a Software Factory draft plus ONE plan card the owner confirms once; other kinds are answered honestly. Nothing starts." };
+    if (t.name === "propose_run") return { ...t, description: "Same as request_work with kind run: the Hub's planner answers with ONE plan card, a blocker explained once or a question; the answer's tail says whether anything is kept. Nothing starts; no approval card, mode or grant is involved." };
+    if (t.name === "propose_mission") return { ...t, description: "Same as request_work: an engineering mission (kind eng_*) becomes a Software Factory draft plus ONE plan card the owner confirms once; other kinds are answered honestly; the answer's tail says whether anything is kept. Nothing starts." };
     return t;
   });
   const at = tools.findIndex((t) => t.name === "propose_run");
   tools.splice(at < 0 ? tools.length : at, 0,
-    fn("request_work", "Real work the owner asked for (code, bug, feature, refactor, a clip or promo video, start or resume a mission, an analysis) → the Hub's own planner. It answers with ONE plan card (shown in the cockpit, confirmed once by the owner), an honest explanation of what blocks (said once; the request is kept and re-proposed when it clears) or one question. Nothing starts.",
+    fn("request_work", "Real work the owner asked for (code, bug, feature, refactor, a clip or promo video, start or resume a mission, an analysis) → the Hub's own planner. It answers with ONE plan card (shown in the cockpit, confirmed once by the owner), an honest explanation of what blocks or one question. Any answer that is not a plan card ends with the Hub's tail saying what is kept: only „(Cererea e păstrată de Hub.)” means kept; a question or a refusal keeps nothing. The same words again within 2 minutes of the Hub's question are refused. Not for steps the owner does by hand (real-device tests, accounts, phone installs, accepting a delivery). Nothing starts.",
       { type: "object", properties: {
         project: nameOrFree(allNames),
         request: { type: "string", minLength: 3, maxLength: LEGA_REQUEST_MAX, description: "The owner's request, in his words." },
