@@ -7,7 +7,7 @@
 // M11 voice segmentation (2.13.2): short commands („Da”, „Pauză”, „Taci”) lost their first consonant because a segment began
 // only at the first loud block. Now:
 //   - PRE-ROLL: the last `preRollS` of audio before the first voiced block is kept in a ring and prepended to the segment;
-//   - ABSOLUTE FLOOR: a block is voiced only above `absFloorDb` as well as 9 dB over the noise estimate (a digitally quiet,
+//   - ABSOLUTE FLOOR: a block is voiced only above `absFloorDb` (-55 dBFS, measured) as well as 9 dB over the noise estimate (a digitally quiet,
 //     noise-suppressed microphone no longer turns every tiny sound into "speech");
 //   - NOISE TRACKING: the estimate falls fast and rises slowly (≈ 2 dB/s) even while a segment is open, so a steady louder
 //     noise (a fan switched on) closes the segment instead of holding it open for 15 s;
@@ -27,7 +27,10 @@ class IfrimVoiceGate extends AudioWorkletProcessor {
     this.hangSamples = Math.round(sampleRate * (o.endSilenceS || 0.6));
     this.preRoll = new Float32Array(Math.max(0, Math.round(sampleRate * (o.preRollS ?? 0.3))));
     this.ringPos = 0; this.ringFill = 0;
-    this.absFloor = 10 ** ((o.absFloorDb ?? -70) / 10); // energy (mean square) of a -70 dBFS block
+    // Owner probe 2026-10-07: speech at -24…-31 dBFS, room floor -77 dBFS, yet segments of 4–10 s around 0.6–1.5 s of speech — room
+    // sounds between -70 and -55 kept the end from coming. The Hub counts speech only above -50 dBFS (owner/audio.mjs), so a block
+    // is voiced only above -55 dBFS (5 dB under that line): the end comes ~0.6 s after the words.
+    this.absFloor = 10 ** ((o.absFloorDb ?? -55) / 10);
     this.riseFactor = 10 ** ((o.noiseRiseDbPerS ?? 2) / 10 / (sampleRate / 128)); // per 128-sample block
     this.noise = null;
     this.speaking = false; this.silent = 0; this.voiced = 0;

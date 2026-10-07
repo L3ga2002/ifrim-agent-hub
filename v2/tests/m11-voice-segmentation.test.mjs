@@ -116,6 +116,15 @@ test("M11-VS-05 (T19) a quiet speaker (-48 dBFS over a -70 dBFS room) is still s
   assert.ok(segs.every((s) => s.seg.endReason === "silence" && s.seg.durationMs < 15000), `closed by silence before 15 s: ${segs.map((s) => `${s.seg.durationMs}/${s.seg.endReason}`).join(", ")}`);
 });
 
+test("M11-VS-07 (owner probe 2026-10-07) room sounds between -70 and -55 dBFS after a word no longer hold the segment open: it ends ~0.6 s after the words", () => {
+  const w = worklet();
+  const room = concat([noise(1, -77), tone(0.4, -28), ...Array.from({ length: 8 }, () => concat([noise(0.3, -77), tone(0.05, -62, 900)])), noise(1, -77)]);
+  w.feed(room);
+  const segs = w.segments();
+  assert.equal(segs.length, 1);
+  assert.ok(segs[0].seg.durationMs < 1600, `segment ${segs[0].seg.durationMs} ms for a 400 ms word`);
+});
+
 test("M11-VS-06 strict mode: nothing reaches the output before the Hub's release; a release plays the held segment (pre-roll included); a drop plays nothing", () => {
   const w = worklet();
   const { signal } = shortCommand();
