@@ -1,5 +1,15 @@
 # Open Issues - Ifrim Agent Hub
 
+## 2026-10-07 — M11 „Ifrim Delivery” (code `2.14.0-m11`, contract 13, migration 12; LOCAL commits on `v2-milestone-01`, not pushed, not live). Detail: `.ifrim/HANDOFF_2026-10-07_M11.md`, `.ifrim/M11_REPORT.md`
+
+This section takes precedence over the older ones where they overlap.
+
+1. **Not live.** The live Hub serves `2.13.1-m11`. The upgrade to `2.14.0`, the detailing test project and the pilot need the owner's ONE approval of `.ifrim/M11_PILOT_SHEET.md`. The logon autostart now refuses to start the Hub while the code holds migration 12 and the database does not (`v2/scripts/boot-guard.mjs`); after a reboot, start through the approved upgrade.
+2. **Voice: M11_VOICE_READY not declared.** Segmentation fixed and the local diagnostic built (PASS on synthetic signals); the owner's probe (positives and negatives) is NOT_RUN. The filter stays off until the owner turns it on.
+3. **Software revision (§25) does not yet create a parent-linked „refresh” delivery.** The planner shows the difference and proposes the engineering plan; when the new mission starts, the old delivery becomes STALE (software_revision); after its DELIVERY_READY the owner says „pregătește demo-ul” again. Decide whether the refresh section should ride on the engineering envelope (design: mode 'refresh', parentDeliveryId).
+4. **Delivery Room creative approval** stays the existing Studio decision (fresh Windows Hello); the Room links to it.
+5. **Open design decisions kept at their defaults** (`.ifrim/M11_DESIGN.md` OPEN DECISIONS): session-bound delivery phase, one card per clip revision, „Accept local” needs the displayed bundle sha, Windows route only, phone width = 390 px viewport in Chromium (no device emulation), first tone „both”, CTA „Hai să discutăm”, price/term „De stabilit (neconfigurat)” until a CONFIGURED catalog service is bound.
+
 ## 2026-10-05 — P0 closure of M10.2 (code `2.12.1-m10.2`, contract 12, no migration; **committed locally as `e1a2d0d`, not pushed**; **live since 2026-10-06 03:03 UTC**, run `upg_muw3g5tp`; test project `prj_muw3gnxo_52bfc7470f`; probe marker S0 = 4522). Detail: `.ifrim/M10_2_REPORT.md` §11, `.ifrim/HANDOFF_2026-10-05_P0.md`
 
 This section takes precedence over the M10.2 section below where they overlap. The code is on `v2-milestone-01` over `e8a55ce`, in the same files as M10.2. Decisions D14–D23 are described in the report.
