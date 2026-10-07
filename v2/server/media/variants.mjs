@@ -692,5 +692,22 @@ export function createVariantService({ db, bus, clock = () => new Date(), assets
   }
   const get = (id) => mapRow(db.prepare("SELECT * FROM media_variants WHERE id = ?").get(String(id || ""))) || null;
   const list = ({ editProjectId } = {}) => db.prepare("SELECT * FROM media_variants WHERE edit_project_id = ? ORDER BY created_at, rowid").all(String(editProjectId || "")).map(mapRow);
-  return { derive, get, list };
+  /**
+   * M11: a variant whose master no longer proves anything (the software it shows changed) is INVALIDATED: idempotent, the reason kept
+   * in notes_json.invalidated, a `media.variant.invalidated` event. Distribution's INVALIDATED branches then refuse it.
+   */
+  function invalidate(variantId, { reason, actor } = {}) {
+    if (typeof actor !== "string" || !actor.trim()) throw new HubError("validation", "Lipsește autorul operației (actor).", { code: "ACTOR_REQUIRED" });
+    const row = db.prepare("SELECT * FROM media_variants WHERE id = ?").get(String(variantId || ""));
+    if (!row) throw new HubError("not_found", "Varianta nu există.", { code: "VARIANT_MISSING" });
+    if (row.status === "INVALIDATED") return mapRow(row);
+    const at = now();
+    const notes = { ...parse(row.notes_json, {}), invalidated: { reason: String(reason || "").slice(0, 200), at, by: actor.trim() } };
+    return bus.transaction(() => {
+      db.prepare("UPDATE media_variants SET status = 'INVALIDATED', notes_json = ?, updated_at = ? WHERE id = ?").run(JSON.stringify(notes), at, row.id);
+      bus.append({ type: "media.variant.invalidated", scopeType: "media_variant", scopeId: row.id, source: actor.trim(), payload: { variantId: row.id, reason: notes.invalidated.reason } });
+      return mapRow(db.prepare("SELECT * FROM media_variants WHERE id = ?").get(row.id));
+    });
+  }
+  return { derive, get, list, invalidate };
 }

@@ -797,6 +797,37 @@ export function createReviews({ db, bus, clock = () => new Date(), assets = null
     return mapReview(selReview.get(id));
   }
 
+  /**
+   * M11: an OPEN proposal from operations already decided (a delivery revision: tone texts, a jump cut), not from a sentence. Only the
+   * review operations (REVIEW_OPS) are accepted; the same applyOps + validation + diff preview as propose(); apply() is unchanged.
+   */
+  function proposeOps({ editVersionId, ops, text, provenance, actor, sessionId = null } = {}) {
+    const who = requireActor(actor);
+    if (typeof provenance !== "string" || !PROVENANCE_RE.test(provenance)) throw new HubError("validation", "Proveniența revizuirii este obligatorie (de exemplu owner_ui, lega).", { code: "FIELD_INVALID" });
+    if (!Array.isArray(ops) || !ops.length || ops.length > 20) throw new HubError("validation", "Revizuirea are nevoie de 1–20 de operații.", { code: "FIELD_INVALID" });
+    const bad = ops.find((o) => !o || typeof o !== "object" || !REVIEW_OPS.includes(o.op));
+    if (bad) throw new HubError("validation", `Operație necunoscută în revizuire: ${String(bad?.op || "").slice(0, 40)}`, { code: "FIELD_INVALID" });
+    const session = optionalSession(sessionId);
+    const { row, ir } = loadVersion(editVersionId);
+    let preview;
+    try {
+      const next = applyOps(ir, ops);
+      const v = validate(next);
+      preview = { valid: v.ok, errors: v.errors.slice(0, 10), warnings: v.warnings.length, diff: diffIR(ir, next) };
+    } catch (error) {
+      preview = { valid: false, errors: [{ path: "", code: error?.code || "PATCH_INVALID", message: error?.message || String(error) }], diff: null };
+    }
+    const id = newId("mrv");
+    const at = now();
+    const patch = { parserVersion: "ops-v1", ops, clarification: null, options: [], selectedItemId: null, notes: [], negated: false, atMs: null, atFrame: null, baseIrSha256: row.ir_sha256, preview };
+    bus.transaction(() => {
+      insReview.run(id, row.id, "CHANGES_REQUESTED", null, normalizeRo(String(text || "")).slice(0, 2000), json(patch), "OPEN", null, provenance, who, session, at, at);
+      bus.append({ type: "media.review.proposed", scopeType: "media_review", scopeId: id, source: who,
+        payload: { reviewId: id, editVersionId: row.id, kind: "CHANGES_REQUESTED", ops: ops.map((o) => o.op), clarification: false, provenance, previewValid: preview.valid } });
+    });
+    return mapReview(selReview.get(id));
+  }
+
   /** Applies an OPEN proposal as a NEW validated edit version (change_kind "patch"); the original version is never changed. */
   function apply({ reviewId, actor } = {}) {
     const who = requireActor(actor);
@@ -917,5 +948,5 @@ export function createReviews({ db, bus, clock = () => new Date(), assets = null
     : db.prepare("SELECT * FROM media_reviews ORDER BY created_at DESC, rowid DESC LIMIT ?").all(Math.min(1000, Math.max(1, limit)))).map(mapReview);
   const getVersionRow = (id) => mapVersion(selVersion.get(String(id || ""))) || null;
 
-  return { propose, apply, dismiss, decide, recordManualDivergence, get, list, getEditVersion: getVersionRow };
+  return { propose, proposeOps, apply, dismiss, decide, recordManualDivergence, get, list, getEditVersion: getVersionRow };
 }

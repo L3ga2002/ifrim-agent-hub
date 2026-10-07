@@ -80,15 +80,18 @@ export function createMedia({ db, bus, live = null, clock = () => new Date(), co
    * M10 local export (not a publication): copies a READY render to the approved exports folder. Never overwrites: an existing name
    * with OTHER content gets the next free version suffix; the same content is reported as already exported. The copy is verified.
    */
-  function exportLocal({ assetVersionId, name = null, actor = "owner" }) {
+  function exportLocal({ assetVersionId, name = null, actor = "owner", folder = null }) {
     const v = assets.getVersion(assetVersionId);
     if (!v) throw new HubError("not_found", "Materialul nu există.");
     if (v.status !== "READY") throw new HubError("conflict", `Materialul nu e gata de export (${v.status}).`);
-    const dir = exportsDir();
+    let dir = exportsDir();
     if (!dir) throw new HubError("validation", "Nu există un folder de exporturi aprobat (alege întâi un folder de import).");
     const roots = importRoots().map((r) => path.resolve(r).toLowerCase());
     const rd = path.resolve(dir).toLowerCase();
     if (!roots.some((r) => rd === r || rd.startsWith(`${r}${path.sep}`))) throw new HubError("policy", "Folderul de exporturi trebuie să fie într-un folder aprobat.", { code: "EXPORT_DIR_NOT_APPROVED" });
+    // M11: an optional single-segment subfolder (a delivery's export folder), with the same never-overwrite and sha rules.
+    if (folder !== null && folder !== undefined && !/^[a-z0-9][a-z0-9-]{2,80}$/.test(String(folder))) throw new HubError("validation", "Numele folderului de export: litere mici, cifre și cratime.", { code: "EXPORT_FOLDER_INVALID" });
+    if (folder) dir = path.join(dir, String(folder));
     fs.mkdirSync(dir, { recursive: true });
     const src = assets.versionPath(v.id);
     const ext = path.extname(src) || ".mp4";
@@ -103,7 +106,7 @@ export function createMedia({ db, bus, live = null, clock = () => new Date(), co
       fs.copyFileSync(src, target, fs.constants.COPYFILE_EXCL);
       const sha = crypto.createHash("sha256").update(fs.readFileSync(target)).digest("hex");
       if (sha !== v.sha256) { fs.rmSync(target, { force: true }); throw new HubError("tool", "Copia exportată nu corespunde originalului; am șters-o."); }
-      bus.transaction(() => bus.append({ type: "media.export.local", scopeType: "media_asset", scopeId: v.assetId, source: actor, payload: { versionId: v.id, file: path.basename(target), version: i } }));
+      bus.transaction(() => bus.append({ type: "media.export.local", scopeType: "media_asset", scopeId: v.assetId, source: actor, payload: { versionId: v.id, file: path.basename(target), version: i, ...(folder ? { folder: String(folder) } : {}) } }));
       return { file: target, existing: false, sha256: sha, versioned: i > 1 };
     }
     throw new HubError("conflict", "Prea multe exporturi cu același nume.");

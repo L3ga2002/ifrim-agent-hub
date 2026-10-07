@@ -561,6 +561,18 @@ export function createContent({ db, bus, clock = () => new Date(), settings = nu
     }
     return evidence;
   }
+  /**
+   * M11: a SUPPORTED claim cannot rest on a package that no longer proves anything (STALE: newer code; REJECTED by the owner) — an old
+   * clip would otherwise present new code as verified. UNCERTAIN / BLOCKED claims may still cite it.
+   */
+  function assertEvidenceCurrent(evidence, status) {
+    if (status !== "SUPPORTED") return;
+    for (const e of evidence || []) {
+      if (e.kind !== "bundle") continue;
+      const b = db.prepare("SELECT status FROM factory_bundles WHERE id = ?").get(e.ref);
+      if (b && ["STALE", "REJECTED"].includes(b.status)) throw bad(`Dovada bundle „${e.ref}” nu mai e valabilă (${b.status}); afirmația nu poate fi SUPPORTED`, "CLAIM_EVIDENCE_STALE");
+    }
+  }
 
   /** Creates (no `id`) or edits a claim. A text change on a SUPPORTED claim resets it to UNCERTAIN. */
   function saveClaim(projectId, { id = null, text, evidence, shot, conditions, status = null } = {}, actor = "owner") {
@@ -576,6 +588,7 @@ export function createContent({ db, bus, clock = () => new Date(), settings = nu
         const st = status || "UNCERTAIN";
         const evid = ev || [];
         if (st === "SUPPORTED" && !evid.length) throw bad("O afirmație SUPPORTED are nevoie de cel puțin o dovadă (run, test, snapshot, document, bundle, commit)", "CLAIM_NEEDS_EVIDENCE");
+        assertEvidenceCurrent(evid, st);
         const cid = newId("ccl");
         db.prepare(`INSERT INTO content_claims (id, content_project_id, text, status, evidence_json, shot_json, conditions, created_by, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
           .run(cid, projectId, t, st, json(evid), json(shotRef || {}), cond || "", actor, at, at);
@@ -589,6 +602,7 @@ export function createContent({ db, bus, clock = () => new Date(), settings = nu
       let st = status || cur.status;
       if (textChanged && cur.status === "SUPPORTED" && status !== "BLOCKED") st = status === "SUPPORTED" && ev?.length ? "SUPPORTED" : "UNCERTAIN";
       if (st === "SUPPORTED" && !evid.length) throw bad("O afirmație SUPPORTED are nevoie de cel puțin o dovadă", "CLAIM_NEEDS_EVIDENCE");
+      assertEvidenceCurrent(evid, st);
       db.prepare("UPDATE content_claims SET text = ?, status = ?, evidence_json = ?, shot_json = ?, conditions = ?, updated_at = ? WHERE id = ?")
         .run(t, st, json(evid), json(shotRef ?? cur.shot), cond ?? cur.conditions, at, id);
       emit("content.claim.saved", projectId, { claimId: id, status: st, from: cur.status, textChanged, evidence: evid.length }, actor);
@@ -604,6 +618,7 @@ export function createContent({ db, bus, clock = () => new Date(), settings = nu
     const evid = evidence === undefined ? cur.evidence : verifyEvidence(normalizeEvidence(evidence));
     if (status === "SUPPORTED" && !evid.length) throw bad("O afirmație SUPPORTED are nevoie de cel puțin o dovadă (run, test, snapshot, document, bundle, commit)", "CLAIM_NEEDS_EVIDENCE");
     if (status === "BLOCKED" && clean(reason).length < 3) throw bad("Spune pe scurt de ce blochezi afirmația (minimum 3 caractere)");
+    assertEvidenceCurrent(evid, status);
     return bus.transaction(() => {
       db.prepare("UPDATE content_claims SET status = ?, evidence_json = ?, conditions = CASE WHEN ? <> '' THEN ? ELSE conditions END, updated_at = ? WHERE id = ?")
         .run(status, json(evid), status === "BLOCKED" ? clip(reason, 500) : "", clip(reason, 500), now(), claimId);

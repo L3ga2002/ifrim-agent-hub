@@ -581,14 +581,18 @@ test("M09-CP-10 browser demo capture: decodable constant-fps H.264 with the expe
     }
     // Markers: stored on the session in time order, inside the recording, findable through the library search.
     const session = capture.get(result.session.id);
-    assert.deepEqual(session.markers.map((m) => m.kind), ["hook", "cta"]);
+    // M11: a highlight step also records where the element was (a rect normalized to the viewport), so a clip can point at it.
+    assert.deepEqual(session.markers.map((m) => m.kind), ["hook", "highlight", "cta"]);
+    const hl = session.markers.find((m) => m.kind === "highlight");
+    assert.ok(hl.rect && [hl.rect.x, hl.rect.y, hl.rect.w, hl.rect.h].every((v) => v >= 0 && v <= 1) && hl.rect.w > 0, JSON.stringify(hl));
     assert.ok(session.markers[0].atMs <= 400, `hook at ${session.markers[0].atMs}`);
-    assert.ok(session.markers[1].atMs >= 1200 && session.markers[1].atMs <= result.durationMs, `cta at ${session.markers[1].atMs}`);
+    const cta = session.markers.find((m) => m.kind === "cta");
+    assert.ok(cta.atMs >= 1200 && cta.atMs <= result.durationMs, `cta at ${cta.atMs}`);
     const hits = assets.search({ q: "apel la acțiune" });
-    assert.ok(hits.some((h) => h.source === "marker" && h.assetId === result.asset.id && h.fromMs === session.markers[1].atMs));
+    assert.ok(hits.some((h) => h.source === "marker" && h.assetId === result.asset.id && h.fromMs === cta.atMs));
     // A marker after the end of the recording is refused; one inside is accepted.
     assert.throws(() => capture.addMarker(session.id, { kind: "note", atMs: result.durationMs + 5000 }), (e) => e.code === "MARKER_OUT_OF_RANGE");
-    assert.equal(capture.addMarker(session.id, { kind: "note", atMs: 500, note: "Adăugat după" }).markers.length, 3);
+    assert.equal(capture.addMarker(session.id, { kind: "note", atMs: 500, note: "Adăugat după" }).markers.length, 4);
     // The external image was blocked by the guard; the page server saw only its own files.
     assert.ok(session.scope.result.blocked >= 1);
     assert.deepEqual([...new Set(site.hits)].sort(), ["/", "/app.js", "/s.css"]);

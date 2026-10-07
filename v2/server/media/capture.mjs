@@ -886,7 +886,15 @@ export function createCapture({ db, bus, clock = () => new Date(), settings, con
           try { return Boolean(style && style.sheet && style.sheet.cssRules.length > 0); } catch { return false; }
         }, REDACTION_STYLE_ID), stepTimeoutMs, "verificarea mascării");
         if (!present) throw new HubError("policy", "Stilul de mascare nu a putut fi aplicat paginii; captura se oprește (nimic nemascat nu se înregistrează).", { code: "REDACTION_NOT_APPLIED" });
+        await runPageGuard(`navigarea la ${label}`);
       };
+      // M11: an optional page check of the caller (delivery/capture-guard.mjs pageGuard: the synthetic-data banner, no secret, no user
+      // path, no real e-mail), after every navigation and every step. A refusal ends the capture; the failure path wipes the frames.
+      async function runPageGuard(where) {
+        if (typeof input.pageGuard !== "function") return;
+        try { await bounded(Promise.resolve(input.pageGuard(page)), stepTimeoutMs, "verificarea paginii"); }
+        catch (error) { throw new HubError("policy", `Pagina nu poate fi filmată (${where}): ${redactText(String(error?.message || error)).split("\n")[0].slice(0, 200)}`, { code: "CAPTURE_PRIVACY_REFUSED" }); }
+      }
       const followPageRedirect = async () => { const next = guard.takePageRedirect(); if (next) await navigate(next, "redirecționarea după acțiune"); };
 
       const cdp = await context.newCDPSession(page);
@@ -933,7 +941,13 @@ export function createCapture({ db, bus, clock = () => new Date(), settings, con
             else await page.mouse.wheel(value.x, value.y);
             await waitMs(300, controller.signal);
           } else if (kind === "highlight") {
-            await bounded(page.locator(value.selector).first().evaluate((el, ms) => {
+            const loc = page.locator(value.selector).first();
+            // M11: where the highlighted element is, normalized to the viewport (0..1), so a clip can point at the evidence on screen.
+            const box = await bounded(loc.boundingBox(), stepTimeoutMs, "poziția evidențierii").catch(() => null);
+            const clamp = (v) => Math.min(1, Math.max(0, Number(v.toFixed(4))));
+            const rect = box ? { x: clamp(box.x / viewport.width), y: clamp(box.y / viewport.height), w: clamp(box.width / viewport.width), h: clamp(box.height / viewport.height) } : null;
+            markers.push({ id: newId("mmk"), kind: "highlight", atMs: elapsed(), note: value.selector, ...(rect ? { rect } : {}), source: "step", step: index + 1 });
+            await bounded(loc.evaluate((el, ms) => {
               el.setAttribute("data-ifrim-demo-highlight", "1");
               setTimeout(() => el.removeAttribute("data-ifrim-demo-highlight"), ms);
             }, value.ms), stepTimeoutMs, "evidențiere");
@@ -941,6 +955,7 @@ export function createCapture({ db, bus, clock = () => new Date(), settings, con
           } else if (kind === "marker") {
             markers.push({ id: newId("mmk"), kind: value.kind, atMs: elapsed(), note: value.note, source: "step", step: index + 1 });
           }
+          if (kind !== "goto") await runPageGuard(`pasul ${index + 1}`);
           stepResults.push({ i: index + 1, kind, ok: true, ms: Date.now() - t0 });
         } catch (error) {
           checkAbort();

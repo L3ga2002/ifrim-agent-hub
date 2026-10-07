@@ -1906,6 +1906,7 @@ export function createFactory(deps) {
     fs.writeFileSync(file, bundleMarkdown(manifest, sha));
     fs.writeFileSync(path.join(dir, `${id}.json`), JSON.stringify({ ...manifest, sha256: sha }, null, 2));
     bus.transaction(() => {
+      for (const old of db.prepare("SELECT id FROM factory_bundles WHERE mission_id = ? AND status = 'READY_FOR_OWNER_ACCEPTANCE'").all(missionId)) bundleStatusEvent(missionId, old.id, "STALE", "un pachet nou l-a înlocuit");
       db.prepare("UPDATE factory_bundles SET status = 'STALE' WHERE mission_id = ? AND status = 'READY_FOR_OWNER_ACCEPTANCE'").run(missionId);
       db.prepare(`INSERT INTO factory_bundles (id, mission_id, change_set_id, change_set_sha, spec_version, manifest_json, sha256, status, file_path, created_at)
         VALUES (?, ?, ?, ?, ?, ?, ?, 'READY_FOR_OWNER_ACCEPTANCE', ?, ?)`).run(id, missionId, cs.id, cs.sha256, spec.version, json(manifest), sha, path.relative(config.hubRoot, file), now());
@@ -1923,13 +1924,14 @@ export function createFactory(deps) {
       const project = projects.get(missions.get(missionId).projectId);
       const nowSha = takeSnapshot(project.path, { ignore: ignoreOf(missionId), mode: baseMode(missionId) }).sha256;
       if (!bundle || bundle.change_set_id !== cs.id || nowSha !== snapshotRow(cs.snapshotId).sha256) {
-        bus.transaction(() => { if (bundle) db.prepare("UPDATE factory_bundles SET status = 'STALE' WHERE id = ?").run(bundle.id); });
+        bus.transaction(() => { if (bundle) { db.prepare("UPDATE factory_bundles SET status = 'STALE' WHERE id = ?").run(bundle.id); bundleStatusEvent(missionId, bundle.id, "STALE", "workspace-ul s-a schimbat după verificare"); } });
         throw new HubError("conflict", "Workspace-ul nu mai corespunde versiunii testate: pachetul e STALE (refă verificările)");
       }
       await runner.stop(`factory-preview-${missionId}`).catch(() => {});
       { const now2 = fm(missionId); if (now2.stage !== "DELIVERY_READY" || now2.cancelRequestedAt) throw new HubError("conflict", `Misiunea a trecut în ${now2.stage} între timp; acceptarea nu s-a aplicat`); }
       bus.transaction(() => {
         db.prepare("UPDATE factory_bundles SET status = 'OWNER_ACCEPTED', decided_at = ?, decision_note = ? WHERE id = ?").run(now(), String(note).slice(0, 500), bundle.id);
+        bundleStatusEvent(missionId, bundle.id, "OWNER_ACCEPTED", "acceptat local de proprietar");
         const runIds = db.prepare("SELECT run_id FROM factory_dispatches WHERE mission_id = ? AND status = 'DONE'").all(missionId).map((r) => r.run_id);
         const reviewRun = db.prepare("SELECT run_id FROM factory_reviews WHERE change_set_id = ? AND status = 'VALID' AND verdict = 'PASS' ORDER BY created_at DESC LIMIT 1").get(cs.id)?.run_id;
         const tests = db.prepare("SELECT id FROM factory_evidence WHERE change_set_id = ? AND stale = 0 AND status = 'PASS'").all(cs.id).map((r) => r.id);
@@ -1952,6 +1954,7 @@ export function createFactory(deps) {
       await runner.stop(`factory-preview-${missionId}`).catch(() => {});
       { const now2 = fm(missionId); if (now2.stage !== f.stage || now2.cancelRequestedAt) throw new HubError("conflict", `Misiunea a trecut în ${now2.stage} între timp; respingerea nu s-a aplicat`); }
       bus.transaction(() => {
+        for (const b of db.prepare("SELECT id FROM factory_bundles WHERE mission_id = ? AND status = 'READY_FOR_OWNER_ACCEPTANCE'").all(missionId)) bundleStatusEvent(missionId, b.id, "REJECTED", "respins de proprietar");
         db.prepare("UPDATE factory_bundles SET status = 'REJECTED', decided_at = ?, decision_note = ? WHERE mission_id = ? AND status = 'READY_FOR_OWNER_ACCEPTANCE'").run(now(), String(note).slice(0, 500), missionId);
         cancelTasks(missionId, `respins: ${note}`);
         const left = abandonText(abandonAuthoring(missionId, "reject"));
@@ -1959,6 +1962,72 @@ export function createFactory(deps) {
       });
       return view(missionId);
     });
+  }
+
+  // ---------- M11 delivery hooks (read-only: no status write, no process started) ----------
+  /** The bundle status change other services follow (deliveries mark their items STALE); appended inside the caller's transaction. */
+  function bundleStatusEvent(missionId, bundleId, status, reason) {
+    bus.append({ type: "factory.bundle.status", scopeType: "mission", scopeId: missionId, source: "factory", payload: { missionId, bundleId, status, reason } });
+  }
+  const latestBundleRow = (missionId) => db.prepare("SELECT * FROM factory_bundles WHERE mission_id = ? AND status IN ('READY_FOR_OWNER_ACCEPTANCE','OWNER_ACCEPTED') ORDER BY created_at DESC LIMIT 1").get(missionId);
+  /**
+   * Whether the project folder is still exactly the verified version: the same snapshot the accept step takes (same ignore list and
+   * mode). Nothing is written; a drift is only reported (the delivery marks its items STALE from it).
+   */
+  function snapshotCheck(missionId) {
+    const f = need(fm(missionId));
+    const bundle = latestBundleRow(missionId);
+    const cs = currentCs(missionId);
+    const project = projects.get(missions.get(missionId).projectId);
+    const expectedRow = cs ? snapshotRow(cs.snapshotId) : null;
+    const expected = expectedRow?.sha256 || null;
+    const actual = takeSnapshot(project.path, { ignore: ignoreOf(missionId), mode: baseMode(missionId) });
+    const expectedFiles = expectedRow?.files || {};
+    const actualFiles = actual.files || {};
+    const changedFiles = [];
+    for (const [rel, meta] of Object.entries(actualFiles)) if (expectedFiles[rel]?.sha256 !== meta?.sha256) changedFiles.push(rel);
+    for (const rel of Object.keys(expectedFiles)) if (!(rel in actualFiles)) changedFiles.push(rel);
+    return { missionId, stage: f.stage, bundleId: bundle?.id || null, bundleStatus: bundle?.status || null, changeSetId: cs?.id || null, expected, actual: actual.sha256,
+      equal: Boolean(expected) && expected === actual.sha256 && Boolean(bundle) && bundle.change_set_id === cs?.id, changedFiles: changedFiles.slice(0, 20) };
+  }
+  /** The facts a delivery binds to: the current ready or accepted bundle, its change set, snapshot, spec and E2E evidence. */
+  function deliveryBinding(missionId) {
+    const f = need(fm(missionId));
+    const bundle = latestBundleRow(missionId);
+    if (!bundle) return null;
+    const manifest = parse(bundle.manifest_json, {});
+    const spec = approvedSpec(f);
+    const e2e = db.prepare("SELECT * FROM factory_evidence WHERE mission_id = ? AND change_set_id = ? AND stage = 'E2E' AND stale = 0 ORDER BY created_at").all(missionId, bundle.change_set_id).map(rowToEvidence)
+      .map((e) => {
+        const crit = (spec?.spec?.acceptance || []).find((a) => a.id === e.detail?.criterion);
+        const vp = (crit?.steps || []).find((x) => x?.viewport)?.viewport || null;
+        return { criterion: e.detail?.criterion || null, evidenceId: e.id, status: e.status, screenshot: e.detail?.screenshot ? path.basename(String(e.detail.screenshot)) : null, viewport: vp };
+      });
+    return { missionId, bundleId: bundle.id, bundleSha: bundle.sha256, bundleStatus: bundle.status, changeSetId: bundle.change_set_id, changeSetSha: bundle.change_set_sha,
+      snapshotSha: manifest.changeSet?.snapshot || null, specVersion: bundle.spec_version, specSha: manifest.spec?.sha256 || spec?.sha256 || null, startUrl: manifest.start?.url || null,
+      startCommand: manifest.start?.command || null,
+      criteria: (manifest.spec?.criteria || []).map((c) => ({ id: c.id, text: c.text, verify: c.verify, status: c.status, evidence: c.evidence || [], note: c.note || null, ...(c.steps ? { steps: c.steps } : {}) })),
+      manifest, e2e };
+  }
+  /** The factory preview of a mission, as the supervisor sees it (never started here). */
+  function previewStatus(missionId) {
+    const key = "factory-preview-" + missionId;
+    const p = supervisor.list().find((x) => x.key === key) || null;
+    const spec = approvedSpec(fm(missionId));
+    return { key, running: Boolean(p && p.alive !== false && p.status !== "exited"), pid: p?.pid || null, url: spec?.spec?.verification?.preview?.url || null };
+  }
+  /** The file of one non-stale E2E screenshot of the mission, inside its work area (null otherwise). */
+  function e2eShotPath(missionId, evidenceId) {
+    const row = db.prepare("SELECT * FROM factory_evidence WHERE id = ? AND mission_id = ? AND stage = 'E2E' AND stale = 0").get(String(evidenceId || ""), missionId);
+    const shot = row ? parse(row.detail_json, {}).screenshot : null;
+    if (!shot) return null;
+    const name = path.basename(String(shot));
+    if (!/^e2e_[A-Za-z0-9_-]+.png$/.test(name)) return null;
+    const dir = path.join(workRoot(missionId), "e2e");
+    try {
+      const real = fs.realpathSync(path.join(dir, name));
+      return real.toLowerCase().startsWith(fs.realpathSync(dir).toLowerCase() + path.sep) ? real : null;
+    } catch { return null; }
   }
 
   // ---------- stop / pause / resume / recovery ----------
@@ -2470,6 +2539,8 @@ export function createFactory(deps) {
   }
 
   return { initialize, reviseSpec, setLimits, scopeFor, assertStartable, startApproved, onRunFinished, stop, pause, resume, accept, reject, stopAll, recover, tick, idle, close,
+    // M11 delivery hooks (read-only).
+    snapshotCheck, deliveryBinding, previewStatus, e2eShotPath,
     continuationScope, rebindForPlan, raiseLimits, exhaustedStep: (missionId) => exhaustedStep(missionId),
     // M11 L5: step 0 of a test-first mission is open (no repair cycle there); the Hub's own files in its work area on a project.
     inStageZero, hubWrites, remainingAuthoring: (missionId) => remainingAuthoring(missionId),

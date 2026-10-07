@@ -267,6 +267,48 @@ export function createOpsPlans({ db, bus, clock, settings, trust, voice = null, 
       ops: [...new Set(p.body.steps.flatMap((st) => st.ops.map((o) => o.op)))], maxActions: p.body.limits.maxActions, steps };
   }
 
+  // ---------------------------------------------------------------- M11: plans derived from a stronger confirmation
+  // A delivery's package (capture → clip → summary) is not confirmed again: it is DERIVED from the envelope the owner confirmed once,
+  // whose hashed body already listed these exact steps (ops body sha). The derivation runs one way only: the weaker ops authority comes
+  // from the stronger envelope consent, never the reverse. authorize(), resume() and reconfirm() are unchanged.
+  const parents = new Map(); // kind → { verify(parent) → { ok, reason }, allowedOps: Set }
+  function registerParent(kind, { verify, allowedOps }) {
+    if (typeof verify !== "function" || !Array.isArray(allowedOps) || !allowedOps.length) throw new Error("registerParent needs verify() and allowedOps");
+    parents.set(String(kind), { verify, allowedOps: new Set(allowedOps) });
+  }
+  async function adoptDerived({ kind, title, steps, limits = {}, parent, expectedBodySha, sessionId, credential = "" }) {
+    const reg = parents.get(String(parent?.kind || ""));
+    if (!reg) throw new HubError("policy", "Planul derivat nu are un părinte cunoscut.", { code: "PLAN_DERIVED_PARENT" });
+    const body = await buildBody({ kind, title, steps, limits });
+    const bodySha = hashCanonical(body);
+    if (bodySha !== expectedBodySha) throw new HubError("conflict", "Pașii livrării s-au schimbat față de planul confirmat.", { code: "PLAN_DERIVED_CHANGED", data: { expected: String(expectedBodySha || "").slice(0, 16), actual: bodySha.slice(0, 16) } });
+    if (body.decisions.length) throw new HubError("policy", "Un plan derivat nu poate conține decizii (aplicație sau folder nou).", { code: "PLAN_DERIVED_DECISION" });
+    if (body.model) throw new HubError("policy", "Un plan derivat nu pornește modele.", { code: "PLAN_DERIVED_MODEL" });
+    if (body.steps.some((st) => (st.apps || []).length)) throw new HubError("policy", "Un plan derivat nu operează aplicații de pe desktop.", { code: "PLAN_DERIVED_APP" });
+    const outside = [...new Set(body.steps.flatMap((st) => st.ops.map((o) => o.op)).filter((op) => !reg.allowedOps.has(op)))];
+    if (outside.length) throw new HubError("policy", "Operații în afara livrării: " + outside.join(", "), { code: "PLAN_DERIVED_OP" });
+    const check = await reg.verify(parent);
+    if (!check?.ok) throw new HubError("policy", "Confirmarea de la care derivă planul nu mai e valabilă: " + (check?.reason || "necunoscut"), { code: "PLAN_DERIVED_PARENT" });
+    const s = trust.requireSession({ id: sessionId }, "planul derivat din confirmarea ta");
+    const hash = bodySha;
+    const id = newId("opp");
+    const t = clock();
+    const expiresAt = new Date(t.getTime() + (body.limits.maxDurationMin + PLAN_LIMITS.slackMin) * 60000).toISOString();
+    if (new Date(expiresAt) <= clock()) throw new HubError("conflict", "Planul derivat ar fi deja expirat.", { code: "PLAN_DERIVED_EXPIRED" });
+    const consent = { channel: "owner_session", modality: "derived", derivedFrom: { kind: parent.kind, id: parent.id, hash: parent.hash, confirmedAt: parent.confirmedAt, deliveryId: parent.deliveryId || null },
+      sessionId: s.id, credential: String(credential || s.credentialId || "").slice(0, 10), planHash: hash, confirmedAt: now() };
+    bus.transaction(() => {
+      db.prepare(`INSERT INTO ops_plans (id, kind, title, status, body_json, summary_json, plan_hash, nonce, proposed_by, proposed_via, confirm_by, expires_at, created_at, updated_at, consent_json, owner_session_id)
+        VALUES (?, ?, ?, 'CONFIRMED', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(id, kind, body.title, json(body), json(summaryOf(body)), hash, crypto.randomBytes(12).toString("hex"), "derived:" + parent.kind, "derived",
+        now(), expiresAt, now(), now(), json(consent), s.id);
+      for (const st of body.steps) db.prepare("INSERT INTO ops_plan_steps (id, plan_id, seq, kind, title, params_json, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)").run(newId("ops"), id, st.seq, st.kind, st.title, json(st.params), now());
+      db.prepare("UPDATE ops_plans SET authority_json = ? WHERE id = ?").run(json(authorityOf({ id, body, expiresAt }, s.id)), id);
+      bus.append({ type: "ops.plan.derived", scopeType: "ops_plan", scopeId: id, source: "hub", payload: { kind, parentKind: parent.kind, parentId: parent.id, deliveryId: parent.deliveryId || null, steps: body.steps.length, hash: hash.slice(0, 16) } });
+    });
+    start(id);
+    return view(id);
+  }
+
   // ---------------------------------------------------------------- authority (checked at EVERY operation)
   function authorize(planId, stepId, action = {}) {
     const r = row(planId);
@@ -546,6 +588,6 @@ export function createOpsPlans({ db, bus, clock, settings, trust, voice = null, 
     return bus.transaction(() => ids.filter((id) => setStatus(id, "SUPERSEDED", reason || "Corectura a fost rezolvată în Studio", {}, ["PROPOSED"]) === 1));
   }
 
-  return { propose, confirm, authorize, pause, cancel, resume, reconfirm, view, list, active, recover, idle, buildBody, armForLega, confirmFromArmed, armedFor,
+  return { propose, confirm, authorize, pause, cancel, resume, reconfirm, view, list, active, recover, idle, buildBody, armForLega, confirmFromArmed, armedFor, registerParent, adoptDerived,
     disarm: (planId, reason) => armedWindows.disarm(planId, reason), correctionPlans, supersedeCorrections };
 }

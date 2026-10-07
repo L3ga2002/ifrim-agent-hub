@@ -187,30 +187,32 @@ export function createExecutors({ desktop = null, media = null, settings, live =
       },
     },
     "media.variant.render": {
-      describe: ({ masterVersionId, platformKey }) => ({ title: `Variantă ${platformKey}: încadrare, texte lizibile, randare finală și QA`, params: { masterVersionId, platformKey },
+      describe: ({ masterVersionId, platformKey, overrides = undefined, qaUse = undefined }) => ({ title: `Variantă ${platformKey}: încadrare, texte lizibile, randare finală și QA`,
+        // M11: overrides (shorter vertical texts) and qaUse travel only when given, so an existing plan's body hashes the same.
+        params: { masterVersionId, platformKey, ...(overrides !== undefined ? { overrides } : {}), ...(qaUse !== undefined ? { qaUse } : {}) },
         ops: [{ op: "media.variant" }, { op: "media.render" }, { op: "media.qa" }], observed: ["planul de montaj al masterului"], transmitted: [], outputs: [`varianta ${platformKey} randată, cu raport QA`] }),
       run: async ({ params, planId, abort, authorize }) => {
         const actor = `plan:${planId}`;
         authorize({ op: "media.variant" });
-        const d = media.variants.derive({ masterVersionId: params.masterVersionId, platformKey: params.platformKey, actor });
+        const d = media.variants.derive({ masterVersionId: params.masterVersionId, platformKey: params.platformKey, ...(params.overrides ? { overrides: params.overrides } : {}), actor });
         checkAbort(abort);
         authorize({ op: "media.render" });
         const job = await renderVerified(d.version.id, "final", { actor, abort });
         authorize({ op: "media.qa" });
-        const qa = await media.qa.run({ editVersionId: d.version.id, assetVersionId: job.outputAssetVersionId, platform: params.platformKey, actor });
-        return { result: { variantId: d.variant?.id || null, editVersionId: d.version.id, assetVersionId: job.outputAssetVersionId, renderJobId: job.id, changes: (d.changes || []).length, qa: qaSummary(qa), review: reviewState(d.version.id, qa) },
+        const qa = await media.qa.run({ editVersionId: d.version.id, assetVersionId: job.outputAssetVersionId, platform: params.platformKey, ...(params.qaUse ? { use: params.qaUse } : {}), actor });
+        return { result: { variantId: d.variant?.id || null, editVersionId: d.version.id, assetVersionId: job.outputAssetVersionId, renderJobId: job.id, changes: (d.changes || []).length, qa: qaSummary(qa), qaRunId: qa?.runId || qa?.id || null, review: reviewState(d.version.id, qa) },
           evidence: [{ legibility: (d.changes || []).filter((c) => c.kind === "text_legibility").map((c) => c.message) }] };
       },
     },
     "media.render": {
-      describe: ({ editVersionId, profile = "final" }) => ({ title: `Randare ${profile} + QA`, params: { editVersionId, profile }, ops: [{ op: "media.render" }, { op: "media.qa" }], observed: [], transmitted: [], outputs: [`randare ${profile} verificată`] }),
+      describe: ({ editVersionId, profile = "final", qaUse = undefined }) => ({ title: `Randare ${profile} + QA`, params: { editVersionId, profile, ...(qaUse !== undefined ? { qaUse } : {}) }, ops: [{ op: "media.render" }, { op: "media.qa" }], observed: [], transmitted: [], outputs: [`randare ${profile} verificată`] }),
       run: async ({ params, planId, abort, authorize }) => {
         const actor = `plan:${planId}`;
         authorize({ op: "media.render" });
         const job = await renderVerified(params.editVersionId, params.profile || "final", { actor, abort });
         authorize({ op: "media.qa" });
-        const qa = await media.qa.run({ editVersionId: params.editVersionId, assetVersionId: job.outputAssetVersionId, actor });
-        return { result: { renderJobId: job.id, assetVersionId: job.outputAssetVersionId, qa: qaSummary(qa), review: reviewState(params.editVersionId, qa) } };
+        const qa = await media.qa.run({ editVersionId: params.editVersionId, assetVersionId: job.outputAssetVersionId, ...(params.qaUse ? { use: params.qaUse } : {}), actor });
+        return { result: { renderJobId: job.id, assetVersionId: job.outputAssetVersionId, qa: qaSummary(qa), qaRunId: qa?.runId || qa?.id || null, review: reviewState(params.editVersionId, qa) } };
       },
     },
     "media.export.local": {

@@ -405,6 +405,9 @@ export function factualCheck({ ir, claims = [], getVersion = null, presets = PRE
     if (!claim) { add({ code: "CLAIM_UNKNOWN", severity: "error", criterion: "Fiecare afirmație are o înregistrare", message: `Afirmația „${id}” din clipul „${where.clipId}” nu există în proiectul de conținut.`, evidence: { claimId: id }, range, clipId: where.clipId, proposedFix: "Înregistrează afirmația cu dovada ei sau scoate referința." }); continue; }
     if (claim.status === "BLOCKED") add({ code: "CLAIM_BLOCKED", severity: "error", criterion: "Nicio afirmație blocată în video", message: `Afirmația „${clip30(claim.text)}” este BLOCKED și apare în clipul „${where.clipId}”.`, evidence: { claimId: id, status: claim.status }, range, clipId: where.clipId, proposedFix: "Scoate segmentul sau reformulează fără afirmația blocată." });
     else if (claim.status !== "SUPPORTED") add({ code: "CLAIM_NOT_SUPPORTED", severity: "error", criterion: "Afirmațiile publice au dovadă", message: `Afirmația „${clip30(claim.text)}” are starea ${claim.status || "necunoscută"} (fără dovadă confirmată).`, evidence: { claimId: id, status: claim.status }, range, clipId: where.clipId, proposedFix: "Atașează dovada (rulare, test, commit) și marchează afirmația SUPPORTED, sau formulează-o ca ipoteză." });
+    else if (claim.evidence.some((e) => e?.kind === "bundle" && ["STALE", "REJECTED", "MISSING"].includes(e.bundleStatus))) add({ code: "CLAIM_EVIDENCE_STALE", severity: "error", criterion: "Dovada corespunde codului curent",
+      message: `Afirmația „${clip30(claim.text)}” se sprijină pe un pachet care nu mai dovedește codul (${claim.evidence.find((e) => e?.kind === "bundle" && e.bundleStatus)?.bundleStatus}).`, evidence: { claimId: id }, range, clipId: where.clipId,
+      proposedFix: "Refă captura și clipul din versiunea verificată curentă." });
     else if (!claim.evidence.length) add({ code: "CLAIM_WITHOUT_EVIDENCE", severity: "error", criterion: "SUPPORTED înseamnă dovadă atașată", message: `Afirmația „${clip30(claim.text)}” este SUPPORTED fără nicio dovadă atașată.`, evidence: { claimId: id }, range, clipId: where.clipId, proposedFix: "Atașează dovada." });
   }
   // Disclosure labels: every SIMULATION/RECONSTRUCTION/REPLAY/GENERATED clip needs a visible on-screen label for its whole duration.
@@ -751,6 +754,9 @@ export function createMediaQa({ db, bus, clock = () => new Date(), tools = null,
         for (const r of nir.evidenceRegions || []) if (r.claimId) ids.add(r.claimId);
         claimList = ids.size ? db.prepare(`SELECT id, text, status, evidence_json FROM content_claims WHERE id IN (${[...ids].map(() => "?").join(",")})`).all(...ids)
           .map((c) => ({ id: c.id, text: c.text, status: c.status, evidence: parse(c.evidence_json, []) })) : [];
+        // M11: each bundle evidence carries its package's current status, so factual QA sees evidence that no longer proves the code.
+        const bundleStatus = db.prepare("SELECT status FROM factory_bundles WHERE id = ?");
+        claimList = claimList.map((c) => ({ ...c, evidence: c.evidence.map((e) => (e?.kind === "bundle" ? { ...e, bundleStatus: bundleStatus.get(String(e.ref || ""))?.status || "MISSING" } : e)) }));
       }
       let briefBody = brief;
       if (briefBody === undefined) {

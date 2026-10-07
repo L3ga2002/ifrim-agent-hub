@@ -21,6 +21,9 @@ export const OPERATIONS = Object.freeze({
   "file.open": "PLAN_STEP", "file.saveAs": "PLAN_STEP",
   "media.import": "PLAN_STEP", "media.project.import": "PLAN_STEP", "media.edit.apply": "PLAN_STEP", "media.render": "PLAN_STEP", "media.variant": "PLAN_STEP",
   "media.qa": "PLAN_STEP", "capture.browser": "PLAN_STEP", "capture.obs": "PLAN_STEP", "capcut.operate": "PLAN_STEP",
+  // M11 delivery steps (derived from the one envelope confirmation): check the verified version, its local preview, bind evidence,
+  // write the commercial summary, film the demo preview. Owner decisions (accept, creative approval, rights) stay unknown → SENSITIVE.
+  "delivery.verify": "PLAN_STEP", "delivery.preview": "PLAN_STEP", "delivery.bind": "PLAN_STEP", "delivery.summary": "PLAN_STEP", "capture.preview": "PLAN_STEP",
   "access.newApp": "SENSITIVE", "access.newFolder": "SENSITIVE", "model.run": "SENSITIVE", "file.overwrite": "SENSITIVE", "capture.live.enable": "SENSITIVE",
   publish: "REFUSED", upload: "REFUSED", send: "REFUSED", purchase: "REFUSED", "delete.external": "REFUSED", "hub.admin": "REFUSED", "shell.exec": "REFUSED",
 });
