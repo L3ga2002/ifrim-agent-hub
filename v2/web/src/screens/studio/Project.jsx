@@ -348,8 +348,12 @@ function ActivityTab({ ids }) {
   );
 }
 
-/** The project detail: header, limitations, sub-tabs. Selection of the edit plan / version and the player time live here. */
-export function ProjectDetail({ projectId, sub, tMs, versionId: routeVersionId, go, status }) {
+/**
+ * The project detail: header, limitations, sub-tabs. Selection of the edit plan / version and the player time live here.
+ * D7: `reviewId` (the cockpit's `?review=` deep link) opens the correction panel on that proposal; when a plan is bound to it, the panel
+ * shows that plan's card (its ONE confirmation applies, renders and runs QA).
+ */
+export function ProjectDetail({ projectId, sub, tMs, versionId: routeVersionId, reviewId = null, go, status }) {
   const detail = useStudio(`/api/content/projects/${encodeURIComponent(projectId)}`);
   const profiles = useStudio("/api/media/profiles", []);
   const edits = detail.data?.edits || [];
@@ -365,7 +369,8 @@ export function ProjectDetail({ projectId, sub, tMs, versionId: routeVersionId, 
     if (!versions.length) return;
     if (!versionId || !versions.some((v) => v.id === versionId)) setVersionId(edit.data?.edit?.current?.id || versions[versions.length - 1].id);
   }, [versions, versionId, edit.data]);
-  const version = useStudio(versionId ? `/api/media/edit-versions/${encodeURIComponent(versionId)}` : null, ["media.render.", "media.review.", "media.qa."]);
+  // D7: "ops.plan." keeps each review's bound plan (review.plan) current while its card is confirmed, runs or is superseded.
+  const version = useStudio(versionId ? `/api/media/edit-versions/${encodeURIComponent(versionId)}` : null, ["media.render.", "media.review.", "media.qa.", "ops.plan."]);
   const v = version.data?.version || null;
   const fps = normFps(v?.ir?.fps);
   const playable = pickPlayable(version.data?.renders);
@@ -411,7 +416,8 @@ export function ProjectDetail({ projectId, sub, tMs, versionId: routeVersionId, 
           <>
             {workspace}
             <Panel title="Corectură la timecode" icon={MessageSquareText} id="studio-correction">
-              <Correction editVersionId={v.id} fps={fps} currentMs={currentMs} projectId={projectId} ir={v.ir} onApplied={(id) => setVersionId(id)} />
+              <Correction editVersionId={v.id} fps={fps} currentMs={currentMs} projectId={projectId} ir={v.ir} onApplied={(id) => setVersionId(id)}
+                reviews={version.data?.reviews || []} deepReviewId={reviewId} />
             </Panel>
             <Panel title={`Timeline · v${v.version}`} icon={ListVideo} id="studio-timeline"><TimelineInspector ir={v.ir} currentMs={currentMs} onSeek={seek} /></Panel>
             <Panel title="Ce face montajul" id="studio-explain"><ExplainEdit explain={version.data?.explain} onSeek={seek} /></Panel>

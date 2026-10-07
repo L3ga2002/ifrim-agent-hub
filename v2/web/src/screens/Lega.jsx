@@ -308,7 +308,7 @@ function Cockpit({ projectId, go }) {
         else window.history.back();
       }
       if (res.resolved.steps.some((s) => s.intent === "live")) setReplayMission(null);
-      // Review F2 (L4): a planner's question with choices („am găsit un singur test automat”) gets its buttons too, not only the resolver's.
+      // Review F2 (L4): a planner's question with choices (the run planner's, for example) gets its buttons too, not only the resolver's.
       setConversation((c) => [...c, { role: "lega", text: replyFor(res), at: Date.now(), clarification: clarificationOf(res), blocker }]);
       refresh(); cockpit.reload();
     } catch (e) { setError(e); setConversation((c) => [...c, { role: "lega", text: `Nu am putut: ${e.message}`, at: Date.now() }]); }

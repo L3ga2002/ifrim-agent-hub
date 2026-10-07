@@ -2,8 +2,8 @@
 // L11), plus the leftover review findings of the P0-R2/R4 batch (R2-F6, R2-F7, R4-F8) and the exact UNKNOWN_INTENTS count.
 // PASS_SIMULATED: the pure resolver, test Hubs (owner.intent typed on the owner channel and as a provider transcript on the voice channel,
 // the engineering planner on bug-demo copies); fixture providers only — no model, no live Hub, no network.
-//  - L4: a project with no test file gets ONE plain message (nothing to choose, nothing kept, the owner never writes or names a file);
-//    tests found → one plain question with the tests as choices; a programmer's bare test path still completes the request;
+//  - L4 (since M11 L5 wave B): a request with no test to bind gets ONE test-first plan — the Hub writes the acceptance test at step 0
+//    (nothing to choose, nothing kept, the owner never writes, names or picks a file); a programmer's bare test path still completes it;
 //  - L7: „Arată-mi planul” with no project asks ONE question with the projects; naming one (or the button) proposes the plan THERE — no start,
 //    no grant; after the clarification TTL the name only opens the project;
 //  - L11: a request to change the Hub's mode is explain_mode (answered, nothing written); a mode question and „Ce a rămas în <proiect>?”
@@ -58,49 +58,59 @@ async function factoryHub({ name = "Factory Demo R6", clock = null, noTestDir = 
 }
 
 // ------------------------------------------------------------------------------------------------------------------------------ P0R6-01
-test("P0R6-01 (L4) no test on the project → ONE plain message (no file to name or write, nothing kept); tests found → a plain question with them as choices; a programmer's path still completes it", async () => {
+// M11 L5 (wave B, design .ifrim/M11_L5_DESIGN.md §2, §8 „Teste existente actualizate deliberat”): the L4 message („pasul în care Hub-ul scrie
+// singur testul vine curând (M11)”, :70 and :84) and the „alege unul din testele găsite” question (:95, :100) are gone — owner decision Q3.
+// The same requests now get ONE test-first plan: the Hub writes the acceptance test at step 0, the owner names or picks nothing. Kept from
+// L4: no question he cannot answer, no file name in the main lines, nothing kept as a request, a programmer's bare path still completes the
+// request (and replaces the test-first plan, critique B10), and D21 still binds the ONLY acceptance test.
+test("P0R6-01 (L4 → M11 L5) no test to bind → ONE test-first plan (no file to name, write or pick; nothing kept); a programmer's path still completes the request and replaces it; tests found are never offered as choices", async () => {
   const t = await factoryHub({ noTestDir: true });
   try {
     const ctx = { channel: "owner", ownerSession: t.owner.session, actor: "owner" };
     const plan = (input) => t.hub.intake.plan({ kind: "engineering", projectId: t.project.id, ...input }, ctx);
-    const drafts = () => count(t, "SELECT COUNT(*) AS n FROM factory_missions");
-    const before = drafts();
     const r = await plan({ text: "Adaugă validarea numelui: spațiile trec de verificare" });
     assert.equal(r.clarification, undefined, "not a question the owner cannot answer");
-    assert.equal(r.message, "Pe Factory Demo R6 nu există încă un test automat care să arate când cerința e gata, iar fără el Hub-ul nu pornește o schimbare de cod: n-ar putea dovedi că merge. Nu trebuie să-l scrii tu: pasul în care Hub-ul scrie singur testul vine curând (M11). Acum nu pot propune planul; nimic nu e păstrat.");
-    assert.doesNotMatch(r.message, /numește|fișier|test de acceptanță|test\/|\.mjs|adaugă-l/);
+    const env = r.plan?.envelope;
+    assert.ok(env?.body?.testFirst, JSON.stringify(r).slice(0, 400));
+    assert.doesNotMatch(String(r.message || ""), /vine curând|M11/, "the L4 message is gone");
+    assert.doesNotMatch(`${r.note} ${r.plan.summary.headline} ${r.plan.summary.steps} ${r.plan.summary.models}`, /numește|test\/|\.mjs|adaugă-l/, "no file to name in the main lines");
     assert.equal(r.workRequest, undefined, "nothing kept");
-    assert.deepEqual([drafts(), count(t, "SELECT COUNT(*) AS n FROM mission_envelopes"), count(t, "SELECT COUNT(*) AS n FROM work_requests")], [before, 0, 0]);
-    // The request stays open for a programmer: the path said alone (an existing test file outside the usual folders) builds the plan.
+    assert.equal(count(t, "SELECT COUNT(*) AS n FROM work_requests"), 0);
+    // The request stays open for a programmer: the path said alone (an existing test file outside the usual folders) builds the plan with
+    // THAT file, and the test-first plan is replaced.
     const done = await plan({ text: "checks/acceptance.test.mjs" });
     assert.ok(done.plan?.envelope?.id, JSON.stringify(done).slice(0, 400));
     const view = t.hub.factory.view(done.plan.envelope.missionIds[0]);
     assert.equal(view.spec.spec.acceptance[0].testRef, "checks/acceptance.test.mjs");
     assert.match(view.spec.spec.objective, /spațiile trec de verificare/, "the original words are the objective");
-    // Through the intake (the owner typed it): the same plain message reaches him, as a message, and nothing is kept.
+    assert.equal(t.hub.envelopes.get(env.id).status, "SUPERSEDED");
+    // Through the intake (the owner typed it): ONE test-first plan reaches him — no message, no question, nothing kept.
     const typed = await asOwner(t, { text: "Adaugă validarea emailului în formular", projectId: t.project.id });
     const step = typed.results.find((x) => x.intent === "engineering_request");
     assert.ok(step, JSON.stringify(typed.results).slice(0, 400));
-    assert.match(step.message, /^Pe Factory Demo R6 nu există încă un test automat .* nimic nu e păstrat\.$/);
+    assert.ok(step.plan?.envelope?.body?.testFirst, JSON.stringify(step).slice(0, 400));
     assert.equal(step.clarification, undefined);
     assert.equal(step.workRequest, undefined);
     assert.equal(count(t, "SELECT COUNT(*) AS n FROM work_requests"), 0);
   } finally { await t.cleanup(); }
 
-  // Tests found: the plain question, the tests as the choices (acceptance first); one found → „Alege-l”.
+  // Tests found (two, then one): never offered as choices — the Hub writes the test (route H); D21 still binds a described bug.
   const u = await factoryHub();
   try {
     const ctx = { channel: "owner", ownerSession: u.owner.session, actor: "owner" };
     const q = await u.hub.intake.plan({ kind: "engineering", projectId: u.project.id, text: "Adaugă validarea numelui: spațiile trec de verificare" }, ctx);
-    assert.equal(q.clarification?.question, "Pe Factory Demo R6 am găsit testele automate „test/acceptance.test.mjs” și „test/unit.test.mjs”. Pe care îl folosesc ca dovadă că cerința e gata? Îl protejez: se repară codul, nu testul.");
-    assert.deepEqual(q.clarification.options.map((o) => o.id), ["test/acceptance.test.mjs", "test/unit.test.mjs"]);
-    assert.doesNotMatch(q.clarification.question, /numește|test de acceptanță/);
+    assert.equal(q.clarification, undefined, JSON.stringify(q).slice(0, 300));
+    assert.ok(q.plan?.envelope?.body?.testFirst);
+    assert.doesNotMatch(JSON.stringify(q.plan.summary), /unit\.test\.mjs|Pe care îl folosesc|Alege-l/);
     fs.rmSync(path.join(u.dir, "test", "unit.test.mjs"));
     const one = await u.hub.intake.plan({ kind: "engineering", projectId: u.project.id, text: "Adaugă validarea emailului în formular" }, ctx);
-    assert.equal(one.clarification?.question, "Pe Factory Demo R6 am găsit un singur test automat, „test/acceptance.test.mjs”. Alege-l ca dovadă că cerința e gata și îl protejez: se repară codul, nu testul.");
-    // D21 / PF-04 unchanged: a described bug binds the ONLY acceptance test with no question.
+    assert.equal(one.clarification, undefined, JSON.stringify(one).slice(0, 300));
+    assert.ok(one.plan?.envelope?.body?.testFirst, "one test found: still the Hub's own test, never „Alege-l”");
+    // D21 unchanged: a described bug binds the ONLY acceptance test with no question (no step 0).
     const bound = await u.hub.intake.plan({ kind: "engineering", projectId: u.project.id, text: "Repară validarea numelui: spațiile trec de verificare" }, ctx);
     assert.ok(bound.plan?.envelope?.id, JSON.stringify(bound).slice(0, 300));
+    assert.equal(bound.plan.envelope.body.testFirst, undefined);
+    assert.equal(u.hub.factory.view(bound.plan.envelope.missionIds[0]).spec.spec.acceptance[0].testRef, "test/acceptance.test.mjs");
   } finally { await u.cleanup(); }
 });
 

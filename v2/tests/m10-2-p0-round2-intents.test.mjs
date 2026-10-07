@@ -5,7 +5,8 @@
 //  - PF-05: „Continuă / Reia lucrul după Stop All” shows the card too (nothing resumes; D22: Stop All work resumes only after the rearm);
 //  - PF-02: a name part with a digit or a dot („Factory Demo M10.3”) is never dropped to reach a shorter project („Factory Demo A”); a
 //    partial match lacking that part is ONE question, and a pending „Pe ce proiect lucrez?” is not answered by it;
-//  - PF-03 / PF-04: the planner does not bind the acceptance test when the words name another test or ask to WRITE an acceptance test;
+//  - PF-03 / PF-04: the planner does not bind the acceptance test when the words name another test or ask to WRITE an acceptance test
+//    (M11 L5: PF-03 binds the one test named by its topic, otherwise — and for PF-04 — the Hub writes the test at step 0);
 //  - PF-06: a reviewer account check that throws is stored fresh with its cause; the setup step shows that cause and is not re-probed;
 //  - PF-08: a „?” about something else still holds „Continuă”, with a neutral sentence.
 import test from "node:test";
@@ -214,21 +215,40 @@ function fixtureCopy(name = "bug-demo") {
   return { dir, cleanup: () => fs.rmSync(root, { recursive: true, force: true }) };
 }
 
-test("R2B-08 the acceptance test is not bound when the words name ANOTHER test (PF-03) or ask to WRITE an acceptance test (PF-04); the D21 cases still bind", () => {
+// M11 L5 (wave B, design .ifrim/M11_L5_DESIGN.md §2 routes F and G, §8 „Teste existente actualizate deliberat”): before L5 both cases ended
+// in the „pick a test” question. PF-03 (route G) now binds the ONE test file whose name holds the topic the owner named („testul de login” →
+// test/login.test.mjs, autoBound "topic"); no topic, or none / several files holding it → test-first. PF-04 (route F) → test-first: the Hub
+// writes the NEW test the owner asked for; the existing acceptance test is still never bound or protected against that request.
+test("R2B-08 (M11 L5) PF-03 binds the one test named by its topic (none or several → test-first); PF-04 → test-first, the existing acceptance test never bound or protected; the D21 cases still bind", () => {
   const a = fixtureCopy();
   try {
     fs.writeFileSync(path.join(a.dir, "test", "login.test.mjs"), "// fictiv\n");
     const project = { path: a.dir };
     const spec = (text) => buildEngineeringSpec({ text, project });
-    for (const text of ["Repară testul de login care pică", "Repară testul login", "Repară testele care pică", "Lega, repară testul de export care nu merge"]) {
+    for (const text of ["Repară testul de login care pică", "Repară testul login"]) {
       const b = spec(text);
-      assert.deepEqual([b.testRef, b.autoBound], [null, null], `${text}: another test was named → the one question`);
+      assert.deepEqual([b.testRef, b.autoBound, b.route, b.topic, b.testFirst], ["test/login.test.mjs", "topic", "G", "login", null], `${text}: the test named by its topic`);
+      assert.ok(b.input.spec.constraints.some((c) => /test\/login\.test\.mjs e protejat/.test(c)), text);
+      assert.deepEqual(b.problems, []);
     }
+    for (const text of ["Repară testele care pică", "Lega, repară testul de export care nu merge"]) {
+      const b = spec(text);
+      assert.deepEqual([b.testRef, b.autoBound, b.route], [null, null, "G"], `${text}: no topic / no file holding it → the Hub writes the test`);
+      assert.match(b.testFirst?.testRef || "", /^test\/hub\/[a-z0-9-]+\.test\.mjs$/, text);
+      assert.deepEqual(b.problems, [], text);
+    }
+    // Two files hold the topic: no guess — test-first.
+    fs.writeFileSync(path.join(a.dir, "test", "login-form.test.mjs"), "// fictiv\n");
+    assert.deepEqual([spec("Repară testul de login care pică").testRef, Boolean(spec("Repară testul de login care pică").testFirst?.ok)], [null, true]);
+    fs.rmSync(path.join(a.dir, "test", "login-form.test.mjs"));
     for (const text of ["Adaugă un test de acceptanță pentru validarea numelui din Factory Demo M10.2", "Scrie testul de acceptanță pentru export", "Te rog, adaugă în proiect un test nou de acceptanță",
       "Fă un test de acceptanță pentru login", "Creează teste de acceptanță pentru nume", "Scrie-mi un acceptance test pentru export", "Repară bugul și scrie un test de acceptanță pentru el"]) {
       const b = spec(text);
-      assert.deepEqual([b.testRef, b.autoBound], [null, null], `${text}: a NEW acceptance test is asked for`);
-      assert.ok(!b.input.spec.constraints.some((c) => /e protejat/.test(c)), `${text}: nothing protected against the request`);
+      assert.deepEqual([b.testRef, b.autoBound, b.route], [null, null, "F"], `${text}: a NEW acceptance test is asked for`);
+      assert.ok(b.testFirst?.ok, `${text}: the Hub writes it at step 0`);
+      assert.equal(b.input.spec.authoring.testRef, b.testFirst.testRef);
+      assert.ok(!JSON.stringify(b.input.spec).includes("test/acceptance.test.mjs"), `${text}: the existing acceptance test is never protected against the request`);
+      assert.deepEqual(b.problems, [], text);
     }
     // Unchanged D21 cases: the acceptance test named as the verification, a described bug that names no test.
     assert.deepEqual([spec("Repară testul de acceptanță din Factory Demo M10.2").testRef, spec("Repară testul de acceptanță din Factory Demo M10.2").autoBound], ["test/acceptance.test.mjs", "named"]);

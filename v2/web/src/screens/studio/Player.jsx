@@ -1,8 +1,10 @@
 import { forwardRef, useCallback, useEffect, useImperativeHandle, useRef, useState } from "react";
-import { ChevronLeft, ChevronRight, Play, Pause, Link2, Check, X, MessageSquareText } from "lucide-react";
+import { ChevronLeft, ChevronRight, Play, Pause, Link2, Check, X, MessageSquareText, ArrowRight } from "lucide-react";
 import { ErrorNotice, Notice, Chip } from "../../components/ui.jsx";
-import { formatTimecode, stepFrameMs, parseTimeInput, describeOp, proposalPreview, fmtSeconds, studioHref, textItemsAt } from "../../lib/studioLogic.js";
+import { formatTimecode, stepFrameMs, parseTimeInput, describeOp, proposalPreview, fmtSeconds, studioHref, textItemsAt, proposalAction, studioPlanReview, waitingStillWaits } from "../../lib/studioLogic.js";
+import { useResource } from "../../store.js";
 import { studioPost, useBusy } from "./common.jsx";
+import { OpsPlanCard } from "../lega/OpsPlanCard.jsx";
 
 /**
  * HTML5 player over GET /api/media/files/<assetVersionId> (HTTP Range, so seeking works on long files). The time is shown in
@@ -66,25 +68,67 @@ export const Player = forwardRef(function Player({ assetVersionId, fps, initialM
 /**
  * „Corectură la timecode”: a sentence + the time (prefilled with the player's current time until you edit it) → a PROPOSAL
  * (POST …/patches). Nothing changes until you press Aplică, which writes a NEW edit version; the original stays.
+ * D7 (2.12.3): a correction Lega proposed as ONE plan (apply → draft render → QA) shows that plan's own card here instead of Aplică /
+ * Renunță — the same card as in the cockpit (one confirmation in your session, Windows Hello for decisions, pause / continue, „Nu
+ * acum”); the Hub refuses a separate apply of it. The panel opens on the cockpit's deep-linked proposal (`deepReviewId`) or on the one
+ * proposal of this version waiting for its plan; a proposal you typed here is never replaced by another one.
+ * D7 review: while a correction plan of this version waits for its confirmation, a proposal typed here gets no Aplică — the waiting plan's
+ * card stays in view with the reason (the server refuses that apply: EDIT_PLAN_PROPOSED); after „Nu acum” on that card the M09 Aplică
+ * comes back for it.
  */
-export function Correction({ editVersionId, fps, currentMs, projectId, onApplied, ir = null }) {
+export function Correction({ editVersionId, fps, currentMs, projectId, onApplied, ir = null, reviews = [], deepReviewId = null }) {
   const [text, setText] = useState("");
   // M10: the text item you mean (it wins over any guess); the disclosure label is never picked automatically.
   const [target, setTarget] = useState("");
   const [timeText, setTimeText] = useState("");
   const [follow, setFollow] = useState(true);
   const [proposal, setProposal] = useState(null);
+  const [planNote, setPlanNote] = useState(null);
+  // Proposals you dismissed or closed here are not opened again by the seeding below.
+  const dropped = useRef(new Set());
   const b = useBusy();
   useEffect(() => { if (follow) setTimeText(formatTimecode(currentMs, fps).clock); }, [currentMs, follow, fps]);
-  useEffect(() => { setProposal(null); setTarget(""); }, [editVersionId]);
+  useEffect(() => { setProposal(null); setTarget(""); setPlanNote(null); }, [editVersionId]);
+  // D7: the shown proposal follows the server's copy (status, bound plan); an empty panel opens on the deep-linked / waiting proposal.
+  useEffect(() => {
+    const list = Array.isArray(reviews) ? reviews : [];
+    const seed = studioPlanReview(list, deepReviewId);
+    setProposal((p) => {
+      if (p) return list.find((x) => x.id === p.id) || p;
+      return seed && !dropped.current.has(seed.id) ? seed : p;
+    });
+  }, [reviews, deepReviewId]);
+  // A stale page (the plan appeared after the page loaded): the Hub's honest 409 names the plan, and its card replaces the button.
+  const bindPlan = (e) => {
+    if (!e?.details?.planId) return false;
+    if (e.code === "REVIEW_IN_PLAN") {
+      setProposal((p) => (p ? { ...p, plan: { id: String(e.details.planId), status: e.details.status || null } } : p));
+      setPlanNote(e.message || null);
+      return true;
+    }
+    // D7 review: another proposal's plan waits on this version (a stale page): its card replaces Aplică, with the Hub's reason.
+    if (e.code === "EDIT_PLAN_PROPOSED") {
+      setProposal((p) => (p ? { ...p, waitingPlan: { id: String(e.details.planId), status: e.details.status || "PROPOSED", reviewId: e.details.reviewId || null } } : p));
+      setPlanNote(e.message || null);
+      return true;
+    }
+    return false;
+  };
   const timeMs = parseTimeInput(timeText, fps);
   const visibleTexts = textItemsAt(ir, timeMs ?? currentMs);
   const propose = (selectedItemId) => b.run("propose", async () => {
     const review = await studioPost(`/api/media/edit-versions/${encodeURIComponent(editVersionId)}/patches`, { text: text.trim(), ...(timeMs !== null ? { timecodeMs: timeMs } : {}), ...(selectedItemId ? { selectedItemId } : {}) });
+    setPlanNote(null);
     setProposal(review);
   });
   const submit = (e) => { e.preventDefault(); propose(target || null); };
   const preview = proposal ? proposalPreview(proposal.patch) : null;
+  const known = proposalAction(proposal, reviews);
+  const fromServer = proposal?.waitingPlan || null;
+  const waitingAction = known.kind === "apply" && fromServer ? { kind: "waiting", planId: fromServer.id, status: fromServer.status, reviewId: fromServer.reviewId } : known;
+  // D7 review: the waiting plan's own state, live — once it no longer waits (confirmed, „Nu acum”, expired) the panel follows it.
+  const waitingLive = useResource(waitingAction.kind === "waiting" ? `/api/ops/plans/${encodeURIComponent(waitingAction.planId)}` : null, { reloadOn: (e) => e.type.startsWith("ops.") });
+  const action = waitingStillWaits(waitingAction, waitingLive.data) ? waitingAction : waitingAction.kind === "waiting" ? { kind: "apply" } : waitingAction;
   const deepLink = projectId && timeMs !== null ? `#${studioHref(projectId, { sub: "timeline", tMs: timeMs, versionId: editVersionId })}` : null;
   return (
     <div className="stack tight studio-correction">
@@ -125,17 +169,45 @@ export function Correction({ editVersionId, fps, currentMs, projectId, onApplied
               {preview.durationText && <p className="small">Durata: <strong>{preview.durationText}</strong></p>}
               {preview.lines.length > 0 && <ul className="studio-diff">{preview.lines.map((l, i) => <li key={i}>{l}</li>)}</ul>}
               {preview.valid === false && <Notice tone="error" title="Rezultatul n-ar fi valid">{preview.errors.join(" · ") || "IR invalid"}</Notice>}
-              {proposal.status === "OPEN" && (
+              {action.kind === "plan" ? (
+                <div className="stack tight">
+                  {planNote && <Notice tone="info">{planNote}</Notice>}
+                  <OpsPlanCard plan={{ id: action.planId, status: action.status }} card={{ type: "OpsPlan", size: "m" }} />
+                </div>
+              ) : action.kind === "waiting" ? (
+                <div className="stack tight">
+                  <Notice tone="info" title="Un plan așteaptă deja confirmarea ta">{planNote || "Planul afișat corectează deja această versiune: îl confirmi o dată sau alegi „Nu acum” pe cardul lui; abia apoi poți aplica altă corectură."}</Notice>
+                  <OpsPlanCard plan={{ id: action.planId, status: action.status }} card={{ type: "OpsPlan", size: "m" }} />
+                  <div className="row wrap">
+                    <button className="btn ghost" type="button" disabled={Boolean(b.busy)} onClick={() => b.run("dismiss", async () => {
+                      await studioPost(`/api/media/reviews/${encodeURIComponent(proposal.id)}/dismiss`, { reason: "renunțat din Studio" });
+                      dropped.current.add(proposal.id);
+                      setProposal(null);
+                      setPlanNote(null);
+                    })}><X size={15} aria-hidden="true" />Renunță la propunerea nouă</button>
+                  </div>
+                </div>
+              ) : proposal.status === "OPEN" && (
                 <div className="row wrap">
                   <button className="btn approve" type="button" disabled={Boolean(b.busy) || preview.valid === false} onClick={() => b.run("apply", async () => {
-                    const out = await studioPost(`/api/media/reviews/${encodeURIComponent(proposal.id)}/apply`, {}, { toast: "Versiune nouă creată; originalul a rămas neschimbat" });
-                    setProposal(out?.review || null);
-                    if (out?.version?.id) onApplied?.(out.version.id);
+                    try {
+                      const out = await studioPost(`/api/media/reviews/${encodeURIComponent(proposal.id)}/apply`, {}, { toast: "Versiune nouă creată; originalul a rămas neschimbat" });
+                      setProposal(out?.review || null);
+                      if (out?.version?.id) onApplied?.(out.version.id);
+                    } catch (e) { if (!bindPlan(e)) throw e; }
                   })}><Check size={15} aria-hidden="true" />{b.busy === "apply" ? "Se aplică…" : "Aplică (versiune nouă)"}</button>
                   <button className="btn ghost" type="button" disabled={Boolean(b.busy)} onClick={() => b.run("dismiss", async () => {
-                    await studioPost(`/api/media/reviews/${encodeURIComponent(proposal.id)}/dismiss`, { reason: "renunțat din Studio" });
-                    setProposal(null);
+                    try {
+                      await studioPost(`/api/media/reviews/${encodeURIComponent(proposal.id)}/dismiss`, { reason: "renunțat din Studio" });
+                      dropped.current.add(proposal.id);
+                      setProposal(null);
+                    } catch (e) { if (!bindPlan(e)) throw e; }
                   })}><X size={15} aria-hidden="true" />Renunță</button>
+                </div>
+              )}
+              {proposal.status === "APPLIED" && proposal.resultVersionId && action.kind !== "plan" && (
+                <div className="row wrap">
+                  <button className="btn sm" type="button" onClick={() => { dropped.current.add(proposal.id); onApplied?.(proposal.resultVersionId); }}><ArrowRight size={14} aria-hidden="true" />Deschide versiunea nouă</button>
                 </div>
               )}
             </>

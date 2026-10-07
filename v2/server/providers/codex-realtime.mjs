@@ -60,7 +60,7 @@ const webSearchText = (item) => {
 };
 const V2_APPROVALS = new Set(["item/commandExecution/requestApproval", "item/fileChange/requestApproval"]);
 const LEGACY_APPROVALS = new Set(["execCommandApproval", "applyPatchApproval"]);
-const TOOL_REPLY_TIMEOUT_MS = 5000;
+export const TOOL_REPLY_TIMEOUT_MS = 5000;
 const TOOL_REPLY_MAX = 6000;
 
 const withTimeout = (promise, ms, label) => Promise.race([promise, new Promise((_, reject) => setTimeout(() => reject(Object.assign(new Error(`${label} timed out after ${ms} ms`), { category: "transport", timeout: true })), ms))]);

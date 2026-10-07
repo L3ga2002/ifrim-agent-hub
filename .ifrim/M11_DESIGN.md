@@ -111,7 +111,7 @@ It links outputs that already exist to ONE software snapshot and shows them in o
 
 THE SIX PARTS
 
-1) ENGINEERING. The existing Software Factory runs unchanged: spec → BASELINE → Codex writer → checks → Claude review (read-only) → up to 2 repair cycles → QA → preview → E2E → bundle bnd_* → DELIVERY_READY.
+1) ENGINEERING. The existing Software Factory runs unchanged + Etapa 0 (L5): spec → [L5, only when the project has no test that proves the request: step 0 of the same plan, the Hub writes the acceptance test — TEST_AUTHORING (Claude, read-only) → TEST_PROVING (2 runs, must fail today) → TEST_REVIEW (Codex, read-only) → protected; .ifrim/M11_L5_DESIGN.md §2–§3] → BASELINE → Codex writer → checks → Claude review (read-only) → up to 2 repair cycles → QA → preview → E2E → bundle bnd_* → DELIVERY_READY.
 - It runs under ONE envelope:
   - derived bound grants;
   - BUILD_SAFE with SCOPED_LIVE_TRANSITION (envelopes.mjs:68, 320-323);
@@ -605,6 +605,7 @@ The card shows the finite scope:
 - Tools: Codex writer, Claude reviewer (read-only), Playwright Chromium <version>, the Studio renderer.
 - Models: writer Codex gpt-6.1-sol · medium and reviewer Claude sonnet · medium (PILOT_MODELS, explicit bindings, re-checked before every start). The delivery phase uses no model.
 - Duration: mission ≤ 60 min (the envelope window is unchanged), then the delivery phase ≤ 30 min (hard stop 60) after DELIVERY_READY, if DELIVERY_READY arrives before the envelope expires.
+  - L5 note: a test-first mission (step 0, the Hub-written acceptance test) has a 180-minute deadline (.ifrim/M11_L5_DESIGN.md §4), so it does not fit a 60-minute Delivery mission. A Delivery whose request no existing test proves needs its own decision on the duration; a request bound to the project's acceptance test keeps the 60 minutes.
 - Repairs: up to 2 cycles included.
 - Capture: only http://127.0.0.1:4620. Desktop 1280×720@1.5 and phone width 390×844@2, each ≤ 60 s. No audio, no Hub UI, no screen. The steps are those of the approved E2E criteria AC-7 and AC-6.
 - Outputs: clip 16:9 + vertical 9:16, each with automated QA; commercial summary v1 (MD + HTML); a local folder in Videos\Ifrim Studio\Exporturi.
@@ -1154,7 +1155,7 @@ OTHER CASES
 - Ambiguous target („schimbă titlul” with no selection, no timecode, no artifact word, and both the clip hook and the summary title plausible): ONE clarification, „Titlul clipului sau titlul rezumatului?”, with two options. With a selection or a timecode there is no question, and preferredTextTarget (review.mjs:167) picks the item from the selection, the timecode, or the item last corrected on this version line.
 - No matching marker: ONE question listing the markers with their times.
 - Software change words („Adaugă câmpul număr de înmatriculare în formular”, „Butonul să fie verde”): class software.
-  - Engineering draft via buildEngineeringSpec, which binds the project's protected acceptance test or asks ONE question.
+  - Engineering draft via buildEngineeringSpec, which binds the project's protected acceptance test or writes it (L5: step 0 of the same plan, .ifrim/M11_L5_DESIGN.md §2; no question with file names). The revision takes over the parent's preview and E2E criteria (delivery/template.mjs:273, :289-290): a draft without them cannot be captured.
   - ONE envelope whose delivery section has mode 'refresh' and parentDeliveryId, for a new delivery D2.
   - The card shows only the difference: the new mission, re-capture, a clip rebuilt with the kept tone and jump prefs, and summary regeneration that keeps owner sections.
   - Repairs on the card need no grant.

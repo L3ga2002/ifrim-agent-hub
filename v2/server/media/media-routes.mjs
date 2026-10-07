@@ -108,7 +108,12 @@ export function registerMediaRoutes(router, hub) {
     if (!version) throw new HubError("not_found", "Versiunea nu există");
     let explain = null;
     try { explain = media.editors.explainEdit(version.ir, {}); } catch { explain = null; }
-    return { version, explain, qa: media.qa.summary(params.id), reviews: media.reviews.list({ editVersionId: params.id }), renders: media.render.list({ editVersionId: params.id }) };
+    // D7: each review names the live correction plan it is bound to ({ id, status } only; the card reads the plan through
+    // GET /api/ops/plans/:id, as the cockpit does), so the Studio shows that plan's card instead of a separate apply. One query.
+    const bound = new Map();
+    for (const p of hub.opsPlans?.correctionPlans?.({ editVersionId: params.id }) || []) if (!p.expired && p.reviewId && !bound.has(p.reviewId)) bound.set(p.reviewId, p); // newest first
+    const reviews = media.reviews.list({ editVersionId: params.id }).map((r) => ({ ...r, plan: bound.has(r.id) ? { id: bound.get(r.id).id, status: bound.get(r.id).status } : null }));
+    return { version, explain, qa: media.qa.summary(params.id), reviews, renders: media.render.list({ editVersionId: params.id }) };
   });
   get("/api/media/renders", ({ query }) => ({ renders: media.render.list({ editVersionId: query.editVersionId || null, status: query.status || null, limit: Number(query.limit) || 50 }) }));
   get("/api/media/renders/:id", ({ params }) => { const j = media.render.get(params.id); if (!j) throw new HubError("not_found", "Randarea nu există"); return j; });

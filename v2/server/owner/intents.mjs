@@ -180,11 +180,41 @@ const VERB_FORMS = Object.freeze({
 const AGAIN_VERBS = "deschide|porneste|arata|fa|lanseaza|ruleaza|adu|pune|reia|continua|da-mi|fa-mi|incearca|redeschide";
 
 /**
+ * 2.12.3 (D2): a leading acknowledgement („Ok, fă acel videoclip de promovare”, „Hai, repară bug-ul de login”, „Ok, Lega, …”) in front
+ * of a request whose rule is anchored on its verb. It is dropped per clause and only when what follows IS one of these requests
+ * (ACK_REQUESTS), so „ack + X” resolves exactly like X; every other clause keeps its words. It is not a global filler: the confirmation
+ * grammar needs it in front of verbs that do not stand alone („Ok, fă-l”, „Ok, execută”), „hai” leads „hai la …”, and stripFillers is
+ * shared with the voice stop parser (domain/voice.mjs). „da” and „sigur” are consent words and are never dropped here.
+ */
+const ACK_LEAD = /^(?:(?:ok|okay|hai|haide|bine)(?:[\s,!.:;]+|$)|(?:(?:hei|hey|buna) )?lega(?:[\s,!.:;]+|$))+/;
+/** A clause that is only an acknowledgement („Ok.” written by a transcript as its own sentence). */
+const ACK_ONLY = /^(?:(?:ok|okay|hai|haide|bine|(?:(?:hei|hey|buna) )?lega)(?:[\s,!.:;]+|$))+$/;
+const ACK_REQUESTS = new Set(["studio_create", "engineering_request", "analysis_request", "start_mission", "resume_mission", "explain_mode"]);
+
+/**
  * One clause → { text, again, refIt }: fillers removed, "din nou / încă o dată / o dată" and a leading "mai / iar" before a verb
  * recorded as `again`, the first verb in the imperative, `refIt` when that verb carries a pronoun object ("deschide-l",
  * "pornește-o", "arată-mi-l") — the object is then the last target, which only the server may supply.
+ * D2: a leading acknowledgement is dropped only when the rest is one of the anchored requests (ACK_REQUESTS); otherwise the result is
+ * exactly the one without that rule.
  */
 export function prepClause(clause) {
+  const base = prepCore(clause);
+  const lead = stripFillers(clause);
+  const rest = lead.replace(ACK_LEAD, "");
+  if (rest && rest !== lead) {
+    const alt = prepCore(rest);
+    const m = alt.text ? matchPattern(alt.text) : null;
+    if (m && ACK_REQUESTS.has(m.intent)) return alt;
+    // 2.12.3 (D2 review): a conditional request („Ok, citește fișierul doar dacă trec testele”) — a broader rule (show_tests) can match the
+    // whole clause first, while the request itself is the condition's head: the head decides, so „ack + X” still resolves exactly like X.
+    const held = alt.text ? conditionOf(alt.text)?.heldIntent : null;
+    if (held && ACK_REQUESTS.has(held)) return alt;
+  }
+  return base;
+}
+
+function prepCore(clause) {
   let text = stripFillers(clause);
   const before = text;
   text = text.replace(/\b(?:din nou|inca o data|inca odata|inca o oara)\b/g, " ").replace(/\s+o data$/, " ")
@@ -677,6 +707,9 @@ export function modeAnswer({ question = false } = {}, { mode = null, spoken = tr
   return m && m !== "BUILD_SAFE" ? `${base} Acum Hub-ul e în ${m}.` : base;
 }
 
+/** D3: a clause that asks to run or start the preview („Rulează / Pornește / Da drumul la preview-ul …”), on the prepared clause. */
+export const PREVIEW_START = /^(?:ruleaza|porneste|lanseaza|reporneste|activeaza|da drumul la)\b/;
+
 // Pattern table: [intent, regex on the normalized clause, (match, clause) => args]. First match wins per clause.
 // M10.2.1 (D21): a free reference may hold a dot INSIDE a word ("factory demo m10.2", "v2.1"): `\.(?=[a-z0-9])`, never as its first
 // character and never at its end (a sentence-final period is cut with the clause and stripped before matching).
@@ -757,8 +790,10 @@ const P = [
   ["desktop_open", new RegExp(String.raw`(?<!\bnu )\b(deschide|deschideti|porneste|lanseaza|da-mi|fa-mi)(-mi)? (aplicatia |programul )?(?<app>${DESKTOP_APP_WORDS})\b`), (m) => ({ app: desktopAppId(m.groups.app) })],
   // M10.2: "Fă un videoclip de promovare de 30 de secunde" — a Content Studio PLAN request (live it reached no resolver and became a
   // project_management mission on the Hub through the model). Anchored on the verb: "nu face un clip" is not a request.
-  ["studio_create", /^(?:fa|creeaza|genereaza|pregateste|produ|realizeaza|monteaza|construieste)(?:-mi|-ne)? (?:si )?(?:un |o |niste )?(?:nou |noua |scurt |scurta )?(?:videoclip|clip|video|reel|filmulet|promo|montaj)(?:ul|uri|urile)?\b/, studioCreateArgs],
-  ["studio_import_here", /\bimporta(-l|-le|-mi)?( (proiectul|clipul|materialele|fisierele|tot|video-ul|montajul))?( (din|de (in|la))( (folderul|dosarul|locul))? ?(acesta|asta|deschis|curent|de aici|aici)| de aici)\b/],
+  // D2: „Fă acel / acest videoclip de promovare” (the live sentence) is the same request; the planner still chooses the materials.
+  ["studio_create", /^(?:fa|creeaza|genereaza|pregateste|produ|realizeaza|monteaza|construieste)(?:-mi|-ne)? (?:si )?(?:un |o |niste |acel |acest )?(?:nou |noua |scurt |scurta )?(?:videoclip|clip|video|reel|filmulet|promo|montaj)(?:ul|uri|urile)?\b/, studioCreateArgs],
+  // D6: „în Studio(-ul)” may stand after the verb or after the object („Importă în Studio din folderul acesta”).
+  ["studio_import_here", /\bimporta(-l|-le|-mi)?( in studio(-?ul)?,?)?( (proiectul|clipul|materialele|fisierele|tot|video-ul|montajul))?( in studio(-?ul)?,?)?( (din|de (in|la))( (folderul|dosarul|locul))? ?(acesta|asta|deschis|curent|de aici|aici)| de aici)\b/],
   ["studio_variant", /\b(pregateste|fa|randeaza|genereaza|scoate)(-mi)? (si )?(varianta|versiunea|formatul) (?<fmt>verticala|vertical|9 16|tiktok|reels|shorts|patrata|linkedin|youtube)\b/, (m) => ({ format: m.groups.fmt })],
   ["ops_continue", /^(continua|continua planul|continua acum|reia|reia planul|mergi mai departe|poti continua|gata,? continua|ok,? continua)$/],
   // M09 Content Studio — BEFORE simulate / incident_open / status / show_preview / open_project, which would otherwise swallow
@@ -808,7 +843,9 @@ const P = [
   ["show_review", /\b(claude|reviewerul|review-ul|reviewul) ce (a gasit|zice|spune)\b|\bce (a gasit|zice|spune) (claude|reviewerul)\b|\bce zice review\b|\barata(-mi)? review/],
   ["show_changes", /\bce a schimbat\b|\barata(-mi)? (ce a schimbat|diff|modificarile|schimbarile)\b|\bce (fisiere|modificari) (a|au)\b/],
   ["show_tests", /\btestele\b|\bau trecut testele\b|\bce teste\b|\barata(-mi)? test/],
-  ["show_preview", /\bpreview\b|\barata(-mi)? (aplicatia|rezultatul)\b/],
+  // D3: „Rulează / Pornește preview-ul X” is the same read with `start` (the intake answers it; a preview only runs as a mission step).
+  // D3 review: the Romanian inflected spellings too („previewul”, „previewurile”, „previzualizarea”), not only „preview” / „preview-ul”.
+  ["show_preview", /\bpreview(?:-?(?:ul|ului|uri|urile|urilor))?\b|\bprevizualizare(?:a|ii)?\b|\barata(-mi)? (aplicatia|rezultatul)\b/, (_m, c) => (PREVIEW_START.test(c) ? { start: true } : {})],
   ["show_company", /\barata(-mi)? compania\b|\bharta (companiei|firmei)\b|\bcompania\b/],
   ["recommendations", /\bce recomanzi\b|\bce (putem|pot) simplifica\b|\brecomandari(le)?\b/],
   ["briefing", /\bce s-a schimbat\b|\bbuna dimineata\b|\bbriefing\b|\bce e nou\b|\brezumatul zilei\b/],
@@ -944,6 +981,26 @@ function matchPattern(text, skip = null) {
     }
   }
   return null;
+}
+
+/** D4 review: what may stay outside an intent's own match when that intent still covers the whole clause („Deschide-mi Notepad-ul acum”). */
+const COVER_FILLER = /^(?:(?:acum|imediat|repede|te rog|te rog frumos|va rog|din nou|inca o data|o data|-ul|-l|-o|ul|[,.!?;:])\s*)*$/;
+/**
+ * D4 review: whether `intent`'s own rule consumed the whole prepared clause `text` (a step's `text`) — only filler words outside its match.
+ * „deschide notepad si spune-mi ce misiuni am” resolves to desktop_open alone (the rule matches „deschide notepad”), but its second request
+ * is left over, so it is not covered. Pure; false when the rule does not match the clause at all.
+ */
+export function clauseCovered(intent, text) {
+  const t = String(text || "").trim();
+  if (!t) return false;
+  for (const [i, re] of P) {
+    if (i !== intent) continue;
+    const m = t.match(re);
+    if (!m) continue;
+    const rest = `${t.slice(0, m.index)} ${t.slice(m.index + m[0].length)}`.replace(/\s+/g, " ").trim();
+    if (COVER_FILLER.test(rest)) return true;
+  }
+  return false;
 }
 
 /** "deschide-l", "deschide din nou", "încă o dată": repeat the last target (only the server knows it; resolved in resolveRefs). */
@@ -1159,6 +1216,12 @@ export function resolveIntent(text, context = {}) {
     steps.push(step);
     if (alsoExplain) steps.push({ intent: "explain_stop", args: { ...alsoExplain }, constraints: {}, effect: INTENT_EFFECTS.explain_stop, text: t });
   }
+  // D2: a transcript that wrote the acknowledgement as its own sentence („Ok. Fă acel videoclip de promovare.”) — the lone „Ok.” next to
+  // one of the anchored requests is not a step. Only then: „Ok. Continuă.” and „Ok. Oprește tot.” keep their steps (the one-clause resume
+  // rule reads them), and a confirmation in the same sentence is still refused (the request step stays).
+  if (steps.length > 1 && steps.some((s) => ACK_REQUESTS.has(s.intent) || ACK_REQUESTS.has(s.args?.held))) {
+    for (let i = steps.length - 1; i >= 0; i--) if (steps[i].intent === "unknown" && ACK_ONLY.test(String(steps[i].text || ""))) steps.splice(i, 1);
+  }
   if (!steps.length) steps.push({ intent: "unknown", args: {}, constraints: {}, effect: "none", text: "" });
   // Review F1: „…, nu opri tot, oprește doar Codex” — next to a narrower stop the Hub runs, the negated Stop All is answered „nu opresc tot”.
   if (steps.some((s) => INTERRUPT_INTENTS.has(s.intent) && s.intent !== "stop_all")) {
@@ -1250,11 +1313,17 @@ const INERT_REASON = "Textul vine dintr-un document sau dintr-o transcriere medi
  * wins; on a tie, the later one (the project usually closes the sentence: "… de la login din ProDelivery").
  */
 const PROJECT_TAIL = /\b(?:(?:din|pe|la|pentru) (?:proiectul )?|proiectului )/g;
-function namedProjectOf(clause, projects) {
+/**
+ * D3: a preview request names its project right after the word as well („Rulează preview-ul Pro Delivery”, „… preview-ul de la X”), or
+ * after the same prepositions. Global (matchAll), like PROJECT_TAIL. The preposition ends on a word boundary („pe” is never the start
+ * of „pentru”).
+ */
+const PREVIEW_TAIL = /\b(?:preview(?:-?(?:ului|ul|urile|uri))?|previzualizare(?:a|ii)?)\b(?: (?:de la|de pe|din|pentru|pe|la|al|lui)\b)?(?: proiectul(?:ui)?\b)?|\b(?:(?:din|pe|la|pentru) (?:proiectul )?|proiectului )/g;
+function namedProjectOf(clause, projects, tail = PROJECT_TAIL) {
   const opts = { extra: (p) => [p.slug] };
   let best = null;
   let numbered = null;
-  for (const m of clause.matchAll(PROJECT_TAIL)) {
+  for (const m of clause.matchAll(tail)) {
     const words = clause.slice(m.index + m[0].length).trim().split(/\s+/).filter(Boolean).slice(0, 8);
     for (let n = words.length; n >= 1; n--) {
       const ref = words.slice(0, n).join(" ");
@@ -1382,6 +1451,17 @@ function resolveRefs(step, context) {
     }
     if (named?.matches.length === 1) { step.args.projectId = named.matches[0].id; step.args.projectRef = named.ref; }
     else if (named?.matches.length > 1) return { clarification: { question: `La care proiect te referi: ${named.matches.slice(0, 4).map((p) => p.name).join(" sau ")}?`, options: named.matches.slice(0, 4).map((p) => ({ id: p.id, label: p.name })), forIntent: step.intent } };
+  }
+  // D3: „Rulează preview-ul Pro Delivery” names its project (live, the words were dropped and the agent planned an analysis instead). The
+  // same rules as the code requests above: only a reference whose every word is covered counts; one → projectId, several → ONE question.
+  if (step.intent === "show_preview" && projects.length) {
+    const named = namedProjectOf(String(step.text || ""), projects, PREVIEW_TAIL);
+    if (named?.unknown) {
+      const options = named.candidates.slice(0, 4).map((p) => ({ id: p.id, label: p.name }));
+      return { clarification: { question: `Nu găsesc proiectul „${named.ref}”. ${options.length ? `Te referi la ${options.map((o) => o.label).join(" sau ")}?` : "Pe ce proiect să-ți arăt preview-ul?"}`, options, forIntent: "show_preview" } };
+    }
+    if (named?.matches.length === 1) { step.args.projectId = named.matches[0].id; step.args.projectRef = named.ref; }
+    else if (named?.matches.length > 1) return { clarification: { question: `La care proiect te referi: ${named.matches.slice(0, 4).map((p) => p.name).join(" sau ")}?`, options: named.matches.slice(0, 4).map((p) => ({ id: p.id, label: p.name })), forIntent: "show_preview" } };
   }
   // "Deschide-l din nou": only the server's record of the last target answers it; with none, ONE question and nothing done.
   if (step.intent === "reopen_last") {

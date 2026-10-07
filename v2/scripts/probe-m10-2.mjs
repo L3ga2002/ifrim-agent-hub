@@ -20,6 +20,8 @@
 // other existing counters. A Hub that does not serve a counter yet prints „?” for it; the two owner names that are existing counters
 // (MANUAL_DEV_DB_API_INTERVENTIONS = developerInterventions, CONTEXTUAL_REARM = gateRearms) fall back to the old key. --json prints
 // the Hub's answer unchanged (on 2.12.2 it carries `ownerList` with the same names).
+// 2.12.3 (D1): UNKNOWN_INTENTS leaves out the provider transcripts Lega's agent answered (a tool call or speech in the same Lega session,
+// before the owner's next sentence); their number follows the line („o frază la care a răspuns Lega (neinclusă)”).
 import { PORT, request } from "./common.mjs";
 
 const LABELS = {
@@ -90,6 +92,9 @@ function detailOf(name, b) {
     if (sources) parts.push(`sursă: ${sources}`);
     const n = b.unknownIntents.estimated;
     if (n) parts.push(`${n} ${n === 1 ? "estimată" : "estimate"} din refuzuri (frază înregistrată înainte de numărarea exactă)`);
+    // 2.12.3 (D1): the provider transcripts Lega answered are left out of the number; an older Hub has no such key and prints nothing more.
+    const byLega = b.unknownAnsweredByLega?.sentences || 0;
+    if (byLega > 0) parts.push(byLega === 1 ? "o frază la care a răspuns Lega (neinclusă)" : `${byLega} fraze la care a răspuns Lega (neincluse)`);
   } else if (name === "VOICE_CONFIRMATIONS" && b.voiceConfirmations) {
     const l = list({ misiune: b.voiceConfirmations.envelope, operare: b.voiceConfirmations.ops });
     if (l) parts.push(l);

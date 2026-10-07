@@ -1,8 +1,9 @@
 // Milestone 10.2 — U09: an engineering request in the owner's words becomes ONE Software Factory draft plus ONE envelope
 // (PASS_SIMULATED: fixture providers, software authenticator, test projects; no model). No lega.mission_request card (owner
 // decision 1); the models are explicit — the role defaults or the owner's per-project override — shown and hashed in the plan
-// (decision 4); the Hub's own repository is refused (decision 10); a request that cannot be verified gets ONE question; a draft
-// the planner made and nobody started is withdrawn when its plan is superseded / expires; factory.prepare from the UI is unchanged.
+// (decision 4); the Hub's own repository is refused (decision 10); a request with no test to bind becomes ONE test-first plan (M11 L5:
+// the Hub writes the acceptance test at step 0; before L5 it got ONE question); a draft the planner made and nobody started is withdrawn
+// when its plan is superseded / expires; factory.prepare from the UI is unchanged.
 import test from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
@@ -122,36 +123,54 @@ test("M10.2-EP-02 the Hub's own project: blocked with the factory-refuses-Hub an
   } finally { await t.cleanup(); }
 });
 
-test("M10.2-EP-03 not verifiable → ONE question (no draft); the answer (a choice id or the path said alone) builds the plan; no project → ONE question first", async () => {
+// M11 L5 (wave B, design .ifrim/M11_L5_DESIGN.md §2, §8 „Teste existente actualizate deliberat”): before L5 a FEATURE that named no
+// acceptance test got „Pe care îl folosesc ca dovadă…?” with file names (owner decision Q3 removed it). Now it is ONE test-first plan (route
+// H): the Hub writes the test at step 0, no question, no file to name or pick. What this test kept: D21 still binds; a programmer's choice id or
+// bare path within 2 minutes still builds the plan with THAT file (and replaces the test-first plan, critique B10); a missing file is never
+// bound (route B, a plain message); no project → ONE question first.
+test("M10.2-EP-03 (M11 L5) no test to bind → ONE test-first plan (no question, no file names); a programmer's choice or path within 2 minutes replans with that file; a missing file is never bound; no project → ONE question first", async () => {
   const t = await plannerHub();
   try {
     // M10.2.1 (D21): a bug described without a test file binds the project's ONLY acceptance-named test, with no question …
     const bound = await plan(t, { text: "Repară validarea numelui: spațiile trec de verificare", projectId: t.project.id });
     assert.ok(bound.plan?.envelope?.id, JSON.stringify(bound));
     assert.equal(view(t, bound.plan.envelope.missionIds[0]).spec.spec.acceptance[0].testRef, "test/acceptance.test.mjs");
-    // … a request that neither names the acceptance test nor describes a bug (a feature) still gets ONE question.
-    const drafts = count(t, "SELECT COUNT(*) AS n FROM factory_missions");
+    // … a request that neither names the acceptance test nor describes a bug (a feature): ONE test-first plan (route H), no question.
     const q = await plan(t, { text: "Adaugă verificarea numelui: spațiile trec de verificare", projectId: t.project.id });
-    assert.ok(q.clarification, JSON.stringify(q));
-    // 2.12.2 (P0-R6, L4): plain words — the tests found, one picked as the proof (no file to name or write).
-    assert.match(q.clarification.question, /am găsit testele automate „test\/acceptance\.test\.mjs” și „test\/unit\.test\.mjs”\. Pe care îl folosesc ca dovadă că cerința e gata\?/);
-    assert.deepEqual(q.clarification.options.map((o) => o.id), ["test/acceptance.test.mjs", "test/unit.test.mjs"], "existing tests, acceptance first");
-    assert.equal(q.clarification.forIntent, "engineering");
-    assert.equal(count(t, "SELECT COUNT(*) AS n FROM factory_missions"), drafts, "a question creates no draft");
-    const answered = await plan(t, { text: "", projectId: t.project.id, args: { chosenId: "test/acceptance.test.mjs" } });
+    assert.equal(q.clarification, undefined, JSON.stringify(q).slice(0, 300));
+    const tfEnv = q.plan?.envelope;
+    assert.ok(tfEnv?.id, JSON.stringify(q).slice(0, 300));
+    const tf = view(t, tfEnv.missionIds[0]);
+    assert.equal(tf.spec.spec.authoring.mode, "hub");
+    assert.match(tf.spec.spec.authoring.testRef, /^test\/hub\/[a-z0-9-]+\.test\.mjs$/);
+    assert.equal(tfEnv.body.testFirst.testRef, tf.spec.spec.authoring.testRef);
+    assert.equal(tf.factory.limits.maxDurationMin, 180);
+    assert.match(q.note, /Testul de acceptanță îl scriu eu din cerința ta/);
+    assert.doesNotMatch(`${q.note} ${q.plan.summary.steps} ${q.plan.summary.models}`, /\.mjs|test\/|Pe care îl folosesc/, "no file name in the main lines");
+    // The programmer's path within 2 minutes: the plan is rebuilt with THAT file and replaces the test-first plan (B10). No choice id
+    // completes the "test" memory any more (the pick question is gone, owner decision Q3; wave B review flow #1).
+    const answered = await plan(t, { text: "test/acceptance.test.mjs", projectId: t.project.id });
     assert.ok(answered.plan?.envelope?.id, JSON.stringify(answered));
     const m = view(t, answered.plan.envelope.missionIds[0]);
     assert.match(m.spec.spec.objective, /spațiile trec de verificare/, "the original words, not the answer, are the objective");
     assert.equal(m.spec.spec.acceptance[0].testRef, "test/acceptance.test.mjs");
+    assert.equal(m.spec.spec.authoring, undefined, "a bound plan has no step 0");
+    assert.equal(t.hub.envelopes.get(tfEnv.id).status, "SUPERSEDED", "the new plan replaces the test-first one");
 
-    // The path said alone answers too; a test that does not exist is never bound (the question is asked again).
+    // The path said alone answers too; a test that does not exist is never bound (route B: a plain message, nothing new).
     const q2 = await plan(t, { text: "Adaugă validarea emailului în solicitări", projectId: t.project.id });
-    assert.ok(q2.clarification);
+    assert.ok(q2.plan?.envelope?.body?.testFirst, JSON.stringify(q2).slice(0, 300));
+    const drafts = count(t, "SELECT COUNT(*) AS n FROM factory_missions");
     const missing = await plan(t, { text: "test/nu-exista.test.mjs", projectId: t.project.id });
-    assert.ok(missing.clarification, "a missing file is not an answer");
+    // M11 L5 wave B review (flow #2): the message says how to answer (a sentence the resolver sends to the planner).
+    assert.equal(missing.message, "Nu găsesc testul „test/nu-exista.test.mjs”; nu îl înlocuiesc cu altul. Spune-mi într-o frază ce trebuie reparat sau adăugat, de exemplu „Repară bug-ul: un nume gol trece de validare” sau „Adaugă funcția: exportul listei în CSV”, și scriu eu testul.");
+    assert.equal(missing.plan, undefined, "a missing file is not an answer");
+    assert.equal(count(t, "SELECT COUNT(*) AS n FROM factory_missions"), drafts, "no draft for a missing file");
     const said = await plan(t, { text: "testul e test/unit.test.mjs", projectId: t.project.id });
     assert.ok(said.plan?.envelope?.id, JSON.stringify(said));
     assert.equal(view(t, said.plan.envelope.missionIds[0]).factory.workType, "FEATURE");
+    assert.equal(view(t, said.plan.envelope.missionIds[0]).spec.spec.acceptance[0].testRef, "test/unit.test.mjs");
+    assert.match(view(t, said.plan.envelope.missionIds[0]).spec.spec.objective, /validarea emailului/, "the original request, completed by the path");
 
     // No project: ONE question with the projects that may run (never the Hub itself), then the request continues.
     const p = await plan(t, { text: BUG });

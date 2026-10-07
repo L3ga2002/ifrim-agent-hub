@@ -71,6 +71,67 @@ export function studioHref(target = "board", { sub = null, tMs = null, versionId
 /** ms → "12.5" (no trailing zeros, at most 3 decimals). */
 export const secondsParam = (ms) => String(Math.round(Math.max(0, ms)) / 1000);
 
+// ---------- D7 (2.12.3): a correction Lega proposed and the ONE plan it is bound to ----------
+
+/**
+ * `?review=<id>` of the cockpit's deep link (`/studio/<id>?t=12&review=<reviewId>`) → that review id, or null. A separate helper, so
+ * studioRoute keeps its shape.
+ */
+export function studioReviewParam(query) {
+  return typeof query?.review === "string" && ID_RE.test(query.review) ? query.review : null;
+}
+
+/**
+ * What the correction panel offers for a proposal: { kind: "plan", planId, status } — the plan's own card (its ONE confirmation applies,
+ * renders and runs QA; the server refuses a separate apply) — { kind: "apply" } — the M09 apply (no plan) — or { kind: "none" } (nothing
+ * to apply: a dismissed / applied proposal with no plan, a comment, a clarification, an invalid preview).
+ */
+export function proposalAction(review, reviews = []) {
+  if (!review || typeof review !== "object") return { kind: "none" };
+  if (review.plan && typeof review.plan === "object" && review.plan.id && (review.status === "OPEN" || review.status === "APPLIED")) {
+    return { kind: "plan", planId: String(review.plan.id), status: review.plan.status || null };
+  }
+  if (review.status !== "OPEN") return { kind: "none" };
+  const patch = review.patch || {};
+  if (!(Array.isArray(patch.ops) && patch.ops.length) || patch.preview?.valid === false || patch.clarification) return { kind: "none" };
+  // D7 review: another proposal of this version waits for its plan's ONE confirmation — that plan's card decides first (the server refuses
+  // the direct apply, EDIT_PLAN_PROPOSED): { kind: "waiting", planId, status, reviewId }, never the M09 Aplică.
+  const waiting = waitingCorrection(reviews, review.id);
+  if (waiting) return { kind: "waiting", planId: String(waiting.plan.id), status: waiting.plan.status, reviewId: waiting.id };
+  return { kind: "apply" };
+}
+
+/**
+ * D7 review: whether a { kind: "waiting" } action still holds against the plan's live view (GET /api/ops/plans/<id>): true until that view —
+ * of THIS plan — says it no longer waits (confirmed, cancelled with „Nu acum”, superseded, expired). No view yet → still waiting.
+ */
+export function waitingStillWaits(action, livePlan) {
+  if (!action || action.kind !== "waiting") return false;
+  if (!livePlan || typeof livePlan !== "object" || String(livePlan.id || "") !== String(action.planId)) return true;
+  if (livePlan.status !== "PROPOSED") return false;
+  return !(livePlan.confirmBy && Number.isFinite(Date.parse(livePlan.confirmBy)) && Date.parse(livePlan.confirmBy) <= Date.now());
+}
+
+/** D7 review: the open proposal of this version whose correction plan waits for its confirmation (PROPOSED), other than `exceptId`, or null. */
+export function waitingCorrection(reviews, exceptId = null) {
+  const list = Array.isArray(reviews) ? reviews.filter((r) => r && typeof r === "object") : [];
+  return list.find((r) => r.id !== exceptId && r.status === "OPEN" && r.plan && typeof r.plan === "object" && r.plan.id && r.plan.status === "PROPOSED") || null;
+}
+
+/**
+ * The proposal the correction panel opens with: the deep-linked review when it is on this version, otherwise the ONE open review waiting
+ * for its plan's confirmation (PROPOSED), otherwise null (two such reviews: none is guessed; the Review tab lists them all).
+ */
+export function studioPlanReview(reviews, deepReviewId = null) {
+  const list = Array.isArray(reviews) ? reviews.filter((r) => r && typeof r === "object") : [];
+  if (deepReviewId) {
+    const deep = list.find((r) => r.id === deepReviewId);
+    if (deep) return deep;
+  }
+  const waiting = list.filter((r) => r.status === "OPEN" && r.plan?.status === "PROPOSED");
+  return waiting.length === 1 ? waiting[0] : null;
+}
+
 // ---------- frames & timecodes (rational fps, the IR's units) ----------
 
 const DEFAULT_FPS = Object.freeze({ num: 30, den: 1 });

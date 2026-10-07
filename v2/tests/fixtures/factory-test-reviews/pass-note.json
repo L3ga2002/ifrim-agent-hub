@@ -1,0 +1,27 @@
+{
+  "comment": "M11 L5 test-review fixture (fake-codex test-review:pass-note): a PASS with one non-blocking note (info). The note stays OPEN until the test is protected, then it is SUPERSEDED (it never reaches a repair brief).",
+  "verdict": "PASS",
+  "summary": "Testul verifică cerința și pică azi din motivul potrivit; o notă minoră despre formulare.",
+  "criteria": "ALL",
+  "criterion": {
+    "covered": true,
+    "failsForRightReason": true,
+    "canEverPass": true,
+    "contradictsOwner": false,
+    "trivialPassRisk": "low",
+    "plain": "Verifică exact ce ai cerut: cazul greșit e refuzat, iar unul corect rămâne acceptat."
+  },
+  "findings": [
+    {
+      "severity": "info",
+      "file": "test/hub",
+      "area": "formulare",
+      "observation": "Mesajul aserțiunii ar putea numi și câmpul",
+      "impact": "niciunul asupra verificării",
+      "evidence": "assert.equal(r.ok, false, ...)",
+      "reproduction": "-"
+    }
+  ],
+  "missingContext": [],
+  "previousFindings": "ALL_RESOLVED"
+}

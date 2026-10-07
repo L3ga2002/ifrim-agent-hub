@@ -1,0 +1,35 @@
+{
+  "comment": "M11 L5 author fixture (fake-claude author:sr-feature-ok): a FEATURE test for service-request without tests. It writes data/hub-proof.sqlite in the project on every run (runtime data under the .gitignore'd data/ folder): hermetic only with workspace.ignore [\"data\"] (deriveIgnore). Today POST /api/requests answers 501: an assertion failure.",
+  "body": [
+    "test(\"AC-1: o solicitare validă se salvează și primește 201\", async () => {",
+    "  const m = await load(\"../../src/server-app.js\");",
+    "  assert.equal(typeof m.createApp, \"function\", \"AC-1: lipsește createApp\");",
+    "  fs.mkdirSync(\"data\", { recursive: true });",
+    "  fs.writeFileSync(\"data/hub-proof.sqlite\", \"\");",
+    "  const app = m.createApp({ dbFile: \"data/hub-proof.sqlite\", publicDir: \"public\" });",
+    "  const server = http.createServer(app.handle);",
+    "  await new Promise((resolve) => server.listen(0, \"127.0.0.1\", resolve));",
+    "  try {",
+    "    const status = await new Promise((resolve, reject) => {",
+    "      const req = http.request({ host: \"127.0.0.1\", port: server.address().port, path: \"/api/requests\", method: \"POST\", headers: { \"Content-Type\": \"application/json\" } }, (res) => {",
+    "        res.resume();",
+    "        res.on(\"end\", () => resolve(res.statusCode));",
+    "      });",
+    "      req.on(\"error\", reject);",
+    "      req.end(JSON.stringify({ name: \"Ana Pop\", email: \"ana@example.ro\", service: \"audit\", message: \"Solicitare de test\" }));",
+    "    });",
+    "    assert.equal(status, 201);",
+    "  } finally {",
+    "    await new Promise((resolve) => server.close(resolve));",
+    "    app.close();",
+    "  }",
+    "});"
+  ],
+  "manifest": {
+    "needs": ["node:fs", "node:http"],
+    "api": "createApp({ dbFile, publicDir }) din src/server-app.js; POST /api/requests cu un corp JSON valid răspunde 201.",
+    "cases": [
+      { "name": "AC-1: o solicitare validă se salvează și primește 201", "criterion": "AC-1", "kind": "check", "today": "fail" }
+    ]
+  }
+}

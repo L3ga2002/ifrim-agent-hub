@@ -22,7 +22,9 @@ export function createLeague({ db, config }) {
       FROM agent_runs r JOIN factory_dispatches d ON d.run_id = r.id JOIN factory_missions fm ON fm.mission_id = d.mission_id JOIN missions m ON m.id = d.mission_id JOIN projects p ON p.id = m.project_id
       WHERE d.stage IN ('IMPLEMENTING','REPAIRING','REVIEWING')`).all();
     const firstReview = new Map();
-    for (const r of db.prepare("SELECT mission_id, verdict, created_at FROM factory_reviews ORDER BY created_at").all()) if (!firstReview.has(r.mission_id)) firstReview.set(r.mission_id, r.verdict);
+    // The first CODE review of a mission. M11 L5's step 0 stores the review of the Hub-written test in the same table under
+    // change_set_id "acceptance:<sha12>" (no change set exists yet): it says nothing about the writer and never counts here.
+    for (const r of db.prepare("SELECT mission_id, verdict, created_at FROM factory_reviews WHERE change_set_id NOT LIKE 'acceptance:%' ORDER BY created_at").all()) if (!firstReview.has(r.mission_id)) firstReview.set(r.mission_id, r.verdict);
     const ownerDecisions = new Map();
     for (const r of db.prepare("SELECT scope_id, COUNT(*) AS n FROM events WHERE type = 'factory.stage' AND json_extract(payload_json, '$.stage') = 'NEEDS_OWNER_DECISION' GROUP BY scope_id").all()) ownerDecisions.set(r.scope_id, r.n);
     return rows.map((r) => {

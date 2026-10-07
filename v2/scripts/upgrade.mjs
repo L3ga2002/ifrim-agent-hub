@@ -34,7 +34,10 @@ async function preflight() {
   const runs = [];
   for (const status of ["running", "starting", "waiting_approval"]) runs.push(...(((await get(`/api/runs?status=${status}`, t))?.runs) || []));
   const grants = (((await get("/api/grants", t))?.grants) || []).filter((g) => g.status === "active");
-  const ACTIVE = new Set(["BASELINE", "IMPLEMENTING", "CHECKING", "REVIEWING", "REPAIRING", "QA", "PREVIEW", "E2E"]);
+  // Literal on purpose: the stages the LIVE Hub may report, whatever its (older) version — a superset of factory.mjs ACTIVE_STAGES,
+  // plus CANCEL_REQUESTED (a stop still finishing) and M11 L5's step 0. "E2E" is an evidence stage, never a mission's.
+  // v2/tests/m11-l5-wave-a-support.test.mjs keeps it ⊇ ACTIVE_STAGES.
+  const ACTIVE = new Set(["TEST_AUTHORING", "TEST_PROVING", "TEST_REVIEW", "BASELINE", "IMPLEMENTING", "CHECKING", "REVIEWING", "REPAIRING", "QA", "PREVIEW", "CANCEL_REQUESTED"]);
   const factory = (((await get("/api/factory", t))?.missions) || []).filter((m) => ACTIVE.has(m.stage || m.factory?.stage));
   const media = await get("/api/media/status", t);
   const renders = media?.renders?.active?.length || 0;

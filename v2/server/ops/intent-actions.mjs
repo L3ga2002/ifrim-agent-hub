@@ -63,19 +63,42 @@ const fold = (s) => String(s || "").normalize("NFD").replace(/[̀-ͯ]/g, "").toL
 const sameDir = (a, b) => path.resolve(a).toLowerCase() === path.resolve(b).toLowerCase();
 const insideDir = (root, p) => { const rel = path.relative(path.resolve(root).toLowerCase(), path.resolve(p).toLowerCase()); return rel === "" || (!rel.startsWith("..") && !path.isAbsolute(rel)); };
 
+const IN_STUDIO = String.raw`[îi]n\s+studio(?:-?ul)?`; // „în Studio” / „în Studio-ul” / „în Studioul”
+const IMPORT_VERB = String.raw`import[ăa](?:-l|-le|-mi)?`;
+const IMPORT_OBJECT = String.raw`(?:proiectul|proiectele|clipul|clipurile|materialele|materialul|fi[șşs]ierele|tot|video-ul|montajul)`;
+// The end of the sentence that is not the folder: punctuation, „, te rog”, a trailing „în Studio”. A quoted name keeps its words, because
+// it ends in a quote.
+const IMPORT_TAIL = new RegExp(String.raw`(?:[\s,]+(?:te\s+rog(?:\s+frumos)?|${IN_STUDIO})|[\s.!?]+)$`, "i");
+const IMPORT_FOLDER = new RegExp(String.raw`^${IMPORT_VERB}\s+(?:${IN_STUDIO}[\s,]+)?(?:${IMPORT_OBJECT}[\s,]+)?(?:${IN_STUDIO}[\s,]+)?(?:(?:din|de\s+(?:[îi]n|la))\s+(?:(?:folderul|dosarul|directorul)\s+)?(?<ref>.+)|(?<drive>[a-z]:[\\/].*))$`, "i");
+const IMPORT_LEAD = new RegExp(String.raw`^${IMPORT_VERB}(?=$|[\s,.!?:;])`, "i"); // JS \b does not work after „ă”
+// D6 review: the spoken leads in front of „Importă”, in any order — the Lega prefix, an acknowledgement („Ok,”, „Hai,”, „Bine,”, „Haide”,
+// the same words the resolver drops as ACK_LEAD in owner/intents.mjs) and the polite forms („te rog”, „poți să”).
+const IMPORT_SPOKEN_LEAD = /^(?:(?:(?:hei|hey|bun[ăa])\s+)?lega[\s,!.:;-]+|(?:ok|okay|hai|haide|bine)[\s,!.:;-]+|te\s+rog,?\s+|po[țţt]i\s+s[ăa]\s+)+/i;
+const importWords = (raw) => String(raw || "").trim().replace(IMPORT_SPOKEN_LEAD, "");
+
 /**
  * M10.2 „Importă din <folder>” (Videos/Ifrim Studio, „folderul Ifrim Studio”, a full path) → { folderRef } read from the RAW words:
  * the resolver's normalization drops path separators, so the folder is taken from what the owner said, verbatim. A deictic
  * („din folderul acesta”) is the Explorer path (importHere), not a name, and returns null. Pure.
+ * D6 (2.12.3): „în Studio” / „în Studio-ul” may stand after the verb („Importă în Studio proiectul din C:\…”, the live sentence), after
+ * the object („Importă proiectul în Studio din …”) or after the folder („… din folderul X în Studio”, cut with the tail); a full drive
+ * path may follow the verb without „din” („Importă în Studio C:\…”). The folder reference itself is read exactly as before.
  */
 export function parseImportFolder(raw) {
-  const s = String(raw || "").trim().replace(/^(?:(?:hei|hey|bun[ăa])\s+)?lega[\s,!.:-]+/i, "").replace(/^(?:te rog,?\s+|po[țţt]i\s+s[ăa]\s+)+/i, "");
-  const m = s.match(/^import[ăa](?:-l|-le|-mi)?\s+(?:(?:proiectul|proiectele|clipul|clipurile|materialele|materialul|fi[șşs]ierele|tot|video-ul|montajul)\s+)?(?:din|de\s+(?:[îi]n|la))\s+(?:(?:folderul|dosarul|directorul)\s+)?(?<ref>.+?)[\s.!?]*$/i);
+  let s = importWords(raw);
+  for (let i = 0; i < 4; i++) { const next = s.replace(IMPORT_TAIL, ""); if (next === s) break; s = next; }
+  const m = s.match(IMPORT_FOLDER);
   if (!m) return null;
-  const ref = m.groups.ref.replace(/,?\s+te rog$/i, "").replace(/^["„“'«]+|["”“'»]+$/g, "").trim();
+  const ref = (m.groups.ref ?? m.groups.drive).replace(/^["„“'«]+|["”“'»]+$/g, "").trim();
   if (!ref || ref.length > 400 || ref.includes("\0") || DEICTIC.test(fold(ref))) return null;
   return { folderRef: ref };
 }
+
+/** D6: the sentence starts with „Importă” but names no folder the Hub can read (a deictic is the resolver's studio_import_here). Pure. */
+export function importWithoutFolder(raw) { return IMPORT_LEAD.test(importWords(raw)) && !parseImportFolder(raw); }
+
+/** D6: the one plain answer to „Importă …” without a folder (never a silent unknown). Owner-facing, no ids. */
+export const IMPORT_FOLDER_HELP = "Ca să import un proiect în Studio, spune-mi din ce folder: „Importă proiectul din folderul <nume>” sau calea completă, de exemplu „Importă din C:\\Users\\…\\Videos\\Ifrim Studio\\<proiect>”. Dacă folderul e deschis în Explorer, spune „Importă din folderul acesta”. Nu am importat nimic.";
 
 /** "verticală" / "TikTok" / "Reels" / "Shorts" / "LinkedIn" → a platform profile key (vertical defaults to TikTok 9:16). */
 export function platformKeyFor(format) {

@@ -7,6 +7,7 @@ import { resolveCodexBinary } from "../providers/codex.mjs";
 import { codexIsolationArgs, CODEX_PROFILE_BY_ACCESS, evaluateHostIsolation } from "../policy/isolation.mjs";
 import { redactText } from "../security/redact.mjs";
 import { isAllowedCommand, isAllowedPreviewCommand } from "./spec.mjs";
+import { createTapCaseCollector } from "./test-first.mjs";
 
 /**
  * The Hub runner for checks, QA and previews (M03 §16, §21). Generated code is NEVER run with the backend's rights: every
@@ -63,6 +64,27 @@ export function parseTestOutput(lines) {
   return { counts, failures };
 }
 
+/**
+ * M11 L5 (§5.3): the per-case reader of a run. It must see EVERY output line: the result keeps only the last OUTPUT_LINES for
+ * the evidence, and ten failing deepEqual cases already print more TAP than that, so cases read from the tail would never
+ * match `# tests` (the proof would be INCONCLUSIVE every time). `push(line)` takes the line exactly as the tail stores it (after
+ * the same redaction); `finish(stderrTail)` adds the stderr tail and returns the additive result fields:
+ *   cases             [{ name, ok, depth, skip, todo, code, errorName, message, failureType, fileLevel }] (createTapCaseCollector)
+ *   fileLevelFailure  a failure outside any test (crash, async activity after a test), or null
+ *   overflow          cases beyond the collector's bound (counted, never stored)
+ * The counts stay the runner's own summary (parseTestOutput); these fields never change the status of a command.
+ */
+export function createRunCaseReader() {
+  const collector = createTapCaseCollector();
+  return {
+    push: (line) => collector.push(line),
+    finish(stderrTail = []) {
+      for (const line of stderrTail) collector.push(`[stderr] ${line}`);
+      const { cases, fileLevelFailure, overflow } = collector.result();
+      return { cases, fileLevelFailure, overflow };
+    },
+  };
+}
 /** Raw status of a test command from its exit code and counts; zero tests found is never a pass. */
 export function testStatus({ exitCode, counts, timedOut }) {
   if (timedOut) return { status: "FAIL", reason: "timeout" };
@@ -106,11 +128,12 @@ export function createFactoryRunner({ config, supervisor, settings, providerStat
 
   /**
    * Runs one allowed command in `ws`. Returns { status, reason, exitCode, counts, failures, durationMs, outputTail, isolation,
-   * runner, command }. `key` names the supervised process (Stop kills it).
+   * runner, command, cases, fileLevelFailure, overflow } (the last three: createRunCaseReader, read from every line). `key`
+   * names the supervised process (Stop kills it).
    */
   function run({ key, ws, command, timeoutMs = RUNNER_TIMEOUT_MS, project = null }) {
     const started = Date.now();
-    const base = { command, runner: "codex-sandbox", durationMs: 0, exitCode: null, counts: {}, failures: [], outputTail: "" };
+    const base = { command, runner: "codex-sandbox", durationMs: 0, exitCode: null, counts: {}, failures: [], outputTail: "", cases: [], fileLevelFailure: null, overflow: 0 };
     if (!isAllowedCommand(command)) return Promise.resolve({ ...base, status: "BLOCKED", reason: "comandă în afara listei acceptate", isolation: "none" });
     const ready = readiness(project);
     if (!ready.ok) return Promise.resolve({ ...base, status: "BLOCKED", reason: ready.detail, isolation: ready.isolation });
@@ -120,11 +143,17 @@ export function createFactoryRunner({ config, supervisor, settings, providerStat
     const binary = ready.binary; // the Codex client: the same provider binary every run uses
     return new Promise((resolve) => {
       const out = [];
+      const reader = createRunCaseReader();
       let timedOut = false;
       let record;
       try {
         record = supervisor.start({ key, label: `runner: ${command}`, executable: binary.executable, args: sandboxArgs(binary, ws, argv), cwd: ws,
-          env: { NODE_ENV: "test", CI: "1" }, onStdoutLine: (line) => { out.push(redactText(line).slice(0, 500)); if (out.length > OUTPUT_LINES) out.shift(); } });
+          env: { NODE_ENV: "test", CI: "1" }, onStdoutLine: (line) => {
+            const clean = redactText(line).slice(0, 500);
+            reader.push(clean); // every line, before the tail window below can drop it
+            out.push(clean);
+            if (out.length > OUTPUT_LINES) out.shift();
+          } });
       } catch (error) {
         resolve({ ...base, status: "BLOCKED", reason: `runner-ul nu a pornit: ${error.message}`, isolation: ready.isolation });
         return;
@@ -137,8 +166,8 @@ export function createFactoryRunner({ config, supervisor, settings, providerStat
         const lines = [...out, ...record.stderrTail.map((l) => `[stderr] ${l}`)];
         const { counts, failures } = parseTestOutput(lines);
         const verdict = testStatus({ exitCode: exit.code, counts, timedOut });
-        resolve({ ...base, ...verdict, exitCode: exit.code, counts, failures, durationMs: Date.now() - started, outputTail: lines.slice(-120).join("\n"), isolation: ready.isolation,
-          stopped: record.stoppedByHub || false });
+        resolve({ ...base, ...verdict, exitCode: exit.code, counts, failures, ...reader.finish(record.stderrTail), durationMs: Date.now() - started, outputTail: lines.slice(-120).join("\n"),
+          isolation: ready.isolation, stopped: record.stoppedByHub || false });
       });
     });
   }

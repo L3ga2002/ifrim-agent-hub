@@ -13,6 +13,9 @@ import { runEnvelopeIdOf, runScopeKey } from "../domain/grants.mjs";
 import { redactText } from "../security/redact.mjs";
 import { createArmedWindows } from "./armed-window.mjs";
 import { profileTurnTimeouts, turnTimeoutsOf } from "../factory/plan.mjs";
+import { STAGE_ZERO, ROLE_OF_STAGE } from "../factory/factory.mjs";
+import { testFirstScope, T_CARD_STEP0, T_CARD_STEP0_NO_REWRITE, T_CARD_PROVES, T_STEPS_PREFIX, T_MODELS_SUFFIX, TEST_FIRST_LIMITS } from "../factory/test-first.mjs";
+import { factoryStageLabel } from "../policy/factory-wait.mjs";
 
 /**
  * Mission Authorization Envelopes (M06 §17–§22) and the CapabilityIssuer.
@@ -54,8 +57,13 @@ const OPEN = new Set(["CONFIRMED", "ACTIVE", "WAITING_OWNER"]);
 export const ENVELOPE_LIMITS = Object.freeze({ confirmWindowMin: 15, slackMin: 30, maxMissions: 5, grantMaxAttempts: 5, maxDeltaCycles: 2, maxDeltaAttempts: 3, maxForgivenAttempts: 3 });
 /** Factory stages a started mission can be continued from under a new plan (M10.2 continuation). */
 const CONTINUABLE = new Set(["PAUSED", "BLOCKED", "NEEDS_OWNER_DECISION"]);
-/** Factory stages in which a revoked or expired plan pauses its mission (the runner and model steps in flight). */
-const PAUSABLE = new Set(["BASELINE", "IMPLEMENTING", "CHECKING", "REVIEWING", "REPAIRING", "QA", "PREVIEW"]);
+/**
+ * Factory stages in which a revoked or expired plan pauses its mission (the runner and model steps in flight). M11 L5 (§6): step 0 too —
+ * the test's author, its proof runs and its review stop like any other step of the plan.
+ */
+const PAUSABLE = new Set(["TEST_AUTHORING", "TEST_PROVING", "TEST_REVIEW", "BASELINE", "IMPLEMENTING", "CHECKING", "REVIEWING", "REPAIRING", "QA", "PREVIEW"]);
+/** M11 L5 (§4): the one effect a test-first plan adds to its card, hashed with the others. */
+export const TEST_FIRST_EFFECT = "un singur fișier nou scris de Hub: testul de acceptanță, protejat după review";
 // Gate checks an envelope resolves itself (it derives the grants, admits its own steps in BUILD_SAFE — M10.2 — or, with the
 // legacy flag, enters LIVE_VALIDATION; it takes the lease and makes the backup). Exported for the blocker explainer and Lega.
 export const ENVELOPE_RESOLVES = new Set(["live_grant", "mode", "workspace_lease", "backup", "operational", "concurrency"]);
@@ -171,6 +179,45 @@ export function createEnvelopes({ db, bus, clock, settings, projects, missions, 
     return { projectId: project.id, level, previous: current };
   }
 
+  // ---------- M11 L5: step 0 of a test-first mission (the Hub-written acceptance test, design .ifrim/M11_L5_DESIGN.md §4) ----------
+  /** The author cycles a plan over this mission still covers: 1 + reauthorMax before the start, what remains during step 0, 0 after it. */
+  const remainingAuthoringOf = (v) => {
+    const a = v?.spec?.spec?.authoring;
+    if (!a?.testRef) return 0;
+    const fallback = 1 + (Number.isInteger(a.reauthorMax) ? a.reauthorMax : TEST_FIRST_LIMITS.reauthorMax);
+    try { return typeof factory.remainingAuthoring === "function" ? factory.remainingAuthoring(v.mission.id) : fallback; } catch { return fallback; }
+  };
+  /** Whether step 0 is still ahead of this mission (its test not written, proven, reviewed and protected yet). */
+  const stageZeroAhead = (v) => remainingAuthoringOf(v) > 0;
+  /**
+   * §4 „Domeniul v1” (critique B3): the Hub writes the acceptance test only on a TEST project (never ProDelivery, whatever its registration)
+   * on the Windows route — on the ifrim-runner route the runner tests a copy, so "the run left no other file" would prove nothing — and,
+   * review (authority #5), never where the project's own test script also runs the Hub's work area (§9; the planner's and the factory
+   * start's rule too: testFirstScope). The owner's text, or null.
+   */
+  function testFirstScopeProblem(project) {
+    const route = environments ? environments.routeFor(project.id, "codex") : "windows";
+    let testScript = "";
+    try { testScript = String(JSON.parse(fs.readFileSync(path.join(project.path, "package.json"), "utf8"))?.scripts?.test || ""); } catch { testScript = ""; }
+    return testFirstScope({ project, route, testScript }).text;
+  }
+  /**
+   * The plan's step 0 of a mission (hashed in its entry and, for the card, at the top of the body), or null when it has none ahead:
+   * the test's path, the criteria it proves (the owner's words), who writes it and who reviews it — both read-only, under the role
+   * bindings the plan already binds (the author under the reviewer's, the test review under the writer's narrowed to read-only) —,
+   * one rewrite at most, two proof runs, it must fail today and is protected only after its review, and the author cycles left.
+   */
+  function testFirstOf(v) {
+    const a = v?.spec?.spec?.authoring;
+    const remaining = remainingAuthoringOf(v);
+    if (!a?.testRef || !(remaining > 0)) return null;
+    const ids = new Set(Array.isArray(a.criteria) ? a.criteria : []);
+    const criteria = (v.spec.spec.acceptance || []).filter((c) => ids.has(c.id)).map((c) => ({ id: c.id, text: c.text }));
+    const role = (b, provider) => ({ provider: b?.provider || provider, model: b?.resolvedAlias || "", effort: b?.effort || "" });
+    return { testRef: a.testRef, criteria, author: role(v.scope?.bindings?.reviewer, "claude"), testReviewer: role(v.scope?.bindings?.writer, "codex"),
+      reauthorMax: a.reauthorMax, proofRuns: a.proofRuns, mustFail: true, protectedAfterReview: true, remainingAuthoring: remaining };
+  }
+
   // ---------- readiness & eligibility ----------
   /**
    * What would block the run if the owner confirmed now. Grant, mode, lease, backup and concurrency are what the envelope
@@ -188,6 +235,16 @@ export function createEnvelopes({ db, bus, clock, settings, projects, missions, 
     for (const [role, provider, access] of [["writer", "codex", "workspace-write"], ["reviewer", "claude", "read-only"]]) {
       const evaluated = gate.evaluate({ provider, projectId: project.id, access });
       for (const c of evaluated.checks) if (!c.ok && !ENVELOPE_RESOLVES.has(c.id)) blockers.push({ id: `${role}:${c.id}`, kind: c.id === "isolation" || c.id === "host_isolation" || c.id === "environment_route" ? "isolation" : "gate", detail: `${role === "writer" ? "Writer (Codex)" : "Reviewer (Claude)"} · ${c.id}: ${c.detail}` });
+    }
+    // M11 L5 (§4): a plan whose mission still has step 0 ahead also runs Codex READ-ONLY (the test's review) and only where the Hub may write
+    // the test (test_first_scope: T1). Both are said on the card, never discovered at the dispatch. A check the writer already failed is
+    // not listed twice.
+    if (missionViews.some((v) => v && stageZeroAhead(v))) {
+      for (const c of gate.evaluate({ provider: "codex", projectId: project.id, access: "read-only" }).checks) {
+        if (!c.ok && !ENVELOPE_RESOLVES.has(c.id) && !blockers.some((b) => b.id === `writer:${c.id}`)) blockers.push({ id: `test_review:${c.id}`, kind: c.id === "isolation" || c.id === "host_isolation" || c.id === "environment_route" ? "isolation" : "gate", detail: `Verificarea testului (Codex, doar citire) · ${c.id}: ${c.detail}` });
+      }
+      const scope = testFirstScopeProblem(project);
+      if (scope) blockers.push({ id: "test_first_scope", kind: "plan", code: "TEST_FIRST_SCOPE", detail: scope });
     }
     for (const v of missionViews) {
       if (!v) continue;
@@ -301,9 +358,15 @@ export function createEnvelopes({ db, bus, clock, settings, projects, missions, 
     const route = environments ? environments.routeFor(project.id, "codex") : "windows";
     // M09: each mission carries its role bindings (explicit model + effort + resolution evidence); they are hashed through
     // scopeHash and shown as `models` — the value the owner confirms is the value dispatched.
-    const entries = views.map((v) => ({ missionId: v.mission.id, title: v.mission.title, workType: v.factory.workType, specVersion: v.scope.specVersion, specSha: v.scope.specSha,
-      planSha: v.scope.planSha, scopeHash: hashCanonical(v.scope), limits: v.scope.limits, routes: v.scope.routes, bindings: v.scope.bindings, commands: v.scope.commands,
-      estimatedFiles: (v.spec?.spec?.inScope || []).slice(0, 10), ...(v.continuation ? { continuation: v.continuation } : {}) }));
+    // M11 L5 (§4): a mission with step 0 ahead carries it in its entry (`testFirst`: hashed, read by the budget and the authority); an
+    // ordinary mission's entry is unchanged to the byte (the key is absent, never null).
+    const entries = views.map((v) => {
+      const testFirst = testFirstOf(v);
+      return { missionId: v.mission.id, title: v.mission.title, workType: v.factory.workType, specVersion: v.scope.specVersion, specSha: v.scope.specSha,
+        planSha: v.scope.planSha, scopeHash: hashCanonical(v.scope), limits: v.scope.limits, routes: v.scope.routes, bindings: v.scope.bindings, commands: v.scope.commands,
+        estimatedFiles: (v.spec?.spec?.inScope || []).slice(0, 10), ...(v.continuation ? { continuation: v.continuation } : {}), ...(testFirst ? { testFirst } : {}) };
+    });
+    const firstTestFirst = entries.find((e) => e.testFirst) || null;
     // M10.2 (owner decision 6): every plan — ASSISTED included — pre-authorizes the repair cycles shown on its card, within the
     // mission's limit; a continuation shows (and authorizes) only the cycles that REMAIN. A cycle beyond them is a delta.
     const repairs = (e) => (e.continuation ? e.continuation.remainingCycles : e.limits.maxRepairCycles);
@@ -330,7 +393,8 @@ export function createEnvelopes({ db, bus, clock, settings, projects, missions, 
         // 2.12.2 (P0-R3): the per-turn limits the steps run with, resolved like the dispatch resolves them (a mission whose limits
         // predate them runs with its profile's), so the value confirmed is the value enforced; the largest over the plan's missions.
         turnTimeoutMin: { writer: Math.max(...entries.map((e) => turnTimeoutsOf(e.limits).writer)), reviewer: Math.max(...entries.map((e) => turnTimeoutsOf(e.limits).reviewer)) } },
-      allowedEffects: ["workspace.write (proiectul de mai sus)", "teste locale", "review doar-citire", "remedieri în limită", "QA", ...(hasPreview ? ["preview local"] : []), ...(hasE2E ? ["E2E local"] : [])],
+      allowedEffects: ["workspace.write (proiectul de mai sus)", "teste locale", "review doar-citire", "remedieri în limită", "QA", ...(hasPreview ? ["preview local"] : []), ...(hasE2E ? ["E2E local"] : []),
+        ...(firstTestFirst ? [TEST_FIRST_EFFECT] : [])],
       deniedEffects: [...DENIED_EFFECTS], ownerConstraints: Object.keys(constraints).filter((k) => constraints[k]).sort(),
       subscriptionPolicy: "INCLUDED_SUBSCRIPTION_ONLY",
       // M08: inside an objective the owner confirms the ordered tasks at once, so at TRUSTED the next task of THIS plan starts without
@@ -341,6 +405,8 @@ export function createEnvelopes({ db, bus, clock, settings, projects, missions, 
       modeTransition: settings.get("mode") === "BUILD_SAFE" ? (scopedLive() ? SCOPED_LIVE_TRANSITION : LEGACY_TRANSITION) : null,
       // M10.2: a continuation of a started mission names the plan it continues (only then: an ordinary plan's content is unchanged).
       ...(entries.some((e) => e.continuation) ? { continuation: { fromEnvelopeId: entries[0].continuation.fromEnvelopeId || null, missionId: entries[0].missionId } } : {}),
+      // M11 L5 (§2, §4): the card's step 0 (lines and „Detalii tehnice”), from the first mission that has it ahead — only then.
+      ...(firstTestFirst ? { testFirst: { ...firstTestFirst.testFirst, missionId: firstTestFirst.missionId } } : {}),
     };
     return body;
   }
@@ -356,19 +422,25 @@ export function createEnvelopes({ db, bus, clock, settings, projects, missions, 
     const e2e = effects.includes("E2E local");
     const tail = preview && e2e ? "QA, preview și E2E local." : preview ? "QA și preview local (fără E2E: specificația nu are criterii E2E)."
       : "QA și pachetul de livrare (fără preview sau E2E: specificația nu le cere).";
+    // M11 L5 (§2): a plan with step 0 says it first — the Hub writes and checks the acceptance test, then the usual steps — and who writes
+    // and reviews the test (both read-only). The test's path is never in these lines (only the card's „Detalii tehnice” shows it).
+    const tfEntries = m.filter((e) => e.testFirst);
+    const tfCriteria = tfEntries.flatMap((e) => (e.testFirst.criteria || []).map((c) => ({ id: tfEntries.length > 1 ? `${c.id} (${e.title})` : c.id, text: c.text })));
     return {
       // M10.2: a continuation shows only the difference — what remains and what changed since the plan it continues.
       ...(cont ? { continuation: {
         from: cont.fromEnvelopeId || null, stage: cont.stage,
-        remaining: `Rămân: ${cont.remainingCycles} ${cont.remainingCycles === 1 ? "ciclu" : "cicluri"} de remediere, ${body.limits.maxAttemptsPerStage} încercări pe etapă${cont.extraAttempt ? ` (plus o încercare pentru etapa ${cont.extraAttempt.stage}, ale cărei încercări s-au epuizat)` : ""}, cel mult ${body.limits.maxDurationMin} min.`,
+        remaining: `Rămân: ${cont.remainingCycles} ${cont.remainingCycles === 1 ? "ciclu" : "cicluri"} de remediere, ${body.limits.maxAttemptsPerStage} încercări pe etapă${cont.extraAttempt ? ` (plus o încercare pentru etapa „${factoryStageLabel(cont.extraAttempt.stage)}”, ale cărei încercări s-au epuizat)` : ""}, cel mult ${body.limits.maxDurationMin} min.`,
         changed: previous ? changedParts(previous, body).filter((p) => p !== "conținutul planului" && p !== labelOf("missions")) : [],
         rebind: (cont.rebind || []).map((role) => `${role}: ${bindingLabel(m[0].bindings?.[role])}`),
       } } : {}),
-      headline: cont ? `Continuare: „${m[0].title}” pe ${body.projectName} (din ${cont.stage})` : body.objective ? `Obiectiv „${body.objective.title}”: ${m.length === 1 ? `sarcina „${m[0].title}”` : `${m.length} sarcini, una după alta`} pe ${body.projectName}` : m.length === 1 ? `„${m[0].title}” pe ${body.projectName}` : `${m.length} misiuni pe ${body.projectName}, una după alta`,
+      headline: cont ? `Continuare: „${m[0].title}” pe ${body.projectName} (din etapa „${factoryStageLabel(cont.stage)}”)` : body.objective ? `Obiectiv „${body.objective.title}”: ${m.length === 1 ? `sarcina „${m[0].title}”` : `${m.length} sarcini, una după alta`} pe ${body.projectName}` : m.length === 1 ? `„${m[0].title}” pe ${body.projectName}` : `${m.length} misiuni pe ${body.projectName}, una după alta`,
       where: `Lucrez numai în ${body.projectName} (${body.workspaceScope.route}); ${body.filesystemScope}.`,
-      steps: `${cont ? "Reiau de unde a rămas: " : ""}Implementare (Codex), verificări, review (Claude, doar citire), ${repairs.every((r) => r === 0) ? "fără cicluri de remediere în plan (o remediere îți cere confirmarea diferenței)" : `până la ${Math.max(...repairs)} cicluri de remediere incluse în această confirmare`}, ${tail}`,
+      steps: `${cont ? "Reiau de unde a rămas: " : ""}${tfEntries.length ? `${T_STEPS_PREFIX}implementare` : "Implementare"} (Codex), verificări, review (Claude, doar citire), ${repairs.every((r) => r === 0) ? "fără cicluri de remediere în plan (o remediere îți cere confirmarea diferenței)" : `până la ${Math.max(...repairs)} cicluri de remediere incluse în această confirmare`}, ${tail}`,
       // M09: the exact models and efforts the steps run with (the bindings; checked again before every start and at the provider's report).
-      models: `Modele: ${[...new Set(m.map((e) => `writer ${bindingLabel(e.bindings?.writer)}; reviewer ${bindingLabel(e.bindings?.reviewer)}`))].join(" | ")}. Verificate din nou înainte de fiecare pornire; o schimbare oprește execuția înainte de model.`,
+      models: `Modele: ${[...new Set(m.map((e) => `writer ${bindingLabel(e.bindings?.writer)}; reviewer ${bindingLabel(e.bindings?.reviewer)}`))].join(" | ")}${tfEntries.length ? T_MODELS_SUFFIX : ""}. Verificate din nou înainte de fiecare pornire; o schimbare oprește execuția înainte de model.`,
+      // M11 L5 (§2): the step-0 lines of the card (the same words the page builds from the hashed body.testFirst) and what the test proves.
+      ...(tfEntries.length ? { testFirst: { step0: tfEntries.every((e) => e.testFirst.reauthorMax === 0) ? T_CARD_STEP0_NO_REWRITE : T_CARD_STEP0, proves: T_CARD_PROVES(tfCriteria), criteria: tfCriteria, missions: tfEntries.map((e) => e.missionId) } } : {}),
       never: "Fără deploy, commit, push, mesaje, bani, schimbări de acces sau izolare, instalări, ștergeri de date reale.",
       stops: `Mă opresc la ${body.limits.maxDurationMin} min, ${body.limits.maxAttemptsPerStage} încercări pe etapă, sau când livrarea e gata de verificarea ta (nu accept singur). Continui și dacă închizi pagina, dar numai în aceste limite; nu încep alte misiuni${body.continuationPolicy.nextMissionWithoutConfirmation ? " decât pe cele din acest plan" : ""}.`,
       // 2.12.2 (P0-R3): the per-turn limits (hashed in body.limits.turnTimeoutMin), next to the mission's own deadline.
@@ -997,16 +1069,19 @@ export function createEnvelopes({ db, bus, clock, settings, projects, missions, 
   // ---------- CapabilityIssuer ----------
   /**
    * M10.2 (U11): the attempts the plan authorizes for ONE role of ONE mission, over all its grants: (1 + the repair cycles shown on
-   * the card + the extra cycles the owner confirmed as deltas) × attempts per stage, plus the confirmed extra attempts (and, for a
-   * continuation, the one more attempt of the exhausted step its card showed). Never more than what the owner saw.
+   * the card + the extra cycles the owner confirmed as deltas + M11 L5 the author cycles of step 0 the card showed) × attempts per stage,
+   * plus the confirmed extra attempts (and, for a continuation, the one more attempt of the exhausted step its card showed). Never more
+   * than what the owner saw. With the defaults a test-first plan gives (1 + 2 + 0 + 2) × 2 = 10 attempts per role (6 without step 0):
+   * each author cycle is one Claude turn (the reviewer's binding) and one Codex test review (the writer's, read-only).
    */
   function budgetOf(env, missionId) {
     const entry = env.body.missions.find((m) => m.missionId === missionId);
     if (!entry) return 0;
     const cycles = env.body.limits.maxRepairCycles?.[missionId] ?? 0;
     const extraCycles = env.derived?.extraCycles?.[missionId] || 0;
+    const authoring = Number(entry.testFirst?.remainingAuthoring) || 0;
     const extraAttempts = (env.derived?.extraAttempts?.[missionId] || 0) + (entry.continuation?.extraAttempt ? 1 : 0);
-    return (1 + cycles + extraCycles) * entry.limits.maxAttemptsPerStage + extraAttempts;
+    return (1 + cycles + extraCycles + authoring) * entry.limits.maxAttemptsPerStage + extraAttempts;
   }
   /**
    * What this plan's grants for (mission, role) already hold: the attempts spent by grants that are closed (exhausted, revoked,
@@ -1218,8 +1293,11 @@ export function createEnvelopes({ db, bus, clock, settings, projects, missions, 
   }
 
   // ---------- authority hook used by the factory before every model step ----------
-  /** Returns null (allowed) or { reason } (the step waits for the owner). Only missions under an envelope are affected. */
-  function authorityFor(missionId, { stage, cycle, role = null, bindingHash = null, grantId = null, runId = null }) {
+  /**
+   * Returns null (allowed) or { reason } (the step waits for the owner). Only missions under an envelope are affected. `access` is the
+   * access the step really runs with (factory dispatchRun, M11 L5 S4).
+   */
+  function authorityFor(missionId, { stage, cycle, role = null, bindingHash = null, grantId = null, runId = null, access = null }) {
     // M10.2 (U11): "GRANT" tops up the role's derived grant inside the plan's budget (never holds the step); "RESUME" tells the
     // factory which plan a resume runs under ({ plan: { envelopeId, expiresAt, maxCycles } }) so it never widens it by itself.
     if (stage === "GRANT") { try { topUp(missionId, role, bindingHash); } catch { /* the gate decides: no grant → refused, never a manual one */ } return null; }
@@ -1242,6 +1320,16 @@ export function createEnvelopes({ db, bus, clock, settings, projects, missions, 
       if (!confirmed?.bindingHash || confirmed.bindingHash !== bindingHash) return { reason: `Modelul pasului (${role}) nu este cel confirmat în plan (${bindingLabel(confirmed)}); confirmă un plan nou` };
     }
     if (env.status === "WAITING_OWNER" && env.derived?.hold) return { reason: env.derived.hold };
+    // M11 L5 (§4 S4): step 0 runs only read-only (the Hub writes the test itself) and only as the card showed it. Without this refusal the
+    // writer's derived workspace-write grant would admit a writing test review (a grant admits a narrower step, never a wider one); a
+    // rewrite beyond reauthorMax is outside the plan, like a repair cycle beyond the confirmed ones.
+    if (STAGE_ZERO.has(stage)) {
+      const label = factoryStageLabel(stage);
+      const tf = env.body.missions.find((m) => m.missionId === missionId)?.testFirst || null;
+      if (access !== "read-only") return { reason: `${label}: pasul 0 rulează doar în citire (testul îl scrie Hub-ul); planul confirmat nu admite ${access === "workspace-write" ? "un pas care scrie în proiect" : "un pas cu acces nedeclarat"}` };
+      if (!tf) return { reason: `${label}: planul confirmat nu are pasul 0 (testul scris de Hub); cere un plan nou ca să-l vezi și să-l confirmi` };
+      if (Number(cycle) > Number(tf.reauthorMax)) return { reason: `${label}: rescrierea ${cycle} depășește planul confirmat (cel mult ${tf.reauthorMax}); testul nu se mai rescrie, decizia e a ta` };
+    }
     const allowed = env.body.limits.maxRepairCycles?.[missionId] ?? 0;
     const extra = (env.derived?.extraCycles || {})[missionId] || 0;
     // A continuation counts the cycles the mission already used before it (its card authorizes only the ones that remain).
@@ -1301,12 +1389,16 @@ export function createEnvelopes({ db, bus, clock, settings, projects, missions, 
     if (env.derived?.hold) return null;
     const f = factory.list().find((x) => x.missionId === missionId) || null;
     if (!f || !CONTINUABLE.has(f.stage)) return null;
+    // M11 L5 (§4 S5): the stage is named in the owner's words (factoryStageLabel), never as its code.
     const step = factory.exhaustedStep ? factory.exhaustedStep(missionId) : null;
-    if (step) return { kind: "attempt", stage: step.stage, text: `O încercare în plus pentru etapa ${step.stage} (${step.counted}/${step.limit} folosite), în același plan și aceleași limite de timp.` };
+    if (step) return { kind: "attempt", stage: step.stage, text: `O încercare în plus pentru etapa „${factoryStageLabel(step.stage)}” (${step.counted}/${step.limit} folosite), în același plan și aceleași limite de timp.` };
     // Review #11: the PLAN's attempt budget is spent while the factory's own limit is not (the gate refused the step: BLOCKED) — the
     // difference is one more attempt of the plan, never a repair cycle the owner was not stuck on.
     const spent = budgetSpent(env, missionId, f);
-    if (spent) return { kind: "attempt", stage: spent.stage, budget: true, text: `O încercare în plus pentru etapa ${spent.stage} (încercările confirmate în plan s-au epuizat), în același plan și aceleași limite de timp.` };
+    if (spent) return { kind: "attempt", stage: spent.stage, budget: true, text: `O încercare în plus pentru etapa „${factoryStageLabel(spent.stage)}” (încercările confirmate în plan s-au epuizat), în același plan și aceleași limite de timp.` };
+    // M11 L5 (§4 S5): step 0 has no repair cycle to add — its only difference is one more attempt (above); otherwise there is none (a
+    // step-0 outcome a resume cannot change stays the owner's decision: stop, or a new plan with the request said otherwise).
+    if (factory.inStageZero?.(missionId)) return null;
     const cycle = (f?.repairCycles ?? 0) + 1;
     return { kind: "cycle", cycle, text: `Un ciclu de remediere în plus (ciclul ${cycle}), în același plan și aceleași limite de timp.` };
   }
@@ -1319,7 +1411,9 @@ export function createEnvelopes({ db, bus, clock, settings, projects, missions, 
     if (f?.stage !== "BLOCKED") return null;
     const last = db.prepare("SELECT stage FROM factory_dispatches WHERE mission_id = ? ORDER BY created_at DESC LIMIT 1").get(missionId);
     if (!last) return null;
-    const role = last.stage === "REVIEWING" ? "reviewer" : "writer";
+    // M11 L5 (§4): the role whose binding the stage runs under (the factory's own map: the test's author under the reviewer's, its review
+    // under the writer's); before it, every stage but REVIEWING counted as the writer's.
+    const role = ROLE_OF_STAGE[last.stage] || "writer";
     const usable = grants.ofEnvelope(env.id).some((g) => g.kind === "run" && g.status === "active" && g.binding?.missionId === missionId && g.binding?.role === role && g.attemptsUsed < g.maxAttempts);
     return !usable && budgetOf(env, missionId) - allocatedOf(env.id, missionId, role) < 1 ? { stage: last.stage, role } : null;
   }
@@ -1347,6 +1441,9 @@ export function createEnvelopes({ db, bus, clock, settings, projects, missions, 
     const shown = deltaOf(env.id, missionId);
     const k = kind || shown?.kind || "cycle";
     if (!["cycle", "attempt"].includes(k)) throw new HubError("validation", "Diferență necunoscută");
+    // M11 L5 (§4 S5): step 0 has no repair cycles (the test is rewritten at most reauthorMax times, then the owner decides) — refused
+    // before anything changes, whatever the client asked for.
+    if (k === "cycle" && factory.inStageZero?.(missionId)) throw new HubError("conflict", "Etapa 0 nu are cicluri de remediere: testul de acceptanță se rescrie cel mult o dată, apoi decizia e a ta", { code: "NO_DELTA" });
     const extraCycles = { ...(env.derived?.extraCycles || {}) };
     const extraAttempts = { ...(env.derived?.extraAttempts || {}) };
     if (k === "cycle") {
@@ -1551,7 +1648,8 @@ export function createEnvelopes({ db, bus, clock, settings, projects, missions, 
     }
     if (["CANCELLED", "REJECTED"].includes(stage)) return close(env.id, "CANCELLED", `Misiunea s-a încheiat: ${stage}`);
     if (stage === "ACCEPTED") return close(env.id, "COMPLETED", "Acceptat de tine");
-    if (["BASELINE", "IMPLEMENTING", "CHECKING", "REVIEWING", "REPAIRING", "QA", "PREVIEW"].includes(stage) && env.status === "WAITING_OWNER") {
+    // M11 L5 (§6): a mission resumed into step 0 (the test's author, proof or review) brings its plan back to ACTIVE too.
+    if (["TEST_AUTHORING", "TEST_PROVING", "TEST_REVIEW", "BASELINE", "IMPLEMENTING", "CHECKING", "REVIEWING", "REPAIRING", "QA", "PREVIEW"].includes(stage) && env.status === "WAITING_OWNER") {
       bus.transaction(() => setStatus(env.id, "ACTIVE", { reason: `Misiunea a reluat (${stage})`, from: ["WAITING_OWNER"] }));
     }
   }

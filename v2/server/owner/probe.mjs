@@ -17,6 +17,14 @@
 // suspension record's precedence kind; the Hub's shutdown with work in flight is listed apart (breakdown.stopAll.shutdowns). UNKNOWN_INTENTS
 // is exact for every sentence the intake ran since then: owner.intent announces (`outcome: true`) the owner.intent_outcome it writes after
 // the steps ran, with the number of unknown steps it left without any answer; only older events are still estimated. GET stays SELECT-only.
+//
+// 2.12.3 (D1): a provider transcript the Hub left unanswered on purpose (the voice bridge leaves an unknown sentence to Lega's agent) is not
+// counted when Lega answered it — a delegated turn of the same Lega session that SPOKE (lega.turn_completed spoke: true; tied to the sentence by
+// its start or one of its tool calls) or the voice model's own non-empty speech (never a line the Hub spoke through the same channel), after
+// the owner's sentence, before his next one and within LEGA_ANSWER_WINDOW_MS. A bare tool call (the lega.hub_actions pre-check) followed by
+// silence is not an answer (D1 review). The link is the outcome's {legaSessionId, transcriptId} (ids only), or for older rows the
+// owner.intent command row the event is correlated with. Read after the fact (ids, roles, origins, flags and lengths, never words); such
+// sentences are listed apart (breakdown.unknownAnsweredByLega), never in UNKNOWN_INTENTS.
 import crypto from "node:crypto";
 import { HubError } from "../core/errors.mjs";
 
@@ -70,6 +78,8 @@ const DRIFT_EXEMPT = new Set(["legacyImport"]);
 const HASH_EXCLUDED = new Set(["billingIdentitySecret"]);
 /** Evidence ids per counter in a response; the counts themselves are always exact. */
 const EVIDENCE_MAX = 50;
+/** D1: how long after the owner's sentence an answer of Lega's agent still belongs to it (the same bound as a Lega turn's PENDING_ARM_MS). */
+export const LEGA_ANSWER_WINDOW_MS = 60000;
 
 const parse = (text) => { try { return JSON.parse(text || "{}") || {}; } catch { return {}; } };
 const sha = (text) => crypto.createHash("sha256").update(String(text ?? "")).digest("hex");
@@ -223,14 +233,74 @@ export function createProbe({ db, bus, config }) {
     return out;
   }
 
+  /**
+   * D1: the provider transcripts the Hub left unanswered that Lega's agent answered → Map(intent event id → { answerSeq, by }). A candidate
+   * is an owner.intent from a provider transcript („voice-provider”) with unanswered unknown steps. Its link to the owner's lega.transcript
+   * is the outcome's { legaSessionId, transcriptId }, else the owner.intent command row the event is correlated with (rows written before
+   * the outcome carried the link, or an intake that failed before writing it). The answer is the first evidence that reached the owner from
+   * THAT Lega session after the owner's transcript and within LEGA_ANSWER_WINDOW_MS: a delegated turn that spoke and started before his next
+   * sentence (by "turn"), or the voice model's own non-empty speech before it (by "speech"); one answer closes at most one sentence. Like intentOutcomes, not bounded by the window's end (bounded by the time and the next sentence).
+   * SELECT only; ids, roles and lengths, never words.
+   */
+  function legaAnswers(events, outcomes) {
+    const out = new Map();
+    const candidates = events.filter((e) => e.type === "owner.intent" && e.payload.source === "voice-provider" && unansweredUnknown(e.payload, outcomes.get(e.id) || null));
+    if (!candidates.length) return out;
+    const commandLink = db.prepare(`SELECT json_extract(payload_json, '$.legaSessionId') AS s, json_extract(payload_json, '$.transcriptId') AS t FROM commands
+      WHERE id = ? AND type = 'owner.intent'`);
+    const transcriptOf = db.prepare(`SELECT seq, created_at FROM events WHERE id = ? AND type = 'lega.transcript' AND scope_type = 'system' AND scope_id = ?
+      AND json_extract(payload_json, '$.role') = 'user'`);
+    const nextSentence = db.prepare(`SELECT MIN(seq) AS seq FROM events WHERE scope_type = 'system' AND scope_id = ? AND seq > ? AND type = 'lega.transcript'
+      AND json_extract(payload_json, '$.role') = 'user'`);
+    // D1 review: speech the owner heard from Lega herself — the voice model's own words (origin "realtime"; rows written before origins
+    // existed carry none) — never a line the Hub spoke through the same channel (hub_bridge / hub_notice) nor an agent turn's answer (that
+    // one is the turn's own lega.turn_completed below: one answer, one piece of evidence).
+    const firstSpeech = db.prepare(`SELECT id, seq FROM events WHERE scope_type = 'system' AND scope_id = ? AND seq > ? AND seq < ? AND created_at <= ?
+      AND type = 'lega.transcript' AND json_extract(payload_json, '$.role') = 'assistant'
+        AND LENGTH(TRIM(COALESCE(json_extract(payload_json, '$.text'), ''))) > 0
+        AND COALESCE(json_extract(payload_json, '$.origin'), 'realtime') = 'realtime' ORDER BY seq LIMIT 1`);
+    // D1 review: a delegated turn that SPOKE (its answer, or its spoken failure line) and belongs to the sentence: it started after the owner's
+    // transcript (startSeq ≥ its seq) — or one of its tool calls came after it — and before his next sentence. A bare tool call (the
+    // agent's lega.hub_actions pre-check) followed by silence, an interrupted / empty / withheld turn or the owner's Stop never closes it.
+    const firstTurn = db.prepare(`SELECT e.id, e.seq FROM events e WHERE e.scope_type = 'system' AND e.scope_id = ? AND e.type = 'lega.turn_completed' AND e.seq > ?
+      AND e.created_at <= ? AND json_extract(e.payload_json, '$.spoke') = 1 AND COALESCE(json_extract(e.payload_json, '$.startSeq'), 0) < ?
+      AND (COALESCE(json_extract(e.payload_json, '$.startSeq'), -1) >= ? OR EXISTS (SELECT 1 FROM events t WHERE t.scope_type = 'system' AND t.scope_id = e.scope_id
+        AND t.type = 'lega.tool' AND t.seq > ? AND t.seq < ? AND json_extract(t.payload_json, '$.turnId') = json_extract(e.payload_json, '$.turnId')))
+      ORDER BY e.seq LIMIT 1`);
+    const claimed = new Set();
+    for (const e of candidates) {
+      const outcome = outcomes.get(e.id) || null;
+      let link = typeof outcome?.legaSessionId === "string" && typeof outcome?.transcriptId === "string" ? { s: outcome.legaSessionId, t: outcome.transcriptId } : null;
+      if (!link && e.correlationId) {
+        const row = commandLink.get(e.correlationId);
+        if (typeof row?.s === "string" && typeof row?.t === "string") link = { s: row.s, t: row.t };
+      }
+      if (!link) continue;
+      const tr = transcriptOf.get(link.t, link.s);
+      if (!tr || !(tr.seq < e.seq)) continue;
+      const until = Date.parse(tr.created_at);
+      if (!Number.isFinite(until)) continue;
+      const next = nextSentence.get(link.s, tr.seq)?.seq ?? Number.MAX_SAFE_INTEGER;
+      const windowEnd = new Date(until + LEGA_ANSWER_WINDOW_MS).toISOString();
+      const speech = firstSpeech.get(link.s, tr.seq, next, windowEnd);
+      const turn = firstTurn.get(link.s, tr.seq, windowEnd, next, tr.seq, tr.seq, next);
+      const answer = speech && (!turn || speech.seq < turn.seq) ? { ...speech, by: "speech" } : turn ? { ...turn, by: "turn" } : null;
+      if (!answer || claimed.has(answer.id)) continue;
+      claimed.add(answer.id);
+      out.set(e.id, { answerSeq: answer.seq, by: answer.by });
+    }
+    return out;
+  }
+
   function report({ sinceSeq = 0, untilSeq = null } = {}) {
     const since = seqArg(sinceSeq, "sinceSeq") ?? 0;
     const newest = lastSeq();
     const until = Math.min(seqArg(untilSeq, "untilSeq") ?? newest, newest);
     if (until < since) throw new HubError("validation", "untilSeq trebuie să fie ≥ sinceSeq");
     const placeholders = COUNTED_EVENTS.map(() => "?").join(", ");
-    const events = db.prepare(`SELECT seq, id, type, scope_id, source, payload_json FROM events WHERE seq > ? AND seq <= ? AND type IN (${placeholders}) ORDER BY seq`)
-      .all(since, until, ...COUNTED_EVENTS).map((r) => ({ seq: r.seq, id: r.id, type: r.type, scopeId: String(r.scope_id || ""), source: String(r.source || ""), payload: parse(r.payload_json) }));
+    const events = db.prepare(`SELECT seq, id, type, scope_id, source, payload_json, correlation_id FROM events WHERE seq > ? AND seq <= ? AND type IN (${placeholders}) ORDER BY seq`)
+      .all(since, until, ...COUNTED_EVENTS).map((r) => ({ seq: r.seq, id: r.id, type: r.type, scopeId: String(r.scope_id || ""), source: String(r.source || ""), payload: parse(r.payload_json),
+        correlationId: r.correlation_id || null }));
     const commands = db.prepare(`SELECT e.seq AS seq, c.id AS id, c.type AS type, c.actor AS actor, c.channel AS channel, c.status AS status, c.payload_json AS payload_json
       FROM events e JOIN commands c ON c.id = e.scope_id WHERE e.scope_type = 'command' AND e.type = 'command.accepted' AND e.seq > ? AND e.seq <= ? ORDER BY e.seq`)
       .all(since, until).map((r) => ({ seq: r.seq, id: r.id, type: r.type, actor: String(r.actor || ""), channel: r.channel, status: r.status, payload: parse(r.payload_json) }));
@@ -249,6 +319,7 @@ export function createProbe({ db, bus, config }) {
     // R4: the owner's §7 counters, with the detail the owner reads next to each (enum keys and counts only).
     const facts = confirmationFacts(events.filter((e) => PLAN_CONFIRMATION_EVENTS.includes(e.type)), until);
     const outcomes = intentOutcomes(events);
+    const answers = legaAnswers(events, outcomes);
     const breakdown = {
       extraScopeConfirmations: { delta: 0, reconfirm: 0, repeat: 0, continuation: 0, continuationChecked: facts.checked },
       voiceConfirmations: { envelope: 0, ops: 0 },
@@ -258,6 +329,8 @@ export function createProbe({ db, bus, config }) {
       // with work in flight on their own line (never in STOP_ALL).
       stopAll: { byChannel: {}, byKind: {}, shutdowns: 0 },
       unknownIntents: { bySource: {}, estimated: 0 },
+      // D1: provider transcripts the Hub left to Lega and Lega answered (an agent turn that spoke, or her own speech): not in UNKNOWN_INTENTS.
+      unknownAnsweredByLega: { sentences: 0, turn: 0, speech: 0, items: [] },
     };
     const extraConfirmation = (e, reason, detail = {}) => { add("extraScopeConfirmations", ev(e, { reason, ...detail })); breakdown.extraScopeConfirmations[reason] += 1; };
     const voicePause = (item, owner) => { add("voicePause", item); breakdown.voicePause[owner ? "owner" : "other"] += 1; };
@@ -292,7 +365,12 @@ export function createProbe({ db, bus, config }) {
       else if (e.type === "owner.intent") {
         if (e.payload.clarification === true) add("clarifications", ev(e));
         const unknown = unansweredUnknown(e.payload, outcomes.get(e.id) || null);
-        if (unknown) {
+        const byLega = unknown ? answers.get(e.id) : null;
+        if (byLega) {
+          const b = breakdown.unknownAnsweredByLega;
+          b.sentences += 1; b[byLega.by] += 1;
+          if (b.items.length < EVIDENCE_MAX) b.items.push({ id: e.id, seq: e.seq, answerSeq: byLega.answerSeq, by: byLega.by });
+        } else if (unknown) {
           add("unknownIntents", ev(e, unknown));
           tally(breakdown.unknownIntents.bySource, unknown.source);
           if (!unknown.exact) breakdown.unknownIntents.estimated += 1;

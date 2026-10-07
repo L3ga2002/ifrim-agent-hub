@@ -39,6 +39,21 @@ function reviewAnswer(name, prompt) {
     ...(state && codes.length ? { previousFindings: Object.fromEntries(codes.map((c) => [c, state])) } : {}) };
   return `SIMULARE (review fixture ${name}).\n\n\`\`\`json\n${JSON.stringify(answer, null, 2)}\n\`\`\`\n`;
 }
+const AUTHORED = new URL("./factory-authored/", import.meta.url);
+
+/**
+ * M11 L5 author fixture (`author:<name>`; `author-slow:<name>` = the same answer after 4 s): answers like the author of the Hub-written
+ * acceptance test (Claude, read-only) with tests/fixtures/factory-authored/<name>.json — { body: string | [lines], manifest: { needs, api,
+ * cases }, slot?: "wrong" } — as a ```js block (the body) and a ```json block (the manifest), bound to the LAST `testSlot <slot>` marker
+ * of the prompt (the current request) unless `slot` is "wrong". It writes nothing; no model.
+ */
+function authorAnswer(name, prompt) {
+  const data = JSON.parse(fs.readFileSync(new URL(`${name.replace(/[^a-z0-9-]/gi, "")}.json`, AUTHORED), "utf8"));
+  const slot = data.slot === "wrong" ? "000000000000" : [...prompt.matchAll(/testSlot ([0-9a-f]{12})/g)].at(-1)?.[1] || "";
+  const body = Array.isArray(data.body) ? data.body.join("\n") : String(data.body || "");
+  const manifest = { testSlot: slot, needs: [], api: "", ...(data.manifest || {}) };
+  return `SIMULARE (author fixture ${name}).\n\n\`\`\`js\n${body}\n\`\`\`\n\n\`\`\`json\n${JSON.stringify(manifest, null, 2)}\n\`\`\`\n`;
+}
 const logFile = opt("log");
 const args = argv.filter((a) => !a.startsWith("--fake-"));
 const log = (entry) => { if (logFile) fs.appendFileSync(logFile, `${JSON.stringify(entry)}\n`); };
@@ -119,8 +134,9 @@ process.stdin.on("end", async () => {
   }
   const ack = (prompt.match(/HANDOFF_ACK \S+ \S+/) || [""])[0];
   // review-slow:<name>: the same answer after 4 s (a test changes the workspace while the reviewer is still reading).
-  if (scenario.startsWith("review-slow:")) await new Promise((r) => setTimeout(r, 4000));
-  const text = /^review(-slow)?:/.test(scenario) ? reviewAnswer(scenario.replace(/^review(-slow)?:/, ""), prompt) : `${ack ? `${ack}\n` : ""}Claude simulated answer.`;
+  if (scenario.startsWith("review-slow:") || scenario.startsWith("author-slow:")) await new Promise((r) => setTimeout(r, 4000));
+  const text = /^review(-slow)?:/.test(scenario) ? reviewAnswer(scenario.replace(/^review(-slow)?:/, ""), prompt)
+    : /^author(-slow)?:/.test(scenario) ? authorAnswer(scenario.replace(/^author(-slow)?:/, ""), prompt) : `${ack ? `${ack}\n` : ""}Claude simulated answer.`;
   for (const part of text.match(/.{1,8}/gs)) out({ type: "stream_event", event: { type: "content_block_delta", delta: { type: "text_delta", text: part } }, session_id: sessionArg });
   out({ type: "assistant", message: { content: [{ type: "text", text }] }, session_id: sessionArg });
   out({ type: "result", subtype: "success", is_error: false, result: text, session_id: sessionArg, usage: { input_tokens: 10, output_tokens: 5 }, total_cost_usd: 0.01, num_turns: 1 });

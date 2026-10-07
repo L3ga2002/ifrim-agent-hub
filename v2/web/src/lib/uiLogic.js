@@ -299,8 +299,17 @@ export const FACTORY_STAGE_RO = Object.freeze({
   SPEC_DRAFT: "Specificație", BASELINE: "Baseline", IMPLEMENTING: "Implementare", CHECKING: "Verificări", REVIEWING: "Review", REPAIRING: "Remediere",
   QA: "QA", PREVIEW: "Preview", DELIVERY_READY: "Gata de acceptare", ACCEPTED: "Acceptat local", REJECTED: "Respins", PAUSED: "Pauză", BLOCKED: "Blocat",
   NEEDS_OWNER_DECISION: "Decizia ta", CANCEL_REQUESTED: "Oprire cerută", CANCELLED: "Oprit",
+  // M11 L5 (design §5.6): step 0 of a test-first mission; on the stage bar only for those missions (factoryPathOf).
+  TEST_AUTHORING: "Testul (pasul 0)", TEST_PROVING: "Proba testului", TEST_REVIEW: "Verificarea testului",
 });
 export const FACTORY_PATH = Object.freeze(["SPEC_DRAFT", "BASELINE", "IMPLEMENTING", "CHECKING", "REVIEWING", "QA", "PREVIEW", "DELIVERY_READY", "ACCEPTED"]);
+/** M11 L5: the three step-0 stages, between the spec and the baseline. */
+export const STAGE_ZERO_STAGES = Object.freeze(["TEST_AUTHORING", "TEST_PROVING", "TEST_REVIEW"]);
+export const FACTORY_PATH_TEST_FIRST = Object.freeze(["SPEC_DRAFT", ...STAGE_ZERO_STAGES, ...FACTORY_PATH.slice(1)]);
+/** The stage path of THIS mission: step 0 appears only when the factory view carries a test-first `authoring` (null otherwise). */
+export function factoryPathOf(view) {
+  return view?.authoring ? FACTORY_PATH_TEST_FIRST : FACTORY_PATH;
+}
 
 /**
  * What the mission waits for, in words that never say "AI lucrează" when it waits for the owner, a grant, the gate,
@@ -334,11 +343,89 @@ export function factoryWaitSuffix(waitReason, stage) {
 /** Index of each stage on the main path (side states map to where the mission stopped). */
 export function factoryProgress(view) {
   const stage = view?.factory?.stage;
-  const at = FACTORY_PATH.indexOf(stage);
+  const path = factoryPathOf(view);
+  const at = path.indexOf(stage);
   if (at >= 0) return { current: at, side: null };
-  const reached = Math.max(0, ...((view?.dispatches || []).map((d) => FACTORY_PATH.indexOf(d.stage === "REPAIRING" ? "IMPLEMENTING" : d.stage))),
-    ...((view?.evidence || []).map((e) => FACTORY_PATH.indexOf(e.stage))));
+  const reached = Math.max(0, ...((view?.dispatches || []).map((d) => path.indexOf(d.stage === "REPAIRING" ? "IMPLEMENTING" : d.stage))),
+    ...((view?.evidence || []).map((e) => path.indexOf(e.stage))));
   return { current: reached, side: stage || null };
+}
+
+/* ---------------- M11 L5: test-first plans (design §2, §5.6) ---------------- */
+/**
+ * The owner texts of the plan card, the same words as the server's T_CARD_STEP0 / T_CARD_PROVES (v2/server/factory/test-first.mjs;
+ * the browser bundle cannot import server code, so m11-l5-ui.test.mjs pins them equal).
+ */
+export const TF_CARD_STEP0 = "Pasul 0 — testul de acceptanță nu există încă: îl scrie Hub-ul din cuvintele tale. Claude propune textul (doar citire), Hub-ul scrie fișierul, verifică de două ori că pică acum din motivul potrivit, Codex îl verifică independent (doar citire), apoi îl protejez. Nu trebuie să scrii sau să alegi nimic. Dacă testul nu trece verificările, îl rescriu o dată, apoi mă opresc fără să modific codul.";
+/** The same sentence without the rewrite, for a plan whose spec allows none (reauthorMax 0; server: T_CARD_STEP0_NO_REWRITE). */
+export const TF_CARD_STEP0_NO_REWRITE = TF_CARD_STEP0.replace("îl rescriu o dată, apoi mă opresc", "mă opresc");
+export const tfCardProves = (criteria = []) => `Ce va dovedi testul: ${(criteria || []).map((c) => `${c.id} — „${String(c.text || "").trim()}”`).join("; ")}.`;
+
+const tfCriteria = (tf) => (Array.isArray(tf?.criteria) ? tf.criteria : []).filter((c) => c && typeof c.id === "string" && c.id && typeof c.text === "string" && c.text.trim());
+const tfRole = (x) => {
+  if (!x) return "";
+  if (typeof x === "string") return x;
+  if (typeof x === "object") return [x.provider, x.model, x.effort].filter((p) => typeof p === "string" && p).join(" · ") || (typeof x.label === "string" ? x.label : "");
+  return "";
+};
+
+/**
+ * The plan card's step-0 lines, from the HASHED plan body only (`body.testFirst`, added only to test-first plans): the step-0 sentence,
+ * what the test will prove (the owner's criteria) and the „Detalii tehnice” row — the only place the test's path appears. An ordinary
+ * plan (no `testFirst`) → null, so its card renders exactly as before.
+ */
+export function testFirstCard(body) {
+  const tf = body?.testFirst;
+  if (!tf || typeof tf !== "object" || typeof tf.testRef !== "string" || !tf.testRef) return null;
+  const criteria = tfCriteria(tf);
+  const reauthor = Number.isInteger(tf.reauthorMax) ? tf.reauthorMax : null;
+  const runs = Number.isInteger(tf.proofRuns) ? tf.proofRuns : null;
+  const parts = [tf.testRef];
+  if (criteria.length) parts.push(`criterii: ${criteria.map((c) => c.id).join(", ")}`);
+  if (tf.mustFail !== false) parts.push("trebuie să pice acum");
+  if (tf.protectedAfterReview !== false) parts.push("review înainte de protejare");
+  if (reauthor !== null) parts.push(reauthor === 0 ? "fără rescriere" : `cel mult ${reauthor} ${reauthor === 1 ? "rescriere" : "rescrieri"}`);
+  if (runs !== null) parts.push(`${runs} ${runs === 1 ? "rulare" : "rulări"}`);
+  const author = tfRole(tf.author);
+  const reviewer = tfRole(tf.testReviewer);
+  if (author) parts.push(`scrie: ${author} (doar citire)`);
+  if (reviewer) parts.push(`verifică: ${reviewer} (doar citire)`);
+  return { step0: reauthor === 0 ? TF_CARD_STEP0_NO_REWRITE : TF_CARD_STEP0, proves: criteria.length ? tfCardProves(criteria) : null, details: parts.join(" · ") };
+}
+
+/** Evidence stage names: the step-0 stages in words, every other stage exactly as before (its code). */
+export function evidenceStageLabel(stage) {
+  return STAGE_ZERO_STAGES.includes(stage) ? FACTORY_STAGE_RO[stage] : stage;
+}
+
+const PROOF_VERDICT_RO = Object.freeze({
+  PROVEN: "pică pe codul de acum, din motivul potrivit", WRONG_REASON: "a picat, dar nu din motivul potrivit", PARTIAL: "pică doar parțial",
+  FLAKY: "rezultatele celor două rulări diferă", NOT_HERMETIC: "a lăsat fișiere în proiect", INCONCLUSIVE: "rezultatul nu a putut fi citit sigur",
+  ALREADY_PASSES: "trece deja pe codul de acum",
+});
+
+/**
+ * One evidence row's result as shown (design §7 Unda B, TestPanel): during TEST_PROVING the Hub's test MUST fail on today's code, so a
+ * FAIL there is labelled „așteptat” (never an error), with the proof's verdict when this row belongs to the current proof; a PASS there
+ * is „neașteptat”. Every other row: its status, unchanged (tone null = the usual colour).
+ */
+export function evidenceResult(e, authoring = null) {
+  const status = e?.status;
+  if (e?.stage !== "TEST_PROVING") return { label: status, tone: null, note: "" };
+  const proof = authoring?.proof;
+  const verdict = proof && Array.isArray(proof.evidenceIds) && proof.evidenceIds.includes(e.id) ? proof.verdict : null;
+  if (status === "FAIL") {
+    if (!verdict) return { label: "FAIL · așteptat", tone: "info", note: "testul scris de Hub trebuie să pice pe codul de acum" };
+    return { label: "FAIL · așteptat", tone: verdict === "PROVEN" ? "ok" : "warn", note: PROOF_VERDICT_RO[verdict] || "" };
+  }
+  if (status === "PASS") return { label: "PASS · neașteptat", tone: "warn", note: PROOF_VERDICT_RO.ALREADY_PASSES };
+  return { label: status, tone: null, note: "" };
+}
+
+/** The owner's summary of the Hub-written test, shown once it is protected (never before; null for an ordinary mission). */
+export function testFirstSummary(view) {
+  const a = view?.authoring;
+  return a && a.status === "PROTECTED" && typeof a.summary === "string" && a.summary ? a.summary : null;
 }
 
 /** "1 min 05 s" style durations for the run timeline (null → "—"). */

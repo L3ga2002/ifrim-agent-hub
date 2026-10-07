@@ -8,7 +8,7 @@ import { ACTIVE_STAGES } from "../factory/factory.mjs";
 import { ROUTES } from "../factory/plan.mjs";
 import { AUTONOMY_LABELS } from "./envelopes.mjs";
 import { classifySuspension, STOPPED_BY } from "../policy/gate-state.mjs";
-import { factoryWaitText } from "../policy/factory-wait.mjs";
+import { factoryWaitText, factoryStageLabel } from "../policy/factory-wait.mjs";
 
 /**
  * ProjectContextService + ExplainService (M06 §06, §12, §23, §24, §26).
@@ -188,7 +188,7 @@ export function createCockpit({ db, bus, clock, settings, projects, missions, ru
     const open = []; const blocked = []; const readyForReview = [];
     for (const m of all.filter((x) => !FINISHED_MISSION.has(x.status))) {
       const f = factories.get(m.id);
-      const item = { missionId: m.id, title: m.title, status: m.status, stage: f?.stage || null, waitReason: f?.waitReason || null, reason: clip(f?.stageReason || "", 240), at: f?.updatedAt || m.updatedAt, source: f ? "factory_missions" : "missions" };
+      const item = { missionId: m.id, title: m.title, status: m.status, stage: f?.stage || null, stageLabel: f ? factoryStageLabel(f.stage) : null, waitReason: f?.waitReason || null, reason: clip(f?.stageReason || "", 240), at: f?.updatedAt || m.updatedAt, source: f ? "factory_missions" : "missions" };
       if (f?.stage === "DELIVERY_READY") readyForReview.push(item);
       else if (f && ["BLOCKED", "NEEDS_OWNER_DECISION", "PAUSED"].includes(f.stage)) blocked.push(item);
       else if (!f && m.status === "BLOCKED") blocked.push(item);
@@ -224,7 +224,7 @@ export function createCockpit({ db, bus, clock, settings, projects, missions, ru
       state: { code: state, label: PROJECT_STATES[state] },
       done, open, blocked, readyForReview,
       running: { runs: active.map((r) => ({ runId: r.runId, provider: r.provider, environment: r.environment, phase: r.phase, startedAt: r.startedAt, lastEventAt: r.lastEventAt })),
-        missions: runningFactory.map((f) => ({ missionId: f.missionId, title: f.title, stage: f.stage, reason: clip(f.stageReason, 200), at: f.updatedAt })) },
+        missions: runningFactory.map((f) => ({ missionId: f.missionId, title: f.title, stage: f.stage, stageLabel: factoryStageLabel(f.stage), reason: clip(f.stageReason, 200), at: f.updatedAt })) },
       approved: open_envelope ? { envelopeId: open_envelope.id, status: open_envelope.status, level: open_envelope.autonomyLevel, missions: open_envelope.missionIds, confirmedAt: open_envelope.confirmedAt, expiresAt: open_envelope.expiresAt } : null,
       // M10.2 (U15): a plan waiting for the owner survives a reload and the end of the voice session — including its armed window
       // (until when, never its nonces) — and so do the operation plan on screen and the requests the Hub kept while blocked.
@@ -305,7 +305,7 @@ export function createCockpit({ db, bus, clock, settings, projects, missions, ru
         progress: "nemăsurat per test (providerul nu raportează progresul pe teste)" };
     });
     const missionsActive = factory.list().filter((f) => ACTIVE_STAGES.has(f.stage) && (!projectId || f.projectId === projectId))
-      .map((f) => ({ missionId: f.missionId, title: f.title, stage: f.stage, waitReason: f.waitReason, reason: clip(f.stageReason, 220), updatedAt: f.updatedAt }));
+      .map((f) => ({ missionId: f.missionId, title: f.title, stage: f.stage, stageLabel: factoryStageLabel(f.stage), waitReason: f.waitReason, reason: clip(f.stageReason, 220), updatedAt: f.updatedAt }));
     return { at: iso(), runs: items, missions: missionsActive, idle: !items.length && !missionsActive.length };
   }
 
@@ -315,12 +315,20 @@ export function createCockpit({ db, bus, clock, settings, projects, missions, ru
     const out = [];
     if (target) {
       const f = target.factory;
-      // Review F6 (2.12.2): what it waits for in the owner's words — never the raw value ("retry", "owner_decision").
+      // Review F6 (2.12.2): what it waits for in the owner's words — never the raw value ("retry", "owner_decision"). M11 L5 (§4 S5): the
+      // stage in the owner's words too (factoryStageLabel), never its code.
       const waits = factoryWaitText(f.waitReason, f.stage);
-      out.push({ what: `„${target.mission.title}” · ${f.stage}${waits ? ` (${waits})` : ""}`, rule: clip(f.stageReason, 400), source: "factory_missions", at: f.updatedAt,
+      // M11 L5 (§3, §4 S5): during step 0 there is no repair cycle to add; a step-0 outcome a resume cannot change (a test that already
+      // passes, a rewrite spent, the project changed) is decided by stopping or by a new plan.
+      const a = target.authoring;
+      const stageZero = Boolean(a) && !["PROTECTED", "ABANDONED"].includes(a.status) && a.status !== "PLANNED";
+      const decide = !stageZero ? "Decizia ta: reia (eventual cu un ciclu în plus) sau oprește"
+        : a.blocked ? "Decizia ta: oprește misiunea sau cere un plan nou, cu cerința spusă altfel; o reluare nu schimbă rezultatul pasului 0 (codul nu a fost atins)"
+          : "Decizia ta: reia sau oprește (la pasul 0 nu există cicluri de remediere; testul se rescrie cel mult o dată)";
+      out.push({ what: `„${target.mission.title}” · ${factoryStageLabel(f.stage)}${waits ? ` (${waits})` : ""}`, rule: clip(f.stageReason, 400), source: "factory_missions", at: f.updatedAt,
         action: f.waitReason === "grant" ? "Planul confirmat a rămas fără autoritate: confirmă din nou planul (granturile se derivă singure)"
           : f.waitReason === "gate" ? "Poarta de execuție e suspendată sau o verificare a porții eșuează: vezi lista de mai jos"
-            : f.stage === "NEEDS_OWNER_DECISION" ? "Decizia ta: reia (eventual cu un ciclu în plus) sau oprește" : f.stage === "PAUSED" ? "Spune „Continuă”: o reiau în limitele planului confirmat (fără plan în vigoare, „Continuă misiunea …” pregătește un plan de continuare)" : "Verifică motivul de mai sus" });
+            : f.stage === "NEEDS_OWNER_DECISION" ? decide : f.stage === "PAUSED" ? "Spune „Continuă”: o reiau în limitele planului confirmat (fără plan în vigoare, „Continuă misiunea …” pregătește un plan de continuare)" : "Verifică motivul de mai sus" });
     }
     // „De ce e blocat?” asked outside a project (voice, the company view) still explains the gate instead of failing on a missing id.
     const pid = projectId || target?.project?.id || null;

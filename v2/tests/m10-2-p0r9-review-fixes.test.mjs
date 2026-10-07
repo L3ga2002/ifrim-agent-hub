@@ -168,7 +168,12 @@ async function oneTestHub() {
   t.dir = dir;
   return t;
 }
-test("R9-04 (F2) the single test the planner found is picked in plain words („Alege-l”, „Folosește-l”, „Primul”, its name) or by its button; a bare „Da” never picks; a plan card, nothing started", async () => {
+// M11 L5 (wave B, design .ifrim/M11_L5_DESIGN.md §2, §8 „Teste existente actualizate deliberat”): the planner no longer offers the tests it
+// found (owner decision Q3) — the request below becomes ONE test-first plan (the Hub writes the acceptance test at step 0). The cockpit's
+// pure clarificationOf rules stay (any planner question with choices, e.g. the run planner's). What the Hub part now checks: no choice is
+// offered, so a plain „Alege-l” / „Primul” / the file's name picks nothing, a bare „Da” confirms nothing, a forged button is refused, and
+// nothing starts.
+test("R9-04 (F2 → M11 L5) the planner offers no test to pick: ONE test-first plan card; „Alege-l”, „Primul”, the file's name or a forged button pick nothing; a bare „Da” confirms nothing; nothing started", async () => {
   // The cockpit draws the planner's choices (not only the resolver's).
   const planner = { question: "Pe X am găsit un singur test automat…", options: [{ id: "test/acceptance.test.mjs", label: "test/acceptance.test.mjs" }], forIntent: "engineering" };
   assert.equal(clarificationOf({ resolved: { clarification: null }, results: [{ intent: "engineering_request", clarification: planner }] }), planner);
@@ -185,42 +190,24 @@ test("R9-04 (F2) the single test the planner found is picked in plain words („
   try {
     const counts = () => [count(t, "SELECT COUNT(*) AS n FROM agent_runs"), count(t, "SELECT COUNT(*) AS n FROM live_grants"), count(t, "SELECT COUNT(*) AS n FROM mission_envelopes WHERE status IN ('CONFIRMED','ACTIVE')"), stopAlls(t)];
     const before = counts();
-    const ask = async () => {
-      const first = await asOwner(t, { text: "Adaugă validarea emailului în formular", projectId: t.project.id });
-      const step = first.results.find((x) => x.intent === "engineering_request");
-      assert.deepEqual(step.clarification?.options?.map((o) => o.id), ["test/acceptance.test.mjs"], JSON.stringify(step).slice(0, 300));
-      assert.equal(clarificationOf(first)?.forIntent, "engineering", "the button the cockpit draws");
-      return first;
-    };
-    // „Da” alone is no pick (it is the plan confirmation word): nothing planned, the question still open.
-    await ask();
-    const yes = await asOwner(t, { text: "Da", projectId: t.project.id });
-    assert.ok(!yes.results.some((x) => x.plan?.envelope?.id), JSON.stringify(yes.results).slice(0, 300));
-    for (const said of ["Alege-l", "Folosește-l", "Primul", "Da, alege-l", "testul acceptance", "acceptance.test.mjs"]) {
-      await ask();
+    const first = await asOwner(t, { text: "Adaugă validarea emailului în formular", projectId: t.project.id });
+    const step = first.results.find((x) => x.intent === "engineering_request");
+    assert.ok(step?.plan?.envelope?.body?.testFirst, JSON.stringify(step).slice(0, 300));
+    assert.equal(step.clarification, undefined, "no question: the Hub writes the test");
+    assert.equal(clarificationOf(first), null, "no button to draw: nothing to pick");
+    assert.doesNotMatch(JSON.stringify(step.plan.summary), /acceptance\.test\.mjs/, "the test found is never offered");
+    const envelopes = () => count(t, "SELECT COUNT(*) AS n FROM mission_envelopes");
+    const shown = envelopes();
+    // A bare „Da” (without the plan the cockpit showed) confirms nothing; plain picks and the file's own name pick nothing.
+    for (const said of ["Da", "Alege-l", "Folosește-l", "Primul", "Da, alege-l", "testul acceptance", "acceptance.test.mjs"]) {
       const r = await asOwner(t, { text: said, projectId: t.project.id });
-      const planned = r.results.find((x) => x.plan?.envelope?.id);
-      assert.ok(planned, `${said}: ${JSON.stringify(r.results).slice(0, 400)}`);
-      assert.equal(planned.plan.envelope.status, "PROPOSED", said);
-      const view = t.hub.factory.view(planned.plan.envelope.missionIds[0]);
-      assert.equal(view.spec.spec.acceptance[0].testRef, "test/acceptance.test.mjs", said);
-      assert.match(view.spec.spec.objective, /validarea emailului/, `${said}: the original request, never the pick's words`);
+      assert.ok(!r.results.some((x) => x.plan?.envelope?.id), `${said}: ${JSON.stringify(r.results).slice(0, 300)}`);
     }
-    // The button (choice with the offered id) does the same.
-    await ask();
-    const clicked = await asOwner(t, { text: "test/acceptance.test.mjs", choice: { forIntent: "engineering", id: "test/acceptance.test.mjs" }, projectId: t.project.id });
-    assert.ok(clicked.results.some((x) => x.plan?.envelope?.status === "PROPOSED"));
-    // With no question open, a plain „Alege-l” picks nothing (it is no request of its own).
-    const none = await asOwner(t, { text: "Alege-l", projectId: t.project.id });
-    assert.ok(!none.results.some((x) => x.plan?.envelope?.id));
-    // Two tests found: a plain „Alege-l” / „Primul” is ambiguous and picks nothing (the buttons, or the test's own name, choose).
-    fs.writeFileSync(path.join(t.dir, "test", "unit.test.mjs"), "import test from \"node:test\";\ntest(\"unit\", () => {});\n");
-    const two = await asOwner(t, { text: "Adaugă validarea emailului în formular", projectId: t.project.id });
-    assert.equal(clarificationOf(two)?.options?.length, 2, JSON.stringify(two.results).slice(0, 300));
-    for (const said of ["Alege-l", "Primul"]) {
-      const r = await asOwner(t, { text: said, projectId: t.project.id });
-      assert.ok(!r.results.some((x) => x.plan?.envelope?.id), `${said} picks nothing among two`);
-    }
+    assert.equal(envelopes(), shown, "no new plan from a pick");
+    assert.equal(t.hub.envelopes.get(step.plan.envelope.id).status, "PROPOSED", "the plan still waits for its one confirmation");
+    // A forged button (a choice the Hub never offered) is refused.
+    await assert.rejects(asOwner(t, { text: "test/acceptance.test.mjs", choice: { forIntent: "engineering", id: "test/acceptance.test.mjs" }, projectId: t.project.id }),
+      /Alegerea nu mai corespunde unei întrebări deschise/);
     assert.deepEqual(counts(), before, "nothing started, no grant, no confirmed plan, no stop");
   } finally { await t.cleanup(); }
 });

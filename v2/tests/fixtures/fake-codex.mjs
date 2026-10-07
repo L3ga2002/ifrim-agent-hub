@@ -149,6 +149,7 @@ rl.on("line", async (line) => {
       }
       if (scenario === "hang") return; // waits for turn/interrupt
       if (scenario.startsWith("factory-write:")) return factoryWrite(msg, turnId, scenario.slice("factory-write:".length));
+      if (/^test-review(-slow)?:/.test(scenario)) return testReview(msg, turnId, scenario.replace(/^test-review(-slow)?:/, ""), scenario.startsWith("test-review-slow:"));
       if (scenario === "mcp-tool-completed") {
         // Only the completed item arrives (e.g. a call that failed at once): it must stop the run too.
         return send({ method: "item/completed", params: { threadId, turnId, item: { type: "mcpToolCall", id: "mcp2", server: "node_repl", tool: "js", status: "failed", arguments: {} } } });
@@ -221,11 +222,17 @@ async function factoryWrite(msg, turnId, name) {
   try { patch = JSON.parse(fs.readFileSync(path.join(FACTORY_PATCHES, `${name.replace(/[^a-z0-9-]/gi, "")}.json`), "utf8")); }
   catch { return send({ method: "turn/completed", params: { threadId, turn: { id: turnId, status: "failed", items: [], error: { message: `fake: patch ${name} missing` } } } }); }
   const inside = (rel) => { const abs = path.resolve(cwd, rel); return abs.startsWith(path.resolve(cwd) + path.sep) ? abs : null; };
+  // M11 L5: "{PROTECTED_TEST}" in a patch path stands for the protected acceptance test the CURRENT writer brief names (a Hub-written
+  // test's path is derived from the project at run time).
+  const protectedTest = [...String(msg.params.input?.[0]?.text || "").matchAll(/PROTEJATE \([^)]*\): ([^\s,]+)/g)].at(-1)?.[1] || "";
+  const pathOf = (rel) => (rel.includes("{PROTECTED_TEST}") ? (protectedTest ? rel.replace("{PROTECTED_TEST}", protectedTest) : "") : rel);
   send({ method: "item/started", params: { threadId, turnId, item: { type: "commandExecution", id: "c1", command: "node --test", status: "inProgress" } } });
   await sleep(30);
   send({ method: "item/completed", params: { threadId, turnId, item: { type: "commandExecution", id: "c1", command: "node --test", status: "completed", exitCode: 0 } } });
   const changed = [];
-  for (const [rel, text] of Object.entries(patch.write || {})) {
+  for (const [rawRel, text] of Object.entries(patch.write || {})) {
+    const rel = pathOf(rawRel);
+    if (!rel) continue;
     const abs = inside(rel);
     if (!abs) continue;
     fs.mkdirSync(path.dirname(abs), { recursive: true });
@@ -245,6 +252,34 @@ async function factoryWrite(msg, turnId, name) {
   send({ method: "item/completed", params: { threadId, turnId, item: { type: "fileChange", id: "f1", changes: changed.map((p) => ({ path: p })), status: "completed" } } });
   const text = `SIMULARE (fixture ${name}): am modificat ${changed.length} fișiere: ${changed.join(", ")}. ${patch.summary || ""}`;
   for (const part of text.match(/.{1,12}/gs)) send({ method: "item/agentMessage/delta", params: { threadId, turnId, itemId: "m1", delta: part } });
+  return send({ method: "turn/completed", params: { threadId, turn: { id: turnId, status: "completed", items: [] } } });
+}
+
+const TEST_REVIEWS = path.join(path.dirname(fileURLToPath(import.meta.url)), "factory-test-reviews");
+/**
+ * M11 L5 test-review fixture (`test-review:<name>`, `test-review-slow:<name>` = the same answer after 4 s): the independent reviewer of
+ * the Hub-written acceptance test (Codex, read-only) answers with tests/fixtures/factory-test-reviews/<name>.json as the final ```json
+ * block, bound to the LAST CHANGE_SET marker of the current brief unless the file names another one. `criteria: "ALL"` repeats
+ * `criterion` for every criterion the brief lists; previousFindings "ALL_RESOLVED" / "ALL_STILL_OPEN" classify every open code it lists.
+ * It writes nothing; no model.
+ */
+async function testReview(msg, turnId, name, slow) {
+  let data;
+  try { data = JSON.parse(fs.readFileSync(path.join(TEST_REVIEWS, `${name.replace(/[^a-z0-9-]/gi, "")}.json`), "utf8")); }
+  catch { return send({ method: "turn/completed", params: { threadId, turn: { id: turnId, status: "failed", items: [], error: { message: `fake: test review ${name} missing` } } } }); }
+  const prompt = String(msg.params.input?.[0]?.text || "");
+  const current = prompt.slice(Math.max(0, prompt.lastIndexOf("# Verificarea testului de acceptanță")));
+  const marker = [...current.matchAll(/CHANGE_SET ([0-9a-f]{12})/g)].at(-1)?.[1] || "";
+  const ids = [...(current.split("## Criteriile")[1]?.split("\n## ")[0] || "").matchAll(/^- (AC-\d{1,3}):/gm)].map((m) => m[1]);
+  const section = current.split("## Findings deschise din verificarea anterioară")[1]?.split("\n## ")[0] || "";
+  const codes = [...section.matchAll(/^- ([A-Z]-\d{3}) /gm)].map((m) => m[1]);
+  const state = data.previousFindings === "ALL_RESOLVED" ? "resolved" : data.previousFindings === "ALL_STILL_OPEN" ? "still_open" : null;
+  const answer = { changeSet: data.changeSet || marker, verdict: data.verdict, summary: data.summary || "",
+    criteria: data.criteria === "ALL" ? ids.map((id) => ({ id, ...(data.criterion || {}) })) : data.criteria || [],
+    findings: data.findings || [], missingContext: data.missingContext || [], ...(state && codes.length ? { previousFindings: Object.fromEntries(codes.map((c) => [c, state])) } : {}) };
+  if (slow) await sleep(4000);
+  const text = `SIMULARE (test review fixture ${name}).\n\n\`\`\`json\n${JSON.stringify(answer, null, 2)}\n\`\`\`\n`;
+  for (const part of text.match(/.{1,24}/gs)) send({ method: "item/agentMessage/delta", params: { threadId, turnId, itemId: "m1", delta: part } });
   return send({ method: "turn/completed", params: { threadId, turn: { id: turnId, status: "completed", items: [] } } });
 }
 const serverRequest = (method, params) => new Promise((resolve) => { const id = serverRequestId++; pendingServer.set(id, resolve); send({ id, method, params }); });
@@ -276,13 +311,15 @@ async function realtime(msg) {
   }
 }
 
-async function delegatedTurn(tool, args, n = 1) {
+async function delegatedTurn(tool, args, n = 1, heard = null, silent = false) {
   const turnId = `turn_lega_${n}`;
   // Real ordering: the turn is admitted BEFORE the client sees the handoff item.
   send({ method: "turn/started", params: { threadId, turn: { id: turnId, status: "inProgress", items: [] } } });
-  send({ method: "thread/realtime/itemAdded", params: { threadId, item: { type: "handoff_request", handoff_id: "h1", item_id: "i1", input_transcript: `fake: ${tool}`, active_transcript: [] } } });
+  send({ method: "thread/realtime/itemAdded", params: { threadId, item: { type: "handoff_request", handoff_id: "h1", item_id: "i1", input_transcript: heard ?? `fake: ${tool}`, active_transcript: [] } } });
   const reply = await serverRequest("item/tool/call", { threadId, turnId, callId: `call_${n}`, namespace: "lega", tool, arguments: args });
   log({ toolReply: reply.result || reply.error, tool });
+  // `silent`: the turn ends without an answer (interrupted, no agent message) — the agent's pre-check followed by nothing said.
+  if (silent) return send({ method: "turn/completed", params: { threadId, turn: { id: turnId, status: "interrupted", items: [] } } });
   const text = `[FINAL] Rezultat simulat pentru ${tool}: ${reply.result?.contentItems?.[0]?.text || ""}`;
   send({ method: "item/completed", params: { threadId, turnId, item: { type: "agentMessage", id: "m1", text } } });
   send({ method: "turn/completed", params: { threadId, turn: { id: turnId, status: "completed", items: [] } } });
@@ -305,7 +342,7 @@ async function legaScript() {
     for (let i = 0; i < calls.length; i += 1) { await delegatedTurn(calls[i].tool, calls[i].args || {}, i + 1); await sleep(50); }
     return log({ callsDone: calls.length });
   }
-  // M10.2 `lega-script:<base64url JSON [{sleep: ms} | {say: text, role?} | {tool, args}]>`: owner words (final transcripts), delegated
+  // M10.2 `lega-script:<base64url JSON [{sleep: ms} | {say: text, role?} | {tool, args, heard?, silent?}]>`: owner words (final transcripts), delegated
   // tool calls and pauses, in order (the voice bridge tests feed the owner's sentences through the provider's real event shape).
   if (scenario.startsWith("lega-script:")) {
     const script = JSON.parse(Buffer.from(scenario.slice("lega-script:".length), "base64url").toString("utf8"));
@@ -313,7 +350,7 @@ async function legaScript() {
     for (const item of script) {
       if (item.sleep) await sleep(item.sleep);
       else if (item.say) said(item.role || "user", item.say);
-      else if (item.tool) { n += 1; await delegatedTurn(item.tool, item.args || {}, n); }
+      else if (item.tool) { n += 1; await delegatedTurn(item.tool, item.args || {}, n, item.heard ?? null, Boolean(item.silent)); }
       await sleep(30);
     }
     return log({ scriptDone: script.length });

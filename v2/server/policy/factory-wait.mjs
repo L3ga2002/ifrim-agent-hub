@@ -6,6 +6,22 @@
  */
 export const FACTORY_WAIT_REASONS = Object.freeze(["approval", "grant", "gate", "provider", "runner", "owner_decision", "cancel", "retry"]);
 
+/**
+ * M11 L5 (§4 S5): the owner's name of every factory stage on the SERVER surfaces (plan deltas „o încercare în plus la …”, the cockpit),
+ * which until now showed the raw stage. The same words as the web's FACTORY_STAGE_RO (web/src/lib/uiLogic.js), plus the three
+ * stages of step 0 (the Hub-written acceptance test, design .ifrim/M11_L5_DESIGN.md §3). Kept literal here: this module stays pure
+ * and imports nothing; v2/tests/m11-l5-wave-a-support.test.mjs keeps it complete against factory.mjs FACTORY_STAGES.
+ */
+export const FACTORY_STAGE_LABELS = Object.freeze({
+  SPEC_DRAFT: "Specificație", TEST_AUTHORING: "Testul (pasul 0)", TEST_PROVING: "Proba testului", TEST_REVIEW: "Verificarea testului",
+  BASELINE: "Baseline", IMPLEMENTING: "Implementare", CHECKING: "Verificări", REVIEWING: "Review", REPAIRING: "Remediere", QA: "QA", PREVIEW: "Preview",
+  DELIVERY_READY: "Gata de acceptare", ACCEPTED: "Acceptat local", REJECTED: "Respins", PAUSED: "Pauză", BLOCKED: "Blocat",
+  NEEDS_OWNER_DECISION: "Decizia ta", CANCEL_REQUESTED: "Oprire cerută", CANCELLED: "Oprit",
+});
+
+/** The owner's name of a factory stage; an unknown value gets a neutral word, never the raw stage. */
+export const factoryStageLabel = (stage) => (Object.hasOwn(FACTORY_STAGE_LABELS, String(stage ?? "")) ? FACTORY_STAGE_LABELS[stage] : "Etapă necunoscută");
+
 /** The label for a factory waitReason (and the mission's stage, which refines two of them), or null for none / an unknown value. */
 export function factoryWaitText(waitReason, stage = null) {
   switch (waitReason) {

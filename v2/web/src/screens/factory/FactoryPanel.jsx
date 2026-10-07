@@ -2,21 +2,23 @@ import { useState } from "react";
 import { Factory, ShieldCheck, Square, Pause, Play, CheckCircle2, XCircle, FileDiff, ListChecks, Timer, Package, AlertTriangle } from "lucide-react";
 import { api, fmt } from "../../api.js";
 import { useResource, useAction, pushToast } from "../../store.js";
-import { FACTORY_STAGE_RO, FACTORY_PATH, factoryWaitLabel, factoryProgress, formatMs, parseCriteriaLines, mergeCriteria } from "../../lib/uiLogic.js";
+import { FACTORY_STAGE_RO, factoryPathOf, factoryWaitLabel, factoryProgress, formatMs, parseCriteriaLines, mergeCriteria, evidenceResult, evidenceStageLabel, testFirstSummary } from "../../lib/uiLogic.js";
 import { Panel, Empty, Loading, ErrorNotice, StatusChip, Notice, Chip, DiffView, Dialog } from "../../components/ui.jsx";
 import { boundaryOf } from "../../lib/environmentLogic.js";
 
 const SEVERITY_TONE = { critical: "error", high: "error", medium: "warn", low: "neutral", info: "neutral" };
 const EVIDENCE_TONE = { PASS: "ok", FAIL: "error", INCONCLUSIVE: "warn", BLOCKED: "error", NOT_RUN: "neutral", NEEDS_INSTALL_APPROVAL: "warn" };
-const ACTIVE = new Set(["BASELINE", "IMPLEMENTING", "CHECKING", "REVIEWING", "REPAIRING", "QA", "PREVIEW"]);
+// M11 L5: the three step-0 stages of a test-first mission can be paused like the others (the factory's PAUSABLE set).
+const ACTIVE = new Set(["TEST_AUTHORING", "TEST_PROVING", "TEST_REVIEW", "BASELINE", "IMPLEMENTING", "CHECKING", "REVIEWING", "REPAIRING", "QA", "PREVIEW"]);
 
-/** Stage path with the current position; side states (pause, block, decision) shown next to it. */
+/** Stage path with the current position; side states (pause, block, decision) shown next to it. Step 0 only for a test-first mission. */
 function StageBar({ view }) {
   const { current, side } = factoryProgress(view);
+  const path = factoryPathOf(view);
   return (
     <div className="stack tight">
       <ol className="row wrap" style={{ listStyle: "none", padding: 0, margin: 0, gap: 6 }} aria-label="Etapele misiunii">
-        {FACTORY_PATH.map((stage, i) => (
+        {path.map((stage, i) => (
           <li key={stage}><span className={`chip ${i < current ? "ok" : i === current ? (side ? "warn" : "info") : "neutral"}`} aria-current={i === current ? "step" : undefined}>{FACTORY_STAGE_RO[stage]}</span></li>
         ))}
       </ol>
@@ -219,6 +221,9 @@ export function FactoryPanel({ missionId }) {
   const cs = view.changeSets.find((c) => c.status === "CURRENT");
   const latestBundle = view.bundles.at(-1);
   const problems = view.specs.at(-1)?.problems || [];
+  // M11 L5: before the Hub-written test is protected there is no repair cycle to add (the factory refuses one in step 0).
+  const inStepZero = Boolean(view.authoring && view.authoring.status !== "PROTECTED");
+  const protectedSummary = testFirstSummary(view);
   return (
     <div className="stack" style={{ overflowWrap: "anywhere", minWidth: 0 }}>
       <Panel title={`Software Factory · ${f.workType}`} icon={Factory} data-lega-target="factory-panel"
@@ -243,6 +248,7 @@ export function FactoryPanel({ missionId }) {
               {view.models?.writer?.approved ? <span className="faint small"> (aprobate cu scope-ul; verificate din nou la fiecare pornire)</span> : <span className="faint small"> (ciornă: se fixează la aprobarea scope-ului)</span>}</dd>
             <dt>{voiceFirst ? "Granturi pe care planul le derivă" : "Granturi necesare"}</dt><dd>{view.grantsNeeded.map((g) => `${g.provider} ${g.access} × ${g.attempts} (${g.why})`).join(" · ")}</dd>
           </dl>
+          {protectedSummary && <Notice tone="ok" title="Pasul 0 încheiat">{protectedSummary}</Notice>}
           {["PAUSED", "BLOCKED", "NEEDS_OWNER_DECISION"].includes(f.stage) && f.approvedSpecVersion && (
             <div className="row wrap">
               <select className="select" aria-label="Modelul reviewer-ului la reluare" value={reviewerModel} onChange={(e) => setReviewerModel(e.target.value)}>
@@ -250,7 +256,7 @@ export function FactoryPanel({ missionId }) {
                 {REVIEWER_CHOICES.filter((m) => m !== (f.bindings?.reviewer?.resolvedAlias || f.limits.reviewerModel)).map((m) => <option key={m} value={m}>Reviewer: {m} (în afara unui plan confirmat)</option>)}
               </select>
               <button className="btn primary" disabled={act.pending} onClick={() => act.run("resume", reviewerModel ? { reviewerModel } : {})}><Play size={14} />Reia</button>
-              {f.stage === "NEEDS_OWNER_DECISION" && <button className="btn" disabled={act.pending} onClick={() => act.run("resume", { allowExtraCycle: true, ...(reviewerModel ? { reviewerModel } : {}) })}>Încă un ciclu de remediere</button>}
+              {f.stage === "NEEDS_OWNER_DECISION" && !inStepZero && <button className="btn" disabled={act.pending} onClick={() => act.run("resume", { allowExtraCycle: true, ...(reviewerModel ? { reviewerModel } : {}) })}>Încă un ciclu de remediere</button>}
               {f.stage === "NEEDS_OWNER_DECISION" && view.reviews.at(-1)?.verdict === "INCONCLUSIVE" && <button className="btn" disabled={act.pending} onClick={() => act.run("resume", { proceedToQa: true, ...(reviewerModel ? { reviewerModel } : {}) })}>Continuă la QA (decizia mea)</button>}
             </div>
           )}
@@ -306,10 +312,10 @@ export function FactoryPanel({ missionId }) {
         <Panel title="Dovezi (runner Hub)">
           <div className="table-wrap"><table className="table table-mobile-cards">
             <thead><tr><th>Etapă</th><th>Comandă</th><th>Rezultat</th><th>Teste</th><th>Izolare</th><th>Durată</th></tr></thead>
-            <tbody>{view.evidence.map((e) => (
-              <tr key={e.id} style={e.stale ? { opacity: 0.55 } : undefined}><td>{e.stage}{e.stale ? " (veche)" : ""}</td><td className="mono">{e.command}</td><td><Chip tone={EVIDENCE_TONE[e.status] || "neutral"}>{e.status}</Chip></td>
+            <tbody>{view.evidence.map((e) => { const r = evidenceResult(e, view.authoring); return (
+              <tr key={e.id} style={e.stale ? { opacity: 0.55 } : undefined}><td>{evidenceStageLabel(e.stage)}{e.stale ? " (veche)" : ""}</td><td className="mono">{e.command}</td><td><Chip tone={r.tone || EVIDENCE_TONE[e.status] || "neutral"}>{r.label}</Chip>{r.note && <div className="faint small">{r.note}</div>}</td>
                 <td>{e.counts?.tests !== undefined ? `${e.counts.pass ?? "?"}/${e.counts.tests}${e.counts.skipped ? `, ${e.counts.skipped} sărite` : ""}` : e.detail?.reason || "—"}</td><td className="faint" style={{ fontSize: 12 }}>{e.isolation}</td><td>{formatMs(e.durationMs)}</td></tr>
-            ))}</tbody>
+            ); })}</tbody>
           </table></div>
         </Panel>
       )}

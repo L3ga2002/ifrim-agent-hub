@@ -239,8 +239,8 @@ test("INT-04 a deadline that fired on a turn whose answer never arrives (process
 });
 
 // ------------------------------------------------------------------------------------------------------------------------------ INT-05
-test("INT-05 the server reports 2.12.2-m10.2 with API contract 12 (every 2.12.2 field is additive)", async () => {
-  assert.equal(HUB_VERSION, "2.12.2-m10.2");
+test("INT-05 the server reports 2.13.0-m11 with API contract 12 (every 2.12.2 field is additive)", async () => {
+  assert.equal(HUB_VERSION, "2.13.0-m11");
   assert.equal(API_CONTRACT, 12);
   const t = await makeTestHub();
   const { server } = createHttpServer(t.hub);
@@ -253,6 +253,6 @@ test("INT-05 the server reports 2.12.2-m10.2 with API contract 12 (every 2.12.2 
       req.on("error", reject); req.end();
     });
     assert.equal(got.status, 200);
-    assert.deepEqual([got.json.version, got.json.apiContract, got.headers["x-hub-contract"]], ["2.12.2-m10.2", 12, "12"]);
+    assert.deepEqual([got.json.version, got.json.apiContract, got.headers["x-hub-contract"]], ["2.13.0-m11", 12, "12"]);
   } finally { await new Promise((r) => server.close(r)); await t.cleanup(); }
 });

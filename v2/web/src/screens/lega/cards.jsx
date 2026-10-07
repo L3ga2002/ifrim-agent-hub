@@ -4,7 +4,7 @@ import { api, fmt } from "../../api.js";
 import { useResource, useAction, pushToast, refresh } from "../../store.js";
 import { Panel, Empty, Loading, ErrorNotice, StatusChip, Notice, Chip, DiffView } from "../../components/ui.jsx";
 import { STATE_TONE, missionGraph } from "../../lib/cockpitLogic.js";
-import { FACTORY_STAGE_RO, blockerAction, cardFocusWanted, holdsTypedText, autonomyRaiseOffered, factoryWaitSuffix as waitSuffix } from "../../lib/uiLogic.js";
+import { FACTORY_STAGE_RO, blockerAction, cardFocusWanted, holdsTypedText, autonomyRaiseOffered, factoryWaitSuffix as waitSuffix, testFirstCard, evidenceResult, evidenceStageLabel, testFirstSummary } from "../../lib/uiLogic.js";
 import { withReauth } from "../../lib/ownerSession.js";
 import { recordSegment, sendSegment } from "../../lib/voiceGate.js";
 import { setPresentedPlan, clearPresentedPlan, beginCapture, endCapture, preferredMic, armedUntil, onArmed } from "../../lib/voiceContext.js";
@@ -125,12 +125,16 @@ export function DecisionCard({ plan, owner, onConfirmed, onCancel, onReplan, det
   }, [presentable, env?.id]);
   if (!plan) return null;
   if (!env) return <CardShell {...rest} title="Planul" icon={ShieldCheck}><Notice tone="warn" title="Planul nu e complet">{(summary?.blockers || []).join(" · ")}</Notice></CardShell>;
+  // M11 L5: a test-first plan's step 0, from the hashed body only (null for an ordinary plan: its card stays exactly as before).
+  const tf = testFirstCard(env.body);
   const stateLabel = { PROPOSED: awaiting ? "așteaptă confirmarea ta" : "expirat", CONFIRMED: "autorizat · în pregătire", ACTIVE: "autorizat · în execuție", WAITING_OWNER: "așteaptă decizia ta", COMPLETED: "încheiat", REVOKED: "revocat", EXPIRED: "expirat", SUPERSEDED: "înlocuit (s-a schimbat ceva)", FAILED_TO_START: "confirmat, dar nu a pornit", CANCELLED: "anulat" }[current?.status] || current?.status;
   return (
     <CardShell {...rest} title="Arată-mi înainte să faci" icon={ShieldCheck} actions={<Chip tone={current?.status === "ACTIVE" ? "info" : awaiting ? "approval" : "neutral"}>{stateLabel}</Chip>}>
       <div ref={ref} tabIndex={-1} className="decision" onKeyDown={(e) => { if (e.key === "Enter" && awaiting && eligible && policyActive && !confirm.pending && e.target === ref.current) confirm.run("keyboard"); }}>
         <p className="lead">{summary.headline}</p>
         <ul className="plain decision-lines">
+          {tf && <li><strong>{tf.step0}</strong></li>}
+          {tf?.proves && <li>{tf.proves}</li>}
           <li>{summary.where}</li><li>{summary.steps}</li>{summary.models && <li>{summary.models}</li>}<li><strong>{summary.never}</strong></li><li>{summary.stops}</li>
           {/* 2.12.2 (P0-R3): the per-turn limits and the mission's deadline the plan binds (hashed in body.limits.turnTimeoutMin). */}
           {summary.limits && <li>{summary.limits}</li>}<li>{summary.cost}</li>
@@ -156,6 +160,8 @@ export function DecisionCard({ plan, owner, onConfirmed, onCancel, onReplan, det
             <dt>Misiuni</dt><dd>{env.body.missions.map((m) => `${m.title} (spec v${m.specVersion}, ${m.workType})`).join(" · ")}</dd>
             {/* M09: the exact models/efforts the plan binds (the value confirmed is the value dispatched). */}
             <dt>Modele</dt><dd>{env.body.missions.map((m) => { const x = env.body.models?.[m.missionId]; return x ? `${env.body.missions.length > 1 ? `${m.title}: ` : ""}writer ${x.writer}; reviewer ${x.reviewer}` : `${m.title}: —`; }).join(" · ")}</dd>
+            {/* M11 L5: the Hub-written test's path appears only here, never in the card's main lines. */}
+            {tf && <><dt>Test (pasul 0)</dt><dd><span className="mono">{tf.details}</span></dd></>}
             <dt>Rută</dt><dd>{env.body.workspaceScope.route} · {env.body.attestationRefs.map((a) => a.attestationId ? `atestare ${a.attestationId} ${a.status}` : a.environment).join(", ")}</dd>
             <dt>Repository</dt><dd>{env.body.baseSnapshot.kind === "repository" ? `${env.body.baseSnapshot.branch} @ ${String(env.body.baseSnapshot.head).slice(0, 10)}` : env.body.baseSnapshot.kind} · stare {env.body.baseSnapshot.stateHash || "—"}</dd>
             <dt>Roluri</dt><dd>{env.body.allowedRoles.join(", ")} · {env.body.providers.join(", ")}</dd>
@@ -371,6 +377,8 @@ export function AgentGraph({ missionId, ...rest }) {
           </ol>
           <p className="small">Etapa: <strong>{FACTORY_STAGE_RO[v.data.factory.stage] || v.data.factory.stage}</strong>{waitSuffix(v.data.factory.waitReason, v.data.factory.stage)}</p>
           {v.data.factory.stageReason && <p className="faint small">{v.data.factory.stageReason}</p>}
+          {/* M11 L5: after protection, what the Hub-written test checks (informative; Stop and Pauză stay available). */}
+          {testFirstSummary(v.data) && <p className="small">{testFirstSummary(v.data)}</p>}
           <Src>Legăturile se aprind doar pe evenimente reale; un rol configurat nu e un worker activ. Mediul arătat e cel în care etapa A RULAT (din dovezi).</Src>
         </>
       )}
@@ -414,12 +422,16 @@ export function DiffPanel({ missionId, ...rest }) {
 export function TestPanel({ missionId, ...rest }) {
   const v = useFactory(missionId);
   const rows = (v.data?.evidence || []).filter((e) => !e.stale);
+  // M11 L5: during the proof the Hub's test must fail (labelled „așteptat”); the owner's summary appears once the test is protected.
+  const authoring = v.data?.authoring || null;
+  const protectedSummary = testFirstSummary(v.data);
   return (
     <CardShell {...rest} title="Teste și verificări" icon={ListChecks}>
+      {protectedSummary && <Notice tone="ok" title="Pasul 0 încheiat">{protectedSummary}</Notice>}
       {v.loading ? <Loading lines={3} /> : !rows.length ? <Empty title="Nicio verificare rulată">Nu există rezultate de teste pentru această misiune.</Empty> : (
         <table className="table small"><thead><tr><th>Etapa</th><th>Comanda</th><th>Rezultat</th><th>Număr</th><th>Unde</th></tr></thead>
-          <tbody>{rows.map((e) => <tr key={e.id}><td>{e.stage}</td><td className="mono">{e.command}</td><td><Chip tone={EVIDENCE_TONE[e.status] || "neutral"}>{e.status}</Chip></td>
-            <td>{e.counts?.tests !== undefined ? `${e.counts.pass ?? "?"}/${e.counts.tests}` : "—"}</td><td className="faint">{e.runner}</td></tr>)}</tbody></table>
+          <tbody>{rows.map((e) => { const r = evidenceResult(e, authoring); return <tr key={e.id}><td>{evidenceStageLabel(e.stage)}</td><td className="mono">{e.command}</td><td><Chip tone={r.tone || EVIDENCE_TONE[e.status] || "neutral"}>{r.label}</Chip>{r.note && <div className="faint small">{r.note}</div>}</td>
+            <td>{e.counts?.tests !== undefined ? `${e.counts.pass ?? "?"}/${e.counts.tests}` : "—"}</td><td className="faint">{e.runner}</td></tr>; })}</tbody></table>
       )}
       <Src>Numerele vin din ieșirea testelor (TAP); fără raportare per test, nu inventez progres.</Src>
     </CardShell>

@@ -36,7 +36,8 @@ export function faceFromLiveEvent(event, currentSessionId) {
 
 /**
  * Review F2 (L4): the question whose choices the conversation draws as buttons — the resolver's when it offers choices, else the first
- * step result's that does (a planner's „am găsit un singur test automat… Alege-l”), else the resolver's own (no buttons). A button
+ * step result's that does (a planner question with choices, e.g. the run planner's; since M11 L5 the engineering planner offers no test
+ * to pick), else the resolver's own (no buttons). A button
  * sends `choice` with that question's forIntent and the option id the Hub offered.
  */
 export function clarificationOf(response) {
@@ -179,10 +180,15 @@ export function missionGraph(view) {
   const where = (rows, fallback) => (rows.length ? (/@wsl-runner/.test(rows[rows.length - 1].runner || "") || /bwrap/.test(rows[rows.length - 1].isolation || "") ? "ifrim-runner" : "Windows") : fallback);
   const status = (rows) => (!rows.length ? "WAITING" : rows.some((r) => r.status === "FAIL") ? "FAILED" : rows.some((r) => r.status === "BLOCKED") ? "BLOCKED" : rows.every((r) => r.status === "PASS") ? "DONE" : "RUNNING");
   const runStatus = (rows) => (!rows.length ? "WAITING" : rows.some((r) => ["running", "starting"].includes(r.status)) ? "RUNNING" : rows.some((r) => r.status === "failed") ? "FAILED" : rows.some((r) => r.status === "completed") ? "DONE" : "BLOCKED");
-  const writer = view.runs.filter((r) => r.provider === "codex");
-  const reviewer = view.runs.filter((r) => r.provider === "claude");
+  // M11 L5 (critique A8): a run is the writer / the code review by the stage it was DISPATCHED for — in a test-first mission a Claude run
+  // may be the test's author and a Codex run the test's review. A run without its dispatch stage keeps the provider rule (as before).
+  const inStages = (r, stages) => !r.dispatchStage || stages.includes(r.dispatchStage);
+  const writer = view.runs.filter((r) => r.provider === "codex" && inStages(r, ["IMPLEMENTING", "REPAIRING"]));
+  const reviewer = view.runs.filter((r) => r.provider === "claude" && inStages(r, ["REVIEWING"]));
+  const stageZero = view.authoring ? [stageZeroNode(view)] : [];
   return [
     { key: "spec", label: "Specificație", status: view.factory.approvedSpecVersion ? "DONE" : "WAITING", where: "Hub" },
+    ...stageZero,
     { key: "baseline", label: "Baseline", status: status(ev("BASELINE")), where: where(ev("BASELINE"), "—") },
     { key: "writer", label: "Codex (writer)", status: runStatus(writer), where: writer.length ? (writer[writer.length - 1].environment === "wsl-runner" ? "ifrim-runner" : "Windows") : "—" },
     { key: "checks", label: "Verificări", status: status(ev("CHECKING")), where: where(ev("CHECKING"), "—") },
@@ -192,4 +198,17 @@ export function missionGraph(view) {
     { key: "e2e", label: "E2E", status: status(ev("E2E")), where: ev("E2E").length ? (ev("E2E")[0].runner === "playwright@wsl-runner" ? "ifrim-runner" : "Windows (browser)") : "—" },
     { key: "delivery", label: "Livrare", status: ["DELIVERY_READY", "ACCEPTED"].includes(view.factory.stage) ? "DONE" : view.factory.stage === "REJECTED" ? "FAILED" : "WAITING", where: "Hub" },
   ];
+}
+
+const STEP_ZERO = new Set(["TEST_AUTHORING", "TEST_PROVING", "TEST_REVIEW"]);
+/**
+ * M11 L5: the „Testul (pasul 0)” node of a test-first mission, from the factory view's `authoring` and the step-0 runs/evidence only:
+ * protected → done; abandoned → failed; held for the owner → blocked; the mission in a step-0 stage → running; else waiting.
+ */
+function stageZeroNode(view) {
+  const a = view.authoring;
+  const stage = view.factory?.stage;
+  const ran = view.runs.some((r) => STEP_ZERO.has(r.dispatchStage)) || (view.evidence || []).some((e) => e.stage === "TEST_PROVING");
+  const status = a.status === "PROTECTED" ? "DONE" : a.status === "ABANDONED" ? "FAILED" : a.blocked ? "BLOCKED" : STEP_ZERO.has(stage) ? "RUNNING" : "WAITING";
+  return { key: "test", label: "Testul (pasul 0)", status, where: ran ? "Windows (graniță de unealtă)" : "—" };
 }

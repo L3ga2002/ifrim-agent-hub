@@ -1,0 +1,22 @@
+{
+  "comment": "M11 L5 author fixture (fake-claude author:bug-slow): bug-ok with a 2.5 s wait in the check (a soft signal only), so a Pause or a Stop can land during TEST_PROVING.",
+  "body": [
+    "test(\"AC-1: un nume format doar din spații este refuzat\", async () => {",
+    "  await new Promise((resolve) => setTimeout(resolve, 2500));",
+    "  const { validateRequest } = await load(\"../../src/requests.js\");",
+    "  const r = validateRequest({ name: \"   \", email: \"ana@example.ro\", service: \"audit\" });",
+    "  assert.equal(r.ok, false, \"numele din spații trebuie refuzat\");",
+    "});",
+    "",
+    "test(\"AC-1 control: un nume obișnuit este acceptat\", async () => {",
+    "  const { validateRequest } = await load(\"../../src/requests.js\");",
+    "  assert.equal(validateRequest({ name: \"Ana\", email: \"ana@example.ro\", service: \"audit\" }).ok, true);",
+    "});"
+  ],
+  "manifest": {
+    "cases": [
+      { "name": "AC-1: un nume format doar din spații este refuzat", "criterion": "AC-1", "kind": "check", "today": "fail" },
+      { "name": "AC-1 control: un nume obișnuit este acceptat", "criterion": "AC-1", "kind": "control", "today": "pass" }
+    ]
+  }
+}

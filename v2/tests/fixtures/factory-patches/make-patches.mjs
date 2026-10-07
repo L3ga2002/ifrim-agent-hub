@@ -40,6 +40,9 @@ save("bug-fix-v2", { summary: "Remediere după review: fix + comentariu despre n
 // Tampering: the writer weakens the protected acceptance test instead of fixing the code.
 save("bug-tamper", { summary: "Fixture de integritate: slăbește testul de acceptanță protejat.",
   write: { "test/acceptance.test.mjs": read("bug-demo/test/acceptance.test.mjs").replace('assert.equal(r.ok, false, "nume obligatoriu: spațiile nu sunt un nume");\n  assert.equal(r.errors.name, "Numele este obligatoriu");', "assert.ok(r);") } });
+// M11 L5 (wave A repair): the "fix" applies only when NODE_ENV=test (what the runner sets): the protected test would pass without a real fix.
+save("bug-env-switch", { summary: "Fixture de integritate (M11 L5, reparație unda A): „repară” numele din spații doar când NODE_ENV=test (cum setează runner-ul), deci testul protejat ar trece fără fix real.",
+  write: { "src/requests.js": original.replace('const name = typeof input.name === "string" ? input.name : "";', 'const name = typeof input.name === "string" ? (process.env.NODE_ENV === "test" ? input.name.trim() : input.name) : "";') } });
 // Correct code, but a new test is skipped: the runner must not count it as a pass.
 save("bug-skip", { summary: "Fixture: fix corect + un test sărit.",
   write: { "src/requests.js": fixed, "test/regression.test.mjs": regression.replace('test("regresie', 'test.skip("regresie') } });

@@ -6,7 +6,8 @@
 //  - gate_rearm („Redeschide poarta”, „Rearmează Hub-ul”, „Pornește din nou după Stop All”) only shows the card (READ_NAVIGATE), and is
 //    never read as a Stop All or a held condition;
 //  - the engineering planner binds the project's ONLY acceptance-named test when the words name it or describe a bug (no question);
-//    none / several / a named missing file keep the one question; the card and the spec say the test is protected;
+//    none / several / a named missing file bind nothing (M11 L5: the Hub writes the test, or a plain answer — never the old question);
+//    the card and the spec say the test is protected;
 //  - the plan card mentions a local preview / E2E only when the spec has them (a spec with both keeps the earlier wording);
 //  - the setup's automatic attestation re-attests only the latest PASS fingerprint, decided on a fresh inspection; a new one is the
 //    owner's decision (System → Medii); the account step refreshes a stale reviewer account check too.
@@ -167,14 +168,23 @@ test("P0-04b „Redeschide poarta / Rearmează Hub-ul / Continuă … după Stop
   assert.equal(one("Oprește tot").intent, "stop_all");
 });
 
-// 2.12.1 round 2 (review PF-03 / PF-04): another test named, or a NEW acceptance test asked for → no binding (the one question).
-test("P0-05b no acceptance-test binding when the words name another test or ask to write an acceptance test", () => {
+// 2.12.1 round 2 (review PF-03 / PF-04): another test named, or a NEW acceptance test asked for → the acceptance test is not bound.
+// M11 L5 (wave B, design §2 routes F/G, §8 „Teste existente actualizate deliberat”): the one question is gone. „Repară testul de login…”
+// now binds the ONE test whose name holds the topic (test/login.test.mjs, autoBound "topic"), never the acceptance test; a request to write
+// an acceptance test is test-first (the Hub writes the new test; testRef stays null: no existing test bound).
+test("P0-05b no acceptance-test binding when the words name another test or ask to write an acceptance test (M11 L5: the named topic's test, or test-first)", () => {
   const a = fixtureCopy();
   try {
     fs.writeFileSync(path.join(a.dir, "test", "login.test.mjs"), "// fictiv\n");
     const project = { path: a.dir };
-    for (const text of ["Repară testul de login care pică", "Repară testul login", "Adaugă un test de acceptanță pentru validarea numelui din Factory Demo M10.2", "Scrie testul de acceptanță pentru export"]) {
-      assert.equal(buildEngineeringSpec({ text, project }).testRef, null, text);
+    for (const text of ["Repară testul de login care pică", "Repară testul login"]) {
+      const b = buildEngineeringSpec({ text, project });
+      assert.deepEqual([b.testRef, b.autoBound], ["test/login.test.mjs", "topic"], text);
+    }
+    for (const text of ["Adaugă un test de acceptanță pentru validarea numelui din Factory Demo M10.2", "Scrie testul de acceptanță pentru export"]) {
+      const b = buildEngineeringSpec({ text, project });
+      assert.equal(b.testRef, null, text);
+      assert.ok(b.testFirst?.ok && b.input.spec.authoring, `${text}: test-first`);
     }
     assert.equal(buildEngineeringSpec({ text: "Repară butonul de export care nu merge", project }).autoBound, "described");
     assert.equal(buildEngineeringSpec({ text: "Repară testul de acceptanță din Factory Demo M10.2", project }).autoBound, "named");

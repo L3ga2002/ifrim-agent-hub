@@ -1,0 +1,25 @@
+{
+  "comment": "M11 L5 author fixture (fake-claude author:bug-ok): a valid BUGFIX body for bug-demo-test-first. Today: the check fails on an assertion, the control passes (PROVEN).",
+  "body": [
+    "test(\"AC-1: un nume format doar din spații este refuzat\", async () => {",
+    "  const { validateRequest } = await load(\"../../src/requests.js\");",
+    "  const r = validateRequest({ name: \"   \", email: \"ana@example.ro\", service: \"audit\" });",
+    "  assert.equal(r.ok, false, \"numele din spații trebuie refuzat\");",
+    "  assert.equal(r.errors.name, \"Numele este obligatoriu\");",
+    "});",
+    "",
+    "test(\"AC-1 control: un nume obișnuit este acceptat\", async () => {",
+    "  const { validateRequest } = await load(\"../../src/requests.js\");",
+    "  const r = validateRequest({ name: \"Ana\", email: \"ana@example.ro\", service: \"audit\" });",
+    "  assert.equal(r.ok, true);",
+    "});"
+  ],
+  "manifest": {
+    "needs": [],
+    "api": "",
+    "cases": [
+      { "name": "AC-1: un nume format doar din spații este refuzat", "criterion": "AC-1", "kind": "check", "today": "fail" },
+      { "name": "AC-1 control: un nume obișnuit este acceptat", "criterion": "AC-1", "kind": "control", "today": "pass" }
+    ]
+  }
+}

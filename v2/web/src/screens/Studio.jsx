@@ -2,7 +2,7 @@ import { useEffect, useRef } from "react";
 import { KanbanSquare, Clapperboard, Library as LibraryIcon, Gauge, MonitorSmartphone, LineChart } from "lucide-react";
 import "../styles/m08.css";
 import "../styles/m09.css";
-import { STUDIO_TABS, studioRoute, studioHref } from "../lib/studioLogic.js";
+import { STUDIO_TABS, studioRoute, studioHref, studioReviewParam } from "../lib/studioLogic.js";
 import { ErrorNotice, Loading } from "../components/ui.jsx";
 import { useStudio, Limitations } from "./studio/common.jsx";
 import { Board } from "./studio/Board.jsx";
@@ -73,7 +73,7 @@ export default function Studio({ id, query, go }) {
         {toolsOpen && <ToolsPanel focus={query?.panel === "tools"} onChanged={status.reload} />}
         {route.tab === "board" && <Board go={go} />}
         {route.tab === "project" && (route.projectId
-          ? <ProjectDetail projectId={route.projectId} sub={route.sub} tMs={route.tMs} versionId={route.versionId} go={go} status={status.data} />
+          ? <ProjectDetail projectId={route.projectId} sub={route.sub} tMs={route.tMs} versionId={route.versionId} reviewId={studioReviewParam(query)} go={go} status={status.data} />
           : <ProjectPicker go={go} />)}
         {route.tab === "library" && (status.loading && !status.data ? <Loading lines={4} /> : <Library status={status.data} reloadStatus={status.reload} />)}
         {route.tab === "command" && <CommandCenter status={status.data} go={go} />}

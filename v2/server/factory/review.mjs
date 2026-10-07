@@ -59,8 +59,8 @@ export function buildReviewBrief({ mission, spec, specVersion, changeSet, checks
 
 const clip = (value, max) => redactText(String(value ?? "").trim()).slice(0, max);
 
-/** Finds the LAST ```json block of the reviewer's answer. */
-function lastJsonBlock(text) {
+/** Finds the LAST ```json block of the reviewer's answer (raw text, or null). Exported for M11 L5's test review. */
+export function lastJsonBlock(text) {
   const blocks = [...String(text || "").matchAll(/```json\s*([\s\S]*?)```/g)];
   return blocks.length ? blocks[blocks.length - 1][1] : null;
 }

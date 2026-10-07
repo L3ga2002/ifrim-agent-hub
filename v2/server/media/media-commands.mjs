@@ -166,11 +166,56 @@ export function registerMediaCommands(register, hub) {
     // M10: selectedItemId = the text item the owner selected in the Studio for THIS version (it wins over any guess; a stale one is ignored).
     schema: { editVersionId: { required: true, max: 80 }, text: { required: true, max: 1000 }, timecodeMs: { type: "integer" }, selectedItemId: { max: 80 } },
     execute: (input, ctx) => media.reviews.propose({ ...input, timecodeMs: input.timecodeMs ?? null, selectedItemId: input.selectedItemId || null, provenance: provenanceOf(ctx), actor: ctx.actor, sessionId: session(ctx)?.id || null }) });
+  // D7 (2.12.3): a correction Lega proposed as ONE plan (apply → draft render → QA) is applied only by that plan's confirmation in the owner
+  // session (the cockpit card or the same card in the Studio). This command never confirms a plan (it also runs on the cookie-less "ui"
+  // channel): it refuses a review bound to a live plan, refuses a review whose base a confirmed plan is correcting right now or a proposed
+  // (unexpired) plan is waiting to correct (D7 review), and closes the proposed correction plans its own apply / dismissal made obsolete
+  // (expired ones; no orphaned card). The plan's step calls media.reviews.apply directly, never this command.
+  const reviewPlans = (review) => (review ? hub.opsPlans?.correctionPlans?.({ reviewId: review.id, editVersionId: review.editVersionId }) || [] : []);
   reg("media.edit.patch.apply", { describe: "Aplică o corectură propusă (versiune nouă; originalul rămâne)", channels: OWNER_UI,
-    schema: { reviewId: { required: true, max: 80 } }, execute: (input, ctx) => media.reviews.apply({ reviewId: input.reviewId, actor: ctx.actor }) });
+    schema: { reviewId: { required: true, max: 80 } }, execute: (input, ctx) => hub.bus.transaction(() => {
+      const review = media.reviews.get(input.reviewId);
+      const plans = reviewPlans(review);
+      const own = plans.find((p) => p.reviewId === review.id && !p.expired);
+      if (own) {
+        throw new HubError("conflict", own.status === "PROPOSED"
+          ? "Corectura asta face parte din planul afișat: îl confirmi o dată și aplic corectura, randez ciorna și rulez QA. Nu o aplic separat."
+          : "Corectura e deja în planul confirmat; îl urmărești sau îl continui din cardul planului.", { code: "REVIEW_IN_PLAN", data: { planId: own.id, status: own.status } });
+      }
+      // A confirmed plan corrects this very version now: a second version from here would make its step fail (REVIEW_STALE).
+      const busy = plans.find((p) => p.status !== "PROPOSED" && p.editVersionId === review.editVersionId);
+      if (busy) {
+        throw new HubError("conflict", "Un plan confirmat corectează chiar acum această versiune; aștept să termine, apoi propui corectura pe versiunea nouă.",
+          { code: "EDIT_PLAN_ACTIVE", data: { planId: busy.id, status: busy.status } });
+      }
+      // D7 review: a correction plan waiting for its ONE confirmation (PROPOSED, not expired) on this very version — the same sentence retyped
+      // in the Studio as another review must not take the old path (a version with no render and no QA, the plan quietly closed). The plan's
+      // card decides: confirmed, or „Nu acum” (cancelled) and only then a direct apply.
+      const waiting = plans.find((p) => p.status === "PROPOSED" && !p.expired && p.editVersionId === review.editVersionId);
+      if (waiting) {
+        throw new HubError("conflict", "Planul afișat corectează deja această versiune: îl confirmi o dată sau alegi „Nu acum” pe cardul lui; abia apoi poți aplica altă corectură.",
+          { code: "EDIT_PLAN_PROPOSED", data: { planId: waiting.id, status: waiting.status, reviewId: waiting.reviewId || null } });
+      }
+      const out = media.reviews.apply({ reviewId: input.reviewId, actor: ctx.actor });
+      if (!out.alreadyApplied) {
+        hub.opsPlans?.supersedeCorrections?.({ editVersionId: out.review.editVersionId,
+          reason: "Versiunea a fost corectată direct în Studio; planul vechi nu se mai poate aplica. Cere corectura din nou dacă mai e nevoie." });
+      }
+      return out;
+    }) });
   reg("media.edit.patch.dismiss", { describe: "Renunță la o corectură propusă", channels: ANY,
     schema: { reviewId: { required: true, max: 80 }, reason: { max: 500, default: "" } },
-    execute: (input, ctx) => media.reviews.dismiss({ reviewId: input.reviewId, actor: ctx.actor, reason: input.reason }) });
+    execute: (input, ctx) => hub.bus.transaction(() => {
+      // Fail-safe on every channel; only a plan already confirmed for this correction decides it (stopped or cancelled from its card).
+      const review = media.reviews.get(input.reviewId);
+      const confirmed = reviewPlans(review).find((p) => p.reviewId === review.id && p.status !== "PROPOSED");
+      if (confirmed) {
+        throw new HubError("conflict", "Corectura e în planul confirmat; o oprești sau o anulezi din cardul planului.", { code: "REVIEW_IN_PLAN", data: { planId: confirmed.id, status: confirmed.status } });
+      }
+      const out = media.reviews.dismiss({ reviewId: input.reviewId, actor: ctx.actor, reason: input.reason });
+      hub.opsPlans?.supersedeCorrections?.({ reviewId: input.reviewId, reason: "Ai renunțat la corectură." });
+      return out;
+    }) });
   reg("media.edit.divergence.record", { describe: "Înregistrează o modificare făcută manual într-un editor (divergență)", channels: OWNER_UI,
     schema: { editVersionId: { required: true, max: 80 }, description: { required: true, max: 2000 }, editor: { max: 40, default: "capcut" }, ir: { type: "object" }, externalFileSha256: { max: 64 } },
     execute: (input, ctx) => media.reviews.recordManualDivergence({ ...input, actor: ctx.actor }) });

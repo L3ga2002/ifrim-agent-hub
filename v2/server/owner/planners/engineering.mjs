@@ -10,31 +10,49 @@
 //   ("Modele: …") and hashed into the envelope (owner decision 4). The account default model is never used.
 // - The Hub's own repository is refused, always (decision 10), and a project without execution rights is refused, before any
 //   draft exists; other blockers are explained once from verified state (owner/blockers.mjs) and the request is preserved.
-// - A request that cannot be made verifiable (no existing acceptance test to bind) gets ONE question, never a draft that can
-//   only end as PLAN_INCOMPLETE — or, 2.12.2 (P0-R6, L4), when the project has no test file at all, ONE plain message (nothing to choose:
-//   the Hub cannot prove the change works, the owner does not write the test, nothing is kept). M10.2.1 (D21): a request that names „testul de acceptanță” or describes a bug without naming a
-//   test file binds the project's ONLY acceptance test (a file named …acceptance… / …acceptanță…) with no question; with none or
-//   several, the one question stays. The bound test is protected: the writer repairs the implementation, never the test (said on
-//   the card and in the spec the writer reads). A test file the owner named that does not exist is never replaced by another one.
-//   2.12.1 round 2: a bug description that names another test („Repară testul de login care pică”) and a request to write a NEW
-//   acceptance test („Adaugă un test de acceptanță…”) are not bound: the one question stays.
+// - M11 L5 (design .ifrim/M11_L5_DESIGN.md §2): a request with no existing test to bind becomes a TEST-FIRST plan — its step 0 is the
+//   Hub writing the acceptance test from the owner's words (Claude proposes it read-only, the Hub proves twice that it fails on today's
+//   code for the right reason, Codex reviews it read-only, then the Hub protects it). The owner never writes, names or picks a file and
+//   confirms ONCE; the „pick one of the tests found” question and the L4 „vine curând” message are gone (owner decision Q3). The routes:
+//     A a named test file that exists → bound and protected (unchanged);
+//     B a named test file that does not exist → ONE plain message; it is never replaced by another test; nothing is kept (D21 rule);
+//     C D21 „named”: the words name „testul de acceptanță” and the project has ONE acceptance-named test → bound (probe step D);
+//     D the acceptance test named while the project has none or several → ONE plain question, without file names;
+//     E D21 „described”: a BUGFIX naming no test, the project's ONE acceptance test → bound (unchanged);
+//     F PF-04 „Adaugă / Scrie un test de acceptanță…” → test-first (a test that already passes is not kept: the owner decides, Q2);
+//     G PF-03: a BUGFIX naming another test („testul de login”) → the ONE test file whose name holds that topic (autoBound "topic"),
+//       otherwise test-first;
+//     H any other BUGFIX / FEATURE → test-first;
+//     I a REFACTOR with no test → ONE plain message (the Hub's characterization test is L5b); nothing kept;
+//     J test-first outside a `hub-test` project on the Windows route (ProDelivery named explicitly) → T1; nothing kept. The factory
+//       refuses the same at start, whatever built the spec, and the plan card shows it as a blocker (envelopes readiness).
+//   The bound test is protected: the writer repairs the implementation, never the test (said on the card and in the spec the writer
+//   reads). Hub-written tests (test/hub/) are never bound by D21 or by topic. A programmer's bare test path said within 2 minutes still
+//   completes the request — after a test-first card too: the new plan replaces it (critique B10).
 // - Draft cleanup: a draft this planner created and nobody started is cancelled when its plan is superseded, expires or is
 //   cancelled, or when the preserved request it belongs to is cancelled or expires. A draft the owner made (no intake provenance)
 //   or one that already started is never touched.
 import fs from "node:fs";
 import path from "node:path";
 import { HubError } from "../../core/errors.mjs";
-import { hashCanonical } from "../../core/canonical.mjs";
+import { hashCanonical, sha256 } from "../../core/canonical.mjs";
 import { redactText } from "../../security/redact.mjs";
 import { normalize } from "../intents.mjs";
 import { checkSpec, isAllowedCommand, protectedTestRefs } from "../../factory/spec.mjs";
 import { defaultModelLimits, ROLE_DEFAULT_BINDINGS, limitsHaveModels, turnTimeoutsOf } from "../../factory/plan.mjs";
+import { plannedTestRefs, deriveIgnore, testFirstScope, HUB_TEST_DIR, STAGING_DIR, T_ROUTE_MISSING_TEST, T_ROUTE_ASK_BEHAVIOUR, T_ROUTE_REFACTOR, T_PLANNER_NOTE } from "../../factory/test-first.mjs";
 import { collectFacts, onlyAfterConfirmation, readinessPassFor } from "../readiness-runner.mjs";
 import { explain } from "../blockers.mjs";
 
 /** An open question (the project, the acceptance test) is answerable for 2 minutes, like the intake's own clarifications. */
 export const ENGINEERING_LIMITS = Object.freeze({ pendingTtlMs: 2 * 60 * 1000, pendingMax: 50, candidateMax: 6, scanDepth: 2 });
 const KIND_HINTS = Object.freeze({ bug: "BUGFIX", bugfix: "BUGFIX", fix: "BUGFIX", feature: "FEATURE", functionalitate: "FEATURE", refactor: "REFACTOR", refactoring: "REFACTOR" });
+/**
+ * M11 L5 review (flow #3): Lega's propose_mission template (args.missionKind, domain/missions.mjs MISSION_TEMPLATES) is an explicit
+ * hint too — before, it was ignored, so an eng_refactor became a FEATURE (a test-first plan asking for a test that fails today, the
+ * opposite of a refactor) and an eng_bugfix lost the BUGFIX control rule.
+ */
+const MISSION_KIND_HINTS = Object.freeze({ eng_bugfix: "BUGFIX", eng_feature: "FEATURE", eng_refactor: "REFACTOR" });
 const WORK_TYPES = new Set(["BUGFIX", "FEATURE", "REFACTOR"]);
 const TEST_FILE = /\.(?:test|spec)\.(?:mjs|cjs|js)$/i;
 const TEST_IN_TEXT = /(?:^|[\s„"'(])((?:\.\/)?[\w-]+(?:\/[\w.-]+)*\.(?:test|spec)\.(?:mjs|cjs|js))(?=$|[\s.,;:!?”"')])/i;
@@ -59,15 +77,40 @@ const NAMES_A_TEST = /\btest(?:ul|ului|ele|elor|e|s)?\b/;
  */
 const CREATE_VERB = String.raw`(?:adauga|adaugi|adaugati|scrie|scrii|scrieti|creeaza|creezi|creati|fa|faci|faceti|genereaza|generezi|generati|pregateste|pregatesti|add|write|create|make|generate)`;
 const BETWEEN = String.raw`(?:si|un|o|niste|inca|alt|alte|alti|nou|noua|noi|primul|prima|cel|cea|cei|mai|in|pe|la|proiect|proiectul|aici|acum|a|an|the|new|another)`;
-const CREATES_ACCEPTANCE = new RegExp(String.raw`\b${CREATE_VERB}(?:-mi|-ne)?(?:\s+${BETWEEN}\b)*\s+(?:test(?:ul|ele|e)?\s+(?:(?:nou|noua|noi)\s+)?(?:de\s+)?(?:acceptanta|acceptance)\b|acceptance[\s-]+tests?\b)`);
+/**
+ * M11 L5 review (flow #4): „Fă testul de acceptanță SĂ TREACĂ” (or „să meargă”, „să fie verde”, „Make the acceptance test pass”) asks for
+ * the code to make the EXISTING test pass, not for a new test: a pass clause right after the test noun cancels the create reading, so the
+ * project's one acceptance test is bound (route C). „Adaugă un test de acceptanță CARE să treacă doar când …” still creates one.
+ */
+const PASS_CLAUSE = String.raw`(?!\s+(?:sa\s+(?:treaca|mearga|functioneze|fie\s+verde|reuseasca)|to\s+pass|pass(?:es)?)\b)`;
+const CREATES_ACCEPTANCE = new RegExp(String.raw`\b${CREATE_VERB}(?:-mi|-ne)?(?:\s+${BETWEEN}\b)*\s+(?:test(?:ul|ele|e)?\s+(?:(?:nou|noua|noi)\s+)?(?:de\s+)?(?:acceptanta|acceptance)\b|acceptance[\s-]+tests?\b)${PASS_CLAUSE}`);
 /** At most this many acceptance-named files are collected: one decides, two already mean „ask”. */
 const ACCEPTANCE_SCAN_MAX = 5;
+/**
+ * M11 L5 (§4 „Termenul misiunii”): a test-first draft's mission deadline (shown on the card, hashed with the limits; 10–480 allowed): step
+ * 0 adds an author turn, two proof runs and a test review before the implementation.
+ */
+export const TEST_FIRST_MAX_DURATION_MIN = 180;
+/** The Hub's own test folder (test/hub/): a Hub-written test is never bound by D21 or by topic (critique B2). */
+const HUB_TEST_DIR_LOWER = HUB_TEST_DIR.toLowerCase();
+/**
+ * M11 L5 (§2 route G): the words after a test word that are not its topic. Skipped: prepositions, articles and plain adjectives
+ * („testul NOU DE login”); a stop word ends the search for that test word („testele CARE pică” names no topic).
+ */
+const TOPIC_FILLERS = new Set(["de", "pentru", "la", "al", "a", "ai", "ale", "cu", "pe", "din", "despre", "of", "for", "the", "nou", "noua", "noi", "vechi", "existent", "existenta",
+  "automat", "automata", "unitar", "unitara", "principal", "principala"]);
+const TOPIC_STOP = new Set(["care", "ce", "cel", "cea", "cei", "cele", "meu", "mea", "tau", "ta", "lui", "ei", "lor", "asta", "acesta", "aceasta", "acela", "aceea", "ala", "aia",
+  "si", "sa", "nu", "mai", "tot", "toate", "toti", "un", "o", "este", "e", "sunt", "pica", "picat", "merge", "mergea", "trece", "esueaza", "rosu", "cazut",
+  "that", "which", "is", "are", "fails", "failing", "broken"]);
+/** The first sentence of route B (the same words as T_ROUTE_MISSING_TEST), followed by the reason when the Hub cannot write the test. */
+const missingHead = (name) => `Nu găsesc testul „${name}”; nu îl înlocuiesc cu altul.`;
 
 /** BUGFIX / FEATURE / REFACTOR from an explicit hint, else from the words (a bug word wins over a refactor word). */
 export function workTypeOf(text, hint = "") {
   const h = String(hint || "").trim();
   if (WORK_TYPES.has(h.toUpperCase())) return h.toUpperCase();
   if (KIND_HINTS[normalize(h)]) return KIND_HINTS[normalize(h)];
+  if (Object.hasOwn(MISSION_KIND_HINTS, h.toLowerCase())) return MISSION_KIND_HINTS[h.toLowerCase()];
   const n = normalize(text);
   if (/\b(bug|buguri|eroare|erori|eroarea|repara|repar|reparam|fix|fixeaza|nu merge|nu functioneaza|crapa|greseala|gresit|defect|regresie)\b/.test(n)) return "BUGFIX";
   if (/\b(refactor|refactorizeaza|refactorizare|restructureaza|curata codul|simplifica codul)\b/.test(n)) return "REFACTOR";
@@ -103,9 +146,10 @@ function existingTestRef(projectPath, raw) {
 
 /**
  * Existing test files under the usual test folders that `accept(name)` keeps (bounded walk; names only, no content read). `max` is
- * checked per folder (the candidate list's long-standing behaviour); `strict` also stops inside a folder.
+ * checked per folder (the candidate list's long-standing behaviour); `strict` also stops inside a folder. `skipHubTests` leaves out the
+ * Hub's own test folder (test/hub/, M11 L5): a test the Hub wrote for an earlier mission is never a candidate.
  */
-function walkTests(projectPath, { accept = () => true, max = 40, strict = false } = {}) {
+function walkTests(projectPath, { accept = () => true, max = 40, strict = false, skipHubTests = false } = {}) {
   const out = [];
   const walk = (dir, rel, depth) => {
     if (out.length >= max || depth > ENGINEERING_LIMITS.scanDepth) return;
@@ -115,7 +159,7 @@ function walkTests(projectPath, { accept = () => true, max = 40, strict = false 
       if (strict && out.length >= max) return;
       if (e.name.startsWith(".") || e.name === "node_modules") continue;
       const r = rel ? `${rel}/${e.name}` : e.name;
-      if (e.isDirectory()) walk(path.join(dir, e.name), r, depth + 1);
+      if (e.isDirectory()) { if (!(skipHubTests && r.toLowerCase() === HUB_TEST_DIR_LOWER)) walk(path.join(dir, e.name), r, depth + 1); }
       else if (e.isFile() && TEST_FILE.test(e.name) && accept(e.name) && isAllowedCommand(`node --test ${r}`)) out.push(r);
     }
   };
@@ -123,55 +167,179 @@ function walkTests(projectPath, { accept = () => true, max = 40, strict = false 
   return out;
 }
 
-/** Existing test files a criterion could be bound to: acceptance tests first (the convention the factory demos use), then by name. */
-function testCandidates(projectPath) {
-  return walkTests(projectPath).sort((a, b) => Number(/acceptan/i.test(b)) - Number(/acceptan/i.test(a)) || a.localeCompare(b)).slice(0, ENGINEERING_LIMITS.candidateMax);
+/**
+ * M10.2.1 (D21): the project's test files whose NAME says acceptance (case and diacritics ignored), at most ACCEPTANCE_SCAN_MAX. M11 L5
+ * (critique B2): never under test/hub/ — a Hub-written test of an earlier mission is not the project's acceptance test for a new request.
+ */
+export function acceptanceCandidates(projectPath) {
+  return walkTests(projectPath, { accept: (name) => ACCEPTANCE_FILE.test(normalize(name)), max: ACCEPTANCE_SCAN_MAX, strict: true, skipHubTests: true }).sort((a, b) => a.localeCompare(b));
 }
 
-/** M10.2.1 (D21): the project's test files whose NAME says acceptance (case and diacritics ignored), at most ACCEPTANCE_SCAN_MAX. */
-export function acceptanceCandidates(projectPath) {
-  return walkTests(projectPath, { accept: (name) => ACCEPTANCE_FILE.test(normalize(name)), max: ACCEPTANCE_SCAN_MAX, strict: true }).sort((a, b) => a.localeCompare(b));
+/**
+ * M11 L5 (§2 route G): the topic a request names right after a test word, on normalized words („testul de login care pică” → "login",
+ * „testul nou de export” → "export"), or null („testele care pică”, „testul de acceptanță”, a word under 3 letters).
+ */
+export function namedTopic(plain) {
+  const tokens = String(plain || "").split(/[^a-z0-9_-]+/).map((w) => w.replace(/^[-_]+|[-_]+$/g, "")).filter(Boolean);
+  for (let i = 0; i < tokens.length; i += 1) {
+    if (!/^test(?:ul|ului|ele|elor|e|s)?$/.test(tokens[i])) continue;
+    for (let j = i + 1; j < Math.min(tokens.length, i + 5); j += 1) {
+      const w = tokens[j];
+      if (TOPIC_FILLERS.has(w)) continue;
+      if (w.length >= 3 && !TOPIC_STOP.has(w) && !ACCEPTANCE_FILE.test(w) && !/^test/.test(w) && !/^\d+$/.test(w)) return w.slice(0, 40);
+      break;
+    }
+  }
+  return null;
+}
+
+/**
+ * M11 L5 (§2 route G): whether a test file NAME holds the topic as a whole word of it — the name (without .test.mjs) split on `-`, `_`,
+ * `.` and spaces. A topic of 4+ letters may also be the start of a word (inflected forms: "login" in logins.test.mjs); a 3-letter topic
+ * must be a whole word. Review (authority #1): a substring match bound catalog.test.mjs to „testul de log” without a question.
+ */
+export function nameHoldsTopic(name, topic) {
+  const t = String(topic || "");
+  if (t.length < 3) return false;
+  const words = normalize(String(name || "").replace(TEST_FILE, "")).split(/[-_.\s]+/).filter(Boolean);
+  return words.some((w) => w === t || (t.length >= 4 && w.startsWith(t)));
+}
+
+/** M11 L5 (§2 route G): the test files (at most 2: one decides, two already mean „write the test”) whose NAME holds the topic; never test/hub/. */
+export function topicCandidates(projectPath, topic) {
+  const t = String(topic || "");
+  if (t.length < 3) return [];
+  return walkTests(projectPath, { accept: (name) => nameHoldsTopic(name, t), max: 2, strict: true, skipHubTests: true }).sort((a, b) => a.localeCompare(b));
+}
+
+/**
+ * M11 L5 (§5.1): what already sits at the Hub's own paths for this request — the files in test/hub/ and .ifrim-hub/staging/ whose name
+ * starts with `prefix` ("<slug>-<h6>"), as {rel: sha256 | null} (null: there, but not a plain file the planner can read). plannedTestRefs
+ * then reuses a staging path only when it holds exactly the Hub's recorded write, and skips to -2 … -9 otherwise. Bounded.
+ */
+function hubPathsOnDisk(projectPath, prefix) {
+  const out = {};
+  const want = String(prefix || "").toLowerCase();
+  for (const dir of [HUB_TEST_DIR, STAGING_DIR]) {
+    let entries = [];
+    try { entries = fs.readdirSync(path.join(projectPath, ...dir.split("/")), { withFileTypes: true }); } catch { continue; }
+    for (const e of entries.slice(0, 500)) {
+      if (!e.name.toLowerCase().startsWith(want)) continue;
+      const rel = `${dir}/${e.name}`;
+      let sha = null;
+      try {
+        const abs = path.join(projectPath, ...rel.split("/"));
+        const st = fs.lstatSync(abs);
+        if (st.isFile() && st.size <= 1024 * 1024) sha = sha256(fs.readFileSync(abs));
+      } catch { sha = null; }
+      out[rel] = sha;
+    }
+  }
+  return out;
+}
+
+function readGitignore(projectPath) {
+  try { return fs.readFileSync(path.join(projectPath, ".gitignore"), "utf8").slice(0, 64 * 1024); } catch { return ""; }
 }
 
 function readScripts(projectPath) {
   try { return JSON.parse(fs.readFileSync(path.join(projectPath, "package.json"), "utf8"))?.scripts || {}; } catch { return {}; }
 }
 
+/** The request's hints without the test files it named (kept for the 2-minute answer: a path that was not found is not asked for again). */
+function withoutTestRefs(args = {}) {
+  const { testRef: _testRef, chosenId: _chosenId, ...rest } = args || {};
+  if (Array.isArray(rest.acceptance)) rest.acceptance = rest.acceptance.map((a) => (a && typeof a === "object" ? { text: a.text } : a));
+  return rest;
+}
+
 /**
  * The spec input for factory.prepare from the owner's words and the (bounded, validated) structured hints a client may add
- * (Lega's request tool: kind hint, acceptance texts, the test file). Returns { input, problems, testRef, workType, autoBound }; `problems`
- * are checkSpec's, so "verifiable" means exactly what the factory will accept at approval; `autoBound` ("named" | "described" | null)
- * says the test was the project's only acceptance test, bound without a question (M10.2.1).
+ * (Lega's request tool: kind hint, acceptance texts, the test file). Returns { input, problems, testRef, workType, autoBound, route,
+ * testFirst, missing, topic }; `problems` are checkSpec's, so "verifiable" means exactly what the factory will accept at approval.
+ *  - `route`: the row of the §2 table (A–I; J is the planner's: it knows the project's source and route) — see the file header;
+ *  - `testRef` / `autoBound` ("named" | "described" | "topic" | null): the EXISTING test bound and protected (A, C, E, G), with how it was
+ *    found without a question (M10.2.1, M11 L5);
+ *  - `testFirst` ({ ok, testRef, stagingRef, criteria, problem }): the Hub-written test's paths when the plan's step 0 writes it (F, G
+ *    with no single topic file, H); the spec then carries `authoring`, `workspace.ignore` (from .gitignore, §5.1 S1) and its acceptance
+ *    command, and `testRef` stays null (no existing test is bound);
+ *  - `missing`: the named test that does not exist (B), as said.
+ * `hubWrites` ({stagingRef: sha256}, factory.hubWrites) lets an abandoned step 0's own file be reused at the same path (§5.1).
  */
-export function buildEngineeringSpec({ text, args = {}, project }) {
+export function buildEngineeringSpec({ text, args = {}, project, hubWrites = {} }) {
   const words = String(text || "").replace(LEGA_PREFIX, "").replace(/\s+/g, " ").trim();
-  const workType = workTypeOf(words, args.workType || args.kindHint || args.kind_hint || "");
+  const workType = workTypeOf(words, args.workType || args.kindHint || args.kind_hint || args.missionKind || "");
   const said = [args.testRef, ...(Array.isArray(args.acceptance) ? args.acceptance.map((a) => (a && typeof a === "object" ? a.testRef : null)) : []), (words.match(TEST_IN_TEXT) || [])[1]].filter(Boolean);
   let named = said.map((r) => existingTestRef(project.path, r)).find(Boolean) || null;
-  // M10.2.1 (D21): no test file said at all, and the words name the acceptance test or describe a bug → the project's ONLY
-  // acceptance-named test file, re-checked like a named one. None or several → no binding (the planner asks its one question).
-  // 2.12.1 round 2: never when the owner asks to CREATE the acceptance test (PF-04), and a described bug is bound only when the words
-  // name no other test (PF-03: „Repară testul de login care pică” asks which test, as before M10.2.1).
+  // A: a test file said (by the words, a hint or the 2-minute answer) that exists. B: said, but none of them exists — never replaced.
+  let route = named ? "A" : said.length ? "B" : null;
   let autoBound = null;
+  let topic = null;
   const plain = normalize(words);
   const namesAcceptance = NAMES_ACCEPTANCE.test(plain);
-  const describesBug = workType === "BUGFIX" && !namesAcceptance && !NAMES_A_TEST.test(plain);
-  if (!named && !said.length && !CREATES_ACCEPTANCE.test(plain) && (namesAcceptance || describesBug)) {
+  const createsAcceptance = CREATES_ACCEPTANCE.test(plain);
+  const namesTest = NAMES_A_TEST.test(plain);
+  // M10.2.1 (D21) C / E: no test file said, the words name the acceptance test (C) or describe a bug naming no test (E) → the project's
+  // ONLY acceptance-named test file (never under test/hub/), re-checked like a named one. 2.12.1 round 2: never when the owner asks to
+  // CREATE the acceptance test (PF-04 → F).
+  if (!route && !createsAcceptance && (namesAcceptance || (workType === "BUGFIX" && !namesTest))) {
     const only = acceptanceCandidates(project.path);
     if (only.length === 1) {
       named = existingTestRef(project.path, only[0]);
-      if (named) autoBound = namesAcceptance ? "named" : "described";
+      if (named) { autoBound = namesAcceptance ? "named" : "described"; route = namesAcceptance ? "C" : "E"; }
     }
   }
+  // M11 L5 G (PF-03): a bug that names ANOTHER test („Repară testul de login care pică”) binds the one test file whose name holds that
+  // topic; none or several → the Hub writes the test (below).
+  if (!route && !createsAcceptance && !namesAcceptance && workType === "BUGFIX" && namesTest) {
+    topic = namedTopic(plain);
+    const found = topic ? topicCandidates(project.path, topic) : [];
+    if (found.length === 1) {
+      named = existingTestRef(project.path, found[0]);
+      if (named) { autoBound = "topic"; route = "G"; }
+    }
+  }
+  // No existing test bound: I (a refactor: the characterization test is L5b), F (PF-04), D (the acceptance test named, none or several),
+  // G (a bug naming another test, no single file), H (anything else). F, G and H are test-first.
+  if (!route) route = workType === "REFACTOR" ? "I" : createsAcceptance ? "F" : namesAcceptance ? "D" : workType === "BUGFIX" && namesTest ? "G" : "H";
+  const writesTest = !named && ["F", "G", "H"].includes(route);
   const title = titleOf(String(args.title || "").trim() || words);
+  const finalTitle = title.length >= 3 ? title : "Cerință de engineering";
   const criteria = (Array.isArray(args.acceptance) ? args.acceptance : []).map((a) => String(typeof a === "string" ? a : a?.text || "").replace(/\s+/g, " ").trim()).filter((s) => s.length >= 5).slice(0, 8);
   const scripts = readScripts(project.path);
   const checks = (Array.isArray(args.verification?.checks) ? args.verification.checks : []).map((c) => String(c || "").trim().replace(/\s+/g, " ")).filter(isAllowedCommand).slice(0, 4);
-  const acceptance = named ? [...(criteria.length ? criteria : [`Cerința ta este îndeplinită: ${words.slice(0, 300)}`]).map((t, i) => ({ id: `AC-${i + 1}`, text: t, verify: "test", testRef: named })),
+  // M11 L5 (§5.1): the Hub-written test's final and staging paths, deterministic per (project, work type, words) — so a repeated request
+  // finds its own draft again — reusing a staging path only at exactly the Hub's own recorded bytes.
+  let testFirst = null;
+  if (writesTest) {
+    const request = { projectId: project.id || "", workType, objective: words, title: finalTitle };
+    const first = plannedTestRefs(request);
+    const refs = plannedTestRefs(request, { existing: hubPathsOnDisk(project.path, `${first.slug}-${first.h6}`), hubWrites });
+    testFirst = { ok: refs.ok, testRef: refs.testRef, stagingRef: refs.stagingRef, criteria: [], problem: refs.problem };
+  }
+  const bound = named || (testFirst?.ok ? testFirst.testRef : null);
+  // M11 L5 review (flow #7, design §2 „Ce va dovedi testul: AC-1 — „{cuvintele tale}””): a Hub-written test's default criterion is the
+  // owner's words as said, without the „Cerința ta este îndeplinită:” prefix; a bound (existing) test keeps its criterion byte for byte (U1).
+  const defaultCriterion = testFirst?.ok ? words.slice(0, 300) : `Cerința ta este îndeplinită: ${words.slice(0, 300)}`;
+  const acceptance = bound ? [...(criteria.length ? criteria : [defaultCriterion]).map((t, i) => ({ id: `AC-${i + 1}`, text: t, verify: "test", testRef: bound })),
     { id: `AC-${(criteria.length || 1) + 1}`, text: "Modificarea e explicată și revizuită independent (doar citire)", verify: "review" }] : [];
+  if (testFirst?.ok) testFirst.criteria = acceptance.filter((a) => a.verify === "test").map((a) => a.id);
+  const checkCommand = checks.length ? checks : [scripts.test && !/^\s*node --test\b/.test(String(scripts.test)) ? "npm test" : "node --test"];
   const input = {
-    workType, title: title.length >= 3 ? title : "Cerință de engineering", objective: words,
-    spec: {
+    workType, title: finalTitle, objective: words,
+    spec: testFirst?.ok ? {
+      inScope: (Array.isArray(args.inScope) ? args.inScope : []).map((s) => String(s).slice(0, 300)).filter(Boolean).slice(0, 10),
+      outOfScope: ["deploy, commit, push", "alte proiecte", "dependențe noi necerute de tine"],
+      acceptance,
+      constraints: ["Pregătită de Hub din cererea ta (fără model); criteriile sunt fixate înainte de implementare, iar testul de acceptanță îl scrie Hub-ul la pasul 0 din cuvintele tale (Claude propune textul, doar citire; Codex îl verifică, doar citire)",
+        `Testul de acceptanță ${testFirst.testRef} îl scrie și îl protejează Hub-ul la pasul 0: repari implementarea, nu testul (o modificare a testului oprește misiunea)`],
+      verification: { checks: checkCommand, acceptance: [`node --test ${testFirst.testRef}`] },
+      // §5.1 S1: the folders the tests write at run time (top-level folder entries of .gitignore), so a test that writes data is no
+      // "left files behind" for the proof; checkSpec refuses src / test / public / the Hub's own work area.
+      workspace: { ignore: deriveIgnore(readGitignore(project.path)) },
+      authoring: { mode: "hub", testRef: testFirst.testRef, stagingRef: testFirst.stagingRef, criteria: testFirst.criteria },
+      sources: { user: [words], code: [], assumptions: ["Testul de acceptanță nu există încă: îl scrie Hub-ul la pasul 0 din cuvintele tale; trebuie să pice pe codul de acum din motivul potrivit, e verificat independent, apoi îl protejez"] },
+    } : {
       inScope: (Array.isArray(args.inScope) ? args.inScope : []).map((s) => String(s).slice(0, 300)).filter(Boolean).slice(0, 10),
       outOfScope: ["deploy, commit, push", "alte proiecte", "dependențe noi necerute de tine"],
       acceptance,
@@ -179,14 +347,17 @@ export function buildEngineeringSpec({ text, args = {}, project }) {
         // M10.2.1: said where the writer reads it (the brief's „Restricții”), not only as the factory's protection list.
         ...(named ? [`Testul de acceptanță ${named} e protejat: repari implementarea, nu testul (o modificare a testului oprește misiunea)`] : [])],
       // The project's own test script when it is not plain node:test (npm test), else node --test directly (the same tests, no npm).
-      verification: { checks: checks.length ? checks : [scripts.test && !/^\s*node --test\b/.test(String(scripts.test)) ? "npm test" : "node --test"], acceptance: named ? [`node --test ${named}`] : [] },
-      sources: { user: [words], code: [], assumptions: named ? [autoBound
-        ? `Testul de acceptanță ${named} e singurul test de acceptanță al proiectului; l-am legat de cerință fără să te întreb (îl protejez la pornire)`
-        : `Testul de acceptanță ${named} există deja în proiect și verifică cerința (îl protejez la pornire)`] : [] },
+      verification: { checks: checkCommand, acceptance: named ? [`node --test ${named}`] : [] },
+      sources: { user: [words], code: [], assumptions: named ? [autoBound === "topic"
+        ? `Testul ${named} e singurul test al proiectului al cărui nume conține „${topic}”; l-am legat de cerință fără să te întreb (îl protejez la pornire)`
+        : autoBound
+          ? `Testul de acceptanță ${named} e singurul test de acceptanță al proiectului; l-am legat de cerință fără să te întreb (îl protejez la pornire)`
+          : `Testul de acceptanță ${named} există deja în proiect și verifică cerința (îl protejez la pornire)`] : [] },
     },
   };
   const { problems } = checkSpec({ ...input.spec, workType, title: input.title, objective: input.objective });
-  return { input, problems, testRef: named, workType, autoBound };
+  const missing = route === "B" ? String(said[0]).replace(/[\u0000-\u001f\u007f]/g, " ").trim().slice(0, 120) : null;
+  return { input, problems, testRef: named, workType, autoBound, route, testFirst, missing, topic: autoBound === "topic" ? topic : null };
 }
 
 /**
@@ -223,10 +394,21 @@ export function createBlockedRecorder(hub) {
 export function registerEngineeringPlanner(hub, intake) {
   const { db, bus, settings, projects, envelopes, config } = hub;
   const nowMs = () => (typeof config?.now === "function" ? config.now() : new Date()).getTime();
-  const pending = new Map(); // conversation key → { text, args, projectId, awaiting: "project"|"test", options, at }
+  const pending = new Map(); // conversation key → { text, args, projectId, awaiting: "project"|"test"|"text", options, at }
   const inFlight = new Set(); // `${projectId}:${requestHash}`: the same request twice at once prepares one draft
 
   const isHubProject = (project) => Boolean(project) && (project.slug === "ifrim-agent-hub" || (config?.hubRoot && path.resolve(project.path).toLowerCase() === path.resolve(config.hubRoot).toLowerCase()));
+  /** The route the project's Codex steps run on (the factory runner's own routing; Windows without an environment layer). */
+  const routeOf = (project) => {
+    try { return hub.factoryRunner?.routeOf ? hub.factoryRunner.routeOf(project) : hub.environments?.routeFor ? hub.environments.routeFor(project.id, "codex") : "windows"; } catch { return "unknown"; }
+  };
+  /**
+   * M11 L5 (§4 „Domeniul v1”, route J): where the Hub may write the acceptance test itself — a `hub-test` project (never ProDelivery,
+   * whatever its registration) on the Windows route, whose own test script does not also run the Hub's work area (§9). { ok, text }.
+   */
+  function scopeFor(project, { neutral = false } = {}) {
+    return testFirstScope({ project, route: routeOf(project), testScript: readScripts(project.path).test || "", neutral });
+  }
   /** The models an engineering plan on this project is built with (shown and hashed; never the account default). */
   function defaultsFor(projectId) {
     const override = (settings.get("factoryDefaultBindings") || {})[projectId] || null;
@@ -268,13 +450,19 @@ export function registerEngineeringPlanner(hub, intake) {
     let words = String(text || "").trim();
     let args = { ...(step?.args || {}) };
     let pid = projectId || null;
-    // ONE open question (the project, or the acceptance test): the answer — a choice id, a named test, or a bare path — completes
-    // the request it was asked for; anything else is a new request.
+    // ONE open question (the project, the request in other words), or the 2 minutes after an answer without a bound test (a test-first
+    // card included, M11 L5): the answer — a choice id for the project, a named test, or a bare path — completes the request it was
+    // given for; anything else is a new request.
+    // M11 L5 review (flow #1): the "test" memory is completed ONLY by a test file (a hint's testRef or a bare path), on the SAME project.
+    // No choice is ever offered for it any more (the pick question is gone), so a choice id is never a test name: the intake's answer to
+    // its own project question („Factory Demo Beta” → chosenId = the project's id) is a NEW request on that project, not a test called
+    // „prj_…” for the previous one.
     const open = take(key);
+    const saidTest = args.testRef || bareTestPath(words);
     if (open?.awaiting === "project" && (args.chosenId || (pid && !words))) {
       pid = args.chosenId || pid; words = open.text; args = { ...open.args }; pending.delete(key);
-    } else if (open?.awaiting === "test" && (args.testRef || args.chosenId || bareTestPath(words))) {
-      pid = pid || open.projectId; args = { ...open.args, testRef: args.testRef || args.chosenId || bareTestPath(words) }; words = open.text; pending.delete(key);
+    } else if (open?.awaiting === "test" && saidTest && (!pid || pid === open.projectId)) {
+      pid = pid || open.projectId; args = { ...open.args, testRef: saidTest }; words = open.text; pending.delete(key);
     } else if (open?.awaiting === "text" && words && !args.chosenId) {
       // The request said again in other words: the new words replace the old ones, on the same project.
       pid = pid || open.projectId; args = { ...open.args, ...args }; pending.delete(key);
@@ -299,29 +487,34 @@ export function registerEngineeringPlanner(hub, intake) {
     // ---- an existing draft named by the start of a mission ("pornește misiunea X" on an eng_* draft)
     if (args.missionId) return planExisting(project, String(args.missionId), { step, ctx, source });
 
-    // ---- the spec, verifiable or ONE question
-    const built = buildEngineeringSpec({ text: words, args, project });
+    // ---- the spec: an existing test bound, the Hub's own test (test-first, M11 L5), or ONE plain answer (§2 routes A–J)
+    const hubWritesNow = (() => { try { return typeof hub.factory?.hubWrites === "function" ? hub.factory.hubWrites(project.id) : {}; } catch { return {}; } })();
+    const built = buildEngineeringSpec({ text: words, args, project, hubWrites: hubWritesNow });
     if (built.input.objective.length < 10) {
       remember(key, { text: words, args, projectId: project.id, awaiting: "text", options: [] });
       return { kind: "question", question: "Descrie-mi cerința într-o propoziție: ce nu merge sau ce trebuie să facă codul?", options: [], forIntent: "engineering", projectId: project.id };
     }
     if (!built.testRef) {
-      const candidates = testCandidates(project.path);
-      // Kept either way: a programmer's bare test path (or a choice id) still completes this request through the open question.
-      remember(key, { text: words, args, projectId: project.id, awaiting: "test", options: candidates });
-      // 2.12.2 (P0-R6, L4): plain words for the owner, who is not a programmer — live he asked four times what „numește fișierul” meant.
-      // No test at all: a message (not a question he cannot answer) that says why nothing starts, that he does not write the test, and that
-      // nothing is kept. Tests found: he picks one of them (never names or writes a file); the chosen one is protected, as before.
-      if (!candidates.length) {
-        return { kind: "message", projectId: project.id,
-          text: `Pe ${project.name} nu există încă un test automat care să arate când cerința e gata, iar fără el Hub-ul nu pornește o schimbare de cod: n-ar putea dovedi că merge. Nu trebuie să-l scrii tu: pasul în care Hub-ul scrie singur testul vine curând (M11). Acum nu pot propune planul; nimic nu e păstrat.` };
+      // Kept for 2 minutes whatever the answer below: a programmer's bare test path (or a choice id) still completes THIS request — after
+      // a test-first card too, whose plan the new one then replaces (critique B10). The path that was not found is dropped from it.
+      remember(key, { text: words, args: withoutTestRefs(args), projectId: project.id, awaiting: "test", options: [] });
+      // Review (authority #4): for B (a named test that is missing) and D (the acceptance test named, none or several) the project may
+      // have other tests, so the opening does not claim that no test exists.
+      const scope = scopeFor(project, { neutral: built.route === "B" || built.route === "D" });
+      // B: a named test that does not exist is never replaced by another one; nothing is kept.
+      if (built.route === "B") {
+        const why = built.workType === "REFACTOR" ? T_ROUTE_REFACTOR : !scope.ok ? scope.text : null;
+        return { kind: "message", projectId: project.id, text: why ? `${missingHead(built.missing)} ${why}` : T_ROUTE_MISSING_TEST(built.missing) };
       }
-      const named = candidates.map((c) => `„${c}”`);
-      const listed = named.length === 1 ? named[0] : `${named.slice(0, -1).join(", ")} și ${named[named.length - 1]}`;
-      return { kind: "question", projectId: project.id, forIntent: "engineering", options: candidates.map((c) => ({ id: c, label: c })),
-        question: candidates.length === 1
-          ? `Pe ${project.name} am găsit un singur test automat, ${listed}. Alege-l ca dovadă că cerința e gata și îl protejez: se repară codul, nu testul.`
-          : `Pe ${project.name} am găsit testele automate ${listed}. Pe care îl folosesc ca dovadă că cerința e gata? Îl protejez: se repară codul, nu testul.` };
+      // I: a refactor needs a characterization test, which the Hub does not write yet (L5b); nothing is kept.
+      if (built.route === "I") return { kind: "message", projectId: project.id, text: T_ROUTE_REFACTOR };
+      // J: the Hub writes the test only on a test project on the Windows route (never ProDelivery); nothing is kept.
+      if (!scope.ok) return { kind: "message", projectId: project.id, text: scope.text };
+      // D: the acceptance test named, but the project has none or several: ONE plain question, never a list of files to pick from.
+      if (built.route === "D") return { kind: "question", projectId: project.id, forIntent: "engineering", options: [], question: T_ROUTE_ASK_BEHAVIOUR };
+      if (!built.testFirst?.ok) {
+        return { kind: "message", projectId: project.id, text: `Nu pot pregăti testul scris de Hub pe ${project.name}: ${built.testFirst?.problem || "locul testului nu poate fi ales"}. Acum nu pot propune planul; nimic nu e păstrat.` };
+      }
     }
     if (built.problems.length) {
       remember(key, { text: words, args, projectId: project.id, awaiting: "text", options: [] });
@@ -336,7 +529,10 @@ export function registerEngineeringPlanner(hub, intake) {
     }
 
     // ---- the draft (no effects), once per request
-    const requestHash = hashCanonical({ projectId: project.id, workType: built.input.workType, objective: built.input.objective, testRef: built.testRef, models: models.limits }).slice(0, 32);
+    // M11 L5 (§5.1): the Hub-written test's path joins the request's identity only on a test-first draft (an ordinary request keeps its hash).
+    const testFirst = built.testFirst?.ok ? built.testFirst : null;
+    const requestHash = hashCanonical({ projectId: project.id, workType: built.input.workType, objective: built.input.objective, testRef: built.testRef, models: models.limits,
+      ...(testFirst ? { testFirst: testFirst.testRef } : {}) }).slice(0, 32);
     const flight = `${project.id}:${requestHash}`;
     if (inFlight.has(flight)) return { kind: "message", projectId: project.id, text: "Pregătesc deja planul pentru această cerere; îl vezi imediat." };
     inFlight.add(flight);
@@ -344,11 +540,13 @@ export function registerEngineeringPlanner(hub, intake) {
       let missionId = sameDraft(project.id, requestHash);
       if (!missionId) {
         if (typeof hub.prepareFactoryMission !== "function") throw new HubError("internal", "Software Factory nu e disponibil");
-        const view = hub.prepareFactoryMission({ projectId: project.id, workType: built.input.workType, title: built.input.title, objective: built.input.objective, spec: built.input.spec, limits: { ...models.limits } },
+        // M11 L5 (§4): a test-first mission's deadline is 180 min (step 0 runs before the implementation); shown on the card and hashed.
+        const view = hub.prepareFactoryMission({ projectId: project.id, workType: built.input.workType, title: built.input.title, objective: built.input.objective, spec: built.input.spec,
+          limits: { ...models.limits, ...(testFirst ? { maxDurationMin: TEST_FIRST_MAX_DURATION_MIN } : {}) } },
           { actor: ctx?.actor || "owner", provenance: { createdBy: "intake", requestHash, source, channel: ctx?.channel || null } });
         missionId = view.mission.id;
       }
-      return await proposeFor(project, missionId, { step, ctx, models, autoBound: built.autoBound ? built.testRef : null });
+      return await proposeFor(project, missionId, { step, ctx, models, bound: built.autoBound ? { ref: built.testRef, kind: built.autoBound, topic: built.topic } : null });
     } catch (error) {
       if (error instanceof HubError && ["policy", "validation"].includes(error.category)) return { kind: "message", projectId: project.id, text: `Nu am putut pregăti ciorna: ${error.message}` };
       throw error;
@@ -376,7 +574,7 @@ export function registerEngineeringPlanner(hub, intake) {
   }
 
   /** Explain from verified state (blocked → kept with its draft for a later re-plan), else ONE envelope over the draft. */
-  async function proposeFor(project, missionId, { step, ctx, models, autoBound = null }) {
+  async function proposeFor(project, missionId, { step, ctx, models, bound = null }) {
     const view = hub.factory.view(missionId);
     const planRef = { kind: "mission", missionId };
     if (!view?.scope) {
@@ -410,11 +608,16 @@ export function registerEngineeringPlanner(hub, intake) {
     const label = models?.label || `writer ${view.factory.limits.writerModel} · ${view.factory.limits.writerEffort || "—"}; reviewer ${view.factory.limits.reviewerModel} · ${view.factory.limits.reviewerEffort || "—"}`;
     const whose = models ? (models.source === "owner" ? "alese de tine pentru acest proiect" : "implicite pe rol") : "fixate în ciornă";
     // M10.2.1 (D21): the card says which acceptance test is protected and that the writer repairs the implementation, not the test.
+    // M11 L5 (§2): a test-first plan names no file — the Hub writes the test at step 0 (T_PLANNER_NOTE); a test bound by its topic is named
+    // by that topic, never by its path.
     const guarded = view?.spec?.spec ? protectedTestRefs(view.spec.spec) : [];
     const quoted = guarded.slice(0, 4).map((r) => `„${r}”`).join(", ");
-    const guard = !guarded.length ? ""
-      : guarded.length === 1 ? ` Testul de acceptanță ${quoted}${autoBound === guarded[0] ? " (singurul test de acceptanță al proiectului, ales fără întrebare)" : ""} e protejat: writer-ul repară implementarea, nu testul; o modificare a testului oprește misiunea.`
-        : ` Testele de acceptanță ${quoted} sunt protejate: writer-ul repară implementarea, nu testele; o modificare a lor oprește misiunea.`;
+    const guard = view?.spec?.spec?.authoring ? ` ${T_PLANNER_NOTE}`
+      : !guarded.length ? ""
+        : guarded.length === 1 && bound?.kind === "topic" && bound.ref === guarded[0]
+          ? ` Testul automat despre „${bound.topic}” (singurul test al proiectului cu acest nume, ales fără întrebare) devine testul de acceptanță și e protejat: writer-ul repară implementarea, nu testul; o modificare a testului oprește misiunea.`
+          : guarded.length === 1 ? ` Testul de acceptanță ${quoted}${bound?.ref === guarded[0] ? " (singurul test de acceptanță al proiectului, ales fără întrebare)" : ""} e protejat: writer-ul repară implementarea, nu testul; o modificare a testului oprește misiunea.`
+            : ` Testele de acceptanță ${quoted} sunt protejate: writer-ul repară implementarea, nu testele; o modificare a lor oprește misiunea.`;
     // 2.12.2 (P0-R3): the per-turn limits and the mission's deadline the plan binds (the same values the card shows and the dispatch uses).
     const turn = turnTimeoutsOf(view.factory.limits || {});
     const limitsNote = ` Limită pe tură: writer ${turn.writer} min, reviewer ${turn.reviewer} min; termen misiune ${view.factory.limits?.maxDurationMin ?? "—"} min (legate în plan).`;

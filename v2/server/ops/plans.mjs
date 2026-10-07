@@ -517,6 +517,35 @@ export function createOpsPlans({ db, bus, clock, settings, trust, voice = null, 
     return { waitingOwner: left.map((r) => r.id) };
   }
   async function idle(planId) { await runs.get(planId)?.promise; return view(planId); }
+
+  // ---------------------------------------------------------------- D7 (2.12.3): a Studio correction and the plan it is bound to
+  /** The plan states in which a correction plan still decides what happens to its review (expired PROPOSED rows are flagged, see below). */
+  const LIVE_PLAN = ["PROPOSED", "CONFIRMED", "RUNNING", "PAUSED", "NEEDS_OWNER"];
+  /**
+   * The live studio.edit plans (a media.edit.correct step) on a review or on an edit version → [{ id, status, reviewId, editVersionId,
+   * expired }], newest first. `expired`: PROPOSED past its confirmation window (EXPIRED lazily, at confirm or boot) — no longer live. Read
+   * only (a GET must never write); never the nonce or the hash.
+   */
+  function correctionPlans({ reviewId = null, editVersionId = null } = {}) {
+    if (!reviewId && !editVersionId) return [];
+    const t = clock();
+    return db.prepare(`SELECT p.id, p.status, p.confirm_by, json_extract(s.params_json, '$.reviewId') AS review_id, json_extract(s.params_json, '$.editVersionId') AS edit_version_id
+      FROM ops_plans p JOIN ops_plan_steps s ON s.plan_id = p.id WHERE s.kind = 'media.edit.correct' AND p.status IN (${LIVE_PLAN.map(() => "?").join(",")})
+      AND (json_extract(s.params_json, '$.reviewId') = ? OR json_extract(s.params_json, '$.editVersionId') = ?) ORDER BY p.created_at DESC`)
+      .all(...LIVE_PLAN, reviewId ? String(reviewId) : null, editVersionId ? String(editVersionId) : null)
+      .map((r) => ({ id: r.id, status: r.status, reviewId: r.review_id || null, editVersionId: r.edit_version_id || null, expired: r.status === "PROPOSED" && new Date(r.confirm_by) <= t }));
+  }
+  /**
+   * Closes the PROPOSED correction plans (expired ones included) that a direct apply or a dismissal in the Studio made obsolete → their ids.
+   * Inside the caller's transaction (bus.transaction joins it); each emits ops.plan.superseded. An armed voice window for such a plan is
+   * inert by itself (its check requires PROPOSED and the same hash).
+   */
+  function supersedeCorrections({ reviewId = null, editVersionId = null, reason }) {
+    const ids = [...new Set(correctionPlans({ reviewId, editVersionId }).filter((p) => p.status === "PROPOSED").map((p) => p.id))];
+    if (!ids.length) return [];
+    return bus.transaction(() => ids.filter((id) => setStatus(id, "SUPERSEDED", reason || "Corectura a fost rezolvată în Studio", {}, ["PROPOSED"]) === 1));
+  }
+
   return { propose, confirm, authorize, pause, cancel, resume, reconfirm, view, list, active, recover, idle, buildBody, armForLega, confirmFromArmed, armedFor,
-    disarm: (planId, reason) => armedWindows.disarm(planId, reason) };
+    disarm: (planId, reason) => armedWindows.disarm(planId, reason), correctionPlans, supersedeCorrections };
 }

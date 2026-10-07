@@ -17,11 +17,11 @@
 //   a security stop) and the missions, which need the open gate; work stopped for any other reason resumes as before, gate or not.
 import { HubError } from "../core/errors.mjs";
 import { parse } from "../storage/db.mjs";
-import { resolveIntent, matchRef, normalize, stripFillers, INTENT_EFFECTS, CONTINUE_QUESTION, stopTalkAnswer, modeAnswer } from "./intents.mjs";
+import { resolveIntent, matchRef, normalize, stripFillers, INTENT_EFFECTS, CONTINUE_QUESTION, stopTalkAnswer, modeAnswer, PREVIEW_START } from "./intents.mjs";
 import { layoutForIntent } from "./layout.mjs";
 import { localDayStart } from "../intel/twin.mjs";
 import { PACKAGE_KINDS } from "../intel/packages.mjs";
-import { createOpsIntentActions, parseImportFolder } from "../ops/intent-actions.mjs";
+import { createOpsIntentActions, parseImportFolder, importWithoutFolder, IMPORT_FOLDER_HELP } from "../ops/intent-actions.mjs";
 import { classOfIntent, refusalReason } from "../policy/effect-class.mjs";
 import { classifySuspension, credentialTag, STOPPED_BY } from "../policy/gate-state.mjs";
 import { createStopScope, STOP_HOLD_CLASSES } from "./stop-scope.mjs";
@@ -55,8 +55,18 @@ const LEGA_PREFIX = /^(hei |hey |buna )?lega[,!. ]+/;
 /** "Anulează planul" withdraws the plan (CANCELLED); "Nu" / "Nu acum" / "Nu vreau planul" only hold it (nothing starts, the card stays). */
 const CANCEL_WORDS = /\b(anuleaza|anulati|renunta|renunt|abandoneaza|arunca)\b/;
 // P0-R6 (L11): „Ce a rămas în …” with two plausible project names asks which one (the resolver's question, forIntent status).
-const PROJECT_CHOICE = new Set(["open_project", "switch_project", "freeze_project", "unfreeze_project", "autonomy", "status"]);
+// D3: „Rulează preview-ul …” the same (the resolver's question, or the intake's „Pe ce proiect să-ți arăt preview-ul?”).
+const PROJECT_CHOICE = new Set(["open_project", "switch_project", "freeze_project", "unfreeze_project", "autonomy", "status", "show_preview"]);
 const MISSION_CHOICE = new Set(["continue_work", "start_mission", "resume_mission", "show_plan"]);
+/**
+ * D3 review: the planner kinds whose request is answered as the preview read when the words are a pure preview read (a model run or a
+ * mission: the live defect, „Rulează preview-ul Pro Delivery” → two Claude analyses). A Studio request („Fă un preview video…”) is a clip.
+ */
+const PREVIEW_OVERRIDE_KINDS = new Set(["run", "engineering", "start_mission", "resume_mission"]);
+/** D3 review: a work verb anywhere in the words makes them work, never a pure preview read (on normalized words). */
+const PREVIEW_WORK_VERBS = /\b(?:creeaza|construieste|implementeaza|analizeaza|repara|rezolva|corecteaza|adauga|scrie|refactorizeaza|citeste|rezuma|revizuieste|evalueaza|explica|investigheaza|modifica|genereaza|optimizeaza|actualizeaza|sterge|fa|faceti|face)\b/;
+/** D3 review: a show verb on the preview („Arată-mi / Vreau să văd / Deschide preview-ul”), on the prepared clause. */
+const PREVIEW_SHOW_VERB = /^(?:arata|vreau sa vad|deschide|pune|da)(?:-mi)?\b/;
 /** Bounded requests whose open question was about the PROJECT (review #5): the choice id is a project id. */
 const REQUEST_PROJECT_CHOICE = new Set(["engineering_request", "analysis_request"]);
 const NAV_KINDS = new Set(["project", "clip", "screen", "plan", "mission"]);
@@ -94,7 +104,8 @@ const capitalize = (text) => (text ? `${text.charAt(0).toLocaleUpperCase("ro-RO"
  * 2.12.2 (P0-R6, L7): the reads and plans that need a project and ask for it when none is known. The question is remembered like the
  * planners' (rememberProjectQuestion), so a following sentence that only names a project completes it within the clarification TTL.
  */
-const PROJECT_QUESTION_TEXT = Object.freeze({ show_plan: "Pe ce proiect să-ți arăt planul?", continue_work: "Pe ce proiect continui?", status: "Pe ce proiect să mă uit?" });
+const PROJECT_QUESTION_TEXT = Object.freeze({ show_plan: "Pe ce proiect să-ți arăt planul?", continue_work: "Pe ce proiect continui?", status: "Pe ce proiect să mă uit?",
+  show_preview: "Pe ce proiect să-ți arăt preview-ul?" });
 /** R4-F8: the owner's own Stop All in the event log — its own stop kind when recorded, else any stop that is not the Hub's shutdown. */
 const OWNER_STOP_ALL_SQL = `SELECT created_at, source FROM events WHERE scope_type = 'system' AND scope_id = 'hub' AND type = 'system.stop_all'
   AND (json_extract(payload_json, '$.stopKind') = 'stop_all' OR (json_extract(payload_json, '$.stopKind') IS NULL AND source <> 'system')) ORDER BY seq DESC LIMIT 1`;
@@ -117,8 +128,8 @@ const answeredUnknown = (step, r, resolved) => Boolean(step?.args?.refusedConfir
 /** VOICE-05: the owner's own words, quoted as heard (bounded; the closing punctuation dropped). */
 const heardQuote = (heard) => String(heard || "").replace(/[\s.!…]+$/u, "").slice(0, 120) || "Continuă";
 /**
- * Review F2 (L4): the planner questions a plain pick may answer (the engineering planner's „am găsit un singur test automat… Alege-l”,
- * an analysis planner's, or the request they were asked for). Only when the question offered exactly ONE option.
+ * Review F2 (L4): the planner questions a plain pick may answer — any planner question with exactly ONE option (the run / analysis
+ * planner's, or the request it was asked for; since M11 L5 the engineering planner offers no test to pick).
  */
 const PICK_FOR = new Set(["engineering", "run", "engineering_request", "analysis_request"]);
 /** „Alege-l”, „Folosește-l”, „Primul”, „Pe acela”, „Da, alege-l” (normalized). Never a bare „Da”: that word confirms a plan. */
@@ -256,6 +267,71 @@ export function createIntake(hub) {
     r.clarification = { question: r.message, options, forIntent: step.intent, about: "project" };
     rememberClarification(conv, r.clarification, step, null);
     rememberProjectQuestion(conv, step, input?.text);
+  }
+
+  /**
+   * D3: the Hub's own answer to „Arată-mi / Rulează preview-ul” on a project (read-only: never the runner, the supervisor, an envelope or
+   * a planner). A preview exists only as a step of a Software Factory mission whose spec declares one (factory.mjs runPreview, after QA):
+   * the newest such mission of the project (at most 20 looked at) with its last current PREVIEW evidence, or the plain reason there is
+   * none. `step.args.missionId` is set for the layout's Preview card. Owner-facing text without ids.
+   */
+  function previewAnswer(projectId, step) {
+    const name = projects.get(projectId)?.name || "acest proiect";
+    let list = [];
+    try { list = (factory?.list?.() || []).filter((f) => f.projectId === projectId).slice(0, 20); } catch { list = []; }
+    let found = null;
+    for (const f of list) {
+      let v = null;
+      try { v = factory.view(f.missionId); } catch { v = null; }
+      if (!v?.spec?.spec?.verification?.preview) continue;
+      const last = (v.evidence || []).filter((e) => e.stage === "PREVIEW" && !e.stale).at(-1) || null;
+      found = { missionId: f.missionId, title: v.mission?.title || f.title || "misiunea", status: last?.status || null };
+      break;
+    }
+    if (!found) {
+      return { noPreview: true, message: `Pe ${name} nu am un preview pe care să-l pornesc: Hub-ul pornește un preview doar ca pas al unei misiuni Software Factory care are o comandă de preview, iar proiectul acesta nu are o astfel de misiune. Nu am pornit nimic și nu am pregătit niciun plan.` };
+    }
+    step.args.missionId = found.missionId;
+    const last = !found.status ? "încă nu a rulat" : found.status === "PASS" ? "ultima pornire a răspuns" : "ultima pornire nu a răspuns";
+    return { preview: { missionId: found.missionId, title: found.title, status: found.status },
+      message: `Îți arăt în cockpit preview-ul misiunii „${found.title}”: ${last}.${step.args.start ? " Nu îl pornesc separat: preview-ul rulează ca pas al misiunii, după verificări." : ""}` };
+  }
+  /**
+   * D3: the show_preview step for words a client of the intake sent as WORK (Lega's request_work / propose_run / propose_mission reach
+   * plan()), or null. The resolver decides: a sentence whose steps hold a preview read and no planner intent is answered as that read,
+   * whatever kind the client named (live, „Rulează preview-ul Pro Delivery” became two confirmed Claude analyses). The client's project,
+   * when given, wins over the one the words named.
+   */
+  function previewStepOf(text, projectId, source, kind = "run") {
+    // D3 review: only a model-run planner kind is overridden (a Studio request about a „preview” is a clip, planned as before).
+    if (!PREVIEW_OVERRIDE_KINDS.has(kind)) return null;
+    const ctxFor = (pid) => ({ projects: projects.list().map((p) => ({ id: p.id, name: p.name, slug: p.slug, source: p.source })), currentProjectId: pid || null,
+      missions: [], departments: [], source });
+    let resolved = null;
+    try { resolved = resolveIntent(text, ctxFor(projectId)); } catch { return null; }
+    const steps = resolved?.steps || [];
+    if (!steps.length || steps.some((s) => Object.hasOwn(PLANNER_FOR_INTENT, s.intent))) return null;
+    // D3 review: a PURE preview read only — every step is the preview read itself or that read held by a condition („Rulează preview-ul X și
+    // verifică dacă merge”, „Pornește preview-ul X dacă se poate”: the condition changes nothing, nothing is started); no other step (an
+    // unknown clause, „Mod preview pentru comenzi. Clientul vede…”), a run / start or show verb on it, and no work verb anywhere in the words
+    // („Analizează preview-ul”, „Creează un preview”, „Rulează preview-ul X și repară bug-ul”: the resolver drops that clause) — those are
+    // work and reach their planner as before.
+    const isPreview = (s) => s.intent === "show_preview" || (s.intent === "not_yet" && s.args?.held === "show_preview");
+    if (!steps.every(isPreview) && !(resolved.clarification?.forIntent === "show_preview" && steps.every((s) => isPreview(s) || s.intent === "unknown"))) return null;
+    const words = normalize(text);
+    if (PREVIEW_WORK_VERBS.test(words)) return null;
+    let step = steps.find((s) => s.intent === "show_preview") || null;
+    if (!step) {
+      // The held read: the clause without its condition is the read (its project and `start`), else a bare preview read.
+      const held = steps.find(isPreview);
+      const cut = held && held.args?.conditionWord && held.args?.condition ? String(held.text || "").replace(`${held.args.conditionWord} ${held.args.condition}`, "").replace(/[\s,;:]+$/g, "").replace(/\s+si$/, "").trim() : "";
+      let again = null;
+      try { again = cut ? resolveIntent(cut, ctxFor(projectId)).steps.find((s) => s.intent === "show_preview") || null : null; } catch { again = null; }
+      step = again || { intent: "show_preview", effect: INTENT_EFFECTS.show_preview || "read", args: PREVIEW_START.test(String(held?.text || "")) ? { start: true } : {}, constraints: {}, text: held?.text || "" };
+    }
+    if (!step.args?.start && !PREVIEW_SHOW_VERB.test(String(step.text || "")) && !PREVIEW_START.test(String(step.text || ""))) return null;
+    const args = { ...step.args, ...(projectId ? { projectId } : {}) };
+    return { intent: "show_preview", effect: step.effect, effectClass: step.effectClass || classOfIntent("show_preview", step.effect), args, constraints: { ...step.constraints }, text: step.text };
   }
 
   // ---------------------------------------------------------------- M10.2.1: the suspended gate, answered in context (D14/D15)
@@ -932,6 +1008,9 @@ export function createIntake(hub) {
           r.message = target ? "Bine, nu pornesc nimic. Planul rămâne afișat; îl confirmi când vrei sau spui „Anulează planul”." : "Bine, nu pornesc nimic.";
         }
       } else if (step.intent === "reorder") r.message = "Nu pot reordona pașii unui plan dintr-o frază. Spune ce faci întâi, pregătesc planul pentru acel pas, apoi pe următorul.";
+      // D6: „Importă …” with no folder the Hub can read — ONE plain explanation (a read, from every source), never a silent unknown. The
+      // step stays `unknown` for the probe, counted as answered.
+      else if (step.intent === "unknown" && step.args?.importNoFolder) r.message = IMPORT_FOLDER_HELP;
       else if (step.intent === "status") {
         // P0-R6 (L11): „Ești în build safe?” is answered with the mode the server reads; „Ce a rămas în ProDelivery?” is the status of the
         // project it names (shown, with its next step), or ONE question when no project is known. Reads only: nothing changes.
@@ -952,6 +1031,16 @@ export function createIntake(hub) {
       else if (step.intent === "why_blocked") r.explain = cockpit.whyBlocked({ projectId, missionId: step.args.missionId || null });
       else if (step.intent === "why_route") r.explain = cockpit.whyRoute({ worker: step.args.worker });
       else if (step.intent === "replay") { const mid = step.args.missionId || (projectId && factory.list().find((f) => f.projectId === projectId)?.missionId); r.replay = mid ? cockpit.replay(mid) : null; if (!mid) r.message = "Nu am o misiune de reluat pe acest proiect."; }
+      // D3: „Arată-mi / Rulează preview-ul [X]” — answered by the Hub itself (a read): the project the words named, else the open one, else
+      // ONE question (remembered, so a following „ProDelivery” completes it). Nothing is started; the layout block below adds the Preview card.
+      else if (step.intent === "show_preview") {
+        const pid = step.args.projectId && projects.get(step.args.projectId) ? step.args.projectId : projectId;
+        if (!pid) askProject(r, step, env);
+        else {
+          Object.assign(r, previewAnswer(pid, step));
+          if (r.preview) { if (pid !== projectId) r.navigate = `/cockpit/${pid}`; projectId = pid; }
+        }
+      }
       else if (step.intent === "briefing" || step.intent === "continue_last") r.delta = cockpit.delta(projectId || "__company__");
       else if (step.intent === "show_company" || step.intent === "zoom") { r.companyMap = cockpit.companyMap(); r.navigate = step.args.departmentKey ? `/company-map/${step.args.departmentKey}` : "/company-map"; }
       else if (step.intent === "recommendations") r.recommendations = advisor.recommendations();
@@ -1055,8 +1144,10 @@ export function createIntake(hub) {
           const target = studioEditTarget(step.args.clipRef, conv?.lastTarget);
           if (target.question) { r.message = target.question; if (target.navigate) r.navigate = target.navigate; }
           else {
-            // A PROPOSAL on the current edit version: a review row with its patch and preview; applying it is a separate action
-            // of the owner in the Studio (a new version; the original stays). Provenance comes from the source, never the words.
+            // A PROPOSAL on the current edit version: a review row with its patch and preview (a new version when applied; the original
+            // stays). Provenance comes from the source, never the words. D7: when the plan card below exists, applying is that plan's ONE
+            // confirmation (the cockpit card or the same card in the Studio: apply → draft render → QA); the Studio's direct apply refuses a
+            // review bound to a live plan (REVIEW_IN_PLAN). The M09 Studio apply is the path only when no plan exists.
             const provenance = studioProvenance(source, ctx);
             const voiceFilterOff = studioVoiceFilterOff();
             const sentence = String(input.text || "").replace(/^\s*(?:(?:hei|hey|bun[ăa])\s+)?lega[\s,!.:-]+/i, "").slice(0, 1000) || step.text;
@@ -1345,7 +1436,7 @@ export function createIntake(hub) {
     const env = { input, ctx, source, presented, presentedPlanId, planWaiting, awaiting, voiceWaiting, derived, conv, state, pendingForProject, stepCount: 0, cleanText: "" };
     const reply = (resolvedOut, results) => ({ projectId: state.projectId, resolved: resolvedOut, results, layout: state.layout, channel: ctx.channel, source });
 
-    // Review F2 (L4): „Alege-l” (or the test's name) answers the ONE test the planner offered — the owner never names a file. It picks;
+    // Review F2 (L4): „Alege-l” (or the option's name) answers the ONE option a planner question offered — the owner never names a file. It picks;
     // the plan card that follows still needs its own one confirmation, and the step keeps its own effect-class check for this source.
     if (!(input.choice && typeof input.choice === "object")) {
       const pick = singleOptionPick(conv.clarification, input.text, nowMs(), (id) => { try { return Boolean(projects.get(id)); } catch { return false; } });
@@ -1389,8 +1480,11 @@ export function createIntake(hub) {
     const resolved = resolveIntent(input.text, resolveContext());
     // M10.2 U10 „Importă din Videos/Ifrim Studio”: the resolver's normalization drops path separators, so a named-folder import is read
     // from the raw words here — only when the resolver found nothing else (a deictic „din folderul acesta” stays studio_import_here).
-    const folderImport = resolved.steps.length === 1 && resolved.steps[0].intent === "unknown" && !resolved.clarification && !resolved.refused.length ? parseImportFolder(input.text) : null;
+    const loneUnknown = resolved.steps.length === 1 && resolved.steps[0].intent === "unknown" && !resolved.clarification && !resolved.refused.length;
+    const folderImport = loneUnknown ? parseImportFolder(input.text) : null;
     if (folderImport) resolved.steps = [{ intent: "studio_import_folder", effect: "plan", effectClass: "BOUNDED_WORKFLOW", args: { folderRef: folderImport.folderRef }, constraints: {}, text: String(input.text).slice(0, 400) }];
+    // D6: „Importă …” with no folder the Hub can read → ONE plain explanation, never a silent unknown (the step stays `unknown` for the probe).
+    else if (loneUnknown && importWithoutFolder(input.text)) resolved.steps[0].args = { ...resolved.steps[0].args, importNoFolder: true };
     // R4 (UNKNOWN_INTENTS, exact): a sentence with an unknown step announces (`outcome: true`) the owner.intent_outcome written after its
     // steps ran, with how many unknown steps the Hub left without any answer (probe.mjs counts that number; older events stay estimated).
     const unknownSteps = resolved.steps.filter((s) => s.intent === "unknown").length;
@@ -1416,9 +1510,12 @@ export function createIntake(hub) {
     if (unknownSteps) {
       const unanswered = resolved.steps.filter((s, i) => s.intent === "unknown" && !answeredUnknown(s, results[i], resolved)).length;
       // Enum fields and counts only (never the words); a failure here never changes the answer the owner gets.
+      // D1: a sentence the voice bridge carried names its Lega session and the owner's transcript event (ids only, never words), so the
+      // probe can see whether Lega answered what the Hub left unanswered (probe.mjs legaAnswers). The HTTP routes never send a transcript id.
+      const link = input.legaSessionId && input.transcriptId ? { legaSessionId: String(input.legaSessionId).slice(0, 80), transcriptId: String(input.transcriptId).slice(0, 80) } : {};
       try {
         bus.emit({ type: "owner.intent_outcome", scopeType: "owner", scopeId: current?.id || "global", source: ctx.actor,
-          payload: { intentEventId: intentEvent?.id || null, channel: ctx.channel, source, unknown: unknownSteps, unknownUnanswered: unanswered } });
+          payload: { intentEventId: intentEvent?.id || null, channel: ctx.channel, source, unknown: unknownSteps, unknownUnanswered: unanswered, ...link } });
       } catch { /* observability only */ }
     }
     return reply({ steps: resolved.steps.map((s) => ({ intent: s.intent, effect: s.effect, args: s.args, constraints: s.constraints })), clarification: resolved.clarification, refused: resolved.refused }, results);
@@ -1457,6 +1554,14 @@ export function createIntake(hub) {
     const r = { intent: kind, effect: "plan", constraints: step.constraints, args: step.args, effectClass: step.effectClass };
     const why = refusalReason("BOUNDED_WORKFLOW", src, { derivedOwnerSession: Boolean(derived), planPresented: false });
     if (why) { r.refused = why; return r; }
+    // D3: words that ask to run, start or show a preview are a READ the Hub answers itself when the client named a model-run kind — they
+    // never reach a planner (the resolver's verdict decides; a sentence that also holds a planner intent, another clause or a work verb is
+    // planned as before — D3 review).
+    const previewStep = previewStepOf(input.text, state.projectId, src, kind);
+    if (previewStep) {
+      return executeStep(previewStep, { input, ctx, source: src, presented: null, presentedPlanId: null, planWaiting: null, awaiting: null, voiceWaiting: null, derived, conv, state,
+        pendingForProject: [], stepCount: 1, cleanText: "" });
+    }
     const out = await runPlannerFor(kind, step, { input, ctx, source: src, conv, state });
     if (!out) { r.message = "Nu am încă un planificator pentru acest tip de lucru pe acest Hub."; return r; }
     applyPlannerOutcome(out, r, step, { input, ctx, source: src, conv, state });

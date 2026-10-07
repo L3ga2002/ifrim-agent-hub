@@ -1,0 +1,23 @@
+{
+  "comment": "M11 L5 wave A repair (security review #7; fake-claude author:bug-writes-deps): passes the lint (node:fs is only a soft signal), but each run plants a file under node_modules — a folder the snapshot never reads. The fingerprint around the proof still sees it: NOT_HERMETIC.",
+  "body": [
+    "test(\"AC-1: un nume format doar din spații este refuzat\", async () => {",
+    "  fs.mkdirSync(\"node_modules/hub-proof\", { recursive: true });",
+    "  fs.writeFileSync(\"node_modules/hub-proof/index.js\", \"module.exports = 1;\");",
+    "  const { validateRequest } = await load(\"../../src/requests.js\");",
+    "  assert.equal(validateRequest({ name: \"   \", email: \"ana@example.ro\", service: \"audit\" }).ok, false);",
+    "});",
+    "",
+    "test(\"AC-1 control: un nume obișnuit este acceptat\", async () => {",
+    "  const { validateRequest } = await load(\"../../src/requests.js\");",
+    "  assert.equal(validateRequest({ name: \"Ana\", email: \"ana@example.ro\", service: \"audit\" }).ok, true);",
+    "});"
+  ],
+  "manifest": {
+    "needs": ["node:fs"],
+    "cases": [
+      { "name": "AC-1: un nume format doar din spații este refuzat", "criterion": "AC-1", "kind": "check", "today": "fail" },
+      { "name": "AC-1 control: un nume obișnuit este acceptat", "criterion": "AC-1", "kind": "control", "today": "pass" }
+    ]
+  }
+}

@@ -83,7 +83,9 @@ export function layoutForIntent(step, cockpit, current) {
     case "show_changes": return mission ? add("DiffPanel", { kind: "mission", id: mission }) : null;
     case "show_tests": return mission ? add("TestPanel", { kind: "mission", id: mission }) : null;
     case "show_review": return mission ? add("ReviewPanel", { kind: "mission", id: mission }) : null;
-    case "show_preview": return mission ? add("Preview", { kind: "mission", id: mission }) : null;
+    // D3: only the mission the intake picked as having a preview (a Software Factory mission whose spec declares one); never the
+    // cockpit's fallback mission above, which would show an empty „Niciun preview încă” card for work that has no preview.
+    case "show_preview": return step.args?.missionId ? add("Preview", { kind: "mission", id: step.args.missionId }) : null;
     case "replay": return mission ? add("Replay", { kind: "mission", id: mission }) : null;
     case "status": case "why_blocked": case "why_route": return add("Explain", mission ? { kind: "mission", id: mission } : { kind: "project", id: pid }, "m");
     // The plan just prepared is shown as the decision card (the one confirmable plan); without one, the list of prepared missions.
