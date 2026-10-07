@@ -54,8 +54,8 @@ export function registerOwnerCommands(reg, hub) {
     schema: { projectId: { required: true, max: 80 }, level: { enum: AUTONOMY_LEVELS, required: true }, atLeast: { type: "boolean" } },
     execute: (input, ctx) => envelopes.setAutonomy({ projectId: input.projectId, level: input.level, session: session(ctx), actor: ctx.actor, atLeast: input.atLeast === true }) });
   reg("envelope.propose", { describe: "Arată-mi înainte să faci: planul exact, fără execuție și fără granturi", async: true, channels: ANY_OWNER_FACING,
-    schema: { projectId: { required: true, max: 80 }, missionIds: { type: "array", max: 5, items: "string" }, level: { enum: AUTONOMY_LEVELS }, constraints: { type: "object", default: {} } },
-    execute: (input, ctx) => envelopes.propose({ projectId: input.projectId, missionIds: input.missionIds || [], level: input.level || null, constraints: input.constraints || {}, actor: ctx.actor, via: ctx.channel }) });
+    schema: { projectId: { required: true, max: 80 }, missionIds: { type: "array", max: 5, items: "string" }, level: { enum: AUTONOMY_LEVELS }, constraints: { type: "object", default: {} }, deliveryId: { max: 80 } },
+    execute: (input, ctx) => envelopes.propose({ projectId: input.projectId, missionIds: input.missionIds || [], level: input.level || null, constraints: input.constraints || {}, actor: ctx.actor, via: ctx.channel, deliveryId: input.deliveryId || null }) });
   reg("envelope.confirm", { describe: "Confirmarea ta unică a planului afișat (sesiune autentificată, politica voice-first)", async: true, channels: OWNER,
     schema: { envelopeId: { required: true, max: 80 }, nonce: { required: true, max: 64 }, displayedHash: { required: true, max: 64 }, modality: { enum: ["click", "keyboard", "typed", "voice"], default: "click" },
       utteranceId: { max: 80 } },

@@ -64,6 +64,10 @@ export const INTENT_EFFECTS = Object.freeze({
   // M10.2 integration: a code change ("repară testul X", "implementează Y") becomes ONE engineering plan (factory draft + envelope);
   // a reading/analysis ("analizează…", "rezumă…") becomes ONE run plan (one bounded read-only model step). Both only propose.
   engineering_request: "plan", analysis_request: "plan",
+  // M11 „Ifrim Delivery”: preparing a demo for a presentation (engineering + capture + clip + commercial summary) is ONE plan card; a
+  // change to what was delivered is a plan too (a clip revision card, a summary version, or the difference of a software change);
+  // „Arată-mi ce ai pregătit” / „Deciziile mele” only open the Delivery Room.
+  delivery_prepare: "plan", delivery_revise: "plan", delivery_open: "navigate", delivery_status: "read", delivery_decisions: "navigate",
   // M10.2.1 (D14): „Redeschide poarta” / „Rearmează Hub-ul” only shows the rearm card in the cockpit (navigation); reopening the gate
   // is its own owner-session command (fresh authenticator, bound to the exact suspension), never a sentence.
   gate_rearm: "navigate",
@@ -781,6 +785,12 @@ const P = [
   ["details", /^(detalii|arata(-mi)? detaliile|mai multe detalii|vreau detalii)$/],
   // M10 Desktop Operator — BEFORE studio_open ("deschide OBS Studio" is the app, not the Studio page) and open_project ("deschide
   // CapCut" is not a project). Only known app names match; "importă din folderul acesta" reads the Explorer window in front.
+  // M11 „Ifrim Delivery” — before the capture / clip / Studio patterns: a sentence that asks for the demo prepared for a presentation
+  // (with a clip and the commercial summary in it) is ONE delivery plan, never a clip alone or a capture alone.
+  ["delivery_decisions", /^(?:arata(?:-mi)? )?deciziile (?:mele|tale|in asteptare)\b|^ce (?:decizii|am de decis)\b/, () => ({ decisions: true })],
+  ["delivery_open", /\barata(?:-mi)? ce (?:ai|mi-ai) pregatit\b|\b(?:deschide|arata(?:-mi)?) (?:camera de livrare|livrarea demo-ului|livrarea pregatita)\b/],
+  ["delivery_prepare", /^(?:pregateste|fa|construieste|livreaza)(?:-mi|-ne)? (?:si )?(?:demo-ul|demoul|demo|livrarea|prezentarea)\b(?=.*\b(?:prezentare|prezentarea|client|livrare|clip|rezumat)\b)|^pregateste(?:-mi)? livrarea\b/, (_m, clause) => ({ request: clause })],
+  ["delivery_revise", /\b(?:clipul|videoclipul|clip-ul|montajul|varianta verticala)\b.*\b(?:prea (?:tehnic|comercial|lung|scurt)|mai (?:scurt|comercial|simplu))\b|\bdupa secunda\b.*\barata direct\b|^in rezumat\b|\b(?:butonul|formularul|pagina|site-ul) de (?:programare|programari)\b.*\btrebuie sa\b/, (_m, clause) => ({ request: clause })],
   ["not_yet", /^nu (deschide|porni|lansa|inregistra|filma|importa|aduce)\b/],
   ["ops_capture_vertical",/\b(inregistreaza|filmeaza|captureaza|inregistram|filmam)(-mi)?\b.*\b(demonstratia|demo-ul|demoul|demo|ecranul|hub-ul|hubul|aplicatia)\b/,
     (m, c) => ({ vertical: /\b(vertical|verticala|9 16|tiktok|reels|shorts)\b/.test(c), noPublish: true, obs: /\bobs\b/.test(c) })],
@@ -965,6 +975,8 @@ function constraintsOf(clause) {
   // request — the delay must still remove the start (a preview-only plan, never an armed one). "care / ce / se așteaptă" describes.
   if (/\bmai tarziu\b|(?<!\b(?:care|ce|se|il|o|te|ma|ne|va|le) )\basteapta\b|\bnu inca\b/.test(clause)) c.noStart = true;
   if (/\bdoar (citire|citeste)\b|\bfara modificari\b/.test(clause)) c.readOnly = true;
+  // M11: „Nu publica nimic” is a constraint of the request (attached, hashed in the plan), not an unknown sentence; publishing is denied anyway.
+  if (/\bnu (publica|posta|urca|incarca)\b|\bfara (publicare|postare|upload|incarcare)\b/.test(clause)) c.noPublish = true;
   return c;
 }
 
@@ -1017,7 +1029,7 @@ const COND_LEAD = new RegExp(String.raw`^(?<word>${COND_WORDS}) (?<cond>[^,]+), 
 // Review M10.2 #21: a code change or an analysis is a start too ("Repară bug-ul de login doar dacă trec testele" read the tests and
 // dropped both the request and the condition; "… după review" planned with the condition only in free text).
 const START_LIKE = new Set(["confirm", "show_plan", "continue_work", "start_mission", "resume_mission", "ops_continue", "objective_plan", "studio_create", "studio_variant", "ops_capture_vertical", "studio_import_here",
-  "engineering_request", "analysis_request"]);
+  "engineering_request", "analysis_request", "delivery_prepare"]);
 const START_VERB = /^(?:(?:ok|okay|hai|sigur|bine|da),? )*(?:executa|porneste|incepe|lanseaza|ruleaza|confirma|continua|reia|fa-l|fa-o|da drumul|repara|rezolva|corecteaza|implementeaza|refactorizeaza|adauga|scrie|analizeaza|revizuieste|evalueaza|investigheaza)\b/;
 /** Review M10.2 #19: a clause that STARTS with a plan-start verb (after acknowledgements) — the same list show_plan's catch-all excludes. */
 const PLAN_START = /^(?:(?:ok|okay|hai|sigur|bine|da),? )*(?:executa|porneste|incepe|lanseaza|ruleaza|confirma|confirm|fa-l|fa-o|da drumul)\b/;
@@ -1073,7 +1085,7 @@ function conditionOf(text) {
 // 2.12.1 round 2: gate_rearm is anchored on the whole clause, so „După Stop All, deschide poarta” is ONE rearm request (split at the
 // comma, its left half would be read as a Stop All).
 const NEVER_SPLIT = new Set(["ops_capture_vertical", "studio_edit", "simulate", "reorder", "confirm", "not_yet", "reject_plan", "refuse_execute", "studio_publish", "quiet",
-  "twin_impact", "twin_why", "objective_plan", "incident_open", "teach", "forget", "start_mission", "resume_mission", "studio_create", "gate_rearm"]);
+  "twin_impact", "twin_why", "objective_plan", "incident_open", "teach", "forget", "start_mission", "resume_mission", "studio_create", "gate_rearm", "delivery_prepare", "delivery_revise"]);
 /** A split never MANUFACTURES consent or authority: "Da, pornește misiunea" must not become "da" + a mission start. */
 const NEVER_A_HALF = new Set(["confirm", "lega_start", "autonomy", "unfreeze_project", "ops_continue"]);
 const RIGHT_VERB = /^(?:arata|deschide|porneste|continua|opreste|fa|pregateste|importa|treci|du-ma|mergi|adu|comuta|inregistreaza|spune|explica|reia|lanseaza|ruleaza|creeaza|genereaza|hai)\b/;
@@ -1221,6 +1233,26 @@ export function resolveIntent(text, context = {}) {
   // rule reads them), and a confirmation in the same sentence is still refused (the request step stays).
   if (steps.length > 1 && steps.some((s) => ACK_REQUESTS.has(s.intent) || ACK_REQUESTS.has(s.args?.held))) {
     for (let i = steps.length - 1; i >= 0; i--) if (steps[i].intent === "unknown" && ACK_ONLY.test(String(steps[i].text || ""))) steps.splice(i, 1);
+  }
+  // M11: a delivery request is ONE step. The sentences that detail it („Verifică programările pe mobil, repară problema convenită, fă un
+  // clip și pregătește-mi rezumatul comercial”) belong to the same plan (capture, clip and summary are in it), never extra plans; the
+  // clauses of one revision („Site-ul e bine, dar clipul e prea tehnic. După secunda 10 …”) are classified together. An interruption
+  // or a confirmation is never absorbed.
+  const DELIVERY_DETAIL = new Set(["unknown", "studio_create", "ops_capture_vertical", "engineering_request", "show_preview", "show_tests", "studio_variant", "delivery_prepare"]);
+  const prepIndex = steps.findIndex((s) => s.intent === "delivery_prepare");
+  if (prepIndex >= 0) {
+    for (let i = steps.length - 1; i > prepIndex; i--) {
+      if (!DELIVERY_DETAIL.has(steps[i].intent) || steps[i].args?.refusedConfirmation) continue;
+      const [detail] = steps.splice(i, 1);
+      Object.assign(steps[prepIndex].constraints, detail.constraints || {});
+      steps[prepIndex].args = { ...steps[prepIndex].args, details: [detail.text, ...(steps[prepIndex].args.details || [])].filter(Boolean) };
+    }
+  }
+  for (let i = steps.length - 1; i > 0; i--) {
+    if (steps[i].intent === "delivery_revise" && ["delivery_revise", "unknown"].includes(steps[i - 1].intent)) {
+      const [later] = steps.splice(i, 1);
+      steps[i - 1] = { ...steps[i - 1], intent: "delivery_revise", effect: INTENT_EFFECTS.delivery_revise, args: { ...steps[i - 1].args, request: `${steps[i - 1].text || steps[i - 1].args?.request || ""} ${later.args?.request || later.text || ""}`.trim() }, constraints: { ...steps[i - 1].constraints, ...later.constraints } };
+    }
   }
   if (!steps.length) steps.push({ intent: "unknown", args: {}, constraints: {}, effect: "none", text: "" });
   // Review F1: „…, nu opri tot, oprește doar Codex” — next to a narrower stop the Hub runs, the negated Stop All is answered „nu opresc tot”.

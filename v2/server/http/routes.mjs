@@ -28,6 +28,7 @@ import { registerOwnerRoutes } from "../owner/owner-routes.mjs";
 import { registerIntelRoutes } from "../intel/intel-routes.mjs";
 import { registerMediaRoutes } from "../media/media-routes.mjs";
 import { registerOpsRoutes } from "../ops/ops-routes.mjs";
+import { registerDeliveryRoutes } from "../delivery/delivery-routes.mjs";
 import { registerProbeRoutes } from "../owner/probe-routes.mjs";
 import { COMMAND_CHANNELS, AGENT_COMMANDS, decodeDelegation, checkDelegation } from "../runtime/commands.mjs";
 
@@ -78,6 +79,7 @@ export function registerRoutes(router, hub, { token }) {
   registerMediaRoutes(router, hub);
   // M10 Desktop Operator, operation plans, Studio project import / folders / capture scope / local export.
   registerOpsRoutes(router, hub);
+  if (hub.deliveries) registerDeliveryRoutes(router, hub);
   // M10.2 probe counters (GET, read-only) and the owner.nav screen telemetry (v2/server/owner/probe-routes.mjs).
   registerProbeRoutes(router, hub);
 

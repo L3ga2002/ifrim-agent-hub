@@ -57,6 +57,7 @@ import { newId } from "./core/ids.mjs";
 import { createTrust, SESSION_DEFAULTS } from "./owner/trust.mjs";
 import { createEnvelopes } from "./owner/envelopes.mjs";
 import { registerRunPlanner } from "./owner/planners/run.mjs";
+import { registerDeliveryPlanner } from "./owner/planners/delivery.mjs";
 import { createArmedWindows } from "./owner/armed-window.mjs";
 import { createCockpit } from "./owner/cockpit.mjs";
 import { createInterrupts } from "./owner/interrupts.mjs";
@@ -78,6 +79,8 @@ import { createMedia } from "./media/index.mjs";
 import { createDesktopOperator } from "./desktop/operator.mjs";
 import { createExecutors } from "./ops/executors.mjs";
 import { createOpsPlans } from "./ops/plans.mjs";
+import { createDeliveries, DELIVERY_PHASE_OPS } from "./delivery/delivery.mjs";
+import { createDeliveryExecutors } from "./delivery/executors.mjs";
 import { setExtraCommands } from "./factory/spec.mjs";
 import { createProbe, registerProbeCommands } from "./owner/probe.mjs";
 import { createWorkRequests, registerWorkRequestCommands } from "./owner/work-requests.mjs";
@@ -299,6 +302,26 @@ export function createHub(config, { providerOverrides = {}, homeDir, browserLaun
   const executors = createExecutors({ desktop, media, settings, live });
   const opsPlans = createOpsPlans({ db, bus, clock, settings, trust, voice, apps: desktop.apps, executors, live, desktop, armedWindows,
     folderContext: () => ({ allowed: desktop.allowedFolders(), forbidden: desktop.forbiddenFolders() }), stopScope: () => stopScopeRef });
+  // M11 „Ifrim Delivery”: the delivery service (the four delivery tables), its plan steps merged into the executors map (opsPlans reads it
+  // lazily) and the envelope as the parent a delivery package plan is DERIVED from — the owner's one confirmation of the envelope that
+  // listed these exact steps (hashed). The parent check re-reads the envelope: same hash, confirmed, carrying this delivery.
+  const deliveries = createDeliveries({ db, bus, clock, config, settings, projects, missions, factory, media, opsPlans, trust, sales });
+  Object.assign(executors, createDeliveryExecutors({ deliveries, factory, media, projects, runner: factoryRunner, supervisor, opsPlans, config }));
+  opsPlans.registerParent("envelope", {
+    allowedOps: DELIVERY_PHASE_OPS,
+    verify: (parent) => {
+      const env = envelopes.get(parent?.id);
+      if (!env) return { ok: false, reason: "planul confirmat nu mai există" };
+      if (env.envelopeHash !== parent.hash) return { ok: false, reason: "planul confirmat s-a schimbat" };
+      if (!["ACTIVE", "CONFIRMED", "COMPLETED"].includes(env.status)) return { ok: false, reason: `planul confirmat e ${env.status}` };
+      if (env.body?.delivery?.deliveryId !== parent.deliveryId) return { ok: false, reason: "planul confirmat nu conține această livrare" };
+      if (!trust.policy?.()?.active) return { ok: false, reason: "politica voice-first nu e activă" };
+      return { ok: true };
+    },
+  });
+  envelopes.attachDelivery(deliveries);
+  deliveries.attachEnvelopes(envelopes);
+
   // M10.2 U13: Lega arms a plan it has just SPOKEN (its bridge or its plan tool); the plan's service re-checks everything. A plan already
   // armed in this Lega session keeps its window (re-arming would make a "Da" said in between count as said before the window).
   legaLate.armPresented = ({ legaSessionId, planId, dryRun = false }) => {
@@ -314,10 +337,12 @@ export function createHub(config, { providerOverrides = {}, homeDir, browserLaun
     company, chiefOfStaff, surfaces, schedules, computer, skills, artifacts, integrations, nativeSessions, telemetry, router, commands, checkpoints,
     breakers, supervisor, backups, providers, gate, runs, handoffs, tools, roleConfig, skillConfig, capabilityConfig, codexIsolation, lega, refreshCodexConfig, factory, factoryRunner,
     environments, wslRunner, trust, envelopes, armedWindows, cockpit, interrupts, advisor, voice, voiceEngine,
-    twin, warroom, autopilot, simulations, league, skillEvolution, teach, packages, board, devices, media, desktop, opsPlans, executors };
+    twin, warroom, autopilot, simulations, league, skillEvolution, teach, packages, board, devices, media, desktop, opsPlans, executors, deliveries };
   registerCommands(commands, hub);
   // M10.2 (U12): the "run" planner (one bounded model step → ONE run envelope; propose_run's replacement under voice-first).
   if (hub.intake) hub.runPlanner = registerRunPlanner(hub, hub.intake);
+  // M11: the delivery planner (prepare / revise / open), next to the run planner.
+  if (hub.intake) hub.deliveryPlanner = registerDeliveryPlanner(hub, hub.intake);
   // M10.2 probe counters (read-only, from the logs) + the owner.nav screen telemetry; observability only, no authority.
   hub.probe = createProbe({ db, bus, config }); registerProbeCommands((type, def) => commands.register(type, def));
   // M10.2 U06: preserved work requests (a blocked request is kept and re-proposed, never run by itself) and the automatic readiness
@@ -377,7 +402,7 @@ export function createHub(config, { providerOverrides = {}, homeDir, browserLaun
   const scheduler = createScheduler({ db, bus, clock, approvals, leases, runs,
     extraTick: () => Promise.all([schedules.tick((cmd) => commands.dispatch({ ...cmd, channel: "schedule", actor: "scheduler" }).then((r) => r.result)), factory.tick(), Promise.resolve().then(() => sales.tick()),
       Promise.resolve().then(() => envelopes.tick()), Promise.resolve().then(() => voice.tick()), Promise.resolve().then(() => media.tick()),
-      Promise.resolve().then(() => lega.tick()), Promise.resolve().then(() => hub.workRequests.tick())]) });
+      Promise.resolve().then(() => lega.tick()), Promise.resolve().then(() => hub.workRequests.tick()), Promise.resolve().then(() => deliveries.tick())]) });
   hub.scheduler = scheduler;
   // ---------------------------------------------------------------- 2.12.2 (P0-R1): retained-lease reconciliation
   // A workspace lease kept after an unconfirmed stop (runs.finalize) or a restart (recovery) is released once its run is finished and its
@@ -490,6 +515,7 @@ export function createHub(config, { providerOverrides = {}, homeDir, browserLaun
     bootReport.factory = factory.recover();
     // M09: interrupted renders / captures / transcriptions / distribution attempts are marked, never resumed.
     try { bootReport.media = media.boot(); } catch (error) { bootReport.media = { error: String(error?.message || error).slice(0, 300) }; }
+    try { deliveries.boot(); } catch (error) { bootReport.deliveries = { error: String(error?.message || error).slice(0, 300) }; }
     // Workspaces a crash left in the environment are marked orphaned and kept for inspection (never deleted at boot).
     bootReport.environments = { "wsl-runner": wslRunner.recover() };
     // M10.2: an attestation that this code no longer accepts (canary version, age) or a stale account check is ANNOUNCED once
@@ -519,6 +545,7 @@ export function createHub(config, { providerOverrides = {}, homeDir, browserLaun
     envelopes.close();
     await factory.close();
     await lega.stopAll("shutdown").catch(() => {});
+    try { deliveries.close_(); } catch { /* closing */ }
     await media.close();
     await desktop.close().catch(() => {});
     await supervisor.stopAll();

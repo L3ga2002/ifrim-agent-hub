@@ -25,6 +25,7 @@ import { registerOwnerCommands } from "../owner/owner-commands.mjs";
 import { registerIntelCommands } from "../intel/intel-commands.mjs";
 import { registerMediaCommands } from "../media/media-commands.mjs";
 import { registerOpsCommands } from "../ops/ops-commands.mjs";
+import { registerDeliveryCommands } from "../delivery/delivery-commands.mjs";
 import fs from "node:fs";
 
 /** Commands a LOCAL_HUB schedule may run (non-AI, no external effects). */
@@ -482,6 +483,8 @@ export function registerCommands(commands, hub) {
   registerIntelCommands(reg, hub);
   registerMediaCommands(reg, hub);
   registerOpsCommands(reg, hub);
+  // M11 „Ifrim Delivery”: the Delivery Room's commands (owner session for every decision; fail-safe verify / stop / cancel).
+  if (hub.deliveries) registerDeliveryCommands(reg, hub);
 
   // ---------- company runtime & chief of staff ----------
   reg("company.department_status", { describe: "Stare departament (active/planned/paused)", schema: { departmentKey: { required: true, max: 40 }, status: { enum: ["active", "planned", "paused"], required: true }, reason: { required: true, min: 3, max: 300 } },

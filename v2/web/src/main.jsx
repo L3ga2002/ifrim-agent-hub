@@ -37,6 +37,8 @@ const screens = {
   studio: lazy(() => import("./screens/Studio.jsx")),
   // M10: Desktop Operator (apps, import folders, plans, recent actions).
   desktop: lazy(() => import("./screens/Desktop.jsx")),
+  // M11: the Delivery Room (#/livrare/<dlv>, #/livrare?projectId=…) and „Deciziile mele” (#/livrare/decizii).
+  livrare: lazy(() => import("./screens/DeliveryRoom.jsx")),
 };
 
 export function parseRoute(hash) {

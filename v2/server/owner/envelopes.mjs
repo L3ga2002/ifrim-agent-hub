@@ -79,7 +79,7 @@ const LEGACY_TRANSITION = "BUILD_SAFE→LIVE_VALIDATION până la sfârșitul mi
 /** How a changed part of a plan is named to the owner (a superseded preview, a continuation's difference). */
 const CHANGE_LABELS = Object.freeze({ missions: "specificația, planul, limitele sau modelele unei misiuni", baseSnapshot: "starea repository-ului", attestationRefs: "atestarea mediului",
   workspaceScope: "ruta proiectului", limits: "limitele", modeTransition: "modul Hub-ului", models: "modelele", effortPolicy: "efortul", autonomyLevel: "nivelul de autonomie",
-  run: "sarcina, providerul, accesul sau modelul execuției" });
+  run: "sarcina, providerul, accesul sau modelul execuției", delivery: "pașii de după livrare (captură, clip, rezumat)" });
 const labelOf = (key) => CHANGE_LABELS[key];
 /*
  * M10.2 (U12) run envelopes: ONE bounded model step (an analysis, a reading, at most one write turn where the route allows it) under
@@ -454,7 +454,15 @@ export function createEnvelopes({ db, bus, clock, settings, projects, missions, 
       blockers: readinessInfo.afterReadiness ? [] : readinessInfo.blockers.map((b) => b.detail),
       ...(readinessInfo.afterReadiness ? { preSteps: readinessInfo.preSteps || [] } : {}),
       state: stateOf(readinessInfo),
+      // M11: what happens after the software is ready, under THIS confirmation (no model, nothing published).
+      ...(body.delivery ? deliverySummaryOf(body.delivery) : {}),
     };
+  }
+  /** The card lines of a delivery section, and the sentences the M10.2 card already shows (steps / stops) extended. */
+  function deliverySummaryOf(dlv) {
+    return { delivery: { headline: "După ce software-ul e gata, fără altă întrebare și fără model:", steps: dlv.ops?.stepTitles || [], outputs: dlv.outputs || [], never: dlv.never || [], decisionsLeft: dlv.decisionsLeft || [],
+      data: "Doar datele sintetice ale proiectului de test (banner vizibil).", capture: `Captura: doar ${dlv.preview?.origin || "preview-ul local"}, desktop și lățimea unui telefon (390 px) în Chromium, fără audio, fără ecranul tău.`,
+      limits: `Cel mult ${dlv.limits?.phaseMinutes || 30} min după ce software-ul e gata.` } };
   }
 
   // ---------- M10.2 (U11): continuation of a started mission ----------
@@ -498,7 +506,7 @@ export function createEnvelopes({ db, bus, clock, settings, projects, missions, 
 
   // ---------- propose ----------
   /** Preview only: nothing runs, nothing is granted. Works under the legacy policy too (confirmation then goes through Approvals). */
-  async function propose({ projectId, missionIds = [], level = null, constraints = {}, actor = "owner", via = "ui", objective = null }) {
+  async function propose({ projectId, missionIds = [], level = null, constraints = {}, actor = "owner", via = "ui", objective = null, deliveryId = null }) {
     const project = projects.get(projectId);
     if (!project) throw new HubError("not_found", "Proiect necunoscut");
     // A plan never runs above the project's own level (raising it is a separate, re-authenticated decision); a caller may
@@ -523,10 +531,16 @@ export function createEnvelopes({ db, bus, clock, settings, projects, missions, 
       return { envelope: null, readiness: ready, summary: { headline: views[0].mission.title, blockers: ready.blockers.map((b) => b.detail), state: "PLAN_INCOMPLETE" } };
     }
     const body = await buildBody(project, views, autonomy, constraints, objectiveRef);
+    // M11: a delivery plan carries its hashed delivery section (capture → clip → summary after DELIVERY_READY); an ordinary plan has
+    // no such key, so its hash is unchanged to the byte.
+    if (deliveryId) {
+      if (!deliveryApi) throw new HubError("policy", "Livrarea nu e disponibilă pe acest server");
+      body.delivery = await deliveryApi.sectionFor(deliveryId);
+    }
     const hash = hashCanonical(body);
     const previous = body.continuation?.fromEnvelopeId ? get(body.continuation.fromEnvelopeId) : null;
     const summary = summaryOf(body, ready, previous?.body || null);
-    const id = insertProposal({ project, ids, body, hash, summary, autonomy, actor, via, eligible: ready.eligible });
+    const id = insertProposal({ project, ids, body, hash, summary, autonomy, actor, via, eligible: ready.eligible, extra: deliveryId ? { deliveryId } : {} });
     return { envelope: view(id), readiness: ready, summary };
   }
 
@@ -553,6 +567,9 @@ export function createEnvelopes({ db, bus, clock, settings, projects, missions, 
   let conversationsApi = null;
   /** Late-bound by hub.mjs (the run manager and conversations exist before the envelopes, but are not part of the M06 contract). */
   function attachRuns({ runs = null, conversations = null } = {}) { runsApi = runs; conversationsApi = conversations; }
+  // M11: the delivery service (late-bound like the runs): sectionFor() for the hashed section, arm() inside the confirmation.
+  let deliveryApi = null;
+  function attachDelivery(api) { deliveryApi = api || null; }
   const isHubProject = (project) => Boolean(project) && (project.slug === "ifrim-agent-hub" || (Boolean(config?.hubRoot) && path.resolve(project.path).toLowerCase() === path.resolve(config.hubRoot).toLowerCase()));
   const runRequestOf = (body) => ({ provider: body.run.provider, access: body.run.access, task: body.run.task, model: body.run.request?.model || "", effort: body.run.request?.effort || "" });
 
@@ -945,6 +962,10 @@ export function createEnvelopes({ db, bus, clock, settings, projects, missions, 
         catch (error) { bus.transaction(() => setStatus(env.id, "SUPERSEDED", { reason: error.message, from: ["PROPOSED"] })); throw new HubError("conflict", `Planul nu mai e valabil: ${error.message}`); }
       }
       body = await buildBody(project, views, env.autonomyLevel, Object.fromEntries((env.body.ownerConstraints || []).map((k) => [k, true])), objectiveNow);
+      if (env.body.delivery?.deliveryId) {
+        try { body.delivery = await deliveryApi.sectionFor(env.body.delivery.deliveryId); }
+        catch (error) { bus.transaction(() => setStatus(env.id, "SUPERSEDED", { reason: `Livrarea: ${error.message}`, from: ["PROPOSED"] })); throw new HubError("conflict", `Planul nu mai e valabil: ${error.message}`); }
+      }
     }
     // Another tab may have confirmed it while this one was recomputing: report that, not a "changed plan".
     const current = get(env.id);
@@ -988,6 +1009,8 @@ export function createEnvelopes({ db, bus, clock, settings, projects, missions, 
         }
         const n = setStatus(env.id, "CONFIRMED", { reason: `Confirmat (${modality}) în sesiunea ${s.id}`, from: ["PROPOSED"], extra: { owner_session_id: s.id, consent_json: json(consent), confirmed_at: consent.confirmedAt, idempotency_key: consent.idempotencyKey, current_mission_id: env.missionIds[0] || null, expires_at: expiresAt } });
         if (n) bus.append({ type: "envelope.confirmed", scopeType: "envelope", scopeId: env.id, projectId: env.projectId, source: "owner", payload: { channel: "owner_session", modality, session: s.id, hash: env.envelopeHash.slice(0, 16) } });
+        // M11: the delivery is armed by THIS consent, in the same transaction (a throw rolls the confirmation back; nothing starts).
+        if (n && env.body.delivery?.deliveryId) deliveryApi.arm(env.body.delivery.deliveryId, { envelopeId: env.id, envelopeHash: env.envelopeHash, consent, expiresAt });
         return n;
       });
       if (changed !== 1) throw new HubError("conflict", "Planul a fost deja confirmat (altă filă sau o confirmare dublă)");
@@ -1055,7 +1078,7 @@ export function createEnvelopes({ db, bus, clock, settings, projects, missions, 
   }
 
   function changedParts(before, after) {
-    const keys = ["missions", "run", "baseSnapshot", "attestationRefs", "workspaceScope", "limits", "modeTransition", "models", "effortPolicy", "autonomyLevel"];
+    const keys = ["missions", "run", "baseSnapshot", "attestationRefs", "workspaceScope", "limits", "modeTransition", "models", "effortPolicy", "autonomyLevel", "delivery"];
     const labels = CHANGE_LABELS;
     const out = keys.filter((k) => hashCanonical(before?.[k] ?? null) !== hashCanonical(after?.[k] ?? null)).map((k) => labels[k]);
     // M10.2 (U12): a run plan's binding changed under the same label (CLI version, model list) is named like a mission's.
@@ -1740,7 +1763,7 @@ export function createEnvelopes({ db, bus, clock, settings, projects, missions, 
   return { propose, confirm, confirmDelta, deltaOf, revoke, view, get, forProject, openFor, pending, autonomyOf, setAutonomy, readiness, deriveGrants, assertWithin, authorityFor, liveAuthority, liveScopes, tick, envelopeOfMission, restoreModeHold, undoRestore, armConfirmation, armForLega, disarm, armedFor, confirmFromArmed,
     topUp, budgetOf: (id, missionId) => { const env = get(id); return env ? budgetOf(env, missionId) : 0; }, lastConfirmedOf,
     // M10.2 (U12): run envelopes (one bounded model step).
-    proposeRun, attachRuns, runAccessProblem, runReadiness: (projectId, req) => runReadiness(projects.get(projectId), req), isHubProject,
+    proposeRun, attachRuns, attachDelivery, runAccessProblem, runReadiness: (projectId, req) => runReadiness(projects.get(projectId), req), isHubProject,
     // Review #1/#31 (readiness pre-steps under the one confirmation), #10 (boot reconciliation of run plans).
     attachReadiness, recoverRuns,
     close: () => { stopped = true; } };

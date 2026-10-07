@@ -18,6 +18,7 @@ import { ClipPanel, AnswerCard } from "./delivery/ClipPanel.jsx";
 import { SummaryEditor } from "./delivery/SummaryEditor.jsx";
 import { DecisionsPanel } from "./delivery/DecisionsPanel.jsx";
 import { ObservationsPanel } from "./delivery/ObservationsPanel.jsx";
+import { DecisionInbox } from "./delivery/DecisionInbox.jsx";
 
 /**
  * The Room's data access, built on the existing API client only: one GET for the aggregated view, the delivery's allowlisted POST
@@ -340,6 +341,8 @@ function LatestDelivery({ projectId, go, client }) {
  * separate decisions. Opening it only reads. Nothing here publishes, uploads or sends anything.
  */
 export default function DeliveryRoom({ id, query, go, client = defaultClient }) {
+  // M11 „Deciziile mele”: #/livrare/decizii lists every result waiting for the owner (read-only).
+  if (id === "decizii") return <DecisionInbox go={go} />;
   const route = deliveryRoute(id, query);
   if (route.invalid) {
     return (

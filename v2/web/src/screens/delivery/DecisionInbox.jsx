@@ -1,0 +1,53 @@
+import { useEffect, useState } from "react";
+import { Inbox, RefreshCw } from "lucide-react";
+import { api, fmt } from "../../api.js";
+import { Chip, Empty, ErrorNotice, Loading, Notice } from "../../components/ui.jsx";
+
+const KIND = { software_bundle: "Pachet software", mission_decision: "Misiune oprită", delivery: "Livrare" };
+
+/**
+ * „Deciziile mele” (M11): every result that waits for the owner, one row each — what it is, why it waits, what accepting / rejecting
+ * (closing / keeping) does and what it touches. Read-only: each row opens the place where the decision is taken in the owner session.
+ */
+export function DecisionInbox({ go }) {
+  const [data, setData] = useState(null);
+  const [error, setError] = useState(null);
+  const load = () => api("/api/decisions/inbox").then(setData, setError);
+  useEffect(() => { load(); }, []);
+  return (
+    <div className="page delivery">
+      <div className="page-head">
+        <div><h1><Inbox size={20} /> Deciziile mele</h1><p className="faint small">{data?.note || "Ce așteaptă decizia ta. Hub-ul nu acceptă nimic în locul tău."}</p></div>
+        <button className="btn sm ghost" onClick={load}><RefreshCw size={14} />Reîncarcă</button>
+      </div>
+      <ErrorNotice error={error} />
+      {!data ? <Loading lines={4} /> : !data.items.length ? <Empty title="Nimic nu așteaptă decizia ta">Când un pachet, o misiune oprită sau o livrare are nevoie de tine, apare aici.</Empty> : (
+        <div className="stack">
+          {data.items.map((it) => (
+            <section key={`${it.kind}:${it.id}`} className="panel">
+              <div className="panel-head">
+                <h3>{it.title}</h3>
+                <div className="row wrap">
+                  <Chip tone="info">{KIND[it.kind] || it.kind}</Chip>
+                  <Chip tone={it.real ? "warn" : "neutral"}>{it.real ? "proiect real" : "proiect de test"}</Chip>
+                  <span className="faint small">{it.projectName}{it.waitingSince ? ` · din ${fmt.dateTime(it.waitingSince)}` : ""}</span>
+                </div>
+              </div>
+              <div className="panel-body stack tight small">
+                <p><strong>Ce este:</strong> {it.what}</p>
+                <p><strong>De ce așteaptă:</strong> {it.why}</p>
+                {it.facts?.length > 0 && <p>{it.facts.join(" · ")}</p>}
+                <p><strong>{it.kind === "mission_decision" ? "Dacă o închizi:" : "Dacă accepți:"}</strong> {it.ifAccept.replace(/^Dacă o închizi: /, "")}</p>
+                <p><strong>{it.kind === "mission_decision" ? "Dacă o lași:" : "Dacă respingi:"}</strong> {it.ifReject.replace(/^Dacă o lași: /, "")}</p>
+                <details><summary>Fișiere și efecte ({it.effects.length})</summary><ul className="plain-list">{it.effects.slice(0, 30).map((e) => <li key={e}>{e}</li>)}</ul></details>
+                {it.criteria?.length > 0 && <details><summary>Criterii</summary><ul className="plain-list">{it.criteria.map((c) => <li key={c}>{c}</li>)}</ul></details>}
+                <div className="row"><button className="btn sm" onClick={() => go(it.link)}>Deschide locul deciziei</button></div>
+              </div>
+            </section>
+          ))}
+        </div>
+      )}
+      {data && <Notice tone="info">Acceptarea, respingerea, aprobarea creativă și „gata de prezentare” sunt decizii separate, luate de tine în sesiunea de proprietar. Nimic nu se publică din Hub.</Notice>}
+    </div>
+  );
+}
