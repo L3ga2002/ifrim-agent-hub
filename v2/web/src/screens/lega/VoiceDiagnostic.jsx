@@ -20,7 +20,8 @@ export function VoiceDiagnostic() {
   const gate = useRef(null);
   const stream = useRef(null);
   const timer = useRef(null);
-  const load = async () => { try { setData(await api("/api/voice/diagnostics")); } catch (e) { setError(e); } };
+  // A silent read on open: a closed owner session is not an error here (the start button asks for Windows Hello).
+  const load = async () => { try { setData(await api("/api/voice/diagnostics")); setError(null); } catch (e) { if (e?.status !== 401) setError(e); } };
   const stop = () => {
     clearTimeout(timer.current);
     gate.current?.close(); gate.current = null;
