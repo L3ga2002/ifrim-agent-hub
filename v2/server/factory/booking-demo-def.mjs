@@ -100,6 +100,12 @@ export const BOOKING_DEMO = freeze({
     // The commercial summary's template text (delivery/summary.mjs): shown only when its criteria passed; no price, result or deadline.
     summary: {
       problem: "Clienții care programează de pe telefon pot alege ore deja ocupate; programarea pică abia la confirmare.",
+      demonstrates: [
+        { text: "Clientul își face programarea de pe telefon și nu poate alege o oră ocupată.", criteria: ["AC-1", "AC-6"] },
+        { text: "Același flux funcționează pe desktop.", criteria: ["AC-2", "AC-7"] },
+        { text: "O oră deja rezervată este refuzată, iar programarea confirmată apare imediat.", criteria: ["AC-3"] },
+        { text: "Corectura a fost verificată de un reviewer independent.", criteria: ["AC-4"] },
+      ],
       how: { criteria: ["AC-6", "AC-7"], lines: ["Clientul alege serviciul, ziua și o oră liberă.", "Completează numele și mașina.", "Primește confirmarea programării pe loc.", "Orele ocupate apar indisponibile și nu pot fi alese, nici pe telefon."] },
       benefits: [
         { text: "Pe telefon, clientul vede doar orele pe care le poate rezerva.", criteria: ["AC-1", "AC-6"] },

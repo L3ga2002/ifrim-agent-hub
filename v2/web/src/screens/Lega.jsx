@@ -403,6 +403,18 @@ function Cockpit({ projectId, go }) {
       </header>
       {owner.error?.status === 404 && <Notice tone="warn" title="Hub-ul rulează o versiune mai veche">Serverul pornit ({hub?.version || "—"}) nu are rutele Lega 2.0. Repornește Hub-ul (v2\scripts\restart.ps1); până atunci folosește Control Room.</Notice>}
       {hub?.simulation && <Notice tone="info" title="Simulare">Instanță separată cu date sintetice și provideri fixture; nimic de aici nu e real.</Notice>}
+      {/* M11: the project's deliveries, in Lega's own words (the result, never ids or grants), one click from the Delivery Room. */}
+      {(cockpit.data?.deliveries || []).length > 0 && (
+        <div className="stack tight" aria-label="Livrări">
+          {cockpit.data.deliveries.slice(0, 2).map((d) => (
+            <Notice key={d.id} tone={d.status === "READY" ? "ok" : d.status === "STALE" || d.status === "FAILED" ? "warn" : "info"} title={`Camera de livrare: ${d.title}`}>
+              <span>{d.sentence}</span>{" "}
+              <button className="btn sm" onClick={() => go(d.href)}>Arată-mi ce ai pregătit</button>{" "}
+              <button className="btn sm ghost" onClick={() => go("/livrare/decizii")}>Deciziile mele</button>
+            </Notice>
+          ))}
+        </div>
+      )}
       <div className="cockpit-grid">
         <aside className="cockpit-left" aria-label="Lega">
           {!faceHidden && (

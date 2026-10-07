@@ -244,7 +244,7 @@ test("IK-05 pending verb, server-held last target, transcript idempotency", asyn
 test("IK-06 planners: blocked → one preserved request and no plan; a card → one lega.plan; registry kinds are fixed", async () => {
   const t = await planHub();
   try {
-    assert.deepEqual([...PLANNER_KINDS].sort(), ["engineering", "resume_mission", "run", "start_mission", "studio_create"]);
+    assert.deepEqual([...PLANNER_KINDS].sort(), ["delivery", "engineering", "resume_mission", "run", "start_mission", "studio_create"]);
     assert.throws(() => t.hub.intake.registerPlanner("deploy", () => null), /necunoscut/);
     const recorded = [];
     t.hub.intake.attachWorkRequests({ recordBlocked: (req) => { recorded.push(req); return { id: `wr_${recorded.length}`, text: "Încă blocat; cererea ta e păstrată." }; } });

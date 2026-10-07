@@ -398,6 +398,8 @@ export function createDeliveries({ db, bus, clock, config, settings, projects, m
   }
   const revisionView = (r) => r && ({ id: r.id, deliveryId: r.delivery_id, text: r.text_redacted, classes: parse(r.classes_json, []), target: parse(r.target_json, {}), delta: parse(r.delta_json, {}),
     clarification: parse(r.clarification_json, null), status: r.status, opsPlanId: r.ops_plan_id, reviewId: r.review_id, documentId: r.document_id, childDeliveryId: r.child_delivery_id, createdAt: r.created_at });
+  /** The revision a running revision plan belongs to (its ops plan id), or null. */
+  const revisionOfPlan = (deliveryId, planId) => revisionView(db.prepare("SELECT * FROM delivery_revisions WHERE delivery_id = ? AND ops_plan_id = ?").get(String(deliveryId || ""), String(planId || "")));
   const getRevision = (id) => revisionView(db.prepare("SELECT * FROM delivery_revisions WHERE id = ?").get(String(id || "")));
   function updateRevision(id, fields) {
     const cols = { status: "status", opsPlanId: "ops_plan_id", reviewId: "review_id", documentId: "document_id", childDeliveryId: "child_delivery_id" };
@@ -520,6 +522,6 @@ export function createDeliveries({ db, bus, clock, config, settings, projects, m
   }
 
   return { createPlanned, sectionFor, sectionForMission, arm, activate, bindItem, bindSoftware, currentItem, items: itemsOfDelivery, trigger, verify, renderDocument, exportDocument, editDocument, approveDocument,
-    currentDoc, recordRevision, getRevision, updateRevision, view, get, need, list, latestForProject, close, cancel, setStatus, readiness, boot, tick, onEvent, attachEnvelopes, patch, bindService, startPreview,
+    currentDoc, recordRevision, getRevision, updateRevision, revisionOfPlan, view, get, need, list, latestForProject, close, cancel, setStatus, readiness, boot, tick, onEvent, attachEnvelopes, patch, bindService, startPreview,
     close_: () => { if (detach) detach(); detach = null; }, mediaFacts, markerOf };
 }

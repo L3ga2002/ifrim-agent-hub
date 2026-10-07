@@ -787,7 +787,7 @@ const P = [
   // CapCut" is not a project). Only known app names match; "importă din folderul acesta" reads the Explorer window in front.
   // M11 „Ifrim Delivery” — before the capture / clip / Studio patterns: a sentence that asks for the demo prepared for a presentation
   // (with a clip and the commercial summary in it) is ONE delivery plan, never a clip alone or a capture alone.
-  ["delivery_decisions", /^(?:arata(?:-mi)? )?deciziile (?:mele|tale|in asteptare)\b|^ce (?:decizii|am de decis)\b/, () => ({ decisions: true })],
+  ["delivery_decisions", /^(?:arata(?:-mi)? )?deciziile (?:mele|tale|in asteptare)\b/, () => ({ decisions: true })],
   ["delivery_open", /\barata(?:-mi)? ce (?:ai|mi-ai) pregatit\b|\b(?:deschide|arata(?:-mi)?) (?:camera de livrare|livrarea demo-ului|livrarea pregatita)\b/],
   ["delivery_prepare", /^(?:pregateste|fa|construieste|livreaza)(?:-mi|-ne)? (?:si )?(?:demo-ul|demoul|demo|livrarea|prezentarea)\b(?=.*\b(?:prezentare|prezentarea|client|livrare|clip|rezumat)\b)|^pregateste(?:-mi)? livrarea\b/, (_m, clause) => ({ request: clause })],
   ["delivery_revise", /\b(?:clipul|videoclipul|clip-ul|montajul|varianta verticala)\b.*\b(?:prea (?:tehnic|comercial|lung|scurt)|mai (?:scurt|comercial|simplu))\b|\bdupa secunda\b.*\barata direct\b|^in rezumat\b|\b(?:butonul|formularul|pagina|site-ul) de (?:programare|programari)\b.*\btrebuie sa\b/, (_m, clause) => ({ request: clause })],

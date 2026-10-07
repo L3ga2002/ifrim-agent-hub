@@ -23,7 +23,7 @@ export function createDeliveryExecutors({ deliveries, factory, media, projects, 
     if (!revision && !statuses.includes(d.status)) throw refuse("DELIVERY_NOT_ACTIVE", `Livrarea e ${d.status}; pașii ei nu rulează.`);
     return { d, revision };
   }
-  const planRevision = (deliveryId, planId) => deliveries.view(deliveryId).revisions.find((r) => r.planId === planId) || null;
+  const planRevision = (deliveryId, planId) => deliveries.revisionOfPlan(deliveryId, planId);
   const snapshotEqual = (d) => {
     const s = factory.snapshotCheck(d.missionId);
     if (s.actual !== d.snapshotSha) {

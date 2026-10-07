@@ -30,20 +30,23 @@ test("M11-SU-02 (T10) a benefit or the flow is stated only with every criterion 
   const ok = renderSummary(base());
   assert.match(section(ok, "benefits").text, /doar orele pe care le poate rezerva\. \(dovadă: AC-1, AC-6\)/);
   assert.match(section(ok, "how").text, /Primește confirmarea/);
-  assert.match(section(ok, "demonstrated").text, /lățimea unui telefon \(390 px, Chromium\) \(AC-6\)/);
+  assert.match(section(ok, "demonstrated").text, /pe telefon și nu poate alege o oră ocupată\. \(verificat: AC-1, AC-6\)/, "a client's words, gated on the criteria");
+  assert.match(section(ok, "demonstrated").text, /Verificări tehnice trecute: 7 din 7/);
+  assert.match(section(ok, "provenance").text, /AC-6 .*lățimea unui telefon \(390 px, Chromium\)/, "the technical criteria stay traceable");
   const mobileFailed = renderSummary(base({ manifest: manifest({ "AC-6": "FAIL" }) }));
   assert.doesNotMatch(section(mobileFailed, "benefits").text, /doar orele/, "the phone benefit is gone with AC-6");
   assert.match(section(mobileFailed, "benefits").text, /O oră ocupată nu poate fi rezervată/, "a benefit on other criteria stays");
   assert.match(section(mobileFailed, "how").text, /nu e verificat cap-coadă.*AC-6/);
   assert.match(section(mobileFailed, "cannot_claim").text, /Nu afirmăm: AC-6 .*FAIL/);
   assert.ok(mobileFailed.claimsToVerify.some((c) => c.startsWith("AC-6")));
-  assert.doesNotMatch(section(mobileFailed, "demonstrated").text, /AC-6/);
+  assert.doesNotMatch(section(mobileFailed, "demonstrated").text, /nu poate alege o oră ocupată/, "the phone line is gone with AC-6");
+  assert.match(section(mobileFailed, "demonstrated").text, /Verificări tehnice trecute: 6 din 7/);
 });
 
 test("M11-SU-03 (T07) a criterion the reviewer left open (business decision) stays visible: it is never folded into a PASS", () => {
   const doc = renderSummary(base({ manifest: manifest({ "AC-4": "NEVERIFICAT" }) }));
   assert.match(section(doc, "cannot_claim").text, /AC-4 Cauza și fixul.*NEVERIFICAT/);
-  assert.doesNotMatch(section(doc, "demonstrated").text, /review independent/);
+  assert.doesNotMatch(section(doc, "demonstrated").text, /reviewer independent/);
 });
 
 test("M11-SU-04 no invented price, ROI, deadline or date: price comes only from a CONFIGURED service; the fact guard refuses the rest", () => {

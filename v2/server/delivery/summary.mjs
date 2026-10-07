@@ -72,6 +72,9 @@ export function normalizeSummaryBlock(input, criteriaIds = []) {
     problem: input.problem === undefined ? null : line(input.problem, "summary.problem"),
     how: Array.isArray(input.how?.lines) ? { lines: input.how.lines.map((l, i) => line(l, `summary.how.lines[${i}]`)).filter(Boolean), criteria: gate(input.how.criteria, "summary.how.criteria") } : null,
     benefits: (Array.isArray(input.benefits) ? input.benefits : []).map((b, i) => ({ text: line(b?.text, `summary.benefits[${i}].text`), criteria: gate(b?.criteria, `summary.benefits[${i}].criteria`) })).filter((b) => b.text),
+    // What the demo shows, in a client's words (each line gated on its criteria, like a benefit); the spec's technical criteria then
+    // stay in „Trasabilitate”. Without it, the spec lines are shown (the earlier behaviour).
+    demonstrates: (Array.isArray(input.demonstrates) ? input.demonstrates : []).map((b, i) => ({ text: line(b?.text, `summary.demonstrates[${i}].text`), criteria: gate(b?.criteria, `summary.demonstrates[${i}].criteria`) })).filter((b) => b.text),
     questions: (Array.isArray(input.questions) ? input.questions : []).map((q, i) => line(q, `summary.questions[${i}]`)).filter(Boolean),
   };
   if (summary.questions.length > 8) problems.push("summary.questions: cel mult 8 întrebări");
@@ -93,9 +96,9 @@ const FIXED_CANNOT = Object.freeze([
 
 /** How one passed criterion was verified, in the owner's words. */
 function verifiedHow(c) {
-  if (c.verify === "test") return `test automat (${c.id})`;
-  if (c.verify === "review") return `review independent (${c.id})`;
-  if (c.verify === "preview") return `preview local pornit din versiunea verificată (${c.id})`;
+  if (c.verify === "test") return `prin test automat (${c.id})`;
+  if (c.verify === "review") return `prin review independent (${c.id})`;
+  if (c.verify === "preview") return `prin preview local pornit din versiunea verificată (${c.id})`;
   if (c.verify === "e2e") {
     const vp = (Array.isArray(c.steps) ? c.steps : []).find((s) => s && s.viewport)?.viewport;
     if (vp && vp.width <= 480) return `în browser, la lățimea unui telefon (${vp.width} px, Chromium) (${c.id})`;
@@ -128,7 +131,9 @@ export function renderSummary(input) {
   tpl("problem", [problemLine, "Demo local pentru prezentare, cu date sintetice; nu este un sistem în producție."].filter(Boolean).map((l) => assertNoInventedFacts(l, "problema")).join("\n"));
 
   const passLines = criteria.filter(PASS).map((c) => `${clean(c.text, 200)}: verificat ${verifiedHow(c)}.`);
-  tpl("demonstrated", passLines.length ? bullets(passLines) : "Nimic nu este încă verificat în această versiune.");
+  const shown = (block?.summary?.demonstrates || []).filter((b) => allPass(b.criteria)).map((b) => `${assertNoInventedFacts(b.text, "ce demonstrăm")} (verificat: ${b.criteria.join(", ")})`);
+  if (shown.length) tpl("demonstrated", `${bullets(shown)}\n\nVerificări tehnice trecute: ${passLines.length} din ${criteria.length} (lista e în „Trasabilitate”).`);
+  else tpl("demonstrated", passLines.length ? bullets(passLines) : "Nimic nu este încă verificat în această versiune.");
 
   const how = block?.summary?.how;
   if (how?.lines?.length && allPass(how.criteria)) tpl("how", bullets(how.lines.map((l) => assertNoInventedFacts(l, "cum funcționează"))));
@@ -164,7 +169,7 @@ export function renderSummary(input) {
   const files = (cs.files || []).map((f) => clean(f.path, 120)).filter(Boolean);
   sections.provenance = { id: "provenance", heading: SECTION.provenance.heading, source: "bundle", auto: true,
     text: bullets([`Pachet verificat ${clean(bundleId, 60)} (${String(bundleSha).slice(0, 12)})`, `Set de modificări ${String(cs.sha256 || "").slice(0, 12)}, snapshot ${String(cs.snapshot || "").slice(0, 12)}${files.length ? `; fișiere: ${files.join(", ")}` : ""}`,
-      `Specificația v${manifest.spec?.version ?? "?"}`, `Generat ${generatedAt}`]) };
+      `Specificația v${manifest.spec?.version ?? "?"}`, ...(shown.length ? criteria.map((c) => `${c.id} ${clean(c.text, 200)}: ${c.status}${PASS(c) ? ` (verificat ${verifiedHow(c)})` : ""}`) : []), `Generat ${generatedAt}`]) };
 
   const materials = materialLines(owner);
   for (const m of materials) claims.push(`Material de prezentare: ${m}`);

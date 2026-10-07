@@ -181,7 +181,8 @@ export function createCockpit({ db, bus, clock, settings, projects, missions, ru
     });
     const bundles = bundlesOf(project.id);
     const done = [
-      ...bundles.filter((b) => b.status === "ACCEPTED" || b.decided_at).map((b) => ({ kind: "bundle", id: b.id, missionId: b.mission_id, title: b.title, status: b.status, at: b.decided_at || b.created_at,
+      // M11 (T16): only what the owner ACCEPTED is done — a READY, STALE or REJECTED bundle is not (it was listed as done before).
+      ...bundles.filter((b) => b.status === "OWNER_ACCEPTED").map((b) => ({ kind: "bundle", id: b.id, missionId: b.mission_id, title: b.title, status: b.status, at: b.decided_at || b.created_at,
         evidence: `pachet ${b.id} · spec v${b.spec_version} · change set ${String(b.change_set_sha || "").slice(0, 12)}`, source: "factory_bundles" })),
       ...all.filter((m) => m.status === "COMPLETED" && !factories.has(m.id)).slice(0, 10).map((m) => ({ kind: "mission", id: m.id, title: m.title, status: m.status, at: m.updatedAt, evidence: `${missions.progress(m.id).completed}/${missions.progress(m.id).total} sarcini verificate`, source: "missions" })),
     ].sort((a, b) => String(b.at).localeCompare(String(a.at))).slice(0, 12);
