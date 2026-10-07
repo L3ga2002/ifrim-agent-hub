@@ -45,12 +45,18 @@ export function analyseQuality(pcm) {
   const floor = sorted.length ? sorted[Math.floor(sorted.length * 0.1)] : -120;
   const speech = frames.filter((db) => db > floor + 10 && db > -50);
   const speechLevel = speech.length ? speech.reduce((a, b) => a + b, 0) / speech.length : floor;
+  // M11 voice diagnostic (additive): frames that stand out of the floor but stay under the -50 dBFS line are counted apart, so a
+  // segment refused as "too short" says whether the voice was short or only too quiet for the line. They never count as speech.
+  const quiet = frames.filter((db) => db > floor + 10 && db <= -50);
   return {
     durationMs: Math.round((pcm.length / VOICE_SAMPLE_RATE) * 1000),
     speechMs: speech.length * 20,
     snrDb: Number((speechLevel - floor).toFixed(1)),
     peakDb: Number((sorted.at(-1) ?? -120).toFixed(1)),
     clipping: Number((pcm.length ? clipped / pcm.length : 0).toFixed(4)),
+    floorDb: Number(floor.toFixed(1)),
+    speechLevelDb: speech.length ? Number(speechLevel.toFixed(1)) : null,
+    quietSpeechMs: quiet.length * 20,
   };
 }
 

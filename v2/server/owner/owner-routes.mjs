@@ -128,9 +128,13 @@ export function registerOwnerRoutes(router, hub) {
   const ownerOnly = (req) => { const s = sessionOf(req); if (!s) throw new HubError("authentication", "Vocea se verifică doar în sesiunea ta de proprietar (Windows Hello / cheia ta)", { data: { needSession: true } }); return s; };
   const voiceFlags = (req) => { try { const v = JSON.parse(String(req.headers["x-voice-flags"] || "{}").slice(0, 1000)); return v && typeof v === "object" && !Array.isArray(v) ? v : {}; } catch { return {}; } };
   const SEGMENT_BYTES = 600 * 1024; // 15 s of 16 kHz PCM16 is 480 KB
+  // M11: how the page cut the segment (pre-roll, voiced time, levels); numbers only, for the owner's local diagnostic, never a decision input.
+  const voiceSeg = (req) => { try { const v = JSON.parse(String(req.headers["x-voice-seg"] || "null").slice(0, 600)); return v && typeof v === "object" && !Array.isArray(v) ? v : null; } catch { return null; } };
   get("/api/voice", ({ req }) => voice.status(sessionOf(req, false)));
   post("/api/voice/utterances", ({ req, query, body }) => voice.analyzeUtterance({ session: ownerOnly(req), buffer: body, purpose: String(query.purpose || ""),
-    legaSessionId: query.legaSession || null, envelopeId: query.envelope || null, flags: voiceFlags(req) }), { raw: true, maxBytes: SEGMENT_BYTES });
+    legaSessionId: query.legaSession || null, envelopeId: query.envelope || null, flags: voiceFlags(req), seg: voiceSeg(req) }), { raw: true, maxBytes: SEGMENT_BYTES });
+  get("/api/voice/diagnostics", ({ req }) => voice.diagnostics({ session: ownerOnly(req) }));
+  post("/api/voice/diagnostics", ({ req, body }) => voice.diagnose({ session: ownerOnly(req), buffer: body, flags: voiceFlags(req), seg: voiceSeg(req) }), { raw: true, maxBytes: SEGMENT_BYTES });
   get("/api/voice/utterances/:id", ({ req, params }) => voice.getUtterance({ id: params.id, session: ownerOnly(req) }));
   post("/api/voice/enroll/sample", ({ req, query, body }) => voice.enrollSample({ session: ownerOnly(req), buffer: body, phraseIndex: query.phrase }), { raw: true, maxBytes: SEGMENT_BYTES });
   post("/api/voice/enroll/finish", ({ req, body }) => dispatch(req, "voice.enroll.finish", { consentText: body.consentText }, { requireOwner: true }));

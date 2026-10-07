@@ -43,6 +43,7 @@ const ENROLL = Object.freeze({ minSamples: 5, maxSamples: 8, minSpeechMs: 1200, 
 const VERIFY = Object.freeze({ minSpeechMs: 600, minSnrDb: 6, floorMatch: 0.35, ceilMatch: 0.55, margin: 0.1, rejectGap: 0.1, rejectMax: 0.28, minConsistency: 0.45 });
 const UTTERANCE_TTL_MS = 2 * 60000; // a spoken "yes" counts for this long, once
 const RATE = Object.freeze({ perMinute: 40 });
+const DIAG = Object.freeze({ max: 60, ttlMs: 2 * 3600000 }); // M11: the local voice diagnostic keeps measurements only, in memory
 
 /**
  * M10.2.1 (D18): whether a sentence the owner SAID is exactly the resume — „Continuă”, „Lega, continuă”, „Ok, continuă”, „Continuă
@@ -118,6 +119,99 @@ export function createVoice({ db, bus, clock, settings, config, trust, engine })
     durationMs: r.duration_ms, speechMs: r.speech_ms, snrDb: r.snr_db, audioSha256: r.audio_sha256, result: r.speaker_result, reason: r.speaker_reason, verifier: r.verifier,
     profileId: r.profile_id, profileVersion: r.profile_version, flags: parse(r.flags_json, []), transcript: r.transcript, transcriptStatus: r.transcript_status,
     sttEngine: r.stt_engine, sttMs: r.stt_ms, svMs: r.sv_ms, consumedBy: r.consumed_by, consumedAt: r.consumed_at, expiresAt: r.expires_at, createdAt: r.created_at });
+
+  // ---------- M11 local voice diagnostic ----------
+  // Where the owner's voice is lost, stage by stage (capture → segmentation → speaker → transcript → intent → effect), for the
+  // owner's own session only. Kept in memory (the last DIAG.max segments, DIAG.ttlMs), never on disk, never the audio; the score is
+  // shown only here, rounded, to the authenticated owner who spoke. Nothing in an entry is ever read back as authority.
+  const diag = new Map(); // owner session id → [entry]
+  const SEG_KEYS = ["preRollMs", "voicedMs", "durationMs", "peakDb", "voicedLevelDb", "noiseDb", "sampleRate"];
+  const segMeta = (raw) => {
+    if (!raw || typeof raw !== "object") return null;
+    const out = {};
+    for (const k of SEG_KEYS) if (Number.isFinite(Number(raw[k])) && raw[k] !== null && raw[k] !== "") out[k] = Number(Number(raw[k]).toFixed(1));
+    if (["silence", "max", "flush", "push"].includes(raw.endReason)) out.endReason = raw.endReason;
+    return Object.keys(out).length ? out : null;
+  };
+  const DIAG_PLAN = Object.freeze([{ id: "diag-plan", title: "planul afișat" }]);
+  /** The intent the Hub would read from the owner's verified words, with one plan shown (pure; nothing is run). */
+  function intentOf(text) {
+    if (!text) return null;
+    try {
+      const out = resolveIntent(text, { projects: [], missions: [], departments: [], pendingEnvelopes: DIAG_PLAN, awaiting: "envelope_confirmation", source: "voice-local" });
+      const steps = (out?.steps || []).map((s) => s.intent);
+      return { intents: steps, clarification: out?.clarification?.forIntent || null, refused: Boolean(out?.refused) };
+    } catch { return { intents: ["unknown"], clarification: null, refused: false }; }
+  }
+  const EFFECT = {
+    gate: (r) => (r === "MATCH" ? "trimisă la Lega; Hub-ul verifică din nou orice efect" : "aruncată: nu ajunge la Lega"),
+    confirm: (r) => (r === "MATCH" ? "poate confirma o dată planul legat, în sesiunea ta" : "nimic"),
+    probe: () => "nimic (probă)",
+    diag: () => "nimic (diagnostic)",
+  };
+  function recordDiag(sessionId, entry) {
+    const list = (diag.get(sessionId) || []).filter((e) => now() - e.atMs < DIAG.ttlMs);
+    list.push(entry);
+    diag.set(sessionId, list.slice(-DIAG.max));
+    return entry;
+  }
+  function diagEntry({ purpose, utteranceId = null, m, decision, seg, transcript, transcriptStatus }) {
+    const vadFail = ["QUALITY_SHORT", "QUALITY_QUIET", "QUALITY_NOISE"].includes(decision.cause);
+    const intent = transcript ? intentOf(transcript) : null;
+    return {
+      id: newId("vdg"), atMs: now(), at: iso(), purpose, utteranceId, segmentation: segMeta(seg),
+      quality: { durationMs: m.quality.durationMs, speechMs: m.quality.speechMs, quietSpeechMs: m.quality.quietSpeechMs ?? null, snrDb: m.quality.snrDb, peakDb: m.quality.peakDb,
+        floorDb: m.quality.floorDb ?? null, speechLevelDb: m.quality.speechLevelDb ?? null, clipping: m.quality.clipping },
+      speaker: { result: decision.result, cause: decision.cause || null, reason: decision.reason, score: Number.isFinite(decision.score) ? Number(decision.score.toFixed(2)) : null,
+        matchAt: Number.isFinite(decision.matchAt) ? Number(decision.matchAt.toFixed(2)) : null, rejectBelow: Number.isFinite(decision.rejectBelow) ? Number(decision.rejectBelow.toFixed(2)) : null, suspicious: decision.suspicious || [] },
+      thresholds: { minSpeechMs: VERIFY.minSpeechMs, minSnrDb: VERIFY.minSnrDb, speechLineDb: -50 },
+      transcript: { status: transcriptStatus, text: transcript || null, sttMs: m.sttMs ?? null },
+      intent,
+      stages: { AUDIO_CAPTURED: m.quality.durationMs > 0, VAD_OK: !vadFail, SPEAKER_MATCH: decision.result === "MATCH", TRANSCRIPT_FINAL: transcriptStatus === "final",
+        INTENT: intent ? intent.intents.join("+") : null, AUTHORIZED_EFFECT: (EFFECT[purpose] || EFFECT.diag)(decision.result) },
+      lostAt: decision.result === "MATCH" ? (transcriptStatus === "final" ? (intent && !intent.intents.every((i) => i === "unknown") ? null : "INTENT") : transcriptStatus === "pending" ? null : "TRANSCRIPT_FINAL")
+        : vadFail ? "VAD_OK" : "SPEAKER_MATCH",
+    };
+  }
+  /** GET /api/voice/diagnostics: the owner's own entries, newest last, plus where they were lost. */
+  function diagnostics({ session }) {
+    const s = trust.requireSession(session, "diagnosticul vocal");
+    const entries = (diag.get(s.id) || []).filter((e) => now() - e.atMs < DIAG.ttlMs);
+    const lost = {};
+    for (const e of entries) { const k = e.lostAt || "NONE"; lost[k] = (lost[k] || 0) + 1; }
+    return { entries: entries.map(({ atMs, ...e }) => e), lostAt: lost, total: entries.length, keptMinutes: DIAG.ttlMs / 60000, thresholds: { minSpeechMs: VERIFY.minSpeechMs, minSnrDb: VERIFY.minSnrDb, speechLineDb: -50 },
+      note: "Doar măsurători, în memorie, pentru sesiunea ta; audio-ul nu se păstrează. Diagnosticul nu confirmă și nu pornește nimic." };
+  }
+  /**
+   * POST /api/voice/diagnostics: one segment measured through the same speaker path as the filter, but with NO row, NO binding,
+   * NO event: it can never confirm, resume or release anything. The owner's matched words are transcribed locally (as for a probe)
+   * so the diagnostic shows the intent the Hub would read; other speech is never transcribed.
+   */
+  async function diagnose({ session, buffer, flags = {}, seg = null }) {
+    const s = trust.requireSession(session, "diagnosticul vocal");
+    limit(s);
+    const profile = active();
+    const stored = profile ? readProfile(profile.id) : null;
+    let m; let decision;
+    if (!profile || !stored?.centroid) {
+      m = { quality: analyseQuality(decodePcm16(buffer)), sttMs: null };
+      decision = { result: "UNCERTAIN", cause: "NO_PROFILE", reason: profile ? "Profilul nu poate fi citit; refă înscrierea" : "Niciun profil vocal înscris", suspicious: [] };
+    } else {
+      m = await measure(buffer, { transcribe: false });
+      decision = stored.centroid.length !== m.embedding.length ? { result: "UNCERTAIN", cause: "PROFILE_MISMATCH", reason: "Profilul vine de la alt verificator; refă înscrierea", suspicious: [] } : decide(m, profile, stored.centroid, flags || {});
+    }
+    let transcript = null; let transcriptStatus = "skipped";
+    if (decision.result === "MATCH") {
+      const out = await engine.analyze(buffer, { embed: false, transcribe: true });
+      transcript = String(out.transcript || "").trim().slice(0, 500);
+      if (isLikelyHallucination(transcript, m.quality)) transcript = "";
+      m = { ...m, sttMs: out.sttMs ?? null };
+      transcriptStatus = transcript ? "final" : "empty";
+    }
+    const entry = recordDiag(s.id, diagEntry({ purpose: "diag", m, decision, seg, transcript: transcript || null, transcriptStatus }));
+    const { atMs, ...shown } = entry;
+    return { ...shown, authority: false };
+  }
 
   function limit(session) {
     const list = (rate.get(session.id) || []).filter((t) => now() - t < 60000);
@@ -227,19 +321,25 @@ export function createVoice({ db, bus, clock, settings, config, trust, engine })
     if (Number(flags.legaOverlap) > 0.3 || Number(flags.envelopeCorrelation) > 0.6) suspicious.push("vocea Lega se aude în microfon");
     if (flags.virtualDevice === true) suspicious.push("dispozitiv audio virtual / loopback");
     if (flags.playbackLike === true) suspicious.push("spectru tipic redării dintr-un difuzor");
-    let result; let reason;
-    if (m.quality.speechMs < VERIFY.minSpeechMs || m.quality.snrDb < VERIFY.minSnrDb) { result = "INSUFFICIENT_AUDIO"; reason = m.quality.speechMs < VERIFY.minSpeechMs ? "segment prea scurt" : "prea mult zgomot"; }
-    else {
-      const score = cosine(m.embedding, centroid);
+    let result; let reason; let cause; let score = null;
+    const matchAt = Math.min(profile.calibration.matchAt, VERIFY.ceilMatch);
+    if (m.quality.speechMs < VERIFY.minSpeechMs || m.quality.snrDb < VERIFY.minSnrDb) {
+      result = "INSUFFICIENT_AUDIO";
+      reason = m.quality.speechMs < VERIFY.minSpeechMs ? "segment prea scurt" : "prea mult zgomot";
+      // M11 diagnostic: "too short" splits into a short sentence and a voice under the -50 dBFS line (quiet), measured, not guessed.
+      cause = m.quality.speechMs >= VERIFY.minSpeechMs ? "QUALITY_NOISE" : (m.quality.quietSpeechMs || 0) + m.quality.speechMs >= VERIFY.minSpeechMs ? "QUALITY_QUIET" : "QUALITY_SHORT";
+    } else {
+      score = cosine(m.embedding, centroid);
       // The ceiling also applies to a profile calibrated earlier with a higher one (short confirmations score lower than the
       // 2–4 s enrolment phrases: measured on the live owner flow).
-      const matchAt = Math.min(profile.calibration.matchAt, VERIFY.ceilMatch);
       result = score >= matchAt ? "MATCH" : score < profile.calibration.rejectBelow ? "NON_MATCH" : "UNCERTAIN";
       reason = result === "MATCH" ? "apropiat de profilul tău" : result === "NON_MATCH" ? "diferit de profilul tău" : "zonă de incertitudine";
+      cause = result === "MATCH" ? "SPEAKER_MATCH" : result === "NON_MATCH" ? "SPEAKER_NON_MATCH" : "SPEAKER_UNCERTAIN";
     }
     // The page's own checks can only lower a result, never raise it.
-    if (suspicious.length && result === "MATCH") { result = flags.virtualDevice === true || Number(flags.envelopeCorrelation) > 0.6 ? "NON_MATCH" : "UNCERTAIN"; reason = `semnale suspecte: ${suspicious.join(", ")}`; }
-    return { result, reason, suspicious };
+    if (suspicious.length && result === "MATCH") { result = flags.virtualDevice === true || Number(flags.envelopeCorrelation) > 0.6 ? "NON_MATCH" : "UNCERTAIN"; reason = `semnale suspecte: ${suspicious.join(", ")}`; cause = "SUSPICIOUS_INPUT"; }
+    // `cause`, `score`, `matchAt` feed only the owner's local diagnostic (recordDiag); an utterance answer never carries them.
+    return { result, reason, suspicious, cause, score, matchAt, rejectBelow: profile.calibration.rejectBelow };
   }
 
   /**
@@ -247,7 +347,7 @@ export function createVoice({ db, bus, clock, settings, config, trust, engine })
    * asynchronously); "confirm": the spoken answer to the plan shown (transcribed synchronously; carries the envelope id);
    * "probe": the check right after enrolment. Every row belongs to the owner session that sent it.
    */
-  async function analyzeUtterance({ session, buffer, purpose, legaSessionId = null, envelopeId = null, flags = {} }) {
+  async function analyzeUtterance({ session, buffer, purpose, legaSessionId = null, envelopeId = null, flags = {}, seg = null }) {
     const s = trust.requireSession(session, "verificarea vocii");
     if (!VOICE_PURPOSES.includes(purpose)) throw new HubError("validation", "Scop necunoscut pentru segmentul vocal");
     if (purpose === "confirm" && !envelopeId) throw new HubError("validation", "Confirmarea vocală trebuie legată de planul afișat");
@@ -264,17 +364,17 @@ export function createVoice({ db, bus, clock, settings, config, trust, engine })
     if (replayed) {
       const pcm = decodePcm16(buffer);
       m = { quality: analyseQuality(pcm), audioSha256: sha256(buffer), transcript: null, sttMs: null, svMs: null, sttEngine: null };
-      decision = { result: "UNCERTAIN", reason: "aceeași înregistrare a fost deja folosită pentru o confirmare (reluare)", suspicious: ["înregistrare reluată"] };
+      decision = { result: "UNCERTAIN", cause: "REPLAY", reason: "aceeași înregistrare a fost deja folosită pentru o confirmare (reluare)", suspicious: ["înregistrare reluată"] };
     } else if (!profile || !stored?.centroid) {
       const pcm = decodePcm16(buffer);
       const quality = analyseQuality(pcm);
       m = { quality, audioSha256: sha256(buffer), transcript: null, sttMs: null, svMs: null, sttEngine: null };
-      decision = { result: "UNCERTAIN", reason: profile ? "Profilul nu poate fi citit; refă înscrierea" : "Niciun profil vocal înscris", suspicious: [] };
+      decision = { result: "UNCERTAIN", cause: "NO_PROFILE", reason: profile ? "Profilul nu poate fi citit; refă înscrierea" : "Niciun profil vocal înscris", suspicious: [] };
     } else {
       // The speaker decision comes FIRST, without transcription: speech that is not the owner's is never turned into text.
       m = await measure(buffer, { transcribe: false });
       decision = stored.centroid.length !== m.embedding.length
-        ? { result: "UNCERTAIN", reason: "Profilul vine de la alt verificator; refă înscrierea", suspicious: [] }
+        ? { result: "UNCERTAIN", cause: "PROFILE_MISMATCH", reason: "Profilul vine de la alt verificator; refă înscrierea", suspicious: [] }
         : decide(m, profile, stored.centroid, flags || {});
       // Only then, for the owner's matched speech where the answer needs the words (confirm, probe), the local transcript.
       if (decision.result === "MATCH" && purpose !== "gate") {
@@ -306,12 +406,15 @@ export function createVoice({ db, bus, clock, settings, config, trust, engine })
         decision.result, decision.reason, VERIFIER.id, profile?.id || null, profile?.version || null, json(decision.suspicious), transcript, transcriptStatus,
         transcript !== null ? m.sttEngine : null, transcript !== null ? m.sttMs : null, m.svMs, new Date(now() + UTTERANCE_TTL_MS).toISOString(), created, created);
     bus.emit({ type: "voice.utterance", scopeType: "owner", scopeId: "voice", source: "owner", payload: { id, purpose, result: decision.result, transcriptStatus, legaSessionId: base.lega_session_id } });
+    // M11: the owner's local diagnostic (measurements, in memory). A gate entry gets its transcript and intent when the text follows.
+    const diagged = recordDiag(s.id, diagEntry({ purpose, utteranceId: id, m, decision, seg, transcript, transcriptStatus }));
     // The gate's text follows on its own (Lega already heard the sentence once released); it feeds the bypass check.
     if (purpose === "gate" && decision.result === "MATCH") {
       engine.analyze(buffer, { embed: false, transcribe: true }).then((out) => {
         let text = String(out.transcript || "").trim().slice(0, 500);
         if (isLikelyHallucination(text, m.quality)) text = "";
         db.prepare("UPDATE voice_utterances SET transcript = ?, transcript_status = ?, stt_engine = ?, stt_ms = ?, updated_at = ? WHERE id = ?").run(text || null, text ? "final" : "empty", out.sttEngine || null, out.sttMs ?? null, iso(), id);
+        Object.assign(diagged, diagEntry({ purpose, utteranceId: id, m: { ...m, sttMs: out.sttMs ?? null }, decision, seg, transcript: text || null, transcriptStatus: text ? "final" : "empty" }), { id: diagged.id, atMs: diagged.atMs, at: diagged.at });
         // M08 §17 / M10.2: an armed plan may be confirmed by this segment (bound above by the server, even when the page did not tag it);
         // the plan's service re-checks everything (no authority here).
         if (text && base.envelope_id) bus.emit({ type: "voice.gate_final", scopeType: "owner", scopeId: "voice", source: "owner", payload: { utteranceId: id, envelopeId: base.envelope_id, sessionId: base.owner_session_id, legaSessionId: base.lega_session_id, armed: Boolean(armedPlan) } });
@@ -322,7 +425,7 @@ export function createVoice({ db, bus, clock, settings, config, trust, engine })
         if (text && base.lega_session_id && classifyContinueSentence(text) === "continue") {
           bus.emit({ type: "voice.continue_heard", scopeType: "owner", scopeId: "voice", source: "owner", payload: { utteranceId: id, ownerSessionId: base.owner_session_id, legaSessionId: base.lega_session_id, planBound: Boolean(armedPlan) } });
         }
-      }).catch(() => { try { db.prepare("UPDATE voice_utterances SET transcript_status = 'failed', updated_at = ? WHERE id = ?").run(iso(), id); } catch { /* closing */ } });
+      }).catch(() => { try { db.prepare("UPDATE voice_utterances SET transcript_status = 'failed', updated_at = ? WHERE id = ?").run(iso(), id); } catch { /* closing */ } diagged.transcript = { ...diagged.transcript, status: "failed" }; diagged.lostAt = "TRANSCRIPT_FINAL"; diagged.stages = { ...diagged.stages, TRANSCRIPT_FINAL: false }; });
     }
     // `boundPlanId` / `armed`: the page only observes an armed plan (the Hub confirms it from this row) instead of posting a second path.
     return { utteranceId: id, purpose, result: decision.result, reason: decision.reason, flags: decision.suspicious, transcript: purpose === "gate" ? null : transcript, final: transcriptStatus !== "pending",
@@ -500,10 +603,11 @@ export function createVoice({ db, bus, clock, settings, config, trust, engine })
   function tick() {
     try { db.prepare("DELETE FROM voice_utterances WHERE consumed_at IS NULL AND created_at < ?").run(new Date(now() - 24 * 3600000).toISOString()); } catch { /* closing */ }
     for (const [sid, d] of drafts) if (now() - d.startedAt > ENROLL.draftMinutes * 60000) drafts.delete(sid);
+    for (const [sid, list] of diag) { const fresh = list.filter((e) => now() - e.atMs < DIAG.ttlMs); if (fresh.length) diag.set(sid, fresh); else diag.delete(sid); }
     for (const [sid, list] of rate) { const fresh = list.filter((t) => now() - t < 60000); if (fresh.length) rate.set(sid, fresh); else rate.delete(sid); }
     try { engine.tick(); } catch { /* engine state is reported by status */ }
   }
 
-  return { enrollSample, enrollReset, enrollFinish, analyzeUtterance, getUtterance, claimForConfirmation, claimForContinue, utteranceForIntent, recentGateRelease, remove, setGate, status, tick, active,
+  return { enrollSample, enrollReset, enrollFinish, analyzeUtterance, diagnose, diagnostics, getUtterance, claimForConfirmation, claimForContinue, utteranceForIntent, recentGateRelease, remove, setGate, status, tick, active,
     peekUtterance, setArmedResolver };
 }

@@ -7,6 +7,7 @@ import { webauthnAvailable, onLocalhost, localhostUrl, registerAuthenticator, un
 import { recordSegment, listMicrophones, sendSegment } from "../../lib/voiceGate.js";
 import { preferredMic, setPreferredMic } from "../../lib/voiceContext.js";
 import { GATE_TOGGLE_RESULT } from "../../lib/voiceGateApply.js";
+import { VoiceDiagnostic } from "./VoiceDiagnostic.jsx";
 
 /**
  * The resumable setup of Lega 2.0 (M07 §07, §21): the REAL steps, in order, from the Hub's own state (a refresh shows the
@@ -249,6 +250,7 @@ function VoicePanel({ owner }) {
           {rec.active && <div className="mic-level" aria-hidden="true"><span style={{ width: `${Math.round(rec.level * 100)}%` }} /></div>}
           {gateSet !== null && gateSet === v.gate.enabled && <p className="small" role="status">{gateSet ? GATE_TOGGLE_RESULT.on : GATE_TOGGLE_RESULT.off}</p>}
           {probe && <p className="small">Rezultat: <strong>{probe.result}</strong> ({probe.reason}){probe.transcript ? <> · am auzit: <b>„{probe.transcript}”</b></> : null}</p>}
+          <VoiceDiagnostic />
         </div>
       ) : (
         <div className="stack tight">

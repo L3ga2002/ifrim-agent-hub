@@ -57,8 +57,13 @@ export async function toPcm16k(pcm, sampleRate) {
 const query = (o) => Object.entries(o).filter(([, v]) => v !== null && v !== undefined && v !== "").map(([k, v]) => `${k}=${encodeURIComponent(v)}`).join("&");
 
 /** One segment to the Hub: { utteranceId, result, reason, transcript?, transcriptStatus, ... }. Needs the owner session. */
-export function sendSegment(bytes, { purpose, legaSessionId = null, envelopeId = null, flags = {} } = {}) {
-  return apiRaw(`/api/voice/utterances?${query({ purpose, legaSession: legaSessionId, envelope: envelopeId })}`, bytes, { headers: { "X-Voice-Flags": JSON.stringify(flags) } });
+export function sendSegment(bytes, { purpose, legaSessionId = null, envelopeId = null, flags = {}, seg = null } = {}) {
+  return apiRaw(`/api/voice/utterances?${query({ purpose, legaSession: legaSessionId, envelope: envelopeId })}`, bytes, { headers: { "X-Voice-Flags": JSON.stringify(flags), ...(seg ? { "X-Voice-Seg": JSON.stringify(seg) } : {}) } });
+}
+
+/** M11: one segment to the local voice diagnostic (no utterance row, no binding: it can never confirm or release anything). */
+export function diagnoseSegment(bytes, { flags = {}, seg = null } = {}) {
+  return apiRaw("/api/voice/diagnostics", bytes, { headers: { "X-Voice-Flags": JSON.stringify(flags), ...(seg ? { "X-Voice-Seg": JSON.stringify(seg) } : {}) } });
 }
 
 /**
@@ -66,7 +71,7 @@ export function sendSegment(bytes, { purpose, legaSessionId = null, envelopeId =
  * Lega, plus close(). `context()` gives { legaSessionId, envelopeId } at the moment a sentence ends (the plan on screen, if
  * any, so a spoken "yes" is bound to it). `onDecision(decision)` reports each decision (shown to the owner).
  */
-export async function createVoiceGate(stream, { onDecision = () => {}, context = () => ({}) } = {}) {
+export async function createVoiceGate(stream, { onDecision = () => {}, context = () => ({}), diagnostic = false, onDropped = () => {} } = {}) {
   startLegaHistory();
   const ctx = new (window.AudioContext || window.webkitAudioContext)();
   await ctx.audioWorklet.addModule("/voice-gate-worklet.js");
@@ -78,6 +83,8 @@ export async function createVoiceGate(stream, { onDecision = () => {}, context =
   let closed = false;
   node.port.onmessage = async (event) => {
     const m = event.data || {};
+    // M11: a click / knock the worklet refused to send (no audio here, only its timing) — shown by the diagnostic.
+    if (m.type === "dropped" && !closed) { onDropped({ reason: m.reason, voicedMs: m.voicedMs, durationMs: m.durationMs }); return; }
     if (m.type !== "segment" || closed) return;
     const t0 = performance.now();
     const durMs = (m.pcm.length / m.sampleRate) * 1000;
@@ -87,10 +94,13 @@ export async function createVoiceGate(stream, { onDecision = () => {}, context =
       const flags = localFlags(m.pcm, m.sampleRate, t0, durMs, label);
       const bytes = await toPcm16k(m.pcm, m.sampleRate);
       m.pcm.fill(0);
-      decision = await sendSegment(bytes, { purpose: "gate", legaSessionId: where.legaSessionId || null, envelopeId: where.envelopeId || null, flags });
+      // M11 diagnostic mode: the same microphone, worklet and speaker path, sent to the diagnostic (nothing released to Lega).
+      decision = diagnostic ? await diagnoseSegment(bytes, { flags, seg: m.seg || null })
+        : await sendSegment(bytes, { purpose: "gate", legaSessionId: where.legaSessionId || null, envelopeId: where.envelopeId || null, flags, seg: m.seg || null });
     } catch (error) { decision = { result: "UNCERTAIN", reason: error.status === 401 ? "filtrul cere sesiunea ta de proprietar (Windows Hello)" : `verificarea nu a rulat: ${error.message}` }; }
     if (closed) return;
-    node.port.postMessage({ type: decision.result === "MATCH" ? "release" : "drop", id: m.id });
+    const result = diagnostic ? decision.speaker?.result : decision.result;
+    node.port.postMessage({ type: !diagnostic && result === "MATCH" ? "release" : "drop", id: m.id });
     onDecision({ ...decision, envelopeId: where.envelopeId || null, ms: Math.round(performance.now() - t0), segmentMs: Math.round(durMs) });
   };
   return {
