@@ -8,7 +8,7 @@ import path from "node:path";
 import vm from "node:vm";
 import { fileURLToPath } from "node:url";
 import { makeTestHub, enrolOwner } from "./helpers.mjs";
-import { enrolVoice, segment, speak, OTHER_SPEAKER } from "./voice-helpers.mjs";
+import { enrolVoice, segment, speak, OTHER_SPEAKER, NEAR_SPEAKER } from "./voice-helpers.mjs";
 import { diagRows, diagSummary } from "../web/src/lib/voiceDiagLogic.js";
 import { analyseQuality } from "../server/owner/audio.mjs";
 import { voicePcm } from "./fixtures/voice-pcm.mjs";
@@ -205,4 +205,26 @@ test("M11-VS-12 the diagnostic view says where each sentence was lost, in plain 
   assert.equal(rows[1].stages.VAD_OK, "nu: prea scurtă");
   assert.equal(rows[1].lostAt, "segmentare");
   assert.equal(diagSummary(entries).text, "1 din 2 au trecut; pierdute: 1 la segmentare");
+});
+
+test("M11-VS-13 (owner decision „da opriri din incert”) an UNCERTAIN voice may only stop: „Pauză” / „Oprește tot” → voice.stop_heard; „Continuă”, „Da”, another voice → nothing", async () => {
+  const t = await makeTestHub();
+  try {
+    const owner = await enrolOwner(t, { activatePolicy: false });
+    await enrolVoice(t, owner);
+    const heard = [];
+    t.hub.bus.subscribe((e) => { if (e.type === "voice.stop_heard") heard.push(e.payload); });
+    const gate = (text, speaker) => t.hub.voice.analyzeUtterance({ session: owner.session, buffer: segment(text, { speaker }), purpose: "gate", legaSessionId: "lgs_test_1", flags: {} });
+    const p = await gate("Pauză", NEAR_SPEAKER);
+    assert.equal(p.result, "UNCERTAIN", "the uncertain voice is still not released to Lega");
+    await gate("Oprește tot", NEAR_SPEAKER);
+    await gate("Continuă", NEAR_SPEAKER);
+    await gate("Da, execută planul", NEAR_SPEAKER);
+    await gate("Oprește tot", OTHER_SPEAKER);
+    await new Promise((r) => setTimeout(r, 1500));
+    assert.deepEqual(heard.map((h) => h.intent).sort(), ["pause", "stop_all"]);
+    assert.ok(heard.every((h) => h.speaker === "UNCERTAIN"));
+    const kept = t.hub.db.prepare("SELECT transcript FROM voice_utterances WHERE speaker_result != 'MATCH'").all();
+    assert.ok(kept.every((r) => r.transcript === null), "the uncertain text is never kept");
+  } finally { await t.cleanup(); }
 });

@@ -394,6 +394,13 @@ export function createHub(config, { providerOverrides = {}, homeDir, browserLaun
   cockpit.projectCockpit = async (projectId) => {
     const data = await baseProjectCockpit(projectId);
     if (data) { try { data.notices = hub.readiness.noticesFor(data.project.id); } catch { data.notices = []; } }
+    // M11: the project's deliveries (open first, then the latest), each with the plain sentence Lega says about it — never ids or grants.
+    if (data) {
+      try {
+        data.deliveries = deliveries.list({ projectId: data.project.id }).slice(0, 3).map((d) => ({ id: d.id, title: d.title, status: d.status, statusReason: d.statusReason, labels: d.labels,
+          sentence: hub.deliveryPlanner ? hub.deliveryPlanner.summaryLine(deliveries.view(d.id)) : d.statusReason, href: `/livrare/${d.id}` }));
+      } catch { data.deliveries = []; }
+    }
     return data;
   };
   // M07: the resumable setup (ordered real steps; the automatic ones run on the Hub through the ordinary commands).
@@ -445,6 +452,18 @@ export function createHub(config, { providerOverrides = {}, homeDir, browserLaun
     // words (describeResults → speak). 2.12.1: ONE line per sentence, in the intake's words — `say` (a refused claim, a veto the bridge did
     // not already answer, a pointer to the cockpit, a plan waiting) or the intake's prefix (what was heard) + the description of the
     // result; a silent outcome (a duplicate, the session checks Lega's own line answers, a veto the bridge answered) says nothing.
+    // M11 (owner decision 2026-10-07): a stop heard locally from an UNCERTAIN voice (never a resume or a start) — the same fail-safe
+    // paths every channel has: Stop All on the voice channel, the pause without an owner session, Lega's own silence.
+    if (event.type === "voice.stop_heard" && event.payload?.intent) {
+      const p = event.payload;
+      setImmediate(() => {
+        Promise.resolve().then(async () => {
+          if (p.intent === "stop_all") await commands.dispatch({ type: "system.stop_all", payload: { reason: "Oprește tot (spus; vocea nu a fost confirmată local, doar oprire)" }, channel: "voice", actor: `voice-local:${p.legaSessionId || "?"}` });
+          else if (p.intent === "pause") await hub.interrupts.pause({ actor: `voice-local:${p.legaSessionId || "?"}`, reason: "Pauză (spusă; vocea nu a fost confirmată local, doar oprire)", channel: "voice" });
+          else if (p.intent === "mute" && p.legaSessionId) live.publish({ type: "lega.silence", sessionId: p.legaSessionId });
+        }).catch(() => {});
+      });
+    }
     if (event.type === "voice.continue_heard" && event.payload?.utteranceId) {
       const p = event.payload;
       setImmediate(() => {

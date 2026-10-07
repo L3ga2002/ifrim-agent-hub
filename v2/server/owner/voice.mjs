@@ -83,6 +83,25 @@ export function continueCopyKind(transcript) {
   return null;
 }
 
+/**
+ * M11 (owner decision 2026-10-07, „da opriri din incert”): a sentence that ONLY stops something — „Pauză”, „Taci”, „Oprește tot” —
+ * as one clean imperative step (a question, a negation, a condition or reported speech resolve to explain_stop / not_yet, never here).
+ * Returns the stop intent or null. Pure. Used only for gate segments whose speaker came out UNCERTAIN: such a sentence may stop work
+ * locally, never start, resume or confirm anything, and nothing of it reaches Lega.
+ */
+export const STOP_ONLY_INTENTS = Object.freeze(["pause", "mute", "stop_all"]);
+export function classifyStopSentence(transcript) {
+  const raw = String(transcript || "").slice(0, 200).trim();
+  if (!raw || /\?/.test(raw) || /[„“”«»"]/.test(raw)) return null;
+  let out;
+  try { out = resolveIntent(raw, { projects: [], missions: [], departments: [], pendingEnvelopes: [], source: "voice-local" }); } catch { return null; }
+  const steps = out?.steps || [];
+  if (steps.length !== 1 || out.clarification) return null;
+  const s = steps[0];
+  if (!STOP_ONLY_INTENTS.includes(s.intent) || s.constraints?.conditional || s.args?.inert) return null;
+  return s.intent;
+}
+
 /** Word overlap of what was heard and what was shown (diacritics and punctuation ignored): 0..1. */
 export function phraseMatch(heard, expected) {
   const words = (s) => normalizeText(s).replace(/[^a-z0-9\s-]+/g, " ").split(/\s+/).filter((w) => w.length > 1);
@@ -408,6 +427,22 @@ export function createVoice({ db, bus, clock, settings, config, trust, engine })
     bus.emit({ type: "voice.utterance", scopeType: "owner", scopeId: "voice", source: "owner", payload: { id, purpose, result: decision.result, transcriptStatus, legaSessionId: base.lega_session_id } });
     // M11: the owner's local diagnostic (measurements, in memory). A gate entry gets its transcript and intent when the text follows.
     const diagged = recordDiag(s.id, diagEntry({ purpose, utteranceId: id, m, decision, seg, transcript, transcriptStatus }));
+    // M11 (owner decision „da opriri din incert”): an UNCERTAIN gate segment of a Lega session (the speaker model is unsure, NOT another
+    // voice, no suspicious input) is transcribed locally only to see whether it is a stop. A clean „Pauză” / „Taci” / „Oprește tot” then
+    // stops locally (voice.stop_heard; hub.mjs runs the fail-safe interrupt). The text is not kept, nothing is released to Lega, and
+    // nothing can start, resume or confirm from it.
+    if (purpose === "gate" && decision.result === "UNCERTAIN" && decision.cause === "SPEAKER_UNCERTAIN" && !(decision.suspicious || []).length && base.lega_session_id) {
+      engine.analyze(buffer, { embed: false, transcribe: true }).then((out) => {
+        let text = String(out.transcript || "").trim().slice(0, 200);
+        if (isLikelyHallucination(text, m.quality)) text = "";
+        const stop = text ? classifyStopSentence(text) : null;
+        diagged.transcript = { status: stop ? "final" : "skipped", text: null, sttMs: out.sttMs ?? null };
+        if (!stop) return;
+        diagged.stages = { ...diagged.stages, INTENT: stop, AUTHORIZED_EFFECT: "oprire locală (voce incertă: doar oprește, nu pornește nimic)" };
+        diagged.lostAt = null;
+        bus.emit({ type: "voice.stop_heard", scopeType: "owner", scopeId: "voice", source: "voice-local", payload: { utteranceId: id, intent: stop, ownerSessionId: base.owner_session_id, legaSessionId: base.lega_session_id, speaker: "UNCERTAIN" } });
+      }).catch(() => {});
+    }
     // The gate's text follows on its own (Lega already heard the sentence once released); it feeds the bypass check.
     if (purpose === "gate" && decision.result === "MATCH") {
       engine.analyze(buffer, { embed: false, transcribe: true }).then((out) => {
