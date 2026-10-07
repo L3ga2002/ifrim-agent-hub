@@ -4,6 +4,7 @@ import { api } from "../../api.js";
 import { Chip, ErrorNotice } from "../../components/ui.jsx";
 import { createVoiceGate, MIC_CONSTRAINTS } from "../../lib/voiceGate.js";
 import { preferredMic } from "../../lib/voiceContext.js";
+import { withReauth } from "../../lib/ownerSession.js";
 import { diagRows, diagSummary, DIAG_STAGES } from "../../lib/voiceDiagLogic.js";
 
 /**
@@ -30,6 +31,8 @@ export function VoiceDiagnostic() {
   const start = async () => {
     setError(null); setDropped(0);
     try {
+      // The diagnostic is the owner's own: open the session first (Windows Hello) instead of failing on every sentence.
+      setData(await withReauth(() => api("/api/voice/diagnostics")));
       const deviceId = preferredMic();
       stream.current = await navigator.mediaDevices.getUserMedia({ audio: { ...MIC_CONSTRAINTS, ...(deviceId ? { deviceId: { ideal: deviceId } } : {}) } });
       gate.current = await createVoiceGate(stream.current, { diagnostic: true, onDecision: () => load(), onDropped: () => setDropped((n) => n + 1) });
