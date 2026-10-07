@@ -311,3 +311,6 @@ export function renderContactDraft({ org = null, contact = null, proposal = null
 
   return { subject, body, claimsToVerify, personalizationBasis: basis, warnings };
 }
+
+// M11: the commercial summary of a delivery (delivery/summary.mjs) reuses the same rules for untrusted text, price and term.
+export { NOT_CONFIGURED, clean, priceText, leadTimeText, materialLines };

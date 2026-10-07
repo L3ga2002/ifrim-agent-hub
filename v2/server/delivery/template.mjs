@@ -29,10 +29,11 @@ import { PLATFORM_KEYS } from "../media/variants.mjs";
 import { TEST_PROJECT_MARKER, slugify } from "../domain/projects.mjs";
 import { insideAny } from "../policy/action-policy.mjs";
 import { assertCaptureOrigin, syntheticProjectProblems, textViolations, SYNTHETIC_BANNER } from "./capture-guard.mjs";
+import { normalizeSummaryBlock } from "./summary.mjs";
 
 export const TEMPLATE_SCHEMA = 1;
 export const STORY_TEMPLATE = "delivery-presentation-v1";
-export const SUMMARY_TEMPLATE = "commercial-summary-v1";
+export const SUMMARY_TEMPLATE = "commercial-summary-v2"; // v2: the owner's §21 sections (delivery/summary.mjs)
 export const PACKAGE_KIND = "delivery.package";
 export const REVISE_KIND = "delivery.revise";
 export const DELIVERY_LIMITS = Object.freeze({ phaseMinutes: 30, hardStopMinutes: 60, maxActions: 120, revisionMinutes: 15, maxSteps: 12 });
@@ -127,8 +128,12 @@ export function normalizeDeliveryBlock(input) {
   if (exportPrefix !== null && !EXPORT_PREFIX_RE.test(exportPrefix)) problems.push("exportPrefix: litere mici, cifre și cratime (2–31 de caractere)");
   const redactSelectors = Array.isArray(input.redactSelectors) ? input.redactSelectors : [];
   if (redactSelectors.length > 20 || redactSelectors.some((s) => !safeSelector(s))) problems.push("redactSelectors: cel mult 20 de selectori CSS valizi");
+  // M11: the commercial summary's template text (problem, flow, benefits gated on criteria, questions), fact-guarded at definition time.
+  const summaryPart = normalizeSummaryBlock(input.summary);
+  problems.push(...summaryPart.problems);
   const block = { noun, issue: input.issue ? clean(input.issue, 160) : null, proofSelector: String(input.proofSelector || "").trim(), bannerSelector: String(input.bannerSelector || "").trim(),
-    evidenceNote: evidenceNote || null, exportPrefix, redactSelectors: redactSelectors.map((s) => String(s).trim()), texts, variant: { platformKey, overrides } };
+    evidenceNote: evidenceNote || null, exportPrefix, redactSelectors: redactSelectors.map((s) => String(s).trim()), texts, variant: { platformKey, overrides },
+    ...(summaryPart.summary ? { summary: summaryPart.summary } : {}) };
   return { block, problems };
 }
 

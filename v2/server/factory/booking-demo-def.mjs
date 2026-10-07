@@ -97,5 +97,16 @@ export const BOOKING_DEMO = freeze({
       cta: { criteria: [], business: "Hai să discutăm", technical: "Pachet local, gata de verificare" },
     },
     variant: { platformKey: "shorts_9x16", overrides: { hookText: "Programări online — demo", ctaText: "Hai să vorbim" } },
+    // The commercial summary's template text (delivery/summary.mjs): shown only when its criteria passed; no price, result or deadline.
+    summary: {
+      problem: "Clienții care programează de pe telefon pot alege ore deja ocupate; programarea pică abia la confirmare.",
+      how: { criteria: ["AC-6", "AC-7"], lines: ["Clientul alege serviciul, ziua și o oră liberă.", "Completează numele și mașina.", "Primește confirmarea programării pe loc.", "Orele ocupate apar indisponibile și nu pot fi alese, nici pe telefon."] },
+      benefits: [
+        { text: "Pe telefon, clientul vede doar orele pe care le poate rezerva.", criteria: ["AC-1", "AC-6"] },
+        { text: "Aceeași programare funcționează și pe desktop.", criteria: ["AC-2", "AC-7"] },
+        { text: "O oră ocupată nu poate fi rezervată a doua oară.", criteria: ["AC-3"] },
+      ],
+      questions: ["Cum primiți acum programările (telefon, mesaje, alt sistem)?", "Ce servicii și ce durate ar trebui să apară în listă?", "Cine confirmă programările și cum vreți să fiți anunțat?", "De pe ce dispozitive programează clienții dumneavoastră?"],
+    },
   },
 });

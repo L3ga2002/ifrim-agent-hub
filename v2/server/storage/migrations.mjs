@@ -1034,4 +1034,51 @@ export const MIGRATIONS = [
       `);
     },
   },
+  {
+    // M11 „Ifrim Delivery”: a delivery binds one verified software version to what is shown from it (preview, captures, clip,
+    // vertical, commercial summary) through real links. Items carry the snapshot they are evidence of and their upstream items, so
+    // a change marks exactly the dependent items STALE (delivery/stale.mjs); a STALE item never returns to CURRENT. Documents are
+    // versioned (an owner edit is a new version), revisions record the owner's feedback and what it became. Purely additive.
+    version: 12,
+    name: "m11-deliveries",
+    up(db) {
+      db.exec(`
+        CREATE TABLE deliveries (id TEXT PRIMARY KEY, project_id TEXT NOT NULL REFERENCES projects(id), parent_id TEXT REFERENCES deliveries(id),
+          lineage INTEGER NOT NULL DEFAULT 1, title TEXT NOT NULL,
+          status TEXT NOT NULL CHECK (status IN ('PLANNED','ARMED','ACTIVE','READY','NEEDS_OWNER','STALE','CLOSED','CANCELLED','EXPIRED','FAILED')),
+          status_reason TEXT NOT NULL DEFAULT '', mission_id TEXT, envelope_id TEXT, envelope_hash TEXT, ops_plan_id TEXT,
+          template_json TEXT NOT NULL, template_sha TEXT NOT NULL, ops_steps_json TEXT NOT NULL, ops_body_sha TEXT NOT NULL, consent_json TEXT,
+          activate_by TEXT, activated_at TEXT, phase_expires_at TEXT,
+          bundle_id TEXT, bundle_sha TEXT, change_set_id TEXT, change_set_sha TEXT, snapshot_sha TEXT, spec_version INTEGER, spec_sha TEXT, binding_sha TEXT,
+          generation INTEGER NOT NULL DEFAULT 0, content_project_id TEXT, edit_project_id TEXT,
+          labels_json TEXT NOT NULL DEFAULT '[]', verified_json TEXT NOT NULL DEFAULT '{}',
+          created_by TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, closed_at TEXT, version INTEGER NOT NULL DEFAULT 1);
+        CREATE INDEX idx_deliveries_project ON deliveries(project_id, updated_at);
+        CREATE INDEX idx_deliveries_mission ON deliveries(mission_id);
+        CREATE UNIQUE INDEX ux_deliveries_envelope ON deliveries(envelope_id) WHERE envelope_id IS NOT NULL;
+        CREATE UNIQUE INDEX ux_deliveries_open_project ON deliveries(project_id) WHERE status IN ('ARMED','ACTIVE');
+        CREATE TABLE delivery_items (id TEXT PRIMARY KEY, delivery_id TEXT NOT NULL REFERENCES deliveries(id),
+          kind TEXT NOT NULL CHECK (kind IN ('bundle','e2e_shot','preview','capture','brief','claim','edit','render','variant','qa','export')),
+          role TEXT NOT NULL DEFAULT '', ref_table TEXT NOT NULL, ref_id TEXT NOT NULL, ref_sha TEXT NOT NULL DEFAULT '', snapshot_sha TEXT NOT NULL DEFAULT '',
+          generation INTEGER NOT NULL DEFAULT 1, upstream_json TEXT NOT NULL DEFAULT '[]', supersedes_id TEXT,
+          status TEXT NOT NULL DEFAULT 'CURRENT' CHECK (status IN ('CURRENT','SUPERSEDED','STALE')), stale_code TEXT NOT NULL DEFAULT '', status_reason TEXT NOT NULL DEFAULT '',
+          meta_json TEXT NOT NULL DEFAULT '{}', created_by TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
+        CREATE INDEX idx_delivery_items_delivery ON delivery_items(delivery_id, kind, status);
+        CREATE INDEX idx_delivery_items_ref ON delivery_items(ref_table, ref_id);
+        CREATE TABLE delivery_documents (id TEXT PRIMARY KEY, delivery_id TEXT NOT NULL REFERENCES deliveries(id),
+          kind TEXT NOT NULL CHECK (kind IN ('commercial_summary')), version INTEGER NOT NULL, parent_id TEXT,
+          sections_json TEXT NOT NULL, text TEXT NOT NULL, content_sha TEXT NOT NULL, basis_json TEXT NOT NULL, basis_sha TEXT NOT NULL,
+          claims_to_verify_json TEXT NOT NULL DEFAULT '[]', warnings_json TEXT NOT NULL DEFAULT '[]',
+          author_kind TEXT NOT NULL CHECK (author_kind IN ('template','owner','mixed')),
+          status TEXT NOT NULL CHECK (status IN ('CURRENT','SUPERSEDED','STALE')), stale_reason TEXT NOT NULL DEFAULT '',
+          approval_json TEXT, export_json TEXT NOT NULL DEFAULT '{}', created_by TEXT NOT NULL, created_at TEXT NOT NULL, UNIQUE (delivery_id, kind, version));
+        CREATE TABLE delivery_revisions (id TEXT PRIMARY KEY, delivery_id TEXT NOT NULL REFERENCES deliveries(id), text_redacted TEXT NOT NULL,
+          classes_json TEXT NOT NULL DEFAULT '[]', target_json TEXT NOT NULL DEFAULT '{}', delta_json TEXT NOT NULL DEFAULT '{}', clarification_json TEXT,
+          status TEXT NOT NULL CHECK (status IN ('NOTED','CLARIFY','PROPOSED','APPLIED','ROUTED_SOFTWARE','REFUSED','CANCELLED')),
+          ops_plan_id TEXT, review_id TEXT, document_id TEXT, child_delivery_id TEXT,
+          source TEXT NOT NULL, channel TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
+        CREATE INDEX idx_delivery_revisions_delivery ON delivery_revisions(delivery_id, created_at);
+      `);
+    },
+  },
 ];

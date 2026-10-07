@@ -50,17 +50,20 @@ export const MAX_TEXT = 2000;
  * current clips at every clip version, „Trasabilitate” states the facts of the verified bundle (bundle, hashes, spec). The owner's
  * own remarks go in the editable sections.
  */
+// M11 (owner's brief §21): the commercial summary answers, in this order, the problem, what the demo shows, how it works, the benefits
+// we may state, what we may NOT state, the questions for the client and the next step. Video, price/term and traceability follow.
 export const SUMMARY_SECTIONS = Object.freeze([
-  { id: "context", heading: "Ce am pregătit" }, { id: "delivered", heading: "Ce funcționează (verificat)" }, { id: "fixed", heading: "Problema rezolvată" },
-  { id: "not_verified", heading: "Ce nu am verificat" }, { id: "video", heading: "Materiale video", auto: true }, { id: "scope", heading: "Ce include" },
-  { id: "exclusions", heading: "Ce nu include" }, { id: "price_terms", heading: "Preț și termen" }, { id: "next_step", heading: "Următorul pas" },
+  { id: "problem", heading: "Problema" }, { id: "demonstrated", heading: "Ce demonstrăm" }, { id: "how", heading: "Cum funcționează" },
+  { id: "benefits", heading: "Ce beneficii putem afirma" }, { id: "cannot_claim", heading: "Ce nu putem afirma" }, { id: "questions", heading: "Întrebări pentru client" },
+  { id: "next_step", heading: "Următorul pas" }, { id: "video", heading: "Materiale video", auto: true }, { id: "price_terms", heading: "Preț și termen" },
   { id: "provenance", heading: "Trasabilitate", auto: true },
 ].map((s) => Object.freeze(s)));
 /** Where a generated section comes from, as the refusal of a hand edit says it. */
 const AUTO_SECTION_SOURCE = Object.freeze({ video: "din clipurile curente (fișiere, durată, QA)", provenance: "din faptele pachetului verificat (pachet, amprente, specificație)" });
 const SECTION_ALIASES = Object.freeze({
-  context: ["ce am pregatit", "contextul", "context", "introducerea", "introducere"], delivered: ["ce functioneaza", "functioneaza"], fixed: ["problema rezolvata", "problema"],
-  not_verified: ["ce nu am verificat", "nu am verificat", "neverificat"], video: ["materiale video", "materialele video"], scope: ["ce include"], exclusions: ["ce nu include", "excluderi"],
+  problem: ["problema"], demonstrated: ["ce demonstram", "demonstram", "ce functioneaza"], how: ["cum functioneaza", "fluxul", "cum merge"],
+  benefits: ["beneficii", "beneficiile", "ce beneficii"], cannot_claim: ["ce nu putem afirma", "nu putem afirma", "limitele", "limite"],
+  questions: ["intrebari pentru client", "intrebarile", "intrebari"], video: ["materiale video", "materialele video"],
   price_terms: ["pret si termen", "pretul", "pret", "termenul", "termen"], next_step: ["urmatorul pas", "pasul urmator", "pasii urmatori", "urmatorii pasi"], provenance: ["trasabilitate", "trasabilitatea"],
 });
 
@@ -435,7 +438,7 @@ export function classify(text, ctx = {}) {
       // A generated section is refused with where it comes from AND where the owner's own words can go instead.
       clause.refused = "SUMMARY_SECTION_AUTO";
       const editable = c.summary.sections.filter((s) => !s.auto);
-      const suggested = ["next_step", "context"].map((id) => editable.find((s) => s.id === id)).filter(Boolean);
+      const suggested = ["next_step", "problem"].map((id) => editable.find((s) => s.id === id)).filter(Boolean);
       const where = (suggested.length ? suggested : editable.slice(0, 2)).map((s) => `«${s.heading}»`).join(" sau ");
       messages.push(`Secțiunea «${section.heading}» se generează ${AUTO_SECTION_SOURCE[section.id] || "din starea curentă a livrării"} și nu se editează de mână.`
         + (where ? ` Observațiile tale le scrii într-o secțiune editabilă, de exemplu ${where}: spune secțiunea și textul nou, între ghilimele.` : ""));

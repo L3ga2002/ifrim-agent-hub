@@ -112,8 +112,9 @@ test("M11-CG-04 assertSyntheticProject accepts only a hub-test project with a Hu
   code(() => assertSyntheticProject(PROJECT, null, KNOWN), "DELIVERY_MARKER_INVALID");
   code(() => assertSyntheticProject(PROJECT, { ...MARKER, createdBy: "altcineva" }, KNOWN), "DELIVERY_MARKER_INVALID");
   code(() => assertSyntheticProject(PROJECT, { ...MARKER, fixture: "necunoscut" }, KNOWN), "DELIVERY_FIXTURE_UNKNOWN");
-  // By default only the registered factory demos are known.
-  code(() => assertSyntheticProject(PROJECT, MARKER, { config: CONFIG }), "DELIVERY_FIXTURE_UNKNOWN");
+  // By default only the registered factory demos are known: booking-demo is registered (M11 U1), an unknown name is not.
+  assert.deepEqual(problemCodes(PROJECT, MARKER, { config: CONFIG }), []);
+  code(() => assertSyntheticProject(PROJECT, { ...MARKER, fixture: "necunoscut" }, { config: CONFIG }), "DELIVERY_FIXTURE_UNKNOWN");
   assert.deepEqual(problemCodes(PROJECT, { ...MARKER, fixture: "service-request" }, { config: CONFIG }), []);
   // Every problem is listed, not only the first.
   assert.deepEqual(problemCodes({ ...PROJECT, source: "registry" }, { ...MARKER, data: undefined }), ["DELIVERY_PROJECT_NOT_TEST", "DELIVERY_DATA_NOT_SYNTHETIC"]);

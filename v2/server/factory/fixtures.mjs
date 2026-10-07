@@ -3,6 +3,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { TEST_PROJECT_MARKER } from "../domain/projects.mjs";
 import { plannedTestRefs } from "./test-first.mjs";
+import { BOOKING_DEMO } from "./booking-demo-def.mjs";
 
 /**
  * Software Factory demo fixtures (M03 §25–§27): small projects with fictive data and no network, kept in v2/fixtures/factory.
@@ -95,6 +96,8 @@ export const FACTORY_DEMOS = Object.freeze({
     // With an empty project id; demoSpec(name, { projectId }) derives the paths of the registered project through specFor.
     spec: bugTestFirstSpec(""), specFor: bugTestFirstSpec,
   },
+  // M11 „Ifrim Delivery”: the synthetic appointments app of a fictive detailing workshop (booking-demo-def.mjs documents the shape).
+  "booking-demo": BOOKING_DEMO,
 });
 
 /** Copies a fixture into `targetDir` (must not exist) and writes the test-project marker. Returns the marker data. */
@@ -109,7 +112,7 @@ export function materializeFixture(name, targetDir, { port = null } = {}) {
   fs.cpSync(source, targetDir, { recursive: true, errorOnExist: true, filter: keep });
   if (demo.overlay) fs.cpSync(path.join(FIXTURE_ROOT, demo.overlay), targetDir, { recursive: true, force: true });
   if (port) fs.writeFileSync(path.join(targetDir, "config.json"), `${JSON.stringify({ port })}\n`);
-  const marker = { createdBy: "ifrim-agent-hub", purpose: "live-validation", name: demo.name, stack: demo.stack, fixture: name, createdAt: new Date().toISOString() };
+  const marker = { createdBy: "ifrim-agent-hub", purpose: "live-validation", name: demo.name, stack: demo.stack, fixture: name, ...(demo.data ? { data: demo.data } : {}), createdAt: new Date().toISOString() };
   fs.writeFileSync(path.join(targetDir, TEST_PROJECT_MARKER), `${JSON.stringify(marker, null, 2)}\n`);
   return marker;
 }

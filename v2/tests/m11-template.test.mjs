@@ -314,7 +314,7 @@ test("M11-TP-08 sectionOf is the hashed envelope block: the documented shape, bo
   assert.deepEqual(section.preview, { origin: "http://127.0.0.1:4620", command: "node server.js" });
   assert.deepEqual(section.captures, template.captures.map((c) => ({ role: c.role, viewport: { ...c.viewport }, dsf: c.dsf, fps: 30, maxDurationMs: 60000, stepsSha: c.stepsSha })));
   assert.deepEqual(section.story, { template: "delivery-presentation-v1", tone: "both", canvas: "1920x1080", fps: "30/1", variant: { platformKey: "shorts_9x16", overridesSha: template.story.variant.overridesSha } });
-  assert.deepEqual(section.summary, { template: "commercial-summary-v1", serviceRefs: [] });
+  assert.deepEqual(section.summary, { template: "commercial-summary-v2", serviceRefs: [] });
   assert.deepEqual(section.tools, { ffmpeg: IDENTITY.ffmpeg, ffprobe: IDENTITY.ffprobe, chromium: { version: "1.61.0" } });
   assert.deepEqual(section.exports, { dir: EXPORTS, folder: template.exports.folder });
   assert.deepEqual(section.limits, { phaseMinutes: 30, maxActions: 120 });

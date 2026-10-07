@@ -138,11 +138,13 @@ test("U06-BL-04 migration 11 on a copy (dry run) and on the database: work_reque
   db10.prepare("INSERT INTO settings (key, value_json, updated_at) VALUES ('u06-probe', '\"kept\"', ?)").run(new Date().toISOString());
   db10.close();
   const r = await dryRunMigration({ dbPath: file, tmpDir: path.join(dir, "tmp") });
-  assert.deepEqual([r.schemaBefore, r.schemaAfter, r.integrity, r.rowCountsUnchanged], [10, 11, "ok", true]);
-  assert.deepEqual(r.pending, ["11:m10-2-work-requests"]);
+  // Later migrations (M11: 12) follow it in the same run; migration 11 is the first one pending.
+  assert.deepEqual([r.schemaBefore, r.schemaAfter, r.integrity, r.rowCountsUnchanged], [10, MIGRATIONS.at(-1).version, "ok", true]);
+  assert.deepEqual(r.pending, MIGRATIONS.filter((m) => m.version > 10).map((m) => `${m.version}:${m.name}`));
+  assert.equal(r.pending[0], "11:m10-2-work-requests");
   const db = openDatabase(file);
   try {
-    assert.equal(db.prepare("SELECT MAX(version) AS v FROM schema_migrations").get().v, 11);
+    assert.equal(db.prepare("SELECT MAX(version) AS v FROM schema_migrations").get().v, MIGRATIONS.at(-1).version);
     const cols = db.prepare("PRAGMA table_info(work_requests)").all().map((c) => c.name);
     for (const c of ["id", "text_redacted", "source", "channel", "project_id", "intent", "effect_class", "status", "blocker_signature", "explained_at", "plan_ref", "created_at", "updated_at", "expires_at"]) assert.ok(cols.includes(c), c);
     assert.throws(() => db.prepare("INSERT INTO work_requests (id, source, channel, intent, status, created_by, created_at, updated_at, expires_at) VALUES ('w', 's', 'c', 'engineering', 'RUNNING', 'x', 'a', 'a', 'a')").run(), /CHECK/);

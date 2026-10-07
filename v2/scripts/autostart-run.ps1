@@ -17,6 +17,11 @@ function Get-Health { try { return Invoke-RestMethod -Uri $health -TimeoutSec 3 
 $h = Get-Health
 if ($h -and $h.ok) { Write-Log "deja pornit: $($h.version), mod $($h.mode)"; exit 0 }
 
+# M11: the working tree may hold an unreleased migration; a reboot must not apply it. A pending migration means the Hub is started
+# only through the owner-approved upgrade (node v2/scripts/upgrade.mjs --apply), never by this logon task.
+$guard = & node (Join-Path $PSScriptRoot "boot-guard.mjs") 2>$null | Out-String
+if ($LASTEXITCODE -eq 3) { Write-Log ("NU pornesc: codul are o migrare neaplicata, care cere upgrade-ul aprobat ({0})" -f $guard.Trim()); exit 0 }
+
 Write-Log "pornesc Hub-ul V2"
 # A child PowerShell: start-detached.ps1 ends with `exit`, which would end this script too if it were dot-sourced.
 $out = & powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File (Join-Path $PSScriptRoot "start-detached.ps1") 2>&1 | Out-String

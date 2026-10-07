@@ -241,7 +241,7 @@ test("M11-RV-07 software needs a software noun AND a change verb; a text change 
   assert.deepEqual(run("Site-ul nu e bine").feedback.map((f) => [f.subject, f.polarity]), [["software", "negative"]]);
   // A change verb WITHOUT a software noun is never software; a text on screen that mentions a button is a clip text.
   for (const phrase of ["Schimbă textul «Rezervă acum» în «Programează»", "Mută textul de pe buton mai sus", "Fă textul de final mai scurt", "Schimbă titlul în «Formular nou»", "Taie de la 10 la 12",
-    "În clip, scoate partea cu formularul", "În rezumat, la Ce include scrie «Formular de programare și buton de confirmare»",
+    "În clip, scoate partea cu formularul", "În rezumat, la Cum funcționează scrie «Formular de programare și buton de confirmare»",
     // quoted words are the new TEXT, never the request: a quote that names the page or a repair does not make it coding
     "Schimbă textul de final în «Repară pagina de programări»", "Schimbă titlul în «Aplicația ta de programări»"]) {
     const r = run(phrase);
@@ -303,12 +303,14 @@ test("M11-RV-10 summary only: a section edit with the quoted text — no plan, n
   assert.deepEqual([r.classes, r.status, r.actions, r.clarification], [["summary"], "SUMMARY_EDIT", ["summary"], null]);
   assert.deepEqual(r.summary, { target: { kind: "summary", id: "ddoc_1", versionId: 1 }, edits: [{ id: "next_step", text: "O discuție scurtă, apoi oferta" }] });
   assert.deepEqual([r.media, r.vertical, r.software], [null, null, null]);
-  assert.deepEqual(run("În rezumat, la Ce nu include scrie „Mentenanță”").summary.edits, [{ id: "exclusions", text: "Mentenanță" }]); // the longest heading wins over „Ce include”
+  assert.deepEqual(run("În rezumat, la Ce nu putem afirma scrie „Mentenanță”").summary.edits, [{ id: "cannot_claim", text: "Mentenanță" }]);
+  // „Cum funcționează” is the flow, never „Ce demonstrăm” (whose alias „ce funcționează” is a different phrase).
+  assert.deepEqual(run("În rezumat, la Cum funcționează scrie «Alegi ora»").summary.edits, [{ id: "how", text: "Alegi ora" }]);
   assert.deepEqual(run("În ofertă, la secțiunea Preț și termen pune «De stabilit împreună»").summary.edits, [{ id: "price_terms", text: "De stabilit împreună" }]);
   // «vechi» în «nou» inside a section whose text is known.
-  const sections = SUMMARY_SECTIONS.map((s) => ({ ...s, text: s.id === "context" ? "Demo local pentru prezentare, cu date sintetice." : "" }));
-  assert.deepEqual(run("În rezumat, la Ce am pregătit schimbă «Demo local» în «Demonstrație locală»", { summary: { documentId: "ddoc_1", version: 2, sections } }).summary.edits,
-    [{ id: "context", text: "Demonstrație locală pentru prezentare, cu date sintetice." }]);
+  const sections = SUMMARY_SECTIONS.map((s) => ({ ...s, text: s.id === "problem" ? "Demo local pentru prezentare, cu date sintetice." : "" }));
+  assert.deepEqual(run("În rezumat, la Problema schimbă «Demo local» în «Demonstrație locală»", { summary: { documentId: "ddoc_1", version: 2, sections } }).summary.edits,
+    [{ id: "problem", text: "Demonstrație locală pentru prezentare, cu date sintetice." }]);
   // The selected section is the target when the sentence names none.
   assert.deepEqual(run("scrie «Sunați-ne»", { selection: { kind: "summary", id: "next_step" } }).summary.edits, [{ id: "next_step", text: "Sunați-ne" }]);
   // Missing section or text: ONE question; auto sections and the title are refused honestly.
@@ -319,11 +321,11 @@ test("M11-RV-10 summary only: a section edit with the quoted text — no plan, n
   // „Trasabilitate” is GENERATED like „Materiale video” (the facts of the verified bundle). The refusal is honest about where each
   // comes from AND about where the owner's own words can go instead.
   assert.deepEqual(auto.messages, ["Secțiunea «Materiale video» se generează din clipurile curente (fișiere, durată, QA) și nu se editează de mână. "
-    + "Observațiile tale le scrii într-o secțiune editabilă, de exemplu «Următorul pas» sau «Ce am pregătit»: spune secțiunea și textul nou, între ghilimele."]);
+    + "Observațiile tale le scrii într-o secțiune editabilă, de exemplu «Următorul pas» sau «Problema»: spune secțiunea și textul nou, între ghilimele."]);
   const trace = run("În rezumat, la Trasabilitate scrie «Pachet verificat de mine»");
   assert.deepEqual([trace.status, trace.clauses[0].refused, trace.summary, trace.clarification, trace.actions], ["REFUSED", "SUMMARY_SECTION_AUTO", null, null, []]);
   assert.deepEqual(trace.messages, ["Secțiunea «Trasabilitate» se generează din faptele pachetului verificat (pachet, amprente, specificație) și nu se editează de mână. "
-    + "Observațiile tale le scrii într-o secțiune editabilă, de exemplu «Următorul pas» sau «Ce am pregătit»: spune secțiunea și textul nou, între ghilimele."]);
+    + "Observațiile tale le scrii într-o secțiune editabilă, de exemplu «Următorul pas» sau «Problema»: spune secțiunea și textul nou, între ghilimele."]);
   // Generated whatever the caller's section list claims; the sections it suggests are editable ones this document really has.
   const claimed = run("În rezumat, la Trasabilitate scrie «x»", { summary: { documentId: "ddoc_1", version: 2, sections: SUMMARY_SECTIONS.map((s) => ({ id: s.id, heading: s.heading, auto: false })) } });
   assert.equal(claimed.clauses[0].refused, "SUMMARY_SECTION_AUTO");
@@ -567,8 +569,8 @@ test("M11-RV-15 sentences that are not revisions get an honest, complete answer 
   assert.deepEqual(run("Urcă titlul mai sus").media.ops, [{ op: "move_text", itemId: "t-hook", dx: 0, dy: -0.08 }]);
   // Quoted words are the new TEXT, never a decision or an operation; a summary text may speak about deploy.
   assert.deepEqual(run("În clip, schimbă textul de final în «Aprob și public, apoi fac push»").media.ops, [{ op: "replace_text", itemId: "t-cta", text: "Aprob și public, apoi fac push" }]);
-  assert.deepEqual(run("În rezumat, la Ce nu include scrie «commit, push și deploy»").summary.edits, [{ id: "exclusions", text: "commit, push și deploy" }]);
-  assert.deepEqual([run("În rezumat, la Ce nu include scrie despre deploy").status, run("În rezumat, la Ce nu include scrie despre deploy").clarification.kind], ["CLARIFY", "text"]);
+  assert.deepEqual(run("În rezumat, la Ce nu putem afirma scrie «commit, push și deploy»").summary.edits, [{ id: "cannot_claim", text: "commit, push și deploy" }]);
+  assert.deepEqual([run("În rezumat, la Ce nu putem afirma scrie despre deploy").status, run("În rezumat, la Ce nu putem afirma scrie despre deploy").clarification.kind], ["CLARIFY", "text"]);
   // „Nu publica nimic”: the owner's own constraint is noted (and holds anyway) — not „Nu am înțeles”.
   for (const phrase of ["Nu publica nimic.", "Nu trimite clipul nimănui", "Te rog, nu posta nimic", "Nu urca nimic pe YouTube"]) {
     const r = run(phrase);
