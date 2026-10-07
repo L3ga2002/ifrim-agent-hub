@@ -1312,7 +1312,9 @@ const INERT_REASON = "Textul vine dintr-un document sau dintr-o transcriere medi
  * (≥ 72) wins, with the candidates within 15 points (an exact name alone, as in matchRef). The strongest reference in the clause
  * wins; on a tie, the later one (the project usually closes the sentence: "… de la login din ProDelivery").
  */
-const PROJECT_TAIL = /\b(?:(?:din|pe|la|pentru) (?:proiectul )?|proiectului )/g;
+// 2.13.1 (L5 pilot, 2026-10-07): „Repară validarea în Factory Demo L5: …” — „în” names the project too (it drafted on the cockpit's
+// project instead). Safe for „în cod” / „în formular”: a run counts only when a project's name covers every word (≥ 72).
+const PROJECT_TAIL = /\b(?:(?:din|in|pe|la|pentru) (?:proiectul )?|proiectului )/g;
 /**
  * D3: a preview request names its project right after the word as well („Rulează preview-ul Pro Delivery”, „… preview-ul de la X”), or
  * after the same prepositions. Global (matchAll), like PROJECT_TAIL. The preposition ends on a word boundary („pe” is never the start

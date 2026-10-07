@@ -23,7 +23,7 @@ const HUB = `http://127.0.0.1:${Number(process.env.HUB_V2_PORT || 8011)}`;
 if (fs.existsSync(dir)) { console.error(`REFUSED: ${dir} already exists; nothing was changed.`); process.exit(1); }
 materializeFixture(fixture, dir, { port });
 // The fixture's own acceptance test fails before the work (that is the point); the unit tests must at least load.
-try { execFileSync(process.execPath, ["--check", path.join(dir, fixture === "bug-demo" ? "src/requests.js" : "src/server-app.js")], { stdio: "pipe" }); }
+try { execFileSync(process.execPath, ["--check", path.join(dir, fixture.startsWith("bug-demo") ? "src/requests.js" : "src/server-app.js")], { stdio: "pipe" }); }
 catch { console.error("The fixture source does not parse; removing nothing, please report."); process.exit(1); }
 const git = (...args) => execFileSync("git", ["-C", dir, "-c", "user.name=Ifrim Agent Hub (test)", "-c", "user.email=hub-test@example.invalid", "-c", "commit.gpgsign=false", ...args], { stdio: "pipe" });
 git("init", "-q", "-b", "main");

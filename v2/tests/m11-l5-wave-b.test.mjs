@@ -29,7 +29,9 @@ import { LEGA_CONSENT_VERSION, legaAgentInstructions } from "../server/policy/le
 import { resolveIntent } from "../server/owner/intents.mjs";
 import { factoryStageLabel } from "../server/policy/factory-wait.mjs";
 
-// The repository HEAD is read from (U1). A mutation run from a copy of the tree (no .git there) points IFRIM_TEST_GIT_ROOT at the repository.
+// The pre-L5 commit b0883ad (2.12.2 + M11 wave 0) is the golden base of U1 (pinned: HEAD now contains L5 itself).
+const GOLDEN_BASE = "b0883ad";
+// The repository is read from (U1). A mutation run from a copy of the tree (no .git there) points IFRIM_TEST_GIT_ROOT at the repository.
 const REPO = process.env.IFRIM_TEST_GIT_ROOT ? path.resolve(process.env.IFRIM_TEST_GIT_ROOT) : path.resolve(fileURLToPath(new URL("../..", import.meta.url)));
 const CODEX_MODELS = [{ id: "gpt-6.1-sol", isDefault: true, efforts: ["medium", "high"] }, { id: "gpt-fake-sol", efforts: ["medium", "high"] }];
 const HAND_MODELS = { writerModel: "gpt-fake-sol", reviewerModel: "sonnet" };
@@ -110,7 +112,7 @@ let headN = 0;
  * imports point at the current tree. Read-only: nothing in the repository is written.
  */
 async function headModule(rel) {
-  const text = execFileSync("git", ["-C", REPO, "show", `HEAD:${rel}`], { encoding: "utf8", maxBuffer: 32 * 1024 * 1024 });
+  const text = execFileSync("git", ["-C", REPO, "show", `${GOLDEN_BASE}:${rel}`], { encoding: "utf8", maxBuffer: 32 * 1024 * 1024 });
   const dir = path.dirname(path.join(REPO, ...rel.split("/")));
   const wired = text.replace(/(\bfrom\s*|\bimport\s*\(\s*)"(\.{1,2}\/[^"]+)"/g, (_, lead, spec) => `${lead}${JSON.stringify(pathToFileURL(path.resolve(dir, spec)).href)}`);
   const tmp = path.join(os.tmpdir(), `ifrim-l5b-head-${process.pid}-${headN++}.mjs`);
