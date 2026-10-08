@@ -32,6 +32,8 @@ async function deliveryHub() {
   const project = (await dispatch(t.hub, "project.register_test", { path: dir })).result;
   const owner = await enrolOwner(t);
   await dispatch(t.hub, "owner.autonomy.set", { projectId: project.id, level: "TRUSTED" }, { ownerSession: owner.reauth() });
+  // The owner's per-project model choice from the test account's model list (an engineering plan binds it, as on the real Hub).
+  t.hub.bus.transaction(() => t.hub.settings.set("factoryDefaultBindings", { [project.id]: { writer: { model: "gpt-fake-sol", effort: "medium" }, reviewer: { model: "sonnet", effort: "medium" } } }, "test", "fake models"));
   const spec = demoSpec("booking-demo", { port });
   const { mission } = (await dispatch(t.hub, "factory.prepare", { projectId: project.id, ...spec, limits: { ...FACTORY_DEMOS["booking-demo"].limits, ...MODELS } })).result;
   return { ...t, project, dir, owner, mission, port, importRoot };
@@ -128,6 +130,13 @@ test("M11-DF-01 ONE confirmation: mission → DELIVERY_READY → derived deliver
     assert.match(swText, /nu încep nimic până nu confirmi/);
     assert.equal(modelRuns(t), runsBefore, "the new scope is not executed by itself");
     assert.equal(t.hub.deliveries.get(planned.id).status, "READY", "nothing is stale before the new mission starts");
+    // §25 complete: the same ONE card carries the new mission AND a refresh delivery linked to this one (parent → child).
+    assert.equal(sw.kind, "envelope", swText.slice(0, 600));
+    const childId = sw.proposal.envelope.body.delivery?.deliveryId;
+    assert.ok(childId, `the card carries the refresh delivery: ${String(sw.note).slice(0, 700)} · missions ${JSON.stringify(sw.proposal?.envelope?.missionIds)}`);
+    assert.equal(t.hub.deliveries.get(childId).parentId, planned.id);
+    assert.equal(t.hub.deliveries.get(childId).status, "PLANNED", "nothing armed before the owner confirms");
+    assert.match(swText, /o singură confirmare pentru tot/);
 
     // T15 — nothing published anywhere: no publish / upload operation in any delivery plan, publishing OFF in the Room.
     const ops = t.hub.db.prepare("SELECT body_json FROM ops_plans").all().flatMap((r) => JSON.parse(r.body_json).steps.flatMap((s) => s.ops.map((o) => o.op)));

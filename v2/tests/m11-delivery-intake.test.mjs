@@ -65,5 +65,20 @@ test("M11-DI-02 (T20) the sentence → ONE envelope card carrying mission + deli
     const named = JSON.stringify(await asOwner(t, owner, { text: OWNER_SENTENCE, projectId: hubProject.id }));
     assert.doesNotMatch(named, /nu are un demo/, named.slice(0, 400));
     assert.ok(named.includes(project.id), named.slice(0, 400));
+    // §25 complete (2026-10-08): „Butonul de programare trebuie să facă altceva.” → the difference, and ONE card carrying the new
+    // mission AND a refresh delivery whose parent is the current one; nothing runs, nothing is armed.
+    const parentId = env.body.delivery.deliveryId;
+    const runsBefore = t.hub.db.prepare("SELECT COUNT(*) AS n FROM agent_runs").get().n;
+    const sw = await t.hub.deliveryPlanner.revise({ step: { intent: "delivery_revise", args: {} }, text: "Butonul de programare trebuie să facă altceva.", projectId: project.id, session: owner.session });
+    const swText = JSON.stringify(sw);
+    assert.equal(sw.kind, "envelope", swText.slice(0, 600));
+    const childId = sw.proposal.envelope.body.delivery?.deliveryId;
+    assert.ok(childId, `the card carries the refresh delivery: ${String(sw.note).slice(0, 700)}`);
+    assert.notEqual(childId, parentId);
+    assert.equal(t.hub.deliveries.get(childId).parentId, parentId);
+    assert.equal(t.hub.deliveries.get(childId).status, "PLANNED");
+    assert.match(swText, /o singură confirmare pentru tot/);
+    assert.match(swText, /nu încep nimic până nu confirmi/);
+    assert.equal(t.hub.db.prepare("SELECT COUNT(*) AS n FROM agent_runs").get().n, runsBefore, "nothing ran");
   } finally { await t.cleanup(); }
 });

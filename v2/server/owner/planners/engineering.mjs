@@ -323,8 +323,21 @@ export function buildEngineeringSpec({ text, args = {}, project, hubWrites = {} 
   const defaultCriterion = testFirst?.ok ? words.slice(0, 300) : `Cerința ta este îndeplinită: ${words.slice(0, 300)}`;
   const acceptance = bound ? [...(criteria.length ? criteria : [defaultCriterion]).map((t, i) => ({ id: `AC-${i + 1}`, text: t, verify: "test", testRef: bound })),
     { id: `AC-${(criteria.length || 1) + 1}`, text: "Modificarea e explicată și revizuită independent (doar citire)", verify: "review" }] : [];
+  // §25 (2026-10-08): a software revision of a delivered demo keeps the demo's own proof — the local preview and the browser flows on
+  // phone and desktop width — so the new version can be filmed again under the same ONE card. Only a test project's delivery passes
+  // `inheritDemo`; the inherited criteria are renumbered after the owner's and stay ordinary acceptance criteria (a flow the change
+  // breaks fails the mission honestly; it is never dropped).
+  const inherit = project?.source === "hub-test" && args.inheritDemo && typeof args.inheritDemo === "object" ? args.inheritDemo : null;
+  let inheritedPreview = null;
+  if (inherit && acceptance.length) {
+    const extra = (Array.isArray(inherit.criteria) ? inherit.criteria : []).filter((c) => ["preview", "e2e"].includes(c?.verify)).slice(0, 4);
+    const review = acceptance.pop();
+    extra.forEach((c) => acceptance.push({ ...c, id: `AC-${acceptance.length + 1}` }));
+    acceptance.push({ ...review, id: `AC-${acceptance.length + 1}` });
+    if (inherit.preview?.command && inherit.preview?.url) inheritedPreview = { command: String(inherit.preview.command), url: String(inherit.preview.url) };
+  }
   if (testFirst?.ok) testFirst.criteria = acceptance.filter((a) => a.verify === "test").map((a) => a.id);
-  const checkCommand = checks.length ? checks : [scripts.test && !/^\s*node --test\b/.test(String(scripts.test)) ? "npm test" : "node --test"];
+  const checkCommand =checks.length ? checks : [scripts.test && !/^\s*node --test\b/.test(String(scripts.test)) ? "npm test" : "node --test"];
   const input = {
     workType, title: finalTitle, objective: words,
     spec: testFirst?.ok ? {
@@ -333,7 +346,7 @@ export function buildEngineeringSpec({ text, args = {}, project, hubWrites = {} 
       acceptance,
       constraints: ["Pregătită de Hub din cererea ta (fără model); criteriile sunt fixate înainte de implementare, iar testul de acceptanță îl scrie Hub-ul la pasul 0 din cuvintele tale (Claude propune textul, doar citire; Codex îl verifică, doar citire)",
         `Testul de acceptanță ${testFirst.testRef} îl scrie și îl protejează Hub-ul la pasul 0: repari implementarea, nu testul (o modificare a testului oprește misiunea)`],
-      verification: { checks: checkCommand, acceptance: [`node --test ${testFirst.testRef}`] },
+      verification: { checks: checkCommand, acceptance: [`node --test ${testFirst.testRef}`], ...(inheritedPreview ? { preview: inheritedPreview } : {}) },
       // §5.1 S1: the folders the tests write at run time (top-level folder entries of .gitignore), so a test that writes data is no
       // "left files behind" for the proof; checkSpec refuses src / test / public / the Hub's own work area.
       workspace: { ignore: deriveIgnore(readGitignore(project.path)) },
@@ -347,7 +360,7 @@ export function buildEngineeringSpec({ text, args = {}, project, hubWrites = {} 
         // M10.2.1: said where the writer reads it (the brief's „Restricții”), not only as the factory's protection list.
         ...(named ? [`Testul de acceptanță ${named} e protejat: repari implementarea, nu testul (o modificare a testului oprește misiunea)`] : [])],
       // The project's own test script when it is not plain node:test (npm test), else node --test directly (the same tests, no npm).
-      verification: { checks: checkCommand, acceptance: named ? [`node --test ${named}`] : [] },
+      verification: { checks: checkCommand, acceptance: named ? [`node --test ${named}`] : [], ...(inheritedPreview ? { preview: inheritedPreview } : {}) },
       sources: { user: [words], code: [], assumptions: named ? [autoBound === "topic"
         ? `Testul ${named} e singurul test al proiectului al cărui nume conține „${topic}”; l-am legat de cerință fără să te întreb (îl protejez la pornire)`
         : autoBound

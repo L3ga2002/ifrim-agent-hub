@@ -4,6 +4,7 @@ import { Panel, Chip, Notice, ErrorNotice } from "../../components/ui.jsx";
 import { Player } from "../studio/Player.jsx";
 import { OpsPlanCard } from "../lega/OpsPlanCard.jsx";
 import { DecisionCard } from "../lega/cards.jsx";
+import { DecisionAction, decisionRowFor } from "./DecisionsPanel.jsx";
 import {
   clipSlots, selectionFor, selectionValid, revisionAvailability, revisionBody, revisionOutcome, clarificationReply, revisionRows, fmtClock,
   sessionGate, sessionLabel, sentence, REVISION_LIMITS,
@@ -65,6 +66,13 @@ function OldClip({ slot }) {
   );
 }
 
+/** The creative decision of this clip, offered under its player (the same row, request and lock as the decisions panel). */
+function CreativeHere({ room, slotKey }) {
+  const row = decisionRowFor(room, slotKey === "master" ? "creativeMaster" : "creativeVertical");
+  if (!row?.action) return null;
+  return <div className="delivery-creative-here"><DecisionAction room={room} row={row} place="clip" /></div>;
+}
+
 /** The current version of one format: player, labels, QA, versions, the marker list (seeks) and the text items (selection). */
 function CurrentClip({ slot, room, register, onTime }) {
   const ref = useRef(null);
@@ -87,6 +95,8 @@ function CurrentClip({ slot, room, register, onTime }) {
         : null}
       {slot.evidenceNote && <Notice tone="warn">{slot.evidenceNote}</Notice>}
       <QaBlock slot={slot} onSeek={slot.playable ? seek : null} />
+      {/* Pilot 2026-10-08: the owner looked for the creative approval next to the clip; the same decision row as in „6 · Deciziile tale”. */}
+      {slot.creative !== "APPROVED" && <CreativeHere room={room} slotKey={slot.key} />}
       <VersionLine slot={slot} />
       {slot.markers.length > 0 && (
         <div>

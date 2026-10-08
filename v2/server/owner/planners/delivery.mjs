@@ -152,9 +152,28 @@ export function registerDeliveryPlanner(hub, intake) {
       const items = deliveries.items(d.id).filter((i) => i.status === "CURRENT");
       const diff = ["cerința se schimbă: criteriile de acceptanță trebuie revăzute (testul se rescrie, nu se refolosește)", "e nevoie de o misiune nouă de cod (Codex + review Claude)",
         `devin învechite după ea: preview-ul, ${items.filter((i) => i.kind === "capture").length} capturi, clipul și varianta verticală, afirmațiile din rezumat`, "nu încep nimic până nu confirmi planul"];
-      deliveries.recordRevision(d.id, { ...base, status: "ROUTED_SOFTWARE" });
-      const eng = hub.engineeringPlanner ? await hub.engineeringPlanner.plan({ step: { ...step, args: { ...(step?.args || {}), request: out.software.request } }, text: out.software.request, projectId: d.projectId, session }).catch((e) => ({ kind: "message", text: e.message })) : null;
-      const head = `${[...lines].join(" ")} Asta schimbă software-ul: ${diff.join("; ")}.`.trim();
+      const rev = deliveries.recordRevision(d.id, { ...base, status: "ROUTED_SOFTWARE" });
+      // The new mission keeps the demo's own proof (preview + browser flows), so the refresh delivery can film the new version.
+      const parentSpec = factory.view(d.missionId)?.spec?.spec || null;
+      const inheritDemo = parentSpec ? { preview: parentSpec.verification?.preview || null, criteria: (parentSpec.acceptance || []).filter((c) => ["preview", "e2e"].includes(c.verify)) } : null;
+      let eng = hub.engineeringPlanner ? await hub.engineeringPlanner.plan({ step: { ...step, args: { ...(step?.args || {}), request: out.software.request, ...(inheritDemo ? { inheritDemo } : {}) } }, text: out.software.request, projectId: d.projectId, session }).catch((e) => ({ kind: "message", text: e.message })) : null;
+      // §25 complete (2026-10-08): the same ONE card also carries a refresh delivery linked to this one (parent → child), so after the
+      // new code is verified the capture, clips and summary are redone without another question. If the refresh cannot be planned,
+      // the engineering card stays as it was and the owner asks for the demo again afterwards.
+      let refresh = "";
+      const newMission = eng?.kind === "envelope" ? eng.proposal?.envelope?.missionIds?.[0] : null;
+      if (newMission) {
+        try {
+          const child = await deliveries.createPlanned({ projectId: d.projectId, missionId: newMission, parentId: d.id, actor: "intake" });
+          const withDelivery = await envelopes.propose({ projectId: d.projectId, missionIds: [newMission], deliveryId: child.id, constraints: { ...(step?.constraints || {}), noPublish: true }, actor: "intake", via: "intake" });
+          if (withDelivery?.envelope) {
+            eng = { ...eng, proposal: withDelivery };
+            deliveries.updateRevision(rev.id, { childDeliveryId: child.id });
+            refresh = " Planul include și livrarea nouă (capturi, clipuri, rezumat) pentru versiunea reparată, legată de cea de acum: o singură confirmare pentru tot.";
+          } else refresh = ` Livrarea nouă o cer după ce codul e gata (${(withDelivery?.summary?.blockers || []).slice(0, 2).join(" · ") || "planul cu livrare nu s-a putut prezenta"}).`;
+        } catch (error) { refresh = ` Livrarea nouă o cer după ce codul e gata (${String(error.message).slice(0, 160)}).`; }
+      }
+      const head = `${[...lines].join(" ")} Asta schimbă software-ul: ${diff.join("; ")}.${refresh}`.trim();
       if (eng && (eng.kind === "envelope" || eng.kind === "question")) return { ...eng, note: `${head} ${eng.note || ""}`.trim(), ...(eng.kind === "question" ? { question: `${head} ${eng.question}` } : {}) };
       return { kind: "message", projectId: d.projectId, text: `${head} ${eng?.text || ""}`.trim() };
     }
