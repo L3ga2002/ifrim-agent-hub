@@ -11,6 +11,8 @@ import { assertSyntheticProject, checkPreviewTarget, probeNotHub, pageGuard } fr
 import { buildMaster } from "./clip-ir.mjs";
 import { slotsComplete } from "./stale.mjs";
 
+/** How long a delivery waits for its preview to answer (a cold sandbox included). */
+export const PREVIEW_WAIT_MS = 240000;
 const refuse = (code, message) => new HubError("policy", message, { code });
 const checkAbort = (abort) => { if (abort?.aborted) throw new HubError("task", "Planul a fost oprit.", { code: "STOPPED" }); };
 
@@ -78,7 +80,9 @@ export function createDeliveryExecutors({ deliveries, factory, media, projects, 
         snapshotEqual(d);
         const key = `delivery-preview-${d.id}`;
         const project = projects.get(d.projectId);
-        const r = await runner.startPreview({ key, ws: project.path, command: d.template.preview.command, url: d.template.preview.url, project });
+        // Pilot 2026-10-08: the first command through the Windows sandbox after a Hub start takes minutes (181 s at the pilot's BASELINE);
+        // the default 20 s wait failed the delivery with ECONNREFUSED while the preview was still starting.
+        const r = await runner.startPreview({ key, ws: project.path, command: d.template.preview.command, url: d.template.preview.url, project, waitMs: PREVIEW_WAIT_MS });
         if (r.status !== "PASS") throw new HubError("tool", `Preview-ul nu a pornit: ${r.reason || r.status}`, { code: "DELIVERY_PREVIEW_FAILED" });
         return { result: { key, url: d.template.preview.url, reused: false } };
       },
