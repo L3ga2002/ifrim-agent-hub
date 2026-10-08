@@ -17,7 +17,9 @@ const checkAbort = (abort) => { if (abort?.aborted) throw new HubError("task", "
 export function createDeliveryExecutors({ deliveries, factory, media, projects, runner, supervisor, opsPlans, config, fetchImpl = globalThis.fetch }) {
   /** The delivery a running step belongs to: ACTIVE (or READY for a revision) and bound to THIS plan. */
   function bound(params, planId, { statuses = ["ACTIVE"] } = {}) {
-    const d = deliveries.need(params.deliveryId);
+    let d = deliveries.need(params.deliveryId);
+    // The delivery-only card: the first step of the confirmed plan starts the PLANNED delivery it was proposed for.
+    if (d.status === "PLANNED" && d.opsPlanId === planId) d = deliveries.startDirect(d.id, planId);
     const revision = d.opsPlanId !== planId && Boolean(planRevision(d.id, planId));
     if (d.opsPlanId !== planId && !revision) throw refuse("CAPTURE_NOT_BOUND", "Pasul nu aparține planului acestei livrări.");
     if (!revision && !statuses.includes(d.status)) throw refuse("DELIVERY_NOT_ACTIVE", `Livrarea e ${d.status}; pașii ei nu rulează.`);

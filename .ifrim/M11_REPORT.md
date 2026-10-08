@@ -1,6 +1,6 @@
 # M11 „Ifrim Delivery”: raport (2026-10-07)
 
-Starea: **M11_BUILD_READY local**. Codul, testele și integrarea sunt făcute. Nimic din M11 nu e live. Pilotul și proba vocală așteaptă aprobarea ta (`.ifrim/M11_PILOT_SHEET.md`).
+Starea: **M11 live `2.14.0-m11` din 2026-10-08 07:25 UTC** (`upg_muz7or7n`, pilot aprobat). Proiectul de test detailing e creat; pilotul așteaptă fraza și confirmarea proprietarului.
 
 ## Commituri locale pe `v2-milestone-01` (nepublicate)
 

@@ -531,6 +531,9 @@ export function createEnvelopes({ db, bus, clock, settings, projects, missions, 
       return { envelope: null, readiness: ready, summary: { headline: views[0].mission.title, blockers: ready.blockers.map((b) => b.detail), state: "PLAN_INCOMPLETE" } };
     }
     const body = await buildBody(project, views, autonomy, constraints, objectiveRef);
+    // Pilot 2026-10-08: a re-proposal of the same missions (the card refreshed after the gate reopened, a readiness retry) keeps the
+    // delivery section of the preview it replaces; otherwise the owner confirms a card that silently lost the capture → clip → summary.
+    if (!deliveryId && deliveryApi) deliveryId = inheritedDelivery(project.id, ids);
     // M11: a delivery plan carries its hashed delivery section (capture → clip → summary after DELIVERY_READY); an ordinary plan has
     // no such key, so its hash is unchanged to the byte.
     if (deliveryId) {
@@ -542,6 +545,17 @@ export function createEnvelopes({ db, bus, clock, settings, projects, missions, 
     const summary = summaryOf(body, ready, previous?.body || null);
     const id = insertProposal({ project, ids, body, hash, summary, autonomy, actor, via, eligible: ready.eligible, extra: deliveryId ? { deliveryId } : {} });
     return { envelope: view(id), readiness: ready, summary };
+  }
+
+  /** The delivery of the project's open preview for exactly these missions, when one is still waiting for its confirmation. */
+  function inheritedDelivery(projectId, ids) {
+    const want = JSON.stringify([...ids].sort());
+    for (const r of db.prepare("SELECT mission_ids_json, body_json FROM mission_envelopes WHERE project_id = ? AND status = 'PROPOSED' ORDER BY created_at DESC").all(projectId)) {
+      let missions = [], body = {};
+      try { missions = JSON.parse(r.mission_ids_json); body = JSON.parse(r.body_json); } catch { continue; }
+      if (JSON.stringify([...missions].sort()) === want && body.delivery?.deliveryId) return body.delivery.deliveryId;
+    }
+    return null;
   }
 
   /** Records a preview (PROPOSED, consumable nonce, confirm-by window) and supersedes the project's older previews: one shared path. */

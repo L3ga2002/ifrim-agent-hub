@@ -31,8 +31,19 @@ export function registerDeliveryPlanner(hub, intake) {
   const deliverable = () => projects.list().filter((p) => p.source === "hub-test").map((p) => ({ p, marker: markerOf(p) }))
     .filter(({ marker }) => marker?.data === "synthetic" && FACTORY_DEMOS[marker.fixture]?.delivery).map(({ p }) => p);
 
-  function pickProject(projectId) {
+  /** A demo the sentence names by a distinctive word of its name („demo-ul de detailing”) wins over the project open in the cockpit. */
+  const GENERIC = new Set(["demo", "livrare", "factory", "test", "proiect", "proiectul", "programari"]);
+  const words = (v) => String(v || "").normalize("NFD").replace(/[̀-ͯ]/g, "").toLowerCase().split(/[^a-z0-9]+/).filter((w) => w.length >= 4 && !GENERIC.has(w));
+  function namedIn(text, list) {
+    const said = new Set(words(text));
+    const hits = list.filter((p) => words(p.name).some((w) => said.has(w)));
+    return hits.length === 1 ? hits[0] : null;
+  }
+
+  function pickProject(projectId, text = "") {
     const list = deliverable();
+    const named = namedIn(text, list);
+    if (named) return { project: named };
     if (projectId) {
       const p = list.find((x) => x.id === projectId);
       if (p) return { project: p };
@@ -45,7 +56,7 @@ export function registerDeliveryPlanner(hub, intake) {
   }
 
   async function prepare({ step, text, projectId }) {
-    const picked = pickProject(projectId);
+    const picked = pickProject(projectId, text);
     if (picked.question) return { kind: "question", ...picked.question, forIntent: "delivery_prepare" };
     if (picked.refused) return { kind: "message", text: picked.refused };
     const project = picked.project;
@@ -65,6 +76,8 @@ export function registerDeliveryPlanner(hub, intake) {
       if (!r.ok) return blocked(project, r.blockers);
       const d = await deliveries.createPlanned({ projectId: project.id, missionId: ready.missionId, actor: "intake" });
       const plan = await opsPlans.propose({ kind: PACKAGE_KIND, title: d.title, steps: packageSteps(d.template, d.id), limits: { maxDurationMin: DELIVERY_LIMITS.phaseMinutes, maxActions: DELIVERY_LIMITS.maxActions }, actor: "intake", via: "intake" });
+      // The confirmed card starts THIS delivery (startDirect at its first step); a newer card for the same delivery replaces the binding.
+      if (plan?.id) deliveries.patch(d.id, { ops_plan_id: plan.id });
       return { kind: "ops", plan, projectId: project.id, note: `Software-ul e deja verificat (${ready.stage === "ACCEPTED" ? "acceptat de tine" : "gata de verificarea ta"}): planul face doar captura, clipul 16:9 + vertical și rezumatul comercial. Fără model, fără publicare. O singură confirmare.` };
     }
 

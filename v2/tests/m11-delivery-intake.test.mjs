@@ -50,6 +50,9 @@ test("M11-DI-02 (T20) the sentence → ONE envelope card carrying mission + deli
     assert.ok(env.body.delivery?.deliveryId, "the card carries the delivery section");
     assert.ok(env.body.ownerConstraints.includes("noPublish"));
     assert.equal(t.hub.deliveries.get(env.body.delivery.deliveryId).status, "PLANNED");
+    // Pilot 2026-10-08: the card refreshed for the same mission (after the gate reopened) keeps its delivery section.
+    const again = await t.hub.envelopes.propose({ projectId: project.id, missionIds: env.missionIds || env.body.missions.map((m) => m.missionId || m.id), actor: "test", via: "ui" });
+    assert.equal(again.envelope?.body.delivery?.deliveryId, env.body.delivery.deliveryId, "a re-proposal keeps the delivery");
     assert.equal(t.hub.db.prepare("SELECT COUNT(*) AS n FROM agent_runs").get().n, 0, "nothing ran");
     assert.equal(t.hub.db.prepare("SELECT COUNT(*) AS n FROM live_grants").get().n, grantsBefore, "no grant");
     assert.equal(t.hub.settings.get("mode"), modeBefore, "no mode change");
@@ -58,5 +61,9 @@ test("M11-DI-02 (T20) the sentence → ONE envelope card carrying mission + deli
     const refused = await asOwner(t, owner, { text: "Pregătește demo-ul pentru prezentare.", projectId: hubProject.id });
     const text = JSON.stringify(refused);
     assert.match(text, /proiecte de test|nu are un demo/, text.slice(0, 400));
+    // Pilot 2026-10-08: the demo the sentence names („demo-ul de detailing”) wins over another project open in the cockpit.
+    const named = JSON.stringify(await asOwner(t, owner, { text: OWNER_SENTENCE, projectId: hubProject.id }));
+    assert.doesNotMatch(named, /nu are un demo/, named.slice(0, 400));
+    assert.ok(named.includes(project.id), named.slice(0, 400));
   } finally { await t.cleanup(); }
 });

@@ -206,6 +206,31 @@ export function createDeliveries({ db, bus, clock, config, settings, projects, m
     }
   }
 
+  /**
+   * The delivery-only card (software already verified): the owner confirmed THIS ops plan, whose id the planner recorded on the PLANNED
+   * row. Its first step starts the delivery here, with the same checks as an activation: the mission still ready, the verified bundle,
+   * the same snapshot and the same steps. Pilot 2026-10-08: without it the confirmed card failed at step 1 (CAPTURE_NOT_BOUND).
+   */
+  function startDirect(id, planId, { actor = "owner" } = {}) {
+    const d = need(id);
+    if (d.status !== "PLANNED" || !planId || d.opsPlanId !== planId) throw new HubError("policy", "Pasul nu aparține planului acestei livrări.", { code: "CAPTURE_NOT_BOUND" });
+    const refuse = (reason) => { throw new HubError("policy", reason, { code: "DELIVERY_NOT_STARTED" }); };
+    const fv = factory.view(d.missionId);
+    if (!fv || !["DELIVERY_READY", "ACCEPTED"].includes(fv.factory.stage)) refuse(`Misiunea nu mai e gata (${fv?.factory?.stage || "?"}).`);
+    const binding = factory.deliveryBinding(d.missionId);
+    if (!binding) refuse("Misiunea nu are un pachet verificat.");
+    if (d.template.specSha && binding.specSha && binding.specSha !== d.template.specSha) refuse("Specificația s-a schimbat după propunere.");
+    const snap = factory.snapshotCheck(d.missionId);
+    if (!snap.equal) refuse(`Proiectul nu mai e versiunea verificată (${snap.changedFiles.slice(0, 5).join(", ") || "snapshot diferit"}).`);
+    const plan = opsPlans.view(planId);
+    if (!plan || plan.kind !== PACKAGE_KIND || hashCanonical(plan.body) !== d.opsBodySha) refuse("Pașii livrării diferă de planul confirmat.");
+    bus.transaction(() => {
+      bindSoftware(d, binding, actor);
+      setStatus(id, "ACTIVE", "Pornită din confirmarea ta (cardul livrării)", { activated_at: now(), phase_expires_at: plan.expiresAt || null }, { from: ["PLANNED"] });
+    });
+    return get(id);
+  }
+
   /** Binds the verified version (bundle + E2E evidence) as generation g; called inside a transaction. */
   function bindSoftware(d, binding, actor) {
     const generation = (d.generation || 0) + (d.bundleSha === binding.bundleSha ? 0 : 1) || 1;
@@ -521,7 +546,7 @@ export function createDeliveries({ db, bus, clock, config, settings, projects, m
     }
   }
 
-  return { createPlanned, sectionFor, sectionForMission, arm, activate, bindItem, bindSoftware, currentItem, items: itemsOfDelivery, trigger, verify, renderDocument, exportDocument, editDocument, approveDocument,
+  return { createPlanned, sectionFor, sectionForMission, arm, activate, startDirect, bindItem, bindSoftware, currentItem, items: itemsOfDelivery, trigger, verify, renderDocument, exportDocument, editDocument, approveDocument,
     currentDoc, recordRevision, getRevision, updateRevision, revisionOfPlan, view, get, need, list, latestForProject, close, cancel, setStatus, readiness, boot, tick, onEvent, attachEnvelopes, patch, bindService, startPreview,
     close_: () => { if (detach) detach(); detach = null; }, mediaFacts, markerOf };
 }

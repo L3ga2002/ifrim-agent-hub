@@ -148,3 +148,36 @@ test("M11-DF-01 ONE confirmation: mission → DELIVERY_READY → derived deliver
     assert.throws(() => t.hub.deliveries.approveDocument(planned.id, { displayedSha: t.hub.deliveries.currentDoc(planned.id).contentSha, session: t.owner.session }), /curentă|învechit/);
   } finally { await t.cleanup(); }
 });
+
+test("M11-DF-02 (pilot 2026-10-08) the delivery-only card: software already DELIVERY_READY → ONE ops confirmation starts the PLANNED delivery → READY; no model", { timeout: 900000, skip }, async () => {
+  const t = await deliveryHub();
+  try {
+    // As in the pilot: a delivery row was planned, but the envelope the owner confirmed carried no delivery section.
+    const orphan = await t.hub.deliveries.createPlanned({ projectId: t.project.id, missionId: t.mission.id, actor: "test" });
+    const { envelope } = (await dispatch(t.hub, "envelope.propose", { projectId: t.project.id, missionIds: [t.mission.id], constraints: { noPublish: true } })).result;
+    assert.equal(envelope.body.delivery, undefined);
+    t.queue("codex", "factory-write:booking-fix");
+    t.queue("claude", "review:pass");
+    await dispatch(t.hub, "envelope.confirm", { envelopeId: envelope.id, nonce: envelope.nonce, displayedHash: envelope.envelopeHash }, { ownerSession: t.owner.session });
+    const done = await untilStage(t, t.mission.id, SETTLED);
+    assert.equal(done.factory.stage, "DELIVERY_READY", done.factory.stageReason);
+    assert.equal(t.hub.deliveries.get(orphan.id).status, "PLANNED", "never armed by an envelope without the delivery");
+    const runsAtReady = modelRuns(t);
+    // The owner's sentence again → the delivery-only card for the same PLANNED row.
+    const card = await t.hub.deliveryPlanner.prepare({ step: { intent: "delivery_prepare", args: {}, constraints: { noPublish: true } }, text: "Pregătește demo-ul de detailing pentru prezentare. Nu publica nimic.", projectId: t.project.id });
+    assert.equal(card.kind, "ops", JSON.stringify(card).slice(0, 400));
+    const plan = card.plan;
+    assert.equal(t.hub.deliveries.get(orphan.id).opsPlanId, plan.id, "the card is bound to the delivery it starts");
+    await dispatch(t.hub, "ops.plan.confirm", { planId: plan.id, nonce: plan.nonce, displayedHash: plan.hash }, { channel: "owner", ownerSession: t.owner.session });
+    const ready = await untilDelivery(t, orphan.id, ["READY", "FAILED", "NEEDS_OWNER", "EXPIRED", "CANCELLED"]);
+    const pv = t.hub.opsPlans.view(plan.id);
+    assert.equal(ready.status, "READY", `${ready.statusReason} · ${JSON.stringify(pv.steps.map((s) => [s.seq, s.kind, s.status, s.error]))}`);
+    assert.equal(modelRuns(t), runsAtReady, "no model after DELIVERY_READY");
+    const v = t.hub.deliveries.view(orphan.id);
+    assert.ok(v.clip.master?.src && v.clip.vertical?.src, "16:9 and 9:16 rendered");
+    assert.equal(v.decisions.software, "PENDING");
+    assert.equal(v.summary.version, 1);
+    // A plan that is not this delivery's still cannot touch it.
+    assert.throws(() => t.hub.deliveries.startDirect(orphan.id, "ops_other"), /nu aparține planului/);
+  } finally { await t.cleanup(); }
+});
