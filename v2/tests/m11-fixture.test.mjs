@@ -318,7 +318,7 @@ test("M11-FX-07 BOOKING_DEMO: the spec validates with the factory's validator, t
   assert.equal(d.evidenceNote, "interval ocupat pe telefon");
   assert.match(d.exportPrefix, /^[a-z0-9][a-z0-9-]{1,30}$/);
   assert.equal(d.exportPrefix, "demo-programari");
-  assert.deepEqual(Object.keys(d), ["noun", "issue", "proofSelector", "bannerSelector", "evidenceNote", "exportPrefix", "texts", "variant"]);
+  assert.deepEqual(Object.keys(d), ["noun", "issue", "proofSelector", "bannerSelector", "evidenceNote", "exportPrefix", "texts", "variant", "summary"]);
   // The owner-facing texts never promise a price, a term or a contact, and "phone" is always a width, not a device.
   const ownerTexts = JSON.stringify([BOOKING_DEMO.title, BOOKING_DEMO.objective, spec.acceptance.map((a) => a.text), d]);
   assert.doesNotMatch(ownerTexts, /\b(?:lei|ron|eur|euro|gratuit|reducere|garant\w*|zile lucrătoare)\b|€|\d+\s*%/i);
