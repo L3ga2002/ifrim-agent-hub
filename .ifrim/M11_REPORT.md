@@ -112,3 +112,37 @@ Fixul vocal e LIVE din 2026-10-07 16:01 UTC (`2.13.2-m11`, `upg_muyaojn4`). **M1
   - Room-ul nu are încă buton de aprobare creativă propriu: decizia rămâne în Studio;
   - legarea unui serviciu din catalog există pe server; în UI e butonul din Room;
   - revizia software (§25) propune planul de engineering, dar nu face încă automat o „livrare refresh” legată de părinte. După noul DELIVERY_READY spui din nou „pregătește demo-ul”, iar vechea livrare e deja STALE.
+
+## Pilotul live și închiderea zilei (2026-10-08)
+
+**Starea:** pilotul M11 a mers cap-coadă pe Hub-ul live `2.14.0-m11`. M11 NU e declarat închis. Mai rămân trei probe ale proprietarului (§24 live, §25 live, vocea 2) și reluarea testului DF-01 pe un PC liber.
+
+**Rezultat:**
+- **Software:** demo-ul de detailing a fost reparat cu 2 rulări de model (Codex și Claude). Criteriile au trecut 7 din 7, iar proprietarul a acceptat pachetul.
+- **Livrare** `dlv_muzwjqf9_ef85b7a924`: READY, fără niciun model după DELIVERY_READY. Ce a produs:
+  - capturi pe desktop și la lățimea unui telefon;
+  - clipurile 16:9 și 9:16, de 0:34 fiecare, cu QA WARN;
+  - rezumatul v1;
+  - exportul în Videos.
+- **Deciziile proprietarului:** clipurile aprobate, rezumatul „gata de prezentare”, nimic publicat.
+
+**Defectele găsite live și reparate,** fiecare cu test:
+
+| Commit | Ce s-a reparat |
+|---|---|
+| `6b6f1da` | demo-ul numit în frază câștigă; cardul refăcut păstrează livrarea; cardul „doar livrare” își pornește livrarea |
+| `e1b8e6e` | preview-ul așteaptă 240 s un sandbox rece |
+| `9adc13b` | CLI-ul Codex selectat de aplicație (`CODEX_CLI_PATH`), nu cel stricat din bundle |
+| `eb83147` | Node-ul de sistem în sandbox, niciodată un link fnm |
+| `a121387` | decizia creativă citită live în camera de livrare |
+| `9e50e1e` | §25 complet: spec-ul moștenește dovezile demo-ului; un singur card pentru cod nou și livrare nouă (părinte → copil); aprobarea și sub fiecare clip |
+| `2be1d87` | conversația vocală a proprietarului: cardul de revizie nu mai cere sesiune; vocea folosește sesiunea deschisă; Lega știe unde e sesiunea, camera de livrare și deciziile |
+
+**Cauze externe:** Codex s-a actualizat singur în timpul livrării, iar CLI-ul alpha.2 avea sandbox-ul elevated stricat. Codex l-a reparat, la cererea proprietarului, cu alpha.20.
+
+**Teste:**
+- suitele afectate au trecut toate, cu 0 eșecuri;
+- DF-02, livrare cap-coadă cu Chromium și ffmpeg reale: PASS;
+- DF-01 a depășit timpul sub CPU 100%, încărcat de procesele proprietarului: de reluat.
+
+**Push:** proprietarul a publicat până la `a121387`. Ultimele 3 commituri sunt doar locale.
