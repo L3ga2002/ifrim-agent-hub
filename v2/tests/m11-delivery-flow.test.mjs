@@ -177,6 +177,13 @@ test("M11-DF-02 (pilot 2026-10-08) the delivery-only card: software already DELI
     assert.ok(v.clip.master?.src && v.clip.vertical?.src, "16:9 and 9:16 rendered");
     assert.equal(v.decisions.software, "PENDING");
     assert.equal(v.summary.version, 1);
+    // The owner's creative approval in the Room shows at once (read live, not the value bound at render time).
+    assert.equal(v.clip.master.creative, "PENDING");
+    await dispatch(t.hub, "media.review.decide", { editVersionId: v.clip.master.editVersionId, kind: "CREATIVE_APPROVED", note: "" }, { channel: "owner", ownerSession: t.owner.reauth() });
+    const after = t.hub.deliveries.view(orphan.id);
+    assert.equal(after.clip.master.creative, "APPROVED");
+    assert.equal(after.decisions.creativeMaster, "APPROVED");
+    assert.equal(after.decisions.creativeVertical, "PENDING", "the vertical is its own decision");
     // A plan that is not this delivery's still cannot touch it.
     assert.throws(() => t.hub.deliveries.startDirect(orphan.id, "ops_other"), /nu aparține planului/);
   } finally { await t.cleanup(); }

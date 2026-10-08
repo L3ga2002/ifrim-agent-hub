@@ -443,6 +443,15 @@ export function createDeliveries({ db, bus, clock, config, settings, projects, m
     const binding = d.missionId ? (() => { try { return factory.deliveryBinding(d.missionId); } catch { return null; } })() : null;
     const fv = d.missionId ? factory.view(d.missionId) : null;
     const doc = currentDoc(id);
+    // The owner's creative decision is read live from the Studio reviews of that exact edit version (pilot 2026-10-08: the value bound
+    // at render time stayed PENDING after the owner approved, so the Room kept offering the button).
+    const creativeOf = (editVersionId, bound) => {
+      if (!editVersionId) return bound || "PENDING";
+      let reviews = [];
+      try { reviews = media.reviews.list({ editVersionId }) || []; } catch { return bound || "PENDING"; }
+      const live = reviews.filter((r) => r.status !== "DISMISSED" && ["CREATIVE_APPROVED", "REJECTED"].includes(r.kind)).at(-1);
+      return live ? (live.kind === "CREATIVE_APPROVED" ? "APPROVED" : "REJECTED") : (bound || "PENDING");
+    };
     const clip = (role) => {
       const edit = current.find((i) => i.kind === (role === "master" ? "edit" : "variant") && i.role === (role === "master" ? "master" : "vertical"));
       const render = current.find((i) => i.kind === "render" && i.role === role);
@@ -450,7 +459,7 @@ export function createDeliveries({ db, bus, clock, config, settings, projects, m
       if (!edit && !render) return null;
       return { editVersionId: role === "master" ? edit?.refId || null : edit?.meta?.editVersionId || null, assetVersionId: render?.refId || null, src: render?.refId ? `/api/media/files/${render.refId}` : null,
         durationMs: render?.meta?.durationMs || null, label: render?.meta?.label || null, qa: qa ? { status: qa.meta?.status || null, kinds: qa.meta?.kinds || {}, unjustified: qa.meta?.unjustified || 0 } : null,
-        creative: render?.meta?.creative || "PENDING", markers: edit?.meta?.markers || [], textItems: edit?.meta?.textItems || [] };
+        creative: creativeOf(role === "master" ? edit?.refId : edit?.meta?.editVersionId, render?.meta?.creative), markers: edit?.meta?.markers || [], textItems: edit?.meta?.textItems || [] };
     };
     const plans = db.prepare("SELECT id FROM ops_plans WHERE id = ? OR id IN (SELECT ops_plan_id FROM delivery_revisions WHERE delivery_id = ? AND ops_plan_id IS NOT NULL)").all(d.opsPlanId || "", id)
       .map((r) => opsPlans.view(r.id)).filter(Boolean).map((p) => ({ id: p.id, kind: p.kind, status: p.status, steps: p.steps.map((s) => ({ seq: s.seq, title: s.title, status: s.status, kind: s.kind })) }));
