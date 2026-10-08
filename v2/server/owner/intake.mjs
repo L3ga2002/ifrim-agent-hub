@@ -599,7 +599,10 @@ export function createIntake(hub) {
     const fn = planners.get(kind);
     if (!fn) return null;
     // lastTarget is the server-held conversation state (written only from executed results), never a client field.
-    return fn({ step, text: env.input.text, projectId: env.state.projectId, source: env.source, ctx: env.ctx, session: session(env.ctx), hub, lastTarget: env.conv?.lastTarget || null });
+    // Pilot 2026-10-08: on the voice route the delivery planner works under the owner session the derived Lega authority was verified
+    // against (as local actions do above), so a summary edit said to Lega is not answered with „open your session” mid-conversation.
+    const s = session(env.ctx) || (kind === "delivery" ? env.derived?.session || null : null);
+    return fn({ step, text: env.input.text, projectId: env.state.projectId, source: env.source, ctx: env.ctx, session: s, hub, lastTarget: env.conv?.lastTarget || null });
   }
 
   /** Every plan shown is announced (the Lega voice and other screens learn its id from the Hub, not from the model). */

@@ -40,6 +40,8 @@ export const LEGA_SCREENS = Object.freeze({
   sistem: "/system", setari: "/settings", vanzari: "/sales",
   // M09 Content Studio (navigation only; a correction is proposed from the cockpit, applied by the owner in the Studio).
   studio: "/studio",
+  // M11: the delivery Room and the owner's decisions (navigation only; every decision is taken there, in the owner session).
+  livrare: "/livrare", decizii: "/livrare/decizii",
 });
 
 /** Efforts a Lega run proposal may name (the lega.propose_run command accepts exactly these). */
@@ -173,6 +175,10 @@ export const LEGA_HOWTO_VOICE_FIRST = Object.freeze({
   backup: LEGA_HOWTO.backup,
   billing: LEGA_HOWTO.billing,
   isolation: LEGA_HOWTO.isolation,
+  // Pilot 2026-10-08: Lega could not say where the owner session is opened, nor where a delivery is approved.
+  owner_session: { screen: "lega", text: "Sesiunea de proprietar o deschizi în cockpit (Lega), sus în dreapta: butonul „Deblochează sesiunea”, apoi Windows Hello. Când e deschisă, acolo scrie „sesiune deschisă”. Mai e un buton „Deblochează (Windows Hello)” în Lega → Configurare. Cardurile de plan îți cer singure Windows Hello când apeși pe ele." },
+  delivery: { screen: "livrare", text: "Livrările sunt în Camera de livrare: demo-ul, software-ul verificat, clipurile 16:9 și vertical, rezumatul comercial. Sub fiecare clip e butonul de aprobare creativă; jos, la „6 · Deciziile tale”, sunt toate deciziile (software, clipuri, rezumat „gata de prezentare”), fiecare cu Windows Hello. Publicarea e oprită." },
+  decisions: { screen: "decizii", text: "„Deciziile mele” arată tot ce așteaptă decizia ta: pachete software, misiuni oprite, livrări. Fiecare rând are „Deschide locul deciziei”, unde decizi tu, în sesiunea de proprietar. Hub-ul nu acceptă nimic în locul tău." },
 });
 /** The how-to map a session uses (voice-first or the legacy one, unchanged). */
 export const legaHowTo = (voiceFirst = false) => (voiceFirst ? LEGA_HOWTO_VOICE_FIRST : LEGA_HOWTO);

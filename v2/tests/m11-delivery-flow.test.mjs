@@ -193,6 +193,12 @@ test("M11-DF-02 (pilot 2026-10-08) the delivery-only card: software already DELI
     assert.equal(after.clip.master.creative, "APPROVED");
     assert.equal(after.decisions.creativeMaster, "APPROVED");
     assert.equal(after.decisions.creativeVertical, "PENDING", "the vertical is its own decision");
+    // Pilot 2026-10-08 (Lega by voice): a clip revision said without an owner session still gets its ONE card (a proposal has no effect);
+    // only the card's confirmation asks for the session.
+    const voiced = await t.hub.deliveryPlanner.revise({ step: { intent: "delivery_revise", args: {} }, text: "Site-ul e bine, dar clipul e prea tehnic. După secunda 10 arată direct programarea.", projectId: t.project.id, session: null });
+    assert.equal(voiced.kind, "ops", JSON.stringify(voiced).slice(0, 400));
+    assert.equal(voiced.plan.status, "PROPOSED");
+    assert.equal(modelRuns(t), runsAtReady, "no model for a clip revision card");
     // A plan that is not this delivery's still cannot touch it.
     assert.throws(() => t.hub.deliveries.startDirect(orphan.id, "ops_other"), /nu aparține planului/);
   } finally { await t.cleanup(); }

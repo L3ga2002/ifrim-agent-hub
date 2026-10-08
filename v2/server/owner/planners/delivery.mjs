@@ -17,7 +17,7 @@ import { HubError } from "../../core/errors.mjs";
 import { TEST_PROJECT_MARKER } from "../../domain/projects.mjs";
 import { FACTORY_DEMOS, demoSpec } from "../../factory/fixtures.mjs";
 import { defaultModelLimits } from "../../factory/plan.mjs";
-import { packageSteps, PACKAGE_KIND, DELIVERY_LIMITS } from "../../delivery/template.mjs";
+import { packageSteps, revisionSteps, PACKAGE_KIND, REVISE_KIND, DELIVERY_LIMITS } from "../../delivery/template.mjs";
 import { classify, REVISION_RECORD_STATUS } from "../../delivery/revision.mjs";
 
 const READY_STAGES = new Set(["DELIVERY_READY", "ACCEPTED"]);
@@ -143,8 +143,12 @@ export function registerDeliveryPlanner(hub, intake) {
       const review = media.reviews.proposeOps({ editVersionId, ops: out.media.ops, text: out.textRedacted || text, provenance: "lega", actor: "intake" });
       if (review.patch?.preview && review.patch.preview.valid === false) return { kind: "message", text: `Schimbarea nu poate fi aplicată pe montaj: ${review.patch.preview.errors?.[0]?.message || "montaj invalid"}. Nimic nu s-a schimbat.` };
       const rev = deliveries.recordRevision(d.id, { ...base, status: "PROPOSED", reviewId: review.id, delta: { prefs: out.media.prefs || (out.media.brief ? { tone: out.media.brief.audience } : null) } });
-      const plan = await hub.commands.dispatch({ type: "delivery.revision.propose", payload: { deliveryId: d.id, revisionId: rev.id }, channel: session ? "owner" : "test", actor: "intake", ownerSession: session });
-      return { kind: "ops", plan: plan.result, projectId: d.projectId,
+      // Pilot 2026-10-08: a proposal has no effect, so it needs no owner session (Lega by voice was refused here and could not say where
+      // to open one); the card's confirmation is what asks for the owner session, exactly like every other plan card.
+      const plan = await opsPlans.propose({ kind: REVISE_KIND, title: `Revizuire clip: ${d.title}`, steps: revisionSteps(d.template, d.id, rev.id),
+        limits: { maxDurationMin: DELIVERY_LIMITS.revisionMinutes, maxActions: 60 }, actor: "intake", via: "intake" });
+      deliveries.updateRevision(rev.id, { opsPlanId: plan.id, status: "PROPOSED" });
+      return { kind: "ops", plan, projectId: d.projectId,
         note: [...lines, `Schimb doar clipul: ${(out.media.lines || []).join("; ") || "textele și montajul"}. Refac randarea 16:9, varianta verticală, QA și secțiunea video a rezumatului. Rămân la fel: software-ul, testele, capturile și restul rezumatului — fără cod nou, fără model. O singură confirmare.`].join(" ") };
     }
     if (out.status === "ROUTE_SOFTWARE" && out.software?.request) {
