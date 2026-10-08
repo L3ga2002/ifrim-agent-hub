@@ -17,3 +17,19 @@ test("M11-PF-01 the delivery preview waits for a cold Windows sandbox (the pilot
   assert.ok(seen.waitMs >= 180000, `waitMs ${seen.waitMs}`);
   assert.equal(seen.waitMs, PREVIEW_WAIT_MS);
 });
+
+test("M11-PF-02 the Hub uses the Codex CLI the desktop selected (CODEX_CLI_PATH), not the newest file in the desktop bundle", async () => {
+  const fs = await import("node:fs");
+  const os = await import("node:os");
+  const path = await import("node:path");
+  const { selectedCodexCli } = await import("../server/providers/codex.mjs");
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "codexcli-"));
+  const exe = path.join(dir, "codex.exe");
+  fs.writeFileSync(exe, "");
+  try {
+    assert.equal(selectedCodexCli({ env: { CODEX_CLI_PATH: exe } }), exe);
+    assert.equal(selectedCodexCli({ env: { CODEX_CLI_PATH: path.join(dir, "missing.exe") } }), null, "a missing file is never selected");
+    assert.equal(selectedCodexCli({ env: {}, platform: "win32", readUserEnv: () => exe }), exe, "read from the user's environment");
+    assert.equal(selectedCodexCli({ env: {}, platform: "linux" }), null);
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});

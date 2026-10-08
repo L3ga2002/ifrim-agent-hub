@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { execFile } from "node:child_process";
+import { execFile, execFileSync } from "node:child_process";
 import { promisify } from "node:util";
 import { parse as parseToml } from "smol-toml";
 import { createJsonRpcPeer } from "./jsonrpc.mjs";
@@ -136,10 +136,32 @@ export function codexBaseOverrides({ webSearch = "disabled" } = {}) {
 
 const ACTIVITY_ITEMS = new Set(["commandExecution", "fileChange", "mcpToolCall", "webSearch", "imageView", "imageGeneration", "collabAgentToolCall", "subAgentActivity"]);
 
+/**
+ * The Codex CLI the owner's desktop selected (CODEX_CLI_PATH, process env or the user's registry environment, read once per process).
+ * Pilot 2026-10-08: the desktop bundle folder kept a broken alpha.2 CLI (elevated sandbox "setup refresh had errors") while the
+ * desktop itself ran the repaired alpha.20 named by CODEX_CLI_PATH; the Hub picked the bundle by mtime and could not run any command.
+ */
+let userCliPath;
+export function selectedCodexCli({ env = process.env, platform = process.platform, readUserEnv = null } = {}) {
+  const fromEnv = env.CODEX_CLI_PATH;
+  if (fromEnv) return fs.existsSync(fromEnv) ? fromEnv : null;
+  if (platform !== "win32") return null;
+  if (readUserEnv) { const v = readUserEnv("CODEX_CLI_PATH"); return v && fs.existsSync(v) ? v : null; }
+  if (userCliPath === undefined) {
+    try {
+      const out = execFileSync("reg", ["query", "HKCU\Environment", "/v", "CODEX_CLI_PATH"], { encoding: "utf8", windowsHide: true, timeout: 5000 });
+      userCliPath = /CODEX_CLI_PATHs+REG_(?:EXPAND_)?SZs+(.+)/.exec(out)?.[1]?.trim() || null;
+    } catch { userCliPath = null; }
+  }
+  return userCliPath && fs.existsSync(userCliPath) ? userCliPath : null;
+}
+
 export function resolveCodexBinary(config) {
   if (config.providerBinaries.codex) return config.providerBinaries.codex;
   if (config.testMode) return null;
   if (process.env.HUB_CODEX_BIN) return { executable: process.env.HUB_CODEX_BIN, prefixArgs: [] };
+  const selected = selectedCodexCli();
+  if (selected) return { executable: selected, prefixArgs: [], source: "CODEX_CLI_PATH (CLI-ul selectat de aplicația Codex)" };
   const root = path.join(os.homedir(), "AppData", "Local", "OpenAI", "Codex", "bin");
   try {
     const candidates = fs.readdirSync(root).map((name) => path.join(root, name, "codex.exe"))
