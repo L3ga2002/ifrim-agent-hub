@@ -46,6 +46,12 @@ Starea: **M11_BUILD_READY local**. Codul, testele și integrarea sunt făcute. N
 
 ## Dovezi (teste)
 
+- **Regresia completă V2** (2026-10-07, 22:12 → 2026-10-08, 00:14 UTC, cod 2.14.0-m11): 1680 teste, 1676 PASS, 1 SKIP (T25, symlink, neschimbat), 3 FAIL, toate lămurite:
+  - M11-FX-07: testul aștepta blocul de livrare fără partea nouă `summary`; corectat (`52f4398`), PASS;
+  - M09-SB-01: testul folosea o interfață de test veche, păstrată din 2.13.0 (`.ifrim/tmp/m09-web-dist-studio`); cu interfața curentă, PASS;
+  - M10.2-LC-07: depășire de timp sub încărcarea regresiei; rulat singur, PASS.
+- **V1:** 552 de teste, 551 PASS, 1 SKIP, 0 FAIL.
+
 - `m11-delivery-flow` (184 s) rulează cap-coadă pe un Hub de test, cu providerii simulați și Chromium și ffmpeg reale:
   - o confirmare → READY, fără nicio rulare de model după DELIVERY_READY;
   - §24: se refac doar montajul, randarea, varianta, QA, exportul și secțiunea video;
