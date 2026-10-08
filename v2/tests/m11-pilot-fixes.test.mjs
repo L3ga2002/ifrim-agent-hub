@@ -33,3 +33,19 @@ test("M11-PF-02 the Hub uses the Codex CLI the desktop selected (CODEX_CLI_PATH)
     assert.equal(selectedCodexCli({ env: {}, platform: "linux" }), null);
   } finally { fs.rmSync(dir, { recursive: true, force: true }); }
 });
+
+test("M11-PF-03 a sandboxed command never runs with an fnm/nvm per-shell node (the Codex sandbox cannot launch it): the system node is used", async () => {
+  const path = await import("node:path");
+  const { sandboxNodePath, commandArgv } = await import("../server/factory/runner.mjs");
+  const fnm = String.raw`C:\Users\u\AppData\Local\fnm_multishells\2516_1\node.exe`;
+  const pf = String.raw`C:\Program Files`;
+  const sys = path.join(pf, "nodejs", "node.exe");
+  const own = String.raw`D:\n\node.exe`;
+  const exists = (p) => p === sys;
+  assert.equal(sandboxNodePath({ env: { ProgramFiles: pf }, platform: "win32", execPath: fnm, exists }), sys);
+  assert.equal(sandboxNodePath({ env: {}, platform: "win32", execPath: sys, exists }), sys, "a system node stays");
+  assert.equal(sandboxNodePath({ env: { HUB_SANDBOX_NODE: own }, platform: "win32", execPath: fnm, exists: () => true }), own);
+  assert.equal(sandboxNodePath({ env: {}, platform: "win32", execPath: fnm, exists: () => false }), fnm, "no system node: unchanged (the sandbox then reports it)");
+  assert.deepEqual(commandArgv("node server.js", sys), [sys, "server.js"]);
+  assert.deepEqual(commandArgv("node --test a.mjs", sys), [sys, "--test", "--test-reporter=tap", "a.mjs"]);
+});

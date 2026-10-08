@@ -23,13 +23,29 @@ import { createTapCaseCollector } from "./test-first.mjs";
 export const RUNNER_TIMEOUT_MS = 180000;
 const OUTPUT_LINES = 300;
 
-export function commandArgv(command) {
+/**
+ * The node.exe a sandboxed command runs with. Pilot 2026-10-08: a Hub started from a shell with fnm ran from
+ * %LOCALAPPDATA%\fnm_multishells\...\node.exe, which the Codex Windows sandbox cannot launch (CreateProcessAsUserW: access denied,
+ * also through its real path under %APPDATA%\fnm); the system install under Program Files can. HUB_SANDBOX_NODE overrides.
+ */
+export function sandboxNodePath({ env = process.env, platform = process.platform, execPath = process.execPath, exists = fs.existsSync } = {}) {
+  if (env.HUB_SANDBOX_NODE && exists(env.HUB_SANDBOX_NODE)) return env.HUB_SANDBOX_NODE;
+  if (platform === "win32" && /[\\/](?:fnm_multishells|fnm|nvm|volta)[\\/]/i.test(execPath)) {
+    for (const base of [env.ProgramFiles, env.ProgramW6432, "C:\\Program Files"].filter(Boolean)) {
+      const candidate = path.join(base, "nodejs", "node.exe");
+      if (exists(candidate)) return candidate;
+    }
+  }
+  return execPath;
+}
+
+export function commandArgv(command, node = sandboxNodePath()) {
   const parts = String(command).trim().split(/\s+/);
-  const npmCli = path.join(path.dirname(process.execPath), "node_modules", "npm", "bin", "npm-cli.js");
-  if (parts[0] === "node" && parts[1] === "--test") return [process.execPath, "--test", "--test-reporter=tap", ...parts.slice(2)];
-  if (parts[0] === "node") return [process.execPath, ...parts.slice(1)];
-  if (parts[0] === "npm" && parts[1] === "test") return [process.execPath, npmCli, "test"];
-  if (parts[0] === "npm" && parts[1] === "run") return [process.execPath, npmCli, "run", parts[2]];
+  const npmCli = path.join(path.dirname(node), "node_modules", "npm", "bin", "npm-cli.js");
+  if (parts[0] === "node" && parts[1] === "--test") return [node, "--test", "--test-reporter=tap", ...parts.slice(2)];
+  if (parts[0] === "node") return [node, ...parts.slice(1)];
+  if (parts[0] === "npm" && parts[1] === "test") return [node, npmCli, "test"];
+  if (parts[0] === "npm" && parts[1] === "run") return [node, npmCli, "run", parts[2]];
   return null;
 }
 
@@ -217,7 +233,7 @@ export function createFactoryRunner({ config, supervisor, settings, providerStat
     const started = Date.now();
     try {
       const binary = ready.binary;
-      const record = supervisor.start({ key, label: "preflight: node -e 0", executable: binary.executable, args: sandboxArgs(binary, scratch, [process.execPath, "-e", "0"]), cwd: scratch });
+      const record = supervisor.start({ key, label: "preflight: node -e 0", executable: binary.executable, args: sandboxArgs(binary, scratch, [sandboxNodePath(), "-e", "0"]), cwd: scratch });
       const timer = setTimeout(() => { supervisor.stop(key, { graceMs: 0 }).catch(() => {}); }, 300000);
       timer.unref?.();
       const exit = await record.exit;
