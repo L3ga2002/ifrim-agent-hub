@@ -166,3 +166,39 @@ test("DP-06 (criterion 4) the owner confirms ONE plan and closes the browser at 
     assert.equal(t.hub.db.prepare("SELECT COUNT(*) AS n FROM events WHERE type = 'ops.plan.consent'").get().n, 0, "no second confirmation");
   } finally { await t.cleanup(); }
 });
+
+test("DP-07 (§25 closure) the delivery DERIVED from the envelope also produces the Word document and the campaign (office.verify inside the phase; the plan is bound before its first step)", { timeout: 900000, skip: skipE2E }, async () => {
+  const t = await makeTestHub({ queues: true, configOverrides: { mediaTools: { launcher: launchers } } });
+  try {
+    await prepareLiveWithoutGrants(t.hub);
+    const importRoot = tempDir("videos");
+    t.hub.bus.transaction(() => t.hub.settings.set("mediaPolicy", { ...(t.hub.settings.get("mediaPolicy") || {}), importRoots: [importRoot] }, "test", "exports folder"));
+    const port = await freePort();
+    const dir = path.join(t.dataDir, "detailing-demo");
+    materializeFixture("booking-demo", dir, { port });
+    const dispatch = (type, payload, extra = {}) => t.hub.commands.dispatch({ type, payload, channel: "test", actor: "test", ...extra });
+    const project = (await dispatch("project.register_test", { path: dir })).result;
+    const owner = await enrolOwner(t);
+    await dispatch("owner.autonomy.set", { projectId: project.id, level: "TRUSTED" }, { ownerSession: owner.reauth() });
+    const { mission } = (await dispatch("factory.prepare", { projectId: project.id, ...demoSpec("booking-demo", { port }), limits: { ...FACTORY_DEMOS["booking-demo"].limits, writerModel: "gpt-fake-sol", reviewerModel: "sonnet" } })).result;
+    const planned = await t.hub.deliveries.createPlanned({ projectId: project.id, missionId: mission.id, actor: "test", extras: ["document", "campaign"] });
+    const { envelope } = (await dispatch("envelope.propose", { projectId: project.id, missionIds: [mission.id], deliveryId: planned.id, constraints: { noPublish: true } })).result;
+    t.queue("codex", "factory-write:booking-fix");
+    t.queue("claude", "review:pass");
+    await dispatch("envelope.confirm", { envelopeId: envelope.id, nonce: envelope.nonce, displayedHash: envelope.envelopeHash }, { ownerSession: owner.session });
+    // The browser is closed right after the one confirmation: the page's session ends (idle), nobody is there to click anything.
+    t.hub.db.prepare("UPDATE owner_sessions SET status = 'ended', revoked_at = ?, revoke_reason = 'idle' WHERE id = ?").run(new Date().toISOString(), owner.session.id);
+    const where = () => { const dd = t.hub.deliveries.get(planned.id); const pv = dd.opsPlanId ? t.hub.opsPlans.view(dd.opsPlanId) : null;
+      return JSON.stringify({ stage: t.hub.factory.view(mission.id).factory.stage, reason: t.hub.factory.view(mission.id).factory.stageReason, delivery: dd.status, why: dd.statusReason, steps: pv?.steps.map((s) => [s.seq, s.kind, s.status, s.error]) }); };
+    const ready = await waitFor(() => (["READY", "FAILED", "NEEDS_OWNER", "EXPIRED", "CANCELLED"].includes(t.hub.deliveries.get(planned.id).status) ? t.hub.deliveries.get(planned.id) : null), 600000, 300)
+      .catch((error) => { throw new Error(`${error.message} · ${where()}`); });
+    const d = t.hub.deliveries.get(planned.id);
+    const plan = d.opsPlanId ? t.hub.opsPlans.view(d.opsPlanId) : null;
+    assert.equal(ready.status, "READY", `${ready.statusReason} · ${JSON.stringify(plan?.steps.map((s) => [s.seq, s.kind, s.status, s.error]))}`);
+    assert.equal(t.hub.db.prepare("SELECT status FROM owner_sessions WHERE id = ?").get(owner.session.id).status, "ended", "the session really was closed the whole time");
+    assert.equal(t.hub.db.prepare("SELECT COUNT(*) AS n FROM owner_sessions WHERE status = 'active'").get().n, 0, "no new session was opened for it");
+    assert.equal(t.hub.db.prepare("SELECT COUNT(*) AS n FROM events WHERE type = 'ops.plan.consent'").get().n, 0, "no second confirmation");
+    for (const k of ["delivery.office.document", "delivery.campaign", "delivery.package.index"]) assert.equal(plan.steps.find((st) => st.kind === k)?.status, "DONE", k);
+    assert.equal(plan.steps.find((st) => st.kind === "delivery.office.workbook"), undefined, "no Excel asked");
+  } finally { await t.cleanup(); }
+});
