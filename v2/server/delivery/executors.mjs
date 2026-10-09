@@ -102,7 +102,19 @@ export function createDeliveryExecutors({ deliveries, factory, media, projects, 
         assertSyntheticProject(project, marker, { config });
         const before = snapshotEqual(d);
         const binding = factory.deliveryBinding(d.missionId);
-        const target = checkPreviewTarget({ origin: d.template.preview.origin, delivery: { id: d.id, missionId: d.missionId, template: d.template, startUrl: binding?.startUrl }, supervisor, config });
+        const targetOf = () => checkPreviewTarget({ origin: d.template.preview.origin, delivery: { id: d.id, missionId: d.missionId, template: d.template, startUrl: binding?.startUrl }, supervisor, config });
+        let target;
+        try { target = targetOf(); }
+        catch (error) {
+          // Stage before M12 (criterion 5, found by the closed-browser run): the reused factory preview ended between the two captures. A
+          // recoverable technical stop: the delivery starts its OWN supervised preview of the same verified version (bounded: once), then
+          // every guard runs again; a foreign process on the port is still never filmed.
+          if (error?.code !== "CAPTURE_PREVIEW_NOT_SUPERVISED") throw error;
+          checkAbort(abort);
+          const r = await runner.startPreview({ key: `delivery-preview-${d.id}`, ws: project.path, command: d.template.preview.command, url: d.template.preview.url, project, waitMs: PREVIEW_WAIT_MS });
+          if (r.status !== "PASS") throw new HubError("tool", `Preview-ul livrării nu a putut fi repornit: ${r.reason || r.status}`, { code: "DELIVERY_PREVIEW_FAILED" });
+          target = targetOf();
+        }
         await probeNotHub(target.origin, { fetch: fetchImpl, config });
         checkAbort(abort);
         const scope = { kind: "delivery_preview", origin: target.origin, deliveryId: d.id, bundleId: d.bundleId, bundleSha: d.bundleSha, snapshotSha: d.snapshotSha, role: cap.role, viewport: cap.viewport,

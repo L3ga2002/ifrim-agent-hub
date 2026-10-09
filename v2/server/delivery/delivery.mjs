@@ -104,12 +104,12 @@ export function createDeliveries({ db, bus, clock, config, settings, projects, m
    * The delivery row of a proposal (no effect): the frozen template, the exact package steps and the sha of their ops body. The same
    * mission and template reuse the open PLANNED row (a re-proposal of the same card).
    */
-  async function createPlanned({ projectId, missionId, parentId = null, actor = "owner" }) {
+  async function createPlanned({ projectId, missionId, parentId = null, actor = "owner", extras = [] }) {
     const r = await readiness({ projectId, missionId });
     if (!r.ok) throw new HubError("policy", `Livrarea nu poate fi pregătită: ${r.blockers.map((b) => b.title).join("; ")}`, { code: "DELIVERY_NOT_ELIGIBLE", data: { blockers: r.blockers } });
     const simulation = Boolean(config.testMode);
     const template = buildTemplate({ project: r.project, marker: r.marker, missionView: r.missionView, demo: r.demo, tools: r.tools.identity, toolsState: r.tools.state, chromium: { version: r.browser.version || null },
-      exportsDir: media.exportsDir(), simulation, day: day(), route: r.route, mode: parentId ? "refresh" : "new", parentDeliveryId: parentId, config });
+      exportsDir: media.exportsDir(), simulation, day: day(), route: r.route, mode: parentId ? "refresh" : "new", parentDeliveryId: parentId, config, extras });
     const tSha = templateSha(template);
     const existing = db.prepare("SELECT * FROM deliveries WHERE mission_id = ? AND status = 'PLANNED' AND template_sha = ? ORDER BY created_at DESC LIMIT 1").get(missionId, tSha);
     if (existing) return get(existing.id);
@@ -434,6 +434,18 @@ export function createDeliveries({ db, bus, clock, config, settings, projects, m
     return getRevision(id);
   }
 
+  /** The office steps of the delivery's own package plan (DONE ones carry the file, its sha and the level reached). */
+  function officeOf(d) {
+    const extras = d.template?.extras || [];
+    if (!extras.length || !d.opsPlanId) return { requested: extras, folder: null, items: [] };
+    const p = opsPlans.view(d.opsPlanId);
+    const label = { "delivery.office.document": "Document Word", "delivery.office.workbook": "Registru Excel", "delivery.campaign": "Pachet de campanie", "delivery.package.index": "Cuprinsul dosarului" };
+    const items = (p?.steps || []).filter((s) => label[s.kind]).map((s) => ({ kind: s.kind, label: label[s.kind], status: s.status, file: s.result?.file || s.result?.dir || s.result?.folder || null,
+      pdf: s.result?.pdf || null, level: s.result?.level || s.result?.calendarLevel || null, pages: s.result?.pages || null, formulasChecked: s.result?.formulasChecked ?? null,
+      channels: s.result?.channels ?? null, posts: s.result?.posts ?? null, files: s.result?.files?.length ?? (typeof s.result?.files === "number" ? s.result.files : null) }));
+    return { requested: extras, folder: path.join(d.template.exports.dir, d.template.exports.folder), items };
+  }
+
   // ---------------------------------------------------------------- the owner's view (contract: .ifrim/M11_DESIGN.md DELIVERY ROOM UI)
   function view(id) {
     const d = need(id);
@@ -485,6 +497,8 @@ export function createDeliveries({ db, bus, clock, config, settings, projects, m
       decisions: { software: binding?.bundleStatus === "OWNER_ACCEPTED" ? "ACCEPTED" : "PENDING", creativeMaster: clip("master")?.creative || "PENDING", creativeVertical: clip("vertical")?.creative || "PENDING",
         rightsPublic: "NOT_RECORDED", summaryReady: doc?.approval ? "READY" : "PENDING", publishing: "OFF" },
       plans,
+      // Stage before M12: the office part of the package (Word, Excel, campaign, folder index) with the verification level each reached.
+      office: officeOf(d),
       revisions: db.prepare("SELECT * FROM delivery_revisions WHERE delivery_id = ? ORDER BY created_at").all(id).map(revisionView).map((r) => ({ id: r.id, text: r.text, status: r.status, classes: r.classes, planId: r.opsPlanId })),
       history: items.map((i) => ({ kind: i.kind, role: i.role, id: i.id, status: i.status, staleReason: i.statusReason, supersedesId: i.supersedesId, createdAt: i.createdAt })),
     };

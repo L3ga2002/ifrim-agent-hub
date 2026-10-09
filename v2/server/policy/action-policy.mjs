@@ -24,6 +24,8 @@ export const OPERATIONS = Object.freeze({
   // M11 delivery steps (derived from the one envelope confirmation): check the verified version, its local preview, bind evidence,
   // write the commercial summary, film the demo preview. Owner decisions (accept, creative approval, rights) stay unknown → SENSITIVE.
   "delivery.verify": "PLAN_STEP", "delivery.preview": "PLAN_STEP", "delivery.bind": "PLAN_STEP", "delivery.summary": "PLAN_STEP", "capture.preview": "PLAN_STEP",
+  // Stage before M12: Word / Excel opened by the Hub (own invisible instance, read-only) to verify a file the plan generated.
+  "office.verify": "PLAN_STEP",
   "access.newApp": "SENSITIVE", "access.newFolder": "SENSITIVE", "model.run": "SENSITIVE", "file.overwrite": "SENSITIVE", "capture.live.enable": "SENSITIVE",
   publish: "REFUSED", upload: "REFUSED", send: "REFUSED", purchase: "REFUSED", "delete.external": "REFUSED", "hub.admin": "REFUSED", "shell.exec": "REFUSED",
 });

@@ -19,6 +19,7 @@ import { SummaryEditor } from "./delivery/SummaryEditor.jsx";
 import { DecisionsPanel } from "./delivery/DecisionsPanel.jsx";
 import { ObservationsPanel } from "./delivery/ObservationsPanel.jsx";
 import { DecisionInbox } from "./delivery/DecisionInbox.jsx";
+import { OfficePanel } from "./delivery/OfficePanel.jsx";
 
 /**
  * The Room's data access, built on the existing API client only: one GET for the aggregated view, the delivery's allowlisted POST
@@ -279,6 +280,7 @@ export function DeliveryRoomView({ view, owner = null, client = defaultClient, r
         <div id={SECTION_IDS.shots} tabIndex={-1} className="delivery-section"><Guard name="Capturi" resetKey={viewTick.current}><ShotsPanel room={room} /></Guard></div>
         <div id={SECTION_IDS.clip} tabIndex={-1} className="delivery-section"><Guard name="Clip" resetKey={viewTick.current}><ClipPanel room={room} /></Guard></div>
         <div id={SECTION_IDS.summary} tabIndex={-1} className="delivery-section"><Guard name="Rezumat" resetKey={viewTick.current}><SummaryEditor room={room} /></Guard></div>
+        {view?.office?.requested?.length ? <div id="livrare-dosar" tabIndex={-1} className="delivery-section"><Guard name="Dosar" resetKey={viewTick.current}><OfficePanel room={room} /></Guard></div> : null}
         <div id={SECTION_IDS.decisions} tabIndex={-1} className="delivery-section delivery-last">
           <Guard name="Observații" resetKey={viewTick.current}><ObservationsPanel room={room} hiddenPlanIds={hiddenPlanIds} /></Guard>
           <Guard name="Decizii" resetKey={viewTick.current}><DecisionsPanel room={room} /></Guard>

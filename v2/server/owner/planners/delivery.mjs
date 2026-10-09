@@ -19,6 +19,7 @@ import { FACTORY_DEMOS, demoSpec } from "../../factory/fixtures.mjs";
 import { defaultModelLimits } from "../../factory/plan.mjs";
 import { packageSteps, revisionSteps, PACKAGE_KIND, REVISE_KIND, DELIVERY_LIMITS } from "../../delivery/template.mjs";
 import { classify, REVISION_RECORD_STATUS } from "../../delivery/revision.mjs";
+import { requestedArtifacts } from "../../delivery/office-executors.mjs";
 
 const READY_STAGES = new Set(["DELIVERY_READY", "ACCEPTED"]);
 const markerOf = (project) => { try { return JSON.parse(fs.readFileSync(path.join(project.path, TEST_PROJECT_MARKER), "utf8")); } catch { return null; } };
@@ -68,17 +69,20 @@ export function registerDeliveryPlanner(hub, intake) {
     const running = missionsOf.find((f) => !READY_STAGES.has(f.stage) && !["SPEC_DRAFT", "CANCELLED", "REJECTED", "FAILED"].includes(f.stage));
     if (running) return { kind: "message", projectId: project.id, text: `Pe ${project.name} lucrez deja la „${running.title || "misiunea curentă"}” (${running.stage}). Livrarea pornește singură când software-ul e gata, dacă planul tău o include; altfel o cer după.` };
     const open = deliveries.list({ projectId: project.id }).find((d) => ["ARMED", "ACTIVE"].includes(d.status));
+    // Stage before M12: the Word / Excel / campaign artifacts the sentence asks for ride in the same card and the same folder.
+    const extras = requestedArtifacts(`${text || ""} ${step?.args?.request || ""}`);
+    const asked = extras.length ? ` și ${extras.map((x) => ({ document: "documentul Word", workbook: "Excel-ul cu date demonstrative", campaign: "pachetul de campanie" })[x]).join(", ")}` : "";
     if (open) return { kind: "message", projectId: project.id, text: `Livrarea pentru ${project.name} e deja în curs (${open.status === "ARMED" ? "pornește când software-ul e gata" : "rulează"}).`, navigate: `/livrare/${open.id}` };
 
     // A verified version already exists: the delivery-only card (one confirmation; no code, no model).
     if (ready) {
       const r = await deliveries.readiness({ projectId: project.id, missionId: ready.missionId });
       if (!r.ok) return blocked(project, r.blockers);
-      const d = await deliveries.createPlanned({ projectId: project.id, missionId: ready.missionId, actor: "intake" });
+      const d = await deliveries.createPlanned({ projectId: project.id, missionId: ready.missionId, actor: "intake", extras });
       const plan = await opsPlans.propose({ kind: PACKAGE_KIND, title: d.title, steps: packageSteps(d.template, d.id), limits: { maxDurationMin: DELIVERY_LIMITS.phaseMinutes, maxActions: DELIVERY_LIMITS.maxActions }, actor: "intake", via: "intake" });
       // The confirmed card starts THIS delivery (startDirect at its first step); a newer card for the same delivery replaces the binding.
       if (plan?.id) deliveries.patch(d.id, { ops_plan_id: plan.id });
-      return { kind: "ops", plan, projectId: project.id, note: `Software-ul e deja verificat (${ready.stage === "ACCEPTED" ? "acceptat de tine" : "gata de verificarea ta"}): planul face doar captura, clipul 16:9 + vertical și rezumatul comercial. Fără model, fără publicare. O singură confirmare.` };
+      return { kind: "ops", plan, projectId: project.id, note: `Software-ul e deja verificat (${ready.stage === "ACCEPTED" ? "acceptat de tine" : "gata de verificarea ta"}): planul verifică site-ul în browser și face captura, clipul 16:9 + vertical, rezumatul comercial${asked}, totul în același dosar. Fără model, fără publicare. O singură confirmare.` };
     }
 
     // The agreed issue as a factory draft (the fixture's approved spec; the pilot's explicit models), then ONE envelope with the delivery.
@@ -97,7 +101,7 @@ export function registerDeliveryPlanner(hub, intake) {
     }
     const r = await deliveries.readiness({ projectId: project.id, missionId });
     if (!r.ok) return blocked(project, r.blockers);
-    const d = await deliveries.createPlanned({ projectId: project.id, missionId, actor: "intake" });
+    const d = await deliveries.createPlanned({ projectId: project.id, missionId, actor: "intake", extras });
     const proposal = await envelopes.propose({ projectId: project.id, missionIds: [missionId], deliveryId: d.id, constraints: { ...(step?.constraints || {}), noPublish: true }, actor: "intake", via: "intake" });
     if (!proposal?.envelope) return { kind: "blocked", projectId: project.id, text: `Planul nu poate fi prezentat încă: ${(proposal?.summary?.blockers || []).slice(0, 3).join(" · ")}. Cererea ta rămâne păstrată.`,
       blocker: { signature: "DELIVERY_PLAN_INCOMPLETE", text: (proposal?.summary?.blockers || []).join(" · ") }, request: { planRef: null } };

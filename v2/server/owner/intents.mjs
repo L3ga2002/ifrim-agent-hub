@@ -76,7 +76,27 @@ export const INTENT_EFFECTS = Object.freeze({
   explain_stop: "read",
   // 2.12.2 (P0-R6, L11): a request to change the Hub's mode by voice or text — answered (modeAnswer), never done: nothing is written.
   explain_mode: "none",
+  // Stage before M12: a question about the system itself (installed apps, accounts, what the Hub can do, where results are, what Codex
+  // produced, what Claude found, what is blocked) — answered from the Hub's real state (owner/knowledge.mjs); nothing runs.
+  system_knowledge: "read",
 });
+
+// Stage before M12: questions about the system itself (owner/knowledge.mjs answers them from the Hub's real state).
+/** The questions about the system the intent resolver routes to `system_knowledge` (normalized text; the topic is knowledgeTopic's). */
+export const KNOWLEDGE_QUESTION = /\bce aplicati(?:i|ile)\b|\bce (?:programe|aplicatii) (?:ai|am|sunt|stii|poti)\b|\bce (?:e|ai|am) instalat\b|\b(?:ce|care) (?:conturi|modele)\b|\bce abonament|\bce (?:stii|poti) (?:sa )?(?:faci|folosesti)\b|\bce capabilitati\b|\bunde (?:e|sunt|gasesc|ai pus|ai salvat)\b.*\b(?:dosar|dosarul|fisier|fisierele|rezultat|rezultatele|livrare|livrarea|clip|clipurile|document|documentul|excel|excelul|campani)|\bce a (?:facut|produs|scris) codex\b|\bce a (?:gasit|spus|zis|observat) claude\b|\bce zice claude\b|\bce (?:e|este|sta) blocat\b/;
+/** Which knowledge topic a question is about (diacritics folded), or null. Pure. */
+export function knowledgeTopic(text) {
+  const t = String(text || "").normalize("NFD").replace(/[̀-ͯ]/g, "").toLowerCase();
+  if (/\bce aplicati(i|ile)\b|\bce (programe|aplicatii) (ai|am|sunt|stii|poti)\b|\bce e instalat\b|\bce (ai|am) instalat\b/.test(t)) return "apps";
+  if (/\b(ce|care) (conturi|modele)\b|\bce abonament/.test(t)) return "accounts";
+  if (/\bce (stii|poti) (sa )?(faci|folosesti)\b|\bce capabilitati\b/.test(t)) return "capabilities";
+  if (/\bunde (e|sunt|gasesc|ai pus|ai salvat)\b.*\b(dosar|dosarul|fisier|fisierele|rezultat|rezultatele|livrare|livrarea|clip|clipurile|document|documentul|excel|excelul|campani)/.test(t)) return "locations";
+  if (/\bce a (facut|produs|scris) codex\b|\bce a scris codex\b/.test(t)) return "codex";
+  if (/\bce a (gasit|spus|zis|observat) claude\b|\bce zice claude\b/.test(t)) return "claude";
+  if (/\bce e blocat\b|\bce (este|e) blocat\b|\bce sta blocat\b/.test(t)) return "blocked";
+  if (/\bce (faci|lucrezi) acum\b|\bce (ruleaza|e activ|e in lucru)\b/.test(t)) return "active";
+  return null;
+}
 
 /** The apps the operator knows by name (normalized words → catalog id). Anything else is not a desktop target. */
 const DESKTOP_APP_WORDS = "capcut|cap cut|obs studio|obs|notepad|blocnotes|block notes|explorer-ul|explorerul|explorer|file explorer|exploratorul de fisiere|exploratorul";
@@ -777,6 +797,7 @@ const P = [
   ["live", /\b(revino|inapoi) la (acum|live|prezent)\b|\bmod live\b/],
   ["replay", /\b(arata|explica)(-mi)? (de ce|cum) a (picat|esuat|cazut)\b|\bde ce a picat\b|\breplay\b|\barata(-mi)? momentul\b/, (m, c) => ({ subject: /\btest/.test(c) ? "test" : "mission" })],
   ["why_blocked", /\bde ce (e|este|a ramas|s-a|sa) (blocat|oprit|in asteptare)|\bde ce nu (porneste|merge|continua)\b|\bce (il|o) blocheaza\b/],
+  ["system_knowledge", KNOWLEDGE_QUESTION, (m, c) => ({ topic: knowledgeTopic(c) || "overview" })],
   ["why_route", /\bde ce (?<who>claude|codex)\b/, (m) => ({ worker: m.groups.who })],
   ["twin_why", /\bde ce (am ales|am decis|am hotarat|folosim|avem|am pus|am schimbat|am trecut pe) (?<what>.+)/, (m) => ({ what: m.groups.what })],
   ["start_view", /\b(porneste|deschide|incepe) (direct |mereu |intotdeauna )?(in|cu) (?<v>ecran(ul)? complet|lega|scena|cockpit(ul)?)\b/, (m) => ({ startView: /cockpit/.test(m.groups.v) ? "cockpit" : "stage" })],

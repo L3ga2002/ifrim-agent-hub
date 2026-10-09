@@ -191,6 +191,7 @@ export function createLega({ bus, live, clock, settings, gate, grants, projects,
   const needSession = (reason) => new HubError("authentication", `${SESSION_PROBLEM[reason] || "Sesiunea de proprietar nu e validă"}; deschide-o din nou (Windows Hello / cheia ta) ca să pornești Lega`,
     { data: { needSession: true, reason } });
   /** Derived starts of this owner session inside the window, read from the audit (a restart does not reset the count). */
+  let knowledgeRef = null; // stage before M12: owner/knowledge.mjs, bound after the hub is assembled (read-only)
   function recentDerivedStarts(ownerSessionId) {
     const since = clock().getTime() - DERIVED_START_LIMIT.windowMs;
     return bus.query({ typePrefix: "lega.authority_derived", limit: 200 }).filter((e) => e.payload?.ownerSessionId === ownerSessionId && Date.parse(e.createdAt) >= since);
@@ -1793,8 +1794,10 @@ export function createLega({ bus, live, clock, settings, gate, grants, projects,
       return { ok: true, text: `Am deschis cockpitul pentru ${project.name} (doar context; nimic nu pornește). ${brief.text}` };
     }
     // M10.2 voice-first tools (absent from the legacy tool list: a legacy session gets "unknown tool", exactly as before).
-    if (["request_work", "studio_overview", "last_delivery", "hub_actions"].includes(tool)) {
+    if (["request_work", "studio_overview", "last_delivery", "hub_actions", "system_knowledge"].includes(tool)) {
       if (!isVoiceFirst(current)) return { ok: false, text: "Unealtă necunoscută." };
+      // Stage before M12: the same read the typed question gets (owner/knowledge.mjs), from the Hub's real state.
+      if (tool === "system_knowledge") { if (!knowledgeRef) return { ok: false, text: "Registrul sistemului nu e disponibil." }; const a = await knowledgeRef.answer(String(args?.topic || "overview")); return { ok: true, text: `${a.text}${a.screen ? ` (ecran: ${a.screen})` : ""}` }; }
       if (tool === "request_work") return requestWork(current, args);
       if (tool === "studio_overview") return studioOverview();
       if (tool === "last_delivery") return lastDelivery();
@@ -1954,7 +1957,7 @@ export function createLega({ bus, live, clock, settings, gate, grants, projects,
     return { id: s.id, status: s.status, authority: s.authority || "grant", ownerSessionId: s.authority === "owner_session" ? s.ownerSessionId : null, gated: Boolean(s.gated), stopping: Boolean(s.stopping) };
   }
 
-  return { start, connected, stop, stopAll, trackRun, proposalFailed, announce, announceResults, preview, tick, recover, authorityOf, state: () => publicView(session),
+  return { attachKnowledge: (k) => { knowledgeRef = k; }, start, connected, stop, stopAll, trackRun, proposalFailed, announce, announceResults, preview, tick, recover, authorityOf, state: () => publicView(session),
     // D23: a start waiting for its automatic account check counts as active (no session yet), so lega.session.stop „current” reaches it.
     active: () => Boolean(session && session.status !== "ended") || pendingStarts.size > 0,
     // M10.2: what the Hub did from the owner's words in the current session (the same list lega.hub_actions reads).

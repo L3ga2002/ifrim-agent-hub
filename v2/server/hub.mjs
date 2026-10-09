@@ -81,6 +81,9 @@ import { createExecutors } from "./ops/executors.mjs";
 import { createOpsPlans } from "./ops/plans.mjs";
 import { createDeliveries, DELIVERY_PHASE_OPS } from "./delivery/delivery.mjs";
 import { createDeliveryExecutors } from "./delivery/executors.mjs";
+import { createOfficeExecutors } from "./delivery/office-executors.mjs";
+import { createKnowledge } from "./owner/knowledge.mjs";
+import { createDevProfileReader } from "./owner/dev-profile.mjs";
 import { setExtraCommands } from "./factory/spec.mjs";
 import { createProbe, registerProbeCommands } from "./owner/probe.mjs";
 import { createWorkRequests, registerWorkRequestCommands } from "./owner/work-requests.mjs";
@@ -233,7 +236,8 @@ export function createHub(config, { providerOverrides = {}, homeDir, browserLaun
   // M06 (Lega 2.0): the owner's trusted session, the product policy, Mission Authorization Envelopes, the project cockpit,
   // interruptions, quiet proactivity / recommendations / shadow reviews and the local voice profile. Built on the modules
   // above; the envelope service is the factory's authority hook (no envelope = M03–M05 behaviour).
-  const trust = createTrust({ db, bus, clock, settings, config });
+  // Stage before M12: the local development profile is read from the instance's private data folder (tests inject config.devProfile).
+  const trust = createTrust({ db, bus, clock, settings, config, devProfile: createDevProfileReader({ dataDir: config.dataDir, override: config.devProfile, clock }) });
   ownerTrust = trust; // M10: Lega's derived voice authority reads the owner session from here (late-bound above)
   // M07: the local voice engines (whisper.cpp + CAM++ in a supervised worker) and the server-held utterances; created before the
   // envelopes, which consume a spoken confirmation's utterance in the same transaction that confirms the plan.
@@ -307,6 +311,7 @@ export function createHub(config, { providerOverrides = {}, homeDir, browserLaun
   // listed these exact steps (hashed). The parent check re-reads the envelope: same hash, confirmed, carrying this delivery.
   const deliveries = createDeliveries({ db, bus, clock, config, settings, projects, missions, factory, media, opsPlans, trust, sales });
   Object.assign(executors, createDeliveryExecutors({ deliveries, factory, media, projects, runner: factoryRunner, supervisor, opsPlans, config }));
+  Object.assign(executors, createOfficeExecutors({ deliveries, factory, opsPlans, config }));
   opsPlans.registerParent("envelope", {
     allowedOps: DELIVERY_PHASE_OPS,
     verify: (parent) => {
@@ -339,6 +344,9 @@ export function createHub(config, { providerOverrides = {}, homeDir, browserLaun
     environments, wslRunner, trust, envelopes, armedWindows, cockpit, interrupts, advisor, voice, voiceEngine,
     twin, warroom, autopilot, simulations, league, skillEvolution, teach, packages, board, devices, media, desktop, opsPlans, executors, deliveries };
   registerCommands(commands, hub);
+  // Stage before M12: what Lega knows about the system (read-only, from the real registries and tables).
+  hub.knowledge = createKnowledge(hub);
+  lega?.attachKnowledge?.(hub.knowledge);
   // M10.2 (U12): the "run" planner (one bounded model step → ONE run envelope; propose_run's replacement under voice-first).
   if (hub.intake) hub.runPlanner = registerRunPlanner(hub, hub.intake);
   // M11: the delivery planner (prepare / revise / open), next to the run planner.

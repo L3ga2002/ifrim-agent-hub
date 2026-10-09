@@ -4,6 +4,7 @@ import { validateLayout, defaultLayout, CARD_TYPES } from "./layout.mjs";
 import { AUTONOMY_LEVELS, AUTONOMY_LABELS, DENIED_EFFECTS } from "./envelopes.mjs";
 import { PROJECT_STATES } from "./cockpit.mjs";
 import { decodeDelegation } from "../runtime/commands.mjs";
+import { isLoopback, DEV_SESSION_HOURS } from "./dev-profile.mjs";
 
 /**
  * HTTP adapter for M06. The owner session travels in an HttpOnly, SameSite=Strict cookie scoped to /api; the database keeps
@@ -47,6 +48,20 @@ export function registerOwnerRoutes(router, hub) {
     if (result?.token) setCookie(res, result.token, SESSION_DEFAULTS.maxHours * 3600);
     return { sessionId: result.sessionId, expiresAt: result.expiresAt, reauthAt: result.reauthAt, renewed: result.renewed };
   }, { maxBytes: 64 * 1024 });
+  // Stage before M12: the local development profile opens the owner session without a ceremony — only when the INSTANCE's profile
+  // is on (a file in its private data folder), only for the canonical localhost origin, a same-origin request from a loopback peer, never
+  // on the agent or CLI channels. The session says authority local_dev_profile and userVerified false; no WebAuthn result is written.
+  post("/api/owner/dev-session", async ({ req, res }) => {
+    const declared = String(req.headers["x-hub-channel"] || "").toLowerCase();
+    if (declared === "agent" || declared === "cli") throw new HubError("policy", `Profilul de dezvoltare nu se deschide pe canalul ${declared}`, { code: "DEV_PROFILE_CHANNEL" });
+    if (!isLoopback(req.socket?.remoteAddress)) throw new HubError("policy", "Profilul de dezvoltare se deschide doar de pe acest calculator", { code: "DEV_PROFILE_REMOTE" });
+    if (req.headers.origin !== config.canonicalOrigin) throw new HubError("policy", `Profilul de dezvoltare se deschide doar din pagina Hub-ului (${config.canonicalOrigin})`, { code: "DEV_PROFILE_ORIGIN" });
+    const site = req.headers["sec-fetch-site"];
+    if (site && site !== "same-origin") throw new HubError("policy", "Cerere din alt site refuzată", { code: "DEV_PROFILE_ORIGIN" });
+    const result = await dispatch(req, "owner.dev_session.open", { origin: originOf(req), currentToken: tokenOf(req) || "", userAgent: String(req.headers["user-agent"] || "").slice(0, 200) });
+    if (result?.token) setCookie(res, result.token, DEV_SESSION_HOURS * 3600);
+    return { sessionId: result.sessionId, expiresAt: result.expiresAt, renewed: result.renewed, authority: result.authority };
+  });
   post("/api/owner/logout", async ({ req, res }) => { const r = sessionOf(req) ? await dispatch(req, "owner.logout", {}) : { ended: false }; setCookie(res, null, 0); return r; });
   post("/api/owner/sessions/revoke-all", ({ req, body }) => dispatch(req, "owner.sessions.revoke_all", { reason: body.reason || "revocare" }));
   post("/api/owner/credentials/:id/revoke", ({ req, params }) => dispatch(req, "owner.credential.revoke", { credentialId: params.id }, { requireOwner: true }));
@@ -73,6 +88,13 @@ export function registerOwnerRoutes(router, hub) {
   });
   get("/api/missions/:id/replay", ({ params }) => { const r = cockpit.replay(params.id); if (!r) throw new HubError("not_found", "Misiunea nu e o misiune Software Factory"); return r; });
   get("/api/company/map", () => cockpit.companyMap());
+  // Stage before M12: what Lega knows about the system (read-only; the same answer as the typed or spoken question).
+  get("/api/knowledge", async ({ query }) => {
+    if (!hub.knowledge) throw new HubError("not_found", "Registrul sistemului nu e disponibil");
+    const topic = String(query.topic || "overview");
+    const [snapshot, answer] = await Promise.all([hub.knowledge.snapshot(topic), hub.knowledge.answer(topic)]);
+    return { ...snapshot, answer: answer.text, screen: answer.screen || null };
+  });
 
   // ---------- natural language, envelopes, autonomy, interruptions ----------
   post("/api/owner/intent", ({ req, body }) => dispatch(req, "owner.intent", { text: body.text || "", projectId: body.projectId || undefined, source: body.source || "typed", utteranceId: body.utteranceId || undefined, presented: body.presented || undefined, layout: body.layout || undefined,

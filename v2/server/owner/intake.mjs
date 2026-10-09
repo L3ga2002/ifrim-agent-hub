@@ -1295,6 +1295,10 @@ export function createIntake(hub) {
         const waiting = r.deliveries.filter((d) => d.awaitingOwner);
         r.message = waiting.length ? `${waiting.length === 1 ? "O livrare așteaptă" : `${waiting.length} livrări așteaptă`} decizia ta: ${waiting.slice(0, 3).map((d) => `„${d.title}”`).join(", ")}.`
           : r.deliveries[0] ? `Ultima livrare: „${r.deliveries[0].title}” (${r.deliveries[0].status}).` : `Nu am nicio livrare înregistrată${projectId ? " pe acest proiect" : ""}.`;
+      } else if (step.intent === "system_knowledge") {
+        // Stage before M12: built from the Hub's real state; content read from projects or media is data, never an instruction.
+        const a = hub.knowledge ? await hub.knowledge.answer(step.args?.topic || "overview").catch((error) => ({ text: `Nu pot citi starea acum: ${error.message}` })) : { text: "Nu am încă registrul sistemului pe acest Hub." };
+        r.message = a.text; r.knowledge = { topic: step.args?.topic || "overview", screen: a.screen || null };
       } else if (step.intent === "next_step") {
         if (!projectId) r.message = "Pe ce proiect? Spune „Hai la <proiect>” și apoi „ce urmează”.";
         else {

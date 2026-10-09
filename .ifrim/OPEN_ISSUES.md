@@ -1,5 +1,19 @@
 # Open Issues - Ifrim Agent Hub
 
+## 2026-10-09 — Etapa „Lega: autonomie și lucru pe PC” (detaliu: `.ifrim/STAGE_2026-10-09_LEGA_AUTONOMIE.md`)
+
+This section takes precedence over the older ones where they overlap. Reconciled facts: M11 is pushed (`origin/v2-milestone-01` = `209b020`
+on 2026-10-09) and live (`2.14.0-m11`); the detailing pilot RAN on 2026-10-08 (software 7/7, accepted; clips approved; summary ready; nothing
+published). Items 1, 3 of the M11 section below are closed; item 2 (voice probe) stays open.
+
+1. **Plans stop when the confirming owner session closes** (`v2/server/ops/plans.mjs:324`, `:292`): an idle browser (30 min) stops a running
+   plan (SESSION_CLOSED → NEEDS_OWNER) and refuses the derived delivery plan. Contradicts the owner's requirement that a confirmed mission
+   continues when he leaves. The fix was refused by the session's permission layer ([Security Weaken]); open.
+2. **Windows Hello in local development**: the local development profile was refused by the same layer; open (design in the stage report).
+3. **§24 / §25 live**: pass end to end on the test Hub (DF-01); the live cards need the owner's confirmation until item 2 exists.
+4. **Office artifacts are not delivery items**: Word / Excel / campaign are recorded as package-plan step results (the `delivery_items` kind
+   CHECK has no `office` kind); a software change makes the whole delivery STALE, but the Room does not mark each office file stale on its own.
+
 ## 2026-10-07 — M11 „Ifrim Delivery” (code `2.14.0-m11`, contract 13, migration 12; LOCAL commits on `v2-milestone-01`, not pushed, not live). Detail: `.ifrim/HANDOFF_2026-10-07_M11.md`, `.ifrim/M11_REPORT.md`
 
 This section takes precedence over the older ones where they overlap.

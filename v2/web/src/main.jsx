@@ -10,6 +10,7 @@ import { api } from "./api.js";
 import { Shell } from "./shell/Shell.jsx";
 import { Loading } from "./components/ui.jsx";
 import { navigate } from "./nav.js";
+import { ensureOwnerSession } from "./lib/ownerSession.js";
 
 const screens = {
   // M06: Lega 2.0 — the cockpit you drive by intent (the start screen); the full dashboard stays one click away.
@@ -82,6 +83,16 @@ function App() {
     if (navKey) api("/api/owner/nav", { method: "POST", body: { screen: navKey } }).catch(() => {});
   }, [navKey]);
   useEffect(() => startHubConnection(), []);
+  // Stage before M12: under the instance's local development profile the owner session opens without a dialog, and stays open
+  // (re-checked every 5 minutes: a profile turned off ends it on the Hub, and the badge goes away).
+  const [devMode, setDevMode] = useState(false);
+  useEffect(() => {
+    let alive = true;
+    const check = () => ensureOwnerSession().then((on) => { if (alive) setDevMode(Boolean(on)); });
+    check();
+    const timer = setInterval(check, 5 * 60000);
+    return () => { alive = false; clearInterval(timer); };
+  }, []);
   // M08 Zero-Menu: a plain start (no screen in the address) opens what the owner chose — the cockpit or the big Lega screen.
   useEffect(() => {
     const h = window.location.hash;
@@ -98,6 +109,8 @@ function App() {
       <Suspense fallback={<div className="page"><Loading lines={5} /></div>}>
         {loading ? <div className="page"><Loading lines={5} /></div> : <Screen id={route.id} query={route.query} go={go} key={`${route.name}:${route.id || ""}`} />}
       </Suspense>
+      {devMode && <div className="dev-profile-badge" role="status" title="Sesiunea de proprietar e deschisă de profilul de dezvoltare locală al acestui Hub, fără Windows Hello (auditat). Se oprește cu: node v2/scripts/dev-profile.mjs off"
+        style={{ position: "fixed", left: 12, bottom: 12, zIndex: 50, fontSize: 11, padding: "2px 8px", borderRadius: 999, background: "var(--surface-2, rgba(0,0,0,.6))", color: "var(--text-2, #ccc)", opacity: 0.75, pointerEvents: "auto" }}>Mod dezvoltare locală</div>}
     </Shell>
   );
 }

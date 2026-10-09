@@ -3,6 +3,7 @@ import { HubError } from "../core/errors.mjs";
 import { newId } from "../core/ids.mjs";
 import { json, parse } from "../storage/db.mjs";
 import { b64url, verifyRegistration, verifyAssertion } from "./webauthn.mjs";
+import { DEV_CREDENTIAL_PREFIX, DEV_SESSION_HOURS, isDevCredential } from "./dev-profile.mjs";
 
 /**
  * Trusted owner session (M06 §07) and the versioned product policy (M06 §02, §21).
@@ -25,7 +26,7 @@ export const SESSION_DEFAULTS = Object.freeze({ maxHours: 8, idleMinutes: 30, re
 export const SESSION_COOKIE = "ifrim_owner";
 const MAX_CREDENTIALS = 5;
 
-export function createTrust({ db, bus, clock, settings, config }) {
+export function createTrust({ db, bus, clock, settings, config, devProfile = () => ({ enabled: false, reason: "absent" }) }) {
   const now = () => clock();
   const iso = (d = now()) => d.toISOString();
   const hashToken = (token) => crypto.createHash("sha256").update(String(token)).digest("hex");
@@ -36,7 +37,13 @@ export function createTrust({ db, bus, clock, settings, config }) {
     status: row.status, createdAt: row.created_at, lastSeenAt: row.last_seen_at, expiresAt: row.expires_at, reauthAt: row.reauth_at, revokedAt: row.revoked_at,
     revokeReason: row.revoke_reason, userAgent: row.user_agent });
   const activeCredentials = () => db.prepare("SELECT * FROM owner_credentials WHERE status = 'active' ORDER BY created_at").all().map(rowToCredential);
-  const credential = (id) => rowToCredential(db.prepare("SELECT * FROM owner_credentials WHERE id = ?").get(id));
+  // Stage before M12: the local development profile is a credential of its own kind (never a WebAuthn one): active only while the
+  // instance's profile file is on, names this machine and account, and carries the same id.
+  const devCredential = (id) => {
+    const p = devProfile();
+    return { id, label: "Profil de dezvoltare locală", kind: "dev_profile", publicKey: null, userVerified: false, status: p.enabled && id === `${DEV_CREDENTIAL_PREFIX}${p.id}` ? "active" : "revoked" };
+  };
+  const credential = (id) => (isDevCredential(id) ? devCredential(id) : rowToCredential(db.prepare("SELECT * FROM owner_credentials WHERE id = ?").get(id)));
 
   /** WebAuthn needs a domain RP ID: the Hub's origin on "localhost" (an IP address such as 127.0.0.1 cannot be an RP ID). */
   function relyingParty(origin) {
@@ -170,7 +177,8 @@ export function createTrust({ db, bus, clock, settings, config }) {
     if (origin && row.origin !== origin) return null;
     const t = now();
     if (new Date(row.expires_at) <= t) { expireSession(row.id, "expired"); return null; }
-    if (t.getTime() - new Date(row.last_seen_at).getTime() > SESSION_DEFAULTS.idleMinutes * 60000) { expireSession(row.id, "idle"); return null; }
+    // A dev-profile session does not idle out (the page would reopen it without a dialog anyway); its absolute expiry still holds.
+    if (!isDevCredential(row.credential_id) && t.getTime() - new Date(row.last_seen_at).getTime() > SESSION_DEFAULTS.idleMinutes * 60000) { expireSession(row.id, "idle"); return null; }
     const cred = credential(row.credential_id);
     if (!cred || cred.status !== "active") { expireSession(row.id, "credential-revoked"); return null; }
     return row;
@@ -194,20 +202,69 @@ export function createTrust({ db, bus, clock, settings, config }) {
   function describe(s) {
     if (!s) return null;
     const t = now().getTime();
+    // A dev-profile session has no ceremony to be "fresh" from: its authority is the instance profile, re-read at every check.
+    if (isDevCredential(s.credentialId)) return { ...s, authority: "local_dev_profile", fresh: true, freshUntil: s.expiresAt, idleExpiresAt: s.expiresAt };
     const freshUntil = new Date(new Date(s.reauthAt).getTime() + SESSION_DEFAULTS.reauthMinutes * 60000).toISOString();
-    return { ...s, fresh: t < Date.parse(freshUntil), freshUntil, idleExpiresAt: new Date(Date.parse(s.lastSeenAt) + SESSION_DEFAULTS.idleMinutes * 60000).toISOString() };
+    return { ...s, authority: "webauthn", fresh: t < Date.parse(freshUntil), freshUntil, idleExpiresAt: new Date(Date.parse(s.lastSeenAt) + SESSION_DEFAULTS.idleMinutes * 60000).toISOString() };
   }
 
   /** A session must exist (re-read from the database: a revoked one fails even with a cached object). */
   function requireSession(session, what = "această acțiune") {
     const row = session?.id ? db.prepare("SELECT * FROM owner_sessions WHERE id = ?").get(session.id) : null;
-    if (!row || row.status !== "active" || new Date(row.expires_at) <= now()) throw new HubError("authentication", `Pentru ${what} deschide sesiunea de proprietar (Windows Hello / cheia ta)`);
+    // A dev-profile session ends as soon as the instance's profile is off (or names another machine, account or id).
+    const devOff = Boolean(row) && isDevCredential(row.credential_id) && credential(row.credential_id).status !== "active";
+    if (devOff && row.status === "active") expireSession(row.id, "dev-profile-off");
+    if (!row || devOff || row.status !== "active" || new Date(row.expires_at) <= now()) throw new HubError("authentication", `Pentru ${what} deschide sesiunea de proprietar (Windows Hello / cheia ta)`);
     return describe(rowToSession(row));
   }
   function requireFresh(session, what) {
     const s = requireSession(session, what);
     if (!s.fresh) throw new HubError("authentication", `Pentru ${what} confirmă din nou cu autentificatorul (ultima verificare e mai veche de ${SESSION_DEFAULTS.reauthMinutes} minute)`, { data: { reauth: true } });
     return s;
+  }
+
+  // ---------- the local development profile (stage before M12) ----------
+  /**
+   * Opens an owner session from the instance's local development profile: no WebAuthn ceremony, user_verified = 0, credential
+   * "devprofile:<id>", authority local_dev_profile in every event. Only for the canonical localhost origin (the HTTP layer adds: a loopback
+   * peer, a same-origin request, the per-boot token, never the agent or CLI channels). Refused while the profile is off.
+   */
+  function openDevSession({ origin, userAgent = "", currentToken = null }) {
+    const rp = relyingParty(origin);
+    const p = devProfile();
+    if (!p.enabled) throw new HubError("policy", `Profilul de dezvoltare locală nu este activ pe această instanță (${p.reason || "absent"}).`, { code: "DEV_PROFILE_OFF" });
+    const credentialId = `${DEV_CREDENTIAL_PREFIX}${p.id}`;
+    const existing = currentToken ? resolveRow(currentToken, rp.origin) : null;
+    if (existing && existing.credential_id === credentialId) return { sessionId: existing.id, token: null, expiresAt: existing.expires_at, renewed: true, authority: "local_dev_profile" };
+    const t = now();
+    const token = b64url.encode(crypto.randomBytes(32));
+    const id = newId("osn");
+    const expiresAt = new Date(t.getTime() + DEV_SESSION_HOURS * 3600000).toISOString();
+    const policyVersion = settings.get("ownerPolicy")?.version || 0;
+    bus.transaction(() => {
+      db.prepare(`INSERT INTO owner_sessions (id, token_hash, credential_id, origin, policy_version, user_verified, status, created_at, last_seen_at, expires_at, reauth_at, user_agent)
+        VALUES (?, ?, ?, ?, ?, 0, 'active', ?, ?, ?, ?, ?)`).run(id, hashToken(token), credentialId, rp.origin, policyVersion, iso(t), iso(t), expiresAt, iso(t), String(userAgent).slice(0, 200));
+      bus.append({ type: "owner.session_opened", scopeType: "owner", scopeId: id, source: "hub", payload: { authority: "local_dev_profile", profile: p.id, machine: p.machine, user: p.user, userVerified: false, expiresAt } });
+    });
+    return { sessionId: id, token, expiresAt, renewed: false, authority: "local_dev_profile" };
+  }
+
+  /**
+   * Stage before M12 (the owner's decision of 2026-10-09: „expirarea sesiunii UI nu trebuie confundată cu revocarea autorizației unei
+   * misiuni deja aprobate”): the authority a confirmation gave outlives the browser. A session that ended because the page idled, expired,
+   * logged out or rotated keeps backing what it ALREADY confirmed, bounded by that plan's own time limit, action budget, Stop, pause and
+   * cancel. A security revocation ends it: the authenticator revoked, every session revoked, the development profile turned off. It never
+   * opens anything new: new confirmations still need an open session (requireSession).
+   */
+  const ENDED_KEEPS_AUTHORITY = new Set(["idle", "expired", "logout", "rotated"]);
+  function confirmedAuthority(sessionId) {
+    const row = sessionId ? db.prepare("SELECT * FROM owner_sessions WHERE id = ?").get(String(sessionId)) : null;
+    if (!row) return { ok: false, reason: "unknown-session" };
+    const cred = credential(row.credential_id);
+    if (!cred || cred.status !== "active") return { ok: false, reason: isDevCredential(row.credential_id) ? "dev-profile-off" : "credential-revoked" };
+    if (row.status === "active" && new Date(row.expires_at) > now()) return { ok: true, sessionOpen: true };
+    if (row.status === "active" || ENDED_KEEPS_AUTHORITY.has(String(row.revoke_reason || ""))) return { ok: true, sessionOpen: false, endedBecause: row.status === "active" ? "expired" : row.revoke_reason };
+    return { ok: false, reason: String(row.revoke_reason || "revoked") };
   }
 
   function endSession(session, reason = "logout", actor = "owner") {
@@ -267,11 +324,12 @@ export function createTrust({ db, bus, clock, settings, config }) {
       origin: `http://localhost:${config.port}`, rpId: "localhost", defaults: SESSION_DEFAULTS,
       credentials: creds.map((c) => ({ id: c.id, short: c.id.slice(0, 10), label: c.label, alg: c.alg, createdAt: c.createdAt, lastUsedAt: c.lastUsedAt, attestationFmt: c.attestationFmt, backupEligible: c.backupEligible })),
       bootstrapNeeded: creds.length === 0,
+      devProfile: (() => { const p = devProfile(); return p.enabled ? { enabled: true, id: p.id, machine: p.machine, user: p.user, enabledAt: p.enabledAt } : { enabled: false, reason: p.reason || "absent" }; })(),
       session: session ? describe(session) : null,
       activeSessions: db.prepare("SELECT COUNT(*) AS n FROM owner_sessions WHERE status = 'active' AND expires_at > ?").get(iso()).n,
     };
   }
 
-  return { relyingParty, beginRegistration, finishRegistration, beginAuthentication, finishAuthentication, resolveSession, requireSession, requireFresh,
+  return { openDevSession, confirmedAuthority, devProfile, relyingParty, beginRegistration, finishRegistration, beginAuthentication, finishAuthentication, resolveSession, requireSession, requireFresh,
     endSession, revokeAllSessions, revokeCredential, policy, activatePolicy, deactivatePolicy, status, credential, activeCredentials };
 }

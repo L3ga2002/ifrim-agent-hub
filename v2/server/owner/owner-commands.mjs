@@ -37,6 +37,11 @@ export function registerOwnerCommands(reg, hub) {
     logPayload: (i) => ({ origin: i.origin, challengeId: i.challengeId, credentialId: String(i.credential?.id || "").slice(0, 10), renew: Boolean(i.currentToken) }),
     logResult: (r) => ({ sessionId: r?.sessionId, expiresAt: r?.expiresAt, renewed: r?.renewed }),
     execute: (input) => trust.finishAuthentication({ origin: input.origin, challengeId: input.challengeId, credential: input.credential, currentToken: input.currentToken || null, userAgent: input.userAgent }) });
+  reg("owner.dev_session.open", { describe: "Deschide sesiunea de proprietar din profilul de dezvoltare locală al instanței (fără Windows Hello; userVerified fals, auditat)", channels: PRE_SESSION,
+    schema: { origin: { required: true, max: 120 }, currentToken: { max: 200, default: "" }, userAgent: { max: 200, default: "" } },
+    logPayload: (i) => ({ origin: i.origin, renew: Boolean(i.currentToken) }),
+    logResult: (r) => ({ sessionId: r?.sessionId, expiresAt: r?.expiresAt, renewed: r?.renewed, authority: r?.authority }),
+    execute: (input) => trust.openDevSession({ origin: input.origin, currentToken: input.currentToken || null, userAgent: input.userAgent }) });
   reg("owner.logout", { describe: "Închide sesiunea de proprietar", channels: OWNER, schema: {},
     execute: (input, ctx) => trust.endSession(session(ctx), "logout", ctx.actor) });
   reg("owner.sessions.revoke_all", { describe: "Închide toate sesiunile de proprietar (fail-safe)", channels: ANY_OWNER_FACING, schema: { reason: { max: 200, default: "revocare" } },

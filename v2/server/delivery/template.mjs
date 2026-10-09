@@ -36,7 +36,9 @@ export const STORY_TEMPLATE = "delivery-presentation-v1";
 export const SUMMARY_TEMPLATE = "commercial-summary-v2"; // v2: the owner's §21 sections (delivery/summary.mjs)
 export const PACKAGE_KIND = "delivery.package";
 export const REVISE_KIND = "delivery.revise";
-export const DELIVERY_LIMITS = Object.freeze({ phaseMinutes: 30, hardStopMinutes: 60, maxActions: 120, revisionMinutes: 15, maxSteps: 12 });
+export const DELIVERY_LIMITS = Object.freeze({ phaseMinutes: 30, hardStopMinutes: 60, maxActions: 120, revisionMinutes: 15, maxSteps: 16 });
+/** Office artifacts a delivery may add (stage before M12): a Word document, an Excel workbook, a local campaign package. */
+export const DELIVERY_EXTRAS = Object.freeze(["document", "workbook", "campaign"]);
 export const TEXT_SLOTS = Object.freeze(["hook", "desktop", "mobile", "cta"]);
 export const CAPTURE_ROLES = Object.freeze(["desktop", "mobile"]);
 /** The two capture presets (hashed in the plan). Mobile is a viewport width, nothing more. */
@@ -389,8 +391,10 @@ export function exportFolderName({ prefix = null, noun, slug, day }) {
  * blockers with `eligibility` first.
  */
 export function buildTemplate({ project, marker, missionView, demo, tools = null, toolsState = null, chromium = null, exportsDir, simulation = false, day,
-  route = "windows", mode = "new", parentDeliveryId = null, config = {} } = {}) {
+  route = "windows", mode = "new", parentDeliveryId = null, config = {}, extras = [] } = {}) {
   const problems = [];
+  const extraList = DELIVERY_EXTRAS.filter((x) => (extras || []).includes(x));
+  for (const x of extras || []) if (!DELIVERY_EXTRAS.includes(x)) problems.push(`livrabil necunoscut: ${String(x).slice(0, 30)}`);
   if (!isObject(project) || !project.id || !project.name) problems.push("proiectul lipsește");
   if (!isObject(marker) || typeof marker.fixture !== "string" || marker.data !== "synthetic") problems.push("markerul proiectului nu declară un fixture cu date sintetice");
   if (route !== "windows") problems.push(`ruta „${String(route).slice(0, 30)}” nu poate fi filmată (doar windows)`);
@@ -452,6 +456,8 @@ export function buildTemplate({ project, marker, missionView, demo, tools = null
     exports: { dir: exportsDir, folder: exportFolderName({ prefix: block.exportPrefix, noun: block.noun, slug, day: d }) },
     limits: { phaseMinutes: DELIVERY_LIMITS.phaseMinutes, maxActions: DELIVERY_LIMITS.maxActions },
     pin: t.state === "UNPINNED" ? { expect: t.identity } : null,
+    // Only when asked: a template without extras keeps the M11 shape (and hash) byte for byte.
+    ...(extraList.length ? { extras: extraList } : {}),
   };
   return deepFreeze(JSON.parse(JSON.stringify(template)));
 }
@@ -485,7 +491,9 @@ export const DELIVERY_NEVER = Object.freeze(["publicare", "încărcare (upload)"
   "înregistrarea drepturilor", "aprobarea rezumatului", "date reale", "alte proiecte", "prețuri sau termene inventate", "OBS, ecranul tău sau CapCut", "niciun model după DELIVERY_READY"]);
 export const DELIVERY_DECISIONS_LEFT = Object.freeze(["Accept local (software)", "aprobarea creativă a clipului 16:9", "aprobarea creativă a variantei verticale",
   "drepturile pentru uz public", "rezumatul „gata de prezentare”"]);
-const outputsOf = (t) => ["clip 16:9 cu QA automat", "variantă verticală 9:16 cu QA automat", "rezumat comercial v1 (Markdown + HTML)", `folder local: ${t.exports.folder} (în folderul de exporturi aprobat)`];
+const EXTRA_OUTPUTS = Object.freeze({ document: "document Word (verificat în Word, cu PDF)", workbook: "registru Excel cu date demonstrative (formule recalculate de Excel)", campaign: "pachet de campanie pregătit local (nepublicat)" });
+const outputsOf = (t) => ["clip 16:9 cu QA automat", "variantă verticală 9:16 cu QA automat", "rezumat comercial v1 (Markdown + HTML)", ...(t.extras || []).map((x) => EXTRA_OUTPUTS[x]),
+  `folder local: ${t.exports.folder} (în folderul de exporturi aprobat)`];
 
 /**
  * `sectionOf(template, { deliveryId, ops: { stepTitles, bodySha } })` → body.delivery of the envelope (hashed with the rest of it).
@@ -539,8 +547,12 @@ export function packageSteps(template, deliveryId) {
     { kind: "media.variant.render", title: "Derivă varianta verticală 9:16, randeaz-o și rulează QA automat (uz intern)", params: { masterVersionId: ref(5, "editVersionId"), ...variantParams(t) } },
     { kind: "delivery.export", title: `Exportă local cele două clipuri în ${t.exports.folder} (fără publicare)`, params: { deliveryId: id, master: ref(6, "assetVersionId"), vertical: ref(7, "assetVersionId") } },
     { kind: "delivery.summary.render", title: "Scrie rezumatul comercial v1 (Markdown + HTML, fără prețuri inventate)", params: { deliveryId: id } },
-    { kind: "delivery.finish", title: "Leagă dovezile de versiunea verificată și încheie livrarea", params: { deliveryId: id, render: ref(6, "renderJobId"), variant: ref(7, "variantId"), verticalEdit: ref(7, "editVersionId") } },
   );
+  // Stage before M12: the office artifacts the owner asked for, in the same folder, before the delivery is closed.
+  const extraKinds = { document: "delivery.office.document", workbook: "delivery.office.workbook", campaign: "delivery.campaign" };
+  for (const x of t.extras || []) steps.push({ kind: extraKinds[x], params: { deliveryId: id } });
+  if ((t.extras || []).length) steps.push({ kind: "delivery.package.index", params: { deliveryId: id } });
+  steps.push({ kind: "delivery.finish", title: "Leagă dovezile de versiunea verificată și încheie livrarea", params: { deliveryId: id, render: ref(6, "renderJobId"), variant: ref(7, "variantId"), verticalEdit: ref(7, "editVersionId") } });
   if (steps.length > DELIVERY_LIMITS.maxSteps) throw new HubError("internal", "Planul de livrare depășește numărul maxim de pași.", { code: "DELIVERY_STEPS_LIMIT" });
   return steps;
 }

@@ -33,8 +33,31 @@ export async function registerAuthenticator({ setupText = "", label = "" } = {})
   return api("/api/owner/register/finish", { method: "POST", body: { challengeId: begin.challengeId, credential, label } });
 }
 
-/** Opens (or re-authenticates) the owner session with a verified assertion. */
+/**
+ * Stage before M12: when THIS Hub instance runs the local development profile (the Hub says so in /api/owner/status; the browser
+ * never decides it), the owner session is opened by the Hub without a Windows Hello dialog. The session says authority
+ * local_dev_profile; nothing here produces or imitates a WebAuthn answer.
+ */
+let devProfileOn = null;
+export const devProfileActive = () => devProfileOn === true;
+async function devProfileEnabled() {
+  try { const s = await api("/api/owner/status"); devProfileOn = Boolean(s?.devProfile?.enabled); } catch { devProfileOn = false; }
+  return devProfileOn;
+}
+export const openDevSession = () => api("/api/owner/dev-session", { method: "POST", body: {} });
+/** At page start: opens the dev-profile session when the instance runs the profile and no session is open (no dialog either way). */
+export async function ensureOwnerSession() {
+  try {
+    const s = await api("/api/owner/status");
+    devProfileOn = Boolean(s?.devProfile?.enabled);
+    if (devProfileOn && !s?.session) await openDevSession();
+  } catch { /* the page works without it; actions ask again */ }
+  return devProfileOn;
+}
+
+/** Opens (or re-authenticates) the owner session with a verified assertion — or, under the local development profile, without a dialog. */
 export async function unlockSession(purpose = "unlock") {
+  if (await devProfileEnabled()) return openDevSession();
   const begin = await api("/api/owner/auth/begin", { method: "POST", body: { purpose } });
   const pk = begin.publicKey;
   let cred;

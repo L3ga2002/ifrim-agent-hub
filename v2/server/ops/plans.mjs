@@ -18,7 +18,7 @@ import { createArmedWindows } from "../owner/armed-window.mjs";
 import { createStopScope, STOP_HOLD_CLASSES } from "../owner/stop-scope.mjs";
 import { classifySuspension } from "../policy/gate-state.mjs";
 
-export const PLAN_LIMITS = Object.freeze({ confirmWindowMin: 15, slackMin: 30, maxSteps: 12, defaultMaxDurationMin: 30, maxDurationMin: 240, maxActionsPerStep: 200 });
+export const PLAN_LIMITS = Object.freeze({ confirmWindowMin: 15, slackMin: 30, maxSteps: 16, defaultMaxDurationMin: 30, maxDurationMin: 240, maxActionsPerStep: 200 });
 export const NEVER_IN_PLANS = Object.freeze(["publicare pe platforme", "încărcare (upload)", "trimiterea de mesaje", "plăți sau cumpărături", "ștergeri externe", "schimbarea setărilor de securitate"]);
 const ACTIVE = new Set(["CONFIRMED", "RUNNING"]);
 /**
@@ -289,7 +289,11 @@ export function createOpsPlans({ db, bus, clock, settings, trust, voice = null, 
     if (outside.length) throw new HubError("policy", "Operații în afara livrării: " + outside.join(", "), { code: "PLAN_DERIVED_OP" });
     const check = await reg.verify(parent);
     if (!check?.ok) throw new HubError("policy", "Confirmarea de la care derivă planul nu mai e valabilă: " + (check?.reason || "necunoscut"), { code: "PLAN_DERIVED_PARENT" });
-    const s = trust.requireSession({ id: sessionId }, "planul derivat din confirmarea ta");
+    // Stage before M12: the derived plan (the delivery after DELIVERY_READY) rides on the confirmation's authority, which outlives a
+    // closed browser; only a revocation refuses it.
+    const held = trust.confirmedAuthority ? trust.confirmedAuthority(sessionId) : null;
+    if (held && !held.ok) throw new HubError("authentication", `Autorizarea confirmării tale a fost revocată (${held.reason}); planul derivat nu pornește.`, { code: "SESSION_CLOSED" });
+    const s = held ? { id: String(sessionId), credentialId: credential || "" } : trust.requireSession({ id: sessionId }, "planul derivat din confirmarea ta");
     const hash = bodySha;
     const id = newId("opp");
     const t = clock();
@@ -321,8 +325,9 @@ export function createOpsPlans({ db, bus, clock, settings, trust, voice = null, 
     if (!a) stop("Planul nu are autoritate (neconfirmat).", "PLAN_NOT_CONFIRMED");
     if (r.status !== "RUNNING") stop(`Planul nu rulează (${r.status}); niciun pas nou.`, "PLAN_NOT_RUNNING");
     if (new Date(a.expiresAt) <= clock()) stop("Limita de timp a planului a trecut; pașii noi s-au oprit.", "PLAN_EXPIRED", "NEEDS_OWNER");
-    try { trust.requireSession({ id: a.sessionId }, "planul confirmat"); }
-    catch { stop("Sesiunea de proprietar în care ai confirmat planul s-a închis; pașii noi s-au oprit.", "SESSION_CLOSED", "NEEDS_OWNER"); }
+    // Stage before M12: the confirmation's authority outlives the page (idle, expiry, logout); a security revocation still stops it.
+    const held = trust.confirmedAuthority ? trust.confirmedAuthority(a.sessionId) : (() => { try { trust.requireSession({ id: a.sessionId }, "planul confirmat"); return { ok: true }; } catch { return { ok: false }; } })();
+    if (!held.ok) stop("Autorizarea în care ai confirmat planul a fost revocată; pașii noi s-au oprit.", "SESSION_CLOSED", "NEEDS_OWNER");
     const st = db.prepare("SELECT * FROM ops_plan_steps WHERE id = ? AND plan_id = ?").get(String(stepId || ""), planId);
     if (!st || st.status !== "RUNNING") stop("Pasul nu e în execuție.", "STEP_NOT_RUNNING");
     // Per step (M10.2): the running step's own operations, apps and folders; a plan confirmed before M10.2 has only the union.

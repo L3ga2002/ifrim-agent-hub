@@ -408,7 +408,9 @@ export function buildMaster(input = {}) {
   const addText = (slot, candidates, anim) => {
     const w = windows[slot];
     if (!w) return;
-    items.push(place({ id: TEXT_IDS[slot], start: w.start, end: w.end, text: shown[slot], style: TEXT_STYLE[slot], animation: anim }, candidates));
+    // Stage before M12 (pilot QA 2026-10-08: the CTA measured 3.94:1 in 16:9 and 4.2:1 in 9:16, under 4.5): every delivery text sits on
+    // its own plate (drawn at ≥ 0.9 opacity by compile.mjs), so its contrast holds by construction whatever the capture shows behind it.
+    items.push(place({ id: TEXT_IDS[slot], start: w.start, end: w.end, text: shown[slot], style: TEXT_STYLE[slot], animation: anim, plate: true }, candidates));
     included.push(TEXT_IDS[slot]);
   };
   addText("hook", wide, "fade");
