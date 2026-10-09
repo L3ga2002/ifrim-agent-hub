@@ -201,3 +201,11 @@ test("FZ-10 the proposal window: 24 h in the local development profile, 15 min o
   assert.equal(proposalWindowMin({ settings: settings(120), trust: trust(false) }), 120);
   assert.equal(proposalWindowMin({ settings: settings(99999), trust: trust(false) }), 15);
 });
+
+test("FZ-11 a delivery derived from an envelope may run its Word / Excel checks; a refused start is retried once (NEEDS_OWNER → ARMED)", async () => {
+  const { DELIVERY_PHASE_OPS } = await import("../server/delivery/delivery.mjs");
+  const { canTransition } = await import("../server/delivery/stale.mjs");
+  assert.ok(DELIVERY_PHASE_OPS.includes("office.verify"));
+  assert.ok(canTransition("NEEDS_OWNER", "ARMED"));
+  assert.ok(!canTransition("CANCELLED", "ARMED"));
+});

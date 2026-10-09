@@ -1016,6 +1016,11 @@ export function createIntake(hub) {
       // D6: „Importă …” with no folder the Hub can read — ONE plain explanation (a read, from every source), never a silent unknown. The
       // step stays `unknown` for the probe, counted as answered.
       else if (step.intent === "unknown" && step.args?.importNoFolder) r.message = IMPORT_FOLDER_HELP;
+      // Stage before M12 (§5): a sentence that is only a restriction („Nu publica nimic”) is understood and said back, never silence.
+      else if (step.intent === "unknown" && (step.constraints?.noPublish || step.constraints?.noDeploy || step.constraints?.noMessages || step.constraints?.noGit)) {
+        const said = [step.constraints.noPublish && "nu public nimic", step.constraints.noDeploy && "nu fac deploy", step.constraints.noMessages && "nu trimit mesaje", step.constraints.noGit && "nu fac commit sau push"].filter(Boolean);
+        r.message = `Bine: ${said.join(", ")}. Oricum nimic nu se publică și nu pleacă din PC fără o decizie separată a ta.`;
+      }
       else if (step.intent === "status") {
         // P0-R6 (L11): „Ești în build safe?” is answered with the mode the server reads; „Ce a rămas în ProDelivery?” is the status of the
         // project it names (shown, with its next step), or ONE question when no project is known. Reads only: nothing changes.

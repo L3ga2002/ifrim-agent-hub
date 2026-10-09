@@ -117,8 +117,8 @@ export function deriveCriteria({ words, flows = [] } = {}) {
     const { field: f, entity: e } = s;
     const said = "derivat din cererea ta";
     out.test.push(
-      { text: `Serverul aplică cerința și când e apelat direct, fără browser: ${e.art} fără ${f.bare} sau cu ${f.bare} gol (doar spații) e ${adj(e, "refuzată", "refuzat")}, cu o eroare pentru câmpul ${f.label}, și nu se salvează nimic`, origin: `${said}: cerința e a aplicației, nu doar a formularului` },
-      { text: `Câmpul ${f.label} trimis cu ${e.art} ${adj(e, "validă", "valid")} se păstrează în ${e.saved} și se poate citi înapoi după salvare (răspunsul la creare sau datele salvate)`, origin: `${said}: valoarea cerută nu se pierde` },
+      { text: `Serverul aplică cerința și când e apelat direct, fără browser: ${e.art} fără ${f.bare} sau cu ${f.bare} gol (doar spații) e ${adj(e, "refuzată", "refuzat")}, cu o eroare pentru câmpul ${f.label}, și nu se salvează nimic (o citire după refuz nu găsește ${e.noun})`, origin: `${said}: cerința e a aplicației, nu doar a formularului` },
+      { text: `Câmpul ${f.label} trimis cu ${e.art} ${adj(e, "validă", "valid")} se păstrează în ${e.saved}: o citire separată după salvare (datele proiectului) îl regăsește, nu doar ecoul din răspunsul la creare`, origin: `${said}: valoarea cerută nu se pierde` },
       { text: `${e.art[0].toUpperCase()}${e.art.slice(1)} cu ${f.bare} și celelalte date valide${e.slot} e în continuare ${adj(e, "acceptată", "acceptat")} (control: trece azi și după)`, guard: true, origin: "comportamentul existent al proiectului: o implementare care refuză tot nu trece" },
     );
     const augmented = inherited.map((flow) => {

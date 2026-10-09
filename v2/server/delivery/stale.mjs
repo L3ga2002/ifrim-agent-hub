@@ -231,7 +231,7 @@ export const DELIVERY_TRANSITIONS = Object.freeze({
   PLANNED: Object.freeze(["ARMED", "ACTIVE", "CANCELLED"]),
   ARMED: Object.freeze(["ARMED", "ACTIVE", "CANCELLED", "EXPIRED", "FAILED"]),
   ACTIVE: Object.freeze(["READY", "NEEDS_OWNER"]),
-  NEEDS_OWNER: Object.freeze(["ACTIVE", "STALE", "CLOSED"]),
+  NEEDS_OWNER: Object.freeze(["ACTIVE", "STALE", "CLOSED", "ARMED"]),
   READY: Object.freeze(["NEEDS_OWNER", "STALE", "CLOSED"]),
   STALE: Object.freeze(["CLOSED"]),
   CLOSED: Object.freeze([]), CANCELLED: Object.freeze([]), EXPIRED: Object.freeze([]), FAILED: Object.freeze([]),

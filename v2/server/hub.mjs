@@ -354,7 +354,7 @@ export function createHub(config, { providerOverrides = {}, homeDir, browserLaun
   // Stage before M12 (§25 closure): the bounded recovery of a revision stopped at step 0 (planners/delivery.mjs refineTest). A technical
   // action of the Hub (or of the agent on the cli/agent channel), recorded as such; the new card still needs its own confirmation.
   commands.register("factory.refine_test", { describe: "Rafinează o singură dată testul unei revizii oprite la pasul 0 (aceleași cuvinte, aceleași efecte, doar verificările noi; cardul nou cere confirmare)",
-    channels: ["ui", "cli", "test"], schema: { missionId: { required: true, max: 80 } },
+    async: true, channels: ["ui", "cli", "test"], schema: { missionId: { required: true, max: 80 } },
     execute: async (input, ctx) => {
       if (!hub.deliveryPlanner?.refineTest) throw new Error("planificatorul de livrare nu e disponibil");
       return hub.deliveryPlanner.refineTest({ missionId: input.missionId, actor: ctx?.actor || "user" });

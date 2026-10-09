@@ -26,7 +26,9 @@ import { renderSummary, editSummary, regenerateSummary, toMarkdown, toHtml } fro
 import { writeNew } from "./files.mjs";
 
 /** The operations a derived delivery plan may contain (and nothing else: no model, no app, no decision). */
-export const DELIVERY_PHASE_OPS = Object.freeze(["delivery.verify", "delivery.bind", "delivery.preview", "capture.preview", "media.edit.apply", "media.render", "media.variant", "media.qa", "export.local", "delivery.summary", "media.tools.pin"]);
+// Stage closure 2026-10-09: office.verify (Word / Excel read back through COM, in the delivery folder) belongs to the delivery phase too:
+// the confirmed envelope already hashed those steps; without it a delivery with Word / Excel derived from an envelope never started.
+export const DELIVERY_PHASE_OPS = Object.freeze(["delivery.verify", "delivery.bind", "delivery.preview", "capture.preview", "media.edit.apply", "media.render", "media.variant", "media.qa", "export.local", "delivery.summary", "media.tools.pin", "office.verify"]);
 const OPEN = new Set(["PLANNED", "ARMED", "ACTIVE", "READY", "NEEDS_OWNER", "STALE"]);
 
 export function createDeliveries({ db, bus, clock, config, settings, projects, missions, factory, media, opsPlans, trust, sales = null }) {
@@ -575,6 +577,15 @@ export function createDeliveries({ db, bus, clock, config, settings, projects, m
   /** Housekeeping: activation retry after a restart (within activate_by), and READY deliveries re-verified every 10 minutes. */
   let lastVerify = 0;
   async function tick() {
+    // A derived delivery plan that the Hub refused before its first step (no ops plan exists, e.g. an operation the phase list lacked) goes
+    // back to ARMED ONCE, so the same checks run again on the current code; the confirmation, the hash and the snapshot are re-checked.
+    for (const r of db.prepare("SELECT id FROM deliveries WHERE status = 'NEEDS_OWNER' AND (ops_plan_id IS NULL OR ops_plan_id = '') AND status_reason LIKE 'Planul de livrare nu a pornit:%'").all()) {
+      if (db.prepare("SELECT 1 FROM events WHERE type = 'delivery.rearmed' AND scope_id = ? LIMIT 1").get(r.id)) continue;
+      bus.transaction(() => {
+        setStatus(r.id, "ARMED", "Reîncerc pornirea livrării pe codul actual (o singură dată)", {}, { from: ["NEEDS_OWNER"] });
+        bus.append({ type: "delivery.rearmed", scopeType: "delivery", scopeId: r.id, source: "delivery", payload: { deliveryId: r.id } });
+      });
+    }
     for (const r of db.prepare("SELECT id, mission_id FROM deliveries WHERE status = 'ARMED'").all()) {
       try { const f = factory.view(r.mission_id)?.factory; if (f && ["DELIVERY_READY", "ACCEPTED"].includes(f.stage)) await activate(r.id); } catch { /* next tick */ }
     }
