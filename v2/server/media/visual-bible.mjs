@@ -130,7 +130,7 @@ export const PRESETS = deepFreeze({
     },
   },
   "ifrim-business": {
-    id: "ifrim-business", version: 1, title: "Ifrim Business",
+    id: "ifrim-business", version: 2, title: "Ifrim Business",
     summary: "Rezultate pentru decidenți: bază grafit-ardezie, carduri luminoase cu text închis, accent albastru încrezător, mișcare sobră.",
     pace: "mediu",
     fonts: { display: F.segoeSemibold, body: F.segoe },
@@ -140,7 +140,9 @@ export const PRESETS = deepFreeze({
       title: style("display", 0.04, 600, "#F4F6F8"),
       body: style("body", 0.029, 400, "#0F1419", { box: box("#F4F6F8", 0.94, 0.009, 0.008), lineHeight: 1.25 }),
       label: style("display", 0.02, 600, "#3D7DFF", { box: box("#F4F6F8", 0.96, 0.005), uppercase: true, letterSpacing: 0.06 }),
-      cta: style("display", 0.036, 600, "#FFFFFF", { box: box("#3D7DFF", 1, 0.012, 0.012) }),
+      // Stage before M12: white on the accent #3D7DFF is 3.8:1 (QA measured 3.94:1 on the pilot's CTA); the CTA plate is the deeper
+      // #2B63E0 (5.3:1), so the final call to action passes the 4.5:1 legibility rule by construction.
+      cta: style("display", 0.036, 600, "#FFFFFF", { box: box("#2B63E0", 1, 0.012, 0.012) }),
       lower_third: style("body", 0.025, 600, "#0F1419", { box: box("#F4F6F8", 0.95, 0.007, 0.006) }),
       metric: style("display", 0.06, 700, "#3D7DFF", { box: box("#F4F6F8", 0.96, 0.012, 0.01) }),
     },

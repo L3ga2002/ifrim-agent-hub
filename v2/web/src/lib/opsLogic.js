@@ -53,7 +53,8 @@ export function opsReplyLines(r) {
   if (r.desktop?.app && r.desktop.verified !== undefined) lines.push(r.desktop.note || (r.desktop.verified ? `${r.desktop.app.name} e în prim-plan.` : `${r.desktop.app.name}: nu am putut verifica prim-planul.`));
   if (r.desktop?.folder) lines.push(r.desktop.verified ? `Am deschis folderul ${r.desktop.folder}.` : `Am cerut Explorer să deschidă ${r.desktop.folder}, dar nu am putut verifica fereastra.`);
   if (r.desktop?.takenOver) lines.push(r.desktop.note);
-  if (r.opsPlan && !r.studio) lines.push(`${r.note || "Plan afișat."} ${r.opsPlan.decisions?.length ? "Confirmarea cere Windows Hello (decizie inclusă)." : "O singură confirmare."}`);
+  // Stage before M12: the planner's note may already say „O singură confirmare.” (2026-10-09 live: it was said twice).
+  if (r.opsPlan && !r.studio) { const note = r.note || "Plan afișat."; const tail = r.opsPlan.decisions?.length ? "Confirmarea cere Windows Hello (decizie inclusă)." : "O singură confirmare."; lines.push(note.includes(tail) ? note : `${note} ${tail}`); }
   if (r.plansPaused?.length) lines.push(`Am pus pe pauză ${r.plansPaused.length === 1 ? "planul care rula" : `${r.plansPaused.length} planuri`}.`);
   if (r.plan?.status && String(r.plan.id || "").startsWith("opp_")) lines.push(`Planul „${r.plan.title}”: ${PLAN_STATUS_LABELS[r.plan.status] || r.plan.status}.`);
   if (r.blockedBy?.length && !r.message) lines.push(`Blocat de: ${r.blockedBy.join(", ")}.`);

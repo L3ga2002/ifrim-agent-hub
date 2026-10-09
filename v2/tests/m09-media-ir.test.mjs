@@ -591,7 +591,7 @@ test("M09-IR-30 five genuinely distinct presets, complete and internally consist
   for (const id of PRESET_IDS) {
     const p = PRESETS[id];
     for (const key of required) assert.ok(p[key] !== undefined, `${id}.${key}`);
-    assert.equal(p.version, 1);
+    assert.equal(p.version, p.id === "ifrim-business" ? 2 : 1); // ifrim-business v2 (stage before M12): CTA plate 4.5:1
     assert.ok(Object.isFrozen(p) && Object.isFrozen(p.palette), "presets are immutable in code");
     assert.match(p.palette.base, /^#[0-9A-F]{6}$/i);
     const base = parseInt(p.palette.base.slice(1), 16);
@@ -622,7 +622,7 @@ test("M09-IR-30 five genuinely distinct presets, complete and internally consist
   for (const [label, set] of Object.entries({ signatures, accents, colors, displayFonts, captions, motions })) assert.equal(set.size, 5, `${label} differ across the five presets`);
   // Every preset validates an IR that uses its common styles.
   for (const id of PRESET_IDS) {
-    const ir = baseIR(); ir.preset = { id, version: 1 };
+    const ir = baseIR(); ir.preset = { id, version: PRESETS[id].version };
     const r = validateIR(ir, opts());
     assert.equal(r.ok, true, `${id}: ${JSON.stringify(r.errors)}`);
   }
@@ -660,7 +660,7 @@ test("M09-IR-31 seedPresets is idempotent, never overwrites, and getPreset verif
   assert.equal(third.conflicts[0].id, "ifrim-tech");
   assert.equal(env.db.prepare("SELECT sha256 FROM content_style_presets WHERE id = 'ifrim-tech'").get().sha256, "x", "never overwritten");
   // validateIR can use the DB lookup.
-  const r = validateIR({ ...baseIR(), preset: { id: "ifrim-business", version: 1 } }, opts({ presets: (id, version) => getPreset(env.db, id, version) }));
+  const r = validateIR({ ...baseIR(), preset: { id: "ifrim-business", version: 2 } }, opts({ presets: (id, version) => getPreset(env.db, id, version) }));
   assert.equal(r.ok, true, JSON.stringify(r.errors));
 });
 
@@ -698,7 +698,7 @@ test("M09-IR-33 resolveFonts on this machine's C:/Windows/Fonts", (t) => {
     assert.equal(Object.keys(r.roles).length + r.missing.length, Object.keys(PRESETS[id].fonts).length, id);
     for (const role of Object.values(r.roles)) assert.ok(fs.existsSync(role.absPath), role.absPath);
     t.diagnostic(`${id}: ok=${r.ok} substitutions=${r.substitutions.map((s) => s.used).join("; ") || "-"} missing=${r.missing.map((m) => m.file).join("; ") || "-"}`);
-    const v = validateIR({ ...baseIR(), preset: { id, version: 1 } }, opts({ fonts: r }));
+    const v = validateIR({ ...baseIR(), preset: { id, version: PRESETS[id].version } }, opts({ fonts: r }));
     assert.equal(v.ok, r.ok || !r.missing.some((m) => v.dependencies.fonts.includes(m.file)), `${id}: validateIR reflects missing fonts`);
   }
 });

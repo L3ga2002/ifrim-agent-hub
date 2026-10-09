@@ -255,7 +255,7 @@ test("M11-TP-06 buildTemplate is frozen and deterministic: the same inputs give 
     assert.deepEqual([...cap.evidenceSelectors], [".slot[data-booked='true'][aria-disabled='true']"]);
   }
   assert.deepEqual(a.story.variant, { platformKey: "shorts_9x16", overrides: { hookText: "Programări online — demo", ctaText: "Hai să vorbim" }, overridesSha: hashCanonical({ hookText: "Programări online — demo", ctaText: "Hai să vorbim" }) });
-  assert.deepEqual([a.story.tone, a.story.canvas, a.story.fps, a.story.preset], ["both", { width: 1920, height: 1080 }, { num: 30, den: 1 }, { id: "ifrim-business", version: 1 }]);
+  assert.deepEqual([a.story.tone, a.story.canvas, a.story.fps, a.story.preset], ["both", { width: 1920, height: 1080 }, { num: 30, den: 1 }, { id: "ifrim-business", version: 2 }]);
   assert.deepEqual(a.summary, { template: SUMMARY_TEMPLATE, serviceRefs: [] });
   assert.deepEqual(a.tools, { ffmpeg: IDENTITY.ffmpeg, ffprobe: IDENTITY.ffprobe, chromium: { version: "1.61.0" } });
   assert.deepEqual(a.exports, { dir: EXPORTS, folder: "demo-programari-demo-livrare-detailing-programari-20261005" });

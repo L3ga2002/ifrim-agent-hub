@@ -43,7 +43,7 @@ export const TONE_SLOTS = Object.freeze({
   business: Object.freeze({ hook: "business", desktop: "business", mobile: "business", cta: "business" }),
   technical: Object.freeze({ hook: "technical", desktop: "technical", mobile: "technical", cta: "technical" }),
 });
-export const MASTER_PRESET = Object.freeze({ id: "ifrim-business", version: 1 });
+export const MASTER_PRESET = Object.freeze({ id: "ifrim-business", version: 2 }); // v2 (stage before M12): the CTA plate reaches 4.5:1
 /** Pacing and legibility (owner lens): reading speed, how long each text stays, the pause between two texts. */
 export const PACING = Object.freeze({ readCps: 15, hookMs: 3000, hookMaxMs: 5000, textMs: 3500, textMaxMs: 7000, ctaMs: 2500, ctaMaxMs: 5000, gapMs: 200, minTextMs: 1500, evidenceHoldMs: 1500, minCaptureMs: 1000 });
 const TEXT_STYLE = Object.freeze({ hook: "hook", desktop: "lower_third", mobile: "lower_third", cta: "cta" });

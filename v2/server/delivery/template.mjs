@@ -51,7 +51,7 @@ export const VIEWPORT_RULES = Object.freeze({ mobileMaxWidth: 480, desktopMinWid
 /** Pacing of a capture (owner lens): a short settle after the first page, and the proof held long enough for the CTA to sit on it. */
 export const CAPTURE_PACING = Object.freeze({ settleMs: 800, proofHoldMs: 2500, highlightMs: 1200, typeDelayMs: 60, runWord: "Prezentare" });
 export const ROLE_WORD = Object.freeze({ desktop: "desktop", mobile: "mobil" });
-export const STORY = Object.freeze({ tone: "both", canvas: Object.freeze({ width: 1920, height: 1080 }), fps: Object.freeze({ num: 30, den: 1 }), preset: Object.freeze({ id: "ifrim-business", version: 1 }), platformKey: "shorts_9x16" });
+export const STORY = Object.freeze({ tone: "both", canvas: Object.freeze({ width: 1920, height: 1080 }), fps: Object.freeze({ num: 30, den: 1 }), preset: Object.freeze({ id: "ifrim-business", version: 2 }), platformKey: "shorts_9x16" });
 
 const UNSAFE_SELECTOR = /[{}<>;\\\r\n\u0000]|\/\*|\*\//;
 const CONTROL = /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/;
