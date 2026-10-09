@@ -277,7 +277,7 @@ export function createOpsPlans({ db, bus, clock, settings, trust, voice = null, 
     if (typeof verify !== "function" || !Array.isArray(allowedOps) || !allowedOps.length) throw new Error("registerParent needs verify() and allowedOps");
     parents.set(String(kind), { verify, allowedOps: new Set(allowedOps) });
   }
-  async function adoptDerived({ kind, title, steps, limits = {}, parent, expectedBodySha, sessionId, credential = "" }) {
+  async function adoptDerived({ kind, title, steps, limits = {}, parent, expectedBodySha, sessionId, credential = "", onCreated = null }) {
     const reg = parents.get(String(parent?.kind || ""));
     if (!reg) throw new HubError("policy", "Planul derivat nu are un părinte cunoscut.", { code: "PLAN_DERIVED_PARENT" });
     const body = await buildBody({ kind, title, steps, limits });
@@ -309,6 +309,9 @@ export function createOpsPlans({ db, bus, clock, settings, trust, voice = null, 
       for (const st of body.steps) db.prepare("INSERT INTO ops_plan_steps (id, plan_id, seq, kind, title, params_json, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)").run(newId("ops"), id, st.seq, st.kind, st.title, json(st.params), now());
       db.prepare("UPDATE ops_plans SET authority_json = ? WHERE id = ?").run(json(authorityOf({ id, body, expiresAt }, s.id)), id);
       bus.append({ type: "ops.plan.derived", scopeType: "ops_plan", scopeId: id, source: "hub", payload: { kind, parentKind: parent.kind, parentId: parent.id, deliveryId: parent.deliveryId || null, steps: body.steps.length, hash: hash.slice(0, 16) } });
+      // Stage closure (live §25, 2026-10-09): the parent binds the plan id in the SAME transaction, before the first step can run; the
+      // delivery's step 1 checked the binding and was refused when start() ran before the caller recorded the id.
+      if (typeof onCreated === "function") onCreated(id, { expiresAt });
     });
     start(id);
     return view(id);

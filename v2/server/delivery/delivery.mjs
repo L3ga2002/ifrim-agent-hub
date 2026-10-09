@@ -11,6 +11,7 @@
 // mission's DELIVERY_READY the package plan is DERIVED from that consent (opsPlans.adoptDerived), never confirmed again. Revisions and
 // a re-package are ordinary one-confirmation ops plans. Nothing here accepts software, approves a clip or a summary, records rights or
 // publishes: those stay the owner's own commands.
+import { HUB_VERSION } from "../config.mjs";
 import fs from "node:fs";
 import path from "node:path";
 import { HubError } from "../core/errors.mjs";
@@ -199,8 +200,8 @@ export function createDeliveries({ db, bus, clock, config, settings, projects, m
       const env = envelopes?.get?.(d.envelopeId) || null;
       const plan = await opsPlans.adoptDerived({ kind: PACKAGE_KIND, title: d.title, steps, limits: { maxDurationMin: DELIVERY_LIMITS.phaseMinutes, maxActions: DELIVERY_LIMITS.maxActions },
         parent: { kind: "envelope", id: d.envelopeId, hash: d.envelopeHash, confirmedAt: consent.confirmedAt || env?.confirmedAt || null, deliveryId: d.id }, expectedBodySha: d.opsBodySha,
-        sessionId: consent.sessionId, credential: consent.credential || "" });
-      bus.transaction(() => db.prepare("UPDATE deliveries SET ops_plan_id = ?, phase_expires_at = ?, updated_at = ? WHERE id = ?").run(plan.id, plan.expiresAt, now(), id));
+        sessionId: consent.sessionId, credential: consent.credential || "",
+        onCreated: (planId, { expiresAt }) => db.prepare("UPDATE deliveries SET ops_plan_id = ?, phase_expires_at = ?, updated_at = ? WHERE id = ?").run(planId, expiresAt, now(), id) });
       return { activated: true, planId: plan.id };
     } catch (error) {
       bus.transaction(() => setStatus(id, "NEEDS_OWNER", `Planul de livrare nu a pornit: ${String(error.message).slice(0, 200)}`, {}, { from: ["ACTIVE"] }));
@@ -577,13 +578,16 @@ export function createDeliveries({ db, bus, clock, config, settings, projects, m
   /** Housekeeping: activation retry after a restart (within activate_by), and READY deliveries re-verified every 10 minutes. */
   let lastVerify = 0;
   async function tick() {
-    // A derived delivery plan that the Hub refused before its first step (no ops plan exists, e.g. an operation the phase list lacked) goes
-    // back to ARMED ONCE, so the same checks run again on the current code; the confirmation, the hash and the snapshot are re-checked.
-    for (const r of db.prepare("SELECT id FROM deliveries WHERE status = 'NEEDS_OWNER' AND (ops_plan_id IS NULL OR ops_plan_id = '') AND status_reason LIKE 'Planul de livrare nu a pornit:%'").all()) {
-      if (db.prepare("SELECT 1 FROM events WHERE type = 'delivery.rearmed' AND scope_id = ? LIMIT 1").get(r.id)) continue;
+    // A derived delivery plan the Hub refused before any step did work — no ops plan (an operation the phase list lacked) or a plan that
+    // FAILED with no step done (its step 1 ran before the plan id was bound) — goes back to ARMED once per Hub version, so the same
+    // checks run again on the current code: the confirmation, the steps' hash, the snapshot and the tools are re-checked by activate().
+    const candidates = db.prepare(`SELECT d.id, d.ops_plan_id FROM deliveries d WHERE d.status = 'NEEDS_OWNER' AND (d.status_reason LIKE 'Planul de livrare nu a pornit:%'
+      OR (d.status_reason LIKE 'planul de livrare: failed%' AND d.ops_plan_id IS NOT NULL AND NOT EXISTS (SELECT 1 FROM ops_plan_steps s WHERE s.plan_id = d.ops_plan_id AND s.status = 'DONE')))`).all();
+    for (const r of candidates) {
+      if (db.prepare("SELECT 1 FROM events WHERE type = 'delivery.rearmed' AND scope_id = ? AND json_extract(payload_json, '$.version') = ? LIMIT 1").get(r.id, HUB_VERSION)) continue;
       bus.transaction(() => {
-        setStatus(r.id, "ARMED", "Reîncerc pornirea livrării pe codul actual (o singură dată)", {}, { from: ["NEEDS_OWNER"] });
-        bus.append({ type: "delivery.rearmed", scopeType: "delivery", scopeId: r.id, source: "delivery", payload: { deliveryId: r.id } });
+        setStatus(r.id, "ARMED", "Reîncerc pornirea livrării pe codul actual (o singură dată pe versiune)", {}, { from: ["NEEDS_OWNER"] });
+        bus.append({ type: "delivery.rearmed", scopeType: "delivery", scopeId: r.id, source: "delivery", payload: { deliveryId: r.id, version: HUB_VERSION, previousPlanId: r.ops_plan_id || null } });
       });
     }
     for (const r of db.prepare("SELECT id, mission_id FROM deliveries WHERE status = 'ARMED'").all()) {
