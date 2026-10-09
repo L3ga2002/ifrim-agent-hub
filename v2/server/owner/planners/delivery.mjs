@@ -231,18 +231,32 @@ export function registerDeliveryPlanner(hub, intake) {
   /** The parent's office artifacts that depend on the software (Word, campaign): a refresh redoes only those; the Excel data stays. */
   const softwareExtras = (parent) => (parent?.template?.extras || []).filter((x) => ["document", "campaign"].includes(x));
 
+  const refining = new Set();
   async function refineTest({ missionId, actor = "hub", session = null }) {
     const db = hub.db;
     const no = (reason) => ({ ok: false, reason });
+    // Review (b15f3d6 #2): one refinement at a time per mission (the automatic trigger and a manual command may race).
+    if (refining.has(missionId)) return no("rafinarea acestei misiuni rulează deja");
+    refining.add(missionId);
+    try { return await refineOnce({ missionId, actor, session, db, no }); } finally { refining.delete(missionId); }
+  }
+
+  async function refineOnce({ missionId, actor, session, db, no }) {
     const f = factory.view(missionId);
     if (!f) return no("misiunea nu există");
     const stage = db.prepare("SELECT stage FROM factory_missions WHERE mission_id = ?").get(missionId)?.stage;
-    // PAUSED: the plan's authority ended (expired, revoked) while the mission waited at step 0 — the same stuck work.
     if (!["NEEDS_OWNER_DECISION", "PAUSED"].includes(stage)) return no(`misiunea nu e oprită la verificarea testului (etapa ${stage})`);
-    const stopped = db.prepare("SELECT payload_json FROM events WHERE type = 'factory.test_stopped' AND scope_id = ? ORDER BY seq DESC LIMIT 1").get(missionId);
-    if (!stopped) return no("misiunea nu s-a oprit la pasul 0 (testul)");
+    const stopped = db.prepare("SELECT seq, payload_json FROM events WHERE type = 'factory.test_stopped' AND scope_id = ? ORDER BY seq DESC LIMIT 1").get(missionId);
+    if (!stopped || JSON.parse(stopped.payload_json || "{}").kind !== "exhausted") return no("misiunea nu s-a oprit la pasul 0 după verificările testului");
+    // The stuck work only: no stage after the stop other than the owner-decision wait or the pause of an expired / revoked plan; a pause
+    // that a Stop All caused is the owner's to lift (the rearm), never a refinement's (review #3).
+    const later = db.prepare("SELECT json_extract(payload_json, '$.stage') AS stage FROM events WHERE type = 'factory.stage' AND scope_id = ? AND seq > ?").all(missionId, stopped.seq).map((r) => r.stage);
+    if (later.some((st) => !["NEEDS_OWNER_DECISION", "PAUSED"].includes(st))) return no("misiunea a reluat lucrul după oprirea testului");
+    if (stage === "PAUSED" && db.prepare("SELECT 1 FROM events WHERE type = 'system.stop_all' AND seq > ? LIMIT 1").get(stopped.seq)) return no("misiunea e oprită de „Oprește tot”; o reiei tu, după rearmare");
     if (db.prepare("SELECT COUNT(*) AS n FROM factory_change_sets WHERE mission_id = ?").get(missionId).n > 0) return no("codul proiectului a fost deja atins; o rafinare a testului nu mai e sigură");
     if (db.prepare("SELECT 1 FROM events WHERE type = 'factory.refined' AND json_extract(payload_json, '$.from') = ? LIMIT 1").get(missionId)) return no("misiunea a fost deja rafinată o dată");
+    // A refinement's own result is never refined again (review #2): the chain stops at one generation.
+    if (db.prepare("SELECT 1 FROM events WHERE type = 'factory.refined' AND json_extract(payload_json, '$.to') = ? LIMIT 1").get(missionId)) return no("misiunea e deja rezultatul unei rafinări; nu o rafinez din nou (blocaj tehnic)");
     const mission = hub.missions.get(missionId);
     const project = projects.get(mission?.projectId);
     if (!project || project.source !== "hub-test") return no("rafinarea automată a testului e doar pentru proiectele de test");
@@ -258,31 +272,46 @@ export function registerDeliveryPlanner(hub, intake) {
       .catch((e) => ({ kind: "message", text: e.message })) : null;
     const newMission = eng?.kind === "envelope" ? eng.proposal?.envelope?.missionIds?.[0] : null;
     if (!newMission) return no(`planul rafinat nu s-a putut prezenta: ${String(eng?.text || eng?.question || "fără detalii").slice(0, 200)}`);
-    const newSpec = factory.view(newMission)?.spec?.spec || {};
-    const testTexts = (s) => (s.acceptance || []).filter((a) => a.verify === "test").map((a) => a.text).join("\n");
-    if (testTexts(newSpec) === testTexts(oldSpec)) {
-      try { await factory.stop(newMission, { reason: "Rafinarea ar repeta aceleași criterii", actor: "hub" }); } catch { /* not started */ }
-      return no("criteriile derivate sunt aceleași cu cele respinse; nu repet același test (blocaj tehnic înregistrat)");
+    // Review #1: from here on a failure undoes what this attempt created (its cards and its new mission) and is recorded, so no
+    // orphan card or half-superseded mission is left behind.
+    const created = { envelopes: [eng.proposal?.envelope?.id].filter(Boolean), deliveryId: null };
+    const undo = async (reason) => {
+      for (const id of created.envelopes) { try { envelopes.revoke(id, { actor: "hub", reason, pauseMission: false }); } catch { /* already closed */ } }
+      if (created.deliveryId) await deliveries.cancel(created.deliveryId, { reason, actor: "hub" }).catch(() => {});
+      await factory.stop(newMission, { reason, actor: "hub" }).catch(() => {});
+      hub.bus.transaction(() => hub.bus.append({ type: "factory.refine_failed", scopeType: "mission", scopeId: missionId, projectId: project.id, source: actor, payload: { from: missionId, to: newMission, reason: String(reason).slice(0, 300) } }));
+    };
+    try {
+      const newSpec = factory.view(newMission)?.spec?.spec || {};
+      const testTexts = (s) => (s.acceptance || []).filter((a) => a.verify === "test").map((a) => a.text).join("\n");
+      if (testTexts(newSpec) === testTexts(oldSpec)) {
+        await undo("Rafinarea ar repeta aceleași criterii");
+        return no("criteriile derivate sunt aceleași cu cele respinse; nu repet același test (blocaj tehnic înregistrat)");
+      }
+      let proposal = eng.proposal;
+      let childId = null;
+      if (parent) {
+        const next = await deliveries.createPlanned({ projectId: project.id, missionId: newMission, parentId: parent.id, actor: "hub", extras: softwareExtras(parent) });
+        created.deliveryId = next.id;
+        const withDelivery = await envelopes.propose({ projectId: project.id, missionIds: [newMission], deliveryId: next.id, constraints: { noPublish: true }, actor: "hub", via: "refine" });
+        if (withDelivery?.envelope) { proposal = withDelivery; childId = next.id; created.envelopes.push(withDelivery.envelope.id); }
+      }
+      // The stuck work is closed as superseded: nothing of it had started on the code, and its history stays readable.
+      if (child && ["PLANNED", "ARMED", "NEEDS_OWNER"].includes(child.status)) await deliveries.cancel(child.id, { reason: `Înlocuită de rafinarea tehnică a testului (misiunea ${newMission})`, actor: "hub" });
+      await factory.stop(missionId, { reason: `Înlocuită de rafinarea tehnică a testului (misiunea ${newMission}); specificația și dovezile rămân în istoric`, actor: "hub" });
+      const crit = (newSpec.acceptance || []).filter((a) => a.verify === "test" || a.verify === "e2e");
+      hub.bus.transaction(() => hub.bus.append({ type: "factory.refined", scopeType: "mission", scopeId: newMission, projectId: project.id, source: actor,
+        payload: { from: missionId, to: newMission, fromSpecSha: f.spec?.sha256 || null, toSpecSha: factory.view(newMission)?.spec?.sha256 || null, envelopeId: proposal?.envelope?.id || null,
+          childDeliveryId: childId, supersededDeliveryId: child?.id || null, parentDeliveryId: parent?.id || null, criteria: { before: (oldSpec.acceptance || []).filter((a) => a.verify === "test").length, after: crit.length },
+          rejected: reviews.slice(-2) } }));
+      const note = `Testul pentru „${words}” a fost respins de verificarea independentă (${reviews.length} ${reviews.length === 1 ? "dată" : "dăți"}): verifica prea puțin. `
+        + `Am refăcut doar verificările: ${crit.length} criterii în loc de ${(oldSpec.acceptance || []).filter((a) => a.verify === "test").length} (formularul în browser, serverul apelat direct, păstrarea valorii, fluxurile existente). `
+        + `Rezultatul, proiectul și efectele sunt aceleași${childId ? ", cu livrarea nouă legată de aceeași livrare" : ""}; misiunea veche și codul ei neatins rămân în istoric. Confirmarea veche nu se refolosește: planul acesta are confirmarea lui.`;
+      return { ok: true, proposal, note, from: missionId, to: newMission, childDeliveryId: childId };
+    } catch (error) {
+      await undo(`Rafinarea nu s-a încheiat: ${String(error?.message || error).slice(0, 200)}`);
+      return no(`rafinarea nu s-a încheiat: ${String(error?.message || error).slice(0, 200)}`);
     }
-    let proposal = eng.proposal;
-    let childId = null;
-    if (parent) {
-      const next = await deliveries.createPlanned({ projectId: project.id, missionId: newMission, parentId: parent.id, actor: "hub", extras: softwareExtras(parent) });
-      const withDelivery = await envelopes.propose({ projectId: project.id, missionIds: [newMission], deliveryId: next.id, constraints: { noPublish: true }, actor: "hub", via: "refine" });
-      if (withDelivery?.envelope) { proposal = withDelivery; childId = next.id; }
-    }
-    // The stuck work is closed as superseded: nothing of it had started on the code, and its history stays readable.
-    if (child && ["PLANNED", "ARMED", "NEEDS_OWNER"].includes(child.status)) await deliveries.cancel(child.id, { reason: `Înlocuită de rafinarea tehnică a testului (misiunea ${newMission})`, actor: "hub" }).catch(() => {});
-    await factory.stop(missionId, { reason: `Înlocuită de rafinarea tehnică a testului (misiunea ${newMission}); specificația și dovezile rămân în istoric`, actor: "hub" }).catch(() => {});
-    const crit = (newSpec.acceptance || []).filter((a) => a.verify === "test" || a.verify === "e2e");
-    hub.bus.transaction(() => hub.bus.append({ type: "factory.refined", scopeType: "mission", scopeId: newMission, projectId: project.id, source: actor,
-      payload: { from: missionId, to: newMission, fromSpecSha: f.spec?.sha256 || null, toSpecSha: factory.view(newMission)?.spec?.sha256 || null, envelopeId: proposal?.envelope?.id || null,
-        childDeliveryId: childId, supersededDeliveryId: child?.id || null, parentDeliveryId: parent?.id || null, criteria: { before: (oldSpec.acceptance || []).filter((a) => a.verify === "test").length, after: crit.length },
-        rejected: reviews.slice(-2) } }));
-    const note = `Testul pentru „${words}” a fost respins de verificarea independentă (${reviews.length} ${reviews.length === 1 ? "dată" : "dăți"}): verifica prea puțin. `
-      + `Am refăcut doar verificările: ${crit.length} criterii în loc de ${(oldSpec.acceptance || []).filter((a) => a.verify === "test").length} (formularul în browser, serverul apelat direct, păstrarea valorii, fluxurile existente). `
-      + `Rezultatul, proiectul și efectele sunt aceleași${childId ? ", cu livrarea nouă legată de aceeași livrare" : ""}; misiunea veche și codul ei neatins rămân în istoric. Confirmarea veche nu se refolosește: planul acesta are confirmarea lui.`;
-    return { ok: true, proposal, note, from: missionId, to: newMission, childDeliveryId: childId };
   }
 
   intake.registerPlanner("delivery", async (args) => {

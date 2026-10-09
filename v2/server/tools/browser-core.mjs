@@ -327,7 +327,9 @@ export async function runE2ESteps({ base, steps, launch, id, stepTimeoutMs = 100
               const visible = (n) => Boolean(n && (n.offsetWidth || n.offsetHeight || n.getClientRects().length) && getComputedStyle(n).visibility !== "hidden");
               const invalid = el.getAttribute("aria-invalid") === "true" || el.matches(":invalid");
               const described = String(el.getAttribute("aria-describedby") || "").split(/\s+/).filter(Boolean).map((id) => document.getElementById(id)).filter(visible).map((n) => n.innerText || "").join(" ");
-              const alerts = [...document.querySelectorAll("[role=alert]")].filter(visible).map((n) => n.innerText || "").join(" ");
+              // An alert counts only inside the field's own form (review: a cookie banner elsewhere is no message about the field).
+              const scope = el.form || el.closest("form, fieldset") || document;
+              const alerts = [...scope.querySelectorAll("[role=alert]")].filter(visible).map((n) => n.innerText || "").join(" ");
               return { invalid, message: `${described} ${alerts}`.trim() };
             }, value), stepTimeoutMs, "expectInvalid");
             if (seen.invalid && seen.message) break;
