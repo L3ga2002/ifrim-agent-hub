@@ -78,6 +78,21 @@ Teste: DP-01…05 PASS; DP-06 (o confirmare, sesiunea închisă imediat, misiune
 fără sesiune nouă) PASS în 108 s; regresia completă 1693 teste: 1688 PASS, 4 FAIL (3 intenții reparate și reluate PASS; M09-SB-01 = build de
 test învechit în `.ifrim/tmp`, PASS pe build-ul curent), 1 SKIP; regresiile țintite pe codul final 138/140 PASS, 2 SKIPPED_ENV (vite).
 
+## Probe live pe Hub-ul proprietarului (2.14.1-m11, upgrade `upg_mv0yn13c` 12:49 UTC + repornire cu presetul v2 ~14:55 UTC)
+
+Profilul de dezvoltare activ (`dev_fc41496f2663`, PC „Catalin”, cont „mihai”). Toate confirmările de mai jos sunt click-uri ale proprietarului în
+sesiunea profilului (`consent.credential = devprofile`, `modality = click`); clasificatorul sesiunii Claude a refuzat click-ul agentului pe
+„Confirmă planul” („[Security Weaken]”), deci nicio confirmare nu a fost făcută de agent.
+
+| Probă | Confirmări | Windows Hello | Intervenții tehnice după confirmare | Rezultat |
+|---|---|---|---|---|
+| §24 revizie media (`opp_mv123umo_a22d4eeb67`) | 1 | 0 | 0 | DONE 6/6: fără model (rulări 57 → 57), software acceptat 7/7 valid, capturi neatinse, montaj/randări/variantă/QA/export v2/rezumat v2 noi, vechile SUPERSEDED, aprobarea creativă a versiunilor noi PENDING (nemoștenită). QA WARN: pauze înghețate + contrast CTA 3,94 / 4,2 (montajul vechi, preset v1) |
+| Sarcina combinată (`opp_mv16dspo_101aa9677c`, livrarea `dlv_mv16dsp8_491116ae10`) | 1 | 0 | 0 | DONE 14/14 în ~2 min, fără model; Word APP_VERIFIED (2 pagini, 6 titluri, 4 tabele, PDF), Excel APP_VERIFIED (13/13 formule, PDF), campanie 5 canale / 10 postări, manifest 16 fișiere; legibility PASS pe ambele clipuri (presetul v2); WARN rămas: pauze înghețate |
+| §25 revizie software (`mis_mv16l212_a6e1053492`, livrare-copil `dlv_mv16l88c_f3ffac3ae1` ARMED, părinte `dlv_mv16dsp8…`) | 1 | 0 | — | Un card: misiune nouă + livrare-copil. 4 rulări reale (Claude sonnet·medium a scris testul de 2 ori, Codex gpt-6.1-sol·medium l-a verificat de 2 ori). Verificarea independentă a respins testul ambele dăți („AC-1 poate fi trecut de o implementare trivială”) → NEEDS_OWNER_DECISION după limita de rescriere (1). Codul proiectului nu a fost atins |
+
+Observație din probă: un card de plan se vede doar în pagina din care s-a trimis fraza și expiră după 15 minute; cardul §24 propus din
+browserul agentului nu a apărut în browserul proprietarului (a fost nevoie ca proprietarul să trimită fraza din nou).
+
 ## Ce NU s-a făcut și de ce (istoric, înainte de permisiuni)
 
 - **Profilul de dezvoltare și §7**: inițial refuzate de clasificator; făcute după permisiuni (punctele 4–5).
