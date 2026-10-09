@@ -248,6 +248,11 @@ export function registerDeliveryPlanner(hub, intake) {
     if (!["NEEDS_OWNER_DECISION", "PAUSED"].includes(stage)) return no(`misiunea nu e oprită la verificarea testului (etapa ${stage})`);
     const stopped = db.prepare("SELECT seq, payload_json FROM events WHERE type = 'factory.test_stopped' AND scope_id = ? ORDER BY seq DESC LIMIT 1").get(missionId);
     if (!stopped || JSON.parse(stopped.payload_json || "{}").kind !== "exhausted") return no("misiunea nu s-a oprit la pasul 0 după verificările testului");
+    // Only when the independent test review judged the checks insufficient (CHANGES_REQUESTED): a timeout, a crash or a proof on the
+    // wrong reason is not a problem of the criteria, and a refinement would only hide it.
+    const rejection = db.prepare("SELECT payload_json FROM events WHERE type = 'factory.test_rejected' AND scope_id = ? AND seq < ? ORDER BY seq DESC LIMIT 1").get(missionId, stopped.seq);
+    const rejected = rejection ? JSON.parse(rejection.payload_json || "{}") : null;
+    if (!rejected || rejected.kind !== "review" || rejected.verdict !== "CHANGES_REQUESTED") return no("testul nu a fost respins de verificarea independentă pentru criterii insuficiente; nu rafinez");
     // The stuck work only: no stage after the stop other than the owner-decision wait or the pause of an expired / revoked plan; a pause
     // that a Stop All caused is the owner's to lift (the rearm), never a refinement's (review #3).
     const later = db.prepare("SELECT json_extract(payload_json, '$.stage') AS stage FROM events WHERE type = 'factory.stage' AND scope_id = ? AND seq > ?").all(missionId, stopped.seq).map((r) => r.stage);

@@ -359,9 +359,11 @@ export function createHub(config, { providerOverrides = {}, homeDir, browserLaun
       if (!hub.deliveryPlanner?.refineTest) throw new Error("planificatorul de livrare nu e disponibil");
       return hub.deliveryPlanner.refineTest({ missionId: input.missionId, actor: ctx?.actor || "user" });
     } });
-  // Automatic: a step 0 that ends exhausted on a test project tries the refinement once (refineTest refuses everything outside its bounds).
+  // Automatic: a step 0 that ends exhausted on a delivery revision (a mission with a delivery attached, the §25 path) tries the
+  // refinement once; refineTest refuses everything outside its bounds. Other missions keep the manual command (factory.refine_test).
   bus.subscribe((event) => {
     if (event.type !== "factory.test_stopped" || event.payload?.kind !== "exhausted") return;
+    if (!db.prepare("SELECT 1 FROM deliveries WHERE mission_id = ? LIMIT 1").get(String(event.scopeId || ""))) return;
     setTimeout(() => { hub.deliveryPlanner?.refineTest?.({ missionId: event.scopeId, actor: "hub" }).catch((error) => console.error(`[refine] ${event.scopeId}: ${String(error?.message || error).slice(0, 200)}`)); }, 1000);
   });
   // M10.2 probe counters (read-only, from the logs) + the owner.nav screen telemetry; observability only, no authority.
