@@ -43,6 +43,7 @@ import { defaultModelLimits, ROLE_DEFAULT_BINDINGS, limitsHaveModels, turnTimeou
 import { plannedTestRefs, deriveIgnore, testFirstScope, HUB_TEST_DIR, STAGING_DIR, T_ROUTE_MISSING_TEST, T_ROUTE_ASK_BEHAVIOUR, T_ROUTE_REFACTOR, T_PLANNER_NOTE } from "../../factory/test-first.mjs";
 import { collectFacts, onlyAfterConfirmation, readinessPassFor } from "../readiness-runner.mjs";
 import { explain } from "../blockers.mjs";
+import { deriveCriteria } from "./criteria.mjs";
 
 /** An open question (the project, the acceptance test) is answerable for 2 minutes, like the intake's own clarifications. */
 export const ENGINEERING_LIMITS = Object.freeze({ pendingTtlMs: 2 * 60 * 1000, pendingMax: 50, candidateMax: 6, scanDepth: 2 });
@@ -321,21 +322,28 @@ export function buildEngineeringSpec({ text, args = {}, project, hubWrites = {} 
   // M11 L5 review (flow #7, design §2 „Ce va dovedi testul: AC-1 — „{cuvintele tale}””): a Hub-written test's default criterion is the
   // owner's words as said, without the „Cerința ta este îndeplinită:” prefix; a bound (existing) test keeps its criterion byte for byte (U1).
   const defaultCriterion = testFirst?.ok ? words.slice(0, 300) : `Cerința ta este îndeplinită: ${words.slice(0, 300)}`;
-  const acceptance = bound ? [...(criteria.length ? criteria : [defaultCriterion]).map((t, i) => ({ id: `AC-${i + 1}`, text: t, verify: "test", testRef: bound })),
-    { id: `AC-${(criteria.length || 1) + 1}`, text: "Modificarea e explicată și revizuită independent (doar citire)", verify: "review" }] : [];
   // §25 (2026-10-08): a software revision of a delivered demo keeps the demo's own proof — the local preview and the browser flows on
   // phone and desktop width — so the new version can be filmed again under the same ONE card. Only a test project's delivery passes
   // `inheritDemo`; the inherited criteria are renumbered after the owner's and stay ordinary acceptance criteria (a flow the change
   // breaks fails the mission honestly; it is never dropped).
   const inherit = project?.source === "hub-test" && args.inheritDemo && typeof args.inheritDemo === "object" ? args.inheritDemo : null;
+  const inheritedFlows = inherit ? (Array.isArray(inherit.criteria) ? inherit.criteria : []).filter((c) => ["preview", "e2e"].includes(c?.verify)).slice(0, 4) : [];
+  // §25 closure: a Hub-written test with no structured criteria derives the checks the request's shape needs (planners/criteria.mjs)
+  // instead of one sentence; a structured list (Lega's tool, the 2-minute answer) or an existing bound test keep their criteria.
+  const derived = testFirst?.ok && !criteria.length ? deriveCriteria({ words, flows: inheritedFlows.filter((c) => c.verify === "e2e") }) : null;
+  const useDerived = Boolean(derived && derived.test.length);
+  const acceptance = !bound ? [] : useDerived
+    ? derived.test.map((c, i) => ({ id: `AC-${i + 1}`, text: c.text, verify: "test", testRef: bound, ...(c.guard ? { guard: true } : {}), origin: c.origin }))
+    : (criteria.length ? criteria : [defaultCriterion]).map((t, i) => ({ id: `AC-${i + 1}`, text: t, verify: "test", testRef: bound }));
   let inheritedPreview = null;
   if (inherit && acceptance.length) {
-    const extra = (Array.isArray(inherit.criteria) ? inherit.criteria : []).filter((c) => ["preview", "e2e"].includes(c?.verify)).slice(0, 4);
-    const review = acceptance.pop();
-    extra.forEach((c) => acceptance.push({ ...c, id: `AC-${acceptance.length + 1}` }));
-    acceptance.push({ ...review, id: `AC-${acceptance.length + 1}` });
+    // The flows first (the delivery films the first phone-width and the first desktop flow), then the derived browser checks.
+    const flows = useDerived ? inheritedFlows.map((c) => (c.verify === "e2e" ? derived.flows.find((d) => d.id === c.id) || c : c)) : inheritedFlows;
+    flows.forEach((c) => acceptance.push({ ...c, id: `AC-${acceptance.length + 1}` }));
     if (inherit.preview?.command && inherit.preview?.url) inheritedPreview = { command: String(inherit.preview.command), url: String(inherit.preview.url) };
   }
+  if (useDerived && acceptance.length) derived.browser.forEach((c) => acceptance.push({ ...c, id: `AC-${acceptance.length + 1}` }));
+  if (bound) acceptance.push({ id: `AC-${acceptance.length + 1}`, text: "Modificarea e explicată și revizuită independent (doar citire)", verify: "review" });
   if (testFirst?.ok) testFirst.criteria = acceptance.filter((a) => a.verify === "test").map((a) => a.id);
   const checkCommand =checks.length ? checks : [scripts.test && !/^\s*node --test\b/.test(String(scripts.test)) ? "npm test" : "node --test"];
   const input = {
@@ -345,13 +353,15 @@ export function buildEngineeringSpec({ text, args = {}, project, hubWrites = {} 
       outOfScope: ["deploy, commit, push", "alte proiecte", "dependențe noi necerute de tine"],
       acceptance,
       constraints: ["Pregătită de Hub din cererea ta (fără model); criteriile sunt fixate înainte de implementare, iar testul de acceptanță îl scrie Hub-ul la pasul 0 din cuvintele tale (Claude propune textul, doar citire; Codex îl verifică, doar citire)",
-        `Testul de acceptanță ${testFirst.testRef} îl scrie și îl protejează Hub-ul la pasul 0: repari implementarea, nu testul (o modificare a testului oprește misiunea)`],
+        `Testul de acceptanță ${testFirst.testRef} îl scrie și îl protejează Hub-ul la pasul 0: repari implementarea, nu testul (o modificare a testului oprește misiunea)`,
+        ...(useDerived ? derived.constraints : [])],
       verification: { checks: checkCommand, acceptance: [`node --test ${testFirst.testRef}`], ...(inheritedPreview ? { preview: inheritedPreview } : {}) },
       // §5.1 S1: the folders the tests write at run time (top-level folder entries of .gitignore), so a test that writes data is no
       // "left files behind" for the proof; checkSpec refuses src / test / public / the Hub's own work area.
       workspace: { ignore: deriveIgnore(readGitignore(project.path)) },
       authoring: { mode: "hub", testRef: testFirst.testRef, stagingRef: testFirst.stagingRef, criteria: testFirst.criteria },
-      sources: { user: [words], code: [], assumptions: ["Testul de acceptanță nu există încă: îl scrie Hub-ul la pasul 0 din cuvintele tale; trebuie să pice pe codul de acum din motivul potrivit, e verificat independent, apoi îl protejez"] },
+      sources: { user: [words], code: [], assumptions: ["Testul de acceptanță nu există încă: îl scrie Hub-ul la pasul 0 din cuvintele tale; trebuie să pice pe codul de acum din motivul potrivit, e verificat independent, apoi îl protejez",
+        ...(useDerived ? [`Criteriile sunt derivate de Hub din cererea ta (tipul cererii: ${derived.shape}), fără model; cuvintele tale rămân cererea`, ...derived.assumptions] : [])] },
     } : {
       inScope: (Array.isArray(args.inScope) ? args.inScope : []).map((s) => String(s).slice(0, 300)).filter(Boolean).slice(0, 10),
       outOfScope: ["deploy, commit, push", "alte proiecte", "dependențe noi necerute de tine"],

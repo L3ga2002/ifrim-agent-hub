@@ -406,7 +406,7 @@ async function intentsWith(...pairs) {
     assert.ok(changed.includes(find), `the mutation must apply: ${find.slice(0, 100)}`);
     changed = changed.replace(find, replace);
   }
-  changed = changed.replace('from "../policy/effect-class.mjs"', `from ${JSON.stringify(EFFECT_CLASS_URL)}`);
+  changed = changed.replace('from "../policy/effect-class.mjs"', `from ${JSON.stringify(EFFECT_CLASS_URL)}`).replace('from "./typos.mjs"', 'from ' + JSON.stringify(new URL("../server/owner/typos.mjs", import.meta.url).href));
   const tmp = path.join(os.tmpdir(), `ifrim-r6-mut-${process.pid}-${mutationN++}.mjs`);
   fs.writeFileSync(tmp, changed);
   try { return await import(pathToFileURL(tmp).href); } finally { fs.rmSync(tmp, { force: true }); }

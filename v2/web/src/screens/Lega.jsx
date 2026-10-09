@@ -60,7 +60,7 @@ function Cockpit({ projectId, go }) {
   const owner = useOwner();
   const [currentProject, setCurrentProject] = usePref("lega.project", "");
   const pid = projectId || currentProject || "";
-  const cockpit = useResource(pid ? `/api/cockpit/${pid}` : null, { reloadOn: (e) => !e.type.startsWith("run.activity") && (e.projectId === pid || e.type.startsWith("envelope.") || e.type.startsWith("factory.") || e.type === "settings.changed") });
+  const cockpit = useResource(pid ? `/api/cockpit/${pid}` : null, { reloadOn: (e) => !e.type.startsWith("run.activity") && (e.projectId === pid || e.type.startsWith("envelope.") || e.type.startsWith("ops.plan") || e.type.startsWith("factory.") || e.type === "settings.changed") });
   const projects = useResource("/api/projects");
   const [faceShape, setFaceShape] = usePref("lega.face", "CORE");
   const [faceHidden, setFaceHidden] = usePref("lega.faceHidden", false);
@@ -98,6 +98,16 @@ function Cockpit({ projectId, go }) {
     if (plan?.envelope?.id === pending.envelopeId) return;
     api(`/api/envelopes/${pending.envelopeId}`).then((env) => { if (env?.status === "PROPOSED") setPlan({ envelope: env, summary: env.summary }); }).catch(() => {});
   }, [cockpit.data?.proposedPlan?.envelopeId, cockpit.data?.proposedPlan?.armedUntil]); // eslint-disable-line react-hooks/exhaustive-deps
+  // Stage before M12 (§7): the same plan in another tab or browser. When the Hub no longer lists it as waiting (confirmed, revoked or
+  // expired elsewhere), the card on this page reads its real state back instead of offering a confirmation the Hub would refuse.
+  useEffect(() => {
+    if (!cockpit.data || cockpit.data.proposedPlan || plan?.envelope?.status !== "PROPOSED") return;
+    api(`/api/envelopes/${plan.envelope.id}`).then((env) => { if (env) setPlan((p) => (p?.envelope?.id === env.id ? { ...p, envelope: env, summary: env.summary || p.summary } : p)); }).catch(() => {});
+  }, [cockpit.data?.generatedAt]); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => {
+    if (!cockpit.data || cockpit.data.proposedOpsPlan || opsPlan?.status !== "PROPOSED") return;
+    loadOpsPlan(opsPlan.id);
+  }, [cockpit.data?.generatedAt]); // eslint-disable-line react-hooks/exhaustive-deps
   useEffect(() => {
     const pending = cockpit.data?.proposedOpsPlan;
     if (!pending) return;

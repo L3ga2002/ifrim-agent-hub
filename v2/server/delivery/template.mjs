@@ -231,8 +231,11 @@ export function captureScriptFrom(e2eSteps, { noun, role, proofSelector, pacing 
       lastProofAt = steps.length;
     } else if (kind === "select") {
       blockers.push(blocker("DELIVERY_STEP_UNSUPPORTED", "Pas E2E care nu poate fi filmat", `Pasul ${n} alege dintr-o listă (select); captura demo nu are un pas echivalent, așa că acest criteriu nu poate fi filmat în M11.`));
+    } else if (kind === "expectLabel") {
+      // §25 closure: the labelled field is shown (a highlight, not evidence: the evidence stays the checked states).
+      steps.push({ waitFor: value.selector }, { highlight: { selector: value.selector, ms: highlightMs } });
     }
-    // noHorizontalOverflow is a check, not something to show: dropped.
+    // noHorizontalOverflow, expectInvalid and expectNoText are checks, not something to show: dropped.
   }
   if (lastProofAt >= 0 && proofHoldMs) steps.splice(lastProofAt, 0, { wait: proofHoldMs });
   if (steps.length > DEMO_MAX_STEPS) blockers.push(blocker("DELIVERY_CAPTURE_TOO_LONG", "Prea mulți pași pentru o captură", `Criteriul ar da ${steps.length} pași demo; o captură are cel mult ${DEMO_MAX_STEPS}.`));

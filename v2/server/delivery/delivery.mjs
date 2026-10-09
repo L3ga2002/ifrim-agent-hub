@@ -434,6 +434,7 @@ export function createDeliveries({ db, bus, clock, config, settings, projects, m
     return getRevision(id);
   }
 
+  const OFFICE_DEPENDS = Object.freeze({ "delivery.office.document": ["software", "criteria"], "delivery.office.workbook": ["fixture"], "delivery.campaign": ["software", "clips"], "delivery.package.index": ["software", "clips", "files"] });
   /** The office steps of the delivery's own package plan (DONE ones carry the file, its sha and the level reached). */
   function officeOf(d) {
     const extras = d.template?.extras || [];
@@ -442,8 +443,22 @@ export function createDeliveries({ db, bus, clock, config, settings, projects, m
     const label = { "delivery.office.document": "Document Word", "delivery.office.workbook": "Registru Excel", "delivery.campaign": "Pachet de campanie", "delivery.package.index": "Cuprinsul dosarului" };
     const items = (p?.steps || []).filter((s) => label[s.kind]).map((s) => ({ kind: s.kind, label: label[s.kind], status: s.status, file: s.result?.file || s.result?.dir || s.result?.folder || null,
       pdf: s.result?.pdf || null, level: s.result?.level || s.result?.calendarLevel || null, pages: s.result?.pages || null, formulasChecked: s.result?.formulasChecked ?? null,
-      channels: s.result?.channels ?? null, posts: s.result?.posts ?? null, files: s.result?.files?.length ?? (typeof s.result?.files === "number" ? s.result.files : null) }));
-    return { requested: extras, folder: path.join(d.template.exports.dir, d.template.exports.folder), items };
+      channels: s.result?.channels ?? null, posts: s.result?.posts ?? null, files: s.result?.files?.length ?? (typeof s.result?.files === "number" ? s.result.files : null),
+      sha256: s.result?.sha256 || null, ...officeState(d, s.kind) }));
+    return { requested: extras, folder: path.join(d.template.exports.dir, d.template.exports.folder), softwareSpecSha: d.template?.specSha || null, items };
+  }
+
+  /**
+   * Stage before M12 (§8): what each office artifact depends on, and whether a software change made it out of date. The Word document
+   * describes the verified software (criteria, flows), the campaign links the clips filmed from it and the folder index lists both:
+   * a software change makes them STALE. The Excel workbook holds the fixture's demonstration data, not the code: it stays CURRENT.
+   * A file is never „current” only because it exists: the state comes from the delivery's own stale record.
+   */
+  function officeState(d, kind) {
+    const dependsOn = OFFICE_DEPENDS[kind] || [];
+    const softwareStale = d.status === "STALE" || ["CLOSED"].includes(d.status) && /software/i.test(String(d.statusReason || ""));
+    const stale = softwareStale && dependsOn.includes("software");
+    return { dependsOn, state: stale ? "STALE" : "CURRENT", stateReason: stale ? "descrie versiunea software anterioară; se refac în livrarea nouă" : dependsOn.includes("software") ? "legat de versiunea software verificată a acestei livrări" : "date demonstrative, independente de cod" };
   }
 
   // ---------------------------------------------------------------- the owner's view (contract: .ifrim/M11_DESIGN.md DELIVERY ROOM UI)

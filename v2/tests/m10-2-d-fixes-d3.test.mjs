@@ -296,7 +296,7 @@ async function mutatedResolver(mutate) {
   const changed = mutate(src);
   assert.notEqual(changed, src, "the mutation must apply");
   const file = path.join(os.tmpdir(), `ifrim-d3-intents-mut-${process.pid}-${mutationN++}.mjs`);
-  fs.writeFileSync(file, changed.replace('from "../policy/effect-class.mjs"', `from ${JSON.stringify(pathToFileURL(EFFECT_CLASS_PATH).href)}`));
+  fs.writeFileSync(file, changed.replace('from "../policy/effect-class.mjs"', `from ${JSON.stringify(pathToFileURL(EFFECT_CLASS_PATH).href)}`).replace('from "./typos.mjs"', 'from ' + JSON.stringify(new URL("../server/owner/typos.mjs", import.meta.url).href)));
   try { return await import(pathToFileURL(file).href); } finally { fs.rmSync(file, { force: true }); }
 }
 test("D3-07 mutation checks: the resolveRefs branch keeps the project, the table's args keep `start`", async () => {

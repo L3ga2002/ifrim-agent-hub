@@ -92,8 +92,12 @@ export function checkSpec(input = {}, { hubPorts = [8011, 8012] } = {}) {
       if (raw !== undefined && raw.length <= 20000) steps = JSON.parse(raw);
       else { steps = [{ invalid: raw === undefined ? "format necunoscut" : "pași prea mari" }]; if (raw !== undefined) problems.push(`${id}: pașii E2E sunt prea mari`); }
     }
-    spec.acceptance.push({ id, text, verify, ...(testRef ? { testRef } : {}), ...(item.expectFailure ? { expectFailure: str(item.expectFailure, 200) } : {}), ...(steps ? { steps } : {}) });
+    // §25 closure: a „păstrare” criterion (guard, test only) and the criterion's provenance (where the planner derived it from).
+    const guard = item.guard === true && verify === "test";
+    const origin = item.origin ? str(item.origin, 200) : "";
+    spec.acceptance.push({ id, text, verify, ...(testRef ? { testRef } : {}), ...(item.expectFailure ? { expectFailure: str(item.expectFailure, 200) } : {}), ...(steps ? { steps } : {}), ...(guard ? { guard: true } : {}), ...(origin ? { origin } : {}) });
   }
+  if (spec.acceptance.some((a) => a.guard) && !spec.acceptance.some((a) => a.verify === "test" && !a.guard)) problems.push("criteriile de păstrare au nevoie de cel puțin un criteriu prin test care pică azi");
   if (!spec.acceptance.length) problems.push("cel puțin un criteriu de acceptanță");
   if (!spec.acceptance.some((a) => a.verify === "test")) problems.push("cel puțin un criteriu verificat printr-un test automat independent");
   for (const key of ["checks", "acceptance"]) {

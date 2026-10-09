@@ -32,6 +32,7 @@
  * server — the last target the owner acted on).
  */
 import { classOfIntent } from "../policy/effect-class.mjs";
+import { correctTypos, addKnownWords } from "./typos.mjs";
 
 export const INTENT_EFFECTS = Object.freeze({
   open_project: "navigate", switch_project: "navigate", continue_last: "read", show_changes: "read", show_review: "read", show_tests: "read",
@@ -810,7 +811,7 @@ const P = [
   // (with a clip and the commercial summary in it) is ONE delivery plan, never a clip alone or a capture alone.
   ["delivery_decisions", /^(?:arata(?:-mi)? )?deciziile (?:mele|tale|in asteptare)\b/, () => ({ decisions: true })],
   ["delivery_open", /\barata(?:-mi)? ce (?:ai|mi-ai) pregatit\b|\b(?:deschide|arata(?:-mi)?) (?:camera de livrare|livrarea demo-ului|livrarea pregatita)\b/],
-  ["delivery_prepare", /^(?:pregateste|fa|construieste|livreaza)(?:-mi|-ne)? (?:si )?(?:demo-ul|demoul|demo|livrarea|prezentarea)\b(?=.*\b(?:prezentare|prezentarea|client|livrare|clip|rezumat)\b)|^pregateste(?:-mi)? livrarea\b/, (_m, clause) => ({ request: clause })],
+  ["delivery_prepare", /^(?:pregateste|fa|construieste|livreaza)(?:-mi|-ne)? (?:si )?(?:demo-ul|demoul|demo|livrarea|prezentarea)\b(?=.*\b(?:prezentare|prezentarea|client|livrare|clip|rezumat|demo|demo-ul|demo-ului|demoului|word|excel|document|campanie|dosar)\b)|^pregateste(?:-mi)? livrarea\b/, (_m, clause) => ({ request: clause })],
   ["delivery_revise", /\b(?:clipul|videoclipul|clip-ul|montajul|varianta verticala)\b.*\b(?:prea (?:tehnic|comercial|lung|scurt)|mai (?:scurt|comercial|simplu))\b|\bdupa secunda\b.*\barata direct\b|^in rezumat\b|\b(?:butonul|formularul|pagina|site-ul) de (?:programare|programari)\b.*\btrebuie sa\b/, (_m, clause) => ({ request: clause })],
   ["not_yet", /^nu (deschide|porni|lansa|inregistra|filma|importa|aduce)\b/],
   ["ops_capture_vertical",/\b(inregistreaza|filmeaza|captureaza|inregistram|filmam)(-mi)?\b.*\b(demonstratia|demo-ul|demoul|demo|ecranul|hub-ul|hubul|aplicatia)\b/,
@@ -1151,7 +1152,14 @@ function splitClause(clause, context, depth = 0) {
  *   on; only the SERVER supplies it (from executed results), never a client's payload.
  *   Projects may carry `source` ("hub-test" ranks after a real project); missions may carry `status` / `kind`.
  */
+let patternWordsAdded = false;
 export function resolveIntent(text, context = {}) {
+  if (!patternWordsAdded) {
+    patternWordsAdded = true;
+    const words = new Set([...Object.keys(VERB_FORMS), ...Object.values(VERB_FORMS)]);
+    for (const [, re] of P) for (const w of String(re.source).replace(/[^a-z-]+/g, " ").split(" ")) if (w.length >= 4) words.add(w.replace(/^-+|-+$/g, ""));
+    addKnownWords(words);
+  }
   const raw = String(text || "").slice(0, 2000);
   const source = context.source || "typed";
   const LEGA_PREFIX = /^(hei |hey |buna )?lega[,!. ]+/;
@@ -1167,6 +1175,10 @@ export function resolveIntent(text, context = {}) {
   // P0-R2: a Stop named inside quotes is a quotation (answered below when nothing else in the sentence is understood), never the command.
   const quotedStop = STOP_MENTION.test(quotedParts);
   norm = unquote(norm);
+  // Stage before M12 (§5): a missing, swapped or extra letter („regătește”) and the usual transcription slips, recorded for audit; never
+  // into a confirmation, a stop, a negation or an outward effect (owner/typos.mjs).
+  const typo = correctTypos(norm, { protect: (context.projects || []).flatMap((p) => [normalize(p.name), normalize(p.slug || "")]) });
+  norm = typo.text;
   const steps = [];
   const forget = norm.match(FORGET);
   // An interruption always wins ("De acum oprește tot" stops; it is not a lesson), and a question is never a lesson (review M08).
@@ -1291,7 +1303,7 @@ export function resolveIntent(text, context = {}) {
   if (SCENARIO_DECREASE.test(norm)) for (const s of steps) if (s.intent === "simulate") s.args = { scenario: s.args.scenario, unsupported: true };
   for (const step of steps) Object.assign(step.constraints, globalConstraints);
 
-  const out = { utterance: raw, normalized: norm, source, quotedConfirm, steps: [], clarification: null, refused: [] };
+  const out = { utterance: raw, normalized: norm, source, quotedConfirm, steps: [], clarification: null, refused: [], ...(typo.corrections.length ? { corrections: typo.corrections } : {}) };
   if (quotedConfirm) out.refused.push({ intent: "confirm", reason: "O confirmare între ghilimele este un citat, nu răspunsul tău; am ignorat-o" });
   // Review M10.2 #17: a confirmation is clean only when EVERY step of the sentence is one ("Da. Execută planul."). "Fă un videoclip …,
   // apoi execută planul" or "Repară bug-ul de login. Da, execută planul" bound the yes to the plan that waited BEFORE the sentence and
@@ -1351,6 +1363,11 @@ export function resolveIntent(text, context = {}) {
     // refused as a command (it is kept only for display).
     step.effectClass = step.args.inert ? "REFUSED" : classOfIntent(step.intent, step.effect);
     out.steps.push(step);
+  }
+  // Stage before M12 (§5): a slip of a word Lega never corrects (a stop, a confirmation, a publication) is ONE question, never the act.
+  if (typo.suspects.length && !out.clarification && out.steps.every((s) => s.intent === "unknown" || s.effect === "read" || s.effect === "none")) {
+    const s = typo.suspects[0];
+    out.clarification = { question: `Ai vrut să spui „${s.to}”? Nu execut o comandă scrisă greșit; scrie-o din nou exact dacă asta vrei.`, options: [], forIntent: "unknown", suspect: s };
   }
   return out;
 }

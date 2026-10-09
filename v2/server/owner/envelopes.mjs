@@ -16,6 +16,7 @@ import { profileTurnTimeouts, turnTimeoutsOf } from "../factory/plan.mjs";
 import { STAGE_ZERO, ROLE_OF_STAGE } from "../factory/factory.mjs";
 import { testFirstScope, T_CARD_STEP0, T_CARD_STEP0_NO_REWRITE, T_CARD_PROVES, T_STEPS_PREFIX, T_MODELS_SUFFIX, TEST_FIRST_LIMITS } from "../factory/test-first.mjs";
 import { factoryStageLabel } from "../policy/factory-wait.mjs";
+import { proposalWindowMin } from "../policy/proposal-window.mjs";
 
 /**
  * Mission Authorization Envelopes (M06 §17–§22) and the CapabilityIssuer.
@@ -570,7 +571,7 @@ export function createEnvelopes({ db, bus, clock, settings, projects, missions, 
       db.prepare(`INSERT INTO mission_envelopes (id, schema_version, project_id, mission_ids_json, plan_hash, envelope_hash, body_json, summary_json, autonomy_level, status, nonce,
         proposed_by, proposed_via, issued_at, confirm_by, expires_at, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'PROPOSED', ?, ?, ?, ?, ?, ?, ?, ?)`)
         .run(id, ENVELOPE_SCHEMA_VERSION, project.id, json(ids), body.planHash, hash, json(body), json(summary), autonomy, nonce, String(actor).slice(0, 80), via, iso(t),
-          new Date(t.getTime() + ENVELOPE_LIMITS.confirmWindowMin * 60000).toISOString(), new Date(t.getTime() + maxMin * 60000).toISOString(), iso(t), iso(t));
+          new Date(t.getTime() + proposalWindowMin({ settings, trust }) * 60000).toISOString(), new Date(t.getTime() + maxMin * 60000).toISOString(), iso(t), iso(t));
       bus.append({ type: "envelope.proposed", scopeType: "envelope", scopeId: id, projectId: project.id, source: actor, payload: { via, missions: ids, hash: hash.slice(0, 16), level: autonomy, eligible, ...extra } });
     });
     return id;

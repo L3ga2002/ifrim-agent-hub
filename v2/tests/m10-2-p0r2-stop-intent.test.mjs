@@ -322,7 +322,7 @@ async function mutated(file, find, replace, imports) {
   fs.writeFileSync(tmp, changed);
   try { return await import(pathToFileURL(tmp).href); } finally { fs.rmSync(tmp, { force: true }); }
 }
-const intentsWith = (find, replace) => mutated(INTENTS_PATH, find, replace, [['from "../policy/effect-class.mjs"', `from ${JSON.stringify(EFFECT_CLASS_URL)}`]]);
+const intentsWith = (find, replace) => mutated(INTENTS_PATH, find, replace, [['from "../policy/effect-class.mjs"', `from ${JSON.stringify(EFFECT_CLASS_URL)}`], ['from "./typos.mjs"', 'from ' + JSON.stringify(new URL("../server/owner/typos.mjs", import.meta.url).href)]]);
 const stopsIn = (mod, text) => mod.resolveIntent(text, {}).steps.some((s) => s.intent === "stop_all");
 
 test("P0R2-08 mutation checks: without each new guard the specific phrase stops again (or loses its answer)", async () => {

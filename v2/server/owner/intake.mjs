@@ -1497,7 +1497,9 @@ export function createIntake(hub) {
     // R4 (UNKNOWN_INTENTS, exact): a sentence with an unknown step announces (`outcome: true`) the owner.intent_outcome written after its
     // steps ran, with how many unknown steps the Hub left without any answer (probe.mjs counts that number; older events stay estimated).
     const unknownSteps = resolved.steps.filter((s) => s.intent === "unknown").length;
-    const intentEvent = bus.emit({ type: "owner.intent", scopeType: "owner", scopeId: current?.id || "global", source: ctx.actor, payload: { channel: ctx.channel, source, steps: resolved.steps.map((s) => s.intent), clarification: Boolean(resolved.clarification), refused: resolved.refused.length, ...(unknownSteps ? { outcome: true } : {}) } });
+    const intentEvent = bus.emit({ type: "owner.intent", scopeType: "owner", scopeId: current?.id || "global", source: ctx.actor, payload: { channel: ctx.channel, source, steps: resolved.steps.map((s) => s.intent), clarification: Boolean(resolved.clarification), refused: resolved.refused.length, ...(unknownSteps ? { outcome: true } : {}),
+      // Stage before M12 (§5): the slips Lega corrected (word → word only, never the sentence), so the interpretation can be audited.
+      ...(resolved.corrections?.length ? { corrections: resolved.corrections.slice(0, 10) } : {}) } });
     if (resolved.clarification) rememberClarification(conv, resolved.clarification, resolved.steps.find((s) => s.intent === resolved.clarification.forIntent) || null, state.projectId);
     // Review #5: a resolver question about a request's PROJECT (several projects match the name) is answerable by naming one, too.
     if (resolved.clarification && REQUEST_PROJECT_CHOICE.has(resolved.clarification.forIntent)) {

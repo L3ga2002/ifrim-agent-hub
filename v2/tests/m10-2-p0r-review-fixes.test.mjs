@@ -458,7 +458,7 @@ async function intentsWith(find, replace, ...more) {
     assert.ok(changed.includes(f), `the mutation must apply: ${f.slice(0, 100)}`);
     changed = changed.replace(f, r);
   }
-  changed = changed.replace('from "../policy/effect-class.mjs"', `from ${JSON.stringify(EFFECT_CLASS_URL)}`);
+  changed = changed.replace('from "../policy/effect-class.mjs"', `from ${JSON.stringify(EFFECT_CLASS_URL)}`).replace('from "./typos.mjs"', 'from ' + JSON.stringify(new URL("../server/owner/typos.mjs", import.meta.url).href));
   const tmp = path.join(os.tmpdir(), `ifrim-rf-mut-${process.pid}-${mutationN++}.mjs`);
   fs.writeFileSync(tmp, changed);
   try { return await import(pathToFileURL(tmp).href); } finally { fs.rmSync(tmp, { force: true }); }
@@ -631,7 +631,7 @@ test("RF-10 (R2-F5) the command's name in a statement („Stop All-ul nu merge�
   assert.equal(stops(noArticleGuard, "Stop All-ul nu merge"), false, "the predicate's „-ul” still holds it");
   const noArticleEither = await (async () => {
     const changed = src.replace(startGuard, "|stop[ -]?all\\b)`);\n/** The same command anywhere").replace("const PREDICATE = /^(?:-?ul\\b|", "const PREDICATE = /^(?:")
-      .replace('from "../policy/effect-class.mjs"', `from ${JSON.stringify(EFFECT_CLASS_URL)}`);
+      .replace('from "../policy/effect-class.mjs"', `from ${JSON.stringify(EFFECT_CLASS_URL)}`).replace('from "./typos.mjs"', 'from ' + JSON.stringify(new URL("../server/owner/typos.mjs", import.meta.url).href));
     const tmp = path.join(os.tmpdir(), `ifrim-rf-mut-${process.pid}-${mutationN++}.mjs`);
     fs.writeFileSync(tmp, changed);
     try { return await import(pathToFileURL(tmp).href); } finally { fs.rmSync(tmp, { force: true }); }

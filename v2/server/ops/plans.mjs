@@ -17,6 +17,7 @@ import { classifyAction, insideAny } from "../policy/action-policy.mjs";
 import { createArmedWindows } from "../owner/armed-window.mjs";
 import { createStopScope, STOP_HOLD_CLASSES } from "../owner/stop-scope.mjs";
 import { classifySuspension } from "../policy/gate-state.mjs";
+import { proposalWindowMin } from "../policy/proposal-window.mjs";
 
 export const PLAN_LIMITS = Object.freeze({ confirmWindowMin: 15, slackMin: 30, maxSteps: 16, defaultMaxDurationMin: 30, maxDurationMin: 240, maxActionsPerStep: 200 });
 export const NEVER_IN_PLANS = Object.freeze(["publicare pe platforme", "încărcare (upload)", "trimiterea de mesaje", "plăți sau cumpărături", "ștergeri externe", "schimbarea setărilor de securitate"]);
@@ -161,7 +162,7 @@ export function createOpsPlans({ db, bus, clock, settings, trust, voice = null, 
       for (const old of db.prepare("SELECT id FROM ops_plans WHERE status = 'PROPOSED' AND kind = ?").all(kind)) setStatus(old.id, "SUPERSEDED", "Un plan mai nou a fost prezentat", {}, ["PROPOSED"]);
       db.prepare(`INSERT INTO ops_plans (id, kind, title, status, body_json, summary_json, plan_hash, nonce, proposed_by, proposed_via, confirm_by, expires_at, created_at, updated_at)
         VALUES (?, ?, ?, 'PROPOSED', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(id, kind, body.title, json(body), json(summaryOf(body)), hash, nonce, String(actor).slice(0, 80), String(via).slice(0, 40),
-        new Date(t.getTime() + PLAN_LIMITS.confirmWindowMin * 60000).toISOString(), new Date(t.getTime() + (body.limits.maxDurationMin + PLAN_LIMITS.slackMin) * 60000).toISOString(), now(), now());
+        new Date(t.getTime() + proposalWindowMin({ settings, trust }) * 60000).toISOString(), new Date(t.getTime() + (body.limits.maxDurationMin + PLAN_LIMITS.slackMin) * 60000).toISOString(), now(), now());
       for (const s of body.steps) db.prepare("INSERT INTO ops_plan_steps (id, plan_id, seq, kind, title, params_json, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)").run(newId("ops"), id, s.seq, s.kind, s.title, json(s.params), now());
       bus.append({ type: "ops.plan.proposed", scopeType: "ops_plan", scopeId: id, source: actor, payload: { kind, via, steps: body.steps.length, decisions: body.decisions.length, hash: hash.slice(0, 16) } });
     });

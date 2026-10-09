@@ -209,7 +209,7 @@ async function mutated(file, mutate, imports) {
 const ACTIONS = path.join(SERVER, "ops", "intent-actions.mjs");
 const ACTION_IMPORTS = [["../core/errors.mjs", path.join(SERVER, "core", "errors.mjs")], ["../owner/blockers.mjs", path.join(SERVER, "owner", "blockers.mjs")], ["./plans.mjs", path.join(SERVER, "ops", "plans.mjs")]];
 const INTENTS = path.join(SERVER, "owner", "intents.mjs");
-const INTENT_IMPORTS = [["../policy/effect-class.mjs", path.join(SERVER, "policy", "effect-class.mjs")]];
+const INTENT_IMPORTS = [["../policy/effect-class.mjs", path.join(SERVER, "policy", "effect-class.mjs")], ["./typos.mjs", path.join(SERVER, "owner", "typos.mjs")]];
 const fails = (fn) => { try { fn(); return false; } catch { return true; } };
 
 test("D6-07 mutation checks: each piece of the parser and the resolver rule is what keeps D6-01…03 green", async () => {

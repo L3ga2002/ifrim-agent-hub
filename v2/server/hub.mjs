@@ -351,6 +351,19 @@ export function createHub(config, { providerOverrides = {}, homeDir, browserLaun
   if (hub.intake) hub.runPlanner = registerRunPlanner(hub, hub.intake);
   // M11: the delivery planner (prepare / revise / open), next to the run planner.
   if (hub.intake) hub.deliveryPlanner = registerDeliveryPlanner(hub, hub.intake);
+  // Stage before M12 (§25 closure): the bounded recovery of a revision stopped at step 0 (planners/delivery.mjs refineTest). A technical
+  // action of the Hub (or of the agent on the cli/agent channel), recorded as such; the new card still needs its own confirmation.
+  commands.register("factory.refine_test", { describe: "Rafinează o singură dată testul unei revizii oprite la pasul 0 (aceleași cuvinte, aceleași efecte, doar verificările noi; cardul nou cere confirmare)",
+    channels: ["ui", "cli", "agent", "test"], schema: { missionId: { required: true, max: 80 } },
+    execute: async (input, ctx) => {
+      if (!hub.deliveryPlanner?.refineTest) throw new Error("planificatorul de livrare nu e disponibil");
+      return hub.deliveryPlanner.refineTest({ missionId: input.missionId, actor: ctx?.actor || "user" });
+    } });
+  // Automatic: a step 0 that ends exhausted on a test project tries the refinement once (refineTest refuses everything outside its bounds).
+  bus.subscribe((event) => {
+    if (event.type !== "factory.test_stopped" || event.payload?.kind !== "exhausted") return;
+    setTimeout(() => { hub.deliveryPlanner?.refineTest?.({ missionId: event.scopeId, actor: "hub" }).catch(() => {}); }, 1000);
+  });
   // M10.2 probe counters (read-only, from the logs) + the owner.nav screen telemetry; observability only, no authority.
   hub.probe = createProbe({ db, bus, config }); registerProbeCommands((type, def) => commands.register(type, def));
   // M10.2 U06: preserved work requests (a blocked request is kept and re-proposed, never run by itself) and the automatic readiness

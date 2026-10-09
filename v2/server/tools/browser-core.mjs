@@ -158,12 +158,20 @@ export function browserLaunchOptions(allowedOrigin) {
  * specification (so the writer cannot change them) and are checked again here. Each step is ONE of:
  *   { viewport: { width, height } }   { goto: "/path" }   { fill: { selector, value } }   { select: { selector, value } }
  *   { click: "selector" }   { expectText: "text" }   { expectSelector: "selector" }   { noHorizontalOverflow: true }
+ *   { expectLabel: { selector, text } }  the field is visible and its accessible name (label / aria-label / aria-labelledby) holds the text
+ *   { expectInvalid: "selector" }        the field is marked invalid (aria-invalid or :invalid) AND a visible message explains it
+ *                                        (its aria-describedby text, or a visible role=alert) — a silent native flag is not enough
+ *   { expectNoText: "text" }             after a short settle (≤ 1.5 s) the page does NOT show the text (a refused submit)
  * Paths are relative to the preview origin; selectors are CSS, values fictive text. No scripts, no URLs. The first step
  * after the optional viewport steps is a goto (otherwise the steps would run on an empty page). `{run}` inside a fill value
  * or an expectText becomes a token unique to the run, so a re-run never collides with data an earlier run saved
  * (deduplication, unique keys) and the page can be checked for exactly what this run submitted.
  */
-export const E2E_STEP_KINDS = Object.freeze(["viewport", "goto", "fill", "select", "click", "expectText", "expectSelector", "noHorizontalOverflow"]);
+export const E2E_STEP_KINDS = Object.freeze(["viewport", "goto", "fill", "select", "click", "expectText", "expectSelector", "noHorizontalOverflow", "expectLabel", "expectInvalid", "expectNoText"]);
+/** The settle time of expectNoText (bounded by the step timeout). */
+export const E2E_NO_TEXT_SETTLE_MS = 1500;
+/** Case- and diacritics-insensitive text, for an accessible name or a message. */
+const looseText = (value) => String(value || "").normalize("NFD").replace(/[̀-ͯ]/g, "").toLowerCase().replace(/\s+/g, " ").trim();
 export const E2E_MAX_STEPS = 25;
 export const E2E_RUN_TOKEN = "{run}";
 
@@ -187,6 +195,9 @@ export function validateE2ESteps(steps) {
       expectText: () => typeof v === "string" && v.length > 0 && v.length <= 300,
       expectSelector: () => selector(v),
       noHorizontalOverflow: () => v === true,
+      expectLabel: () => selector(v?.selector) && typeof v?.text === "string" && v.text.trim().length > 0 && v.text.length <= 120,
+      expectInvalid: () => selector(v),
+      expectNoText: () => typeof v === "string" && v.length > 0 && v.length <= 300,
     }[kind]();
     if (!ok) problems.push(`pasul ${i + 1} (${kind}): valoare invalidă`);
   });
@@ -296,7 +307,39 @@ export async function runE2ESteps({ base, steps, launch, id, stepTimeoutMs = 100
         else if (kind === "click") { await page.click(value, { timeout: stepTimeoutMs }); await followPageRedirect(); }
         else if (kind === "expectSelector") await page.waitForSelector(value, { state: "visible", timeout: stepTimeoutMs });
         else if (kind === "expectText") await page.waitForFunction((needle) => document.body && document.body.innerText.includes(needle), value.split(E2E_RUN_TOKEN).join(runToken), { timeout: stepTimeoutMs });
-        else if (kind === "noHorizontalOverflow") {
+        else if (kind === "expectLabel") {
+          await page.waitForSelector(value.selector, { state: "visible", timeout: stepTimeoutMs });
+          const name = await bounded(page.evaluate((sel) => {
+            const el = document.querySelector(sel);
+            if (!el) return "";
+            const byIds = (ids) => String(ids || "").split(/\s+/).filter(Boolean).map((id) => document.getElementById(id)?.textContent || "").join(" ");
+            return [el.getAttribute("aria-label") || "", byIds(el.getAttribute("aria-labelledby")), ...[...(el.labels || [])].map((l) => l.textContent || "")].join(" ");
+          }, value.selector), stepTimeoutMs, "expectLabel");
+          if (!looseText(name).includes(looseText(value.text))) throw new Error(`câmpul ${value.selector} nu are eticheta „${value.text}” (nume accesibil: „${String(name).trim().slice(0, 80)}”)`);
+        } else if (kind === "expectInvalid") {
+          await page.waitForSelector(value, { state: "attached", timeout: stepTimeoutMs });
+          const deadline = Date.now() + stepTimeoutMs;
+          let seen = null;
+          for (;;) {
+            seen = await bounded(page.evaluate((sel) => {
+              const el = document.querySelector(sel);
+              if (!el) return { invalid: false, message: "" };
+              const visible = (n) => Boolean(n && (n.offsetWidth || n.offsetHeight || n.getClientRects().length) && getComputedStyle(n).visibility !== "hidden");
+              const invalid = el.getAttribute("aria-invalid") === "true" || el.matches(":invalid");
+              const described = String(el.getAttribute("aria-describedby") || "").split(/\s+/).filter(Boolean).map((id) => document.getElementById(id)).filter(visible).map((n) => n.innerText || "").join(" ");
+              const alerts = [...document.querySelectorAll("[role=alert]")].filter(visible).map((n) => n.innerText || "").join(" ");
+              return { invalid, message: `${described} ${alerts}`.trim() };
+            }, value), stepTimeoutMs, "expectInvalid");
+            if (seen.invalid && seen.message) break;
+            if (Date.now() > deadline) throw new Error(`câmpul ${value} nu e marcat invalid cu un mesaj vizibil (invalid: ${seen.invalid}, mesaj: „${seen.message.slice(0, 80)}”)`);
+            await new Promise((r) => setTimeout(r, 150));
+          }
+        } else if (kind === "expectNoText") {
+          const needle = value.split(E2E_RUN_TOKEN).join(runToken);
+          await new Promise((r) => setTimeout(r, Math.min(E2E_NO_TEXT_SETTLE_MS, stepTimeoutMs)));
+          const shown = await bounded(page.evaluate((n) => Boolean(document.body && document.body.innerText.includes(n)), needle), stepTimeoutMs, "expectNoText");
+          if (shown) throw new Error(`pagina arată „${needle.slice(0, 80)}” deși nu trebuia`);
+        } else if (kind === "noHorizontalOverflow") {
           const widths = await bounded(page.evaluate(() => ({ scroll: document.documentElement.scrollWidth, view: window.innerWidth })), stepTimeoutMs, "noHorizontalOverflow");
           if (widths.scroll > widths.view + 1) throw new Error(`depășire orizontală: ${widths.scroll}px > ${widths.view}px`);
         }
