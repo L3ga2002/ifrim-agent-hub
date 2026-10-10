@@ -1,6 +1,10 @@
 # IfrimDigital Ifrim Agent Hub - Claude Code Context
 
-## M11 „Ifrim Delivery” - 2026-10-07 (read first)
+## Current state - 2026-10-09 evening (read first)
+
+Read `.ifrim/STAGE_2026-10-09_LEGA_AUTONOMIE.md` (section „Închiderea etapei”) and the first section of `.ifrim/OPEN_ISSUES.md` first; they take precedence over the M11 and milestone lines below, which are history where they conflict. Code `2.14.5-m11` (API contract 13, migration 12, no new migration) is on `v2-milestone-01` (commits `b15f3d6` … `bff5c68` plus the docs commit); `origin/v2-milestone-01` was `7407301` before them. The live Hub runs `2.14.4-m11` (2.14.5 only narrows the automatic test refinement). §25 ran live to a READY refresh delivery on 2026-10-09 (`mis_mv1eo6il_104584123d`, `dlv_mv1eo8oo_d120460140`). M11 is live and pushed; the 2026-10-09 stage before M12 added the local development profile (no Windows Hello in local dev), confirmed plans that continue with the browser closed, Word / Excel / campaign in the delivery, Lega's system knowledge, criteria derived from natural requests, the bounded refinement of a revision stopped at step 0, tolerant typo understanding and plan cards kept 24 h. The Claude Code auto-mode classifier on this PC refuses live-Hub upgrades/restarts and `git push`; the owner runs those commands. M12 Sales has not started.
+
+## M11 „Ifrim Delivery” - 2026-10-07 (history)
 
 Read `.ifrim/HANDOFF_2026-10-07_M11.md` first; it takes precedence over the milestone lines below. Code `2.14.0-m11` (API contract 13, migration 12 `m11-deliveries`) is committed LOCALLY on `v2-milestone-01` (not pushed, not live); the live Hub serves `2.13.1-m11`. One envelope confirmation now covers the mission and its delivery (capture → 16:9 clip + 9:16 variant → QA → local export → commercial summary, no model after DELIVERY_READY); Delivery Room `#/livrare/<id>`, „Deciziile mele” `#/livrare/decizii`. The logon autostart refuses to start the Hub while the code holds an unapplied migration (`v2/scripts/boot-guard.mjs`): start through the approved upgrade. The pilot needs the owner's approval of `.ifrim/M11_PILOT_SHEET.md`; the voice segmentation fix awaits the owner's voice probe. Never upgrade, push, create the detailing project or run the pilot without that approval.
 

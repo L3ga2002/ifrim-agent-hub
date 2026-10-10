@@ -1,6 +1,35 @@
 # Open Issues - Ifrim Agent Hub
 
-## 2026-10-09 — Etapa „Lega: autonomie și lucru pe PC” (detaliu: `.ifrim/STAGE_2026-10-09_LEGA_AUTONOMIE.md`)
+## 2026-10-09 (evening) — Closure of the stage before M12 (code `2.14.5-m11`, commits `b15f3d6`…`bff5c68`, live `2.14.4-m11`; detail: `.ifrim/STAGE_2026-10-09_LEGA_AUTONOMIE.md` → „Închiderea etapei”)
+
+This section takes precedence over every older one where they overlap. Reconciled facts (checked 2026-10-09 18:05 UTC): `origin/v2-milestone-01`
+= `7407301` (= local HEAD then), so 62f5788 / 95465c8 / 7407301 are pushed; the live Hub served `2.14.1-m11` (contract 13, BUILD_SAFE, upgrade
+`upg_mv0yn13c`) with the local development profile on.
+
+Closed (with evidence in the stage report):
+- **Plans stopping when the confirming page closes** (item 1 of the 10-09 section below): fixed in `62f5788` (`trust.confirmedAuthority`,
+  `ops/plans.mjs`); DP-06 PASS (one confirmation, session closed at once, mission → review → QA → derived delivery → READY).
+- **Windows Hello in local development** (item 2 below): the local development profile is live (`dev_fc41496f2663`); the §24 and combined
+  confirmations of 2026-10-09 needed 0 Hello prompts.
+- **§24 and the combined delivery** (item 3 below): DONE live (`opp_mv123umo_a22d4eeb67`, `opp_mv16dspo_101aa9677c` / `dlv_mv16dsp8_491116ae10`).
+- **§25 test rejected twice**: cause = one criterion (the owner's sentence) proven by a server test; fixed by derived criteria + guard criteria
+  + browser checks + bounded refinement (`b15f3d6`). The stuck mission `mis_mv16l212_a6e1053492` waited at NEEDS_OWNER_DECISION; its plan
+  `env_mv16l8fa_e03c6bdee4` EXPIRED at 19:59:59 UTC (its 3.5 h authority) and its child delivery `dlv_mv16l88c_f3ffac3ae1` EXPIRED with it.
+- **V1 blank page on 3004** („504 Outdated Optimize Dep” after the node_modules accident): `dev:web` restarted, 0 console errors.
+- **Office artifacts without their own state** (item 4 below): each office file now carries its dependency and state in the delivery view.
+
+Open:
+1. **Push and the last upgrade**: the Claude Code auto-mode classifier refuses `node v2/scripts/upgrade.mjs --apply` („[Production Deploy]”)
+   and `git push origin v2-milestone-01` from the agent; the owner ran the upgrades (live `2.14.4-m11`) and runs the push. Code `2.14.5-m11`
+   only narrows the automatic refinement; it goes live with the next upgrade. §25 itself is DONE live (stage report, „Probe live”).
+2. **Frozen-frame warnings in the delivery clips**: analysed against the capture markers (stage report): every freeze ≥ 1 s of the desktop
+   part lies in a highlight hold, the typing or the proof hold; no stalled capture found. The QA verdict stays WARN because the clip IR does not
+   mark those holds `holdIntentional` (QA justifies only marked clips); marking them from the capture markers is the remaining fix.
+3. **CapCut / OBS**: discovered, never authorized or operated live (only Notepad was operated live, 2026-10-04 and 10-06). Operating them needs
+   the owner's app authorization card. The FFmpeg route stays the editor path.
+4. **The owner's real voice probe** and the old bundles (ProDelivery, Factory Demo M07, the accidental Factory Demo M10.2 mission): owner's.
+
+## 2026-10-09 — Etapa „Lega: autonomie și lucru pe PC” (ISTORIC: items 1–4 superseded by the section above)
 
 This section takes precedence over the older ones where they overlap. Reconciled facts: M11 is pushed (`origin/v2-milestone-01` = `209b020`
 on 2026-10-09) and live (`2.14.0-m11`); the detailing pilot RAN on 2026-10-08 (software 7/7, accepted; clips approved; summary ready; nothing

@@ -104,15 +104,67 @@ browserul agentului nu a apărut în browserul proprietarului (a fost nevoie ca 
   livrare-copil).
 - **Proba vocală 2 a proprietarului**: rămâne o probă umană.
 
-## Decizii rămase ale proprietarului
+## Decizii rămase ale proprietarului (ISTORIC, înlocuit de „Închiderea etapei” de mai jos)
 
-1. Permisiunile sesiunii Claude Code pentru §5 și §7 (sau implementarea lor de către el / altă sesiune).
-2. Confirmarea cardurilor §24 și §25 pe Hub-ul live (sau după §5, de către agent cu autoritatea de dezvoltare).
-3. Pachetele care îl așteaptă: ProDelivery, Factory Demo M07 (voce), misiunea accidentală pe Factory Demo M10.2.
+Punctele 1 și 2 de aici sunt închise: §5 și §7 au fost implementate după permisiunile din 11:02 UTC (punctele 4–5), iar §24 și sarcina
+combinată au rulat live cu confirmarea proprietarului. Punctul 3 (pachetele vechi) rămâne, vezi mai jos.
 
-## Următoarele trei priorități
+## Următoarele trei priorități (ISTORIC, înlocuit de „Închiderea etapei” de mai jos)
 
-1. §7: autoritatea confirmată să nu depindă de pagina deschisă (cele două locuri din `plans.mjs`), cu test „browser închis → misiunea ajunge la
-   READY”, „revocare → se oprește”.
-2. §5: profilul de dezvoltare locală (designul de mai sus), cu teste: origin extern refuzat, alt PC/cont refuzat, `userVerified` niciodată fals.
-3. §24/§25 live pe „Demo Livrare — Detailing”, apoi M12 (publicarea și bugetul în planul aprobat; `campanie.json` are deja forma).
+## Închiderea etapei (2026-10-09 seara, cod `2.14.5-m11`, commit-uri `b15f3d6`…`bff5c68`; live `2.14.4-m11`)
+
+Cauza blocajului §25, verificată în baza de date: specificația v1 a misiunii `mis_mv16l212_a6e1053492` avea UN singur criteriu prin test,
+chiar cuvintele proprietarului („Butonul de programare trebuie să ceară și numărul de telefon”), dovedit cu un test `node --test`. Reviewerul
+independent (Codex `gpt-6.1-sol`, doar citire) l-a respins de două ori: întâi „verifică o funcție de validare, nu butonul”, apoi „verifică
+respingerea prin API, dar nu solicitarea telefonului la apăsarea butonului” (`rev_mv16nkp6_9a6294778b`, `rev_mv16tnkr_e5e8f142bc`). Sensul
+cererii era clar; planul verifica prea puțin, iar partea de formular nu se poate dovedi corect cu un test de server.
+
+Ce s-a reparat:
+
+1. **Criterii derivate din cererea naturală** (`v2/server/owner/planners/criteria.mjs`, folosit de `buildEngineeringSpec` când nu există
+   criterii structurate): o cerere de tip „X trebuie să ceară Y” / „adaugă câmpul Y” / „Y obligatoriu” dă: serverul refuză direct (fără
+   browser) lipsa sau valoarea goală; valoarea se păstrează în înregistrarea salvată; o cerere validă e în continuare acceptată (criteriu de
+   „păstrare”, un control care trece azi și după, respinge implementarea care refuză tot); fluxurile existente ale proiectului, cu câmpul
+   etichetat completat; în browser, lipsa câmpului marchează câmpul invalid cu un mesaj vizibil și confirmarea nu apare. Tipul „să nu accepte /
+   să refuze” și tipul generic sunt tratate separat. Fiecare criteriu are proveniența lui (`origin`), ipotezele sunt scrise în specificație
+   (numele tehnic `phone` după convenția proiectului, fără format național, fără SMS).
+2. **Testul de acceptanță**: criteriile de păstrare sunt cazuri „control”; dovada cere în continuare ca fiecare criteriu nou să pice azi pe o
+   aserțiune (PARTIAL rămâne eșec, poarta nu e coborâtă); autorul și reviewerul văd criteriile de browser ca context.
+3. **Pași E2E noi** (`browser-core.mjs`): `expectLabel`, `expectInvalid` (invalid ȘI mesaj vizibil), `expectNoText`. Captura de livrare
+   arată câmpul etichetat.
+4. **Recuperarea limitată** (`refineTest` în `planners/delivery.mjs`, comanda `factory.refine_test`, automat la `factory.test_stopped`
+   exhausted): o singură dată per misiune, doar pe proiecte de test, doar dacă codul nu a fost atins și criteriile noi diferă; aceleași cuvinte,
+   același proiect, aceleași efecte, livrarea nouă legată de aceeași livrare-părinte; misiunea veche și livrarea-copil neîncepută se închid ca
+   înlocuite (istoricul rămâne), legături în evenimentul `factory.refined`. Cardul nou are confirmarea lui: autoritatea veche nu se refolosește.
+5. **Lega înțelege greșelile** (`v2/server/owner/typos.mjs`): litere lipsă, inversate sau în plus și alunecări de transcriere („ward”, „exel”)
+   se corectează pe propoziția normalizată, pentru text și voce, cu `corrections` în rezultat și în evenimentul `owner.intent`. Nu corectează
+   niciodată SPRE oprire, confirmare, negație, publicare sau ștergere; o greșeală a acestor cuvinte primește o singură întrebare. Planul de
+   livrare se recunoaște și cu Word / Excel / document / campanie / dosar.
+6. **Cardurile de plan**: fereastra de afișare a propunerii e separată de autoritate (`v2/server/policy/proposal-window.mjs`): 24 h în
+   profilul de dezvoltare locală, 15 min altfel, setarea `proposalWindowMin` a proprietarului are prioritate. Cockpitul se reîncarcă și la
+   evenimentele planurilor de operații și citește starea reală a unui card confirmat sau revocat în altă pagină.
+7. **Artefactele Office** (`delivery.mjs officeOf`): fiecare fișier are dependențele și starea lui; Word și campania depind de software,
+   Excel-ul cu date demonstrative nu; o livrare de reîmprospătare reface doar Word-ul și campania.
+8. **V1**: pagina de pe 3004 era goală („504 Outdated Optimize Dep”), pentru că ștergerea accidentală din `node_modules` a eliminat cache-ul
+   vite cât timp serverul rula. Am repornit doar `npm run dev:web` (aceeași comandă ca tray-ul); verificat în Chromium: 0 erori, proiectele se
+   încarcă de la API-ul 8004.
+
+Verificare: testele noi FZ-01…FZ-10 10/10 (inclusiv Chromium real: formularul corect trece, cel fără câmp, cel care marchează invalid fără
+mesaj și cel care confirmă fără telefon pică); testele existente afectate 930/930 (M09-SB-01 pica doar pe build-ul vechi din `.ifrim/tmp`,
+PASS după rebuild). Regresia completă finală pe `bff5c68` (2026-10-09 22:28 UTC → ~00:10 UTC, CPU 60% la start): **1711 teste, 1710 PASS, 0 FAIL, 1 SKIP** (T25, legătura simbolică de fișier cere privilegiul Windows de symlink; ramura e acoperită de testul cu junction). O regresie intermediară pe `357fc89` a găsit cazul I9 (rafinarea automată după un timeout), reparat în `bff5c68`. Probele live: secțiunea următoare.
+
+### Probe live (2026-10-09 20:14–21:44 UTC; Hub `2.14.2` → `2.14.3` → `2.14.4-m11`, upgrade-uri `upg_mv1emgil` și următoarele, rulate de proprietar)
+
+| Probă | Rezultat |
+|---|---|
+| §25 cerere → criterii → test → implementare → review → QA → preview → livrare-copil | **DONE.** `factory.refine_test` (canal cli) pe `mis_mv16l212_a6e1053492` → misiunea `mis_mv1eo6il_104584123d`, planul `env_mv1eo98c_b20d57df22` (confirmat de proprietar 20:19:26, click, profil local, 0 Hello), livrarea-copil `dlv_mv1eo8oo_d120460140` (părinte `dlv_mv16dsp8_491116ae10`) READY la 21:44:03. 8/8 criterii PASS (AC-1…3 test, AC-4 preview, AC-5…7 E2E, AC-8 review). Testul: scris de Claude, respins o dată de Codex („nu verifică faptul că cererile refuzate nu salvează nimic”), rescris, PROVEN, PASS, protejat. Misiunea veche: CANCELLED (înlocuită), istoricul păstrat |
+| Rulări reale prin abonamente | 6: Claude `sonnet`·medium ×3 (autor ×2, review cod ×1), Codex `gpt-6.1-sol`·medium ×3 (verificarea testului ×2, writer ×1). 0 rulări de model după DELIVERY_READY |
+| Mutații (copii ale proiectului, Chromium real) | Implementarea reală: testul PASS, E2E 3/3 PASS. „Refuză tot”: testul FAIL, fluxurile FAIL. „Validare doar în browser”: testul FAIL. „Pierde telefonul”: testul FAIL. „Câmp afișat, nefolosit”: fluxurile pozitive FAIL (testul de server trece, corect) |
+| Livrarea-copil | Word `Prezentare demo (2).docx` APP_VERIFIED (2 pagini, PDF), campanie 5 canale / 10 postări, cuprins + manifest; Excel-ul NU a fost refăcut (date demonstrative, independente de cod). Fișierele vechi nu au fost suprascrise. Clip 16:9 37,3 s și 9:16: QA WARN (pauze înghețate: highlight-uri, tastare, dovadă; drepturi: platformă nespecificată, nimic publicat); aprobarea creativă a versiunilor noi rămâne a proprietarului |
+| Defecte latente găsite live și reparate | 1) `office.verify` lipsea din operațiile fazei de livrare, deci o livrare cu Word/Excel derivată din plan nu pornea (`4f8b84f`); 2) pasul 1 al planului derivat rula înainte ca id-ul planului să fie legat de livrare (`260b067`). Ambele cu test (FZ-11, DP-07 cap-coadă 191 s), reluare automată o dată pe versiune |
+| Lega pe traseul real (`POST /api/owner/intent`, canal ui, fără sesiune de proprietar, introduse de agent) | „regătește …”, „pregateste …”, „pregăteste …”, „fă prezentarea demo-ului, cu Word, Excel și clip”, „pregătește prezentarea, fără Excel” → aceeași intenție `delivery_prepare` și același răspuns (proiectul avea deja misiunea §25); „nu porni încă, arată-mi planul” → `not_yet` + noStart, „Bine, nu pornesc nimic.”; „ce urmează după Oprește tot?” → `explain_stop` (citire), poarta a rămas deschisă; „oprște tot” → o întrebare, nicio oprire; „nu publica nimic” → constrângere noPublish (răspunsul explicit vine din `2.14.3`) |
+| Carduri persistente (Playwright, fără sesiune de proprietar, fără click) | cardul §25 VIZIBIL în tab 1, tab 2, după refresh, după navigare și într-un context de browser separat; 0 sesiuni de proprietar deschise de probă |
+
+Măsurători: confirmări de produs ale proprietarului 1; solicitări Windows Hello 0; intervenții tehnice ale proprietarului 3 (comanda de upgrade, de trei ori: clasificatorul refuză upgrade-ul agentului, iar două defecte latente au cerut încă două versiuni) + 1 de făcut (push); acțiuni ale agentului prin autoritatea de test: backup `bkp_mv1a5mgn_22cf010006` (cli), `factory.refine_test` (cli), 9 propoziții Lega de probă (ui, fără sesiune), repornirea `dev:web` V1, sondele read-only; blocaje externe: clasificatorul Claude Code („[Production Deploy]” la upgrade, refuz la `git push`, refuz de scriere în `.ifrim/tmp`).
+
+Observație de produs (decizia proprietarului): implementarea întoarce telefonul și în lista publică a zilei (`GET /api/bookings`), pe care testul a folosit-o pentru citirea înapoi. Pentru un demo cu date sintetice nu e o problemă; pentru un client real ar trebui ascuns din lista publică.
