@@ -1,5 +1,6 @@
 import { HubError } from "../core/errors.mjs";
 import { canonicalJson, sha256 } from "../core/canonical.mjs";
+import { clipHoldProblems, HOLD_REASONS, HOLD_LIMITS } from "./holds.mjs";
 
 /**
  * EditProjectIR v1 — the single, explicit description of an edit. Every consumer reads THIS document and nothing else:
@@ -99,7 +100,10 @@ const KEYS = {
   captionsLayout: ["anchor", "safeArea"],
   safeArea: ["top", "bottom", "left", "right"],
   videoClip: ["id", "assetVersionId", "sourceIn", "sourceOut", "start", "speed", "fit", "crop", "keyframes", "transitionIn", "focus",
-    "shotId", "claimIds", "label", "holdIntentional", "color"],
+    "shotId", "claimIds", "label", "holdIntentional", "color", "holds"],
+  // R-MEDIA: an intentional pause measured in the capture (media/holds.mjs), in SOURCE frames of the clip's asset version.
+  hold: ["id", "reason", "srcFrom", "srcTo", "maxFrames", "provenance"],
+  holdProvenance: ["schema", "sessionId", "assetVersionId", "stepsSha", "step", "stepKind", "startMs", "endMs", "plannedMs", "maxMs", "postcondition"],
   rect: ["x", "y", "w", "h"],
   keyframe: ["frame", "scale", "cx", "cy", "ease"],
   transition: ["kind", "frames"],
@@ -579,6 +583,22 @@ export function validateIR(ir, opts = {}) {
         .forEach((c, k) => str(c, `${path}.claimIds[${k}]`, { pattern: ID_RE, max: 64 }));
       if (clip.label !== undefined && clip.label !== null) oneOf(clip.label, `${path}.label`, CLIP_LABELS);
       bool(clip.holdIntentional, `${path}.holdIntentional`);
+      // R-MEDIA: the clip's measured pauses. Every field is checked here (none is carried unchecked); the provenance must name this clip's
+      // own asset version, and frames / cap are re-derived from the measured interval (media/holds.mjs clipHoldProblems).
+      const holdIds = new Set();
+      list(clip.holds, `${path}.holds`, HOLD_LIMITS.perClip, "holds", { required: false }).forEach((h, k) => {
+        const hp = `${path}.holds[${k}]`;
+        if (!keys(h, KEYS.hold, hp, "pauză")) return;
+        const hid = str(h.id, `${hp}.id`, { pattern: ID_RE, max: 64 });
+        if (hid !== undefined) { if (holdIds.has(hid)) err(`${hp}.id`, "DUPLICATE_ID", `Pauza „${hid}” apare de două ori în clip.`); holdIds.add(hid); }
+        oneOf(h.reason, `${hp}.reason`, HOLD_REASONS);
+        const hFrom = int(h.srcFrom, `${hp}.srcFrom`, { min: 0, max: LIMITS.maxFrames });
+        const hTo = int(h.srcTo, `${hp}.srcTo`, { min: 1, max: LIMITS.maxFrames });
+        int(h.maxFrames, `${hp}.maxFrames`, { min: 1, max: LIMITS.maxFrames });
+        if (hFrom !== undefined && hTo !== undefined && hTo <= hFrom) err(`${hp}.srcTo`, "FRAME_RANGE", "srcTo trebuie să fie după srcFrom.");
+        if (!keys(h.provenance, KEYS.holdProvenance, `${hp}.provenance`, "proveniența pauzei")) return;
+        if (fps) for (const pr of clipHoldProblems(h, clip, fps)) err(`${hp}.${pr.field}`, pr.code, pr.message);
+      });
       if (clip.color !== undefined && keys(clip.color, KEYS.color, `${path}.color`, "color")) oneOf(clip.color.preset, `${path}.color.preset`, COLOR_PRESETS);
       let transition = null;
       if (clip.transitionIn !== undefined && clip.transitionIn !== null && keys(clip.transitionIn, KEYS.transition, `${path}.transitionIn`, "transitionIn")) {

@@ -33,6 +33,7 @@
 //   cancelled, or when the preserved request it belongs to is cancelled or expires. A draft the owner made (no intake provenance)
 //   or one that already started is never touched.
 import fs from "node:fs";
+import crypto from "node:crypto";
 import path from "node:path";
 import { HubError } from "../../core/errors.mjs";
 import { hashCanonical, sha256 } from "../../core/canonical.mjs";
@@ -43,7 +44,7 @@ import { defaultModelLimits, ROLE_DEFAULT_BINDINGS, limitsHaveModels, turnTimeou
 import { plannedTestRefs, deriveIgnore, testFirstScope, HUB_TEST_DIR, STAGING_DIR, T_ROUTE_MISSING_TEST, T_ROUTE_ASK_BEHAVIOUR, T_ROUTE_REFACTOR, T_PLANNER_NOTE } from "../../factory/test-first.mjs";
 import { collectFacts, onlyAfterConfirmation, readinessPassFor } from "../readiness-runner.mjs";
 import { explain } from "../blockers.mjs";
-import { deriveCriteria } from "./criteria.mjs";
+import { deriveCriteria, conflictingHubTests, requestShape } from "./criteria.mjs";
 
 /** An open question (the project, the acceptance test) is answerable for 2 minutes, like the intake's own clarifications. */
 export const ENGINEERING_LIMITS = Object.freeze({ pendingTtlMs: 2 * 60 * 1000, pendingMax: 50, candidateMax: 6, scanDepth: 2 });
@@ -267,7 +268,7 @@ function withoutTestRefs(args = {}) {
  *  - `missing`: the named test that does not exist (B), as said.
  * `hubWrites` ({stagingRef: sha256}, factory.hubWrites) lets an abandoned step 0's own file be reused at the same path (§5.1).
  */
-export function buildEngineeringSpec({ text, args = {}, project, hubWrites = {} }) {
+export function buildEngineeringSpec({ text, args = {}, project, hubWrites = {}, hubTests = [] }) {
   const words = String(text || "").replace(LEGA_PREFIX, "").replace(/\s+/g, " ").trim();
   const workType = workTypeOf(words, args.workType || args.kindHint || args.kind_hint || args.missionKind || "");
   const said = [args.testRef, ...(Array.isArray(args.acceptance) ? args.acceptance.map((a) => (a && typeof a === "object" ? a.testRef : null)) : []), (words.match(TEST_IN_TEXT) || [])[1]].filter(Boolean);
@@ -345,6 +346,13 @@ export function buildEngineeringSpec({ text, args = {}, project, hubWrites = {} 
   if (useDerived && acceptance.length) derived.browser.forEach((c) => acceptance.push({ ...c, id: `AC-${acceptance.length + 1}` }));
   if (bound) acceptance.push({ id: `AC-${acceptance.length + 1}`, text: "Modificarea e explicată și revizuită independent (doar citire)", verify: "review" });
   if (testFirst?.ok) testFirst.criteria = acceptance.filter((a) => a.verify === "test").map((a) => a.id);
+  // R-PRIV: an earlier Hub-written test that read the field back from the app's answers belongs to the earlier contract. It is named on
+  // the card, kept unchanged and linked to its version, and moved out of the active suite at the start — never rewritten to pass.
+  const supersedes = useDerived && derived.shape === "hide_public" ? conflictingHubTests({ field: requestShapeField(words), hubTests }) : [];
+  if (supersedes.length) {
+    derived.constraints.push(...supersedes.map((x) => `Testul anterior ${x.testRef}${x.missionId ? ` (misiunea ${x.missionId}${x.specVersion ? `, specificația v${x.specVersion}` : ""})` : ""} e incompatibil cu cerința nouă: ${x.reason}. Hub-ul îl păstrează neschimbat (sha ${x.sha256.slice(0, 12)}) în .ifrim-hub/retired/, legat de versiunea originală, și nu îl mai rulează; nu se rescrie`));
+    derived.assumptions.push(`Contractul vechi și cel nou se contrazic la ${supersedes.length === 1 ? "un test" : `${supersedes.length} teste`} scris${supersedes.length === 1 ? "" : "e"} de Hub înainte; criteriile noi verifică separat păstrarea internă și neexpunerea publică`);
+  }
   const checkCommand =checks.length ? checks : [scripts.test && !/^\s*node --test\b/.test(String(scripts.test)) ? "npm test" : "node --test"];
   const input = {
     workType, title: finalTitle, objective: words,
@@ -360,6 +368,7 @@ export function buildEngineeringSpec({ text, args = {}, project, hubWrites = {} 
       // "left files behind" for the proof; checkSpec refuses src / test / public / the Hub's own work area.
       workspace: { ignore: deriveIgnore(readGitignore(project.path)) },
       authoring: { mode: "hub", testRef: testFirst.testRef, stagingRef: testFirst.stagingRef, criteria: testFirst.criteria },
+      ...(supersedes.length ? { supersedes } : {}),
       sources: { user: [words], code: [], assumptions: ["Testul de acceptanță nu există încă: îl scrie Hub-ul la pasul 0 din cuvintele tale; trebuie să pice pe codul de acum din motivul potrivit, e verificat independent, apoi îl protejez",
         ...(useDerived ? [`Criteriile sunt derivate de Hub din cererea ta (tipul cererii: ${derived.shape}), fără model; cuvintele tale rămân cererea`, ...derived.assumptions] : [])] },
     } : {
@@ -382,6 +391,9 @@ export function buildEngineeringSpec({ text, args = {}, project, hubWrites = {} 
   const missing = route === "B" ? String(said[0]).replace(/[\u0000-\u001f\u007f]/g, " ").trim().slice(0, 120) : null;
   return { input, problems, testRef: named, workType, autoBound, route, testFirst, missing, topic: autoBound === "topic" ? topic : null };
 }
+
+/** R-PRIV: the field a hide_public request names (planners/criteria.mjs), for conflictingHubTests. */
+function requestShapeField(words) { return requestShape(words).field || null; }
 
 /**
  * The intake recorder for a planner's "blocked" answer (U06 work requests behind U07's applyPlannerOutcome): the request is kept
@@ -417,6 +429,27 @@ export function createBlockedRecorder(hub) {
 export function registerEngineeringPlanner(hub, intake) {
   const { db, bus, settings, projects, envelopes, config } = hub;
   const nowMs = () => (typeof config?.now === "function" ? config.now() : new Date()).getTime();
+  /**
+   * R-PRIV: the Hub-written tests already in the project (test/hub/*.test.mjs, at most 20, each ≤ 256 KiB) with their sha256 and, when an
+   * approved spec of this project protected exactly those bytes, the mission and spec version they belong to. Read-only.
+   */
+  const earlierHubTests = (project) => {
+    try {
+      const dir = path.join(project.path, HUB_TEST_DIR);
+      if (!fs.existsSync(dir)) return [];
+      const owners = db.prepare("SELECT fs.mission_id, fs.version, fs.protected_json FROM factory_specs fs JOIN missions m ON m.id = fs.mission_id WHERE m.project_id = ? AND fs.status = 'APPROVED' ORDER BY fs.created_at").all(project.id);
+      return fs.readdirSync(dir).filter((n) => /^[a-z0-9][a-z0-9-]{0,63}\.test\.mjs$/.test(n)).sort().slice(0, 20).flatMap((name) => {
+        const abs = path.join(dir, name);
+        const st = fs.lstatSync(abs);
+        if (!st.isFile() || st.size > 256 * 1024) return [];
+        const buf = fs.readFileSync(abs);
+        const ref = `${HUB_TEST_DIR}/${name}`;
+        const digest = crypto.createHash("sha256").update(buf).digest("hex");
+        const owner = owners.find((o) => { try { return JSON.parse(o.protected_json || "{}").files?.[ref] === digest; } catch { return false; } });
+        return [{ ref, sha256: digest, text: buf.toString("utf8"), missionId: owner?.mission_id || null, specVersion: owner ? owner.version : null }];
+      });
+    } catch { return []; }
+  };
   const pending = new Map(); // conversation key → { text, args, projectId, awaiting: "project"|"test"|"text", options, at }
   const inFlight = new Set(); // `${projectId}:${requestHash}`: the same request twice at once prepares one draft
 
@@ -512,7 +545,7 @@ export function registerEngineeringPlanner(hub, intake) {
 
     // ---- the spec: an existing test bound, the Hub's own test (test-first, M11 L5), or ONE plain answer (§2 routes A–J)
     const hubWritesNow = (() => { try { return typeof hub.factory?.hubWrites === "function" ? hub.factory.hubWrites(project.id) : {}; } catch { return {}; } })();
-    const built = buildEngineeringSpec({ text: words, args, project, hubWrites: hubWritesNow });
+    const built = buildEngineeringSpec({ text: words, args, project, hubWrites: hubWritesNow, hubTests: earlierHubTests(project) });
     if (built.input.objective.length < 10) {
       remember(key, { text: words, args, projectId: project.id, awaiting: "text", options: [] });
       return { kind: "question", question: "Descrie-mi cerința într-o propoziție: ce nu merge sau ce trebuie să facă codul?", options: [], forIntent: "engineering", projectId: project.id };

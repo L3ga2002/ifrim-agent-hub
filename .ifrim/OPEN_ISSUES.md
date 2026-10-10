@@ -1,5 +1,28 @@
 # Open Issues - Ifrim Agent Hub
 
+## 2026-10-10 — Corrections after M11 + M12 handoff (code `2.14.6-m11`, contract 13, schema 12; detail: `.ifrim/STAGE_2026-10-10_CORECTII_M11.md`)
+
+This section takes precedence over every older one where they overlap. Baseline at start: HEAD = `origin/v2-milestone-01` = `49a6032`;
+live `2.14.5-m11` (the owner had already upgraded); the owner's uncommitted changes are line endings only.
+
+Closed in code (tested in isolation, full regression 1731/1733 PASS + 1 SKIP + 1 load timeout that passes alone):
+- **Frozen-frame warnings in the delivery clips** (item 2 of the 10-09 section): captures now record measured holds; QA justifies only a
+  freeze inside holds the capture session stored. Old clips keep their reports (nothing retroactive).
+- **Phone in the public list of the §25 demo** (owner's product observation of 10-09): the Hub now plans that revision with distinct
+  checks and supersedes the old §25 test without rewriting it.
+- **Selective revision**: the Excel workbook of a refresh is kept only by proof (live data check: `Programari demo.xlsx` of
+  `dlv_mv16dsp8_491116ae10`, sha `9ce060d8…`, reusable).
+
+Open:
+1. **Upgrade to `2.14.6-m11` and push of the stage commit**: see the thread report (the Claude Code classifier refused them before).
+2. **The §25 privacy revision live**: after the upgrade, the sentence goes to the §25 delivery; the owner confirms the card; Codex
+   implements; the refresh delivery then films the new version and keeps the Excel by proof. Not run yet.
+3. Limits stated by the review: the Excel proof covers the generic demo workbook (not project data); the reused file stays in the source
+   delivery's folder; the conflicting-test detection is a heuristic shown on the card; earlier Hub tests of other missions are still not
+   protected from a later writer (integrity reports `test_modified` medium / `test_deleted` high) — candidate for M12+.
+4. U06-BL-06 can time out under heavy CPU load (130 s in the full run, 9,9 s alone).
+5. Items 3–4 of the 10-09 section (CapCut/OBS, the owner's voice probe, old bundles) are unchanged.
+
 ## 2026-10-09 (evening) — Closure of the stage before M12 (code `2.14.5-m11`, commits `b15f3d6`…`bff5c68`, live `2.14.4-m11`; detail: `.ifrim/STAGE_2026-10-09_LEGA_AUTONOMIE.md` → „Închiderea etapei”)
 
 This section takes precedence over every older one where they overlap. Reconciled facts (checked 2026-10-09 18:05 UTC): `origin/v2-milestone-01`

@@ -11,6 +11,9 @@
 //     · markers: chapter „intro”, demo „<noun> desktop”, demo „<noun> mobil”, evidence (the phone-width proof), cta. A capture marker
 //       at t ms sits at frame round(t·fps/1000) + the clip's offset. The demo notes carry the domain noun, so „după secunda zece arată
 //       direct programarea” resolves to a marker, never to a fixed second;
+//     · R-MEDIA: each clip carries the capture's measured pauses (`holds`, media/holds.mjs) that check out against THAT capture (asset
+//       version, session, steps sha, cap, verified postcondition) in source frames; a hold that does not check out is left out and listed
+//       in `holdsRejected` (never on the clip). Old point markers are never turned into holds;
 //     · evidence regions from the capture's highlight rects (viewport-normalized) of the states the criterion checks, mapped through
 //       the contain framing into canvas space, each with the clip's claim id; the clip focus is the first evidence rect (else the
 //       first highlight).
@@ -29,6 +32,7 @@ import { FULL_RECT, DEFAULT_SAFE_AREA, safeRect, clipFraming, srcToCanvas, estim
 import { applyOps } from "../media/review.mjs";
 import { normalizeRo } from "../media/captions.mjs";
 import { normalize } from "../owner/intents.mjs";
+import { checkCaptureHold, clipHoldOf, HOLD_LIMITS } from "../media/holds.mjs";
 
 export const CLIP_LABEL_TEXT = "DATE SINTETICE · DEMO LOCAL";
 export const CLIP_LABEL_TEXT_SIMULATION = `SIMULARE · ${CLIP_LABEL_TEXT}`;
@@ -129,7 +133,16 @@ function capturesOf(list, fps) {
     if (!CAPTURE_LABELS_ALLOWED.includes(label)) throw bad("CLIP_CAPTURES_INVALID", `Captura ${raw.role} trebuie etichetată ORIGINAL_RECORDING sau SIMULATION (primit: ${String(label).slice(0, 30)}).`);
     const markers = (Array.isArray(raw.markers) ? raw.markers : []).filter((m) => isObject(m) && typeof m.kind === "string" && Number.isFinite(m.atMs) && m.atMs >= 0)
       .map((m) => ({ kind: m.kind, atMs: m.atMs, note: typeof m.note === "string" ? m.note : "", rect: rectOf(m.rect) })).sort((a, b) => a.atMs - b.atMs);
-    out[raw.role] = { role: raw.role, assetVersionId: id, width, height, durationMs, frames: sourceFramesAvailable(durationMs, fps), label, markers,
+    // R-MEDIA: the measured pauses of THIS capture only (its asset version, its session and steps sha when the caller knows them).
+    const holds = [], holdsRejected = [];
+    const ref = { assetVersionId: id, sessionId: typeof raw.sessionId === "string" && raw.sessionId ? raw.sessionId : null, stepsSha: typeof raw.stepsSha === "string" && raw.stepsSha ? raw.stepsSha : null, durationMs };
+    for (const h of (Array.isArray(raw.holds) ? raw.holds : []).slice(0, HOLD_LIMITS.perClip)) {
+      const checked = checkCaptureHold(h, ref);
+      const clipHold = checked.ok ? clipHoldOf(h, fps) : null;
+      if (clipHold) holds.push(clipHold);
+      else holdsRejected.push({ role: raw.role, id: isObject(h) ? String(h.id || "").slice(0, 64) : null, code: checked.ok ? "HOLD_EMPTY_FRAMES" : checked.code, reason: checked.ok ? "sub un cadru" : checked.message });
+    }
+    out[raw.role] = { role: raw.role, assetVersionId: id, width, height, durationMs, frames: sourceFramesAvailable(durationMs, fps), label, markers, holds, holdsRejected,
       evidenceSelectors: Array.isArray(raw.evidenceSelectors) ? raw.evidenceSelectors.map(String) : null, proofSelector: typeof raw.proofSelector === "string" && raw.proofSelector ? raw.proofSelector : null };
   }
   if (!out.desktop || !out.mobile) throw bad("CLIP_CAPTURES_INVALID", "Montajul are nevoie de ambele capturi: desktop și lățimea unui telefon.");
@@ -462,7 +475,7 @@ export function buildMaster(input = {}) {
       { id: "v-main", kind: "video", clips: ROLES.map((role) => {
         const c = clipOf[role];
         return { id: c.id, assetVersionId: c.cap.assetVersionId, sourceIn: 0, sourceOut: c.frames, start: c.start, fit: "contain", label: clipLabel(role),
-          ...(focusOf[role] ? { focus: focusOf[role] } : {}), ...(c.claims.length ? { claimIds: c.claims } : {}) };
+          ...(focusOf[role] ? { focus: focusOf[role] } : {}), ...(c.claims.length ? { claimIds: c.claims } : {}), ...(c.cap.holds.length ? { holds: c.cap.holds } : {}) };
       }) },
       { id: "tr-label", kind: "text", items: [labelItem] },
       ...(items.length ? [{ id: "tr-story", kind: "text", items }] : []),
@@ -483,7 +496,10 @@ export function buildMaster(input = {}) {
     out = r.ir;
     for (const s of r.skipped) notes.push(`Preferința păstrată nu s-a putut aplica: ${s.detail || s.reason}.`);
   }
-  return { ir: out, tone, included, omitted, claims: Object.fromEntries(ROLES.map((role) => [clipOf[role].id, clipOf[role].claims])), markers: markerTable(out), notes };
+  const holdsRejected = ROLES.flatMap((role) => caps[role].holdsRejected);
+  if (holdsRejected.length) notes.push(`${holdsRejected.length} pauze din capturi nu se potrivesc capturii folosite; nu justifică nimic.`);
+  return { ir: out, tone, included, omitted, claims: Object.fromEntries(ROLES.map((role) => [clipOf[role].id, clipOf[role].claims])), markers: markerTable(out), notes,
+    holds: Object.fromEntries(ROLES.map((role) => [CLIP_IDS[role], caps[role].holds.length])), holdsRejected };
 }
 
 /** The master IR alone (see buildMaster). */

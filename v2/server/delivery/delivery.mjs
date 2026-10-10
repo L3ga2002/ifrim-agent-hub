@@ -107,12 +107,12 @@ export function createDeliveries({ db, bus, clock, config, settings, projects, m
    * The delivery row of a proposal (no effect): the frozen template, the exact package steps and the sha of their ops body. The same
    * mission and template reuse the open PLANNED row (a re-proposal of the same card).
    */
-  async function createPlanned({ projectId, missionId, parentId = null, actor = "owner", extras = [] }) {
+  async function createPlanned({ projectId, missionId, parentId = null, actor = "owner", extras = [], reused = [] }) {
     const r = await readiness({ projectId, missionId });
     if (!r.ok) throw new HubError("policy", `Livrarea nu poate fi pregătită: ${r.blockers.map((b) => b.title).join("; ")}`, { code: "DELIVERY_NOT_ELIGIBLE", data: { blockers: r.blockers } });
     const simulation = Boolean(config.testMode);
     const template = buildTemplate({ project: r.project, marker: r.marker, missionView: r.missionView, demo: r.demo, tools: r.tools.identity, toolsState: r.tools.state, chromium: { version: r.browser.version || null },
-      exportsDir: media.exportsDir(), simulation, day: day(), route: r.route, mode: parentId ? "refresh" : "new", parentDeliveryId: parentId, config, extras });
+      exportsDir: media.exportsDir(), simulation, day: day(), route: r.route, mode: parentId ? "refresh" : "new", parentDeliveryId: parentId, config, extras, reused });
     const tSha = templateSha(template);
     const existing = db.prepare("SELECT * FROM deliveries WHERE mission_id = ? AND status = 'PLANNED' AND template_sha = ? ORDER BY created_at DESC LIMIT 1").get(missionId, tSha);
     if (existing) return get(existing.id);
@@ -441,14 +441,17 @@ export function createDeliveries({ db, bus, clock, config, settings, projects, m
   /** The office steps of the delivery's own package plan (DONE ones carry the file, its sha and the level reached). */
   function officeOf(d) {
     const extras = d.template?.extras || [];
-    if (!extras.length || !d.opsPlanId) return { requested: extras, folder: null, items: [] };
+    // R-REV: what this refresh kept from its parent by proof (same inputs, same bytes), with the hashes and the reason.
+    const reusedItems = (d.template?.reused || []).map((r) => ({ kind: `delivery.office.${r.kind}`, label: r.kind === "workbook" ? "Registru Excel" : r.kind, status: "REUSED", file: r.file, sha256: r.sha256,
+      inputsSha: r.inputsSha, level: r.level || null, sourceDeliveryId: r.sourceDeliveryId, dependsOn: OFFICE_DEPENDS[`delivery.office.${r.kind}`] || [], state: "CURRENT", stateReason: r.reason }));
+    if (!extras.length || !d.opsPlanId) return { requested: extras, folder: null, items: reusedItems, reused: reusedItems.length };
     const p = opsPlans.view(d.opsPlanId);
     const label = { "delivery.office.document": "Document Word", "delivery.office.workbook": "Registru Excel", "delivery.campaign": "Pachet de campanie", "delivery.package.index": "Cuprinsul dosarului" };
     const items = (p?.steps || []).filter((s) => label[s.kind]).map((s) => ({ kind: s.kind, label: label[s.kind], status: s.status, file: s.result?.file || s.result?.dir || s.result?.folder || null,
       pdf: s.result?.pdf || null, level: s.result?.level || s.result?.calendarLevel || null, pages: s.result?.pages || null, formulasChecked: s.result?.formulasChecked ?? null,
       channels: s.result?.channels ?? null, posts: s.result?.posts ?? null, files: s.result?.files?.length ?? (typeof s.result?.files === "number" ? s.result.files : null),
       sha256: s.result?.sha256 || null, ...officeState(d, s.kind) }));
-    return { requested: extras, folder: path.join(d.template.exports.dir, d.template.exports.folder), softwareSpecSha: d.template?.specSha || null, items };
+    return { requested: extras, folder: path.join(d.template.exports.dir, d.template.exports.folder), softwareSpecSha: d.template?.specSha || null, items: [...items, ...reusedItems], reused: reusedItems.length };
   }
 
   /**

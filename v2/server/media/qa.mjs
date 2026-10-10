@@ -6,6 +6,7 @@ import { json, parse } from "../storage/db.mjs";
 import { validateIR, normalizeIR, irHash, timelineDuration, clipDuration, primaryVideoTrack, framesToMs, msToFrames, framesToTimecode, fpsValue,
   DISCLOSURE_LABELS } from "./ir.mjs";
 import { checkCues, normalizeRo } from "./captions.mjs";
+import { holdCover, holdMatchesStored } from "./holds.mjs";
 import { PRESETS } from "./visual-bible.mjs";
 import { inputArgs } from "./tools.mjs";
 import { profileCanvas } from "./compile.mjs";
@@ -25,7 +26,9 @@ import { PLATFORM_PROFILES, DEFAULT_SAFE_AREA, TEXT_METRICS, safeRect, estimateT
  * supervisor's ring keeps only 80 lines and tools.run's own buffer is capped), so a long render loses no event. Findings are
  * mapped to timeline frames of the IR. A black / frozen / silent range is `justified` only by the shot it lies in: a clip (or
  * consecutive clips of one shotId) marked `holdIntentional`, a `fade` transition (dip through a dark canvas background) for
- * black, or a timeline range with no audio clip in the IR for silence. There is no global whitelist.
+ * black, or a timeline range with no audio clip in the IR for silence. There is no global whitelist. R-MEDIA: a FROZEN range (only that
+ * kind) is also justified when it lies inside a run of the clip's measured capture holds (media/holds.mjs: a planned pause whose step was
+ * verified, remapped through cuts / speed / variants); the finding keeps its raw measurement and names the holds it relied on.
  *
  * Layout QA uses the platform profile's safe area (variants.mjs, internal estimates) and the documented text-box estimate
  * (TEXT_METRICS: average advance 0,55 em proportional / 0,60 em mono, ×1,15 uppercase, line height 1,2); captions are checked
@@ -212,6 +215,15 @@ export function justificationFor(ir, kind, fromFrame, toFrame) {
     if (sameShot && overlapping.every((x) => x.c.holdIntentional === true) && s - tol <= fromFrame && toFrame <= e + tol) {
       const c = overlapping[0].c;
       return { reason: `Cadrul „${c.id}”${c.shotId ? ` (shot ${c.shotId})` : ""} este marcat holdIntentional.`, clipId: c.id, shotId: c.shotId || null };
+    }
+  }
+  // R-MEDIA: only a frozen picture; black, decode errors, a stalled capture or legibility are never justified by a pause.
+  if (kind === "freeze") {
+    const cover = holdCover(ir, fromFrame, toFrame, tol);
+    if (cover) {
+      const reasons = [...new Set(cover.holds.map((h) => h.reason))].join(", ");
+      return { reason: `Pauză planificată și verificată în captură (${reasons}; pașii ${[...new Set(cover.holds.map((h) => h.step))].join(", ")}) pe clipul „${cover.clipId}”, cadrele ${cover.from}–${cover.to}.`,
+        clipId: cover.clipId, shotId: null, basis: "capture_holds", holds: cover.holds.map((h) => ({ id: h.holdId, reason: h.reason, step: h.step, from: h.from, to: h.to, assetVersionId: h.assetVersionId })) };
     }
   }
   if (kind === "black" && isDarkHex(ir.canvas?.background)) {
@@ -575,6 +587,35 @@ export function createMediaQa({ db, bus, clock = () => new Date(), tools = null,
     return { kind: "legibility", status: statusOf(list), findings: list, measurements: { qaVersion: QA_VERSION, heuristic: true, note: "Un cadru pe text; fundalul în mișcare și ecranul privitorului nu sunt măsurate.", items: measured } };
   }
 
+  /**
+   * Review F1 (R-MEDIA): an IR is editable, so a clip hold counts as evidence only when the capture session it names STORED exactly that
+   * hold (media_capture_sessions.scope_json.result.holds, written by the capture itself). Others are dropped before any justification and
+   * counted in the measurements (holds: { kept, unverified }).
+   */
+  function verifiedHolds(nir, measurements) {
+    const stats = { kept: 0, unverified: 0 };
+    const cache = new Map();
+    const storedOf = (sessionId) => {
+      if (!cache.has(sessionId)) {
+        let row = null;
+        try { row = db.prepare("SELECT scope_json FROM media_capture_sessions WHERE id = ?").get(String(sessionId || "")); } catch { row = null; }
+        cache.set(sessionId, parse(row?.scope_json, {})?.result?.holds || []);
+      }
+      return cache.get(sessionId);
+    };
+    for (const t of nir?.tracks || []) {
+      if (t.kind !== "video") continue;
+      for (const c of t.clips || []) {
+        if (!Array.isArray(c.holds)) continue;
+        const keep = c.holds.filter((h) => holdMatchesStored(h, storedOf(h?.provenance?.sessionId)));
+        stats.kept += keep.length; stats.unverified += c.holds.length - keep.length;
+        c.holds = keep;
+      }
+    }
+    if (stats.kept || stats.unverified) measurements.holds = stats;
+    return nir;
+  }
+
   /** ffprobe + one analysis pass. Never persists; `run` does. */
   async function technical({ assetVersionId, ir = null, key = null, timeoutMs = null } = {}) {
     if (!assets || !tools) throw new HubError("internal", "QA tehnic are nevoie de biblioteca media și de unelte.", { code: "QA_DEPS_MISSING" });
@@ -584,7 +625,7 @@ export function createMediaQa({ db, bus, clock = () => new Date(), tools = null,
     if (!version) throw new HubError("not_found", "Versiunea media nu există.", { code: "MEDIA_VERSION_MISSING" });
     const measurements = { qaVersion: QA_VERSION, thresholds: QA_THRESHOLDS, assetVersionId: version.id, sha256: version.sha256, startedAt };
     const done = (status) => ({ kind: "technical", status, findings: list, measurements: { ...measurements, finishedAt: now() } });
-    const nir = ir ? normalizeIR(ir) : null;
+    const nir = ir ? verifiedHolds(normalizeIR(ir), measurements) : null;
     const fps = nir?.fps || null;
     // A render's expected picture size follows its profile (a draft is rendered at half resolution by design).
     const renderProfile = db.prepare("SELECT profile FROM media_render_jobs WHERE output_asset_version_id = ? ORDER BY created_at DESC LIMIT 1").get(version.id)?.profile || "final";
@@ -675,7 +716,8 @@ export function createMediaQa({ db, bus, clock = () => new Date(), tools = null,
       const { range, just } = mapEvent("freeze", e);
       add({ code: "FROZEN_SEGMENT", severity: "warning", criterion: `Fără imagine înghețată ≥ ${T.freezeMinS} s neintenționată`, message: `Imagine înghețată ${range.label} (${e.durationS.toFixed(2).replace(".", ",")} s).`,
         evidence: { filter: "freezedetect", startS: e.startS, endS: e.endS, durationS: e.durationS, noiseDb: T.freezeNoiseDb, openEnded: Boolean(e.openEnded) }, range,
-        proposedFix: "Scurtează sau acoperă cu mișcare (zoom), ori marchează cadrul holdIntentional dacă pauza este voită.", justified: Boolean(just), justification: just?.reason || null, clipId: just?.clipId || undefined });
+        proposedFix: "Scurtează sau acoperă cu mișcare (zoom), ori marchează cadrul holdIntentional dacă pauza este voită.", justified: Boolean(just), justification: just?.reason || null, clipId: just?.clipId || undefined,
+        ...(just?.basis ? { justificationBasis: just.basis, justificationHolds: just.holds } : {}) });
     }
     for (const e of a.silence) {
       const { range, just } = mapEvent("silence", e);

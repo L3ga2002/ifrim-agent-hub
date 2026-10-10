@@ -125,6 +125,26 @@ export function checkSpec(input = {}, { hubPorts = [8011, 8012] } = {}) {
     } else spec.verification.preview = { command, url: url.href };
   }
   if (spec.acceptance.some((a) => a.steps) && !spec.verification.preview) problems.push("criteriile E2E cu pași au nevoie de un preview (verification.preview)");
+  // R-PRIV: earlier Hub-written tests this revision makes incompatible (planners/criteria.mjs conflictingHubTests). The key exists only
+  // when the input carries it. At the start the Hub moves each one, unchanged and sha-checked, out of the active suite (factory.mjs
+  // retireSuperseded); it stays linked to its original version. Only Hub-written tests (test/hub/…) can be superseded, never the
+  // revision's own test.
+  if (input.supersedes !== undefined && input.supersedes !== null) {
+    spec.supersedes = [];
+    const own = input.authoring?.testRef ? relPath(input.authoring.testRef) : null;
+    for (const [i, raw] of (Array.isArray(input.supersedes) ? input.supersedes : []).slice(0, 10).entries()) {
+      const testRef = relPath(raw?.testRef) || "";
+      const sha = String(raw?.sha256 || "");
+      const item = { testRef, sha256: sha, missionId: raw?.missionId ? str(raw.missionId, 80) : null, specVersion: Number.isInteger(raw?.specVersion) ? raw.specVersion : null, reason: str(raw?.reason, 300) };
+      if (!TEST_REF_RE.test(testRef)) problems.push(`supersedes[${i}]: doar un test scris de Hub (${AUTHORING_TEST_DIR}/<nume>.test.mjs)`);
+      else if (own && testRef === own) problems.push(`supersedes[${i}]: testul acestei revizii nu se poate înlocui pe sine`);
+      if (!/^[0-9a-f]{64}$/.test(sha)) problems.push(`supersedes[${i}]: sha256 lipsește`);
+      if (item.reason.length < 10) problems.push(`supersedes[${i}]: motivul incompatibilității lipsește`);
+      if (spec.supersedes.some((x) => x.testRef === testRef)) problems.push(`supersedes[${i}]: ${testRef} apare de două ori`);
+      spec.supersedes.push(item);
+    }
+    if (!spec.supersedes.length) problems.push("supersedes: listă goală (lipsește cheia când nu se înlocuiește nimic)");
+  }
   // M11 L5: the key exists ONLY when the input carries it (null = absent), so every ordinary spec keeps its exact hash.
   if (input.authoring !== undefined && input.authoring !== null) {
     const { authoring, problems: authoringProblems } = checkAuthoring(input.authoring, spec);

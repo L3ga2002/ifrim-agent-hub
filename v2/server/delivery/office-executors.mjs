@@ -12,6 +12,7 @@ import { buildDocx, expectedDocxShape } from "../office/docx.mjs";
 import { buildXlsx, formulaCells } from "../office/xlsx.mjs";
 import { presentationDocument, bookingsWorkbook } from "../office/demo-content.mjs";
 import { buildCampaign, campaignMarkdown, campaignWorkbook } from "../office/campaign.mjs";
+import { hashCanonical } from "../core/canonical.mjs";
 
 export const OFFICE_ARTIFACTS = Object.freeze(["document", "workbook", "campaign"]);
 const refuse = (code, message) => new HubError("policy", message, { code });
@@ -177,11 +178,20 @@ export function createOfficeExecutors({ deliveries, factory, opsPlans, config, a
         const files = list.map((p) => { const b = fs.readFileSync(p); return { path: path.relative(root, p).replace(/\\/g, "/"), bytes: b.length, sha256: sha(b) }; });
         const steps = (opsPlans.view(planId)?.steps || []).filter((s) => s.status === "DONE" && s.result);
         const level = (kind) => steps.find((s) => s.kind === kind)?.result?.level || steps.find((s) => s.kind === kind)?.result?.calendarLevel || null;
-        const manifest = { schema: 1, deliveryId: d.id, project: d.template.project.name, folder: root, files,
+        // R-REV: an artifact of the parent delivery kept by proof (same inputs, same bytes) is listed with its own folder, sha and reason.
+        const reused = (d.template.reused || []).map((r) => ({ kind: r.kind, file: r.file, sha256: r.sha256, sourceDeliveryId: r.sourceDeliveryId, inputsSha: r.inputsSha, reason: r.reason }));
+        // Review F7: the reused file is still the one the card named (the card may have waited); a changed or missing file stops the step.
+        for (const r of reused) {
+          let now = null;
+          try { now = sha(fs.readFileSync(r.file)); } catch { now = null; }
+          if (now !== r.sha256) throw refuse("REUSED_FILE_CHANGED", `${path.basename(r.file)} nu mai e fișierul refolosit din planul confirmat (${now ? "conținut schimbat" : "lipsește"}); cere livrarea din nou ca să fie regenerat.`);
+        }
+        const manifest = { schema: 1, deliveryId: d.id, project: d.template.project.name, folder: root, files, ...(reused.length ? { reused } : {}),
           verification: { document: level("delivery.office.document"), workbook: level("delivery.office.workbook"), campaignCalendar: level("delivery.campaign") }, published: false, note: "Date demonstrative; nimic publicat." };
         const readme = [`# ${d.title}`, "", "Dosarul prezentării, pregătit de Ifrim Agent Hub dintr-un singur plan confirmat. Nimic nu a fost publicat.", "",
           "| Fișier | Mărime |", "|---|---|", ...files.map((f) => `| ${f.path} | ${Math.max(1, Math.round(f.bytes / 1024))} KB |`), "",
           "Verificări: " + Object.entries(manifest.verification).filter(([, v]) => v).map(([k, v]) => `${k} ${v}`).join(", "), "",
+          ...(reused.length ? ["Refolosite din livrarea anterioară (aceleași intrări, aceiași octeți):", ...reused.map((r) => `- ${path.basename(r.file)} — sha256 ${r.sha256.slice(0, 16)}… — ${r.reason}`), ""] : []),
           "Date demonstrative: programările și cifrele sunt exemple; prețurile sunt „De stabilit”.", ""].join("\n");
         // README/manifest describe the folder as it is now: rewritten on purpose (they are the index, not a deliverable copy).
         authorize({ op: "export.local", destination: path.join(root, "README.md") });
@@ -191,6 +201,28 @@ export function createOfficeExecutors({ deliveries, factory, opsPlans, config, a
       },
     },
   };
+}
+
+/**
+ * R-REV: whether the Excel workbook of an earlier delivery of the lineage (`source`, the one that generated it) may be kept by a refresh
+ * instead of being generated again. Proven, never assumed: the source's DONE workbook step recorded a file and its sha256; the file on
+ * disk still has that sha; and the generator run NOW on the current demo data with the source's own creation date produces exactly those
+ * bytes (same data, same generator → same file). → { ok: true, reuse: { kind, sourceDeliveryId, file, sha256, inputsSha, level, reason } }
+ * | { ok: false, code, detail }. Pure apart from reading the source's file.
+ */
+export function workbookReuse({ source, sourcePlan }) {
+  const parent = source;
+  const step = (sourcePlan?.steps || []).find((s) => s.kind === "delivery.office.workbook" && s.status === "DONE" && s.result?.file && s.result?.sha256);
+  if (!step) return { ok: false, code: "NO_PARENT_WORKBOOK", detail: "livrarea anterioară nu are un registru Excel terminat" };
+  const file = String(step.result.file);
+  let onDisk = null;
+  try { onDisk = sha(fs.readFileSync(file)); } catch { return { ok: false, code: "FILE_MISSING", detail: `${path.basename(file)} nu mai există` }; }
+  if (onDisk !== step.result.sha256) return { ok: false, code: "FILE_CHANGED", detail: `${path.basename(file)} s-a schimbat după livrare` };
+  const wb = bookingsWorkbook();
+  const rebuilt = sha(buildXlsx(wb.model, { created: new Date(parent.createdAt) }));
+  if (rebuilt !== step.result.sha256) return { ok: false, code: "INPUTS_CHANGED", detail: "datele demonstrative sau generatorul s-au schimbat (registrul nou ar fi diferit)", rebuilt, recorded: step.result.sha256 };
+  return { ok: true, reuse: { kind: "workbook", sourceDeliveryId: String(parent.id), file, sha256: step.result.sha256, inputsSha: hashCanonical(wb.model), level: step.result.level || null,
+    reason: "date demonstrative independente de cod: aceleași date și același generator dau exact același fișier (sha256 verificat)" } };
 }
 
 /** Which office artifacts a sentence asks for (Romanian, diacritics folded). Pure. */

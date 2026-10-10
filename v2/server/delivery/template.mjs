@@ -394,8 +394,15 @@ export function exportFolderName({ prefix = null, noun, slug, day }) {
  * blockers with `eligibility` first.
  */
 export function buildTemplate({ project, marker, missionView, demo, tools = null, toolsState = null, chromium = null, exportsDir, simulation = false, day,
-  route = "windows", mode = "new", parentDeliveryId = null, config = {}, extras = [] } = {}) {
+  route = "windows", mode = "new", parentDeliveryId = null, config = {}, extras = [], reused = [] } = {}) {
   const problems = [];
+  // R-REV: artifacts of the parent kept by proof (delivery/office-executors.mjs workbookReuse) — only in a refresh, never also regenerated.
+  const reusedList = (Array.isArray(reused) ? reused : []).filter((r) => isObject(r));
+  for (const r of reusedList) {
+    if (!DELIVERY_EXTRAS.includes(r.kind) || !/^[0-9a-f]{64}$/.test(String(r.sha256 || "")) || !/^[0-9a-f]{64}$/.test(String(r.inputsSha || "")) || typeof r.file !== "string" || !path.isAbsolute(r.file)) problems.push(`refolosire invalidă: ${String(r.kind).slice(0, 30)}`);
+    else if (mode !== "refresh" || !DELIVERY_ID_RE.test(String(r.sourceDeliveryId || ""))) problems.push("o refolosire vine doar dintr-o livrare anterioară a unei reîmprospătări");
+    else if ((extras || []).includes(r.kind)) problems.push(`${r.kind}: nu se refolosește și se regenerează în același timp`);
+  }
   const extraList = DELIVERY_EXTRAS.filter((x) => (extras || []).includes(x));
   for (const x of extras || []) if (!DELIVERY_EXTRAS.includes(x)) problems.push(`livrabil necunoscut: ${String(x).slice(0, 30)}`);
   if (!isObject(project) || !project.id || !project.name) problems.push("proiectul lipsește");
@@ -461,6 +468,7 @@ export function buildTemplate({ project, marker, missionView, demo, tools = null
     pin: t.state === "UNPINNED" ? { expect: t.identity } : null,
     // Only when asked: a template without extras keeps the M11 shape (and hash) byte for byte.
     ...(extraList.length ? { extras: extraList } : {}),
+    ...(reusedList.length ? { reused: reusedList.map((r) => ({ kind: r.kind, sourceDeliveryId: r.sourceDeliveryId, file: r.file, sha256: r.sha256, inputsSha: r.inputsSha, level: r.level || null, reason: clean(r.reason, 200) })) } : {}),
   };
   return deepFreeze(JSON.parse(JSON.stringify(template)));
 }
@@ -496,6 +504,7 @@ export const DELIVERY_DECISIONS_LEFT = Object.freeze(["Accept local (software)",
   "drepturile pentru uz public", "rezumatul „gata de prezentare”"]);
 const EXTRA_OUTPUTS = Object.freeze({ document: "document Word (verificat în Word, cu PDF)", workbook: "registru Excel cu date demonstrative (formule recalculate de Excel)", campaign: "pachet de campanie pregătit local (nepublicat)" });
 const outputsOf = (t) => ["clip 16:9 cu QA automat", "variantă verticală 9:16 cu QA automat", "rezumat comercial v1 (Markdown + HTML)", ...(t.extras || []).map((x) => EXTRA_OUTPUTS[x]),
+  ...(t.reused || []).map((r) => `${EXTRA_OUTPUTS[r.kind] || r.kind}: refolosit din livrarea anterioară (sha256 ${r.sha256.slice(0, 12)}…, aceleași intrări)`),
   `folder local: ${t.exports.folder} (în folderul de exporturi aprobat)`];
 
 /**

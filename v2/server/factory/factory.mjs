@@ -556,13 +556,20 @@ export function createFactory(deps) {
         if (!fs.existsSync(abs) || !fs.statSync(abs).isFile()) throw new HubError("validation", `Testul de acceptanță ${ref} nu există în proiect: criteriile se fixează înainte de implementare`);
         protectedFiles[ref] = sha256File(abs);
       }
+      // R-PRIV: the earlier Hub-written tests the confirmed spec supersedes leave the active suite after every pre-check and BEFORE any
+      // snapshot, unchanged and sha-checked, kept in .ifrim-hub/retired/<mission>/ and linked to their original version (never rewritten
+      // to pass). Review F3: if the start fails after the move, the files go back (restoreRetired) — nothing moves without its record.
+      const retired = retireSuperseded(missionId, strict, project);
       // A test-first mission's first snapshot is the pre-test base: step 0 compares the project with it, and the base proper is taken
       // when the reviewed test is protected (in the same snapshot mode).
-      const base = recordSnapshot(missionId, testFirst ? "pre_test" : "base", null, project.path, { mode: null });
+      let base;
       const started = clock();
+      try {
+      base = recordSnapshot(missionId, testFirst ? "pre_test" : "base", null, project.path, { mode: null });
       bus.transaction(() => {
         const authoring = testFirst ? openAuthoring(missionId, f, strict, project, base, testFirst, actor) : null;
-        db.prepare("UPDATE factory_specs SET status = 'APPROVED', approved_at = ?, protected_json = ? WHERE id = ?").run(now(), json({ problems: [], files: protectedFiles, ...(authoring ? { authoring } : {}) }), spec.id);
+        db.prepare("UPDATE factory_specs SET status = 'APPROVED', approved_at = ?, protected_json = ? WHERE id = ?").run(now(), json({ problems: [], files: protectedFiles, ...(authoring ? { authoring } : {}), ...(retired.length ? { retired } : {}) }), spec.id);
+        for (const r of retired) bus.append({ type: "factory.test_superseded", scopeType: "mission", scopeId: missionId, source: actor, payload: { missionId, ...r } });
         // M09: the approved bindings are stored with the scope; every dispatch reads them (never the current limits_json).
         db.prepare(`UPDATE factory_missions SET approved_spec_version = ?, scope_hash = ?, scope_approval_id = ?, base_snapshot_id = ?, started_at = ?, deadline_at = ?, cancel_requested_at = NULL,
           repair_cycles = 0, bindings_json = ? WHERE mission_id = ?`).run(spec.version, hashCanonical(scope), approvalId, base.id, started.toISOString(),
@@ -574,6 +581,7 @@ export function createFactory(deps) {
         if (authoring) setStage(missionId, "TEST_AUTHORING", { waitReason: "provider", reason: T_STAGE.TEST_AUTHORING, actor });
         else setStage(missionId, "BASELINE", { waitReason: "runner", reason: "Rulez testele de acceptanță înainte de orice modificare", actor });
       });
+      } catch (error) { restoreRetired(retired, project); throw error; }
       background(missionId, () => (testFirst ? dispatchTestAuthor(missionId) : runBaseline(missionId)));
       return view(missionId);
     });
@@ -900,6 +908,8 @@ export function createFactory(deps) {
       ...(s.constraints.length ? [`Restricții: ${s.constraints.join("; ")}`] : []),
       "Criterii de acceptanță:", ...s.acceptance.flatMap((a) => [`- ${a.id} [${a.verify}${a.testRef ? `: ${a.testRef}` : ""}] ${a.text}`, ...e2eStepLines(a)]),
       ...(protectedFiles.length ? [`Teste de acceptanță PROTEJATE (nu le modifica, nu le șterge, nu le sări): ${protectedFiles.join(", ")}`] : []),
+      // R-PRIV: the earlier tests this revision superseded are history, not work: never recreated, edited or run again by the writer.
+      ...((spec.protected?.retired || []).length ? [`Teste anterioare retrase de Hub la pornire (contractul vechi, păstrate neschimbate în .ifrim-hub/retired/): ${spec.protected.retired.map((r) => r.from).join(", ")}; nu le recrea și nu le modifica`] : []),
       ...hubTestLine,
       `După tine, Hub-ul rulează singur: ${[...s.verification.checks, ...s.verification.acceptance].join(", ")}. Nu declara că trec fără să le fi rulat.`,
       "", kind,
@@ -2557,6 +2567,49 @@ export function createFactory(deps) {
 }
 
 function sha256File(file) { return crypto.createHash("sha256").update(fs.readFileSync(file)).digest("hex"); }
+
+/**
+ * R-PRIV: moves each earlier Hub-written test a confirmed spec supersedes (spec.supersedes, test/hub/<name>.test.mjs) to
+ * .ifrim-hub/retired/<missionId>/<name>.test.mjs.retired — a name node --test never discovers, inside the Hub's own work area (a control
+ * path: a writer that touches it is a critical finding). Only the exact bytes named on the card are moved (sha256); a copy is verified
+ * before the original is removed. Idempotent for a resumed start (already moved with the same bytes). → [{ from, to, sha256, missionId,
+ * specVersion, reason, at }]. Throws SUPERSEDE_MISMATCH when the file is missing or not the one the owner confirmed.
+ */
+/** Review F3: puts retired tests back (a start that failed after the move); the retired copy is removed only once the original is back. */
+export function restoreRetired(retired, project) {
+  for (const r of retired || []) {
+    try {
+      const from = path.join(project.path, r.from), to = path.join(project.path, r.to);
+      if (!fs.existsSync(from) && fs.existsSync(to) && sha256File(to) === r.sha256) fs.copyFileSync(to, from, fs.constants.COPYFILE_EXCL);
+      if (fs.existsSync(from) && sha256File(from) === r.sha256) fs.rmSync(to, { force: true });
+    } catch { /* left for the next start, which finds both copies and finishes or reverses the move */ }
+  }
+}
+
+export function retireSuperseded(missionId, spec, project) {
+  const out = [];
+  for (const s of spec.supersedes || []) {
+    const name = path.posix.basename(s.testRef);
+    const toRel = `.ifrim-hub/retired/${missionId}/${name}.retired`;
+    const fromFolder = safeFolder(project.path, path.posix.dirname(s.testRef), { create: false });
+    const fromSha = fromFolder ? fileShaAt(fromFolder, name) : null;
+    const existingTo = safeFolder(project.path, path.posix.dirname(toRel), { create: false });
+    const toSha = existingTo ? fileShaAt(existingTo, `${name}.retired`) : null;
+    const record = { from: s.testRef, to: toRel, sha256: s.sha256, missionId: s.missionId || null, specVersion: s.specVersion ?? null, reason: s.reason, at: new Date().toISOString() };
+    if (fromSha === null && toSha === s.sha256) { out.push(record); continue; }
+    // An interrupted move (the copy verified, the original not yet removed): finish it.
+    if (fromSha === s.sha256 && toSha === s.sha256) { fs.rmSync(path.join(fromFolder, name)); out.push(record); continue; }
+    if (fromSha !== s.sha256) throw new HubError("conflict", `Testul anterior ${s.testRef} nu mai este cel din planul confirmat (${fromSha ? "conținut diferit" : "lipsește"}); nu îl mut`, { code: "SUPERSEDE_MISMATCH" });
+    if (toSha !== null) throw new HubError("conflict", `${toRel} există deja cu alt conținut; nu îl suprascriu`, { code: "SUPERSEDE_MISMATCH" });
+    const toFolder = safeFolder(project.path, path.posix.dirname(toRel));
+    const target = path.join(toFolder, `${name}.retired`);
+    fs.copyFileSync(path.join(fromFolder, name), target, fs.constants.COPYFILE_EXCL);
+    if (sha256File(target) !== s.sha256) { fs.rmSync(target, { force: true }); throw new HubError("internal", `Copia testului ${s.testRef} nu are aceleași octeți; nu îl mut`, { code: "SUPERSEDE_COPY" }); }
+    fs.rmSync(path.join(fromFolder, name));
+    out.push(record);
+  }
+  return out;
+}
 
 // ---------- M11 L5: the files the Hub itself writes into a project (§5.1 S2) ----------
 const samePath = (a, b) => (process.platform === "win32" ? String(a).toLowerCase() === String(b).toLowerCase() : a === b);

@@ -128,7 +128,9 @@ export function createDeliveryExecutors({ deliveries, factory, media, projects, 
         if (after.actual !== before.actual) throw refuse("SNAPSHOT_DRIFT", `Proiectul s-a schimbat în timpul capturii (${after.changedFiles.slice(0, 5).join(", ")}); captura nu se leagă de livrare.`);
         const bundleItem = deliveries.currentItem(d.id, "bundle");
         const item = deliveries.bindItem(d.id, { kind: "capture", role: cap.role, refTable: "media_asset_versions", refId: out.version.id, refSha: out.version.sha256 || "", upstream: bundleItem ? [bundleItem.id] : [],
-          meta: { viewport: cap.viewport, dsf: cap.dsf, label: cap.captureLabel, durationMs: out.durationMs, width: out.width, height: out.height, markers: out.markers, sessionId: session.id, snapshotBefore: before.actual, snapshotAfter: after.actual } }, `plan:${planId}`);
+          meta: { viewport: cap.viewport, dsf: cap.dsf, label: cap.captureLabel, durationMs: out.durationMs, width: out.width, height: out.height, markers: out.markers, sessionId: session.id, snapshotBefore: before.actual, snapshotAfter: after.actual,
+            // R-MEDIA: the measured pauses of this capture (bound to its asset version, session and steps sha) and the refused ones, by code.
+            stepsSha: out.stepsSha || null, holds: out.holds || [], holdsRejected: (out.holdsRejected || []).map((h) => ({ reason: h.reason, step: h.step, code: h.code })) } }, `plan:${planId}`);
         return { result: { assetVersionId: out.version.id, durationMs: out.durationMs, itemId: item.id } };
       },
     },
@@ -161,7 +163,9 @@ export function createDeliveryExecutors({ deliveries, factory, media, projects, 
           // The duration the IR validator reads (ffprobe of the stored file), never the recorder's own estimate: the last frame must exist.
           const probed = media.assets.getVersion(item.refId)?.probe?.durationMs;
           return { role, assetVersionId: item.refId, durationMs: Number.isFinite(probed) && probed > 0 ? probed : item.meta.durationMs, width: item.meta.width, height: item.meta.height, captureLabel: item.meta.label, markers: item.meta.markers || [],
-            evidenceSelectors: cap.evidenceSelectors, proofSelector: cap.proofSelector, itemId: item.id };
+            evidenceSelectors: cap.evidenceSelectors, proofSelector: cap.proofSelector, itemId: item.id,
+            // R-MEDIA: checked against THIS capture item and the confirmed template's steps (a hold of another script is refused in clip-ir).
+            holds: item.meta.holds || [], sessionId: item.meta.sessionId || null, stepsSha: cap.stepsSha || null };
         });
         const brief = deliveries.currentItem(d.id, "brief");
         const prefs = brief?.meta?.prefs || {};
@@ -173,7 +177,7 @@ export function createDeliveryExecutors({ deliveries, factory, media, projects, 
         const markers = (built.ir.markers || []).map((m) => ({ kind: m.kind, note: m.note, ms: Math.round((m.frame / fps) * 1000) }));
         deliveries.patch(d.id, { edit_project_id: edit.project.id });
         deliveries.bindItem(d.id, { kind: "edit", role: "master", refTable: "media_edit_versions", refId: edit.version.id, refSha: edit.version.irSha256 || "",
-          upstream: [...captures.map((c) => c.itemId), ...(brief ? [brief.id] : []), ...claimItems.map((c) => c.id)], meta: { textItems, markers, tone: prefs.tone || d.template.story.tone, omitted: built.omitted || [] } }, `plan:${planId}`);
+          upstream: [...captures.map((c) => c.itemId), ...(brief ? [brief.id] : []), ...claimItems.map((c) => c.id)], meta: { textItems, markers, tone: prefs.tone || d.template.story.tone, omitted: built.omitted || [], holds: built.holds || {}, holdsRejected: built.holdsRejected || [] } }, `plan:${planId}`);
         return { result: { editVersionId: edit.version.id, editProjectId: edit.project.id } };
       },
     },

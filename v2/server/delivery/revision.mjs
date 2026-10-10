@@ -78,7 +78,8 @@ const SUMMARY_WORDS = w("rezumat|rezumatul|rezumatului|oferta|ofertei|sectiunea|
 /** The summary named outright: it wins over a clip word in the same clause („În rezumat, la Materiale video …”). */
 const SUMMARY_STRONG = w("rezumat|rezumatul|rezumatului|oferta|ofertei");
 const STRONG_NOUNS = "site|siteul|aplicatia|aplicatie|aplicatiei|app|pagina|paginii|paginile|formular|formularul|formularului|software|softul|codul|functia|functionalitatea|meniul|meniu|baza de date|serverul|api";
-const ELEMENT_NOUNS = "buton|butonul|butonului|butoanele|camp|campul|campului|campuri|campurile|validarea";
+// R-PRIV: „lista publică (a zilei)” is a part of the application too, like a button or a field.
+const ELEMENT_NOUNS = "buton|butonul|butonului|butoanele|camp|campul|campului|campuri|campurile|validarea|lista publica|listei publice|listele publice";
 /** The application itself: with a change verb the clause is a software request even when it speaks of a text („titlul paginii”). */
 const SOFTWARE_STRONG = w(STRONG_NOUNS);
 /** Any software noun. An element alone (a button, a field) next to a text noun may be what a clip text covers, so it is not enough. */
@@ -338,6 +339,10 @@ function decisionsIn(n, named) {
 }
 /** Whether a normalized clause speaks of the application itself (an element next to a text noun may be what a clip text covers). */
 const aboutSoftware = (n) => SOFTWARE_STRONG.test(n) || (SOFTWARE_NOUNS.test(n) && !TEXT_NOUNS.test(n));
+/** „… continuă să funcționeze”, „merg în continuare”, „rămân la fel”: what must keep working (a constraint, not a change). */
+/** Review F4: what the „keeps working” clause must be about — the application's own flows, not a clip or a text. */
+const APP_FLOWS = /(?<![a-z0-9])(?:programar|rezervar|comenz|flux|aplicati|formular|site|pagin|functionalit)/;
+const KEEPS_WORKING = /(?<![a-z0-9])(?:continua|continue) sa (?:functioneze|mearga)(?![a-z0-9])|(?<![a-z0-9])merg(?:e)? in continuare(?![a-z0-9])|(?<![a-z0-9])raman(?:e)? (?:la fel|neschimbat[ea]?)(?![a-z0-9])/;
 
 /** The section a clause names (longest alias first), or the selected one. */
 function sectionIn(n, c) {
@@ -643,6 +648,14 @@ export function classify(text, ctx = {}) {
   const edits = clauses.filter((cl) => cl.class === "summary" && Array.isArray(cl.edits)).flatMap((cl) => cl.edits);
   const summary = edits.length ? { target: targetRef("summary", c), edits } : null;
   const softwareClauses = clauses.filter((cl) => cl.class === "software");
+  // R-PRIV: a sentence that only says what must KEEP working („Programările valide și fluxurile existente continuă să funcționeze”),
+  // next to a software request, is part of that request: it stays in the owner's words the engineering plan reads (never dropped).
+  for (const cl of clauses) {
+    if (softwareClauses.length && cl.class === "unknown" && !cl.ops?.length && KEEPS_WORKING.test(normalize(cl.text)) && APP_FLOWS.test(normalize(cl.text))) {
+      cl.class = "software"; cl.request = cl.text; cl.unclear = false; cl.keeps = true; softwareClauses.push(cl);
+    }
+  }
+  softwareClauses.sort((a, b) => a.index - b.index);
   const software = softwareClauses.length ? { request: softwareClauses.map((cl) => cl.request).join(". ") } : null;
   const feedback = clauses.filter((cl) => cl.class === "feedback").map((cl) => ({ index: cl.index, text: cl.text, ...(cl.feedback || { subject: "decision", polarity: "none", message: cl.message }),
     ...(cl.decision ? { decision: cl.decision } : {}), ...(cl.decisions ? { decisions: cl.decisions } : {}) }));

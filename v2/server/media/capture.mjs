@@ -28,6 +28,8 @@ import { browserLaunchOptions, createRequestGuard, MAX_MAIN_REDIRECTS, onOrigin,
 import { redactText } from "../security/redact.mjs";
 import { isInsideDir } from "./paths.mjs";
 import { CAPTURE_LABELS } from "./assets.mjs";
+import { hashCanonical } from "../core/canonical.mjs";
+import { measureHold, HOLD_SCHEMA, HOLD_LIMITS } from "./holds.mjs";
 
 export const CAPTURE_KINDS = Object.freeze(["obs", "browser_demo", "import", "interview"]);
 export const CAPTURE_STATUSES = Object.freeze(["PLANNED", "RECORDING", "STOPPED", "FAILED", "CANCELLED"]);
@@ -822,6 +824,27 @@ export function createCapture({ db, bus, clock = () => new Date(), settings, con
 
     const stepResults = [];
     const markers = [];
+    // R-MEDIA: the intentional pauses of THIS script (media/holds.mjs), measured on the capture clock; the rejected ones are kept apart.
+    const stepsSha = hashCanonical(steps);
+    const holds = [];
+    const holdsRejected = [];
+    const noteHold = (measured) => {
+      const r = measureHold(measured);
+      if (r.hold && holds.length < HOLD_LIMITS.perCapture) holds.push({ schema: HOLD_SCHEMA, id: newId("hld"), ...r.hold, result: "VERIFIED" });
+      else if (r.rejected && holdsRejected.length < HOLD_LIMITS.perCapture) holdsRejected.push(r.rejected);
+    };
+    // Why a wait step pauses, from the plan itself: right after the proof marker it holds the success state; right after the first
+    // page (goto + its chapter marker) it lets the page settle; anything else is a planned wait.
+    const waitReason = (index) => {
+      if (steps[index - 1]?.marker?.kind === "proof") return "proof_hold";
+      if (index <= 2 && steps.slice(0, index).every((s) => s.goto !== undefined || s.marker?.kind === "chapter")) return "settle";
+      return "wait";
+    };
+    let page = null;
+    let lastHighlight = null;
+    const visible = (selector) => bounded(page.locator(selector).first().isVisible(), stepTimeoutMs, "verificarea pauzei").then((v) => v === true, () => false);
+    // Review F6: a planned wait is a pause only on a live, loaded, non-blank page of the approved origin (a hung or blank page is not).
+    const pageLive = () => (onOrigin(page.url(), origin) ? bounded(page.evaluate(() => document.readyState === "complete" && Boolean(document.body) && document.body.innerText.trim().length > 0), stepTimeoutMs, "verificarea paginii").then((v) => v === true, () => false) : Promise.resolve(false));
     const frames = []; // { file, arrival, ts }
     let frameBytes = 0;
     let browser = null;
@@ -856,7 +879,7 @@ export function createCapture({ db, bus, clock = () => new Date(), settings, con
       // Redaction before any document exists: every document of this context gets the style before its first paint.
       await context.addInitScript(redactionInitScript, { css: redactionCss(redactSelectors), id: REDACTION_STYLE_ID });
       if (contextSetup?.cookies.length) await context.addCookies(contextSetup.cookies);
-      const page = await context.newPage();
+      page = await context.newPage();
       if (contextSetup?.virtualAuthenticator) {
         const authCdp = await context.newCDPSession(page);
         await authCdp.send("WebAuthn.enable");
@@ -931,10 +954,23 @@ export function createCapture({ db, bus, clock = () => new Date(), settings, con
           else if (kind === "click") { await page.locator(value).first().click({ timeout: stepTimeoutMs }); await followPageRedirect(); }
           else if (kind === "type") {
             const loc = page.locator(value.selector).first();
+            const startMs = elapsed();
             if (typeof loc.pressSequentially === "function") await loc.pressSequentially(value.text, { delay: value.delayMs, timeout: stepTimeoutMs + value.text.length * value.delayMs });
             else await page.type(value.selector, value.text, { delay: value.delayMs, timeout: stepTimeoutMs + value.text.length * value.delayMs });
+            const endMs = elapsed();
+            // Typing is a pause only as planned (characters × delay, bounded) and only when the field really holds the typed text.
+            const typed = await bounded(loc.inputValue(), stepTimeoutMs, "verificarea textului").then((v) => v === value.text, () => false);
+            if (recording) noteHold({ reason: "typing", step: index + 1, startMs, endMs, plannedMs: value.text.length * value.delayMs, verified: typed });
           } else if (kind === "press") { await page.keyboard.press(value); await followPageRedirect(); }
-          else if (kind === "wait") await waitMs(value, controller.signal);
+          else if (kind === "wait") {
+            const startMs = elapsed();
+            await waitMs(value, controller.signal);
+            const reason = waitReason(index);
+            const verified = reason === "proof_hold" ? Boolean(lastHighlight) && await visible(lastHighlight) : await pageLive();
+            // The step ends once its postcondition is checked (the picture stays still meanwhile); the cap still bounds the whole.
+            const endMs = elapsed();
+            if (recording) noteHold({ reason, step: index + 1, startMs, endMs, plannedMs: value, verified });
+          }
           else if (kind === "waitFor") await page.locator(value).first().waitFor({ state: "visible", timeout: stepTimeoutMs });
           else if (kind === "scroll") {
             if (value.selector) await page.locator(value.selector).first().scrollIntoViewIfNeeded({ timeout: stepTimeoutMs });
@@ -946,12 +982,17 @@ export function createCapture({ db, bus, clock = () => new Date(), settings, con
             const box = await bounded(loc.boundingBox(), stepTimeoutMs, "poziția evidențierii").catch(() => null);
             const clamp = (v) => Math.min(1, Math.max(0, Number(v.toFixed(4))));
             const rect = box ? { x: clamp(box.x / viewport.width), y: clamp(box.y / viewport.height), w: clamp(box.width / viewport.width), h: clamp(box.height / viewport.height) } : null;
-            markers.push({ id: newId("mmk"), kind: "highlight", atMs: elapsed(), note: value.selector, ...(rect ? { rect } : {}), source: "step", step: index + 1 });
+            const startMs = elapsed();
+            markers.push({ id: newId("mmk"), kind: "highlight", atMs: startMs, note: value.selector, ...(rect ? { rect } : {}), source: "step", step: index + 1 });
             await bounded(loc.evaluate((el, ms) => {
               el.setAttribute("data-ifrim-demo-highlight", "1");
               setTimeout(() => el.removeAttribute("data-ifrim-demo-highlight"), ms);
             }, value.ms), stepTimeoutMs, "evidențiere");
             await waitMs(value.ms, controller.signal);
+            lastHighlight = value.selector;
+            const shown = Boolean(rect) && await visible(value.selector);
+            const endMs = elapsed();
+            if (recording) noteHold({ reason: "highlight", step: index + 1, startMs, endMs, plannedMs: value.ms, verified: shown });
           } else if (kind === "marker") {
             markers.push({ id: newId("mmk"), kind: value.kind, atMs: elapsed(), note: value.note, source: "step", step: index + 1 });
           }
@@ -972,8 +1013,11 @@ export function createCapture({ db, bus, clock = () => new Date(), settings, con
           try { await Promise.race([firstFrame, noFrame]); } finally { clearTimeout(frameTimer); }
         }
       }
+      const endHoldStart = elapsed();
       await waitMs(holdEndMs, controller.signal);
       checkAbort();
+      // The end hold is not a script step: it gets the number after the last one.
+      if (holdEndMs) { const endHoldEnd = elapsed(); noteHold({ reason: "end_hold", step: steps.length + 1, startMs: endHoldStart, endMs: endHoldEnd, plannedMs: holdEndMs, verified: await pageLive() }); }
       stopArrival = clockMs();
       await cdp.send("Page.stopScreencast").catch(() => {});
       recording = false;
@@ -1016,12 +1060,15 @@ export function createCapture({ db, bus, clock = () => new Date(), settings, con
       const ingested = await assets.ingestFile({ sourcePath: out, allowedRoots: [dir], title, category: "screen_recording", origin: "OWNED", captureLabel,
         contentProjectId: row.content_project_id, tags: ["browser_demo", "public_demo_mode"], description: `Captură Public Demo Mode din ${origin} (${steps.length} pași, ${fps} fps).`, actor: who });
       const finalMarkers = [...parse(selSession.get(sessionId).markers_json, []), ...markers.map((m) => ({ ...m, atMs: Math.min(m.atMs, expectedMs) }))].sort((a, b) => a.atMs - b.atMs);
-      const result = { durationMs: expectedMs, frames: frames.length, keptFrames: list.kept, fps, width, height, steps: stepResults, probeDurationMs: probe.durationMs, blocked: guard.summary().blockedCount };
+      // A hold is bound to the stored file: its asset version, this session and the steps sha; it ends inside the recording.
+      const boundHolds = holds.filter((h) => h.startMs < expectedMs).map((h) => ({ ...h, endMs: Math.min(h.endMs, expectedMs), sessionId, assetVersionId: ingested.version.id, stepsSha }));
+      const result = { durationMs: expectedMs, frames: frames.length, keptFrames: list.kept, fps, width, height, steps: stepResults, probeDurationMs: probe.durationMs, blocked: guard.summary().blockedCount,
+        stepsSha, holds: boundHolds, holdsRejected };
       setStatus(sessionId, "STOPPED", { scope_json: json({ ...scope, result }), markers_json: json(finalMarkers), output_asset_id: ingested.asset.id, error: null },
         { type: "media.capture.completed", source: who, payload: { sessionId, kind: "browser_demo", assetId: ingested.asset.id, versionId: ingested.version.id, durationMs: expectedMs, frames: frames.length, markers: finalMarkers.length } });
       try { fs.rmSync(dir, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 }); } catch { /* scratch only */ }
       return { session: get(sessionId), asset: ingested.asset, version: ingested.version, duplicateOf: ingested.duplicateOf, durationMs: expectedMs,
-        frames: frames.length, keptFrames: list.kept, fps, width, height, markers: finalMarkers, steps: stepResults };
+        frames: frames.length, keptFrames: list.kept, fps, width, height, markers: finalMarkers, steps: stepResults, stepsSha, holds: boundHolds, holdsRejected };
     } catch (error) {
       failure = error instanceof HubError ? error
         : controller.signal.aborted && controller.signal.reason instanceof HubError ? controller.signal.reason
