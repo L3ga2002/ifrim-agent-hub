@@ -442,7 +442,10 @@ export function createDeliveries({ db, bus, clock, config, settings, projects, m
   function officeOf(d) {
     const extras = d.template?.extras || [];
     // R-REV: what this refresh kept from its parent by proof (same inputs, same bytes), with the hashes and the reason.
-    const reusedItems = (d.template?.reused || []).map((r) => ({ kind: `delivery.office.${r.kind}`, label: r.kind === "workbook" ? "Registru Excel" : r.kind, status: "REUSED", file: r.file, sha256: r.sha256,
+    // Closure R-PACK: once the folder index copied it, the file shown is the verified local copy in THIS delivery's folder.
+    const indexed = d.opsPlanId ? (opsPlans.view(d.opsPlanId)?.steps || []).find((s) => s.kind === "delivery.package.index" && s.status === "DONE")?.result?.reused || [] : [];
+    const localOf = (r) => indexed.find((x) => x.kind === r.kind && x.sha256 === r.sha256)?.file || null;
+    const reusedItems = (d.template?.reused || []).map((r) => ({ kind: `delivery.office.${r.kind}`, label: r.kind === "workbook" ? "Registru Excel" : r.kind, status: "REUSED", file: localOf(r) || r.file, sourceFile: r.file, copied: Boolean(localOf(r)), sha256: r.sha256,
       inputsSha: r.inputsSha, level: r.level || null, sourceDeliveryId: r.sourceDeliveryId, dependsOn: OFFICE_DEPENDS[`delivery.office.${r.kind}`] || [], state: "CURRENT", stateReason: r.reason }));
     if (!extras.length || !d.opsPlanId) return { requested: extras, folder: null, items: reusedItems, reused: reusedItems.length };
     const p = opsPlans.view(d.opsPlanId);

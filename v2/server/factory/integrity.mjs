@@ -1,10 +1,13 @@
+import crypto from "node:crypto";
 import { scanSource } from "./test-first.mjs";
 
 /**
  * Integrity checks on a writer's change set (M03 §16): success may not come from weakening the verification. Each check
  * becomes a finding with its evidence (the file and the added line), so the reviewer and the owner see it:
  *   critical — a protected acceptance test changed or deleted, an agent-control file (.codex/, .claude/, .mcp.json,
- *              AGENTS.md, CLAUDE.md, the test-project marker, the Hub's .ifrim-hub/ work area) created or changed;
+ *              AGENTS.md, CLAUDE.md, the test-project marker, the Hub's .ifrim-hub/ work area) created or changed; (closure R-HIST) an
+ *              earlier mission's Hub-written test still active changed, deleted or replaced, a retired test's kept copy changed or the
+ *              retired test recreated (same path, or its bytes under another name);
  *   high     — a test file deleted, a skip/only/todo added, a secret-like file created or changed;
  *   medium   — an existing test file modified (allowed, but reviewed separately), an empty catch, a lint/type check disabled.
  * M11 L5 (§5.5) — product code that could pass the protected test without fixing anything (rules on the CODE part of an added line:
@@ -131,11 +134,32 @@ const STDLIB_SHADOW = new Set(["unittest", "ast", "importlib", "io", "pathlib", 
  * changed code file (null = not readable as text); the comment-free view and code_not_reviewable read it. Without it neither applies
  * (a direct caller), and the line alone is lexed.
  */
-export function integrityFindings({ changes, added = [], protectedRefs = [], hubTest = null, texts = null }) {
+export function integrityFindings({ changes, added = [], protectedRefs = [], hubTest = null, texts = null, historic = null }) {
   const findings = [];
   const add = (severity, code, file, observation, evidence) => findings.push({ severity, code, file, area: "integritate", observation, evidence,
     impact: severity === "critical" ? "Verificarea nu mai poate fi considerată independentă" : "Poate ascunde un defect sau o regresie" });
   const protectedSet = new Set(protectedRefs.map((p) => p.toLowerCase()));
+  // Closure R-HIST: the earlier Hub-written tests of the project (`historic.refs`, still active) are protected from this writer like
+  // its own acceptance test, and the tests a mission retired (`historic.retired`: { from, to, sha256 }) may be neither touched in their
+  // retired place nor brought back (same path, or the same bytes under another name). The Hub's own retirement at the start happens
+  // before the base snapshot, so it is never a change here (R-HIST-03).
+  const historicSet = new Set((historic?.refs || []).map((p) => String(p).toLowerCase()));
+  const retiredFrom = new Map((historic?.retired || []).map((r) => [String(r.from).toLowerCase(), r]));
+  const retiredTo = new Map((historic?.retired || []).map((r) => [String(r.to).toLowerCase(), r]));
+  const retiredSha = new Map((historic?.retired || []).map((r) => [String(r.sha256), r]));
+  // Review #6: a git-backed snapshot names an entry by its git oid ("git:…"); the content sha comes from the file text the factory passes.
+  const contentSha = (change) => { const v = change.after?.sha256 || null; return v && String(v).startsWith("git:") ? (typeof texts?.[change.path] === "string" ? crypto.createHash("sha256").update(Buffer.from(texts[change.path], "utf8")).digest("hex") : null) : v; };
+  const historicHandled = new Set();
+  for (const change of changes) {
+    const lower = change.path.toLowerCase().replace(/\\/g, "/");
+    if (protectedSet.has(lower)) continue;
+    if (historicSet.has(lower)) add("critical", "historic_test_changed", change.path, `Un test de acceptanță scris de Hub pentru o misiune anterioară a fost ${change.status === "deleted" ? "șters" : change.status === "added" ? "înlocuit" : "modificat"} de writer`, `${change.status} ${change.path}`);
+    else if (retiredTo.has(lower)) add("critical", "retired_test_changed", change.path, `Copia păstrată a unui test retras a fost ${change.status === "deleted" ? "ștearsă" : "modificată"} de writer`, `${change.status} ${change.path}`);
+    else if (change.status !== "deleted" && retiredFrom.has(lower)) add("critical", "retired_test_recreated", change.path, "Un test retras de Hub a fost recreat de writer în suita activă", `${change.status} ${change.path}`);
+    else if (change.status === "added" && retiredSha.has(contentSha(change))) add("critical", "retired_test_recreated", change.path, `Octeții testului retras ${retiredSha.get(contentSha(change)).from} au reapărut sub alt nume`, `${change.status} ${change.path}`);
+    else continue;
+    historicHandled.add(lower);
+  }
   // Python resolves modules from the project root first: a writer-created top-level module named like a standard-library one the
   // test run uses (unittest, ast, importlib, …) or a sitecustomize would replace it and could fake the protected acceptance run
   // (review M08 round 2). Same for an __init__.py added on the protected test's package path.
@@ -149,6 +173,7 @@ export function integrityFindings({ changes, added = [], protectedRefs = [], hub
   }
   for (const change of changes) {
     const lower = change.path.toLowerCase();
+    if (historicHandled.has(lower.replace(/\\/g, "/"))) continue;
     if (protectedSet.has(lower)) add("critical", "protected_test_changed", change.path, `Testul de acceptanță protejat a fost ${change.status === "deleted" ? "șters" : "modificat"} de writer`, `${change.status} ${change.path}`);
     else if (change.controlFile) add("critical", "control_file_changed", change.path, "Writer-ul a creat sau a modificat un fișier care controlează agenții sau Hub-ul", `${change.status} ${change.path}`);
     else if (change.secretLike) add("high", "secret_like_changed", change.path, "Un fișier cu nume de secret a fost creat sau modificat (conținutul nu e citit de Hub)", `${change.status} ${change.path}`);

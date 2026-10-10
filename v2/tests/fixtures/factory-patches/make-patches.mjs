@@ -69,4 +69,12 @@ save("feature-b-nodedupe", { summary: "Implementare fără deduplicare (fixture 
   write: { "src/server-app.js": readSolution("server-app.js").replace("const DEDUPE = true;", "const DEDUPE = false;"), "public/index.html": readSolution("index.html"), "test/requests.test.mjs": readSolution("requests.test.mjs") } });
 save("feature-b-dedupe", { summary: "Remediere F-001: deduplicarea solicitărilor identice în 10 minute.",
   write: { "src/server-app.js": readSolution("server-app.js") } });
+// ---------- Closure R-HIST (v2/tests/r-closure.test.mjs): the right fix plus a change to an EARLIER mission's Hub-written test ----------
+const HIST = "test/hub/istoric-telefon-aaaaaa.test.mjs";
+save("hist-modify", { summary: "Fixture R-HIST: fix corect + slăbește testul Hub al unei misiuni anterioare.",
+  write: { "src/requests.js": fixed, "test/regression.test.mjs": regression, [HIST]: 'import test from "node:test";\ntest("AC-1: slăbit", () => {});\n' } });
+save("hist-delete", { summary: "Fixture R-HIST: fix corect + șterge testul Hub al unei misiuni anterioare.",
+  write: { "src/requests.js": fixed, "test/regression.test.mjs": regression }, delete: [HIST] });
+save("hist-recreate", { summary: "Fixture R-HIST: fix corect + recreează un test retras de Hub.",
+  write: { "src/requests.js": fixed, "test/regression.test.mjs": regression, "test/hub/retras-vechi-bbbbbb.test.mjs": 'import test from "node:test";\ntest("AC-1: recreat", () => {});\n' } });
 console.log("patches written");

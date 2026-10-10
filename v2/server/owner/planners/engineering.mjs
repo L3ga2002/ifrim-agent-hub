@@ -45,6 +45,7 @@ import { plannedTestRefs, deriveIgnore, testFirstScope, HUB_TEST_DIR, STAGING_DI
 import { collectFacts, onlyAfterConfirmation, readinessPassFor } from "../readiness-runner.mjs";
 import { explain } from "../blockers.mjs";
 import { deriveCriteria, conflictingHubTests, requestShape } from "./criteria.mjs";
+import { publicReadRoutes, readPublicClient, retirementContract } from "../../factory/supersede.mjs";
 
 /** An open question (the project, the acceptance test) is answerable for 2 minutes, like the intake's own clarifications. */
 export const ENGINEERING_LIMITS = Object.freeze({ pendingTtlMs: 2 * 60 * 1000, pendingMax: 50, candidateMax: 6, scanDepth: 2 });
@@ -334,7 +335,7 @@ export function buildEngineeringSpec({ text, args = {}, project, hubWrites = {},
   const derived = testFirst?.ok && !criteria.length ? deriveCriteria({ words, flows: inheritedFlows.filter((c) => c.verify === "e2e") }) : null;
   const useDerived = Boolean(derived && derived.test.length);
   const acceptance = !bound ? [] : useDerived
-    ? derived.test.map((c, i) => ({ id: `AC-${i + 1}`, text: c.text, verify: "test", testRef: bound, ...(c.guard ? { guard: true } : {}), origin: c.origin }))
+    ? derived.test.map((c, i) => ({ id: `AC-${i + 1}`, text: c.text, verify: "test", testRef: bound, ...(c.guard ? { guard: true } : {}), origin: c.origin, ...(c.kind ? { kind: c.kind } : {}) }))
     : (criteria.length ? criteria : [defaultCriterion]).map((t, i) => ({ id: `AC-${i + 1}`, text: t, verify: "test", testRef: bound }));
   let inheritedPreview = null;
   if (inherit && acceptance.length) {
@@ -348,9 +349,27 @@ export function buildEngineeringSpec({ text, args = {}, project, hubWrites = {},
   if (testFirst?.ok) testFirst.criteria = acceptance.filter((a) => a.verify === "test").map((a) => a.id);
   // R-PRIV: an earlier Hub-written test that read the field back from the app's answers belongs to the earlier contract. It is named on
   // the card, kept unchanged and linked to its version, and moved out of the active suite at the start — never rewritten to pass.
-  const supersedes = useDerived && derived.shape === "hide_public" ? conflictingHubTests({ field: requestShapeField(words), hubTests }) : [];
+  // Closure R-SUP: the heuristic only proposes; a candidate is retired only with its explicit contract (provenance, the public route the
+  // conflicting case reads — a route the project's own public page reads —, every other case covered by a new check of the same kind).
+  // A candidate without it stays active and the card says why (nothing is moved on a guess).
+  const candidates = useDerived && derived.shape === "hide_public" ? conflictingHubTests({ field: requestShapeField(words), hubTests }) : [];
+  const supersedes = [];
+  if (candidates.length) {
+    const publicRoutes = publicReadRoutes(readPublicClient(project.path));
+    const next = derived.test.map((c, i) => ({ id: `AC-${i + 1}`, kind: c.kind || null }));
+    for (const x of candidates) {
+      const source = hubTests.find((t) => t.ref === x.testRef);
+      const built = retirementContract({ candidate: x, text: source?.text, key: requestShapeField(words)?.key, publicRoutes, previous: source?.previousSpec || null, next });
+      if (built.ok) supersedes.push({ ...x, contract: built.contract });
+      else {
+        derived.constraints.push(`Testul anterior ${x.testRef} pare să contrazică cerința nouă, dar rămâne activ și neschimbat: ${built.problem}. Dacă implementarea îl pică, decizi tu`);
+        derived.assumptions.push(`Hub-ul nu retrage ${x.testRef} fără dovadă (${built.problem})`);
+      }
+    }
+  }
   if (supersedes.length) {
-    derived.constraints.push(...supersedes.map((x) => `Testul anterior ${x.testRef}${x.missionId ? ` (misiunea ${x.missionId}${x.specVersion ? `, specificația v${x.specVersion}` : ""})` : ""} e incompatibil cu cerința nouă: ${x.reason}. Hub-ul îl păstrează neschimbat (sha ${x.sha256.slice(0, 12)}) în .ifrim-hub/retired/, legat de versiunea originală, și nu îl mai rulează; nu se rescrie`));
+    derived.constraints.push(...supersedes.map((x) => `Testul anterior ${x.testRef}${x.missionId ? ` (misiunea ${x.missionId}${x.specVersion ? `, specificația v${x.specVersion}` : ""})` : ""} e incompatibil cu cerința nouă: ${x.reason}. Hub-ul îl păstrează neschimbat (sha ${x.sha256.slice(0, 12)}) în .ifrim-hub/retired/, legat de versiunea originală, și nu îl mai rulează; nu se rescrie`),
+      ...supersedes.map((x) => `Diferența de contract pentru ${x.testRef}: ${x.contract.conflicts.map((c) => `${c.case} citea ${x.contract.field} din ${c.routes.join(", ")} (lista publică) → înlocuit de ${c.replacedBy.join(", ")}`).join("; ")}${x.contract.kept.length ? `; ${x.contract.kept.map((k) => `${k.case} (${k.kind}) rămâne acoperit de ${k.coveredBy.join(", ")}`).join("; ")}` : ""}${x.contract.internalReads.length ? `; citirile interne (${x.contract.internalReads.join(", ")}) rămân compatibile` : ""}`));
     derived.assumptions.push(`Contractul vechi și cel nou se contrazic la ${supersedes.length === 1 ? "un test" : `${supersedes.length} teste`} scris${supersedes.length === 1 ? "" : "e"} de Hub înainte; criteriile noi verifică separat păstrarea internă și neexpunerea publică`);
   }
   const checkCommand =checks.length ? checks : [scripts.test && !/^\s*node --test\b/.test(String(scripts.test)) ? "npm test" : "node --test"];
@@ -437,7 +456,10 @@ export function registerEngineeringPlanner(hub, intake) {
     try {
       const dir = path.join(project.path, HUB_TEST_DIR);
       if (!fs.existsSync(dir)) return [];
-      const owners = db.prepare("SELECT fs.mission_id, fs.version, fs.protected_json FROM factory_specs fs JOIN missions m ON m.id = fs.mission_id WHERE m.project_id = ? AND fs.status = 'APPROVED' ORDER BY fs.created_at").all(project.id);
+      // Closure R-SUP-01: the owner is the approved spec of THIS project whose step 0 wrote and protected exactly these bytes at this path
+      // (authoring PROTECTED, same testRef, same sha) — a name under test/hub and a hash alone are no provenance.
+      const owners = db.prepare("SELECT fs.mission_id, fs.version, fs.protected_json, fs.spec_json FROM factory_specs fs JOIN missions m ON m.id = fs.mission_id WHERE m.project_id = ? AND fs.status = 'APPROVED' ORDER BY fs.created_at").all(project.id)
+        .filter((o) => { try { const p = JSON.parse(o.protected_json || "{}"); return p.authoring?.status === "PROTECTED"; } catch { return false; } });
       return fs.readdirSync(dir).filter((n) => /^[a-z0-9][a-z0-9-]{0,63}\.test\.mjs$/.test(n)).sort().slice(0, 20).flatMap((name) => {
         const abs = path.join(dir, name);
         const st = fs.lstatSync(abs);
@@ -445,8 +467,10 @@ export function registerEngineeringPlanner(hub, intake) {
         const buf = fs.readFileSync(abs);
         const ref = `${HUB_TEST_DIR}/${name}`;
         const digest = crypto.createHash("sha256").update(buf).digest("hex");
-        const owner = owners.find((o) => { try { return JSON.parse(o.protected_json || "{}").files?.[ref] === digest; } catch { return false; } });
-        return [{ ref, sha256: digest, text: buf.toString("utf8"), missionId: owner?.mission_id || null, specVersion: owner ? owner.version : null }];
+        const owner = owners.find((o) => { try { const p = JSON.parse(o.protected_json || "{}"); return p.authoring?.testRef === ref && p.files?.[ref] === digest; } catch { return false; } });
+        let previousSpec = null;
+        try { previousSpec = owner ? { acceptance: JSON.parse(owner.spec_json || "{}").acceptance || [] } : null; } catch { previousSpec = null; }
+        return [{ ref, sha256: digest, text: buf.toString("utf8"), missionId: owner?.mission_id || null, specVersion: owner ? owner.version : null, previousSpec }];
       });
     } catch { return []; }
   };

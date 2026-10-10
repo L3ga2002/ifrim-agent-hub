@@ -122,7 +122,14 @@ test("RP-05 the spec carries `supersedes` only when present (other specs keep th
   assert.equal(plain.spec.supersedes, undefined);
   assert.equal(specHash(checkSpec({ ...base, supersedes: null }).spec), specHash(plain.spec), "absent and null hash the same");
   const old = OLD_TEST();
-  const ok = checkSpec({ ...base, supersedes: [{ testRef: old.ref, sha256: old.sha256, missionId: old.missionId, specVersion: 1, reason: "citește valoarea câmpului din lista publică" }] });
+  // Closure R-SUP (contract change, 2026-10-10): an entry now also needs its explicit contract difference; the pre-closure entry (identity
+  // and reason only) is refused — kept here as the negative case, the accepted case below carries the contract.
+  const preClosure = { testRef: old.ref, sha256: old.sha256, missionId: old.missionId, specVersion: 1, reason: "citește valoarea câmpului din lista publică" };
+  assert.match(checkSpec({ ...base, supersedes: [preClosure] }).problems.join(" | "), /diferența explicită dintre contractul vechi și cel nou lipsește/);
+  const contract = { field: "phone", previous: { missionId: old.missionId, specVersion: 1 }, publicRoutes: ["/api/bookings"],
+    conflicts: [{ case: "AC-2", criterion: "telefonul se citește înapoi", routes: ["/api/bookings"], replacedBy: ["AC-1", "AC-2", "AC-3"] }], kept: [], internalReads: [] };
+  const kinded = ["public_omits", "anon_params", "internal_persistence"].map((kind, i) => ({ ...base.acceptance[0], id: `AC-${i + 1}`, kind, ...(kind === "internal_persistence" ? { guard: true } : {}) }));
+  const ok = checkSpec({ ...base, acceptance: kinded, supersedes: [{ ...preClosure, contract }] });
   assert.deepEqual(ok.problems, []);
   assert.equal(ok.spec.supersedes[0].testRef, old.ref);
   const bad = (supersedes, extra = {}) => checkSpec({ ...base, ...extra, supersedes }).problems.join(" | ");

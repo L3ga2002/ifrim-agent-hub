@@ -171,6 +171,27 @@ export function createOfficeExecutors({ deliveries, factory, opsPlans, config, a
       run: async ({ params, planId, authorize }) => {
         const d = bound(params, planId);
         const root = folderOf(d);
+        // Closure R-PACK: a file kept by proof from an earlier delivery is COPIED into this folder (the same verified bytes, never
+        // regenerated), so the package stands on its own after the source folder moves or disappears; the source stays untouched.
+        const reusedSource = (d.template.reused || []).map((r) => ({ kind: r.kind, file: r.file, sha256: r.sha256, sourceDeliveryId: r.sourceDeliveryId, inputsSha: r.inputsSha, reason: r.reason }));
+        const localCopies = [];
+        for (const r of reusedSource) {
+          let buf = null;
+          try { buf = fs.readFileSync(r.file); } catch { buf = null; }
+          // Review F7: the reused file is still the one the card named (the card may have waited); a changed or missing file stops the step.
+          if (!buf || sha(buf) !== r.sha256) {
+            // An earlier run of this step may already have copied it (resume): the local copy with the confirmed bytes is enough.
+            // The copy may carry the next free name ("… (2).xlsx") when the folder already held another file of that name.
+            const ext = path.extname(r.file);
+            const local = (fs.existsSync(root) ? fs.readdirSync(root) : []).filter((n) => path.extname(n).toLowerCase() === ext.toLowerCase())
+              .map((n) => path.join(root, n)).find((p) => { try { return fs.statSync(p).isFile() && sha(fs.readFileSync(p)) === r.sha256; } catch { return false; } });
+            if (local) { localCopies.push({ ...r, local, copied: false }); continue; }
+            throw refuse("REUSED_FILE_CHANGED", `${path.basename(r.file)} nu mai e fișierul refolosit din planul confirmat (${buf ? "conținut schimbat" : "lipsește"}); cere livrarea din nou ca să fie regenerat.`);
+          }
+          const w = writeOnce(root, path.basename(r.file), buf, authorize);
+          if (sha(fs.readFileSync(w.file)) !== r.sha256) throw refuse("REUSED_COPY_MISMATCH", `Copia lui ${path.basename(r.file)} în dosarul nou nu are aceiași octeți.`);
+          localCopies.push({ ...r, local: w.file, copied: !w.reused });
+        }
         const list = [];
         const walk = (dir) => { for (const e of fs.readdirSync(dir, { withFileTypes: true })) { const p = path.join(dir, e.name); if (e.isDirectory()) walk(p); else if (!/^(README\.md|manifest\.json)$/i.test(e.name) && !/\.tmp$/.test(e.name)) list.push(p); } };
         walk(root);
@@ -178,29 +199,63 @@ export function createOfficeExecutors({ deliveries, factory, opsPlans, config, a
         const files = list.map((p) => { const b = fs.readFileSync(p); return { path: path.relative(root, p).replace(/\\/g, "/"), bytes: b.length, sha256: sha(b) }; });
         const steps = (opsPlans.view(planId)?.steps || []).filter((s) => s.status === "DONE" && s.result);
         const level = (kind) => steps.find((s) => s.kind === kind)?.result?.level || steps.find((s) => s.kind === kind)?.result?.calendarLevel || null;
-        // R-REV: an artifact of the parent delivery kept by proof (same inputs, same bytes) is listed with its own folder, sha and reason.
-        const reused = (d.template.reused || []).map((r) => ({ kind: r.kind, file: r.file, sha256: r.sha256, sourceDeliveryId: r.sourceDeliveryId, inputsSha: r.inputsSha, reason: r.reason }));
-        // Review F7: the reused file is still the one the card named (the card may have waited); a changed or missing file stops the step.
-        for (const r of reused) {
-          let now = null;
-          try { now = sha(fs.readFileSync(r.file)); } catch { now = null; }
-          if (now !== r.sha256) throw refuse("REUSED_FILE_CHANGED", `${path.basename(r.file)} nu mai e fișierul refolosit din planul confirmat (${now ? "conținut schimbat" : "lipsește"}); cere livrarea din nou ca să fie regenerat.`);
-        }
+        // R-REV + closure R-PACK: an artifact kept by proof (same inputs, same bytes) is listed by its LOCAL path in this folder (relative,
+        // in `files` with the same sha), with its provenance (the source delivery and its original file) and the reason.
+        const reused = localCopies.map((r) => ({ kind: r.kind, file: path.relative(root, r.local).replace(/\\/g, "/"), sha256: r.sha256,
+          source: { deliveryId: r.sourceDeliveryId, file: r.file }, inputsSha: r.inputsSha, reason: r.reason, copiedVerified: true }));
         const manifest = { schema: 1, deliveryId: d.id, project: d.template.project.name, folder: root, files, ...(reused.length ? { reused } : {}),
           verification: { document: level("delivery.office.document"), workbook: level("delivery.office.workbook"), campaignCalendar: level("delivery.campaign") }, published: false, note: "Date demonstrative; nimic publicat." };
         const readme = [`# ${d.title}`, "", "Dosarul prezentării, pregătit de Ifrim Agent Hub dintr-un singur plan confirmat. Nimic nu a fost publicat.", "",
           "| Fișier | Mărime |", "|---|---|", ...files.map((f) => `| ${f.path} | ${Math.max(1, Math.round(f.bytes / 1024))} KB |`), "",
           "Verificări: " + Object.entries(manifest.verification).filter(([, v]) => v).map(([k, v]) => `${k} ${v}`).join(", "), "",
-          ...(reused.length ? ["Refolosite din livrarea anterioară (aceleași intrări, aceiași octeți):", ...reused.map((r) => `- ${path.basename(r.file)} — sha256 ${r.sha256.slice(0, 16)}… — ${r.reason}`), ""] : []),
+          ...(reused.length ? ["Refolosite din livrarea anterioară (aceleași intrări, aceiași octeți), copiate și verificate în acest dosar:", ...reused.map((r) => `- ${r.file} — sha256 ${r.sha256.slice(0, 16)}… — din livrarea ${r.source.deliveryId} — ${r.reason}`), ""] : []),
           "Date demonstrative: programările și cifrele sunt exemple; prețurile sunt „De stabilit”.", ""].join("\n");
         // README/manifest describe the folder as it is now: rewritten on purpose (they are the index, not a deliverable copy).
         authorize({ op: "export.local", destination: path.join(root, "README.md") });
         fs.writeFileSync(path.join(root, "README.md"), readme, "utf8");
         fs.writeFileSync(path.join(root, "manifest.json"), `${JSON.stringify(manifest, null, 2)}\n`, "utf8");
-        return { result: { folder: root, files: files.length, verification: manifest.verification } };
+        // Closure R-PACK: the folder is checked on its own (manifest → every file inside it, by sha), never through the source folder.
+        const self = verifyPackageFolder(root);
+        if (!self.ok) throw refuse("PACKAGE_NOT_SELF_CONTAINED", `Dosarul nu se verifică singur: ${self.problems.join("; ")}`);
+        return { result: { folder: root, files: files.length, verification: manifest.verification, ...(reused.length ? { reused: localCopies.map((r) => ({ kind: r.kind, file: r.local, sha256: r.sha256, sourceDeliveryId: r.sourceDeliveryId })) } : {}) } };
       },
     },
   };
+}
+
+/**
+ * Closure R-PACK: a delivery folder checked on its own — manifest.json read from `root`, every listed file a relative path inside the
+ * folder with its bytes and sha256, every reused entry a local file of the folder listed with the same sha (its source is provenance
+ * only, never read). Works the same after the folder is moved or the source delivery is gone. → { ok, problems, files }
+ */
+export function verifyPackageFolder(root) {
+  const problems = [];
+  let manifest = null;
+  try { manifest = JSON.parse(fs.readFileSync(path.join(root, "manifest.json"), "utf8")); } catch { return { ok: false, problems: ["manifest.json lipsește sau nu se poate citi"], files: 0 }; }
+  const real = (() => { try { return fs.realpathSync.native(root); } catch { return path.resolve(root); } })();
+  const inside = (rel) => {
+    if (typeof rel !== "string" || !rel || path.isAbsolute(rel) || /^[a-z]:/i.test(rel) || rel.split(/[\\/]/).includes("..")) return null;
+    const abs = path.resolve(real, rel);
+    return abs.toLowerCase().startsWith(`${real.toLowerCase()}${path.sep}`) ? abs : null;
+  };
+  const listed = new Map();
+  for (const f of Array.isArray(manifest.files) ? manifest.files : []) {
+    const abs = inside(f?.path);
+    if (!abs) { problems.push(`${f?.path}: nu e o cale din dosar`); continue; }
+    let buf = null;
+    try { const st = fs.lstatSync(abs); if (st.isFile() && !st.isSymbolicLink()) buf = fs.readFileSync(abs); } catch { buf = null; }
+    if (!buf) { problems.push(`${f.path}: lipsește din dosar`); continue; }
+    if (sha(buf) !== f.sha256 || buf.length !== f.bytes) problems.push(`${f.path}: octeți diferiți de manifest`);
+    listed.set(String(f.path).toLowerCase(), f.sha256);
+  }
+  // A file in the folder that the manifest does not list (README / manifest themselves and temporary files aside) is reported too.
+  const walk = (dir) => { let n = []; try { n = fs.readdirSync(dir, { withFileTypes: true }); } catch { return; } for (const e of n) { const p = path.join(dir, e.name); if (e.isDirectory()) walk(p); else if (!/^(README\.md|manifest\.json)$/i.test(e.name) && !/\.tmp$/.test(e.name)) { const rel = path.relative(real, p).replace(/\\/g, "/"); if (!listed.has(rel.toLowerCase()) && !problems.some((x) => x.startsWith(`${rel}:`))) problems.push(`${rel}: nu e în manifest`); } } };
+  walk(real);
+  for (const r of Array.isArray(manifest.reused) ? manifest.reused : []) {
+    if (!inside(r?.file)) { problems.push(`${r?.file}: fișierul refolosit nu e în dosar (trimitere în afara lui)`); continue; }
+    if (listed.get(String(r.file).toLowerCase()) !== r.sha256) problems.push(`${r.file}: fișierul refolosit nu e listat în dosar cu același sha256`);
+  }
+  return { ok: problems.length === 0, problems, files: listed.size };
 }
 
 /**

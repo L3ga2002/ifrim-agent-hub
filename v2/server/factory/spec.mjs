@@ -95,7 +95,10 @@ export function checkSpec(input = {}, { hubPorts = [8011, 8012] } = {}) {
     // §25 closure: a „păstrare” criterion (guard, test only) and the criterion's provenance (where the planner derived it from).
     const guard = item.guard === true && verify === "test";
     const origin = item.origin ? str(item.origin, 200) : "";
-    spec.acceptance.push({ id, text, verify, ...(testRef ? { testRef } : {}), ...(item.expectFailure ? { expectFailure: str(item.expectFailure, 200) } : {}), ...(steps ? { steps } : {}), ...(guard ? { guard: true } : {}), ...(origin ? { origin } : {}) });
+    // Closure R-SUP (review #3): the kind of check a derived test criterion is (public_omits, required_refusal …), kept in the hashed
+    // spec so the factory can verify that a retirement's replacements are the right checks. Present only when the planner set it.
+    const kind = verify === "test" && /^[a-z_]{3,40}$/.test(String(item.kind || "")) ? String(item.kind) : "";
+    spec.acceptance.push({ id, text, verify, ...(testRef ? { testRef } : {}), ...(item.expectFailure ? { expectFailure: str(item.expectFailure, 200) } : {}), ...(steps ? { steps } : {}), ...(guard ? { guard: true } : {}), ...(origin ? { origin } : {}), ...(kind ? { kind } : {}) });
   }
   if (spec.acceptance.some((a) => a.guard) && !spec.acceptance.some((a) => a.verify === "test" && !a.guard)) problems.push("criteriile de păstrare au nevoie de cel puțin un criteriu prin test care pică azi");
   if (!spec.acceptance.length) problems.push("cel puțin un criteriu de acceptanță");
@@ -140,7 +143,13 @@ export function checkSpec(input = {}, { hubPorts = [8011, 8012] } = {}) {
       else if (own && testRef === own) problems.push(`supersedes[${i}]: testul acestei revizii nu se poate înlocui pe sine`);
       if (!/^[0-9a-f]{64}$/.test(sha)) problems.push(`supersedes[${i}]: sha256 lipsește`);
       if (item.reason.length < 10) problems.push(`supersedes[${i}]: motivul incompatibilității lipsește`);
-      if (spec.supersedes.some((x) => x.testRef === testRef)) problems.push(`supersedes[${i}]: ${testRef} apare de două ori`);
+      if (spec.supersedes.some((x) => x.testRef.toLowerCase() === testRef.toLowerCase())) problems.push(`supersedes[${i}]: ${testRef} apare de două ori`);
+      // Closure R-SUP-01/02: the provenance (the mission and spec version that protected these exact bytes) and the explicit contract
+      // difference are part of the confirmed plan; without them nothing is retired (the factory re-checks both before the move).
+      if (!/^mis_[a-z0-9_]{4,76}$/.test(item.missionId || "")) problems.push(`supersedes[${i}]: misiunea originală lipsește (proveniența testului)`);
+      if (!(Number.isInteger(item.specVersion) && item.specVersion >= 1)) problems.push(`supersedes[${i}]: versiunea specificației originale lipsește`);
+      const contract = checkSupersedeContract(raw?.contract, item, i, problems, spec.acceptance);
+      if (contract) item.contract = contract;
       spec.supersedes.push(item);
     }
     if (!spec.supersedes.length) problems.push("supersedes: listă goală (lipsește cheia când nu se înlocuiește nimic)");
@@ -152,6 +161,59 @@ export function checkSpec(input = {}, { hubPorts = [8011, 8012] } = {}) {
     problems.push(...authoringProblems);
   }
   return { spec, problems };
+}
+
+/**
+ * Closure R-SUP-02: the contract of one retirement (factory/supersede.mjs retirementContract), normalized for the spec hash. Every case of
+ * the retired file is named: the conflicting ones with the public route they read and the new criteria that replace them, the others with
+ * the new criteria that keep their coverage; every id is a test criterion of THIS spec. → the contract, or null (problems pushed).
+ */
+const CASE_ID_RE = /^AC-\d{1,3}$/;
+/** The checks that replace a conflicting read (kept equal to factory/supersede.mjs REPLACES_CONFLICT by v2/tests/r-closure.test.mjs). */
+export const SUPERSEDE_REPLACES = Object.freeze(["public_omits", "anon_params", "internal_persistence"]);
+const ROUTE_RE = /^\/[A-Za-z0-9_\-/.]{0,120}$/;
+function checkSupersedeContract(raw, item, i, problems, acceptance) {
+  const at = `supersedes[${i}].contract`;
+  if (!raw || typeof raw !== "object") { problems.push(`${at}: diferența explicită dintre contractul vechi și cel nou lipsește`); return null; }
+  const testIds = new Set(acceptance.filter((a) => a.verify === "test").map((a) => a.id));
+  const ids = (values, where) => {
+    const out = (Array.isArray(values) ? values : []).map((x) => String(x)).slice(0, 10);
+    if (!out.length) problems.push(`${at}: ${where} nu numește nicio verificare nouă`);
+    for (const id of out) if (!testIds.has(id)) problems.push(`${at}: ${where} numește ${id}, care nu e un criteriu prin test al acestei specificații`);
+    return out;
+  };
+  const routes = (values) => (Array.isArray(values) ? values : []).map(String).filter((r) => ROUTE_RE.test(r)).slice(0, 10);
+  const field = String(raw.field || "");
+  if (!/^[A-Za-z][A-Za-z0-9]{0,40}$/.test(field)) problems.push(`${at}: câmpul lipsește`);
+  if (raw.previous?.missionId !== item.missionId || raw.previous?.specVersion !== item.specVersion) problems.push(`${at}: proveniența din contract nu e aceeași cu a testului`);
+  const conflicts = (Array.isArray(raw.conflicts) ? raw.conflicts : []).slice(0, 20).map((c, k) => {
+    const out = { case: String(c?.case || ""), criterion: str(c?.criterion, 300), routes: routes(c?.routes), replacedBy: ids(c?.replacedBy, `conflicts[${k}].replacedBy`) };
+    if (!CASE_ID_RE.test(out.case)) problems.push(`${at}: conflicts[${k}]: cazul lipsește`);
+    if (!out.routes.length) problems.push(`${at}: conflicts[${k}]: ruta publică citită lipsește`);
+    return out;
+  });
+  if (!conflicts.length) problems.push(`${at}: niciun caz incompatibil numit`);
+  const kept = (Array.isArray(raw.kept) ? raw.kept : []).slice(0, 20).map((c, k) => {
+    const out = { case: String(c?.case || ""), kind: String(c?.kind || ""), criterion: str(c?.criterion, 300), coveredBy: ids(c?.coveredBy, `kept[${k}].coveredBy`) };
+    if (!CASE_ID_RE.test(out.case)) problems.push(`${at}: kept[${k}]: cazul lipsește`);
+    if (!/^[a-z_]{3,40}$/.test(out.kind)) problems.push(`${at}: kept[${k}]: tipul lipsește`);
+    return out;
+  });
+  // Review #3: the replacements are the RIGHT checks — each conflict is replaced by every one of the three kinds that split the old
+  // contract, each kept case by a check of its own kind (a hand-made spec cannot name an arbitrary criterion).
+  const kindOf = new Map(acceptance.filter((a) => a.verify === "test").map((a) => [a.id, a.kind || null]));
+  for (const [k, c] of conflicts.entries()) {
+    const kinds = new Set(c.replacedBy.map((id) => kindOf.get(id)));
+    const missing = SUPERSEDE_REPLACES.filter((x) => !kinds.has(x));
+    if (missing.length || c.replacedBy.some((id) => !SUPERSEDE_REPLACES.includes(kindOf.get(id)))) problems.push(`${at}: conflicts[${k}] nu e înlocuit exact de verificările ${SUPERSEDE_REPLACES.join(", ")}${missing.length ? ` (lipsesc: ${missing.join(", ")})` : ""}`);
+  }
+  for (const [k, c] of kept.entries()) if (c.coveredBy.some((id) => kindOf.get(id) !== c.kind)) problems.push(`${at}: kept[${k}] (${c.kind}) e acoperit de un criteriu de alt tip`);
+  const cases = [...conflicts, ...kept].map((c) => c.case);
+  if (new Set(cases).size !== cases.length) problems.push(`${at}: un caz apare de două ori`);
+  const publicRoutes = routes(raw.publicRoutes);
+  if (!publicRoutes.length) problems.push(`${at}: rutele paginii publice lipsesc`);
+  for (const c of conflicts) for (const r of c.routes) if (!publicRoutes.includes(r)) problems.push(`${at}: ${c.case} citește ${r}, care nu e o rută a paginii publice`);
+  return { field, previous: { missionId: item.missionId, specVersion: item.specVersion }, publicRoutes, conflicts, kept, internalReads: routes(raw.internalReads) };
 }
 
 /**

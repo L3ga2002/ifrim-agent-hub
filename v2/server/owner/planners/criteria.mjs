@@ -174,13 +174,13 @@ export function deriveCriteria({ words, flows = [] } = {}) {
     const art = `${e.art[0].toUpperCase()}${e.art.slice(1)}`;
     const includeKey = `include${f.key[0].toUpperCase()}${f.key.slice(1)}`;
     out.test.push(
-      { text: `Lista publică a zilei, cerută direct de la server (fără browser), nu conține câmpul „${f.key}” și nici valoarea ${f.gen}, pentru nicio ${e.bare}: nici pentru cele existente, nici pentru ${e.art} ${adj(e, "validă", "valid")} creată chiar atunci cu ${f.bare}`, origin: `${said}: lista publică nu afișează și nu transmite ${f.noun}` },
-      { text: `Parametrii pe care oricine îi poate adăuga la cererea listei publice (de exemplu ${includeKey}=1, ${f.key}=1, fields=${f.key}, debug=1, all=1) nu fac ${f.noun} să apară: omiterea e făcută de server, nu e o opțiune a clientului`, origin: `${said}: o cale anonimă nu ocolește omiterea` },
+      { text: `Lista publică a zilei, cerută direct de la server (fără browser), nu conține câmpul „${f.key}” și nici valoarea ${f.gen}, pentru nicio ${e.bare}: nici pentru cele existente, nici pentru ${e.art} ${adj(e, "validă", "valid")} creată chiar atunci cu ${f.bare}`, origin: `${said}: lista publică nu afișează și nu transmite ${f.noun}`, kind: "public_omits" },
+      { text: `Parametrii pe care oricine îi poate adăuga la cererea listei publice (de exemplu ${includeKey}=1, ${f.key}=1, fields=${f.key}, debug=1, all=1) nu fac ${f.noun} să apară: omiterea e făcută de server, nu e o opțiune a clientului`, origin: `${said}: o cale anonimă nu ocolește omiterea`, kind: "anon_params" },
     );
-    if (s.keepsRequired) out.test.push({ text: `${art} fără ${f.bare} sau cu ${f.bare} gol (doar spații) e în continuare ${adj(e, "refuzată", "refuzat")} de server, cu o eroare pentru câmpul ${f.label}, și nu se salvează nimic (control: trece azi și după)`, guard: true, origin: `cererea ta: ${f.noun} rămâne obligatoriu` });
+    if (s.keepsRequired) out.test.push({ text: `${art} fără ${f.bare} sau cu ${f.bare} gol (doar spații) e în continuare ${adj(e, "refuzată", "refuzat")} de server, cu o eroare pentru câmpul ${f.label}, și nu se salvează nimic (control: trece azi și după)`, guard: true, origin: `cererea ta: ${f.noun} rămâne obligatoriu`, kind: "required_refusal" });
     out.test.push(
-      { text: `${f.label} trimis cu ${e.art} ${adj(e, "validă", "valid")} se păstrează exact în datele salvate ale aplicației: testul citește înregistrarea prin stocarea internă a aplicației în mediul de test (fișierul sau stratul ei de date), nu printr-o rută publică; nu se adaugă nicio rută anonimă pentru recitirea ${f.gen} (control: trece azi și după)`, guard: true, origin: `cererea ta: ${f.noun} e salvat corect` },
-      { text: `${art} cu ${f.bare} și celelalte date valide${e.slot} e în continuare ${adj(e, "acceptată", "acceptat")} (control: trece azi și după)`, guard: true, origin: "comportamentul existent al proiectului: o implementare care refuză tot nu trece" },
+      { text: `${f.label} trimis cu ${e.art} ${adj(e, "validă", "valid")} se păstrează exact în datele salvate ale aplicației: testul citește înregistrarea prin stocarea internă a aplicației în mediul de test (fișierul sau stratul ei de date), nu printr-o rută publică; nu se adaugă nicio rută anonimă pentru recitirea ${f.gen} (control: trece azi și după)`, guard: true, origin: `cererea ta: ${f.noun} e salvat corect`, kind: "internal_persistence" },
+      { text: `${art} cu ${f.bare} și celelalte date valide${e.slot} e în continuare ${adj(e, "acceptată", "acceptat")} (control: trece azi și după)`, guard: true, origin: "comportamentul existent al proiectului: o implementare care refuză tot nu trece", kind: "valid_accepted" },
     );
     const augmented = inherited.map((flow) => {
       const steps = withField(flow.steps, f);
@@ -214,6 +214,8 @@ export function deriveCriteria({ words, flows = [] } = {}) {
  * request makes incompatible — a test that READS the field's value back from the app's answers (an assert on `.<key>` outside an
  * `errors.` object) in a file that also reads through a GET. Such a test belonged to the earlier contract; it is superseded (kept unchanged,
  * linked to its version), never rewritten to pass. A test that only checks the refusal of a missing value (errors.<key>) stays compatible.
+ * Closure R-SUP: these are CANDIDATES only. A candidate is retired only with the explicit contract of factory/supersede.mjs
+ * retirementContract (provenance, the public route the case reads, the coverage of every other case), checked again before the move.
  * → [{ testRef, sha256, missionId, specVersion, reason }]
  */
 export function conflictingHubTests({ field, hubTests = [] } = {}) {
