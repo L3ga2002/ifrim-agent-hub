@@ -1,4 +1,9 @@
-# IFRIM AGENT HUB — M12 SALES: FLUX INTERN DELIMITAT (PROMPT DE PORNIRE)
+# IFRIM AGENT HUB — M12 SALES: FLUX INTERN DELIMITAT (PROMPT DE PORNIRE) — **DRAFT**
+
+> **STARE: DRAFT.** Nu se trimite și nu se execută până la poarta etapei „Închiderea verificabilă a corecțiilor M11” (2026-10-10):
+> protecțiile testelor Hub istorice, retragerea cu proveniență și recuperarea verificate, release-ul cu rezultate clare și revizia §25
+> reală cu dovada ei (sau declarată READY_TO_CONFIRM, nu LIVE_VERIFIED). Starea porții: `.ifrim/OPEN_ISSUES.md`, prima secțiune.
+> Corecțiile cerute de proprietar la acest prompt sunt în §4b și sunt cerințe, nu sugestii.
 
 Pregătit la 2026-10-10 din documentele și modulele reale ale repository-ului (`.ifrim/M04_SALES_ARCHITECTURE.md`, `.ifrim/M04_REPORT.md`,
 `.ifrim/M04_CONTACT_POLICY.md`, `.ifrim/M04_DATA_PROVENANCE.md`, `v2/server/sales/*`, `v2/tests/m04-*`). Numele milestone-ului rămâne
@@ -19,8 +24,8 @@ Pregătirea materialelor e separată de contactare, publicare și buget. M12 nu 
 
 ## 2. Baseline de verificat la pornire
 
-- ramura `v2-milestone-01`; HEAD și `origin/v2-milestone-01` după etapa din 2026-10-10 (vezi `.ifrim/STAGE_2026-10-10_CORECTII_M11.md`
-  → „Închiderea etapei”); cod `2.14.6-m11`, contract API 13, schema 12;
+- ramura `v2-milestone-01`; HEAD și `origin/v2-milestone-01` după etapa de închidere din 2026-10-10 (vezi
+  `.ifrim/STAGE_2026-10-10_INCHIDERE_M11.md`); cod `2.14.7-m11`, contract API 13, schema 12 (fără migrare);
 - versiunea live din `GET http://localhost:8011/api/health`;
 - modificările necomise ale proprietarului (până acum doar CRLF): nu le atinge;
 - Sales existent (M04, contract în `.ifrim/M04_SALES_ARCHITECTURE.md`): tabelele `sales_*` (migrarea 4), stările lead/oportunitate/ciornă,
@@ -70,6 +75,37 @@ pentru „trimite oferta”, „contactează-i”, „publică” (OUTREACH_DISA
 S-08 Separări: starea comercială separată de execuție (un task COMPLETED nu face WON/CONTACTED); CONTACTED și WON rămân doar prin
 evenimentele M04 (MANUAL_RECORDED / acceptarea clientului înregistrată de proprietar).
 
+## 4b. Corecții obligatorii (proprietar, 2026-10-10)
+
+C-01 **Idempotență per plan și per operație.** Cheia e derivată din planul confirmat (hash-ul lui) și din operație (tip + parametri
+normalizați), nu din text sau din oră. Două reîncercări simultane ale aceleiași operații produc un singur rând și un singur efect; a doua
+primește rezultatul primei (sau „în curs”). Test obligatoriu: două apeluri concurente (Promise.all) pe același plan/operație → un rând,
+un eveniment, același id; o reluare după întrerupere nu dublează.
+
+C-02 **Prețuri necunoscute = stare explicită.** Un preț lipsă e `UNKNOWN` (cu motivul: catalog neconfigurat), nu 0, nu „aproximativ”, nu
+o sumă estimată. Nici termene, ROI sau reduceri inventate. Oferta afișează „De stabilit (neconfigurat)” și nu poate trece de
+`READY_FOR_OWNER_REVIEW` cu un preț inventat; un test caută sume și termene în textul generat.
+
+C-03 **Proveniență în trei feluri distincte:** `fixture` (date sintetice ale testului), `afirmație` (ce a spus proprietarul sau o sursă,
+cu sursa) și `inferență` (dedusă de Hub sau de un model, cu raționamentul). Se păstrează etichetele M04 (`EVIDENCE_LABELS`), cu felul
+datei separat de eticheta de încredere; o inferență nu devine afirmație prin copiere sau rezumare.
+
+C-04 **Inferențele nu primesc punctaj ca dovezi confirmate.** Azi `qualify.mjs` (formula `q-v1`) dă INFERRED 25 de puncte în calitatea
+dovezilor. M12 introduce `q-v2` (versiune nouă, conform regulii din `qualify.mjs`: calificările stocate își păstrează `q-v1`): o inferență
+apare în explicație și în „ce lipsește”, dar nu urcă scorul ca o dovadă confirmată. Testul compară același set de date sub q-v1 și q-v2.
+
+C-05 **Contractele stărilor.** Fiecare stare nouă sau atinsă are: cine o poate seta (eveniment, nu mutare liberă — ca
+`OPPORTUNITY_TRANSITIONS`), precondiții, ce invalidează (o ofertă aprobată legată de sha devine STALE la orice schimbare), și ce nu
+implică (un task COMPLETED nu face CONTACTED/WON; o ofertă gata nu e trimisă). Tabelul stărilor intră în raport și în teste.
+
+C-06 **Oprire, revocare, revenire, predare.** „Oprește tot” oprește pașii Sales în curs (fără efect parțial nedeclarat); revocarea
+autorității unui plan oprește pașii rămași; fiecare scriere are revenirea ei documentată (fișiere noi, nesuprascrise; rânduri marcate
+sintetic, ștergibile doar cu aprobarea proprietarului); handoff-ul final e complet (comenzile exacte, nu „comanda de mai sus”).
+
+C-07 **Funcțiile M04 rămân.** Importul tabelar, identitatea și unificarea, auditul fixture, calificarea, oportunitățile, propunerile,
+ciornele de contact, suprimările, follow-up-urile și ecranele `v2/web/src/screens/sales/*` continuă să funcționeze; testele `m04-*`
+rămân verzi fără modificări de așteptări (o schimbare de contract cerută explicit se declară, cu testul vechi păstrat ca negativ).
+
 ## 5. Teste și dovezi
 
 T-S1 brief → oportunitate sintetică idempotentă (reluarea nu dublează); T-S2 fiecare afirmație din ofertă are dovadă sau e UNKNOWN; o
@@ -77,7 +113,9 @@ afirmație fără dovadă introdusă de mână e refuzată; T-S3 colectorul live
 plan); T-S4 calificarea e reproductibilă și explicată, suprascrierea cere motiv; T-S5 oferta fără prețuri inventate și fără placeholdere;
 T-S6 pachetul: manifest sha256, Word verificat în Word (sau APP_NOT_RUN declarat în mediul fără Office), fără suprascriere, revizie
 selectivă; T-S7 datele sintetice nu ajung în rapoarte reale și nu se amestecă cu `sales_*` reale; T-S8 regresia completă (`npm run
-test:v2`), cu T25 SKIP motivat.
+test:v2`), cu T25 SKIP motivat; T-S9 idempotență cu reîncercare concurentă pe același plan/operație (C-01); T-S10 același set de date
+sub q-v1 și q-v2: inferențele nu urcă scorul (C-04); T-S11 tabelul contractelor de stare respectat (C-05); T-S12 „Oprește tot” și
+revocarea în mijlocul fluxului, fără efect parțial nedeclarat (C-06); T-S13 testele `m04-*` neschimbate și verzi (C-07).
 
 Separă CONFIRMAT ÎN COD / RAPORTAT / TESTAT ACUM IZOLAT / VERIFICAT ACUM LIVE / NEVERIFICAT. Măsoară confirmările de produs,
 comenzile tehnice ale proprietarului, intervențiile agentului, artefactele refolosite; nu inventa costuri.

@@ -1,6 +1,10 @@
 # IfrimDigital Ifrim Agent Hub - Claude Code Context
 
-## Current state - 2026-10-10 (read first)
+## Current state - 2026-10-10 evening (read first)
+
+Read `.ifrim/STAGE_2026-10-10_INCHIDERE_M11.md` and the first section of `.ifrim/OPEN_ISSUES.md` first; they take precedence over everything below. Code and live Hub `2.14.7-m11` (contract 13, schema 12, no migration; upgrade `upg_mv2qfbs5` at 2026-10-10 18:33 UTC; local commit `8b2a76b` + docs commit, push refused to the agent, the owner runs it). 2.14.7 adds R-HIST (earlier Hub tests and retired evidence protected from a later writer), R-SUP (retirement only with provenance and an explicit contract checked on the server), R-ROLL (journaled, verified moves and restores) and R-PACK (the reused Excel copied into a self-verifying folder). The §25 privacy revision card `env_mv2ql6ls_9f08b50ab6` (mission `mis_mv2ql0fp_ee35f8071e`, refresh delivery `dlv_mv2ql6ie_75da58271a`) is READY_TO_CONFIRM by the owner; C: has less free space than the 15 GiB media reserve, so the capture step fails until space is freed. `.ifrim/M12_PROMPT.md` stays DRAFT.
+
+## State - 2026-10-10 (history)
 
 Read `.ifrim/STAGE_2026-10-10_CORECTII_M11.md` and the first section of `.ifrim/OPEN_ISSUES.md` first; they take precedence over everything below. Code `2.14.6-m11` (contract 13, schema 12, no migration) adds R-MEDIA (capture holds with provenance; QA justifies only freezes inside holds its capture session stored), R-PRIV (hide_public criteria, superseded Hub tests retired unchanged to `.ifrim-hub/retired/`) and R-REV (Excel reused only by a sha256 rebuild proof). The live Hub was `2.14.5-m11` on 2026-10-10 10:12 UTC. The next milestone prompt is `.ifrim/M12_PROMPT.md` (M12 Sales not started).
 

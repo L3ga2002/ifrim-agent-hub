@@ -1,5 +1,16 @@
 # Open Issues - Ifrim Agent Hub
 
+## 2026-10-10 (evening) — Closure of the M11 corrections (code and live `2.14.7-m11`, contract 13, schema 12; detail: `.ifrim/STAGE_2026-10-10_INCHIDERE_M11.md`)
+
+This section takes precedence over every older one where they overlap. Closed in code and tested (R-HIST, R-SUP, R-ROLL, R-PACK; 24 new tests, 10/10 mutations killed; full regression 1757: 1753 PASS, 1 SKIP T25, 3 FAIL from the environment, see the stage report). Live upgrade `upg_mv2qfbs5` done; verified backup `hub-dataackups2hub-v2.closure-2.14.7.2026-10-10T18-34-21-868Z.sqlite`.
+
+Open:
+1. **Push** of `8b2a76b` and the docs commit: refused to the agent by the session permission layer; the owner runs `git push origin v2-milestone-01`.
+2. **§25 privacy revision live**: card `env_mv2ql6ls_9f08b50ab6` PROPOSED (confirm by 2026-10-11 18:37 UTC); the owner confirms it once. Before that, free space on C: (14.7 GiB free < the 15 GiB media reserve: the capture step fails with DISK_RESERVE).
+3. **Load-sensitive tests**: D4-02 (Lega, 121 s timeout under 100 % CPU, passes alone) and RM-10 (real capture holds over their latency cap under 100 % CPU, fails again while the CPU stays at 100 %); OFF-06 fails on the same disk reserve as item 2.
+4. Earlier missions started before 2.14.7 have no historic record (their bundle says so); the Excel proof still covers the generic demo workbook only.
+5. Items 3–5 of the section below are unchanged (CapCut/OBS, voice probe, old bundles).
+
 ## 2026-10-10 — Corrections after M11 + M12 handoff (code `2.14.6-m11`, contract 13, schema 12; detail: `.ifrim/STAGE_2026-10-10_CORECTII_M11.md`)
 
 This section takes precedence over every older one where they overlap. Baseline at start: HEAD = `origin/v2-milestone-01` = `49a6032`;
