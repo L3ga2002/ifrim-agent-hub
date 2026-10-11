@@ -1,5 +1,19 @@
 # Open Issues - Ifrim Agent Hub
 
+## 2026-10-11 — Finalizing the M11 probes (no code change; code and live `2.14.7-m11`, HEAD = origin = `d7aeeb5`; detail: `.ifrim/STAGE_2026-10-11_FINALIZARE_PROBE_M11.md`)
+
+This section takes precedence over every older one where they overlap. The push of `8b2a76b` + `d7aeeb5` is DONE (origin verified 2026-10-10 21:18 UTC); item 1 below is closed.
+
+Closed:
+- **D4-02, RM-10, OFF-06**: all PASS in the final regression. RM-10 fails only above ~99 % CPU (correct `HOLD_LATENCY_EXCEEDED` refusal, cap kept); OFF-06 failed only on the disk reserve (C: now ~400 GiB free, reserve 15 GiB kept).
+
+Open:
+1. **Final regression not green** (2026-10-10 23:59 → 2026-10-11 02:06 UTC, CPU 99.6 % in the first hour): V1 `npm run test` 549/552 (2 API timeouts), V2 `test:v2` 1752/1757 + 1 SKIP T25, 4 FAIL (M03-FAC-04/06/07, RF-02). All six pass in isolation (0.4–6 s). Load, not code; rerun after a PC restart.
+2. **§25 privacy revision not executed past step 0** (twice, owner-confirmed): Codex's test review rejected Claude's acceptance test 4/4 times; auto refinement correctly refused (same criteria); no "one more attempt" exists in step 0. Plan `env_mv3b262d_3d5e47db62` expires by itself 2026-10-11 07:43 UTC. Needs a diagnosis of the step-0 proof/review before another try.
+3. **R-SUP retirement not undone after a stopped step 0**: the old §25 test sits in `.ifrim-hub/retired/mis_mv2ql0fp_ee35f8071e/`; parent delivery `dlv_mv1eo8oo_d120460140` is STALE although no code changed (`restoreRetired` only on a failed start / boot recovery).
+4. **CPU**: WmiPrvSE ~4 cores constantly (CIMWin32 + nettcpip providers), source unidentified (not the uninstaller, LightingService or the V1 tray). `LightingService` was stopped by the owner during the diagnosis (`net start LightingService` restores it).
+5. M12 prompt stays DRAFT (probes not closed). `.ifrim/tmp/v2-tests` holds ~8.1 GB of test leftovers (not removed; not needed for space).
+
 ## 2026-10-10 (evening) — Closure of the M11 corrections (code and live `2.14.7-m11`, contract 13, schema 12; detail: `.ifrim/STAGE_2026-10-10_INCHIDERE_M11.md`)
 
 This section takes precedence over every older one where they overlap. Closed in code and tested (R-HIST, R-SUP, R-ROLL, R-PACK; 24 new tests, 10/10 mutations killed; full regression 1757: 1753 PASS, 1 SKIP T25, 3 FAIL from the environment, see the stage report). Live upgrade `upg_mv2qfbs5` done; verified backup `hub-dataackups2hub-v2.closure-2.14.7.2026-10-10T18-34-21-868Z.sqlite`.

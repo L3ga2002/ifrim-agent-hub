@@ -1,6 +1,10 @@
 # IfrimDigital Ifrim Agent Hub - Claude Code Context
 
-## Current state - 2026-10-10 evening (read first)
+## Current state - 2026-10-11 (read first)
+
+Read `.ifrim/STAGE_2026-10-11_FINALIZARE_PROBE_M11.md` and the first section of `.ifrim/OPEN_ISSUES.md` first; they take precedence over everything below. No code change in this stage: code and live Hub `2.14.7-m11` (contract 13, schema 12), HEAD = `origin/v2-milestone-01` = `d7aeeb5` plus this docs commit (the earlier push is done; never ask the owner to push existing commits). D4-02, RM-10 and OFF-06 pass; the final regression is not green (6 load timeouts that pass in isolation). The §25 privacy revision stopped twice at step 0 (Codex rejected Claude's acceptance test 4/4 times); nothing was implemented and the old §25 test stays retired, so the parent delivery is STALE. `.ifrim/M12_PROMPT.md` stays DRAFT.
+
+## State - 2026-10-10 evening (history)
 
 Read `.ifrim/STAGE_2026-10-10_INCHIDERE_M11.md` and the first section of `.ifrim/OPEN_ISSUES.md` first; they take precedence over everything below. Code and live Hub `2.14.7-m11` (contract 13, schema 12, no migration; upgrade `upg_mv2qfbs5` at 2026-10-10 18:33 UTC; local commit `8b2a76b` + docs commit, push refused to the agent, the owner runs it). 2.14.7 adds R-HIST (earlier Hub tests and retired evidence protected from a later writer), R-SUP (retirement only with provenance and an explicit contract checked on the server), R-ROLL (journaled, verified moves and restores) and R-PACK (the reused Excel copied into a self-verifying folder). The §25 privacy revision card `env_mv2ql6ls_9f08b50ab6` (mission `mis_mv2ql0fp_ee35f8071e`, refresh delivery `dlv_mv2ql6ie_75da58271a`) is READY_TO_CONFIRM by the owner; C: has less free space than the 15 GiB media reserve, so the capture step fails until space is freed. `.ifrim/M12_PROMPT.md` stays DRAFT.
 
