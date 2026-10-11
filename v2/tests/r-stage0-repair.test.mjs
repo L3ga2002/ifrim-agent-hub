@@ -139,15 +139,15 @@ test("S0R-06 rewrite inventory and reviewer coverage gate retain the previous ch
   assert.equal(removed.length, 2);
   assert.deepEqual(removedAssertions(entries, body.replaceAll('"GET"', "'GET'")), []);
   const data = { changeSet: "a".repeat(12), verdict: "PASS", summary: "Verificările sunt complete.", criteria: criteria.map((c) => ({ id: c.id, covered: true, failsForRightReason: true, canEverPass: true, contradictsOwner: false, trivialPassRisk: "low", plain: "Criteriul este verificat complet." })), findings: [], missingContext: [] };
-  const parse = (d) => parseTestReview('```json\n' + JSON.stringify(d) + '\n```', { testSha: "a".repeat(64), criteria, inventoryRemoved: removed });
+  const parse = (d) => parseTestReview('```json\n' + JSON.stringify(d) + '\n```', { testSha: "a".repeat(64), criteria, inventoryRemoved: removed, inventory: assertionInventory(rewritten, manifest) });
   assert.equal(parse(data).verdict, "INCONCLUSIVE");
   const previousChecks = Object.fromEntries(removed.map((r) => [r.id, "lost"]));
   const lost = parse({ ...data, previousChecks });
   assert.equal(lost.verdict, "CHANGES_REQUESTED");
   assert.ok(lost.gate.every((g) => g.id.startsWith("P")));
-  assert.equal(parse({ ...data, previousChecks: Object.fromEntries(removed.map((r) => [r.id, "replaced_correctly"])) }).verdict, "PASS");
+  assert.equal(parse({ ...data, previousChecks: Object.fromEntries(removed.map((r) => [r.id, { verdict: "replaced_correctly", by: [assertionInventory(rewritten, manifest)[0].id], why: "Verificarea înlocuitoare păstrează comportamentul cerut." }])) }).verdict, "PASS");
   const previousCandidate = { text: protocol.text, sha: protocol.sha256, cycle: 0, manifest, inventory: entries };
-  assert.match(buildAuthorBrief({ spec: { workType: "FEATURE", changesExisting: true, acceptance: criteria }, previousCandidate }), /Varianta anterioară \(date\)/);
+  assert.match(buildAuthorBrief({ spec: { workType: "FEATURE", changesExisting: true, acceptance: criteria }, cycle: 1, previousCandidate }), /Repari varianta anterioară \(sha/);
   assert.match(buildTestReviewBrief({ spec: { acceptance: criteria }, cycle: 1, previousCandidate, inventoryRemoved: removed }), /previousChecks/);
 });
 
@@ -485,7 +485,7 @@ test("S0R-22 the real c1 to c2 rewrite inventory includes the removed whole-body
   const c1 = read("c1"), c2 = read("c2"), headerLines = c1.split("\n").findIndex((l) => l === "// ---- corpul testului ----") + 1;
   const removed = removedAssertions(assertionInventory(c1, {}, { headerLines }), c2);
   assert.ok(removed.some((r) => /phone|PHONE|telefon/.test(r.statement)), JSON.stringify(removed));
-  assert.ok(removed.every((r) => /^P\d+$/.test(r.id) && r.test));
+  assert.ok(removed.every((r) => /^P[1-9]\d*(?:\.[1-9]\d*)?$/.test(r.id) && r.test));
 });
 
 test("S0R-23 successful protection records retirement atomically; Stop restores history as active", { timeout: 45000 }, async () => {

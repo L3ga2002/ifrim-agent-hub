@@ -277,10 +277,13 @@ async function testReview(msg, turnId, name, slow) {
   const answer = { changeSet: data.changeSet || marker, verdict: data.verdict, summary: data.summary || "",
     criteria: data.criteria === "ALL" ? ids.map((id) => ({ id, ...(data.criterion || {}) })) : data.criteria || [],
     findings: data.findings || [], missingContext: data.missingContext || [], ...(state && codes.length ? { previousFindings: Object.fromEntries(codes.map((c) => [c, state])) } : {}) };
-  if (data.previousChecks === "ALL_REPLACED_CORRECTLY") {
-    const removed = current.split("## Verificări eliminate sau înlocuite")[1]?.split("\n## ")[0] || "";
-    answer.previousChecks = Object.fromEntries([...removed.matchAll(/"id":\s*"(P\d+)"/g)].map((m) => [m[1], "replaced_correctly"]));
-  }
+  const inventorySection = current.split("## Inventarul variantei curente")[1]?.split("\n## ")[0] || "";
+  const inventory = JSON.parse(inventorySection.match(/```json\s*([\s\S]*?)```/)?.[1] || "[]");
+  const judgedSection = current.split("## Verificări de judecat")[1]?.split("\n## ")[0] || "";
+  const judged = JSON.parse(judgedSection.match(/```json\s*([\s\S]*?)```/)?.[1] || "[]");
+  answer.checks = data.checks === "PHONE_INSUFFICIENT" ? inventory.filter((e) => e.statement.includes("!getRes.body.includes(PHONE)")).map((e) => ({ id: e.id, nature: "insufficient", why: "Verificarea literală trebuie completată pentru JSON decodat." })) : data.checks || [];
+  if (data.previousChecks === "ALL_REPLACED_CORRECTLY") answer.previousChecks = Object.fromEntries(judged.map((r) => [r.id, { verdict: "replaced_correctly", by: [inventory.find((e) => e.criterion === r.criterion)?.id || inventory[0]?.id], why: "Verificarea curentă acoperă comportamentul cerut anterior." }]));
+  if (data.previousChecks === "ALL_KEPT_CONTEXT") answer.previousChecks = Object.fromEntries(judged.map((r) => [r.id, { verdict: "kept" }]));
   if (slow) await sleep(4000);
   const text = `SIMULARE (test review fixture ${name}).\n\n\`\`\`json\n${JSON.stringify(answer, null, 2)}\n\`\`\`\n`;
   for (const part of text.match(/.{1,24}/gs)) send({ method: "item/agentMessage/delta", params: { threadId, turnId, itemId: "m1", delta: part } });

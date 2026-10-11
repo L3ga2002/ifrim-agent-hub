@@ -673,6 +673,37 @@ export function browserCriteriaOf(criteria) {
 }
 
 const fenceSafe = (value) => String(value ?? "").replace(/```/g, "'''");
+const AMEND_RULE = "„O verificare insuficientă se completează. O verificare greșită poate fi corectată sau înlocuită, cu justificare și verificare independentă.”";
+const CHECK_ID = /^P[1-9]\d*(?:\.[1-9]\d*)?$/;
+const COMPLETION_REF = /^(F[1-9]\d*|P[1-9]\d*(?:\.[1-9]\d*)?|AC-\d{1,3})$/;
+
+/** Bounded, quoted review data shared by both amendment briefs and the advisory mapping signal. */
+export function completionItems(previousCandidate) {
+  if (!previousCandidate) return [];
+  const review = previousCandidate.review || {};
+  const findings = review.findings ?? previousCandidate.findings ?? [];
+  const inventory = previousCandidate.inventory || assertionInventory(previousCandidate.text || "", previousCandidate.manifest || {}, previousCandidate);
+  const items = [];
+  const add = (ref, text) => {
+    if (items.length < 30) items.push({ ref, text: fenceSafe(redactText(`${ref}: ${text}`)).replace(/\s+/g, " ").trim().slice(0, 396) });
+  };
+  for (const [i, finding] of findings.entries()) add(`F${i + 1}`, `${finding.severity}: ${finding.observation}${finding.impact ? ` — ${finding.impact}` : ""}`);
+  for (const check of review.checks || []) if (check.nature === "insufficient" && CHECK_ID.test(check.id)) {
+    add(check.id, `${inventory.find((entry) => entry.id === check.id)?.statement || ""} — ${check.why || ""}`);
+  }
+  for (const entry of review.gate || []) if (/^AC-\d{1,3}$/.test(entry.id)) add(entry.id, Array.isArray(entry.why) ? entry.why.join("; ") : entry.why || "");
+  return items;
+}
+
+const completionList = (previousCandidate) => [
+  "### Ce trebuie completat (fiecare punct are nevoie de cel puțin o verificare nouă)",
+  ...completionItems(previousCandidate).map((item, i) => `${i + 1}. ${item.text}`),
+];
+
+export function completionSignals(previousCandidate, completes = []) {
+  return completionItems(previousCandidate).filter((item) => !completes.some((entry) => entry.ref === item.ref))
+    .map((item) => ({ signal: "completion_unmapped", plain: "un punct de completat nu are o verificare nouă declarată", detail: item.ref, line: null }));
+}
 
 /** The Hub-owned header of the test file (also shown to the author). */
 export function testHeader({ missionId = "", specVersion = 1, specSha = "", needs = [] } = {}) {
@@ -750,17 +781,25 @@ export function buildAuthorBrief({ mission = {}, spec = {}, specVersion = 1, spe
     lines.push("## Fișierele sursă ale proiectului (azi)", ...files.map((f) => `- ${f}${Array.isArray(exportsOf[f]) && exportsOf[f].length ? ` — exportă: ${exportsOf[f].slice(0, 30).join(", ")}` : ""}`), "");
   }
   const previous = (Array.isArray(previousProblems) ? previousProblems : []).map((p) => (typeof p === "string" ? p : p?.plain || p?.problem || "")).filter(Boolean).slice(0, 20);
+  if (previousCandidate) lines.push(`## Repari varianta anterioară (sha ${previousCandidate.sha})`, AMEND_RULE,
+    "Pornește de la textul anterior, nu de la zero. Păstrează fiecare verificare validă NESCHIMBATĂ: același caz, aceeași instrucțiune, același nume de caz. Adaugă lângă ea verificările cerute de constatările verificatorului. O verificare clasificată insufficient (insuficientă) sau criticată fără clasificare se PĂSTREAZĂ și se completează; nu se elimină și nu se rescrie niciodată.",
+    "Doar o verificare greșită (clasificată wrong de verificator sau demonstrată de tine ca fiind greșită: verifică ceva necerut de proprietar, ar respinge o implementare corectă sau nu poate trece niciodată) poate fi corectată ori înlocuită; declară-o în removed cu basis: wrong, why (10–200 caractere) și by (1–200 caractere). Păstrează toate controalele pozitive și negative. Repararea pregătirii sau a unei funcții auxiliare nu elimină și nu schimbă alte verificări.",
+    ...(cycle > 0 ? [...completionList(previousCandidate), "Pentru fiecare punct adaugă o verificare care ar pica pe o implementare cu exact acea scăpare; păstrează verificările existente."] : []),
+    "```text", fenceSafe(String(previousCandidate.text || "").split("\n").map((l, i) => `${i + 1}| ${l}`).join("\n")), "```",
+    "### Manifest anterior (date)", "```json", fenceSafe(JSON.stringify(previousCandidate.manifest, null, 2)), "```",
+    "### Dovada și review-ul anterior (date)", "```json", fenceSafe(JSON.stringify({ proof: previousCandidate.proof, review: previousCandidate.review, findings: previousCandidate.findings }, null, 2)), "```",
+    "### Inventar anterior (date)", "```json", fenceSafe(JSON.stringify((previousCandidate.inventory || []).map(({ id, test, criterion, kind, statement }) => ({ id, test, criterion, kind, statement })), null, 2)), "```", "");
   if (previous.length) {
-    lines.push("## Varianta anterioară a fost respinsă (date, citate de Hub)", "```text", ...previous.map((p) => `- ${fenceSafe(p).slice(0, 400)}`), "```", "Scrie din nou testul întreg, corectând aceste probleme.", "");
+    lines.push("## Varianta anterioară a fost respinsă (date, citate de Hub)", "```text", ...previous.map((p) => `- ${fenceSafe(p).slice(0, 400)}`), "```", "");
   }
-  if (previousCandidate) lines.push("## Varianta anterioară (date)", "Păstrează fiecare verificare din inventar, cu excepția celor numite greșite de un finding. Orice verificare eliminată sau înlocuită se declară în removed: [{ id, why }] (motiv de 10–200 caractere).", "```json", fenceSafe(JSON.stringify(previousCandidate, null, 2)), "```", "");
+  if (cycle > 0) lines.push('În completes poți declara completările: ref este F1, P77 sau AC-1; by descrie „numele cazului: ce verifică noua verificare” (10–300 caractere). Lista este opțională; intrările invalide sunt ignorate; mapările lipsă sunt semnale pentru review, nu respingeri.');
   lines.push("## Răspuns obligatoriu",
     "Un bloc ```js cu DOAR corpul testului, apoi un singur bloc ```json, exact cu această structură:",
     "```json",
-    JSON.stringify({ testSlot: slot, needs: [], newApi: [], removed: [], api: workType === "FEATURE" ? "o propoziție: forma API aleasă" : "", cases: criteria.flatMap((c) => c.guard ? [{ name: `${c.id} control: …`, criterion: c.id, kind: "control", today: "pass" }] : [
+    JSON.stringify({ testSlot: slot, needs: [], newApi: [], ...(cycle > 0 && previousCandidate ? { amends: previousCandidate.sha, removed: [{ id: "P1", basis: "wrong", why: "justificarea verificării greșite", by: "verificarea înlocuitoare" }] } : { removed: [] }), api: workType === "FEATURE" ? "o propoziție: forma API aleasă" : "", cases: criteria.flatMap((c) => c.guard ? [{ name: `${c.id} control: …`, criterion: c.id, kind: "control", today: "pass" }] : [
       { name: `${c.id}: …`, criterion: c.id, kind: "check", today: "fail" },
       ...(workType === "BUGFIX" ? [{ name: `${c.id} control: …`, criterion: c.id, kind: "control", today: "pass" }] : []),
-    ]) }, null, 2),
+    ]), ...(cycle > 0 ? { completes: [{ ref: "F1", by: "numele cazului: ce verifică noua verificare" }] } : {}) }, null, 2),
     "```");
   return redactText(lines.join("\n"));
 }
@@ -779,34 +818,127 @@ export function normalizeAssertion(source) {
   return (out + String(source).slice(cursor).replace(/\s+/g, " ")).trim();
 }
 
-export function assertionInventory(text, manifest = {}, { headerLines = 0 } = {}) {
+function assertionKey(source) {
+  const code = scanSource(source).code, open = code.indexOf("("), method = code.slice(0, open).replace(/\s/g, "");
+  const keep = ["assert", "assert.ok"].includes(method) ? 1 : /^assert\.(equal|notEqual|strictEqual|notStrictEqual|deepEqual|notDeepEqual|deepStrictEqual|notDeepStrictEqual|match|doesNotMatch)$/.test(method) ? 2 : Infinity;
+  const args = []; let start = open + 1, depth = 0;
+  for (let i = start; i < code.length - 1; i++) {
+    if ("([{".includes(code[i])) depth++;
+    else if (")]}".includes(code[i])) depth--;
+    else if (code[i] === "," && depth === 0) { args.push(source.slice(start, i)); start = i + 1; }
+  }
+  args.push(source.slice(start, -1));
+  return normalizeAssertion(`${method}(${args.slice(0, keep).map((a) => a.trim()).join(", ")})`);
+}
+
+export function assertionInventory(text, manifest = {}, { headerLines = 0, sha = null } = {}) {
   const source = String(text || ""), lex = scanSource(source), cases = [];
   for (const m of lex.code.matchAll(/(?<![.\w$])test\s*\(/g)) {
     const open = m.index + m[0].length - 1;
     const lit = lex.strings.find((s) => s.start > open && !source.slice(open + 1, s.start).trim());
     if (lit) cases.push({ start: m.index, end: matchClose(lex.code, open), name: lit.value });
   }
-  const out = [];
+  const out = [], spans = [];
   for (const m of lex.code.matchAll(/(?<![.\w$])assert\b(?:\s*\.\s*[\w$]+)?\s*\(/g)) {
     const line = lex.lineOf(m.index);
     if (line <= headerLines) continue;
     const end = matchClose(lex.code, m.index + m[0].length - 1);
     if (end < 0) continue;
     const owner = cases.find((c) => m.index > c.start && m.index < c.end);
-    out.push({ id: `P${line}`, test: owner?.name || null, criterion: manifest.cases?.find((c) => c.name === owner?.name)?.criterion || null,
-      statement: normalizeAssertion(source.slice(m.index, end + 1)) });
+    const entry = manifest.cases?.find((c) => c.name === owner?.name), call = source.slice(m.index, end + 1);
+    spans.push({ start: m.index, end: lex.code[end + 1] === ";" ? end + 2 : end + 1 });
+    out.push({ id: `P${line}`, sha, test: owner?.name || null, criterion: entry?.criterion || null, kind: entry?.kind || null,
+      statement: normalizeAssertion(call), key: assertionKey(call) });
   }
+  const counts = new Map(), ordinals = new Map();
+  for (const e of out) counts.set(e.id, (counts.get(e.id) || 0) + 1);
+  for (const e of out) if (counts.get(e.id) > 1) { const id = e.id, n = (ordinals.get(id) || 0) + 1; ordinals.set(id, n); e.id += `.${n}`; }
+  const context = { cases: {}, decls: {}, setup: "" }, excluded = [];
+  for (const c of cases) {
+    let flow = "", cursor = c.start;
+    for (const s of spans.filter((s) => s.start > c.start && s.end <= c.end)) { flow += source.slice(cursor, s.start); cursor = s.end; }
+    const entry = manifest.cases?.find((e) => e.name === c.name);
+    context.cases[c.name] = { criterion: entry?.criterion || null, kind: entry?.kind || null, flow: normalizeAssertion(flow + source.slice(cursor, c.end + 1)), code: lex.code.slice(c.start, c.end + 1) };
+  }
+  // Exclude declarations and top-level test calls from the setup fingerprint.
+  let depth = 0;
+  for (let i = 0; i < lex.code.length; i++) {
+    const ch = lex.code[i];
+    if (depth === 0 && lex.lineOf(i) > headerLines && (i === 0 || !/[\w$.]/.test(lex.code[i - 1]))) {
+      const call = lex.code.slice(i).match(/^test\s*\(/);
+      if (call) {
+        const close = matchClose(lex.code, i + call[0].length - 1);
+        if (close >= 0) { const end = lex.code[close + 1] === ";" ? close + 2 : close + 1; excluded.push({ start: i, end }); i = end - 1; continue; }
+      }
+      const m = lex.code.slice(i).match(/^(?:(?:async\s+)?function\s*\*?\s*|class\s+)([A-Za-z_$][\w$]*)\b|^(?:const|let|var)\s+/);
+      if (m) {
+        const block = /^(?:async\s+)?function|^class/.test(m[0]); let end = i + m[0].length, d = 0, binding = end;
+        const bindings = [];
+        for (; end < lex.code.length; end++) {
+          const x = lex.code[end];
+          if ("([{".includes(x)) d++;
+          else if (")]}".includes(x)) { d--; if (block && d === 0 && x === "}") { end++; break; } }
+          else if (x === ";" && d === 0) { end++; break; }
+          else if (!block && d === 0 && x === "=" && binding !== null) { bindings.push(lex.code.slice(binding, end)); binding = null; }
+          else if (!block && d === 0 && x === ",") { if (binding !== null) bindings.push(lex.code.slice(binding, end)); binding = end + 1; }
+          else if (!block && d === 0 && x === "\n" && /^\s*(?:const|let|var|function|class|test)\b/.test(lex.code.slice(end + 1))) break;
+        }
+        if (!block && binding !== null) bindings.push(lex.code.slice(binding, end).replace(/;$/, ""));
+        const names = block ? [m[1]] : bindings.flatMap((b) => [...b.matchAll(/(?<![\w$])([A-Za-z_$][\w$]*)(?![\w$])/g)].filter((n) => !/^\s*:/.test(b.slice(n.index + n[1].length))).map((n) => n[1]));
+        for (const name of names) context.decls[name] = normalizeAssertion(source.slice(i, end));
+        excluded.push({ start: i, end });
+        i = end - 1;
+        continue;
+      }
+    }
+    if ("([{".includes(ch)) depth++;
+    else if (")]}".includes(ch)) depth--;
+  }
+  let setup = "", cursor = Math.min(source.length, source.split("\n").slice(0, headerLines).reduce((n, line) => n + line.length + 1, 0));
+  for (const span of excluded) { setup += source.slice(cursor, span.start) + " "; cursor = span.end; }
+  context.setup = normalizeAssertion(setup + source.slice(cursor));
+  Object.defineProperty(out, "context", { value: context });
   return out;
 }
 
+export function compareInventory(previous = {}, next = {}) {
+  const before = Array.isArray(previous) ? previous : assertionInventory(previous.text, previous.manifest, previous);
+  const after = Array.isArray(next) ? next : assertionInventory(next.text, next.manifest, next);
+  const caseList = (entries) => entries.context ? Object.entries(entries.context.cases).map(([test, c]) => ({ test, criterion: c.criterion, kind: c.kind })) : entries;
+  const names = new Set(caseList(before).map((e) => e.test)), nextCases = caseList(after), nextNames = new Set(nextCases.map((e) => e.test));
+  const removed = [], contextChanged = [], matched = [], used = new Set();
+  for (const entry of before) {
+    const renames = [...new Set(nextCases.filter((e) => !names.has(e.test) && e.criterion === entry.criterion && e.kind === entry.kind).map((e) => e.test))];
+    const name = nextNames.has(entry.test) ? entry.test : renames.length === 1 ? renames[0] : null;
+    const index = after.findIndex((e, i) => !used.has(i) && name !== null && e.test === name && e.criterion === entry.criterion && e.kind === entry.kind && (e.key || assertionKey(e.statement)) === (entry.key || assertionKey(entry.statement)));
+    if (index < 0) { removed.push(entry); continue; }
+    used.add(index);
+    const nextEntry = after[index], row = { ...entry, nextId: nextEntry.id };
+    matched.push(row);
+    const oldCase = before.context?.cases[entry.test], newCase = after.context?.cases[name], reasons = [];
+    if (oldCase && newCase && oldCase.flow !== newCase.flow) reasons.push("case_flow");
+    const decls = before.context?.decls || {}, helpers = new Set();
+    const addReferences = (code) => { for (const name of code.match(/[A-Za-z_$][\w$]*/g) || []) if (Object.hasOwn(decls, name)) helpers.add(name); };
+    addReferences(oldCase?.code || "");
+    // Set iteration visits newly added references too, and terminates even for recursive helpers.
+    for (const helper of helpers) {
+      addReferences(scanSource(decls[helper]).code);
+      if (decls[helper] !== after.context?.decls[helper]) reasons.push(`helper:${helper}`);
+    }
+    if (before.context && after.context && before.context.setup !== after.context.setup) reasons.push("setup");
+    if (reasons.length) contextChanged.push({ id: entry.id, nextId: nextEntry.id, test: entry.test, criterion: entry.criterion, statement: entry.statement, reasons });
+  }
+  return { removed, contextChanged, matched };
+}
+
 export function removedAssertions(previous = [], body = "") {
-  const remaining = assertionInventory(body).map((x) => x.statement);
-  return previous.filter((entry) => {
-    const index = remaining.indexOf(entry.statement);
-    if (index < 0) return true;
-    remaining.splice(index, 1);
-    return false;
-  });
+  const cases = [...new Map(previous.map((e) => [e.test, { name: e.test, criterion: e.criterion, kind: e.kind }])).values()];
+  return compareInventory(previous, { text: body, manifest: { cases } }).removed;
+}
+
+export function amendmentViolations(removed = [], declared = [], checks = []) {
+  const ids = [...new Set([...removed, ...declared].map((r) => r.id))].filter((id) => checks.some((c) => c.id === id && c.nature === "insufficient"));
+  return ids.length ? [{ rule: "coverage_insufficient_removed", plain: RULE_PLAIN.coverage_insufficient_removed, detail: ids.join(", "), line: null }] : [];
 }
 
 function lastFence(text, langs) {
@@ -825,7 +957,7 @@ function lastJsonBlock(text) {
  * Reads the author's answer: the last ```js block (the body) and the last ```json block (the manifest). Structural problems
  * only (the rules are lintTestBody's). Returns { ok, body, manifest: { testSlot, needs, api, cases }, problems }.
  */
-export function parseAuthorOutput(text, { testSlot = null, workType = "", criteria = [] } = {}) {
+export function parseAuthorOutput(text, { testSlot = null, workType = "", criteria = [], amends = null } = {}) {
   const problems = [];
   const rawBody = lastFence(text, "js|javascript|mjs");
   const rawJson = lastJsonBlock(text);
@@ -837,6 +969,8 @@ export function parseAuthorOutput(text, { testSlot = null, workType = "", criter
   const manifest = { testSlot: "", needs: [], api: "", cases: [], newApi: [], removed: [] };
   if (data) {
     manifest.testSlot = String(data.testSlot ?? "").slice(0, 40);
+    manifest.amends = typeof data.amends === "string" ? data.amends.toLowerCase() : null;
+    if (amends ? !/^[0-9a-f]{64}$/i.test(data.amends || "") || manifest.amends !== String(amends).toLowerCase() : data.amends != null && data.amends !== "") problems.push("manifestul nu numește varianta anterioară (amends)");
     if (testSlot && manifest.testSlot !== String(testSlot)) problems.push(`manifestul nu numește slotul exact (${manifest.testSlot || "—"} în loc de ${testSlot})`);
     for (const need of Array.isArray(data.needs) ? data.needs : []) {
       const k = String(need);
@@ -868,8 +1002,18 @@ export function parseAuthorOutput(text, { testSlot = null, workType = "", criter
     }
     if (String(workType).toUpperCase() === "FEATURE" && manifest.newApi.length && manifest.api.length < 10) problems.push("la FEATURE cu newApi, „api” descrie într-o propoziție forma API aleasă");
     for (const r of Array.isArray(data.removed) ? data.removed : []) {
-      if (!r || !/^P[1-9]\d*$/.test(r.id || "") || typeof r.why !== "string" || r.why.trim().length < 10 || r.why.trim().length > 200 || manifest.removed.some((x) => x.id === r.id)) problems.push("removed: id sau motiv invalid (10–200 caractere, fără duplicate)");
-      else manifest.removed.push({ id: r.id, why: r.why.trim() });
+      if (!r || !CHECK_ID.test(r.id || "") || r.basis !== "wrong" || typeof r.by !== "string" || r.by.trim().length < 1 || r.by.trim().length > 200 || typeof r.why !== "string" || r.why.trim().length < 10 || r.why.trim().length > 200 || manifest.removed.some((x) => x.id === r.id)) problems.push("removed: id, basis (wrong), by (1–200) sau motiv invalid (10–200 caractere, fără duplicate)");
+      else manifest.removed.push({ id: r.id, basis: r.basis, why: r.why.trim(), by: r.by.trim() });
+    }
+    if (data.completes !== undefined) {
+      manifest.completes = [];
+      manifest.completesNotes = [];
+      if (!Array.isArray(data.completes)) manifest.completesNotes.push("completes: valoare ignorată (nu este o listă)");
+      else for (const entry of data.completes) {
+        if (!entry || typeof entry !== "object" || Array.isArray(entry) || typeof entry.ref !== "string" || !COMPLETION_REF.test(entry.ref)) manifest.completesNotes.push("completes: intrare ignorată (ref)");
+        else if (typeof entry.by !== "string" || entry.by.trim().length < 10 || entry.by.trim().length > 300) manifest.completesNotes.push("completes: intrare ignorată (by: 10–300 caractere)");
+        else manifest.completes.push({ ref: entry.ref, by: entry.by.trim() });
+      }
     }
   }
   const body = rawBody === null ? "" : normalizeBody(rawBody);
@@ -881,6 +1025,7 @@ export function parseAuthorOutput(text, { testSlot = null, workType = "", criter
 // ---------------------------------------------------------------------------------------------------------------------
 
 const RULE_PLAIN = Object.freeze({
+  coverage_insufficient_removed: "o verificare criticată ca insuficientă a fost eliminată sau schimbată în loc să fie completată",
   export_missing_undeclared: "testul folosește un export care nu există azi și nu e declarat ca API nou cerut",
   export_existence_assert: 'existența unui export se cere cu need(m, "nume"), nu printr-o aserțiune',
   syntax: "testul nu e JavaScript valid",
@@ -1606,7 +1751,8 @@ export function classifyProof({ runs = [], manifest = {}, criteria = [], workTyp
 // ---------------------------------------------------------------------------------------------------------------------
 
 /** The test reviewer's package (Codex, read-only, its own conversation). */
-export function buildTestReviewBrief({ mission = {}, spec = {}, specVersion = 1, testRef = "", testSha = "", testText = "", manifest = {}, proof = {}, lint = {}, cycle = 0, previousCandidate = null, inventoryRemoved = [], removedDeclared = [], openFindings = [] } = {}) {
+export function buildTestReviewBrief({ mission = {}, spec = {}, specVersion = 1, testRef = "", testSha = "", testText = "", manifest = {}, proof = {}, lint = {}, cycle = 0, previousCandidate = null, inventoryRemoved = [], contextChanged = [], inventory = [], removedDeclared = [], openFindings = [] } = {}) {
+  if (!inventory.length) inventory = assertionInventory(testText, manifest, { sha: testSha || null, headerLines: String(testText).split("\n").findIndex((l) => l === "// ---- corpul testului ----") + 1 });
   const criteria = testCriteriaOf(spec.acceptance);
   const words = [...new Set([...(Array.isArray(spec.sources?.user) ? spec.sources.user : []), spec.objective].filter(Boolean).map(String))];
   const numbered = String(testText || "").replace(/\n$/, "").split("\n").map((l, k) => `${String(k + 1).padStart(3, " ")}| ${l}`);
@@ -1655,7 +1801,17 @@ export function buildTestReviewBrief({ mission = {}, spec = {}, specVersion = 1,
     ...(signals.length ? signals.map((s) => `- ${s.plain}${s.detail ? ` (${fenceSafe(s.detail)})` : ""}${s.line ? `, linia ${s.line}` : ""}`) : ["- (niciunul)"]),
     "",
   ];
-  if (cycle > 0 && previousCandidate) lines.push("## Varianta anterioară (date, numerotată)", "```text", fenceSafe(String(previousCandidate.text || "").split("\n").map((l, i) => `${i + 1}| ${l}`).join("\n")), "```", "## Verificări eliminate sau înlocuite", "Pentru FIECARE id de mai jos răspunde în previousChecks: kept, replaced_correctly sau lost. Judecă acoperirea comportamentului, nu doar textul.", "```json", fenceSafe(JSON.stringify(inventoryRemoved.map((r) => ({ ...r, why: removedDeclared.find((d) => d.id === r.id)?.why || "nedeclarat" })), null, 2)), "```");
+  lines.push("## Inventarul variantei curente", AMEND_RULE,
+    "Când o constatare critică o verificare existentă, clasifică-o în checks: [{ id, nature: insufficient | wrong, why }]. insufficient = corectă, dar nu acoperă tot ce se cere: va fi completată, niciodată eliminată. wrong = verifică ceva necerut de proprietar, ar respinge o implementare corectă sau nu poate trece niciodată: poate fi corectată ori înlocuită. O critică nu este permisiune de ștergere. why: 10–200 caractere.",
+    "```json", fenceSafe(JSON.stringify(inventory.map(({ id, test, criterion, statement }) => ({ id, test, criterion, statement })), null, 2)), "```");
+  const judged = [...inventoryRemoved, ...contextChanged.filter((r) => !inventoryRemoved.some((e) => e.id === r.id))];
+  if (cycle > 0 && previousCandidate) lines.push(...completionList(previousCandidate),
+    "### completes — afirmația autorului (nu e dovadă)", "```json", fenceSafe(JSON.stringify(manifest.completes || [], null, 2)), "```",
+    "Pentru fiecare punct judecă dacă noul test îl închide cu adevărat; un punct rămas deschis este un finding și face criteriul aferent neacoperit (covered: false).");
+  if (cycle > 0 && previousCandidate) lines.push("## Varianta anterioară (date, numerotată)", "```text", fenceSafe(String(previousCandidate.text || "").split("\n").map((l, i) => `${i + 1}| ${l}`).join("\n")), "```", "## Verificări de judecat",
+    "O verificare eliminată pe care review-ul anterior a criticat-o (cu sau fără clasificare) și pe care autorul nu a demonstrat-o ca fiind greșită primește verdictul lost.",
+    "Pentru FIECARE id răspunde în previousChecks cu { verdict: kept | replaced_correctly | lost, by: [id din inventarul curent], why: motiv de 10–200 caractere }. Pentru o eliminare, kept și replaced_correctly cer by nevid și why. Pentru text păstrat în context schimbat, kept nu cere by/why; replaced_correctly le cere. lost blochează. Judecă echivalența comportamentului independent: comparația textuală nu o certifică; motivul autorului nu ține locul răspunsului tău.",
+    "```json", fenceSafe(JSON.stringify(judged.map((r) => ({ ...r, context: r.reasons ? `text păstrat, context schimbat: ${r.reasons.join(", ")}` : "eliminată sau înlocuită", "afirmația autorului (nu e dovadă)": removedDeclared.find((d) => d.id === r.id) || "nedeclarat" })), null, 2)), "```");
   if (openFindings.length) {
     lines.push("## Findings deschise din verificarea anterioară", "Pentru FIECARE cod de mai jos spune în previousFindings dacă este resolved, still_open sau disputed:",
       ...openFindings.map((f) => `- ${f.code} [${f.severity}] ${f.file}: ${fenceSafe(f.observation)}`), "");
@@ -1667,7 +1823,8 @@ export function buildTestReviewBrief({ mission = {}, spec = {}, specVersion = 1,
       criteria: criteria.map((c) => ({ id: c.id, covered: true, failsForRightReason: true, canEverPass: true, contradictsOwner: false, trivialPassRisk: "low|medium|high", plain: "ce verifică testul, pentru proprietar" })),
       findings: [{ severity: "critical|high|medium|low|info", file: testRef || "cale relativă", area: "zonă", observation: "ce ai observat", impact: "de ce contează", evidence: "linia/fragmentul", reproduction: "pași sau motivul incertitudinii" }],
       ...(openFindings.length ? { previousFindings: Object.fromEntries(openFindings.map((f) => [f.code, "resolved | still_open | disputed"])) } : {}),
-      ...(inventoryRemoved.length ? { previousChecks: Object.fromEntries(inventoryRemoved.map((r) => [r.id, "kept | replaced_correctly | lost"])) } : {}),
+      checks: [],
+      ...(judged.length ? { previousChecks: Object.fromEntries(judged.map((r) => [r.id, { verdict: "kept | replaced_correctly | lost", by: ["P1"], why: "justificarea verificatorului" }])) } : {}),
       missingContext: [] }, null, 2),
     "```");
   return redactText(lines.join("\n"));
@@ -1679,7 +1836,7 @@ export function buildTestReviewBrief({ mission = {}, spec = {}, specVersion = 1,
  * canEverPass && !contradictsOwner && trivialPassRisk !== "high", else CHANGES_REQUESTED; a missing or malformed criterion
  * (or a `plain` outside 10–200 characters) makes it INCONCLUSIVE.
  */
-export function parseTestReview(text, { testSha, criteria = [], openCodes = [], inventoryRemoved = [] } = {}) {
+export function parseTestReview(text, { testSha, criteria = [], openCodes = [], inventoryRemoved = [], contextChanged = [], inventory = [] } = {}) {
   const base = parseReview(text, { changeSetSha: testSha, openCodes });
   let problems = [...base.problems];
   const testCriteria = testCriteriaOf(criteria);
@@ -1714,11 +1871,21 @@ export function parseTestReview(text, { testSha, criteria = [], openCodes = [], 
     if (entry.trivialPassRisk === "high") why.push("poate fi trecut de o implementare trivială");
     if (why.length) gate.push({ id: c.id, why });
   }
+  const checks = [], notes = [], ids = new Set(inventory.map((e) => e.id));
+  if (data?.checks !== undefined && !Array.isArray(data.checks)) notes.push("checks: lista este invalidă");
+  for (const c of Array.isArray(data?.checks) ? data.checks : []) {
+    const why = redactText(String(c?.why ?? "").trim());
+    if (!CHECK_ID.test(c?.id || "") || !ids.has(c.id) || !["insufficient", "wrong"].includes(c.nature) || typeof c.why !== "string" || why.length < 10 || why.length > 200) { notes.push(`checks: intrare ignorată (${redactText(String(c?.id || "?")).slice(0, 80)})`); continue; }
+    checks.push({ id: c.id, nature: c.nature, why });
+  }
   // Coverage equivalence is the reviewer's judgement, not a deterministic certification.
-  for (const entry of inventoryRemoved) {
+  for (const entry of [...inventoryRemoved, ...contextChanged.filter((r) => !inventoryRemoved.some((e) => e.id === r.id))]) {
     const answer = data?.previousChecks?.[entry.id];
-    if (!["kept", "replaced_correctly", "lost"].includes(answer)) problems.push(`lipsește previousChecks pentru ${entry.id}`);
-    else if (answer === "lost") gate.push({ id: entry.id, why: ["verificarea anterioară a fost pierdută"] });
+    const verdict = typeof answer === "string" ? answer : answer?.verdict, removed = inventoryRemoved.some((e) => e.id === entry.id);
+    const why = redactText(String(answer?.why ?? "").trim());
+    const evidence = Array.isArray(answer?.by) && answer.by.length > 0 && answer.by.every((id) => CHECK_ID.test(id) && ids.has(id)) && typeof answer?.why === "string" && why.length >= 10 && why.length <= 200;
+    if (!CHECK_ID.test(entry.id) || !["kept", "replaced_correctly", "lost"].includes(verdict) || (verdict === "replaced_correctly" || verdict === "kept" && removed) && !evidence) problems.push(`lipsește previousChecks valid pentru ${entry.id}`);
+    else if (verdict === "lost") gate.push({ id: entry.id, why: ["verificarea anterioară a fost pierdută"] });
   }
   // A CHANGES_REQUESTED whose reasons are the per-criterion answers (no separate finding) is still verifiable.
   if (base.claimedVerdict === "CHANGES_REQUESTED" && gate.length) problems = problems.filter((p) => !p.startsWith("CHANGES_REQUESTED fără"));
@@ -1728,7 +1895,7 @@ export function parseTestReview(text, { testSha, criteria = [], openCodes = [], 
   const cause = verdict !== "INCONCLUSIVE" ? null
     : problems.some((p) => p.startsWith("review-ul nu numește change set-ul exact")) ? "stale"
       : problems.some((p) => p.startsWith("PASS cu findings blocante")) ? "blocking" : "unreadable";
-  return { ...base, verdict, cause, valid: problems.length === 0, problems, criteria: normalized, gate, previousChecks: data?.previousChecks || {} };
+  return { ...base, verdict, cause, valid: problems.length === 0, problems, criteria: normalized, gate, checks, notes, previousChecks: data?.previousChecks || {} };
 }
 
 /** The owner's summary after protection (§2): what the test checks, in the reviewer's words, labelled as such. */

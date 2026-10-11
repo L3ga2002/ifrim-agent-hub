@@ -1,0 +1,70 @@
+{
+  "testSlot": "0b57be2ba0ca",
+  "needs": [
+    "node:path",
+    "node:os",
+    "node:fs",
+    "node:sqlite",
+    "node:http"
+  ],
+  "api": "Testul pornește serverul cu startServer, inserează direct în sqlite o programare preexistentă, verifică structural JSON-ul parsat prin phoneLeaks și găsește id-urile exact în array-ul bookings.",
+  "cases": [
+    {
+      "name": "AC-1: Lista publică a zilei nu expune câmpul phone și valoarea telefonului",
+      "criterion": "AC-1",
+      "kind": "check",
+      "today": "fail"
+    },
+    {
+      "name": "AC-2: Parametrii publici suplimentari nu scot telefonul din lista zilei",
+      "criterion": "AC-2",
+      "kind": "check",
+      "today": "fail"
+    },
+    {
+      "name": "AC-3 control: Programarea e refuzată fără telefon, cu telefon gol sau doar spații, fără a se salva nimic",
+      "criterion": "AC-3",
+      "kind": "control",
+      "today": "pass"
+    },
+    {
+      "name": "AC-4 control: Telefonul trimis e salvat exact în stocarea internă a aplicației",
+      "criterion": "AC-4",
+      "kind": "control",
+      "today": "pass"
+    },
+    {
+      "name": "AC-5 control: O programare validă cu telefon pe interval liber e acceptată de server",
+      "criterion": "AC-5",
+      "kind": "control",
+      "today": "pass"
+    }
+  ],
+  "newApi": [],
+  "removed": [
+    {
+      "id": "P75",
+      "why": "Înlocuit: body.includes(id) acceptă id în metadate; acum se caută id exact în array-ul bookings parsat."
+    },
+    {
+      "id": "P76",
+      "why": "Înlocuit: body.includes acceptă escape Unicode; acum phoneLeaks verifică recursiv JSON-ul decodat."
+    },
+    {
+      "id": "P77",
+      "why": "Înlocuit: body.includes acceptă escape Unicode; acum phoneLeaks verifică recursiv JSON-ul decodat."
+    },
+    {
+      "id": "P98",
+      "why": "Înlocuit: body.includes(id) acceptă id în metadate; acum se caută id exact în array-ul bookings parsat."
+    },
+    {
+      "id": "P99",
+      "why": "Înlocuit: body.includes acceptă escape Unicode; acum phoneLeaks verifică recursiv JSON-ul decodat."
+    },
+    {
+      "id": "P100",
+      "why": "Înlocuit: body.includes acceptă escape Unicode; acum phoneLeaks verifică recursiv JSON-ul decodat."
+    }
+  ]
+}

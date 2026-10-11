@@ -19,7 +19,7 @@ import { integrityFindings, isTestFirstBlocking } from "./integrity.mjs";
 import { contractDrift, publicReadRoutes, readPublicClient } from "./supersede.mjs";
 import { buildReviewBrief, parseReview, BLOCKING_SEVERITIES } from "./review.mjs";
 import { buildAuthorBrief, parseAuthorOutput, lintTestBody, assembleTestFile, classifyProof, proofSignature, buildTestReviewBrief, parseTestReview, ownerSummary, ownerOutcome,
-  assertionInventory, removedAssertions, exportNamesOf, testSlotOf, testFirstScope, T_STAGE, T_ALREADY_PASSES, T_NOT_HERMETIC, T_PROJECT_CHANGED, T_REVIEW_INCONCLUSIVE, T_STOP_STAGE0, REVIEW_CAUSES, PROOF_CAUSES, TEST_FIRST_LIMITS, HUB_TEST_DIR } from "./test-first.mjs";
+  assertionInventory, compareInventory, amendmentViolations, completionSignals, exportNamesOf, testSlotOf, testFirstScope, T_STAGE, T_ALREADY_PASSES, T_NOT_HERMETIC, T_PROJECT_CHANGED, T_REVIEW_INCONCLUSIVE, T_STOP_STAGE0, REVIEW_CAUSES, PROOF_CAUSES, TEST_FIRST_LIMITS, HUB_TEST_DIR } from "./test-first.mjs";
 import { runE2E, browserStatus } from "../tools/browser.mjs";
 import { resolveRoleBindings, resolveBinding, normalizeBindingRequest, bindingLabel } from "../policy/model-binding.mjs";
 
@@ -1697,12 +1697,15 @@ export function createFactory(deps) {
     if (!(a.cycle > 0)) return null;
     const prev = (a.rejected || []).findLast((r) => r.cycle === a.cycle - 1 && r.sha);
     if (!prev) return null;
-    const text = readBlob(blobDir(missionId), prev.sha);
-    if (text === null || sha256(text) !== prev.sha) throw new HubError("conflict", "Copia variantei anterioare lipsește sau are alți octeți", { code: "PREVIOUS_TEST_MISSING" });
+    let text;
+    try { text = readBlob(blobDir(missionId), prev.sha); } catch { return null; }
+    if (text === null || sha256(text) !== prev.sha) return null;
     const manifest = prev.candidate?.manifest || {};
     const headerLines = prev.candidate?.headerLines ?? text.split("\n").findIndex((l) => l === "// ---- corpul testului ----") + 1;
-    return { sha: prev.sha, cycle: prev.cycle, text, manifest, proof: prev.proof, review: prev.review, findings: prev.findings || [], inventory: assertionInventory(text, manifest, { headerLines }) };
+    return { sha: prev.sha, cycle: prev.cycle, text, manifest, headerLines, proof: prev.proof, review: prev.review, findings: prev.findings || [], inventory: assertionInventory(text, manifest, { headerLines, sha: prev.sha }) };
   }
+
+  const holdPreviousMissing = (missionId, a) => holdStageZero(missionId, { kind: "previous_missing", text: "Copia variantei anterioare lipsește sau are alți octeți. Pasul 0 se oprește.", details: ["copia variantei anterioare lipsește sau are alți octeți"], taskId: a.authorTaskId });
 
   async function dispatchTestAuthor(missionId) {
     { const stop = halted(missionId); if (stop) return stop; }
@@ -1711,8 +1714,10 @@ export function createFactory(deps) {
     const a = authoringOf(spec);
     const mission = missions.get(missionId);
     const previous = [...(a.rejected || []).filter((r) => r.cycle === a.cycle - 1).flatMap((r) => r.reasons || []), ...(a.retryProblems || [])].slice(0, 20);
+    const previousCandidate = previousCandidateOf(missionId, a);
+    if (a.cycle > 0 && !previousCandidate) return holdPreviousMissing(missionId, a);
     const brief = buildAuthorBrief({ mission: { id: missionId, title: mission.title }, spec: spec.spec, specVersion: spec.version, specSha: spec.sha256, authoring: { testRef: a.testRef },
-      cycle: a.cycle, previousProblems: previous, previousCandidate: previousCandidateOf(missionId, a), facts: authoringFacts(missionId, a, projects.get(mission.projectId)) });
+      cycle: a.cycle, previousProblems: previous, previousCandidate, facts: authoringFacts(missionId, a, projects.get(mission.projectId)) });
     const reason = authorStageReason(a, spec);
     if (f.stage !== "TEST_AUTHORING" || f.stageReason !== reason) bus.transaction(() => setStage(missionId, "TEST_AUTHORING", { waitReason: "provider", reason }));
     return dispatchRun(missionId, { stage: "TEST_AUTHORING", taskId: a.authorTaskId, role: ROLE_OF_STAGE.TEST_AUTHORING, access: "read-only", conversationId: a.authorConversationId,
@@ -1728,7 +1733,9 @@ export function createFactory(deps) {
     const f = fm(missionId);
     const spec = approvedSpec(f);
     const a = authoringOf(spec);
-    const parsed = parseAuthorOutput(outputOf(run), { testSlot: testSlotOf({ specSha: spec.sha256, cycle: a.cycle }), workType: f.workType, criteria: spec.spec.acceptance });
+    const previousCandidate = previousCandidateOf(missionId, a);
+    if (a.cycle > 0 && (!previousCandidate || previousCandidate.inventory.some((e) => e.sha !== previousCandidate.sha))) return holdPreviousMissing(missionId, a);
+    const parsed = parseAuthorOutput(outputOf(run), { testSlot: testSlotOf({ specSha: spec.sha256, cycle: a.cycle }), workType: f.workType, criteria: spec.spec.acceptance, amends: previousCandidate?.sha || null });
     if (!parsed.ok) {
       updateAuthoring(missionId, { retryProblems: parsed.problems.map((p) => redactText(String(p)).slice(0, 300)).slice(0, 10) });
       bus.emit({ type: "factory.test_unreadable", scopeType: "mission", scopeId: missionId, source: "factory", runId: run.id, payload: { cycle: a.cycle, problems: parsed.problems.slice(0, 5) } });
@@ -1737,20 +1744,22 @@ export function createFactory(deps) {
     const facts = authoringFacts(missionId, a, projects.get(missions.get(missionId).projectId));
     const lint = lintTestBody(parsed.body, { manifest: parsed.manifest, criteria: spec.spec.acceptance, workType: f.workType, testRef: a.testRef, stagingRef: a.stagingRef,
       projectFiles: facts.files, moduleExports: facts.exports, spec: spec.spec });
-    const previousCandidate = previousCandidateOf(missionId, a);
-    const inventoryRemoved = removedAssertions(previousCandidate?.inventory || [], parsed.body);
-    const removedDeclared = parsed.manifest.removed || [];
-    for (const entry of inventoryRemoved) if (!removedDeclared.some((r) => r.id === entry.id)) lint.signals.push({ signal: "coverage_removed_undeclared", plain: "O verificare anterioară a fost eliminată fără motiv declarat", detail: entry.id, line: null });
     const file = assembleTestFile({ body: parsed.body, needs: parsed.manifest.needs, missionId, specVersion: spec.version, specSha: spec.sha256 });
+    const { removed: inventoryRemoved, contextChanged } = compareInventory(previousCandidate?.inventory || [], { text: file.text, manifest: parsed.manifest, headerLines: file.header.length, sha: file.sha256 });
+    const removedDeclared = parsed.manifest.removed || [];
+    lint.violations.push(...amendmentViolations(inventoryRemoved, removedDeclared, previousCandidate?.review?.checks || []));
+    lint.ok = lint.violations.length === 0;
+    if (a.cycle > 0) lint.signals.push(...completionSignals(previousCandidate, parsed.manifest.completes));
+    for (const entry of inventoryRemoved) if (!removedDeclared.some((r) => r.id === entry.id)) lint.signals.push({ signal: "coverage_removed_undeclared", plain: "O verificare anterioară a fost eliminată fără motiv declarat", detail: entry.id, line: null });
     if (!lint.ok) {
       storeTestBlob(missionId, file.text);
       return reAuthorOrDecide(missionId, { kind: "lint", violations: lint.violations, taskId: a.authorTaskId,
-        rejectedCandidate: { sha: file.sha256, headerLines: file.header.length, cycle: a.cycle, manifest: parsed.manifest, lint, previousSha: previousCandidate?.sha || null, inventoryRemoved, removedDeclared } });
+        rejectedCandidate: { sha: file.sha256, headerLines: file.header.length, cycle: a.cycle, manifest: parsed.manifest, lint, previousSha: previousCandidate?.sha || null, inventoryRemoved, contextChanged, removedDeclared } });
     }
     // Write-ahead (§5.1): the exact bytes and the record first, the file after; a crash in between is finished from the blob at the next
     // resume (same sha) or stops at the owner (another file there).
     storeTestBlob(missionId, file.text);
-    updateAuthoring(missionId, { retryProblems: [], pending: { previousSha: previousCandidate?.sha || null, inventoryRemoved, removedDeclared, headerLines: file.header.length, sha: file.sha256, cycle: a.cycle, runId: run.id, manifest: parsed.manifest, lint: { signals: lint.signals, facts: lint.facts }, at: now() } });
+    updateAuthoring(missionId, { retryProblems: [], pending: { previousSha: previousCandidate?.sha || null, inventoryRemoved, contextChanged, removedDeclared, headerLines: file.header.length, sha: file.sha256, cycle: a.cycle, runId: run.id, manifest: parsed.manifest, lint: { signals: lint.signals, facts: lint.facts }, at: now() } });
     return writePendingTest(missionId);
   }
 
@@ -1789,7 +1798,7 @@ export function createFactory(deps) {
       const files = outcome.diff.others.length ? outcome.diff.others : [a.stagingRef];
       return holdStageZero(missionId, { kind: "changed", text: T_PROJECT_CHANGED(files), files, taskId: a.authorTaskId });
     }
-    updateAuthoring(missionId, { pending: null, candidate: { previousSha: p.previousSha || null, inventoryRemoved: p.inventoryRemoved || [], removedDeclared: p.removedDeclared || [], headerLines: p.headerLines, cycle: p.cycle, sha: p.sha, manifest: p.manifest, lint: p.lint, runId: p.runId, status: "STAGED", writtenAt: now() } });
+    updateAuthoring(missionId, { pending: null, candidate: { previousSha: p.previousSha || null, inventoryRemoved: p.inventoryRemoved || [], contextChanged: p.contextChanged || [], removedDeclared: p.removedDeclared || [], headerLines: p.headerLines, cycle: p.cycle, sha: p.sha, manifest: p.manifest, lint: p.lint, runId: p.runId, status: "STAGED", writtenAt: now() } });
     bus.emit({ type: "factory.test_staged", scopeType: "mission", scopeId: missionId, source: "factory", payload: { ref: a.stagingRef, sha: p.sha, cycle: p.cycle, cases: p.manifest.cases.length } });
     return runTestProving(missionId);
   }
@@ -1846,11 +1855,13 @@ export function createFactory(deps) {
     const a = authoringOf(spec);
     const c = a.candidate;
     const testText = readBlob(blobDir(missionId), c.sha);
-    if (testText === null) return holdStageZero(missionId, { kind: "blob_missing", text: T_PROJECT_CHANGED([a.stagingRef]), details: ["copia Hub-ului a testului lipsește"], files: [a.stagingRef], taskId: a.reviewTaskId });
+    const previousCandidate = previousCandidateOf(missionId, a);
+    if (a.cycle > 0 && !previousCandidate) return holdPreviousMissing(missionId, a);
+    if (testText === null || sha256(testText) !== c.sha) return holdStageZero(missionId, { kind: "blob_missing", text: T_PROJECT_CHANGED([a.stagingRef]), details: ["copia Hub-ului a testului lipsește"], files: [a.stagingRef], taskId: a.reviewTaskId });
     const open = findings(missionId, "OPEN").filter((x) => x.source === "test_review");
     bus.transaction(() => setStage(missionId, "TEST_REVIEW", { waitReason: "provider", reason: T_STAGE.TEST_REVIEW }));
     const brief = buildTestReviewBrief({ mission: { id: missionId, title: missions.get(missionId).title }, spec: spec.spec, specVersion: spec.version, testRef: a.testRef, testSha: c.sha,
-      testText, manifest: c.manifest, proof: a.proof || {}, lint: c.lint || {}, cycle: a.cycle, previousCandidate: previousCandidateOf(missionId, a), inventoryRemoved: c.inventoryRemoved || [], removedDeclared: c.removedDeclared || [], openFindings: open });
+      testText, manifest: c.manifest, proof: a.proof || {}, lint: c.lint || {}, cycle: a.cycle, previousCandidate, inventory: assertionInventory(testText, c.manifest, { headerLines: c.headerLines, sha: c.sha }), inventoryRemoved: c.inventoryRemoved || [], contextChanged: c.contextChanged || [], removedDeclared: c.removedDeclared || [], openFindings: open });
     return dispatchRun(missionId, { stage: "TEST_REVIEW", taskId: a.reviewTaskId, role: ROLE_OF_STAGE.TEST_REVIEW, access: "read-only", conversationId: a.testReviewConversationId,
       brief, cycle: a.cycle, changeSeq: 0 });
   }
@@ -1866,7 +1877,9 @@ export function createFactory(deps) {
     const a = authoringOf(spec);
     const c = a.candidate;
     const openPrev = findings(missionId, "OPEN").filter((x) => x.source === "test_review");
-    const parsed = parseTestReview(outputOf(run), { testSha: c.sha, criteria: spec.spec.acceptance, openCodes: openPrev.map((x) => x.code), inventoryRemoved: c.inventoryRemoved || [] });
+    const testText = readBlob(blobDir(missionId), c.sha);
+    if (testText === null || sha256(testText) !== c.sha) return holdStageZero(missionId, { kind: "blob_missing", text: T_PROJECT_CHANGED([a.stagingRef]), taskId: a.reviewTaskId });
+    const parsed = parseTestReview(outputOf(run), { testSha: c.sha, criteria: spec.spec.acceptance, openCodes: openPrev.map((x) => x.code), inventory: assertionInventory(testText, c.manifest, { headerLines: c.headerLines, sha: c.sha }), inventoryRemoved: c.inventoryRemoved || [], contextChanged: c.contextChanged || [] });
     // The files may not change under the reviewer: the review counts only for the exact test and project it saw.
     const diff = stageZeroDiff(missionId, a);
     const changed = diff.staged !== c.sha || diff.others.length > 0;
@@ -1875,7 +1888,7 @@ export function createFactory(deps) {
     bus.transaction(() => {
       db.prepare(`INSERT INTO factory_reviews (id, mission_id, change_set_id, change_set_sha, run_id, reviewer, verdict, summary, missing_json, validation_json, status, created_at)
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(reviewId, missionId, changeSetId, c.sha, run.id, run.provider, parsed.verdict, parsed.summary, json(parsed.missingContext),
-        json({ kind: "acceptance_test", valid: parsed.valid, problems: parsed.problems, claimedVerdict: parsed.claimedVerdict, cause: parsed.cause, criteria: parsed.criteria, gate: parsed.gate, previousChecks: parsed.previousChecks }),
+        json({ kind: "acceptance_test", valid: parsed.valid, problems: parsed.problems, claimedVerdict: parsed.claimedVerdict, cause: parsed.cause, criteria: parsed.criteria, gate: parsed.gate, previousChecks: parsed.previousChecks, checks: parsed.checks, notes: parsed.notes }),
         changed ? "STALE" : parsed.valid ? "VALID" : "INVALID", now());
       if (!changed) {
         for (const finding of parsed.findings) addFinding(missionId, { ...finding, source: "test_review", reviewId, changeSetId, fingerprint: `test_review:${finding.file}:${finding.observation.slice(0, 80)}` });
@@ -1894,7 +1907,7 @@ export function createFactory(deps) {
     }
     updateAuthoring(missionId, { review: { ...parsed, sha: c.sha, reviewId, runId: run.id, at: now() } });
     if (parsed.verdict === "PASS") {
-      updateAuthoring(missionId, (x) => ({ review: { sha: c.sha, reviewId, runId: run.id, criteria: parsed.criteria, summary: parsed.summary, at: now() }, candidate: { ...x.candidate, status: "REVIEWED" } }));
+      updateAuthoring(missionId, (x) => ({ review: { sha: c.sha, reviewId, runId: run.id, criteria: parsed.criteria, checks: parsed.checks, notes: parsed.notes, summary: parsed.summary, at: now() }, candidate: { ...x.candidate, status: "REVIEWED" } }));
       return protectAuthoredTest(missionId);
     }
     if (parsed.verdict === "CHANGES_REQUESTED") {

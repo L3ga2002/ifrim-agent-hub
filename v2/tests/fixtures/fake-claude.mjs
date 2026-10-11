@@ -51,7 +51,10 @@ function authorAnswer(name, prompt) {
   const data = JSON.parse(fs.readFileSync(new URL(`${name.replace(/[^a-z0-9-]/gi, "")}.json`, AUTHORED), "utf8"));
   const slot = data.slot === "wrong" ? "000000000000" : [...prompt.matchAll(/testSlot ([0-9a-f]{12})/g)].at(-1)?.[1] || "";
   const body = Array.isArray(data.body) ? data.body.join("\n") : String(data.body || "");
-  const manifest = { testSlot: slot, needs: [], api: "", ...(data.manifest || {}) };
+  const markerIndex = prompt.lastIndexOf("# Test de acceptanță");
+  const current = markerIndex < 0 ? "" : prompt.slice(markerIndex);
+  const amends = current.match(/Repari varianta anterioară \(sha ([0-9a-f]{64})\)/)?.[1];
+  const manifest = { testSlot: slot, needs: [], api: "", ...(amends ? { amends } : {}), ...(data.manifest || {}) };
   return `SIMULARE (author fixture ${name}).\n\n\`\`\`js\n${body}\n\`\`\`\n\n\`\`\`json\n${JSON.stringify(manifest, null, 2)}\n\`\`\`\n`;
 }
 const logFile = opt("log");
