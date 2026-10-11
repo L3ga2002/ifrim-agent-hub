@@ -1,5 +1,20 @@
 # Open Issues - Ifrim Agent Hub
 
+## 2026-10-11 (afternoon) — Step-0 repair and §25 recovery (code and live `2.14.8-m11`, contract 13, schema 12; detail: `.ifrim/STAGE_2026-10-11_REPARARE_PAS0.md`)
+
+This section takes precedence over every older one where they overlap. Push of `529cb83` DONE by the owner (origin verified 14:08 UTC).
+
+Closed:
+- **Item 2 below (§25 step-0 rejections)**: causes reproduced locally (invented export accepted as proof; rewrite without the previous candidate; R-SUP retirement at start). Fixed in 2.14.8 (R-PROOF, R-REWRITE, R-LIFECYCLE, R-STALE).
+- **Item 3 below (retirement not undone)**: the old §25 test was restored at the 2.14.8 boot (sha `8d944644…`, journal RESTORED with history).
+- **LightingService**: Running / Automatic after the 08:02 UTC reboot; nothing to restore.
+
+Open:
+1. **§25 still not executed past step 0** (third live attempt, `env_mv3wfqmy_e139f9baef` / `mis_mv3wfpyy_d440c4ec5c`, confirmed 15:28 UTC): both candidates PROVEN on behaviour; the rewrite replaced substring value checks with exact-value checks and the Codex review marked two of them `lost` (confirmed locally: phone leaked in a text field or as a key passes the rewrite). Nothing retired, no code touched. Candidate fix (needs the owner's approval before any new plan): a check criticised as insufficient is supplemented, not replaced. The plan expires by itself 18:58 UTC.
+2. **Parent delivery `dlv_mv1eo8oo_d120460140` stays STALE**: audited reconciliation refused (legacy bundle and E2E screenshots have no recorded byte hash; legacy STALE event has no path inventory), although its software drift is now zero.
+3. **Final V2 regression not green**: 1836 tests, 1832 pass, 1 skip (T25), 3 fail — two fixtures fixed afterwards (14/14), RM-10 load-sensitive (fails under load, passes alone). V1 not rerun.
+4. **Agent refusals**: `upgrade.mjs --apply` ([Production Deploy]) and `git push` stay the owner's. CPU: WmiPrvSE ≈ 2.7 cores, source unidentified. M12 stays DRAFT.
+
 ## 2026-10-11 — Finalizing the M11 probes (no code change; code and live `2.14.7-m11`, HEAD = origin = `d7aeeb5`; detail: `.ifrim/STAGE_2026-10-11_FINALIZARE_PROBE_M11.md`)
 
 This section takes precedence over every older one where they overlap. The push of `8b2a76b` + `d7aeeb5` is DONE (origin verified 2026-10-10 21:18 UTC); item 1 below is closed.

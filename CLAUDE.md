@@ -1,6 +1,10 @@
 # IfrimDigital Ifrim Agent Hub - Claude Code Context
 
-## Current state - 2026-10-11 (read first)
+## Current state - 2026-10-11 afternoon (read first)
+
+Read `.ifrim/STAGE_2026-10-11_REPARARE_PAS0.md` and the first section of `.ifrim/OPEN_ISSUES.md` first; they take precedence over everything below. Code and live Hub `2.14.8-m11` (contract 13, schema 12, no migration); `529cb83` pushed by the owner, plus this docs commit. 2.14.8 makes a setup failure (missing export, harness, start) never count as behavioural proof, gives a rewrite the previous candidate and an assertion inventory (removed checks judged by the reviewer), retires a superseded test only when its reviewed replacement is protected (and restores it on a final stop before the writer), and invalidates a delivery only for paths without verified Hub provenance (audited, evidence-only STALE reconciliation). The 2.14.7 early retirement was restored at boot; parent `dlv_mv1eo8oo_d120460140` stays STALE (legacy evidence has no byte hash). The third live §25 attempt (`env_mv3wfqmy_e139f9baef`) stopped correctly at step 0: the rewrite lost two value checks and the reviewer marked them `lost`; nothing was retired or implemented. The next fix (supplement, do not replace, a check criticised as insufficient) needs the owner's approval. `.ifrim/M12_PROMPT.md` stays DRAFT.
+
+## State - 2026-10-11 (history)
 
 Read `.ifrim/STAGE_2026-10-11_FINALIZARE_PROBE_M11.md` and the first section of `.ifrim/OPEN_ISSUES.md` first; they take precedence over everything below. No code change in this stage: code and live Hub `2.14.7-m11` (contract 13, schema 12), HEAD = `origin/v2-milestone-01` = `d7aeeb5` plus this docs commit (the earlier push is done; never ask the owner to push existing commits). D4-02, RM-10 and OFF-06 pass; the final regression is not green (6 load timeouts that pass in isolation). The §25 privacy revision stopped twice at step 0 (Codex rejected Claude's acceptance test 4/4 times); nothing was implemented and the old §25 test stays retired, so the parent delivery is STALE. `.ifrim/M12_PROMPT.md` stays DRAFT.
 
