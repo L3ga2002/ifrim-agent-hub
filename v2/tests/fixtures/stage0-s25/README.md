@@ -21,3 +21,14 @@ The coordinator supplied the r1 test, manifest and parsed cycle-0 review byte-ex
 T-AMEND-04 confirms c5 → r1 has `removed = []`. r1 passes the correct app and the defective **escaped value other key** variant;
 it fails the original app and the other 15 variants in the `r-amend.test.mjs` matrix (assertion failures).
 The decoded `Object.hasOwn(b, "phone")` check catches escaped keys, but does not detect an escaped phone value under another key.
+
+## Fourth live §25 attempt (2.14.9, 2026-10-11 20:20–20:34 UTC, mission mis_mv49pj8t_91920fa038)
+
+| File | Author run | Review run | Verdict |
+|---|---|---|---|
+| c7-be8da1183055 | run_mv49psd4_31e803e58f (Claude sonnet, cycle 0) | run_mv49y4o4_8b0b592117 (Codex) | CHANGES_REQUESTED, 12 checks `insufficient` |
+| c8-c8068c3b9b1a | run_mv49zhjw_cb71c8ba84 (Claude sonnet, cycle 1, amends c7) | run_mv4a5t9v_a0f21baa5c (Codex) | CHANGES_REQUESTED: nothing removed, every check `kept`; AC-1/AC-2 open |
+
+Byte-exact copies of the Hub blobs (sha256 prefix in the name). c8 passes the correct app and rejects the 16 variants of
+`r-amend.test.mjs`, but passes `variant-escape-in-text-other-key.js.txt` (the phone escaped inside a longer text under another key):
+its decoded helper compares strings by exact equality, as the reviewer found. Not used by a test yet (evidence for the next stage).

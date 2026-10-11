@@ -1,5 +1,19 @@
 # Open Issues - Ifrim Agent Hub
 
+## 2026-10-11 (evening) — Test completion without losing checks (code and live `2.14.9-m11`, contract 13, schema 12; detail: `.ifrim/STAGE_2026-10-11_COMPLETARE_TESTE.md`)
+
+This section takes precedence over every older one where they overlap. `8a91d3f` (2.14.9) pushed by the owner (origin verified 20:21 UTC); live upgrade `upg_mv487hiw` (19:38 UTC) after verified backups `bkp_mv486gvm_fe29fa3bd1` (Hub) and `bkp_mv486kzh_4e6ef724dc` (§25 project). Full `test:v2`: 1848, 1847 pass, 1 skip (T25), 0 fail (CPU avg 93 %).
+
+Closed:
+- **Item 1 below (rewrite replaced insufficient checks)**: R-AMEND / R-INVENTORY in 2.14.9; live fourth attempt kept every previous check (reviewer: all `kept`, no `lost`).
+- **Item 3 below (regression not green)**: final regression green on 2.14.9 (RM-10 passed in this run; still load-sensitive by nature).
+- The 15:28 plan `env_mv3wfqmy_e139f9baef` expired by itself at 18:58 UTC.
+
+Open:
+1. **§25 still not past step 0** (fourth attempt, `env_mv49pmjs_74958c8740` / `mis_mv49pj8t_91920fa038`, stopped 20:34 UTC, exhausted): the cycle-1 completion kept everything but stayed incomplete — its decoded helper compares strings exactly (the phone escaped inside a longer text under another key passes; verified locally), and existing records rely on `seed: true` without proof. Candidate fix (needs the owner's approval): Hub-provided header helpers for "does not expose" checks (decoded keys/values, substring) + an explicit "create or prove the existing record" rule. A second completion would be one more rewrite (not done). The plan expires by itself 23:50 UTC; the automatic refinement cancelled itself (same criteria).
+2. **Parent delivery `dlv_mv1eo8oo_d120460140` stays STALE** (reconciliation refused again at the 2.14.9 boot: no path inventory, no byte hashes).
+3. **Agent refusals**: `git push` stays the owner's (refused again); `upgrade.mjs --apply` was NOT refused this time. M12 stays DRAFT.
+
 ## 2026-10-11 (afternoon) — Step-0 repair and §25 recovery (code and live `2.14.8-m11`, contract 13, schema 12; detail: `.ifrim/STAGE_2026-10-11_REPARARE_PAS0.md`)
 
 This section takes precedence over every older one where they overlap. Push of `529cb83` DONE by the owner (origin verified 14:08 UTC).
