@@ -19,7 +19,7 @@ import { integrityFindings, isTestFirstBlocking } from "./integrity.mjs";
 import { contractDrift, publicReadRoutes, readPublicClient } from "./supersede.mjs";
 import { buildReviewBrief, parseReview, BLOCKING_SEVERITIES } from "./review.mjs";
 import { buildAuthorBrief, parseAuthorOutput, lintTestBody, assembleTestFile, classifyProof, proofSignature, buildTestReviewBrief, parseTestReview, ownerSummary, ownerOutcome,
-  exportNamesOf, testSlotOf, testFirstScope, T_STAGE, T_ALREADY_PASSES, T_NOT_HERMETIC, T_PROJECT_CHANGED, T_REVIEW_INCONCLUSIVE, T_STOP_STAGE0, REVIEW_CAUSES, PROOF_CAUSES, TEST_FIRST_LIMITS, HUB_TEST_DIR } from "./test-first.mjs";
+  assertionInventory, removedAssertions, exportNamesOf, testSlotOf, testFirstScope, T_STAGE, T_ALREADY_PASSES, T_NOT_HERMETIC, T_PROJECT_CHANGED, T_REVIEW_INCONCLUSIVE, T_STOP_STAGE0, REVIEW_CAUSES, PROOF_CAUSES, TEST_FIRST_LIMITS, HUB_TEST_DIR } from "./test-first.mjs";
 import { runE2E, browserStatus } from "../tools/browser.mjs";
 import { resolveRoleBindings, resolveBinding, normalizeBindingRequest, bindingLabel } from "../policy/model-binding.mjs";
 
@@ -203,6 +203,10 @@ export function createFactory(deps) {
     bus.transaction(() => {
     db.prepare(`UPDATE factory_missions SET stage = ?, wait_reason = ?, stage_reason = ?, updated_at = ?, version = version + 1${cols.map(([c]) => `, ${c} = ?`).join("")} WHERE mission_id = ?`)
       .run(stage, waitReason, String(reason).slice(0, 1000), now(), ...cols.map(([, v]) => v), missionId);
+    if (FINAL_STAGES.has(stage) && (stage !== "ACCEPTED" || !writerStarted(missionId))) {
+      const note = abandonText(abandonAuthoring(missionId, stage === "REJECTED" ? "reject" : stage === "CANCELLED" ? "stop" : reason || stage));
+      if (note) db.prepare("UPDATE factory_missions SET stage_reason = ? WHERE mission_id = ?").run(`${reason}. ${note}`.slice(0, 1000), missionId);
+    }
     bus.append({ type: "factory.stage", scopeType: "mission", scopeId: missionId, source: actor, payload: { stage, waitReason, reason: String(reason).slice(0, 300) } });
     });
     return view(missionId);
@@ -580,6 +584,69 @@ export function createFactory(deps) {
    * step 0 protected them, file present with its bytes) and every test a mission of this project retired (from → to, sha). Those this
    * start retires are not "active". → { active: [{ ref, sha256, protectedSha, missionId, specVersion }], retired: [{ from, to, sha256, retiredBy }] }
    */
+  function writerStarted(missionId) {
+    return Boolean(db.prepare("SELECT 1 FROM factory_dispatches WHERE mission_id = ? AND stage IN ('IMPLEMENTING','REPAIRING') LIMIT 1").get(missionId)
+      || db.prepare("SELECT 1 FROM factory_change_sets WHERE mission_id = ? LIMIT 1").get(missionId));
+  }
+
+  function assertWriterProtected(missionId) {
+    const spec = approvedSpec(fm(missionId));
+    if (!spec?.spec.authoring) return;
+    const p = spec.protected || {}, plan = retirementPlan(missionId, spec.spec);
+    const journal = plan.length ? readRetireJournal(projects.get(missions.get(missionId).projectId), missionId) : null;
+    if (p.authoring?.status !== "PROTECTED" || p.restoreBlocked || (plan.length && journal?.status !== "MOVED") || plan.some((r) => !(p.retired || []).some((x) => x.from === r.from && x.to === r.to && x.sha256 === r.sha256 && (x.cycle || 1) === (journal?.cycle || 1)) || (p.restored || []).some((x) => x.from === r.from && x.to === r.to && x.sha256 === r.sha256 && (x.cycle || 1) === (journal?.cycle || 1)))) {
+      throw new HubError("conflict", "Testul înlocuitor nu e protejat sau retragerea nu e înregistrată; implementarea nu pornește", { code: p.restoreBlocked ? "RETIRE_RESTORE_INCOMPLETE" : "TEST_NOT_PROTECTED" });
+    }
+  }
+
+  function restoredTest(project, r) {
+    const missionId = r.retiredBy || r.to?.split("/")[2];
+    const journal = readRetireJournal(project, missionId);
+    const rows = db.prepare("SELECT protected_json FROM factory_specs WHERE mission_id = ?").all(missionId);
+    const recorded = rows.some((row) => (parse(row.protected_json, {}).restored || []).some((x) => x.from === r.from && x.to === r.to && x.sha256 === r.sha256));
+    const item = journal?.items?.some((x) => x.from === r.from && x.to === r.to && x.sha256 === r.sha256);
+    if (!(recorded || journal?.status === "RESTORED" && item)) return false;
+    const folder = safeFolder(project.path, path.posix.dirname(r.from), { create: false });
+    return folder && fileShaAt(folder, path.posix.basename(r.from)) === r.sha256;
+  }
+
+  function compensateRetirement(missionId, cause) {
+    return bus.transaction(() => compensateRetirementNow(missionId, cause));
+  }
+
+  function compensateRetirementNow(missionId, cause) {
+    const spec = approvedSpec(fm(missionId)) || latestSpec(missionId);
+    const project = projects.get(missions.get(missionId).projectId);
+    const journal = readRetireJournal(project, missionId);
+
+    const plan = retirementPlan(missionId, spec?.spec);
+    const refuse = (reason) => {
+      if (spec) db.prepare("UPDATE factory_specs SET protected_json = json_set(protected_json, '$.restoreBlocked', json('true')) WHERE id = ?").run(spec.id);
+      bus.append({ type: "factory.retire_restore_refused", scopeType: "mission", scopeId: missionId, source: "factory", payload: { missionId, projectId: project.id, reason, cause } });
+      return { complete: false, items: [], reason, code: "RETIRE_RESTORE_INCOMPLETE" };
+    };
+    if (!journal) {
+      if (retireJournalExists(project, missionId) || spec?.protected?.retired?.length) return refuse("jurnalul retragerii există, dar este invalid sau nu poate fi citit");
+      return { complete: true, items: [], state: "nothing_retired" };
+    }
+    if (writerStarted(missionId)) return refuse("implementarea a fost deja dispecerizată sau există un change set");
+    if (!plan.length || journal.items.length !== plan.length || !plan.every((r) => journal.items.some((x) => x.from === r.from && x.to === r.to && x.sha256 === r.sha256))) return refuse("jurnalul nu corespunde testelor înlocuite din specificație");
+    const legacyMoved = journal.status === "MOVED" && spec.protected?.authoring && spec.protected.authoring.status !== "PROTECTED" && spec.protected.retired?.length;
+    if (legacyMoved) {
+      try {
+        if (plan.some((r) => { const state = retireState(project, r); return state.fromSha !== null || state.toSha !== r.sha256; })) return refuse("retragerea anticipată nu are copia verificată sau calea originală liberă");
+      } catch (e) { return refuse(String(e.message)); }
+    }
+    const restore = restoreRetired(plan, project, { missionId });
+    const fresh = (approvedSpec(fm(missionId)) || latestSpec(missionId)).protected || {};
+    const records = [...(fresh.restored || [])];
+    if (restore.complete) for (const r of plan) if (!records.some((x) => x.from === r.from && x.to === r.to && x.sha256 === r.sha256 && (x.cycle || 1) === (journal.cycle || 1))) records.push({ from: r.from, to: r.to, sha256: r.sha256, cycle: journal.cycle || 1, at: now(), cause });
+    db.prepare("UPDATE factory_specs SET protected_json = ? WHERE id = ?").run(json({ ...fresh, restored: records, restoreBlocked: !restore.complete }), spec.id);
+    if (restore.state !== "already_restored" || records.length !== (fresh.restored || []).length) bus.append({ type: restore.complete ? "factory.retire_restored" : "factory.retire_restore_refused", scopeType: "mission", scopeId: missionId, source: "factory",
+      payload: { missionId, projectId: project.id, complete: restore.complete, items: restore.items, cause, state: restore.state, code: restore.complete ? null : "RETIRE_RESTORE_INCOMPLETE" } });
+    return restore;
+  }
+
   function historicHubTests(project, missionId, strict) {
     const leaving = new Set((strict.supersedes || []).map((s) => s.testRef.toLowerCase()));
     const rows = db.prepare("SELECT fs.mission_id, fs.version, fs.protected_json FROM factory_specs fs JOIN missions m ON m.id = fs.mission_id WHERE m.project_id = ? AND fs.status = 'APPROVED' AND fs.mission_id <> ? ORDER BY fs.created_at")
@@ -590,7 +657,7 @@ export function createFactory(deps) {
       const p = parse(r.protected_json, {}) || {};
       for (const x of [...(p.retired || []), ...(p.historic?.retired || [])]) {
         const key = `${x.from}|${x.to}`.toLowerCase();
-        if (x?.from && x?.to && /^[0-9a-f]{64}$/.test(String(x.sha256 || "")) && !seen.has(key)) { seen.add(key); retired.push({ from: x.from, to: x.to, sha256: x.sha256, retiredBy: x.retiredBy || r.mission_id }); }
+        if (x?.from && x?.to && /^[0-9a-f]{64}$/.test(String(x.sha256 || "")) && !seen.has(key) && !restoredTest(project, x)) { seen.add(key); retired.push({ from: x.from, to: x.to, sha256: x.sha256, retiredBy: x.retiredBy || r.mission_id }); }
       }
     }
     const gone = new Set(retired.map((x) => x.from.toLowerCase()));
@@ -623,11 +690,12 @@ export function createFactory(deps) {
     const out = [];
     for (const a of h.active || []) { const now2 = shaOf(a.ref); if (now2 !== a.sha256) out.push(`testul Hub anterior ${a.ref} (misiunea ${a.missionId}) a fost ${now2 === null ? "șters" : "modificat"}`); }
     for (const r of h.retired || []) {
+      if (restoredTest(project, r)) continue;
       if (shaOf(r.to) !== r.sha256) out.push(`copia retrasă ${r.to} a fost ${shaOf(r.to) === null ? "ștearsă" : "modificată"}`);
       if (shaOf(r.from) !== null) out.push(`testul retras ${r.from} a fost recreat`);
     }
     // Review #6: the retired bytes back in the active Hub suite under another name (on disk, whatever the snapshot identity).
-    const retiredShas = new Map((h.retired || []).map((r) => [r.sha256, r.from]));
+    const retiredShas = new Map((h.retired || []).filter((r) => !restoredTest(project, r)).map((r) => [r.sha256, r.from]));
     if (retiredShas.size) {
       const folder = safeFolder(project.path, HUB_TEST_DIR, { create: false });
       for (const name of folder ? fs.readdirSync(folder).filter((n) => /\.(?:test|spec)\.[cm]?[jt]sx?$/i.test(n)).slice(0, 200) : []) {
@@ -671,13 +739,13 @@ export function createFactory(deps) {
       let base;
       const started = clock();
       try {
-      retired = retireSuperseded(missionId, strict, project, { fault: startFault ? (point, item) => startFault(point, item) : null });
+      retired = testFirst ? [] : retireSuperseded(missionId, strict, project, { fault: startFault ? (point, item) => startFault(point, item) : null });
       startFault?.("snapshot", null);
       base = recordSnapshot(missionId, testFirst ? "pre_test" : "base", null, project.path, { mode: null });
       bus.transaction(() => {
         const authoring = testFirst ? openAuthoring(missionId, f, strict, project, base, testFirst, actor) : null;
         startFault?.("start_record", null);
-        db.prepare("UPDATE factory_specs SET status = 'APPROVED', approved_at = ?, protected_json = ? WHERE id = ?").run(now(), json({ problems: [], files: protectedFiles, ...(authoring ? { authoring } : {}), ...(retired.length ? { retired } : {}),
+        db.prepare("UPDATE factory_specs SET status = 'APPROVED', approved_at = ?, protected_json = ? WHERE id = ?").run(now(), json({ problems: [], files: protectedFiles, ...(authoring ? { authoring, pendingRetire: retirementPlan(missionId, strict) } : {}), ...(retired.length ? { retired } : {}),
           // Review #4: always recorded (an empty list too), so a test added to the project after this start is never re-baselined later.
           historic: { active: historic.active, retired: [...historic.retired, ...retired.map((r) => ({ from: r.from, to: r.to, sha256: r.sha256, retiredBy: missionId }))] } }), spec.id);
         for (const r of retired) bus.append({ type: "factory.test_superseded", scopeType: "mission", scopeId: missionId, source: actor, payload: { missionId, ...r } });
@@ -921,6 +989,7 @@ export function createFactory(deps) {
 
   async function dispatchRun(missionId, { stage, taskId, role, conversationId, brief, cycle, changeSeq, access: requestedAccess = null }) {
     const f = fm(missionId);
+    if (["IMPLEMENTING", "REPAIRING"].includes(stage)) assertWriterProtected(missionId);
     const route = ROUTES[role];
     const access = stepAccess(stage, route, requestedAccess);
     const { prior, counted: attempts } = modelAttempts(missionId, stage, cycle, changeSeq);
@@ -1050,6 +1119,7 @@ export function createFactory(deps) {
   }
 
   async function dispatchWriter(missionId, { repair }) {
+    assertWriterProtected(missionId);
     { const stop = halted(missionId); if (stop) return stop; }
     const f = fm(missionId);
     if (f.deadlineAt && new Date(f.deadlineAt) <= clock()) return setStage(missionId, "NEEDS_OWNER_DECISION", { waitReason: "owner_decision", reason: "Limita de timp a misiunii a fost atinsă" });
@@ -1570,11 +1640,20 @@ export function createFactory(deps) {
    * The project vs the pre-test base (§3, §5.3). During step 0 the only difference allowed is the Hub's staging file, with exactly the
    * candidate's bytes. Returns { others: [paths changed besides it], staged: sha256 of the staging file | null }.
    */
+  function verifiedRestorePaths(missionId, project, files) {
+    const spec = approvedSpec(fm(missionId)), plan = retirementPlan(missionId, spec?.spec);
+    const ref = `.ifrim-hub/retired/${missionId}/journal.json`, journal = readRetireJournal(project, missionId);
+    if (!plan.length || journal?.status !== "RESTORED" || driftProvenance(project.id, [ref]).software.length
+      || !plan.every((r) => files[r.from]?.sha256 === r.sha256 && !files[r.to])) return new Set();
+    return new Set([ref, ...plan.flatMap((r) => [r.from, r.to])]);
+  }
+
   function stageZeroDiff(missionId, a) {
     const project = projects.get(missions.get(missionId).projectId);
     const snap = takeSnapshot(project.path, { ignore: ignoreOf(missionId), mode: baseMode(missionId) });
     const changes = diffManifests(snapshotRow(a.preTestSnapshotId).files, snap.files, { resolve: (sha) => gitEntryHash(project.path, sha) });
-    return { others: changes.filter((c) => c.path !== a.stagingRef).map((c) => c.path), staged: snap.files[a.stagingRef]?.sha256 || null };
+    const restored = verifiedRestorePaths(missionId, project, snap.files);
+    return { others: changes.filter((c) => c.path !== a.stagingRef && !restored.has(c.path)).map((c) => c.path), staged: snap.files[a.stagingRef]?.sha256 || null };
   }
 
   /** The exact bytes of a candidate in the mission's blob store (the write-ahead copy, read back with readBlob). */
@@ -1614,6 +1693,17 @@ export function createFactory(deps) {
    * TEST_AUTHORING (§3, §4): Claude proposes the test, read-only, under the REVIEWER binding, in the author's own conversation. The
    * owner's words, the criteria and an earlier rejection's reasons are quoted as data; the Hub owns the header and writes the file.
    */
+  function previousCandidateOf(missionId, a) {
+    if (!(a.cycle > 0)) return null;
+    const prev = (a.rejected || []).findLast((r) => r.cycle === a.cycle - 1 && r.sha);
+    if (!prev) return null;
+    const text = readBlob(blobDir(missionId), prev.sha);
+    if (text === null || sha256(text) !== prev.sha) throw new HubError("conflict", "Copia variantei anterioare lipsește sau are alți octeți", { code: "PREVIOUS_TEST_MISSING" });
+    const manifest = prev.candidate?.manifest || {};
+    const headerLines = prev.candidate?.headerLines ?? text.split("\n").findIndex((l) => l === "// ---- corpul testului ----") + 1;
+    return { sha: prev.sha, cycle: prev.cycle, text, manifest, proof: prev.proof, review: prev.review, findings: prev.findings || [], inventory: assertionInventory(text, manifest, { headerLines }) };
+  }
+
   async function dispatchTestAuthor(missionId) {
     { const stop = halted(missionId); if (stop) return stop; }
     const f = fm(missionId);
@@ -1622,7 +1712,7 @@ export function createFactory(deps) {
     const mission = missions.get(missionId);
     const previous = [...(a.rejected || []).filter((r) => r.cycle === a.cycle - 1).flatMap((r) => r.reasons || []), ...(a.retryProblems || [])].slice(0, 20);
     const brief = buildAuthorBrief({ mission: { id: missionId, title: mission.title }, spec: spec.spec, specVersion: spec.version, specSha: spec.sha256, authoring: { testRef: a.testRef },
-      cycle: a.cycle, previousProblems: previous, facts: authoringFacts(missionId, a, projects.get(mission.projectId)) });
+      cycle: a.cycle, previousProblems: previous, previousCandidate: previousCandidateOf(missionId, a), facts: authoringFacts(missionId, a, projects.get(mission.projectId)) });
     const reason = authorStageReason(a, spec);
     if (f.stage !== "TEST_AUTHORING" || f.stageReason !== reason) bus.transaction(() => setStage(missionId, "TEST_AUTHORING", { waitReason: "provider", reason }));
     return dispatchRun(missionId, { stage: "TEST_AUTHORING", taskId: a.authorTaskId, role: ROLE_OF_STAGE.TEST_AUTHORING, access: "read-only", conversationId: a.authorConversationId,
@@ -1638,7 +1728,7 @@ export function createFactory(deps) {
     const f = fm(missionId);
     const spec = approvedSpec(f);
     const a = authoringOf(spec);
-    const parsed = parseAuthorOutput(outputOf(run), { testSlot: testSlotOf({ specSha: spec.sha256, cycle: a.cycle }), workType: f.workType });
+    const parsed = parseAuthorOutput(outputOf(run), { testSlot: testSlotOf({ specSha: spec.sha256, cycle: a.cycle }), workType: f.workType, criteria: spec.spec.acceptance });
     if (!parsed.ok) {
       updateAuthoring(missionId, { retryProblems: parsed.problems.map((p) => redactText(String(p)).slice(0, 300)).slice(0, 10) });
       bus.emit({ type: "factory.test_unreadable", scopeType: "mission", scopeId: missionId, source: "factory", runId: run.id, payload: { cycle: a.cycle, problems: parsed.problems.slice(0, 5) } });
@@ -1646,13 +1736,21 @@ export function createFactory(deps) {
     }
     const facts = authoringFacts(missionId, a, projects.get(missions.get(missionId).projectId));
     const lint = lintTestBody(parsed.body, { manifest: parsed.manifest, criteria: spec.spec.acceptance, workType: f.workType, testRef: a.testRef, stagingRef: a.stagingRef,
-      projectFiles: facts.files, moduleExports: facts.exports });
-    if (!lint.ok) return reAuthorOrDecide(missionId, { kind: "lint", violations: lint.violations, taskId: a.authorTaskId });
+      projectFiles: facts.files, moduleExports: facts.exports, spec: spec.spec });
+    const previousCandidate = previousCandidateOf(missionId, a);
+    const inventoryRemoved = removedAssertions(previousCandidate?.inventory || [], parsed.body);
+    const removedDeclared = parsed.manifest.removed || [];
+    for (const entry of inventoryRemoved) if (!removedDeclared.some((r) => r.id === entry.id)) lint.signals.push({ signal: "coverage_removed_undeclared", plain: "O verificare anterioară a fost eliminată fără motiv declarat", detail: entry.id, line: null });
     const file = assembleTestFile({ body: parsed.body, needs: parsed.manifest.needs, missionId, specVersion: spec.version, specSha: spec.sha256 });
+    if (!lint.ok) {
+      storeTestBlob(missionId, file.text);
+      return reAuthorOrDecide(missionId, { kind: "lint", violations: lint.violations, taskId: a.authorTaskId,
+        rejectedCandidate: { sha: file.sha256, headerLines: file.header.length, cycle: a.cycle, manifest: parsed.manifest, lint, previousSha: previousCandidate?.sha || null, inventoryRemoved, removedDeclared } });
+    }
     // Write-ahead (§5.1): the exact bytes and the record first, the file after; a crash in between is finished from the blob at the next
     // resume (same sha) or stops at the owner (another file there).
     storeTestBlob(missionId, file.text);
-    updateAuthoring(missionId, { retryProblems: [], pending: { sha: file.sha256, cycle: a.cycle, runId: run.id, manifest: parsed.manifest, lint: { signals: lint.signals, facts: lint.facts }, at: now() } });
+    updateAuthoring(missionId, { retryProblems: [], pending: { previousSha: previousCandidate?.sha || null, inventoryRemoved, removedDeclared, headerLines: file.header.length, sha: file.sha256, cycle: a.cycle, runId: run.id, manifest: parsed.manifest, lint: { signals: lint.signals, facts: lint.facts }, at: now() } });
     return writePendingTest(missionId);
   }
 
@@ -1691,7 +1789,7 @@ export function createFactory(deps) {
       const files = outcome.diff.others.length ? outcome.diff.others : [a.stagingRef];
       return holdStageZero(missionId, { kind: "changed", text: T_PROJECT_CHANGED(files), files, taskId: a.authorTaskId });
     }
-    updateAuthoring(missionId, { pending: null, candidate: { cycle: p.cycle, sha: p.sha, manifest: p.manifest, lint: p.lint, runId: p.runId, status: "STAGED", writtenAt: now() } });
+    updateAuthoring(missionId, { pending: null, candidate: { previousSha: p.previousSha || null, inventoryRemoved: p.inventoryRemoved || [], removedDeclared: p.removedDeclared || [], headerLines: p.headerLines, cycle: p.cycle, sha: p.sha, manifest: p.manifest, lint: p.lint, runId: p.runId, status: "STAGED", writtenAt: now() } });
     bus.emit({ type: "factory.test_staged", scopeType: "mission", scopeId: missionId, source: "factory", payload: { ref: a.stagingRef, sha: p.sha, cycle: p.cycle, cases: p.manifest.cases.length } });
     return runTestProving(missionId);
   }
@@ -1725,7 +1823,8 @@ export function createFactory(deps) {
     const outside = skippedTreeChanges(outsideBefore, skippedTreeFingerprint(project.path, { ignore: ignoreOf(missionId) })).slice(0, 20);
     const changedFiles = [...diff.others, ...outside];
     const proof = classifyProof({ runs: results.map((r) => ({ status: r.status, reason: r.reason, counts: r.counts, cases: r.cases || [], fileLevelFailure: r.fileLevelFailure || null, overflow: r.overflow || 0 })),
-      manifest: c.manifest, criteria: spec.spec.acceptance, workType: f.workType, testRef: a.stagingRef, changedFiles, missingAtBase: c.lint?.facts?.missingModules || [] });
+      manifest: c.manifest, criteria: spec.spec.acceptance, workType: f.workType, testRef: a.stagingRef, changedFiles, missingAtBase: c.lint?.facts?.missingModules || [], spec: spec.spec, facts: c.lint?.facts || {},
+      test: { text: readBlob(blobDir(missionId), c.sha), headerLines: c.headerLines, refs: [path.posix.basename(a.stagingRef), path.posix.basename(a.testRef)] } });
     updateAuthoring(missionId, (x) => ({ proof: { sha: c.sha, verdict: proof.verdict, cause: proof.cause, reasons: proof.reasons.slice(0, 20), signature: proof.signature, table: proof.table.slice(0, 20),
       failingCriteria: proof.failingCriteria, passingCriteria: proof.passingCriteria, evidenceIds: results.map((r) => r.id), counts: results.map((r) => r.counts || {}), at: now() },
     candidate: { ...x.candidate, status: proof.verdict === "PROVEN" ? "PROVEN" : proof.verdict } }));
@@ -1751,7 +1850,7 @@ export function createFactory(deps) {
     const open = findings(missionId, "OPEN").filter((x) => x.source === "test_review");
     bus.transaction(() => setStage(missionId, "TEST_REVIEW", { waitReason: "provider", reason: T_STAGE.TEST_REVIEW }));
     const brief = buildTestReviewBrief({ mission: { id: missionId, title: missions.get(missionId).title }, spec: spec.spec, specVersion: spec.version, testRef: a.testRef, testSha: c.sha,
-      testText, manifest: c.manifest, proof: a.proof || {}, lint: c.lint || {}, cycle: a.cycle, openFindings: open });
+      testText, manifest: c.manifest, proof: a.proof || {}, lint: c.lint || {}, cycle: a.cycle, previousCandidate: previousCandidateOf(missionId, a), inventoryRemoved: c.inventoryRemoved || [], removedDeclared: c.removedDeclared || [], openFindings: open });
     return dispatchRun(missionId, { stage: "TEST_REVIEW", taskId: a.reviewTaskId, role: ROLE_OF_STAGE.TEST_REVIEW, access: "read-only", conversationId: a.testReviewConversationId,
       brief, cycle: a.cycle, changeSeq: 0 });
   }
@@ -1767,7 +1866,7 @@ export function createFactory(deps) {
     const a = authoringOf(spec);
     const c = a.candidate;
     const openPrev = findings(missionId, "OPEN").filter((x) => x.source === "test_review");
-    const parsed = parseTestReview(outputOf(run), { testSha: c.sha, criteria: spec.spec.acceptance, openCodes: openPrev.map((x) => x.code) });
+    const parsed = parseTestReview(outputOf(run), { testSha: c.sha, criteria: spec.spec.acceptance, openCodes: openPrev.map((x) => x.code), inventoryRemoved: c.inventoryRemoved || [] });
     // The files may not change under the reviewer: the review counts only for the exact test and project it saw.
     const diff = stageZeroDiff(missionId, a);
     const changed = diff.staged !== c.sha || diff.others.length > 0;
@@ -1776,7 +1875,7 @@ export function createFactory(deps) {
     bus.transaction(() => {
       db.prepare(`INSERT INTO factory_reviews (id, mission_id, change_set_id, change_set_sha, run_id, reviewer, verdict, summary, missing_json, validation_json, status, created_at)
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(reviewId, missionId, changeSetId, c.sha, run.id, run.provider, parsed.verdict, parsed.summary, json(parsed.missingContext),
-        json({ kind: "acceptance_test", valid: parsed.valid, problems: parsed.problems, claimedVerdict: parsed.claimedVerdict, cause: parsed.cause, criteria: parsed.criteria, gate: parsed.gate }),
+        json({ kind: "acceptance_test", valid: parsed.valid, problems: parsed.problems, claimedVerdict: parsed.claimedVerdict, cause: parsed.cause, criteria: parsed.criteria, gate: parsed.gate, previousChecks: parsed.previousChecks }),
         changed ? "STALE" : parsed.valid ? "VALID" : "INVALID", now());
       if (!changed) {
         for (const finding of parsed.findings) addFinding(missionId, { ...finding, source: "test_review", reviewId, changeSetId, fingerprint: `test_review:${finding.file}:${finding.observation.slice(0, 80)}` });
@@ -1793,6 +1892,7 @@ export function createFactory(deps) {
       const files = diff.staged !== c.sha ? [a.stagingRef, ...diff.others] : diff.others;
       return holdStageZero(missionId, { kind: "changed", text: T_PROJECT_CHANGED(files), files, taskId: a.reviewTaskId });
     }
+    updateAuthoring(missionId, { review: { ...parsed, sha: c.sha, reviewId, runId: run.id, at: now() } });
     if (parsed.verdict === "PASS") {
       updateAuthoring(missionId, (x) => ({ review: { sha: c.sha, reviewId, runId: run.id, criteria: parsed.criteria, summary: parsed.summary, at: now() }, candidate: { ...x.candidate, status: "REVIEWED" } }));
       return protectAuthoredTest(missionId);
@@ -1811,14 +1911,14 @@ export function createFactory(deps) {
    * the next brief — while authoring.cycle < reauthorMax; otherwise the owner decides, with the matching text (ownerOutcome), and the
    * project's code is never touched.
    */
-  function reAuthorOrDecide(missionId, { kind, verdict = null, cause = null, reasons = [], violations = [], gate = [], summary = "", files = [], taskId = null }) {
+  function reAuthorOrDecide(missionId, { kind, verdict = null, cause = null, reasons = [], violations = [], gate = [], summary = "", files = [], taskId = null, rejectedCandidate = null }) {
     const spec = approvedSpec(fm(missionId));
     const a = authoringOf(spec);
     const outcome = ownerOutcome({ kind, verdict, cause, files, summary, gate, violations, reasons });
     // What the author reads in the next brief (data): the exact rule or reason, with lines and codes, and the reviewer's per-criterion answers.
     const forAuthor = [...outcome.details, ...gate.map((g) => `${g.id}: ${(g.why || []).join(", ")}`), ...(summary ? [`rezumatul verificatorului: ${summary}`] : [])]
       .map((r) => redactText(String(r)).slice(0, 400)).slice(0, 20);
-    const entry = { cycle: a.cycle, sha: a.candidate?.sha || a.pending?.sha || null, kind, verdict, cause, reasons: forAuthor, plain: outcome.text, at: now() };
+    const entry = { candidate: rejectedCandidate || a.candidate || a.pending || null, proof: a.proof || null, review: a.review || null, findings: findings(missionId).filter((x) => x.source === "test_review"), cycle: a.cycle, sha: rejectedCandidate?.sha || a.candidate?.sha || a.pending?.sha || null, kind, verdict, cause, reasons: forAuthor, plain: outcome.text, at: now() };
     const rewrite = (a.cycle || 0) < reauthorMaxOf(spec);
     bus.emit({ type: "factory.test_rejected", scopeType: "mission", scopeId: missionId, source: "factory", payload: { cycle: a.cycle, kind, verdict, sha: entry.sha, rewrite } });
     if (rewrite) {
@@ -1850,12 +1950,16 @@ export function createFactory(deps) {
     { const held = stageZeroRouteHold(missionId, project, a.reviewTaskId); if (held) return held; }
     const summary = ownerSummary({ review: { criteria: a.review?.criteria || review.validation?.criteria || [] }, criteria: spec.spec.acceptance, proof: a.proof || {} });
     /** The protection's one transaction (§5.5 step 4). */
+    let retired = [];
     const commit = (snap) => bus.transaction(() => {
       const fresh = approvedSpec(fm(missionId));
       const prot = fresh.protected || {};
       const authoring = { ...prot.authoring, status: "PROTECTED", protectedAt: now(), protectedSha: c.sha, baseSnapshotId: snap.id, summary: summary.text, lastHubWrite: null,
         candidate: { ...prot.authoring.candidate, status: "PROTECTED" } };
-      db.prepare("UPDATE factory_specs SET protected_json = ? WHERE id = ?").run(json({ ...prot, files: { ...(prot.files || {}), [a.testRef]: c.sha }, authoring }), fresh.id);
+      db.prepare("UPDATE factory_specs SET protected_json = ? WHERE id = ?").run(json({ ...prot, files: { ...(prot.files || {}), [a.testRef]: c.sha }, authoring,
+        retired: [...(prot.retired || []), ...retired.filter((r) => !(prot.retired || []).some((x) => x.from === r.from && x.sha256 === r.sha256 && (x.cycle || 1) === r.cycle))],
+        historic: { ...(prot.historic || {}), retired: [...(prot.historic?.retired || []), ...retired.map((r) => ({ from: r.from, to: r.to, sha256: r.sha256, retiredBy: missionId }))] } }), fresh.id);
+      for (const r of retired) bus.append({ type: "factory.test_superseded", scopeType: "mission", scopeId: missionId, source: "factory", payload: { missionId, ...r } });
       db.prepare("UPDATE factory_missions SET base_snapshot_id = ? WHERE mission_id = ?").run(snap.id, missionId);
       // Step 0's open findings would otherwise reach the first repair brief (its filter takes every non-integrity finding).
       resolveFindings(findings(missionId, "OPEN").filter((x) => x.source === "test_review").map((x) => x.id), "SUPERSEDED", "testul de acceptanță a fost protejat");
@@ -1877,26 +1981,39 @@ export function createFactory(deps) {
         const pre = snapshotRow(a.preTestSnapshotId);
         const resolve = (sha) => gitEntryHash(project.path, sha);
         const before = takeSnapshot(project.path, { ignore: ignoreOf(missionId), mode: baseMode(missionId) });
-        const others = diffManifests(pre.files, before.files, { resolve }).filter((x) => x.path !== a.stagingRef && x.path !== a.testRef).map((x) => x.path);
+        const restoredPaths = verifiedRestorePaths(missionId, project, before.files), restored = restoredPaths.size > 0;
+        const others = diffManifests(pre.files, before.files, { resolve }).filter((x) => x.path !== a.stagingRef && x.path !== a.testRef && !restoredPaths.has(x.path)).map((x) => x.path);
         const staged = before.files[a.stagingRef]?.sha256 === c.sha && !before.files[a.testRef];
         const movedEarlier = before.files[a.testRef]?.sha256 === c.sha && !before.files[a.stagingRef];
         if (others.length || !(staged || movedEarlier)) return { changed: others.length ? others : [a.stagingRef] };
-        let moved;
-        try { ({ moved } = hubMoveFile(project.path, a.stagingRef, a.testRef, c.sha)); }
-        catch (error) { if (error instanceof HubError) return { changed: [a.testRef], detail: error.message }; throw error; }
-        const snap = recordSnapshot(missionId, "base", null, project.path, { mode: baseMode(missionId) });
-        const changes = diffManifests(pre.files, snap.files, { resolve }).filter((x) => !(x.path === a.stagingRef && x.status === "deleted"));
-        if (!(changes.length === 1 && changes[0].path === a.testRef && changes[0].status === "added" && snap.files[a.testRef]?.sha256 === c.sha)) {
-          // Back to the work area; a move back that fails is named in the owner's reason (and a later Stop retries it, abandonAuthoring).
+        let moved = false;
+        try {
+          verifySupersedes(missionId, spec.spec, project);
+          retired = retireSuperseded(missionId, spec.spec, project, { fault: startFault });
+          ({ moved } = hubMoveFile(project.path, a.stagingRef, a.testRef, c.sha));
+          startFault?.("protect_move", null);
+          const snap = recordSnapshot(missionId, "base", null, project.path, { mode: baseMode(missionId) });
+          const allowed = new Map([[a.testRef, { status: "added", sha: c.sha }]]);
+          for (const r of retired) { allowed.set(r.from, { status: "deleted" }); allowed.set(r.to, { status: "added", sha: r.sha256 }); }
+          if (retired.length) {
+            const ref = `.ifrim-hub/retired/${missionId}/journal.json`;
+            allowed.set(ref, { status: before.files[ref] ? "modified" : "added", sha: sha256File(path.join(project.path, ref)) });
+          }
+          const changes = diffManifests(restored ? before.files : pre.files, snap.files, { resolve }).filter((x) => !(x.path === a.stagingRef && x.status === "deleted"));
+          if (changes.length !== allowed.size || changes.some((x) => !allowed.has(x.path) || allowed.get(x.path).status !== x.status || allowed.get(x.path).sha && snap.files[x.path]?.sha256 !== allowed.get(x.path).sha)) throw new HubError("conflict", "Proiectul s-a schimbat în timpul protejării testului");
+          startFault?.("protect_record", null);
+          commit(snap);
+          return { snap };
+        } catch (error) {
           let back = null;
-          if (moved) { try { hubMoveFile(project.path, a.testRef, a.stagingRef, c.sha); } catch (error) { back = `testul a rămas în ${a.testRef}: ${String(error.message).slice(0, 200)}`; } }
-          return { changed: changes.map((x) => x.path).filter((p) => p !== a.testRef), ...(back ? { detail: back } : {}) };
+          if (moved || movedEarlier) { try { hubMoveFile(project.path, a.testRef, a.stagingRef, c.sha); } catch (e) { back = String(e.message); } }
+          const restore = compensateRetirement(missionId, String(error.message).slice(0, 300));
+          return { changed: [a.testRef], detail: `${String(error.message)}${back ? `; ${back}` : ""}`, restoreIncomplete: !restore.complete };
         }
-        return { snap };
       });
-      if (result.snap) commit(result.snap);
       return result;
     });
+    if (outcome.restoreIncomplete) return holdStageZero(missionId, { kind: "RETIRE_RESTORE_INCOMPLETE", text: "Testele retrase nu au putut fi restaurate complet; misiunea nu continuă", details: [outcome.detail], taskId: a.reviewTaskId });
     if (outcome.halted) return halted(missionId) || view(missionId);
     // A Stop that waited for the move is confirmed before anything else (a hold must never replace CANCEL_REQUESTED).
     if (fm(missionId)?.cancelRequestedAt) return confirmCancel(missionId);
@@ -1924,7 +2041,12 @@ export function createFactory(deps) {
    * Inside the caller's transaction. Returns null when there was no open step-0 state, else { ref, sha, withdrawnFrom, problem }.
    */
   function abandonAuthoring(missionId, why) {
+    if (!FINAL_STAGES.has(fm(missionId)?.stage)) return null;
     const a = authoringOf(approvedSpec(fm(missionId)));
+    if (!writerStarted(missionId)) {
+      const restore = compensateRetirement(missionId, why);
+      if (!restore.complete) return { ref: a?.testRef || "", problem: "RETIRE_RESTORE_INCOMPLETE: testele retrase nu au fost restaurate complet" };
+    }
     if (!a || a.status === "ABANDONED") return null;
     const project = projects.get(missions.get(missionId).projectId);
     const shaAt = (rel) => {
@@ -2099,8 +2221,7 @@ export function createFactory(deps) {
         for (const b of db.prepare("SELECT id FROM factory_bundles WHERE mission_id = ? AND status = 'READY_FOR_OWNER_ACCEPTANCE'").all(missionId)) bundleStatusEvent(missionId, b.id, "REJECTED", "respins de proprietar");
         db.prepare("UPDATE factory_bundles SET status = 'REJECTED', decided_at = ?, decision_note = ? WHERE mission_id = ? AND status = 'READY_FOR_OWNER_ACCEPTANCE'").run(now(), String(note).slice(0, 500), missionId);
         cancelTasks(missionId, `respins: ${note}`);
-        const left = abandonText(abandonAuthoring(missionId, "reject"));
-        setStage(missionId, "REJECTED", { reason: `Respins de proprietar: ${String(note).slice(0, 300)}${left ? `. ${left}` : ""}`, actor });
+        setStage(missionId, "REJECTED", { reason: `Respins de proprietar: ${String(note).slice(0, 300)}`, actor });
       });
       return view(missionId);
     });
@@ -2116,6 +2237,34 @@ export function createFactory(deps) {
    * Whether the project folder is still exactly the verified version: the same snapshot the accept step takes (same ignore list and
    * mode). Nothing is written; a drift is only reported (the delivery marks its items STALE from it).
    */
+  function driftProvenance(projectId, changedFiles) {
+    const project = projects.get(projectId), owned = new Map(), writes = hubWrites(projectId);
+    const shaAt = (ref) => { try { const dir = safeFolder(project.path, path.posix.dirname(ref), { create: false }); return dir ? fileShaAt(dir, path.posix.basename(ref)) : null; } catch { return undefined; } };
+    const rows = db.prepare("SELECT fs.mission_id, fs.status, fs.spec_json, fs.protected_json FROM factory_specs fs JOIN missions m ON m.id = fs.mission_id WHERE m.project_id = ?").all(projectId);
+    for (const [ref, digest] of Object.entries(writes)) if (/^\.ifrim-hub\/staging\/[^/]+$/.test(ref) && shaAt(ref) === digest) owned.set(ref, "hub_staging_write");
+    for (const row of rows) {
+      const p = parse(row.protected_json, {}), spec = parse(row.spec_json, {}), j = readRetireJournal(project, row.mission_id);
+      const plan = retirementPlan(row.mission_id, spec);
+      const matches = (x, r) => x.from === r.from && x.to === r.to && x.sha256 === r.sha256;
+      const samePlan = (items) => Array.isArray(items) && items.length === plan.length && plan.every((r) => items.some((x) => matches(x, r)));
+      const recorded = (records, r) => (records || []).some((x) => matches(x, r) && (x.cycle || 1) === (j?.cycle || 1));
+      const validJournal = j && row.status === "APPROVED" && samePlan(j.items)
+        && (!p.pendingRetire || samePlan(p.pendingRetire))
+        && (j.status === "MOVED" ? plan.every((r) => recorded(p.retired, r) && !recorded(p.restored, r))
+          : j.status === "RESTORED" && plan.every((r) => recorded(p.restored, r)));
+      if (validJournal) owned.set(`.ifrim-hub/retired/${row.mission_id}/journal.json`, "hub_retire_journal");
+      if (row.status !== "APPROVED") continue;
+      if (p.authoring?.status === "PROTECTED" && p.files?.[p.authoring.testRef] === p.authoring.protectedSha && shaAt(p.authoring.testRef) === p.authoring.protectedSha) owned.set(p.authoring.testRef, "hub_test_protected");
+      for (const x of validJournal && j.status === "MOVED" ? j.items : []) {
+        if (!spec.supersedes?.some((r) => r.testRef === x.from && r.sha256 === x.sha256) || shaAt(x.to) !== x.sha256) continue;
+        owned.set(x.to, "retired_by_hub");
+        if (shaAt(x.from) === null) owned.set(x.from, "retired_by_hub");
+      }
+    }
+    const paths = [...new Set(changedFiles || [])];
+    return { software: paths.filter((ref) => !owned.has(ref)), hub: paths.filter((ref) => owned.has(ref)).map((ref) => ({ path: ref, provenance: owned.get(ref) })) };
+  }
+
   function snapshotCheck(missionId) {
     const f = need(fm(missionId));
     const bundle = latestBundleRow(missionId);
@@ -2130,7 +2279,7 @@ export function createFactory(deps) {
     for (const [rel, meta] of Object.entries(actualFiles)) if (expectedFiles[rel]?.sha256 !== meta?.sha256) changedFiles.push(rel);
     for (const rel of Object.keys(expectedFiles)) if (!(rel in actualFiles)) changedFiles.push(rel);
     return { missionId, stage: f.stage, bundleId: bundle?.id || null, bundleStatus: bundle?.status || null, changeSetId: cs?.id || null, expected, actual: actual.sha256,
-      equal: Boolean(expected) && expected === actual.sha256 && Boolean(bundle) && bundle.change_set_id === cs?.id, changedFiles: changedFiles.slice(0, 20) };
+      equal: Boolean(expected) && expected === actual.sha256 && Boolean(bundle) && bundle.change_set_id === cs?.id, changedFiles, snapshotAt: expectedRow?.createdAt || expectedRow?.created_at || null };
   }
   /** The facts a delivery binds to: the current ready or accepted bundle, its change set, snapshot, spec and E2E evidence. */
   function deliveryBinding(missionId) {
@@ -2225,8 +2374,7 @@ export function createFactory(deps) {
     }
     bus.transaction(() => {
       cancelTasks(missionId, "misiune oprită");
-      const note = abandonText(abandonAuthoring(missionId, "stop"));
-      setStage(missionId, "CANCELLED", { reason: `Oprire confirmată: nicio execuție sau proces al misiunii nu mai rulează${note ? `. ${note}` : ""}` });
+      setStage(missionId, "CANCELLED", { reason: `Oprire confirmată: nicio execuție sau proces al misiunii nu mai rulează` });
     });
     return view(missionId);
   }
@@ -2259,6 +2407,7 @@ export function createFactory(deps) {
     return serial(missionId, async () => {
       const f = need(fm(missionId));
       if (!RESUMABLE.has(f.stage)) throw new HubError("conflict", `Misiunea e în ${f.stage}`);
+      if (approvedSpec(f)?.protected?.restoreBlocked) throw new HubError("conflict", "Restaurarea testelor retrase este incompletă", { code: "RETIRE_RESTORE_INCOMPLETE" });
       // M11 L5 (§4 S5): step 0 has no repair cycles — the test is rewritten at most reauthorMax times, then the owner decides.
       if (allowExtraCycle && inStageZero(missionId)) throw new HubError("policy", "Etapa 0 nu are cicluri de remediere: testul de acceptanță se rescrie cel mult o dată, apoi decizia e a ta", { code: "NO_DELTA" });
       // An agent on the owner's delegation (M07) resumes only inside what the owner confirmed. A plain resume by the OWNER is the
@@ -2467,30 +2616,37 @@ export function createFactory(deps) {
   /** Boot: nothing resumes by itself; claimed/started dispatches become INTERRUPTED_UNKNOWN and the mission waits for you. */
   function recover() {
     const report = [];
-    for (const row of db.prepare(`SELECT * FROM factory_missions WHERE stage IN (${[...ACTIVE_STAGES].map(() => "?").join(",")})`).all(...ACTIVE_STAGES)) {
-      bus.transaction(() => {
-        const n = db.prepare("UPDATE factory_dispatches SET status = 'INTERRUPTED_UNKNOWN', updated_at = ? WHERE mission_id = ? AND status IN ('REQUESTED','CLAIMED','STARTED')").run(now(), row.mission_id).changes;
-        if (row.cancel_requested_at) {
-          cancelTasks(row.mission_id, "oprire confirmată la repornire");
-          const note = abandonText(abandonAuthoring(row.mission_id, "stop"));
-          setStage(row.mission_id, "CANCELLED", { reason: `Hub-ul a repornit după cererea de oprire; nimic nu mai rulează${note ? `. ${note}` : ""}`, actor: "recovery" });
-        }
-        else setStage(row.mission_id, "BLOCKED", { waitReason: "owner_decision", reason: `Hub-ul a repornit în etapa ${row.stage}; verifică starea și reia manual (fără reluare automată)`, actor: "recovery" });
-        report.push({ missionId: row.mission_id, stage: row.stage, dispatches: n });
-      });
-    }
-    // Closure R-ROLL-02: a start that died between moving its superseded tests and recording the start (the spec is not APPROVED) left
-    // them retired with no running mission: they go back to the active suite, verified; an incomplete restore is reported, never hidden.
-    for (const row of db.prepare("SELECT fm.mission_id, m.project_id FROM factory_missions fm JOIN missions m ON m.id = fm.mission_id WHERE fm.stage = 'SPEC_DRAFT'").all()) {
+    for (const row of db.prepare("SELECT fm.mission_id, m.project_id FROM factory_missions fm JOIN missions m ON m.id = fm.mission_id").all()) {
       try {
-        const spec = latestSpec(row.mission_id);
-        const project = projects.get(row.project_id);
-        if (!spec?.spec?.supersedes?.length || spec.status === "APPROVED" || !project?.path || !fs.existsSync(project.path)) continue;
-        if (!["MOVING", "MOVED"].includes(readRetireJournal(project, row.mission_id)?.status)) continue;
-        const restore = restoreRetired(retirementPlan(row.mission_id, spec.spec), project, { missionId: row.mission_id });
-        bus.transaction(() => bus.append({ type: "factory.retire_restored", scopeType: "mission", scopeId: row.mission_id, source: "recovery", payload: { missionId: row.mission_id, complete: restore.complete, items: restore.items, cause: "pornire neînregistrată înainte de repornire" } }));
-        report.push({ missionId: row.mission_id, stage: "SPEC_DRAFT", retireRestored: restore.complete, items: restore.items });
-      } catch (error) { report.push({ missionId: row.mission_id, stage: "SPEC_DRAFT", retireRestored: false, error: String(error?.message || error).slice(0, 200) }); }
+        bus.transaction(() => {
+          const f = fm(row.mission_id), spec = approvedSpec(f) || latestSpec(row.mission_id);
+          const final = FINAL_STAGES.has(f.stage), started = writerStarted(row.mission_id);
+          const protectedPreWriter = !final && !started && spec?.protected?.authoring?.status === "PROTECTED";
+          if (!protectedPreWriter || f.cancelRequestedAt) {
+            const project = projects.get(row.project_id), journal = readRetireJournal(project, row.mission_id);
+            if (!started && (final || !f.cancelRequestedAt) && (journal || retireJournalExists(project, row.mission_id) || spec?.protected?.retired?.length)) {
+              const cause = final ? "misiune încheiată înainte de implementare"
+                : "retragere anticipată (înainte de protejarea testului nou), anulată la repornire";
+              const restore = compensateRetirement(row.mission_id, cause);
+              if (final && restore.complete) abandonAuthoring(row.mission_id, cause);
+              report.push({ missionId: row.mission_id, retireRestored: restore.complete, items: restore.items, state: restore.state });
+              // Non-final early retirements keep authoring; ACTIVE stages still need interruption recovery below.
+            }
+          }
+          if (ACTIVE_STAGES.has(f.stage)) {
+            const n = db.prepare("UPDATE factory_dispatches SET status = 'INTERRUPTED_UNKNOWN', updated_at = ? WHERE mission_id = ? AND status IN ('REQUESTED','CLAIMED','STARTED')").run(now(), row.mission_id).changes;
+            if (f.cancelRequestedAt) {
+              cancelTasks(row.mission_id, "oprire confirmată la repornire");
+              setStage(row.mission_id, "CANCELLED", { reason: "Hub-ul a repornit după cererea de oprire; nimic nu mai rulează", actor: "recovery" });
+            } else setStage(row.mission_id, "BLOCKED", { waitReason: "owner_decision", reason: `Hub-ul a repornit în etapa ${f.stage}; verifică starea și reia manual (fără reluare automată)`, actor: "recovery" });
+            report.push({ missionId: row.mission_id, stage: f.stage, dispatches: n });
+          }
+        });
+      } catch (error) {
+        const reason = `Recuperarea misiunii a eșuat: ${String(error.message).slice(0, 300)}`;
+        bus.emit({ type: "factory.retire_restore_refused", scopeType: "mission", scopeId: row.mission_id, source: "recovery", payload: { missionId: row.mission_id, projectId: row.project_id, reason } });
+        report.push({ missionId: row.mission_id, error: reason });
+      }
     }
     return report;
   }
@@ -2695,7 +2851,7 @@ export function createFactory(deps) {
 
   return { initialize, reviseSpec, setLimits, scopeFor, assertStartable, startApproved, onRunFinished, stop, pause, resume, accept, reject, stopAll, recover, tick, idle, close,
     // M11 delivery hooks (read-only).
-    snapshotCheck, deliveryBinding, previewStatus, e2eShotPath,
+    snapshotCheck, writerStarted, compensateRetirement, driftProvenance, deliveryBinding, previewStatus, e2eShotPath,
     continuationScope, rebindForPlan, raiseLimits, exhaustedStep: (missionId) => exhaustedStep(missionId),
     // M11 L5: step 0 of a test-first mission is open (no repair cycle there); the Hub's own files in its work area on a project.
     inStageZero, hubWrites, remainingAuthoring: (missionId) => remainingAuthoring(missionId),
@@ -2738,7 +2894,7 @@ export function retireSuperseded(missionId, spec, project, { fault = null } = {}
   const bad = states.find((s) => s.state === "mismatch");
   if (bad) throw new HubError("conflict", bad.problem, { code: "SUPERSEDE_MISMATCH" });
   writeJournal(project, missionId, { status: "MOVING", items: states.map(({ from, to, sha256: sha, state }) => ({ from, to, sha256: sha, state })) });
-  const at = new Date().toISOString();
+  const at = new Date().toISOString(), cycle = readRetireJournal(project, missionId).cycle;
   const out = [];
   for (const s of states) {
     if (s.state === "todo") {
@@ -2761,7 +2917,7 @@ export function retireSuperseded(missionId, spec, project, { fault = null } = {}
       fs.rmSync(path.join(s.fromFolder, s.fromName));
       fault?.("remove", s);
     }
-    out.push({ from: s.from, to: s.to, sha256: s.sha256, missionId: s.missionId, specVersion: s.specVersion, reason: s.reason, at });
+    out.push({ from: s.from, to: s.to, sha256: s.sha256, missionId: s.missionId, specVersion: s.specVersion, reason: s.reason, cycle, at });
   }
   writeJournal(project, missionId, { status: "MOVED", items: out.map(({ from, to, sha256: sha }) => ({ from, to, sha256: sha, state: "done" })) });
   fault?.("record", null);
@@ -2784,9 +2940,7 @@ function retireState(project, p, { clean = false } = {}) {
   const fromName = path.posix.basename(p.from);
   const toFolder = safeFolder(project.path, path.posix.dirname(p.to), { create: false });
   const toName = path.posix.basename(p.to);
-  if (clean && toFolder) {
-    for (const n of fs.readdirSync(toFolder)) if (n.startsWith(`.${toName}.`) && /\.[0-9a-f]{12}\.tmp$/.test(n)) fs.rmSync(path.join(toFolder, n), { force: true });
-  }
+  if (clean) { sweepRetireTemps(fromFolder, fromName); sweepRetireTemps(toFolder, toName); sweepRetireTemps(toFolder, "journal"); }
   const fromSha = fromFolder ? fileShaAt(fromFolder, fromName) : null;
   const toSha = toFolder ? fileShaAt(toFolder, toName) : null;
   const base = { fromFolder, fromName, fromSha, toSha };
@@ -2797,20 +2951,41 @@ function retireState(project, p, { clean = false } = {}) {
   return { ...base, state: "mismatch", problem: `Testul anterior ${p.from} nu mai este cel din planul confirmat (${fromSha ? "conținut diferit" : "lipsește"}); nu îl mut` };
 }
 
+function sweepRetireTemps(folder, name) {
+  if (!folder) return;
+  for (const n of fs.readdirSync(folder)) {
+    if (!n.startsWith(`.${name}.`) || !/^[0-9a-f]{12}\.tmp$/.test(n.slice(name.length + 2))) continue;
+    const file = path.join(folder, n);
+    if (fs.lstatSync(file).isFile()) fs.unlinkSync(file);
+  }
+}
+
+function retireJournalExists(project, missionId) {
+  try { return Boolean(fs.lstatSync(path.join(project.path, ".ifrim-hub", "retired", missionId, "journal.json"))); }
+  catch (e) { return e.code !== "ENOENT"; }
+}
+
 /** The journal of a mission's retirements (null when there is none or it cannot be read). */
 export function readRetireJournal(project, missionId) {
   try {
     const folder = safeFolder(project.path, `.ifrim-hub/retired/${missionId}`, { create: false });
     if (!folder || fileShaAt(folder, "journal.json") === null) return null;
     const j = JSON.parse(fs.readFileSync(path.join(folder, "journal.json"), "utf8"));
-    return j && j.missionId === missionId ? j : null;
+    return j && j.schema === "ifrim.retire-journal/1" && j.missionId === missionId && ["MOVING", "MOVED", "RESTORED", "RESTORE_INCOMPLETE"].includes(j.status)
+      && Array.isArray(j.items) && j.items.length > 0 && j.items.length <= 10 && new Set(j.items.map((x) => x.from)).size === j.items.length
+      && j.items.every((x) => /^test\/hub\/[a-z0-9][a-z0-9-]{0,63}\.test\.mjs$/.test(x.from || "") && x.to === `.ifrim-hub/retired/${missionId}/${path.posix.basename(x.from)}.retired` && /^[0-9a-f]{64}$/.test(x.sha256 || "")) ? j : null;
   } catch { return null; }
 }
 
 function writeJournal(project, missionId, { status, items, problems = [] }) {
   const folder = safeFolder(project.path, `.ifrim-hub/retired/${missionId}`);
+  const previous = readRetireJournal(project, missionId);
+  if (!previous && retireJournalExists(project, missionId)) throw new HubError("conflict", "Jurnalul retragerii este invalid; istoricul nu poate fi înlocuit");
+  sweepRetireTemps(folder, "journal");
+  const cycle = (previous?.cycle || 1) + (status === "MOVING" && previous?.status === "RESTORED" ? 1 : 0);
+  const history = previous ? [...(previous.history || []), { status: previous.status, items: previous.items, problems: previous.problems, cycle: previous.cycle || 1, at: previous.at }] : [];
   const temp = path.join(folder, `.journal.${crypto.randomBytes(6).toString("hex")}.tmp`);
-  fs.writeFileSync(temp, JSON.stringify({ schema: "ifrim.retire-journal/1", missionId, status, items, problems, at: new Date().toISOString() }, null, 2), { flag: "wx" });
+  fs.writeFileSync(temp, JSON.stringify({ schema: "ifrim.retire-journal/1", missionId, status, items, problems, history, cycle, at: new Date().toISOString() }, null, 2), { flag: "wx" });
   fs.renameSync(temp, path.join(folder, "journal.json"));
 }
 
@@ -2822,20 +2997,38 @@ function writeJournal(project, missionId, { status, items, problems = [] }) {
  */
 export function restoreRetired(retired, project, { missionId = null } = {}) {
   const items = [];
+  const journal = missionId ? readRetireJournal(project, missionId) : null;
+  for (const r of retired || []) {
+    try {
+      const state = retireState(project, r, { clean: true });
+      if (journal?.status === "RESTORED" && state.fromSha !== r.sha256) items.push({ ...r, state: "incomplete", problem: "jurnal RESTORED, dar originalul nu are octeții confirmați" });
+      else if (state.state === "mismatch") items.push({ ...r, state: "incomplete", problem: state.problem });
+    } catch (e) { items.push({ ...r, state: "incomplete", problem: String(e.message) }); }
+  }
+  if (items.length) {
+    if (missionId && journal) {
+      try { writeJournal(project, missionId, { status: "RESTORE_INCOMPLETE", items: retired.map((r) => ({ ...r, state: items.find((i) => i.from === r.from)?.state || "unchanged" })), problems: items.map((i) => i.problem) }); }
+      catch (e) { items.push({ state: "incomplete", problem: `jurnalul restaurării: ${String(e.message)}` }); }
+    }
+    return { complete: false, items: retired.map((r) => items.find((i) => i.from === r.from) || { ...r, state: "not_restored", problem: "restaurarea întregii liste a fost refuzată înainte de prima mutare" }), state: "refused" };
+  }
+  if (journal?.status === "RESTORED") return { complete: true, items: (retired || []).map((r) => ({ ...r, state: "already_restored" })), state: "already_restored" };
   for (const r of retired || []) {
     try {
       const fromFolder = safeFolder(project.path, path.posix.dirname(r.from), { create: false });
       const fromName = path.posix.basename(r.from);
       const toFolder = safeFolder(project.path, path.posix.dirname(r.to), { create: false });
       const toName = path.posix.basename(r.to);
-      if (toFolder) for (const n of fs.readdirSync(toFolder)) if (n.startsWith(`.${toName}.`) && /\.[0-9a-f]{12}\.tmp$/.test(n)) fs.rmSync(path.join(toFolder, n), { force: true });
+      sweepRetireTemps(fromFolder, fromName); sweepRetireTemps(toFolder, toName);
       let fromSha = fromFolder ? fileShaAt(fromFolder, fromName) : null;
       const toSha = toFolder ? fileShaAt(toFolder, toName) : null;
       if (fromSha === null && toSha === r.sha256) {
         const temp = path.join(fromFolder || safeFolder(project.path, path.posix.dirname(r.from)), `.${fromName}.${crypto.randomBytes(6).toString("hex")}.tmp`);
         fs.copyFileSync(path.join(toFolder, toName), temp, fs.constants.COPYFILE_EXCL);
         if (sha256File(temp) !== r.sha256) { fs.rmSync(temp, { force: true }); items.push({ from: r.from, state: "incomplete", problem: "copia de restaurare nu are aceiași octeți" }); continue; }
-        fs.renameSync(temp, path.join(path.dirname(temp), fromName));
+        // Atomic, exclusive placement: only complete bytes become visible, never overwrite a new target.
+        fs.linkSync(temp, path.join(path.dirname(temp), fromName));
+        fs.rmSync(temp);
         fromSha = fileShaAt(path.dirname(temp), fromName);
       }
       if (fromSha === r.sha256) {
@@ -2845,10 +3038,10 @@ export function restoreRetired(retired, project, { missionId = null } = {}) {
       } else items.push({ from: r.from, state: "incomplete", problem: fromSha === null ? "nici originalul, nici copia retrasă nu au octeții confirmați" : "originalul are alt conținut" });
     } catch (error) { items.push({ from: r.from, state: "incomplete", problem: String(error?.message || error).slice(0, 200) }); }
   }
-  const complete = items.every((i) => i.state !== "incomplete");
+  let complete = items.every((i) => i.state !== "incomplete");
   if (missionId && items.length) {
-    try { writeJournal(project, missionId, { status: complete ? "RESTORED" : "RESTORE_INCOMPLETE", items: items.map((i) => ({ from: i.from, state: i.state })), problems: items.filter((i) => i.problem).map((i) => `${i.from}: ${i.problem}`) }); }
-    catch { /* the result below still says it; the next start re-checks the files */ }
+    try { writeJournal(project, missionId, { status: complete ? "RESTORED" : "RESTORE_INCOMPLETE", items: items.map((i) => ({ ...retired.find((r) => r.from === i.from), state: i.state })), problems: items.filter((i) => i.problem).map((i) => `${i.from}: ${i.problem}`) }); }
+    catch (e) { complete = false; items.push({ state: "incomplete", problem: `jurnalul restaurării nu a putut fi scris: ${String(e.message)}` }); }
   }
   return { complete, items };
 }

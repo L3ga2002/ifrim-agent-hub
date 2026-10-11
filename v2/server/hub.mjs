@@ -554,10 +554,10 @@ export function createHub(config, { providerOverrides = {}, homeDir, browserLaun
     // M10: a derived Lega authority whose voice session died with the previous process is closed in the audit (nothing starts).
     try { bootReport.lega = lega.recover(); } catch (error) { bootReport.lega = { error: String(error?.message || error).slice(0, 300) }; }
     bootReport.billing = convertLegacyBilling();
+    try { deliveries.boot(); } catch (error) { bootReport.deliveries = { error: String(error?.message || error).slice(0, 300) }; }
     bootReport.factory = factory.recover();
     // M09: interrupted renders / captures / transcriptions / distribution attempts are marked, never resumed.
     try { bootReport.media = media.boot(); } catch (error) { bootReport.media = { error: String(error?.message || error).slice(0, 300) }; }
-    try { deliveries.boot(); } catch (error) { bootReport.deliveries = { error: String(error?.message || error).slice(0, 300) }; }
     // Workspaces a crash left in the environment are marked orphaned and kept for inspection (never deleted at boot).
     bootReport.environments = { "wsl-runner": wslRunner.recover() };
     // M10.2: an attestation that this code no longer accepts (canary version, age) or a stale account check is ANNOUNCED once

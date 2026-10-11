@@ -48,6 +48,7 @@ export function checkSpec(input = {}, { hubPorts = [8011, 8012] } = {}) {
   const spec = {
     schema: SPEC_SCHEMA_VERSION,
     workType: String(input.workType || "").toUpperCase(),
+    ...(input.changesExisting !== undefined ? { changesExisting: input.changesExisting === true } : {}),
     title: str(input.title, 160),
     objective: str(input.objective, 4000),
     inScope: list(input.inScope, 20, 300),
@@ -66,6 +67,7 @@ export function checkSpec(input = {}, { hubPorts = [8011, 8012] } = {}) {
       assumptions: list(input.sources?.assumptions, 20, 500),
     },
   };
+  if (input.changesExisting !== undefined && typeof input.changesExisting !== "boolean") problems.push("changesExisting trebuie să fie true/false");
   if (!WORK_TYPES.includes(spec.workType)) problems.push(`workType trebuie să fie ${WORK_TYPES.join(" / ")}`);
   if (spec.title.length < 3) problems.push("titlul are minimum 3 caractere");
   if (spec.objective.length < 10) problems.push("obiectivul are minimum 10 caractere");

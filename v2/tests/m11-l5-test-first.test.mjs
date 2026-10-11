@@ -12,13 +12,18 @@ import { fileURLToPath } from "node:url";
 import { hashCanonical, sha256 } from "../server/core/canonical.mjs";
 import { parseTestOutput, testStatus } from "../server/factory/runner.mjs";
 import {
-  plannedTestRefs, deriveIgnore, slugOf, buildAuthorBrief, parseAuthorOutput, lintTestBody, assembleTestFile, classifyProof, proofSignature,
+  plannedTestRefs, deriveIgnore, slugOf, buildAuthorBrief, parseAuthorOutput, lintTestBody, assembleTestFile, classifyProof as classifyProofRaw, proofSignature,
   buildTestReviewBrief, parseTestReview, ownerSummary, ownerTextFor, parseTapCases, exportNamesOf, testSlotOf, scanSource, editDistance,
   T1, T_STAGE, T_STAGE_LABELS, T_ALREADY_PASSES, T_WRONG_REASON, T_LINT, T_REVIEW_CHANGES, T_REVIEW_INCONCLUSIVE, T_PROJECT_CHANGED, T_NOT_HERMETIC,
   T_IMPLEMENTATION_FAILED, T_STOP_STAGE0, T_CARD_STEP0, T_CARD_PROVES, T_PLANNER_NOTE, T_ROUTE_REFACTOR, TEST_FIRST_LIMITS, ALLOWED_NEEDS,
   createTapCaseCollector, ownerOutcome, T_PROOF_INCONCLUSIVE, PROOF_CAUSES, REVIEW_CAUSES, T_ROUTE_MISSING_TEST, T_ROUTE_ASK_BEHAVIOUR, T_STEPS_PREFIX, T_MODELS_SUFFIX,
 } from "../server/factory/test-first.mjs";
 import { redactText } from "../server/security/redact.mjs";
+
+
+// R-PROOF: synthetic failures carry source frames; real runs carry their exact assembled text.
+const syntheticTest = { text: 'const load = async () => {};\nassert.equal(result, false);', headerLines: 1, refs: ["synthetic.mjs"] };
+const classifyProof = (input) => classifyProofRaw({ test: input.runs?.[0]?.testContext || syntheticTest, ...input });
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const BUG_DEMO_SRC = fs.readFileSync(path.join(HERE, "..", "fixtures", "factory", "bug-demo", "src", "requests.js"), "utf8");
@@ -155,7 +160,7 @@ test("parseAuthorOutput: last js body + json manifest, slot checked, needs bound
   assert.match(parseAuthorOutput(answer({ testSlot: slot, needs: ["node:child_process"], cases: GOOD_CASES }), { testSlot: slot }).problems.join(";"), /modul nepermis/);
   assert.match(parseAuthorOutput(answer({ testSlot: slot, cases: [{ ...GOOD_CASES[0], today: "pass" }] }), { testSlot: slot }).problems.join(";"), /check.*pice azi/);
   assert.match(parseAuthorOutput(answer({ testSlot: slot, cases: [{ ...GOOD_CASES[1], today: "fail" }] }), { testSlot: slot }).problems.join(";"), /control.*treacă azi/);
-  assert.match(parseAuthorOutput(answer({ testSlot: slot, cases: GOOD_CASES }), { testSlot: slot, workType: "FEATURE" }).problems.join(";"), /api/);
+  assert.match(parseAuthorOutput(answer({ testSlot: slot, cases: GOOD_CASES, newApi: [{ module: "src/booking.js", name: "createBooking", criterion: "AC-1" }] }), { testSlot: slot, workType: "FEATURE" }).problems.join(";"), /api/);
   assert.match(parseAuthorOutput(answer({ testSlot: slot, cases: [] }), { testSlot: slot }).problems.join(";"), /nu are cazuri/);
 });
 
@@ -168,7 +173,9 @@ test("assembleTestFile: the Hub-owned header with load(), only the needed built-
   assert.equal(lines[4], 'import fs from "node:fs";');
   assert.equal(lines[5], 'import http from "node:http";');
   assert.match(lines[6], /^const load = async \(rel\) => \{ try \{ return await import\(new URL\(rel, import\.meta\.url\)\); \} catch \(e\) \{ assert\.fail\(`HUB_LOAD \$\{rel\}: /);
-  assert.equal(lines[7], "// ---- corpul testului ----");
+  assert.match(lines[7], /^const need =/);
+  assert.match(lines[8], /^const setup = async/);
+  assert.equal(lines[9], "// ---- corpul testului ----");
   assert.ok(!file.text.includes("\r"));
   assert.ok(file.text.endsWith(GOOD_BODY));
   assert.equal(file.sha256, sha256(file.text));
@@ -387,21 +394,24 @@ test("U4 lint: built-ins only through 'needs'; soft signals only signal", () => 
   assert.ok(soft.signals.every((s) => s.plain && s.line > 0 || s.signal === "fs_without_tmp" || s.signal === "http"));
 });
 
-test("U4 lint: FEATURE — a module missing at base is allowed; the typeof-first form is only a soft signal", () => {
+test("U4 lint: FEATURE — a module missing at base is allowed; export existence assertions are hard failures; need is the protocol", () => {
   const criteria = [{ id: "AC-1", text: "Rezervarea unui interval liber întoarce o confirmare", verify: "test" }];
   const body = `test("AC-1: rezervarea întoarce confirmarea", async () => {
   const m = await load("../../src/booking.js");
-  assert.equal(typeof m.createBooking, "function", "AC-1: lipsește createBooking");
+  const createBooking = need(m, "createBooking");
+  assert.equal(createBooking({}).ok, true);
   assert.equal(m.createBooking({ slot: "10:00" }).ok, true);
 });\n`;
   const cases = [{ name: "AC-1: rezervarea întoarce confirmarea", criterion: "AC-1", kind: "check", today: "fail" }];
-  const r = lintTestBody(body, { manifest: manifestOf(cases, { api: "createBooking({slot}) întoarce {ok, id}" }), criteria, workType: "FEATURE", testRef: TEST_REF, projectFiles: PROJECT_FILES, moduleExports: MODULE_EXPORTS });
+  const r = lintTestBody(body, { manifest: manifestOf(cases, { api: "createBooking({slot}) întoarce {ok, id}", newApi: [{ module: "../../src/booking.js", name: "createBooking", criterion: "AC-1" }] }), criteria, workType: "FEATURE", testRef: TEST_REF, projectFiles: PROJECT_FILES, moduleExports: MODULE_EXPORTS });
   assert.deepEqual(r.violations, []);
   assert.deepEqual(r.facts.missingModules, ["src/booking.js"]);
   assert.deepEqual(r.signals, []);
   const noTypeof = lintTestBody(body.replace(/  assert\.equal\(typeof[^\n]*\n/, ""), { manifest: manifestOf(cases), criteria, workType: "FEATURE", testRef: TEST_REF, projectFiles: PROJECT_FILES });
-  assert.equal(noTypeof.ok, true);
-  assert.deepEqual(noTypeof.signals.map((s) => s.signal), ["feature_typeof_missing"]);
+  assert.equal(noTypeof.ok, false);
+  assert.ok(hasRule(noTypeof, "export_missing_undeclared"));
+  assert.deepEqual(noTypeof.signals.map((s) => s.signal), []);
+  assert.ok(hasRule(lintTestBody(body.replace('const createBooking = need(m, "createBooking");', 'assert.equal(typeof m.createBooking, "function");'), { manifest: manifestOf(cases), criteria, workType: "FEATURE", testRef: TEST_REF, projectFiles: [] }), "export_existence_assert"));
 });
 
 // ---------------------------------------------------------------------------------------------------------------------
@@ -409,8 +419,8 @@ test("U4 lint: FEATURE — a module missing at base is allowed; the typeof-first
 // ---------------------------------------------------------------------------------------------------------------------
 
 const ok = (name) => ({ name, ok: true, code: null, errorName: null, message: null });
-const failA = (name, message = "AC: aserțiune") => ({ name, ok: false, code: "ERR_ASSERTION", errorName: "AssertionError", message });
-const failT = (name, errorName = "TypeError") => ({ name, ok: false, code: "ERR_TEST_FAILURE", errorName, message: "x is not a function" });
+const failA = (name, message = "AC: aserțiune") => ({ at: { file: "synthetic.mjs", line: /^HUB_/.test(message) ? 1 : 2, column: 1 }, name, ok: false, code: "ERR_ASSERTION", errorName: "AssertionError", message });
+const failT = (name, errorName = "TypeError") => ({ at: { file: "synthetic.mjs", line: 2, column: 1 }, name, ok: false, code: "ERR_TEST_FAILURE", errorName, message: "x is not a function" });
 function run(cases, extra = {}) {
   const fail = cases.filter((c) => !c.ok).length;
   return { status: fail ? "FAIL" : "PASS", reason: fail ? `${fail} teste eșuate` : "ok", counts: { tests: cases.length, pass: cases.length - fail, fail, skipped: 0, todo: 0, cancelled: 0 }, cases, fileLevelFailure: null, ...extra };
@@ -449,7 +459,7 @@ test("U6 classifyProof: WRONG_REASON — TypeError, a failing control, HUB_LOAD 
   assert.equal(bugProof([crash, crash]).verdict, "WRONG_REASON");
 });
 
-test("U6 classifyProof: FEATURE — HUB_LOAD only for a module missing at base; typeof-first failure is PROVEN", () => {
+test("U6 classifyProof: FEATURE — HUB_LOAD only for a module missing at base; undeclared missing exports fail setup", () => {
   const criteria = [{ id: "AC-1", text: "Rezervare", verify: "test" }];
   const cases = [{ name: "AC-1: rezervare", criterion: "AC-1", kind: "check", today: "fail" }];
   const feature = (c, missingAtBase) => classifyProof({ runs: [run([c]), run([c])], manifest: manifestOf(cases), criteria, workType: "FEATURE", testRef: TEST_REF, missingAtBase });
@@ -457,7 +467,7 @@ test("U6 classifyProof: FEATURE — HUB_LOAD only for a module missing at base; 
   assert.equal(feature(missing, ["src/booking.js"]).verdict, "PROVEN");
   assert.equal(feature(missing, []).verdict, "WRONG_REASON", "the module exists at base: a broken import is the wrong reason");
   assert.equal(feature(failA("AC-1: rezervare", "HUB_LOAD ../../src/booking.js: SyntaxError"), ["src/booking.js"]).verdict, "WRONG_REASON");
-  assert.equal(feature(failA("AC-1: rezervare", "AC-1: lipsește createBooking"), []).verdict, "PROVEN", "B4: a new export in an existing module fails on typeof");
+  assert.equal(feature(failA("AC-1: rezervare", "HUB_SETUP export createBooking: lipsește"), []).verdict, "WRONG_REASON", "an undeclared export is a setup failure");
   assert.equal(feature(failT("AC-1: rezervare"), []).verdict, "WRONG_REASON");
 });
 
@@ -512,7 +522,8 @@ function nodeTest(cwd, rel) {
   const lines = String(out.stdout || "").split(/\r?\n/);
   const { counts } = parseTestOutput(lines);
   const tap = parseTapCases(lines);
-  return { ...testStatus({ exitCode: out.status, counts, timedOut: false }), counts, cases: tap.cases, fileLevelFailure: tap.fileLevelFailure, lines };
+  const source = rel === null ? "" : fs.readFileSync(path.join(cwd, rel), "utf8");
+  return { testContext: { text: source, headerLines: source.split("\n").findIndex((l) => l === "// ---- corpul testului ----") + 1, refs: rel === null ? [] : [path.basename(rel)] }, ...testStatus({ exitCode: out.status, counts, timedOut: false }), counts, cases: tap.cases, fileLevelFailure: tap.fileLevelFailure, lines };
 }
 
 test("U5 real node --test: ERR_ASSERTION for an assertion, ERR_TEST_FAILURE for a TypeError; subtests counted", (t) => {
@@ -593,7 +604,8 @@ test("U5 end to end: FEATURE with a module missing at base fails on HUB_LOAD (ER
   const criteria = [{ id: "AC-1", text: "Rezervarea unui interval liber întoarce o confirmare", verify: "test" }];
   const body = `test("AC-1: rezervarea întoarce confirmarea", async () => {
   const m = await load("../../src/booking.js");
-  assert.equal(typeof m.createBooking, "function", "AC-1: lipsește createBooking");
+  const createBooking = need(m, "createBooking");
+  assert.equal(createBooking({}).ok, true);
   assert.equal(typeof path.join, "function");
   assert.equal(typeof url.fileURLToPath, "function");
   assert.equal(typeof os.tmpdir, "function");
@@ -602,7 +614,7 @@ test("U5 end to end: FEATURE with a module missing at base fails on HUB_LOAD (ER
   assert.equal(typeof http.createServer, "function");
 });\n`;
   const cases = [{ name: "AC-1: rezervarea întoarce confirmarea", criterion: "AC-1", kind: "check", today: "fail" }];
-  const manifest = manifestOf(cases, { needs: [...ALLOWED_NEEDS], api: "createBooking({slot}) întoarce {ok, id}" });
+  const manifest = manifestOf(cases, { needs: [...ALLOWED_NEEDS], api: "createBooking({slot}) întoarce {ok, id}", newApi: [{ module: "../../src/booking.js", name: "createBooking", criterion: "AC-1" }] });
   const lint = lintTestBody(body, { manifest, criteria, workType: "FEATURE", testRef: TEST_REF, stagingRef: STAGING_REF, projectFiles: [] });
   assert.deepEqual(lint.violations, []);
   fs.writeFileSync(path.join(dir, ...STAGING_REF.split("/")), assembleTestFile({ body, needs: manifest.needs, missionId: "mis_f", specSha: "b".repeat(64) }).text);
@@ -614,8 +626,8 @@ test("U5 end to end: FEATURE with a module missing at base fails on HUB_LOAD (ER
   fs.mkdirSync(path.join(dir, "src"));
   fs.writeFileSync(path.join(dir, "src", "booking.js"), "export const other = 1;\n");
   const present = [nodeTest(dir, STAGING_REF), nodeTest(dir, STAGING_REF)];
-  assert.deepEqual([present[0].cases[0].code, present[0].cases[0].message], ["ERR_ASSERTION", "AC-1: lipsește createBooking"]);
-  assert.equal(classifyProof({ runs: present, manifest, criteria, workType: "FEATURE", testRef: TEST_REF, missingAtBase: [] }).verdict, "PROVEN");
+  assert.deepEqual([present[0].cases[0].code, present[0].cases[0].message], ["ERR_ASSERTION", "HUB_SETUP export createBooking: lipsește"]);
+  assert.equal(classifyProof({ runs: present, manifest, criteria, workType: "FEATURE", testRef: TEST_REF, missingAtBase: [], facts: { referenced: [{ module: "src/booking.js", name: "createBooking", existsAtBase: false }] } }).verdict, "PROVEN");
   // Implemented: every built-in assertion passes → ALREADY_PASSES (the header itself is sound).
   fs.writeFileSync(path.join(dir, "src", "booking.js"), "export function createBooking() { return { ok: true }; }\n");
   assert.equal(classifyProof({ runs: [nodeTest(dir, STAGING_REF), nodeTest(dir, STAGING_REF)], manifest, criteria, workType: "FEATURE", testRef: TEST_REF }).verdict, "ALREADY_PASSES");
@@ -703,7 +715,7 @@ test("briefs: the author's and the reviewer's packages quote the owner's words a
   const brief = buildTestReviewBrief({ mission: { title: "Nume din spații" }, spec, specVersion: 1, testRef: TEST_REF, testSha: TEST_SHA, testText: file.text, manifest: manifestOf(), proof, lint: { ...lint, signals: [{ plain: "folosește Math.random", detail: "", line: 3 }] }, cycle: 0 });
   assert.ok(brief.includes(`CHANGE_SET ${TEST_SHA.slice(0, 12)}`));
   assert.ok(brief.includes("  1| // Test de acceptanță scris de Ifrim Agent Hub"));
-  assert.ok(brief.includes(`- ${N1} [check] azi: pică (rulări: pică / pică) — ERR_ASSERTION: AC-1: numele din spații trebuie refuzat`));
+  assert.ok(brief.includes(`- ${N1} [check] azi: pică (rulări: pică / pică) — behaviour, linia 2: assert.equal(result, false); — ERR_ASSERTION: AC-1: numele din spații trebuie refuzat`));
   assert.ok(brief.includes("folosește src/requests.js → validateRequest (există azi)"));
   assert.ok(brief.includes("folosește Math.random, linia 3"));
   assert.ok(brief.includes('"canEverPass": true'));
@@ -967,7 +979,8 @@ test("D9 owner texts and briefs not asserted before: routes, steps/models lines,
   assert.equal(ownerTextFor({ kind: "review", verdict: "INCONCLUSIVE" }), T_REVIEW_INCONCLUSIVE(REVIEW_CAUSES.unreadable));
   const spec = { workType: "FEATURE", title: "Rezervare", objective: "Vreau să pot rezerva un interval liber.", acceptance: [{ id: "AC-1", text: "Rezervarea unui interval liber întoarce o confirmare", verify: "test" }] };
   const brief = buildAuthorBrief({ mission: { id: "mis_f", title: "Rezervare" }, spec, specSha: "abc", authoring: { testRef: TEST_REF } });
-  assert.ok(brief.includes('- FEATURE: fiecare test începe cu assert.equal(typeof m.fn, "function", "AC-n: lipsește fn")'));
+  assert.ok(brief.includes('Un export nou doar dacă cerința cere o funcție nouă'));
+  assert.ok(brief.includes('need(m, "nume")'));
   assert.ok(!brief.includes("- BUGFIX:"));
   const manifest = JSON.parse(brief.slice(brief.lastIndexOf("```json") + 7, brief.lastIndexOf("```")));
   assert.equal(manifest.api, "o propoziție: forma API aleasă");

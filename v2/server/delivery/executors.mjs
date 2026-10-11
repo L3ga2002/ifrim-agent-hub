@@ -30,10 +30,13 @@ export function createDeliveryExecutors({ deliveries, factory, media, projects, 
   const planRevision = (deliveryId, planId) => deliveries.revisionOfPlan(deliveryId, planId);
   const snapshotEqual = (d) => {
     const s = factory.snapshotCheck(d.missionId);
-    if (s.actual !== d.snapshotSha) {
-      deliveries.trigger(d.id, "software_changed", { cause: `fișiere schimbate: ${s.changedFiles.slice(0, 5).join(", ") || "snapshot diferit"}` }, "delivery");
+    const drift = factory.driftProvenance(d.projectId, s.changedFiles);
+    if (drift.software.length) {
+      deliveries.trigger(d.id, "software_changed", { changedFiles: s.changedFiles, cause: `fișiere schimbate: ${s.changedFiles.slice(0, 5).join(", ") || "snapshot diferit"}` }, "delivery");
       throw refuse("SNAPSHOT_DRIFT", `Proiectul nu mai e versiunea verificată (${s.changedFiles.slice(0, 5).join(", ") || "snapshot diferit"}); nimic nu se filmează.`);
     }
+    if (!s.expected || s.expected !== d.snapshotSha || s.bundleId !== d.bundleId || (d.changeSetId && s.changeSetId !== d.changeSetId)) throw refuse("SNAPSHOT_DRIFT", "Legătura cu versiunea verificată nu mai corespunde; nimic nu se filmează.");
+    deliveries.verify(d.id, { by: "delivery" });
     return s;
   };
   const exportsDest = (d) => path.join(d.template.exports.dir, d.template.exports.folder, "x.mp4");

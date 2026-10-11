@@ -138,7 +138,7 @@ export function withoutField(steps, field) {
 export function deriveCriteria({ words, flows = [] } = {}) {
   const s = requestShape(words);
   const inherited = (Array.isArray(flows) ? flows : []).filter((f) => f && f.verify === "e2e" && Array.isArray(f.steps));
-  const out = { shape: s.shape, test: [], browser: [], flows: inherited, assumptions: [], constraints: [] };
+  const out = { shape: s.shape, changesExisting: ["hide_public", "required_field", "refuse"].includes(s.shape), test: [], browser: [], flows: inherited, assumptions: [], constraints: [] };
   if (s.shape === "required_field") {
     const { field: f, entity: e } = s;
     const said = "derivat din cererea ta";
@@ -174,10 +174,10 @@ export function deriveCriteria({ words, flows = [] } = {}) {
     const art = `${e.art[0].toUpperCase()}${e.art.slice(1)}`;
     const includeKey = `include${f.key[0].toUpperCase()}${f.key.slice(1)}`;
     out.test.push(
-      { text: `Lista publică a zilei, cerută direct de la server (fără browser), nu conține câmpul „${f.key}” și nici valoarea ${f.gen}, pentru nicio ${e.bare}: nici pentru cele existente, nici pentru ${e.art} ${adj(e, "validă", "valid")} creată chiar atunci cu ${f.bare}`, origin: `${said}: lista publică nu afișează și nu transmite ${f.noun}`, kind: "public_omits" },
-      { text: `Parametrii pe care oricine îi poate adăuga la cererea listei publice (de exemplu ${includeKey}=1, ${f.key}=1, fields=${f.key}, debug=1, all=1) nu fac ${f.noun} să apară: omiterea e făcută de server, nu e o opțiune a clientului`, origin: `${said}: o cale anonimă nu ocolește omiterea`, kind: "anon_params" },
+      { text: `Lista publică a zilei, cerută direct de la server (fără browser), nu conține în ÎNTREGUL corp al răspunsului câmpul „${f.key}” și nici valoarea ${f.gen}: nici pentru înregistrările existente, nici pentru ${e.art} creată în același test, identificată în listă prin id-ul întors la creare`, origin: `${said}: lista publică nu afișează și nu transmite ${f.noun}`, kind: "public_omits" },
+      { text: `Parametrii pe care oricine îi poate adăuga la cererea listei publice (de exemplu ${includeKey}=1, ${f.key}=1, fields=${f.key}, debug=1, all=1) pentru FIECARE parametru, ÎNTREGUL corp al răspunsului nu conține nici câmpul „${f.key}”, nici valoarea ${f.gen}, iar lista conține în continuare înregistrarea creată, identificată prin id-ul întors la creare`, origin: `${said}: o cale anonimă nu ocolește omiterea`, kind: "anon_params" },
     );
-    if (s.keepsRequired) out.test.push({ text: `${art} fără ${f.bare} sau cu ${f.bare} gol (doar spații) e în continuare ${adj(e, "refuzată", "refuzat")} de server, cu o eroare pentru câmpul ${f.label}, și nu se salvează nimic (control: trece azi și după)`, guard: true, origin: `cererea ta: ${f.noun} rămâne obligatoriu`, kind: "required_refusal" });
+    if (s.keepsRequired) out.test.push({ text: `${art} e în continuare ${adj(e, "refuzată", "refuzat")} de server când proprietatea „${f.key}” LIPSEȘTE din cerere, când este șir gol și când conține doar spații: fiecare refuz are o eroare pentru câmpul ${f.label}, și nu se salvează nimic, verificat în stocarea internă a aplicației după FIECARE refuz (control: trece azi și după)`, guard: true, origin: `cererea ta: ${f.noun} rămâne obligatoriu`, kind: "required_refusal" });
     out.test.push(
       { text: `${f.label} trimis cu ${e.art} ${adj(e, "validă", "valid")} se păstrează exact în datele salvate ale aplicației: testul citește înregistrarea prin stocarea internă a aplicației în mediul de test (fișierul sau stratul ei de date), nu printr-o rută publică; nu se adaugă nicio rută anonimă pentru recitirea ${f.gen} (control: trece azi și după)`, guard: true, origin: `cererea ta: ${f.noun} e salvat corect`, kind: "internal_persistence" },
       { text: `${art} cu ${f.bare} și celelalte date valide${e.slot} e în continuare ${adj(e, "acceptată", "acceptat")} (control: trece azi și după)`, guard: true, origin: "comportamentul existent al proiectului: o implementare care refuză tot nu trece", kind: "valid_accepted" },

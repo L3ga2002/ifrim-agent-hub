@@ -386,14 +386,17 @@ test("I4 an unreadable answer is a new attempt of the SAME cycle (counted), not 
 });
 
 // ------------------------------------------------------------------------------------------------------------------------------ I5
-test("I5 CHANGES_REQUESTED on the test → rewritten (the reviewer's reasons quoted to the author) → PASS on the new bytes; T-prefixed findings, resolved by the second review; a Stop after the protection moves the test back to the work area (never left under test/)", async () => {
+test("I5 CHANGES_REQUESTED on the test → rewritten (the reviewer's reasons quoted to the author) → PASS on the new bytes; T-prefixed findings, resolved by the second review; a Stop after the protection before the writer moves the test back to the work area (never left under test/)", async () => {
   const t = await stageZeroHub();
   try {
     const mission = await prepare(t);
     t.queue("claude", "author:bug-ok", "author:bug-ok-v2");
     t.queue("codex", "test-review:changes", "test-review:pass", "hang");
+    t.hub.factory.setStartFaultForTests((point) => { if (point === "protect_record") t.hub.factory.pause(mission.id).catch(() => {}); });
     await approveAndStart(t, mission.id);
-    await untilRun(t, "codex", mission.id, "IMPLEMENTING", 120000);
+    await waitFor(() => view(t, mission.id).authoring?.status === "PROTECTED", 120000, 30);
+    await t.hub.factory.idle(mission.id);
+    assert.equal(t.hub.factory.writerStarted(mission.id), false);
     const v = view(t, mission.id);
     const reviews = v.reviews.filter((r) => r.changeSetId.startsWith("acceptance:"));
     assert.deepEqual(reviews.map((r) => [r.verdict, r.status]), [["CHANGES_REQUESTED", "VALID"], ["PASS", "VALID"]]);
@@ -407,7 +410,7 @@ test("I5 CHANGES_REQUESTED on the test → rewritten (the reviewer's reasons quo
     assert.match(authorBriefs[1], /AC-1: nu poate trece niciodată/);
     assert.match(authorBriefs[1], /rezumatul verificatorului: Testul cere un mesaj/);
     assert.match(briefsOf(t, v.authoring.testReviewConversationId)[1], /## Findings deschise din verificarea anterioară\n[^\n]*\n- T-001 \[high\]/);
-    // Wave A repair (review finding 3): a stopped mission protects nothing any more, so the protected test goes back to the Hub's work
+    // Repair F2: a definitive stop before the writer withdraws the protected test to the Hub's work
     // area (a rename of exactly the protected bytes, never a delete) instead of staying under test/ where a later mission would run it.
     const done = await stopAndConfirm(t, mission.id);
     const a = done.authoring;
@@ -1127,9 +1130,11 @@ test("repair 3: a reviewed test left under test/hub by a crash before the protec
     const mission = await prepare(t);
     t.queue("claude", "author:bug-ok");
     t.queue("codex", "test-review:pass", "hang");
+    t.hub.factory.setStartFaultForTests((point) => { if (point === "protect_record") t.hub.factory.pause(mission.id).catch(() => {}); });
     await approveAndStart(t, mission.id);
-    await untilRun(t, "codex", mission.id, "IMPLEMENTING");
-    await pauseQuiet(t, mission.id);
+    await waitFor(() => view(t, mission.id).authoring?.status === "PROTECTED", 30000, 30);
+    await t.hub.factory.idle(mission.id);
+    assert.equal(t.hub.factory.writerStarted(mission.id), false);
     // The rows a crash between the move and the protection's transaction leaves (as in I8); the owner then stops instead of resuming.
     const { specId, prot } = stored(t, mission.id);
     const a = prot.authoring;
@@ -1153,18 +1158,23 @@ test("repair 3: a reviewed test left under test/hub by a crash before the protec
     const rejected = (await dispatch(s.hub, "factory.reject", { missionId: mission.id, note: "Nu vreau schimbarea asta" })).result;
     const a = rejected.authoring;
     assert.equal(rejected.factory.stage, "REJECTED");
+    assert.equal(s.hub.factory.writerStarted(mission.id), true);
     assert.deepEqual([a.status, a.abandoned.why, a.abandoned.withdrawnFrom], ["ABANDONED", "reject", a.testRef]);
     assert.equal(fs.existsSync(fileAt(s.dir, a.testRef)), false);
     assert.equal(shaOf(fileAt(s.dir, a.stagingRef)), a.protectedSha);
     assert.match(rejected.factory.stageReason, /^Respins de proprietar: Nu vreau schimbarea asta\. Testul scris de Hub a fost mutat înapoi/);
+    assert.equal(events(s, "factory.test_abandoned", mission.id).length, 1);
   } finally { await s.cleanup(); }
   const u = await stageZeroHub();
   try {
     const mission = await prepare(u);
     u.queue("claude", "author:bug-ok");
     u.queue("codex", "test-review:pass", "hang");
+    u.hub.factory.setStartFaultForTests((point) => { if (point === "protect_record") u.hub.factory.pause(mission.id).catch(() => {}); });
     await approveAndStart(u, mission.id);
-    await untilRun(u, "codex", mission.id, "IMPLEMENTING");
+    await waitFor(() => view(u, mission.id).authoring?.status === "PROTECTED", 30000, 30);
+    await u.hub.factory.idle(mission.id);
+    assert.equal(u.hub.factory.writerStarted(mission.id), false);
     const a = view(u, mission.id).authoring;
     fs.writeFileSync(fileAt(u.dir, a.stagingRef), "// fișierul altcuiva\n");
     const done = await stopAndConfirm(u, mission.id);

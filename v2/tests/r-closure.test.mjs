@@ -211,14 +211,17 @@ test("ROLL-03 restore after a failed start is verified: complete → RESTORED; a
     fs.rmSync(path.join(dir, plan[1].to));
     const bad = restoreRetired(plan, { path: dir }, { missionId: "mis_new_0123456789" });
     assert.equal(bad.complete, false);
-    assert.deepEqual(bad.items.map((i) => [i.from, i.state]), [[a.testRef, "restored"], [b.testRef, "incomplete"]]);
-    assert.match(bad.items[1].problem, /nici originalul, nici copia/);
+    assert.deepEqual(bad.items.map((i) => [i.from, i.state]), [[a.testRef, "not_restored"], [b.testRef, "incomplete"]]);
+    assert.match(bad.items[1].problem, /lipsește/);
+    assert.equal(shaAt(dir, a.testRef), null, "preflight refuses the whole restore before moving the valid first copy");
+    assert.equal(shaAt(dir, plan[0].to), spec.supersedes[0].sha256);
     const j = readRetireJournal({ path: dir }, "mis_new_0123456789");
     assert.equal(j.status, "RESTORE_INCOMPLETE");
     assert.ok(j.problems.some((p) => p.includes(b.testRef)));
     // The next attempt does not move anything: the second file is in no known state.
     assert.throws(() => retireSuperseded("mis_new_0123456789", spec, { path: dir }), (e) => e.code === "SUPERSEDE_MISMATCH");
-    assert.equal(shaAt(dir, a.testRef), spec.supersedes[0].sha256, "the restored first file stays in the suite");
+    assert.equal(shaAt(dir, a.testRef), null, "the valid copy remains retired until the entire restore can be verified");
+    assert.equal(shaAt(dir, plan[0].to), spec.supersedes[0].sha256);
   } finally { fs.rmSync(dir, { recursive: true, force: true }); }
 });
 
@@ -559,9 +562,9 @@ test("REV-01 (finding 1) a restore never removes a retired path that holds other
     const plan = retirementPlan("mis_new_0123456789", spec);
     write(dir, plan[0].to, "// altcineva\n");
     const r = restoreRetired(plan.slice(0, 1), { path: dir }, { missionId: "mis_new_0123456789" });
-    assert.equal(r.complete, true);
-    assert.equal(r.items[0].state, "untouched");
-    assert.match(r.items[0].note, /lăsat neatins/);
+    assert.equal(r.complete, false);
+    assert.equal(r.items[0].state, "incomplete");
+    assert.match(r.items[0].problem, /alt conținut/);
     assert.equal(fs.readFileSync(path.join(dir, plan[0].to), "utf8"), "// altcineva\n", "the foreign file is not deleted");
     assert.equal(shaAt(dir, a.testRef), spec.supersedes[0].sha256);
   } finally { fs.rmSync(dir, { recursive: true, force: true }); }

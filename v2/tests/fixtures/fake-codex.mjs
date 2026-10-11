@@ -270,13 +270,17 @@ async function testReview(msg, turnId, name, slow) {
   const prompt = String(msg.params.input?.[0]?.text || "");
   const current = prompt.slice(Math.max(0, prompt.lastIndexOf("# Verificarea testului de acceptanță")));
   const marker = [...current.matchAll(/CHANGE_SET ([0-9a-f]{12})/g)].at(-1)?.[1] || "";
-  const ids = [...(current.split("## Criteriile")[1]?.split("\n## ")[0] || "").matchAll(/^- (AC-\d{1,3}):/gm)].map((m) => m[1]);
+  const ids = [...(current.split("## Criteriile")[1]?.split("\n## ")[0] || "").matchAll(/^- (AC-\d{1,3})(?: \([^\n]*\))?:/gm)].map((m) => m[1]);
   const section = current.split("## Findings deschise din verificarea anterioară")[1]?.split("\n## ")[0] || "";
   const codes = [...section.matchAll(/^- ([A-Z]-\d{3}) /gm)].map((m) => m[1]);
   const state = data.previousFindings === "ALL_RESOLVED" ? "resolved" : data.previousFindings === "ALL_STILL_OPEN" ? "still_open" : null;
   const answer = { changeSet: data.changeSet || marker, verdict: data.verdict, summary: data.summary || "",
     criteria: data.criteria === "ALL" ? ids.map((id) => ({ id, ...(data.criterion || {}) })) : data.criteria || [],
     findings: data.findings || [], missingContext: data.missingContext || [], ...(state && codes.length ? { previousFindings: Object.fromEntries(codes.map((c) => [c, state])) } : {}) };
+  if (data.previousChecks === "ALL_REPLACED_CORRECTLY") {
+    const removed = current.split("## Verificări eliminate sau înlocuite")[1]?.split("\n## ")[0] || "";
+    answer.previousChecks = Object.fromEntries([...removed.matchAll(/"id":\s*"(P\d+)"/g)].map((m) => [m[1], "replaced_correctly"]));
+  }
   if (slow) await sleep(4000);
   const text = `SIMULARE (test review fixture ${name}).\n\n\`\`\`json\n${JSON.stringify(answer, null, 2)}\n\`\`\`\n`;
   for (const part of text.match(/.{1,24}/gs)) send({ method: "item/agentMessage/delta", params: { threadId, turnId, itemId: "m1", delta: part } });

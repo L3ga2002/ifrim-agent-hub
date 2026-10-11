@@ -5,7 +5,7 @@
 // preview, two captures, the 16:9 clip and its vertical variant, the local exports and the commercial summary. Every item records the
 // snapshot it is evidence of and the items it derives from (real links), so a change marks exactly the dependent items (stale.mjs):
 // new code → everything software-bound STALE; a clip revision → only the media chain SUPERSEDED; a copy edit → a new summary version.
-// STALE never returns to CURRENT; only new items are created.
+// Only audited reconciliation of a proven Hub-only invalidation may restore STALE items; ordinary transitions stay monotone.
 //
 // Authority: the owner confirms ONE envelope whose hashed body carries the delivery section (template sha, ops body sha). At the
 // mission's DELIVERY_READY the package plan is DERIVED from that consent (opsPlans.adoptDerived), never confirmed again. Revisions and
@@ -16,7 +16,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { HubError } from "../core/errors.mjs";
 import { newId } from "../core/ids.mjs";
-import { hashCanonical } from "../core/canonical.mjs";
+import { hashCanonical, sha256 } from "../core/canonical.mjs";
 import { json, parse } from "../storage/db.mjs";
 import { TEST_PROJECT_MARKER } from "../domain/projects.mjs";
 import { FACTORY_DEMOS } from "../factory/fixtures.mjs";
@@ -54,13 +54,13 @@ export function createDeliveries({ db, bus, clock, config, settings, projects, m
     staleReason: r.stale_reason, approval: parse(r.approval_json, null), exports: parse(r.export_json, {}), createdBy: r.created_by, createdAt: r.created_at });
   const currentDoc = (id) => docView(db.prepare("SELECT * FROM delivery_documents WHERE delivery_id = ? AND kind = 'commercial_summary' ORDER BY version DESC LIMIT 1").get(id));
 
-  function setStatus(id, to, reason = "", extra = {}, { from = null } = {}) {
+  function setStatus(id, to, reason = "", extra = {}, { from = null, audit = {} } = {}) {
     const d = need(id);
     if (from && !from.includes(d.status)) return false;
     if (d.status !== to && !canTransition(d.status, to)) throw new HubError("conflict", `Livrarea nu poate trece din ${d.status} în ${to}.`, { code: "DELIVERY_TRANSITION" });
     const sets = ["status = ?", "status_reason = ?", "updated_at = ?", "version = version + 1", ...Object.keys(extra).map((k) => `${k} = ?`)];
     const n = db.prepare(`UPDATE deliveries SET ${sets.join(", ")} WHERE id = ? AND status = ?`).run(to, String(reason).slice(0, 500), now(), ...Object.values(extra), id, d.status).changes;
-    if (n) bus.append({ type: "delivery.status", scopeType: "delivery", scopeId: id, source: "delivery", payload: { deliveryId: id, from: d.status, to, reason: String(reason).slice(0, 200), projectId: d.projectId, missionId: d.missionId } });
+    if (n) bus.append({ type: "delivery.status", scopeType: "delivery", scopeId: id, source: "delivery", payload: { deliveryId: id, from: d.status, to, reason: String(reason).slice(0, 200), projectId: d.projectId, missionId: d.missionId, ...audit } });
     return n === 1;
   }
 
@@ -241,11 +241,13 @@ export function createDeliveries({ db, bus, clock, config, settings, projects, m
     db.prepare(`UPDATE deliveries SET bundle_id = ?, bundle_sha = ?, change_set_id = ?, change_set_sha = ?, snapshot_sha = ?, spec_version = ?, spec_sha = ?, binding_sha = ?, generation = ?, updated_at = ? WHERE id = ?`)
       .run(binding.bundleId, binding.bundleSha, binding.changeSetId, binding.changeSetSha, binding.snapshotSha, binding.specVersion, binding.specSha, bindingSha, generation, now(), d.id);
     const fresh = get(d.id);
-    const bundleItem = bindItem(fresh, { kind: "bundle", role: "", refTable: "factory_bundles", refId: binding.bundleId, refSha: binding.bundleSha, meta: { status: binding.bundleStatus } }, actor);
+    const fileSha = (readPath) => { try { const file = readPath(); return file ? sha256(fs.readFileSync(file)) : ""; } catch (e) { if (["ENOENT", "ENOTDIR"].includes(e.code)) return ""; throw e; } };
+    const bundlePath = db.prepare("SELECT file_path FROM factory_bundles WHERE id = ?").get(binding.bundleId)?.file_path;
+    const bundleItem = bindItem(fresh, { kind: "bundle", role: "", refTable: "factory_bundles", refId: binding.bundleId, refSha: binding.bundleSha, meta: { status: binding.bundleStatus, fileSha: fileSha(() => bundlePath ? path.resolve(config.hubRoot, bundlePath) : null) } }, actor);
     for (const e of binding.e2e) {
       if (e.status !== "PASS") continue;
       const role = e.viewport && e.viewport.width <= 480 ? `mobile:${e.criterion}` : `desktop:${e.criterion}`;
-      bindItem(fresh, { kind: "e2e_shot", role, refTable: "factory_evidence", refId: e.evidenceId, refSha: "", upstream: [bundleItem.id], meta: { criterion: e.criterion, viewport: e.viewport, screenshot: e.screenshot } }, actor);
+      bindItem(fresh, { kind: "e2e_shot", role, refTable: "factory_evidence", refId: e.evidenceId, refSha: e.screenshot ? fileSha(() => factory.e2eShotPath(fresh.missionId, e.evidenceId)) : "", upstream: [bundleItem.id], meta: { criterion: e.criterion, viewport: e.viewport, screenshot: e.screenshot } }, actor);
     }
     return bundleItem;
   }
@@ -257,9 +259,10 @@ export function createDeliveries({ db, bus, clock, config, settings, projects, m
    */
   function bindItem(d, { kind, role = "", refTable, refId, refSha = "", upstream = [], meta = {}, snapshotSha = undefined }, actor = "delivery") {
     const delivery = typeof d === "string" ? need(d) : d;
+    if (!refSha && refTable === "media_asset_versions") refSha = db.prepare("SELECT sha256 FROM media_asset_versions WHERE id = ?").get(String(refId))?.sha256 || "";
     const items = itemsOfDelivery(delivery.id);
     const prev = items.filter((i) => i.kind === kind && i.role === role && i.status === "CURRENT").at(-1) || null;
-    if (prev && prev.refId === String(refId) && prev.refSha === String(refSha || "") && prev.snapshotSha === (kind === "brief" ? "" : String(delivery.snapshotSha || ""))) return prev; // idempotent
+    if (prev && prev.refId === String(refId) && (!prev.refSha || !refSha || prev.refSha === String(refSha)) && prev.snapshotSha === (kind === "brief" ? "" : String(delivery.snapshotSha || ""))) return prev; // idempotent
     const id = newId("dli");
     const at = now();
     if (prev) db.prepare("UPDATE delivery_items SET status = 'SUPERSEDED', status_reason = ?, updated_at = ? WHERE id = ? AND status = 'CURRENT'").run("înlocuit de o versiune nouă", at, prev.id);
@@ -280,7 +283,8 @@ export function createDeliveries({ db, bus, clock, config, settings, projects, m
       for (const u of out.itemUpdates) db.prepare("UPDATE delivery_items SET status = ?, stale_code = ?, status_reason = ?, updated_at = ? WHERE id = ? AND status != 'STALE'").run(u.status, u.staleCode || "", u.statusReason || "", at, u.id);
       for (const variantId of out.variants || []) { try { media.variants.invalidate(variantId, { reason: out.reason, actor }); } catch { /* reported by the variant's own state */ } }
       for (const u of out.documentUpdates || []) db.prepare("UPDATE delivery_documents SET status = 'STALE', stale_reason = ? WHERE id = ? AND status = 'CURRENT'").run(String(u.reason || out.reason).slice(0, 300), u.id);
-      if (out.delivery) setStatus(d.id, out.delivery.status, out.delivery.reason, out.delivery.status === "CLOSED" ? { closed_at: at } : {});
+      if (out.delivery) setStatus(d.id, out.delivery.status, out.delivery.reason, out.delivery.status === "CLOSED" ? { closed_at: at } : {}, { audit: { trigger: name, changedFiles: ctx.changedFiles || d.verified?.changedFiles || [], cascade: { reason: out.reason, items: out.itemUpdates, documents: out.documentUpdates || [], variants: out.variants || [] } } });
+      if (d.status === "STALE" && !["software_changed", "software_revision"].includes(name)) bus.append({ type: "delivery.reconciliation_blocked", scopeType: "delivery", scopeId: d.id, source: actor, payload: { deliveryId: d.id, trigger: name, reason: out.reason } });
       if (out.itemUpdates.length || out.delivery) bus.append({ type: "delivery.stale", scopeType: "delivery", scopeId: d.id, source: actor, payload: { deliveryId: d.id, trigger: name, items: out.itemUpdates.length, to: out.delivery?.status || null } });
     });
     return out;
@@ -291,11 +295,115 @@ export function createDeliveries({ db, bus, clock, config, settings, projects, m
     const d = need(id);
     if (!d.missionId || !d.snapshotSha) return { equal: null, reason: "livrarea nu are încă o versiune legată" };
     const snap = factory.snapshotCheck(d.missionId);
-    const equal = snap.actual === d.snapshotSha;
-    const verified = { at: now(), by, expected: d.snapshotSha, actual: snap.actual, equal, changedFiles: snap.changedFiles };
+    const drift = factory.driftProvenance(d.projectId, snap.changedFiles);
+    const equal = Boolean(snap.expected) && snap.expected === d.snapshotSha && snap.bundleId === d.bundleId && (!d.changeSetId || snap.changeSetId === d.changeSetId) && drift.software.length === 0;
+    const verified = { ...d.verified, hubOnly: drift.hub, at: now(), by, expected: d.snapshotSha, actual: snap.actual, equal, changedFiles: snap.changedFiles };
     bus.transaction(() => db.prepare("UPDATE deliveries SET verified_json = ?, updated_at = ? WHERE id = ?").run(json(verified), now(), id));
-    if (!equal && ["READY", "NEEDS_OWNER", "ACTIVE"].includes(d.status)) trigger(id, "software_changed", { cause: `fișiere schimbate: ${snap.changedFiles.slice(0, 5).join(", ") || "snapshot diferit"}` }, by);
+    if (drift.software.length && ["READY", "NEEDS_OWNER", "ACTIVE"].includes(d.status)) trigger(id, "software_changed", { changedFiles: snap.changedFiles, cause: `fișiere schimbate: ${snap.changedFiles.slice(0, 5).join(", ") || "snapshot diferit"}` }, by);
     return verified;
+  }
+
+  /** The only STALE → READY path. Evidence is re-read inside the transaction; creative decisions are untouched. */
+  function reconcileStale(deliveryId, { actor, dryRun = false } = {}) {
+    if (typeof actor !== "string" || !actor.trim() || actor.length > 80 || typeof dryRun !== "boolean") return { ok: false, reasons: ["Autorul sau dryRun este invalid"] };
+    return bus.transaction(() => {
+      const d = get(deliveryId), reasons = [];
+      if (!d) return { ok: false, reasons: ["Livrarea nu există"] };
+      if (d.status === "READY" && d.verified?.reconciled) return { ok: true, alreadyReconciled: true, evidence: d.verified.reconciled.evidence };
+      if (d.status !== "STALE") return { ok: false, reasons: ["Livrarea nu este STALE"] };
+      const event = db.prepare("SELECT * FROM events WHERE type = 'delivery.status' AND scope_id = ? AND json_extract(payload_json, '$.to') = 'STALE' ORDER BY seq DESC LIMIT 1").get(d.id);
+      const payload = parse(event?.payload_json, {});
+      // Older versions recorded the trigger in the immediately following cascade event.
+      const next = event && db.prepare("SELECT * FROM events WHERE scope_id = ? AND seq > ? ORDER BY seq LIMIT 1").get(d.id, event.seq);
+      const old = next?.type === "delivery.stale" ? parse(next.payload_json, {}) : {};
+      const triggerName = payload.trigger || old.trigger;
+      if (!event || !["software_changed", "software_revision"].includes(triggerName)) reasons.push("Cauza STALE nu este o modificare software verificabilă");
+      let snap, drift;
+      try { snap = factory.snapshotCheck(d.missionId); drift = factory.driftProvenance(d.projectId, snap.changedFiles); }
+      catch (e) { reasons.push(`Snapshot-ul nu poate fi verificat: ${String(e.message)}`); }
+      if (!snap || snap.expected !== d.snapshotSha) reasons.push("Snapshot-ul de referință nu corespunde livrării");
+      if (drift?.software.length) reasons.push(`Există modificări software: ${drift.software.join(", ")}`);
+      const legacyPaths = event && d.verified?.at && d.verified.at <= event.created_at ? d.verified.changedFiles : null;
+      const recordedPaths = payload.changedFiles ?? legacyPaths;
+      const paths = Array.isArray(recordedPaths) && recordedPaths.every((p) => typeof p === "string" && p.length > 0) ? recordedPaths : null;
+      if (!paths) reasons.push("Lipsește inventarul căilor din invalidare");
+      const pathEvidence = (paths || []).map((ref) => ({ path: ref, provenance: drift?.hub.find((h) => h.path === ref)?.provenance || (!snap?.changedFiles.includes(ref) ? "verified_bytes_restored" : "software") }));
+      if (pathEvidence.some((x) => x.provenance === "software")) reasons.push("O cale din invalidare nu a revenit la octeții verificați și nu aparține Hub-ului");
+      const snapshot = db.prepare("SELECT created_at FROM factory_snapshots WHERE mission_id = ? AND sha256 = ? ORDER BY seq DESC LIMIT 1").get(d.missionId, d.snapshotSha);
+      if (!snapshot) reasons.push("Data snapshot-ului lipsește");
+      const checked = snapshot ? db.prepare("SELECT fm.mission_id FROM factory_missions fm JOIN missions m ON m.id = fm.mission_id WHERE m.project_id = ? AND fm.started_at >= ?").all(d.projectId, snapshot.created_at).map((r) => ({ missionId: r.mission_id, writerStarted: factory.writerStarted(r.mission_id) })) : [];
+      if (checked.some((m) => m.writerStarted)) reasons.push("O misiune ulterioară a început implementarea");
+      if (event && db.prepare("SELECT 1 FROM events WHERE type = 'delivery.reconciliation_blocked' AND scope_id = ? AND seq > ? LIMIT 1").get(d.id, event.seq)) reasons.push("O invalidare ulterioară are altă cauză");
+      const allItems = itemsOfDelivery(d.id), staleItems = allItems.filter((i) => i.status === "STALE");
+      if (staleItems.some((i) => allItems.some((x) => x.supersedesId === i.id))) reasons.push("Cascada include elemente deja înlocuite");
+      const reason = payload.cascade?.reason || d.statusReason;
+      if (!reason || staleItems.some((i) => i.staleCode !== "SOFTWARE_CHANGED" || i.statusReason !== reason)) reasons.push("Elementele au altă cauză de invalidare");
+      const cascadeList = (key) => {
+        if (!payload.cascade) return null;
+        const value = payload.cascade[key];
+        if (!Array.isArray(value) || value.some((x) => key === "variants" ? typeof x !== "string" : !x || typeof x.id !== "string")) { reasons.push(`Inventarul cascadei este invalid: ${key}`); return []; }
+        return value;
+      };
+      const expectedItems = cascadeList("items"), expectedDocs = cascadeList("documents"), expectedVariants = cascadeList("variants");
+      if (expectedItems && expectedItems.some((i) => !staleItems.some((x) => x.id === i.id) || i.from !== "CURRENT")) reasons.push("Cascada nu mai corespunde elementelor curente");
+      const checkedFiles = [];
+      for (const i of allItems) {
+        let file = null, recordedSha = i.refSha;
+        try {
+          if (i.refTable === "file") file = i.refId;
+          else if (i.refTable === "media_asset_versions") {
+            const v = db.prepare("SELECT rel_path, sha256 FROM media_asset_versions WHERE id = ?").get(i.refId);
+            if (!v) throw new Error("versiunea media lipsește");
+            file = media.paths.resolveRel(v.rel_path);
+            recordedSha ||= v.sha256;
+          } else if (i.refTable === "factory_bundles") {
+            const bundle = db.prepare("SELECT file_path FROM factory_bundles WHERE id = ?").get(i.refId);
+            file = bundle?.file_path ? path.resolve(config.hubRoot, bundle.file_path) : null;
+          }
+          else if (i.kind === "e2e_shot" && i.meta?.screenshot) file = factory.e2eShotPath(d.missionId, i.refId);
+          if (file) {
+            const expectedSha = i.refTable === "factory_bundles" ? i.meta?.fileSha : recordedSha;
+            if (!/^[0-9a-f]{64}$/.test(expectedSha || "")) throw new Error("lipsește hash-ul de octeți înregistrat");
+            if (!fs.lstatSync(file).isFile() || sha256(fs.readFileSync(file)) !== expectedSha) throw new Error("fișierul nu are sha-ul înregistrat");
+            checkedFiles.push({ itemId: i.id, sha256: expectedSha });
+          } else if (["file", "media_asset_versions", "factory_bundles"].includes(i.refTable) || i.kind === "e2e_shot" && i.meta?.screenshot) throw new Error("fișierul lipsește");
+        } catch (e) { reasons.push(`${i.kind}, ${i.role || "fără rol"}, ${i.id}: ${String(e.message)}`); }
+      }
+      const docs = docsOf(d.id).filter((r) => r.status === "STALE");
+      if (expectedDocs?.some((r) => !docs.some((x) => x.id === r.id))) reasons.push("Un document al cascadei nu mai este STALE");
+      if (docs.some((r) => r.stale_reason !== String(reason || "").slice(0, 300))) reasons.push("Documentele au altă cauză de invalidare");
+      const variants = staleItems.filter((i) => i.refTable === "media_variants").map((i) => db.prepare("SELECT * FROM media_variants WHERE id = ?").get(i.refId));
+      const variantStates = new Map();
+      for (const v of variants) {
+        const invalidated = parse(v?.notes_json, {}).invalidated;
+        if (!v || v.status !== "INVALIDATED" || invalidated?.reason !== String(reason || "").slice(0, 200)) { reasons.push("O variantă are altă cauză de invalidare"); continue; }
+        let previous = invalidated.previousStatus, basis = "invalidation_record";
+        if (!previous) {
+          // Legacy variants were created DRAFT. Require the immutable creation event, not a guessed default.
+          const derived = db.prepare("SELECT seq, payload_json FROM events WHERE type = 'media.variant.derived' AND scope_id = ? ORDER BY seq LIMIT 1").get(v.id);
+          const data = parse(derived?.payload_json, {});
+          const later = derived && db.prepare("SELECT type FROM events WHERE scope_id = ? AND seq > ? AND seq < ?").all(v.id, derived.seq, event?.seq || 0);
+          if (derived && data.variantVersionId === v.variant_version_id && data.masterVersionId === v.master_version_id && later.every((e) => e.type === "media.variant.invalidated")) { previous = "DRAFT"; basis = "legacy_derived_event"; }
+        }
+        if (!["DRAFT", "READY", "QA_FAILED", "RENDERED"].includes(previous)) reasons.push("Starea anterioară a variantei nu poate fi verificată");
+        else variantStates.set(v.id, { status: previous, basis });
+      }
+      if (expectedVariants?.some((id) => !variantStates.has(id))) reasons.push("O variantă a cascadei nu poate fi restaurată");
+      if (db.prepare("SELECT id FROM deliveries WHERE project_id = ? AND id <> ? AND status IN ('READY','ACTIVE') AND (created_at > ? OR (created_at = ? AND rowid > (SELECT rowid FROM deliveries WHERE id = ?))) LIMIT 1").get(d.projectId, d.id, d.createdAt, d.createdAt, d.id)) reasons.push("Există o livrare mai nouă READY sau ACTIVE");
+      if (reasons.length) return { ok: false, reasons };
+      const evidence = { staleEvent: event.seq, trigger: triggerName, paths: pathEvidence, hubOnly: drift.hub, missions: checked, files: checkedFiles, items: staleItems.map((i) => i.id), documents: docs.map((r) => r.id), variants: variants.map((v) => ({ id: v.id, ...variantStates.get(v.id) })) };
+      if (dryRun) return { ok: true, dryRun: true, evidence };
+      const at = now();
+      for (const i of staleItems) db.prepare("UPDATE delivery_items SET status = 'CURRENT', stale_code = '', status_reason = '', updated_at = ? WHERE id = ?").run(at, i.id);
+      for (const doc of docs) db.prepare("UPDATE delivery_documents SET status = 'CURRENT', stale_reason = '' WHERE id = ?").run(doc.id);
+      for (const v of variants) {
+        const notes = parse(v.notes_json, {});
+        db.prepare("UPDATE media_variants SET status = ?, notes_json = ?, updated_at = ? WHERE id = ?").run(variantStates.get(v.id).status, json({ ...notes, reinstated: { at, actor, evidence } }), at, v.id);
+      }
+      db.prepare("UPDATE deliveries SET status = 'READY', status_reason = ?, verified_json = ?, updated_at = ?, version = version + 1 WHERE id = ? AND status = 'STALE'").run("Invalidare exclusiv Hub anulată după verificare", json({ ...d.verified, hubOnly: drift.hub, reconciled: { at, actor, evidence } }), at, d.id);
+      bus.append({ type: "delivery.stale_reconciled", scopeType: "delivery", scopeId: d.id, source: actor, payload: { deliveryId: d.id, projectId: d.projectId, evidence } });
+      return { ok: true, evidence };
+    });
   }
 
   // ---------------------------------------------------------------- the commercial summary (versioned documents)
@@ -554,13 +662,18 @@ export function createDeliveries({ db, bus, clock, config, settings, projects, m
         for (const id of deliveriesOfMission(p.missionId)) { const b = currentItem(id, "bundle"); if (b) db.prepare("UPDATE delivery_items SET meta_json = json_set(meta_json, '$.status', 'OWNER_ACCEPTED'), updated_at = ? WHERE id = ?").run(now(), b.id); }
       } else if (e.type === "factory.stage" && ["DELIVERY_READY"].includes(p.stage || p.to)) {
         for (const id of deliveriesOfMission(p.missionId || e.scopeId)) if (get(id).status === "ARMED") setTimeout(() => activate(id).catch(() => {}), 0);
-      } else if (e.type === "factory.stage" && ["BASELINE", "IMPLEMENTING", "REPAIRING", "CHECKING"].includes(p.stage || p.to)) {
+      } else if (e.type === "factory.stage" && ["IMPLEMENTING", "REPAIRING", "CHECKING"].includes(p.stage || p.to)) {
         const missionId = p.missionId || e.scopeId;
         for (const id of deliveriesOfMission(missionId)) { const d = get(id); if (["READY", "NEEDS_OWNER"].includes(d.status)) trigger(id, "software_changed", { cause: "misiunea lucrează din nou la cod" }, "factory"); }
-        // §25: a NEW mission on the same project (a software revision) makes the delivered version's software-bound items STALE.
-        const projectId = missions.get(missionId)?.projectId || null;
-        if (projectId && (p.stage || p.to) === "BASELINE") {
-          for (const r of db.prepare("SELECT id FROM deliveries WHERE project_id = ? AND mission_id != ? AND status IN ('READY','NEEDS_OWNER')").all(projectId, missionId)) trigger(r.id, "software_revision", { missionId }, "factory");
+      } else if (e.type === "factory.change_set" && p.files > 0) {
+        const missionId = p.missionId || e.scopeId, projectId = missions.get(missionId)?.projectId;
+        const first = db.prepare("SELECT id FROM factory_change_sets WHERE mission_id = ? AND json_array_length(changes_json) > 0 ORDER BY seq LIMIT 1").get(missionId);
+        if (projectId && first?.id === p.changeSetId) for (const r of db.prepare("SELECT id FROM deliveries WHERE project_id = ? AND mission_id != ? AND status IN ('READY','NEEDS_OWNER')").all(projectId, missionId)) trigger(r.id, "software_revision", { missionId, changedFiles: factory.snapshotCheck(get(r.id).missionId).changedFiles }, "factory");
+      } else if (e.type === "factory.retire_restored" && p.complete === true) {
+        const projectId = p.projectId || missions.get(p.missionId || e.scopeId)?.projectId;
+        for (const r of db.prepare("SELECT id FROM deliveries WHERE project_id = ? AND status = 'STALE'").all(projectId)) {
+          const result = reconcileStale(r.id, { actor: "factory", dryRun: false });
+          if (!result.ok) bus.emit({ type: "delivery.stale_reconcile_refused", scopeType: "delivery", scopeId: r.id, source: "factory", payload: { deliveryId: r.id, reasons: result.reasons, restoreMissionId: p.missionId || e.scopeId } });
         }
       } else if (e.type.startsWith("ops.plan.") && ["paused", "needs_owner", "failed", "cancelled"].includes(e.type.slice(9))) {
         const r = db.prepare("SELECT id FROM deliveries WHERE ops_plan_id = ? AND status = 'ACTIVE'").get(e.scopeId);
@@ -579,7 +692,15 @@ export function createDeliveries({ db, bus, clock, config, settings, projects, m
     } catch { /* a listener never breaks the publisher; tick re-checks */ }
   }
   let detach = null;
-  function boot() { if (!detach && bus.subscribe) detach = bus.subscribe((e) => setTimeout(() => onEvent(e), 0)); }
+  function boot() {
+    if (detach || !bus.subscribe) return;
+    detach = bus.subscribe((e) => setTimeout(() => onEvent(e), 0));
+    // A crash after committing a verified restore may precede its deferred listener. Replay only for still-stale projects.
+    const restores = db.prepare(`SELECT e.scope_id, e.payload_json FROM events e WHERE e.type = 'factory.retire_restored'
+      AND json_extract(e.payload_json, '$.complete') = 1 AND e.seq = (SELECT MAX(x.seq) FROM events x WHERE x.type = e.type AND x.scope_id = e.scope_id)
+      AND EXISTS (SELECT 1 FROM missions m JOIN deliveries d ON d.project_id = m.project_id WHERE m.id = e.scope_id AND d.status = 'STALE')`).all();
+    for (const e of restores) setTimeout(() => onEvent({ type: "factory.retire_restored", scopeId: e.scope_id, payload: parse(e.payload_json, {}) }), 0);
+  }
 
   /** Housekeeping: activation retry after a restart (within activate_by), and READY deliveries re-verified every 10 minutes. */
   let lastVerify = 0;
@@ -605,7 +726,7 @@ export function createDeliveries({ db, bus, clock, config, settings, projects, m
     }
   }
 
-  return { createPlanned, sectionFor, sectionForMission, arm, activate, startDirect, bindItem, bindSoftware, currentItem, items: itemsOfDelivery, trigger, verify, renderDocument, exportDocument, editDocument, approveDocument,
+  return { createPlanned, sectionFor, sectionForMission, arm, activate, startDirect, bindItem, bindSoftware, currentItem, items: itemsOfDelivery, trigger, verify, reconcileStale, renderDocument, exportDocument, editDocument, approveDocument,
     currentDoc, recordRevision, getRevision, updateRevision, revisionOfPlan, view, get, need, list, latestForProject, close, cancel, setStatus, readiness, boot, tick, onEvent, attachEnvelopes, patch, bindService, startPreview,
     close_: () => { if (detach) detach(); detach = null; }, mediaFacts, markerOf };
 }

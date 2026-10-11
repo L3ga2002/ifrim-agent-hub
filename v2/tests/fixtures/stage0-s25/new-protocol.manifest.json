@@ -1,0 +1,44 @@
+{
+  "needs": [
+    "node:path",
+    "node:os",
+    "node:fs",
+    "node:sqlite",
+    "node:http"
+  ],
+  "api": "startServer({ port, dbPath, now, seed }); API-ul HTTP și stocarea SQLite existente.",
+  "newApi": [],
+  "removed": [],
+  "cases": [
+    {
+      "name": "AC-1: Lista publică omite câmpul și valorile din întregul răspuns",
+      "criterion": "AC-1",
+      "kind": "check",
+      "today": "fail"
+    },
+    {
+      "name": "AC-2: Parametrii anonimi nu expun câmpul sau valoarea și păstrează înregistrarea",
+      "criterion": "AC-2",
+      "kind": "check",
+      "today": "fail"
+    },
+    {
+      "name": "AC-3 control: Proprietatea lipsă și valorile goale sunt refuzate fără salvare",
+      "criterion": "AC-3",
+      "kind": "control",
+      "today": "pass"
+    },
+    {
+      "name": "AC-4 control: Telefonul se păstrează exact în stocarea internă",
+      "criterion": "AC-4",
+      "kind": "control",
+      "today": "pass"
+    },
+    {
+      "name": "AC-5 control: Programarea validă este acceptată",
+      "criterion": "AC-5",
+      "kind": "control",
+      "today": "pass"
+    }
+  ]
+}

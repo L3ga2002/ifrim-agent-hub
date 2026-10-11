@@ -702,7 +702,7 @@ export function createVariantService({ db, bus, clock = () => new Date(), assets
     if (!row) throw new HubError("not_found", "Varianta nu există.", { code: "VARIANT_MISSING" });
     if (row.status === "INVALIDATED") return mapRow(row);
     const at = now();
-    const notes = { ...parse(row.notes_json, {}), invalidated: { reason: String(reason || "").slice(0, 200), at, by: actor.trim() } };
+    const notes = { ...parse(row.notes_json, {}), invalidated: { previousStatus: row.status, reason: String(reason || "").slice(0, 200), at, by: actor.trim() } };
     return bus.transaction(() => {
       db.prepare("UPDATE media_variants SET status = 'INVALIDATED', notes_json = ?, updated_at = ? WHERE id = ?").run(JSON.stringify(notes), at, row.id);
       bus.append({ type: "media.variant.invalidated", scopeType: "media_variant", scopeId: row.id, source: actor.trim(), payload: { variantId: row.id, reason: notes.invalidated.reason } });

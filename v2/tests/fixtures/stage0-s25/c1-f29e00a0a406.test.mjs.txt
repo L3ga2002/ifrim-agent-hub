@@ -1,0 +1,169 @@
+// Test de acceptanță scris de Ifrim Agent Hub din criteriile proprietarului (misiunea mis_mv2ql0fp_ee35f8071e, spec v1 9bbfba84edf6).
+// Protejat după review: se repară implementarea, nu testul. Nu îl modifica manual.
+import test from "node:test";
+import assert from "node:assert/strict";
+import path from "node:path";
+import os from "node:os";
+import fs from "node:fs";
+import * as sqlite from "node:sqlite";
+import http from "node:http";
+const load = async (rel) => { try { return await import(new URL(rel, import.meta.url)); } catch (e) { assert.fail(`HUB_LOAD ${rel}: ${e?.code || e?.name || "eroare"}`); } };
+// ---- corpul testului ----
+function httpReq(options, body) {
+  return new Promise((resolve, reject) => {
+    const req = http.request(options, (res) => {
+      const chunks = [];
+      res.on("data", (c) => chunks.push(c));
+      res.on("end", () => {
+        try { resolve({ status: res.statusCode, body: JSON.parse(Buffer.concat(chunks).toString("utf8")) }); }
+        catch { resolve({ status: res.statusCode, body: null }); }
+      });
+    });
+    req.on("error", reject);
+    if (body != null) req.write(body);
+    req.end();
+  });
+}
+
+const FIXED_DATE = "2026-10-11";
+const FIXED_SLOT = "2026-10-11T14:00";
+const fixedNow = () => new Date(2026, 9, 11, 12, 0, 0);
+
+const bookingJson = JSON.stringify({
+  serviceId: "spalare-exterior",
+  start: FIXED_SLOT,
+  name: "Test Client Alfa",
+  vehicle: "Dacia Logan Test",
+  phone: "0700 111 222",
+});
+
+test("AC-1: Lista publică a zilei nu conține câmpul phone pentru nicio programare", async () => {
+  const m = await load("../../src/server-app.js");
+  assert.equal(typeof m.publicBooking, "function", "AC-1: lipsește publicBooking");
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "det-ac1-"));
+  const dbPath = path.join(tmpDir, "ac1.db");
+  let srv;
+  try {
+    srv = await m.startServer({ port: 0, dbPath, now: fixedNow, seed: false });
+    await httpReq({
+      hostname: "127.0.0.1", port: srv.port, path: "/api/bookings", method: "POST",
+      headers: { "Content-Type": "application/json", "Content-Length": Buffer.byteLength(bookingJson) },
+    }, bookingJson);
+    const { status, body } = await httpReq({
+      hostname: "127.0.0.1", port: srv.port, path: `/api/bookings?date=${FIXED_DATE}`, method: "GET",
+    });
+    assert.equal(status, 200, "AC-1: GET /api/bookings trebuie să returneze 200");
+    assert.ok(Array.isArray(body.bookings) && body.bookings.length > 0, "AC-1: lista trebuie să conțină cel puțin o programare");
+    for (const booking of body.bookings) {
+      assert.equal(Object.hasOwn(booking, "phone"), false, "AC-1: programarea publică nu trebuie să conțină câmpul phone");
+    }
+    assert.equal(JSON.stringify(body).includes("0700 111 222"), false, "AC-1: valoarea telefonului nu trebuie să apară în răspunsul public");
+  } finally {
+    if (srv) await srv.close();
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
+});
+
+test("AC-2: Parametrii suplimentari nu fac telefonul să apară în lista publică", async () => {
+  const m = await load("../../src/server-app.js");
+  assert.equal(typeof m.publicBooking, "function", "AC-2: lipsește publicBooking");
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "det-ac2-"));
+  const dbPath = path.join(tmpDir, "ac2.db");
+  let srv;
+  try {
+    srv = await m.startServer({ port: 0, dbPath, now: fixedNow, seed: false });
+    await httpReq({
+      hostname: "127.0.0.1", port: srv.port, path: "/api/bookings", method: "POST",
+      headers: { "Content-Type": "application/json", "Content-Length": Buffer.byteLength(bookingJson) },
+    }, bookingJson);
+    const params = ["includePhone=1", "phone=1", "fields=phone", "debug=1", "all=1"];
+    for (const param of params) {
+      const { status, body } = await httpReq({
+        hostname: "127.0.0.1", port: srv.port,
+        path: `/api/bookings?date=${FIXED_DATE}&${param}`, method: "GET",
+      });
+      assert.equal(status, 200, `AC-2: GET cu ${param} trebuie să returneze 200`);
+      for (const booking of body.bookings) {
+        assert.equal(Object.hasOwn(booking, "phone"), false, `AC-2: parametrul ${param} nu trebuie să expună câmpul phone`);
+      }
+      assert.equal(JSON.stringify(body).includes("0700 111 222"), false, `AC-2: parametrul ${param} nu trebuie să expună valoarea telefonului`);
+    }
+  } finally {
+    if (srv) await srv.close();
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
+});
+
+test("AC-3 control: programare fără telefon este refuzată cu eroare la câmpul phone", async () => {
+  const m = await load("../../src/server-app.js");
+  assert.equal(typeof m.createApp, "function", "AC-3 control: lipsește createApp");
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "det-ac3-"));
+  const dbPath = path.join(tmpDir, "ac3.db");
+  let srv;
+  try {
+    srv = await m.startServer({ port: 0, dbPath, now: fixedNow, seed: false });
+    const noPhoneJson = JSON.stringify({
+      serviceId: "spalare-exterior",
+      start: FIXED_SLOT,
+      name: "Test Client Alfa",
+      vehicle: "Dacia Logan Test",
+      phone: "   ",
+    });
+    const { status, body } = await httpReq({
+      hostname: "127.0.0.1", port: srv.port, path: "/api/bookings", method: "POST",
+      headers: { "Content-Type": "application/json", "Content-Length": Buffer.byteLength(noPhoneJson) },
+    }, noPhoneJson);
+    assert.equal(status, 400, "AC-3 control: programare fără telefon trebuie refuzată cu 400");
+    assert.ok(body.errors != null && typeof body.errors.phone === "string", "AC-3 control: răspunsul trebuie să conțină o eroare pentru câmpul phone");
+    assert.ok(body.errors.phone.length > 0, "AC-3 control: mesajul de eroare pentru câmpul phone nu trebuie să fie gol");
+  } finally {
+    if (srv) await srv.close();
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
+});
+
+test("AC-4 control: telefonul este păstrat exact în stocarea internă a aplicației", async () => {
+  const m = await load("../../src/server-app.js");
+  assert.equal(typeof m.createApp, "function", "AC-4 control: lipsește createApp");
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "det-ac4-"));
+  const dbPath = path.join(tmpDir, "ac4.db");
+  let srv;
+  try {
+    srv = await m.startServer({ port: 0, dbPath, now: fixedNow, seed: false });
+    const { status } = await httpReq({
+      hostname: "127.0.0.1", port: srv.port, path: "/api/bookings", method: "POST",
+      headers: { "Content-Type": "application/json", "Content-Length": Buffer.byteLength(bookingJson) },
+    }, bookingJson);
+    assert.equal(status, 201, "AC-4 control: programarea cu telefon trebuie acceptată cu 201");
+    await srv.close();
+    srv = null;
+    const dbConn = new sqlite.DatabaseSync(dbPath);
+    const row = dbConn.prepare("SELECT phone FROM bookings WHERE synthetic = 0").get();
+    dbConn.close();
+    assert.ok(row != null, "AC-4 control: înregistrarea trebuie să existe în baza de date");
+    assert.equal(row["phone"], "0700 111 222", "AC-4 control: telefonul trebuie păstrat exact în baza de date");
+  } finally {
+    if (srv) await srv.close();
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
+});
+
+test("AC-5 control: programare validă cu telefon este acceptată", async () => {
+  const m = await load("../../src/server-app.js");
+  assert.equal(typeof m.createApp, "function", "AC-5 control: lipsește createApp");
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "det-ac5-"));
+  const dbPath = path.join(tmpDir, "ac5.db");
+  let srv;
+  try {
+    srv = await m.startServer({ port: 0, dbPath, now: fixedNow, seed: false });
+    const { status, body } = await httpReq({
+      hostname: "127.0.0.1", port: srv.port, path: "/api/bookings", method: "POST",
+      headers: { "Content-Type": "application/json", "Content-Length": Buffer.byteLength(bookingJson) },
+    }, bookingJson);
+    assert.equal(status, 201, "AC-5 control: programarea validă cu telefon trebuie acceptată cu 201");
+    assert.ok(body.booking != null && typeof body.booking.id === "string", "AC-5 control: răspunsul trebuie să conțină un id valid de programare");
+  } finally {
+    if (srv) await srv.close();
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
+});

@@ -13,5 +13,6 @@
   },
   "findings": [],
   "missingContext": [],
-  "previousFindings": "ALL_RESOLVED"
+  "previousFindings": "ALL_RESOLVED",
+  "previousChecks": "ALL_REPLACED_CORRECTLY"
 }

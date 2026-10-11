@@ -3,10 +3,10 @@
   "body": [
     "test(\"AC-1: o solicitare validă se salvează și primește 201\", async () => {",
     "  const m = await load(\"../../src/server-app.js\");",
-    "  assert.equal(typeof m.createApp, \"function\", \"AC-1: lipsește createApp\");",
+    "  const createApp = need(m, \"createApp\");",
     "  fs.mkdirSync(\"data\", { recursive: true });",
     "  fs.writeFileSync(\"data/hub-proof.sqlite\", \"\");",
-    "  const app = m.createApp({ dbFile: \"data/hub-proof.sqlite\", publicDir: \"public\" });",
+    "  const app = await setup(\"aplicație\", () => createApp({ dbFile: \"data/hub-proof.sqlite\", publicDir: \"public\" }));",
     "  const server = http.createServer(app.handle);",
     "  await new Promise((resolve) => server.listen(0, \"127.0.0.1\", resolve));",
     "  try {",
@@ -26,10 +26,19 @@
     "});"
   ],
   "manifest": {
-    "needs": ["node:fs", "node:http"],
+    "needs": [
+      "node:fs",
+      "node:http"
+    ],
     "api": "createApp({ dbFile, publicDir }) din src/server-app.js; POST /api/requests cu un corp JSON valid răspunde 201.",
     "cases": [
-      { "name": "AC-1: o solicitare validă se salvează și primește 201", "criterion": "AC-1", "kind": "check", "today": "fail" }
-    ]
+      {
+        "name": "AC-1: o solicitare validă se salvează și primește 201",
+        "criterion": "AC-1",
+        "kind": "check",
+        "today": "fail"
+      }
+    ],
+    "newApi": []
   }
 }

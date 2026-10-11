@@ -130,6 +130,8 @@ export const T_PROOF_INCONCLUSIVE = (reason) => `Nu am putut verifica testul pe 
 /** One plain phrase per class of proof outcome (classifyProof's `cause`): no paths, no error codes, no jargon. */
 export const PROOF_CAUSES = Object.freeze({
   wrong: "testul nu a picat din motivul cerut",
+  setup_failed: "testul pică la pregătire, nu pe comportamentul cerut",
+  provenance: "locul eșecului nu poate fi verificat sigur",
   file_crash: "testul s-a oprit înainte să verifice ceva",
   code_error: "testul a căzut pe o eroare în cod, nu pe o verificare a cerinței",
   control_fails: "a picat și verificarea care trebuia să treacă azi",
@@ -684,6 +686,8 @@ export function testHeader({ missionId = "", specVersion = 1, specSha = "", need
     'import assert from "node:assert/strict";',
     ...ALLOWED_NEEDS.filter((k) => wanted.has(k)).map((k) => NEEDS[k].line),
     'const load = async (rel) => { try { return await import(new URL(rel, import.meta.url)); } catch (e) { assert.fail(`HUB_LOAD ${rel}: ${e?.code || e?.name || "eroare"}`); } };',
+    'const need = (m, name) => { if (typeof m[name] === "function") return m[name]; assert.fail(`HUB_SETUP export ${name}: ${name in m ? typeof m[name] : "lipsește"}`); };',
+    'const setup = async (label, fn) => { try { return await fn(); } catch (e) { assert.fail(`HUB_SETUP ${label}: ${e?.code || e?.name || "eroare"}`); } };',
     "// ---- corpul testului ----",
   ];
 }
@@ -692,7 +696,7 @@ export function testHeader({ missionId = "", specVersion = 1, specSha = "", need
  * The author's instructions (one user message in the author conversation). The owner's words, the criteria and any earlier
  * rejection reasons are quoted as data. `facts.files` = project files at base (paths), `facts.exports` = {rel: [names]}.
  */
-export function buildAuthorBrief({ mission = {}, spec = {}, specVersion = 1, specSha = "", authoring = {}, cycle = 0, previousProblems = [], facts = {} } = {}) {
+export function buildAuthorBrief({ mission = {}, spec = {}, specVersion = 1, specSha = "", authoring = {}, cycle = 0, previousProblems = [], previousCandidate = null, facts = {} } = {}) {
   const workType = String(spec.workType || "").toUpperCase();
   const criteria = testCriteriaOf(spec.acceptance);
   const browser = browserCriteriaOf(spec.acceptance);
@@ -737,7 +741,8 @@ export function buildAuthorBrief({ mission = {}, spec = {}, specVersion = 1, spe
     "- fiecare test are aserțiuni reale; fără tautologii (assert.ok(true), literal comparat cu literal, aceeași variabilă pe ambele părți), fără assert.fail sau throw necondiționat",
     "- fiecare criteriu are cel puțin un caz „check” care pică azi; un criteriu de păstrare are în schimb cazuri „control” („AC-n control: …”) care trec azi și resping o implementare care refuză tot",
     ...(workType === "BUGFIX" ? ["- BUGFIX: fiecare criteriu are și cel puțin un caz „control” („AC-n control: …”) pe ACEEAȘI funcție, care trece azi (arată că testul nu pică din alt motiv); folosește exact numele exportate de azi"] : []),
-    ...(workType === "FEATURE" ? ['- FEATURE: fiecare test începe cu assert.equal(typeof m.fn, "function", "AC-n: lipsește fn"), ca lipsa funcției noi să pice pe o aserțiune; declară în "api", într-o propoziție, forma API aleasă (nume, parametri, răspuns, mesaje de eroare)'] : []),
+    'Testul exercită contractul real al aplicației de azi (exporturile, rutele, câmpurile existente). Pornirea, datele de test și încărcarea se fac cu load(), need(m, "nume") și setup("etichetă", () => …); un eșec acolo e eșec de pregătire, nu dovadă. Fiecare check trebuie să pice azi pe o aserțiune despre comportament.',
+    ...(spec.changesExisting ? ["Cerința schimbă un comportament existent: nu introduce exporturi, funcții sau rute noi pentru test."] : workType === "FEATURE" ? ['Un export nou doar dacă cerința cere o funcție nouă: îl declari în newApi [{ module, name, criterion }] și îl obții cu need(); existența lui singură nu e dovadă — testul îi verifică și comportamentul.'] : []),
     "- testul nu lasă fișiere în proiect (date temporare doar în fs.mkdtemp(path.join(os.tmpdir(), …))); server http doar pe 127.0.0.1, închis la final; fără timere peste 1 s, fără Date.now/Math.random în aserțiuni",
     "",
   ];
@@ -748,10 +753,11 @@ export function buildAuthorBrief({ mission = {}, spec = {}, specVersion = 1, spe
   if (previous.length) {
     lines.push("## Varianta anterioară a fost respinsă (date, citate de Hub)", "```text", ...previous.map((p) => `- ${fenceSafe(p).slice(0, 400)}`), "```", "Scrie din nou testul întreg, corectând aceste probleme.", "");
   }
+  if (previousCandidate) lines.push("## Varianta anterioară (date)", "Păstrează fiecare verificare din inventar, cu excepția celor numite greșite de un finding. Orice verificare eliminată sau înlocuită se declară în removed: [{ id, why }] (motiv de 10–200 caractere).", "```json", fenceSafe(JSON.stringify(previousCandidate, null, 2)), "```", "");
   lines.push("## Răspuns obligatoriu",
     "Un bloc ```js cu DOAR corpul testului, apoi un singur bloc ```json, exact cu această structură:",
     "```json",
-    JSON.stringify({ testSlot: slot, needs: [], api: workType === "FEATURE" ? "o propoziție: forma API aleasă" : "", cases: criteria.flatMap((c) => c.guard ? [{ name: `${c.id} control: …`, criterion: c.id, kind: "control", today: "pass" }] : [
+    JSON.stringify({ testSlot: slot, needs: [], newApi: [], removed: [], api: workType === "FEATURE" ? "o propoziție: forma API aleasă" : "", cases: criteria.flatMap((c) => c.guard ? [{ name: `${c.id} control: …`, criterion: c.id, kind: "control", today: "pass" }] : [
       { name: `${c.id}: …`, criterion: c.id, kind: "check", today: "fail" },
       ...(workType === "BUGFIX" ? [{ name: `${c.id} control: …`, criterion: c.id, kind: "control", today: "pass" }] : []),
     ]) }, null, 2),
@@ -761,6 +767,47 @@ export function buildAuthorBrief({ mission = {}, spec = {}, specVersion = 1, spe
 
 /** Normalizes a body: BOM and CR removed, trailing whitespace trimmed, one final newline. */
 export const normalizeBody = (body) => `${String(body ?? "").replace(/^﻿/, "").replace(/\r\n?/g, "\n").replace(/\s+$/, "")}\n`;
+
+/** Text equality only: collapse whitespace outside literals and unify string quotes, without interpreting assertions. */
+export function normalizeAssertion(source) {
+  const lex = scanSource(source);
+  let out = "", cursor = 0;
+  for (const s of [...lex.strings].sort((a, b) => a.start - b.start)) {
+    out += String(source).slice(cursor, s.start).replace(/\s+/g, " ") + JSON.stringify(s.value);
+    cursor = s.end;
+  }
+  return (out + String(source).slice(cursor).replace(/\s+/g, " ")).trim();
+}
+
+export function assertionInventory(text, manifest = {}, { headerLines = 0 } = {}) {
+  const source = String(text || ""), lex = scanSource(source), cases = [];
+  for (const m of lex.code.matchAll(/(?<![.\w$])test\s*\(/g)) {
+    const open = m.index + m[0].length - 1;
+    const lit = lex.strings.find((s) => s.start > open && !source.slice(open + 1, s.start).trim());
+    if (lit) cases.push({ start: m.index, end: matchClose(lex.code, open), name: lit.value });
+  }
+  const out = [];
+  for (const m of lex.code.matchAll(/(?<![.\w$])assert\b(?:\s*\.\s*[\w$]+)?\s*\(/g)) {
+    const line = lex.lineOf(m.index);
+    if (line <= headerLines) continue;
+    const end = matchClose(lex.code, m.index + m[0].length - 1);
+    if (end < 0) continue;
+    const owner = cases.find((c) => m.index > c.start && m.index < c.end);
+    out.push({ id: `P${line}`, test: owner?.name || null, criterion: manifest.cases?.find((c) => c.name === owner?.name)?.criterion || null,
+      statement: normalizeAssertion(source.slice(m.index, end + 1)) });
+  }
+  return out;
+}
+
+export function removedAssertions(previous = [], body = "") {
+  const remaining = assertionInventory(body).map((x) => x.statement);
+  return previous.filter((entry) => {
+    const index = remaining.indexOf(entry.statement);
+    if (index < 0) return true;
+    remaining.splice(index, 1);
+    return false;
+  });
+}
 
 function lastFence(text, langs) {
   const re = new RegExp("```(?:" + langs + ")[ \\t]*\\r?\\n([\\s\\S]*?)```", "g");
@@ -778,7 +825,7 @@ function lastJsonBlock(text) {
  * Reads the author's answer: the last ```js block (the body) and the last ```json block (the manifest). Structural problems
  * only (the rules are lintTestBody's). Returns { ok, body, manifest: { testSlot, needs, api, cases }, problems }.
  */
-export function parseAuthorOutput(text, { testSlot = null, workType = "" } = {}) {
+export function parseAuthorOutput(text, { testSlot = null, workType = "", criteria = [] } = {}) {
   const problems = [];
   const rawBody = lastFence(text, "js|javascript|mjs");
   const rawJson = lastJsonBlock(text);
@@ -787,7 +834,7 @@ export function parseAuthorOutput(text, { testSlot = null, workType = "" } = {})
   if (rawJson === null) problems.push("lipsește blocul ```json cu manifestul");
   else { try { data = JSON.parse(rawJson); } catch (error) { problems.push(`manifest JSON invalid: ${String(error.message).slice(0, 120)}`); } }
   if (rawJson !== null && data !== null && (typeof data !== "object" || Array.isArray(data))) { problems.push("manifestul nu e un obiect JSON"); data = null; }
-  const manifest = { testSlot: "", needs: [], api: "", cases: [] };
+  const manifest = { testSlot: "", needs: [], api: "", cases: [], newApi: [], removed: [] };
   if (data) {
     manifest.testSlot = String(data.testSlot ?? "").slice(0, 40);
     if (testSlot && manifest.testSlot !== String(testSlot)) problems.push(`manifestul nu numește slotul exact (${manifest.testSlot || "—"} în loc de ${testSlot})`);
@@ -799,7 +846,6 @@ export function parseAuthorOutput(text, { testSlot = null, workType = "" } = {})
     if (data.needs !== undefined && !Array.isArray(data.needs)) problems.push("„needs” trebuie să fie o listă");
     manifest.needs = ALLOWED_NEEDS.filter((k) => manifest.needs.includes(k));
     manifest.api = redactText(String(data.api ?? "").replace(/\s+/g, " ").trim()).slice(0, 500);
-    if (String(workType).toUpperCase() === "FEATURE" && manifest.api.length < 10) problems.push("la FEATURE, „api” descrie într-o propoziție forma API aleasă");
     const rawCases = Array.isArray(data.cases) ? data.cases : [];
     if (!rawCases.length) problems.push("manifestul nu are cazuri");
     if (rawCases.length > TEST_FIRST_LIMITS.maxTests) problems.push(`manifestul are peste ${TEST_FIRST_LIMITS.maxTests} cazuri`);
@@ -813,6 +859,18 @@ export function parseAuthorOutput(text, { testSlot = null, workType = "" } = {})
       else if (item.kind === "control" && item.today !== "pass") problems.push(`cazul ${index + 1}: un „control” trebuie să treacă azi`);
       manifest.cases.push(item);
     }
+    const ids = new Set((criteria.length ? criteria : manifest.cases).map((c) => c.id || c.criterion));
+    for (const key of ["newApi", "removed"]) if (data[key] !== undefined && !Array.isArray(data[key])) problems.push(`„${key}” trebuie să fie o listă`);
+    if (Array.isArray(data.newApi) && data.newApi.length > 10) problems.push("newApi are peste 10 intrări");
+    for (const a of Array.isArray(data.newApi) ? data.newApi : []) {
+      if (!a || typeof a.module !== "string" || !resolveLoad(a.module.startsWith(".") ? a.module : `../../${a.module}`, "test/hub/test.mjs") || !/^[A-Za-z_$][\w$]*$/.test(a.name || "") || !ids.has(a.criterion)) problems.push("newApi: modul, nume sau criteriu invalid");
+      else manifest.newApi.push({ module: a.module, name: a.name, criterion: a.criterion });
+    }
+    if (String(workType).toUpperCase() === "FEATURE" && manifest.newApi.length && manifest.api.length < 10) problems.push("la FEATURE cu newApi, „api” descrie într-o propoziție forma API aleasă");
+    for (const r of Array.isArray(data.removed) ? data.removed : []) {
+      if (!r || !/^P[1-9]\d*$/.test(r.id || "") || typeof r.why !== "string" || r.why.trim().length < 10 || r.why.trim().length > 200 || manifest.removed.some((x) => x.id === r.id)) problems.push("removed: id sau motiv invalid (10–200 caractere, fără duplicate)");
+      else manifest.removed.push({ id: r.id, why: r.why.trim() });
+    }
   }
   const body = rawBody === null ? "" : normalizeBody(rawBody);
   return { ok: problems.length === 0, body, manifest, problems };
@@ -823,6 +881,8 @@ export function parseAuthorOutput(text, { testSlot = null, workType = "" } = {})
 // ---------------------------------------------------------------------------------------------------------------------
 
 const RULE_PLAIN = Object.freeze({
+  export_missing_undeclared: "testul folosește un export care nu există azi și nu e declarat ca API nou cerut",
+  export_existence_assert: 'existența unui export se cere cu need(m, "nume"), nu printr-o aserțiune',
   syntax: "testul nu e JavaScript valid",
   lexer: "textul testului nu poate fi citit sigur (șir, comentariu sau expresie neînchisă)",
   escape_in_code: "codul folosește secvențe \\u în nume (ar putea ascunde un nume interzis)",
@@ -866,7 +926,6 @@ const SIGNAL_PLAIN = Object.freeze({
   long_timer: "folosește un timer de peste 1 secundă",
   fs_without_tmp: "folosește node:fs fără un folder temporar (fs.mkdtemp(os.tmpdir()))",
   http: "pornește un server sau o cerere http (trebuie să rămână pe 127.0.0.1)",
-  feature_typeof_missing: "un caz FEATURE nu începe cu verificarea că funcția nouă există (typeof)",
   fail_nested: "assert.fail stă într-o funcție internă sau ca argument: verifică dacă rulează mereu (atunci testul nu poate trece niciodată)",
   fs_with_missing_module: "folosește node:fs și încarcă un modul care nu există azi: verifică că testul nu creează singur codul pe care îl încarcă",
 });
@@ -912,7 +971,7 @@ const FORBIDDEN_STRING = Object.freeze([
   { token: "constructor", re: /constructor/ },
   { token: "node:module", re: /^node:(?:module|vm|net|dgram|dns|tls|https|inspector|cluster|repl|v8)$/ },
   // The marker of the Hub's own load() failure: a body that writes it would imitate a missing module (classifyProof).
-  { token: "HUB_LOAD", re: /HUB_LOAD/ },
+  { token: "HUB_LOAD", re: /HUB_LOAD|HUB_SETUP/ },
 ]);
 /** The names a computed key written as a string may never be (they are also forbidden as code tokens). */
 const FORBIDDEN_KEY = /^(?:constructor|__proto__|prototype|caller|callee|arguments|process|globalThis|global|eval|(?:Async|AsyncGenerator|Generator)?Function|getBuiltinModule|mainModule|binding|_linkedBinding|dlopen|require|module|exports|__(?:lookup|define)[GS]etter__|getPrototypeOf|setPrototypeOf|getOwnPropertyDescriptors?|loadExtension|enableLoadExtension|prepareStackTrace|homedir|userInfo|Reflect|fetch|import)$/;
@@ -950,7 +1009,7 @@ function resolveLoad(arg, testRef) {
  *   testRef (final path; staging has the same depth), projectFiles (base paths; optional), moduleExports ({rel: [names]}).
  * Returns { ok, violations: [{ rule, plain, detail, line }], signals: [{ signal, plain, detail, line }], facts }.
  */
-export function lintTestBody(body, { manifest = null, criteria = [], workType = "", testRef = "", stagingRef = "", projectFiles = null, moduleExports = {} } = {}) {
+export function lintTestBody(body, { manifest = null, criteria = [], workType = "", testRef = "", stagingRef = "", projectFiles = null, moduleExports = {}, spec = {} } = {}) {
   const text = normalizeBody(body);
   const kind = String(workType || "").toUpperCase();
   const testCriteria = testCriteriaOf(criteria);
@@ -1031,7 +1090,7 @@ export function lintTestBody(body, { manifest = null, criteria = [], workType = 
     add("assert_alias", `assert${(rest.match(/^\s*\S{0,20}/)?.[0] || "").replace(/\s+/g, "")}`, m.index);
   }
   // Parameters and catch bindings named load/test/assert: (assert) => …, function f(test) {}, catch (assert) {}.
-  for (const m of code.matchAll(/(?<![.\w$])(load|test|assert)\s*=>/g)) add("redefine", m[1], m.index);
+  for (const m of code.matchAll(/(?<![.\w$])(load|need|setup|test|assert)\s*=>/g)) add("redefine", m[1], m.index);
   for (let k = 0; k < code.length; k += 1) {
     if (code[k] !== ")") continue;
     const after = code.slice(k + 1).match(/^\s*(=>|\{)/);
@@ -1039,7 +1098,7 @@ export function lintTestBody(body, { manifest = null, criteria = [], workType = 
     const open = matchOpen(code, k);
     if (open < 0) continue;
     if (after[1] === "{" && /(?<![.\w$])(?:if|for|while|switch|with)\s*$/.test(code.slice(Math.max(0, open - 12), open))) continue;
-    const p = code.slice(open + 1, k).match(/(?<![.\w$])(load|test|assert)\b/);
+    const p = code.slice(open + 1, k).match(/(?<![.\w$])(load|need|setup|test|assert)\b/);
     if (p) add("redefine", p[1], open + 1 + p.index);
   }
   for (const m of code.matchAll(/(?<![.\w$])load\b/g)) {
@@ -1078,9 +1137,9 @@ export function lintTestBody(body, { manifest = null, criteria = [], workType = 
       else if (!LOOPBACK(u[2])) add("remote_url", u[0].slice(0, 60), s.start);
     }
   }
-  for (const m of code.matchAll(/(?<![.\w$])(?:function\s*\*?|const|let|var|class)\s+(load|test|assert)\b/g)) add("redefine", m[1], m.index);
-  for (const m of code.matchAll(/(?<![.\w$])(load|test|assert)\s*=(?!=)/g)) add("redefine", m[1], m.index);
-  for (const m of code.matchAll(/[{,]\s*(load|test|assert)\s*(?=[,}])/g)) if (/(?:const|let|var)\s*\{[^}]*$/.test(code.slice(0, m.index + 1))) add("redefine", m[1], m.index);
+  for (const m of code.matchAll(/(?<![.\w$])(?:function\s*\*?|const|let|var|class)\s+(load|need|setup|test|assert)\b/g)) add("redefine", m[1], m.index);
+  for (const m of code.matchAll(/(?<![.\w$])(load|need|setup|test|assert)\s*=(?!=)/g)) add("redefine", m[1], m.index);
+  for (const m of code.matchAll(/[{,]\s*(load|need|setup|test|assert)\s*(?=[,}])/g)) if (/(?:const|let|var)\s*\{[^}]*$/.test(code.slice(0, m.index + 1))) add("redefine", m[1], m.index);
 
   // --- tests: shape, names, segments --------------------------------------------------------------------------------
   const tests = [];
@@ -1143,12 +1202,14 @@ export function lintTestBody(body, { manifest = null, criteria = [], workType = 
   const nsVars = new Map();
   const localNames = new Map();
   for (const l of facts.loads) {
-    const before = code.slice(Math.max(0, l.index - 200), l.index);
-    const ns = before.match(/(?:const|let|var)\s+([\w$]+)\s*=\s*(?:await\s+)?$/);
+    const before = code.slice(0, l.index);
+    const ns = before.match(/(?<![.\w$])([\w$]+)\s*=\s*(?:await\s+)?$/);
     if (ns) nsVars.set(ns[1], l.resolved);
-    const destr = before.match(/(?:const|let|var)\s*\{([^}]*)\}\s*=\s*(?:await\s+)?$/);
+    const destr = before.match(/\{([^{}]*)\}\s*=\s*(?:await\s+)?$/);
     if (destr) {
       for (const part of destr[1].split(",")) {
+        const rest = part.trim().match(/^\.\.\.([\w$]+)$/);
+        if (rest) { nsVars.set(rest[1], l.resolved); continue; }
         const [exported, local] = part.split(":").map((p) => p.split("=")[0].trim());
         if (/^[\w$]+$/.test(exported || "")) localNames.set(local && /^[\w$]+$/.test(local) ? local : exported, { module: l.resolved, name: exported });
       }
@@ -1159,16 +1220,29 @@ export function lintTestBody(body, { manifest = null, criteria = [], workType = 
   const referencesIn = (start, end) => {
     const refs = [];
     const seg = code.slice(start, end);
-    for (const [v, module] of nsVars) for (const m of seg.matchAll(new RegExp(`(?<![.\\w$])${v.replace(/\$/g, "\\$")}\\s*\\.\\s*([\\w$]+)`, "g"))) refs.push({ module, name: m[1], index: start + m.index });
+    for (const [v, module] of nsVars) for (const m of seg.matchAll(new RegExp(`(?<![.\\w$])${v.replace(/\$/g, "\\$")}\\s*(?:\\?\\.|\\.)\\s*([\\w$]+)`, "g"))) refs.push({ module, name: m[1], index: start + m.index });
+    for (const [v, module] of nsVars) for (const m of seg.matchAll(new RegExp(`(?<![.\\w$])${v.replace(/\$/g, "\\$")}\\s*(?:\\?\\.)?\\s*\\[`, "g"))) {
+      const open = start + m.index + m[0].length - 1, close = matchClose(code, open);
+      const lit = close >= 0 && literalIn(open + 1, close);
+      if (lit) refs.push({ module, name: lit.value, index: start + m.index });
+    }
     for (const [local, ref] of localNames) for (const m of seg.matchAll(new RegExp(`(?<![.\\w$])${local.replace(/\$/g, "\\$")}\\b`, "g"))) refs.push({ ...ref, index: start + m.index });
     for (const l of facts.loads) if (l.inline && l.index >= start && l.index < end) refs.push({ module: l.resolved, name: l.inline, index: l.index });
+    for (const m of seg.matchAll(/(?<![.\w$])need\s*\(\s*([\w$]+)\s*,/g)) {
+      const call = callArgs(code, start + m.index + m[0].indexOf("("));
+      const arg = call?.args?.[1];
+      const lit = arg && literalIn(arg.start, arg.end);
+      if (nsVars.has(m[1]) && lit) refs.push({ module: nsVars.get(m[1]), name: lit.value, index: start + m.index });
+    }
     return refs;
   };
   const allRefs = referencesIn(0, code.length);
   const refSeen = new Set();
   for (const r of allRefs) {
     const known = Array.isArray(moduleExports?.[r.module]) ? moduleExports[r.module] : null;
-    const existsAtBase = known ? known.includes(r.name) || known.includes("*") : null;
+    const existsAtBase = known ? known.includes(r.name) || known.includes("*") : files && !files.has(r.module.toLowerCase()) ? false : null;
+    const declared = kind === "FEATURE" && spec.changesExisting !== true && (manifest?.newApi || []).some((a) => a.name === r.name && (a.module.startsWith(".") ? resolveLoad(a.module, testRef) : a.module) === r.module);
+    if (existsAtBase === false && !declared) add("export_missing_undeclared", `${r.module} → ${r.name}`, r.index);
     const key = `${r.module}#${r.name}`;
     if (!refSeen.has(key)) { refSeen.add(key); facts.referenced.push({ module: r.module, name: r.name, existsAtBase }); }
     if (kind === "BUGFIX" && known && !existsAtBase) {
@@ -1182,10 +1256,6 @@ export function lintTestBody(body, { manifest = null, criteria = [], workType = 
     const seg = code.slice(t.segStart, t.segEnd);
     t.exports = [...new Set(referencesIn(t.segStart, t.segEnd).map((r) => `${r.module}#${r.name}`))];
     if (!/(?<![.\w$])assert\b/.test(seg)) add("no_assert", t.name.slice(0, 80), t.index);
-    if (kind === "FEATURE" && !t.control) {
-      const firstAssert = seg.match(/(?<![.\w$])assert\b(?:\s*\.\s*([\w$]+))?\s*\(\s*(typeof\b)?/);
-      if (!firstAssert || !["equal", "strictEqual"].includes(firstAssert[1]) || !firstAssert[2]) signal("feature_typeof_missing", t.name.slice(0, 80), t.index);
-    }
     facts.tests.push({ name: t.name, criterion: t.criterion || null, control: Boolean(t.control), line: lineOf(t.index), exports: t.exports });
   }
   for (const m of code.matchAll(/(?<![.\w$])assert\b(?:\s*\.\s*([\w$]+))?\s*\(/g)) {
@@ -1193,6 +1263,12 @@ export function lintTestBody(body, { manifest = null, criteria = [], workType = 
     const open = m.index + m[0].length - 1;
     const call = callArgs(code, open);
     if (!call) continue;
+    const argsCode = code.slice(open + 1, call.close);
+    for (const v of [...nsVars.keys(), ...localNames.keys()]) {
+      const name = v.replace(/\$/g, "\\$");
+      const member = nsVars.has(v) ? `${name}\\s*(?:\\.\\s*[\\w$]+|\\[)` : `${name}\\b`;
+      if (new RegExp(`\\btypeof\\s+${member}|\\bin\\s+${name}\\b|\\bObject\\s*\\.\\s*hasOwn\\s*\\(\\s*${name}\\b|(?<![.\\w$])${name}\\s*\\.\\s*hasOwnProperty\\s*\\(`).test(argsCode)) add("export_existence_assert", v, m.index);
+    }
     const argText = (a) => (a ? code.slice(a.start, a.end).trim() : "");
     const srcText = (a) => (a ? text.slice(a.start, a.end).replace(/\s+/g, "") : "");
     const [a1, a2] = call.args;
@@ -1360,6 +1436,9 @@ export function createTapCaseCollector({ maxCases = 500 } = {}) {
     const { item, fields } = cur;
     if (cur.blockKey) fields[cur.blockKey] = cur.blockFirst ?? "";
     if (cur.state === "yaml") {
+      item.stack = fields.stack ?? null;
+      const frame = String(item.stack || "").match(/(?:^|[(/\\])([^/\\():]+):(\d+):(\d+)\)?$/);
+      item.at = frame ? { file: frame[1], line: Number(frame[2]), column: Number(frame[3]) } : null;
       item.code = fields.code ?? null;
       item.errorName = fields.name ?? null;
       item.failureType = fields.failureType ?? null;
@@ -1438,12 +1517,12 @@ export function proofSignature(run) {
  * Wave A: `counts` must be the runner's own summary (`# tests`, `# fail`, …) and `cases` the streaming collector's
  * (createTapCaseCollector fed every line), never the cases parsed from the 300-line tail.
  */
-export function classifyProof({ runs = [], manifest = {}, criteria = [], workType = "", testRef = "", changedFiles = [], missingAtBase = [] } = {}) {
+export function classifyProof({ runs = [], manifest = {}, criteria = [], workType = "", testRef = "", changedFiles = [], missingAtBase = [], test = {}, spec = {}, facts = {} } = {}) {
   const kind = String(workType || "").toUpperCase();
   const testCriteria = testCriteriaOf(criteria);
   const cases = Array.isArray(manifest?.cases) ? manifest.cases : [];
   const byName = new Map(cases.map((c) => [c.name, c]));
-  const result = (verdict, cause, reasons, extra = {}) => ({ verdict, cause, reasons: reasons.map((r) => String(r)), signature: extra.signature ?? null, table: extra.table ?? [], failingCriteria: extra.failingCriteria ?? [], passingCriteria: extra.passingCriteria ?? [] });
+  const result = (verdict, cause, reasons, extra = {}) => ({ verdict, cause, reasons: [...new Set([...reasons.map(String), ...(extra.table || []).filter((r) => r.today === "fail").map((r) => `${r.name}: ${r.origin}, linia ${r.at || "?"}: ${r.statement}`)])], signature: extra.signature ?? null, table: extra.table ?? [], failingCriteria: extra.failingCriteria ?? [], passingCriteria: extra.passingCriteria ?? [] });
   const list = Array.isArray(runs) ? runs : [];
   if (list.length < TEST_FIRST_LIMITS.proofRuns) return result("INCONCLUSIVE", "runs", [`dovada are nevoie de ${TEST_FIRST_LIMITS.proofRuns} rulări (am ${list.length})`]);
   const changed = (Array.isArray(changedFiles) ? changedFiles : []).filter(Boolean);
@@ -1479,33 +1558,47 @@ export function classifyProof({ runs = [], manifest = {}, criteria = [], workTyp
   const signature = proofSignature(first);
   if (signature !== proofSignature(second)) return result("FLAKY", "flaky", ["cele două rulări au dat rezultate diferite"], { signature });
   const secondByName = new Map(second.cases.map((c) => [c.name, c]));
-  const table = first.cases.map((c) => {
+  const sourceLines = String(test.text || "").split(/\r?\n/);
+  const provenanceRow = (c) => {
     const m = byName.get(c.name) || {};
-    return { name: c.name, criterion: m.criterion || null, kind: m.kind || null, today: c.ok ? "pass" : "fail", code: c.code || null, errorName: c.errorName || null, message: c.message || null, runs: [c.ok, Boolean(secondByName.get(c.name)?.ok)] };
-  });
+    const at = c.at && (test.refs || []).includes(c.at.file) && Number.isInteger(c.at.line) && c.at.line > 0 && c.at.line <= sourceLines.length ? c.at : null;
+    const hubMessage = /^HUB_(?:LOAD|SETUP) /.test(c.message || "");
+    const inHeader = Boolean(at && at.line <= Number(test.headerLines || 0));
+    const statement = at ? sourceLines[at.line - 1].trim().slice(0, 160) : "";
+    return { at: at?.line || null, statement, origin: inHeader || hubMessage ? "setup" : "behaviour", provenance: Boolean(at) && inHeader === hubMessage, name: c.name, criterion: m.criterion || null, kind: m.kind || null, today: c.ok ? "pass" : "fail", code: c.code || null, errorName: c.errorName || null, message: c.message || null, runs: [c.ok, Boolean(secondByName.get(c.name)?.ok)] };
+  };
+  const table = first.cases.map(provenanceRow);
+  const allRows = [...table, ...second.cases.map(provenanceRow)];
+  if (allRows.some((r) => r.today === "fail" && r.kind === "check" && !r.provenance)) return result("INCONCLUSIVE", "provenance", allRows.filter((r) => r.today === "fail" && !r.provenance).map((r) => `${r.name}: locul eșecului nu corespunde mesajului sau lipsește`), { signature, table });
   const missing = new Set((Array.isArray(missingAtBase) ? missingAtBase : []).map((p) => String(p).toLowerCase()));
   const wrong = [];
   let wrongCause = null;
   const wrongOf = (cause, reason) => { wrongCause ||= cause; wrong.push(reason); };
-  for (const row of table) {
+  for (const row of allRows) {
     if (row.today === "pass") continue;
     if (row.kind === "control") { wrongOf("control_fails", `${row.name}: un control pică azi (testul nu pică din motivul cerut)`); continue; }
     if (row.code !== "ERR_ASSERTION") { wrongOf("code_error", `${row.name}: eroare de cod ${row.errorName || row.code || "necunoscută"}, nu o aserțiune`); continue; }
     if (isHubLoad(row.message)) {
       const m = String(row.message).match(/^HUB_LOAD (\S+): (\S+)/);
       const resolved = m ? resolveLoad(m[1], testRef) || m[1] : null;
-      if (kind !== "FEATURE") wrongOf("load_failed", `${row.name}: modulul nu se încarcă (${m ? m[2] : "eroare"}); la o reparație codul trebuie să existe`);
+      if (kind !== "FEATURE" || spec.changesExisting === true) wrongOf("load_failed", `${row.name}: modulul nu se încarcă (${m ? m[2] : "eroare"}); la o reparație codul trebuie să existe`);
       else if (!m || m[2] !== "ERR_MODULE_NOT_FOUND" || !missing.has(String(resolved).toLowerCase())) wrongOf("load_failed", `${row.name}: modulul ${m ? m[1] : "?"} nu se încarcă (${m ? m[2] : "eroare"}) deși ar trebui să existe`);
+      else row.origin = "new_api";
+    } else if (row.origin === "setup") {
+      const name = String(row.message || "").match(/^HUB_SETUP export ([A-Za-z_$][\w$]*):/)?.[1];
+      const allowed = kind === "FEATURE" && spec.changesExisting !== true && name && (manifest.newApi || []).some((a) => a.name === name && a.criterion === row.criterion && (facts.referenced || []).some((f) => f.name === name && f.module === (a.module.startsWith(".") ? resolveLoad(a.module, testRef) : a.module) && f.existsAtBase === false));
+      if (allowed) row.origin = "new_api";
+      else wrongOf("setup_failed", `${row.name}: setup, linia ${row.at}: ${row.statement}`);
     }
   }
   if (wrong.length) return result("WRONG_REASON", wrongCause, wrong, { signature, table });
   const required = testCriteria.filter((c) => !c.guard);
-  const failingCriteria = required.filter((c) => table.some((r) => r.criterion === c.id && r.kind === "check" && r.today === "fail")).map((c) => c.id);
+  const failingCriteria = required.filter((c) => table.some((r) => r.criterion === c.id && r.kind === "check" && r.today === "fail" && ["behaviour", "new_api"].includes(r.origin))).map((c) => c.id);
   const passingCriteria = required.map((c) => c.id).filter((id) => !failingCriteria.includes(id));
   if (!failingCriteria.length) return result("ALREADY_PASSES", "already_passes", ["niciun criteriu nu pică pe codul de azi"], { signature, table, failingCriteria, passingCriteria });
   if (passingCriteria.length) return result("PARTIAL", "partial", [`criterii care trec deja azi: ${passingCriteria.join(", ")} (testul poate descrie problema drept comportament corect)`], { signature, table, failingCriteria, passingCriteria });
   const guards = testCriteria.filter((c) => c.guard).map((c) => c.id);
-  return result("PROVEN", "proven", [`toate criteriile pică azi pe aserțiuni${kind === "BUGFIX" || guards.length ? ", controalele trec" : ""}${guards.length ? ` (păstrare: ${guards.join(", ")})` : ""}; 2 rulări identice`], { signature, table, failingCriteria, passingCriteria });
+  return result("PROVEN", "proven", [`toate criteriile pică azi pe aserțiuni${kind === "BUGFIX" || guards.length ? ", controalele trec" : ""}${guards.length ? ` (păstrare: ${guards.join(", ")})` : ""}; 2 rulări identice`, ...table.filter((r) => r.today === "fail").map((r) => `${r.name}: ${r.origin}, linia ${r.at}: ${r.statement}`)], { signature, table, failingCriteria, passingCriteria });
 }
 
 // ---------------------------------------------------------------------------------------------------------------------
@@ -1513,7 +1606,7 @@ export function classifyProof({ runs = [], manifest = {}, criteria = [], workTyp
 // ---------------------------------------------------------------------------------------------------------------------
 
 /** The test reviewer's package (Codex, read-only, its own conversation). */
-export function buildTestReviewBrief({ mission = {}, spec = {}, specVersion = 1, testRef = "", testSha = "", testText = "", manifest = {}, proof = {}, lint = {}, cycle = 0, openFindings = [] } = {}) {
+export function buildTestReviewBrief({ mission = {}, spec = {}, specVersion = 1, testRef = "", testSha = "", testText = "", manifest = {}, proof = {}, lint = {}, cycle = 0, previousCandidate = null, inventoryRemoved = [], removedDeclared = [], openFindings = [] } = {}) {
   const criteria = testCriteriaOf(spec.acceptance);
   const words = [...new Set([...(Array.isArray(spec.sources?.user) ? spec.sources.user : []), spec.objective].filter(Boolean).map(String))];
   const numbered = String(testText || "").replace(/\n$/, "").split("\n").map((l, k) => `${String(k + 1).padStart(3, " ")}| ${l}`);
@@ -1551,7 +1644,7 @@ export function buildTestReviewBrief({ mission = {}, spec = {}, specVersion = 1,
     "## Dovada pe codul de azi (runner Hub, 2 rulări, fără model)",
     `Verdict: ${proof.verdict || "—"}${Array.isArray(proof.reasons) && proof.reasons.length ? ` — ${proof.reasons.join("; ")}` : ""}`,
     ...(Array.isArray(proof.table) && proof.table.length
-      ? proof.table.map((r) => `- ${r.name} [${r.kind || "?"}] azi: ${r.today === "fail" ? "pică" : "trece"} (rulări: ${r.runs.map((ok) => (ok ? "trece" : "pică")).join(" / ")})${r.today === "fail" ? ` — ${r.code || "?"}: ${fenceSafe(r.message || "").slice(0, 200)}` : ""}`)
+      ? proof.table.map((r) => `- ${r.name} [${r.kind || "?"}] azi: ${r.today === "fail" ? "pică" : "trece"} (rulări: ${r.runs.map((ok) => (ok ? "trece" : "pică")).join(" / ")})${r.today === "fail" ? ` — ${r.origin || "?"}, linia ${r.at || "?"}: ${fenceSafe(r.statement || "")} — ${r.code || "?"}: ${fenceSafe(r.message || "").slice(0, 200)}` : ""}`)
       : ["- (fără tabel)"]),
     "",
     "## Fapte statice (Hub, fără model)",
@@ -1562,6 +1655,7 @@ export function buildTestReviewBrief({ mission = {}, spec = {}, specVersion = 1,
     ...(signals.length ? signals.map((s) => `- ${s.plain}${s.detail ? ` (${fenceSafe(s.detail)})` : ""}${s.line ? `, linia ${s.line}` : ""}`) : ["- (niciunul)"]),
     "",
   ];
+  if (cycle > 0 && previousCandidate) lines.push("## Varianta anterioară (date, numerotată)", "```text", fenceSafe(String(previousCandidate.text || "").split("\n").map((l, i) => `${i + 1}| ${l}`).join("\n")), "```", "## Verificări eliminate sau înlocuite", "Pentru FIECARE id de mai jos răspunde în previousChecks: kept, replaced_correctly sau lost. Judecă acoperirea comportamentului, nu doar textul.", "```json", fenceSafe(JSON.stringify(inventoryRemoved.map((r) => ({ ...r, why: removedDeclared.find((d) => d.id === r.id)?.why || "nedeclarat" })), null, 2)), "```");
   if (openFindings.length) {
     lines.push("## Findings deschise din verificarea anterioară", "Pentru FIECARE cod de mai jos spune în previousFindings dacă este resolved, still_open sau disputed:",
       ...openFindings.map((f) => `- ${f.code} [${f.severity}] ${f.file}: ${fenceSafe(f.observation)}`), "");
@@ -1573,6 +1667,7 @@ export function buildTestReviewBrief({ mission = {}, spec = {}, specVersion = 1,
       criteria: criteria.map((c) => ({ id: c.id, covered: true, failsForRightReason: true, canEverPass: true, contradictsOwner: false, trivialPassRisk: "low|medium|high", plain: "ce verifică testul, pentru proprietar" })),
       findings: [{ severity: "critical|high|medium|low|info", file: testRef || "cale relativă", area: "zonă", observation: "ce ai observat", impact: "de ce contează", evidence: "linia/fragmentul", reproduction: "pași sau motivul incertitudinii" }],
       ...(openFindings.length ? { previousFindings: Object.fromEntries(openFindings.map((f) => [f.code, "resolved | still_open | disputed"])) } : {}),
+      ...(inventoryRemoved.length ? { previousChecks: Object.fromEntries(inventoryRemoved.map((r) => [r.id, "kept | replaced_correctly | lost"])) } : {}),
       missingContext: [] }, null, 2),
     "```");
   return redactText(lines.join("\n"));
@@ -1584,7 +1679,7 @@ export function buildTestReviewBrief({ mission = {}, spec = {}, specVersion = 1,
  * canEverPass && !contradictsOwner && trivialPassRisk !== "high", else CHANGES_REQUESTED; a missing or malformed criterion
  * (or a `plain` outside 10–200 characters) makes it INCONCLUSIVE.
  */
-export function parseTestReview(text, { testSha, criteria = [], openCodes = [] } = {}) {
+export function parseTestReview(text, { testSha, criteria = [], openCodes = [], inventoryRemoved = [] } = {}) {
   const base = parseReview(text, { changeSetSha: testSha, openCodes });
   let problems = [...base.problems];
   const testCriteria = testCriteriaOf(criteria);
@@ -1619,6 +1714,12 @@ export function parseTestReview(text, { testSha, criteria = [], openCodes = [] }
     if (entry.trivialPassRisk === "high") why.push("poate fi trecut de o implementare trivială");
     if (why.length) gate.push({ id: c.id, why });
   }
+  // Coverage equivalence is the reviewer's judgement, not a deterministic certification.
+  for (const entry of inventoryRemoved) {
+    const answer = data?.previousChecks?.[entry.id];
+    if (!["kept", "replaced_correctly", "lost"].includes(answer)) problems.push(`lipsește previousChecks pentru ${entry.id}`);
+    else if (answer === "lost") gate.push({ id: entry.id, why: ["verificarea anterioară a fost pierdută"] });
+  }
   // A CHANGES_REQUESTED whose reasons are the per-criterion answers (no separate finding) is still verifiable.
   if (base.claimedVerdict === "CHANGES_REQUESTED" && gate.length) problems = problems.filter((p) => !p.startsWith("CHANGES_REQUESTED fără"));
   let verdict = problems.length ? "INCONCLUSIVE" : base.claimedVerdict === "CHANGES_REQUESTED" ? "CHANGES_REQUESTED" : base.verdict;
@@ -1627,7 +1728,7 @@ export function parseTestReview(text, { testSha, criteria = [], openCodes = [] }
   const cause = verdict !== "INCONCLUSIVE" ? null
     : problems.some((p) => p.startsWith("review-ul nu numește change set-ul exact")) ? "stale"
       : problems.some((p) => p.startsWith("PASS cu findings blocante")) ? "blocking" : "unreadable";
-  return { ...base, verdict, cause, valid: problems.length === 0, problems, criteria: normalized, gate };
+  return { ...base, verdict, cause, valid: problems.length === 0, problems, criteria: normalized, gate, previousChecks: data?.previousChecks || {} };
 }
 
 /** The owner's summary after protection (§2): what the test checks, in the reviewer's words, labelled as such. */

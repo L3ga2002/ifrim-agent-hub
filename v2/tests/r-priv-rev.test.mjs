@@ -45,10 +45,10 @@ test("RP-01 the authorized sentence is a hide_public request: two NEW checks (pu
   const d = deriveCriteria({ words: AUTHORIZED, flows: [FLOW] });
   const fresh = d.test.filter((c) => !c.guard), guards = d.test.filter((c) => c.guard);
   assert.equal(fresh.length, 2);
-  assert.match(fresh[0].text, /Lista publică a zilei.*nu conține câmpul „phone” și nici valoarea/);
+  assert.match(fresh[0].text, /Lista publică a zilei.*ÎNTREGUL corp al răspunsului câmpul „phone” și nici valoarea/);
   assert.match(fresh[1].text, /includePhone=1.*fields=phone.*debug=1/);
   assert.equal(guards.length, 3);
-  assert.match(guards[0].text, /fără telefon sau cu telefon gol.*refuzată de server.*nu se salvează nimic/);
+  assert.match(guards[0].text, /refuzată de server.*LIPSEȘTE din cerere.*șir gol.*doar spații.*nu se salvează nimic.*FIECARE refuz/);
   assert.match(guards[1].text, /stocarea internă a aplicației.*nu printr-o rută publică; nu se adaugă nicio rută anonimă/, "persistence is proven internally, never by a public read");
   assert.match(guards[2].text, /e în continuare acceptată/);
   assert.ok(d.test.every((c) => c.origin), "every criterion says where it comes from");

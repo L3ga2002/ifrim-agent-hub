@@ -83,20 +83,25 @@ const run = (cases) => ({ status: cases.some((c) => !c.ok) ? "FAIL" : "PASS", co
 const criteria = [{ id: "AC-1", text: "refuz direct", verify: "test" }, { id: "AC-2", text: "păstrat", verify: "test" }, { id: "AC-3", text: "valid acceptat", verify: "test", guard: true }];
 const manifest = { cases: [{ name: "AC-1: fara telefon refuzat", criterion: "AC-1", kind: "check", today: "fail" }, { name: "AC-2: telefon pastrat", criterion: "AC-2", kind: "check", today: "fail" },
   { name: "AC-3 control: programare valida acceptata", criterion: "AC-3", kind: "control", today: "pass" }] };
-const fail = (name) => ({ name, ok: false, code: "ERR_ASSERTION", message: "expected 400" });
 
 test("FZ-04 proof: a guard criterion is a control that passes today; the missing behaviour must fail; a failing control is the wrong reason", () => {
+  const proofTest = { text: '// synthetic protocol header\nassert.equal(status, 400);\nassert.equal(savedPhone, phone);\nassert.equal(status, 201);', headerLines: 1, refs: ["fz04.mjs"] };
+  const fail = (name) => ({ name, ok: false, code: "ERR_ASSERTION", message: "expected 400",
+    at: { file: "fz04.mjs", line: manifest.cases.findIndex((c) => c.name === name) + 2, column: 1 } });
   const today = [fail("AC-1: fara telefon refuzat"), fail("AC-2: telefon pastrat"), { name: "AC-3 control: programare valida acceptata", ok: true }];
-  const proven = classifyProof({ runs: [run(today), run(today)], manifest, criteria, workType: "FEATURE" });
+  const proven = classifyProof({ runs: [run(today), run(today)], manifest, criteria, workType: "FEATURE", test: proofTest });
   assert.equal(proven.verdict, "PROVEN");
   assert.deepEqual(proven.failingCriteria, ["AC-1", "AC-2"]);
   assert.match(proven.reasons[0], /păstrare: AC-3/);
+  const withoutFrames = today.map(({ at, ...c }) => c);
+  const inconclusive = classifyProof({ runs: [run(withoutFrames), run(withoutFrames)], manifest, criteria, workType: "FEATURE", test: proofTest });
+  assert.deepEqual([inconclusive.verdict, inconclusive.cause], ["INCONCLUSIVE", "provenance"]);
   // part of the requirement already holds (AC-2 passes today): still PARTIAL — the gate is not lowered
   const partial = [fail("AC-1: fara telefon refuzat"), { name: "AC-2: telefon pastrat", ok: true }, { name: "AC-3 control: programare valida acceptata", ok: true }];
-  assert.equal(classifyProof({ runs: [run(partial), run(partial)], manifest, criteria, workType: "FEATURE" }).verdict, "PARTIAL");
+  assert.equal(classifyProof({ runs: [run(partial), run(partial)], manifest, criteria, workType: "FEATURE", test: proofTest }).verdict, "PARTIAL");
   // the control fails today (the test breaks a valid booking): WRONG_REASON
   const broken = [fail("AC-1: fara telefon refuzat"), fail("AC-2: telefon pastrat"), fail("AC-3 control: programare valida acceptata")];
-  assert.equal(classifyProof({ runs: [run(broken), run(broken)], manifest, criteria, workType: "FEATURE" }).cause, "control_fails");
+  assert.equal(classifyProof({ runs: [run(broken), run(broken)], manifest, criteria, workType: "FEATURE", test: proofTest }).cause, "control_fails");
 });
 
 test("FZ-05 the author and the reviewer see the guard and the browser checks as context, never as test work", () => {

@@ -912,3 +912,26 @@ test("review flow #6, authority #2, #3: during step 0 the cockpit's summary and 
     assert.equal(proposal.envelope.body.testFirst.reauthorMax, 0);
   } finally { await u.cleanup(); }
 });
+
+
+test("S0R-30 revocation in step zero preserves authoring and a new confirmation protects the same mission", { timeout: 90000 }, async () => {
+  const t = await waveBHub();
+  try {
+    const p = t.p["Factory Demo L5"], r = await plan(t, { text: BUG_TF, projectId: p.id });
+    const env = r.plan.envelope, missionId = env.missionIds[0];
+    t.queue("claude", "author-slow:bug-ok", "author:bug-ok"); t.queue("codex", "test-review:pass");
+    await confirm(t, env); await untilRun(t, "claude", missionId, "TEST_AUTHORING");
+    await waitFor(() => fs.readFileSync(path.join(t.dataDir, "claude.queue"), "utf8").trim() === "author:bug-ok", 5000, 20);
+    await dispatch(t.hub, "envelope.revoke", { envelopeId: env.id, reason: "test" }, { channel: "owner", ownerSession: t.owner.session });
+    await untilStage(t, missionId, ["PAUSED"], 20000); await noRuns(t); await t.hub.factory.idle(missionId);
+    assert.notEqual(view(t, missionId).spec.protected.authoring.status, "ABANDONED");
+    const cont = await t.hub.envelopes.propose({ projectId: p.id, missionIds: [missionId] });
+    assert.deepEqual(cont.envelope.missionIds, [missionId]);
+    t.hub.factory.setStartFaultForTests((point) => { if (point === "protect_record") t.hub.factory.pause(missionId).catch(() => {}); });
+    await confirm(t, cont.envelope);
+    await waitFor(() => view(t, missionId).spec.protected.authoring.status === "PROTECTED", 45000, 30);
+    await t.hub.factory.idle(missionId);
+    assert.equal(events(t, "factory.retire_restored").filter((e) => e.scopeId === missionId).length, 0);
+    await stopMission(t, missionId);
+  } finally { await t.cleanup(); }
+});
