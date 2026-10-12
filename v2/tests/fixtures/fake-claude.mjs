@@ -48,7 +48,10 @@ const AUTHORED = new URL("./factory-authored/", import.meta.url);
  * of the prompt (the current request) unless `slot` is "wrong". It writes nothing; no model.
  */
 function authorAnswer(name, prompt) {
-  const data = JSON.parse(fs.readFileSync(new URL(`${name.replace(/[^a-z0-9-]/gi, "")}.json`, AUTHORED), "utf8"));
+  const data = name === "json-reference" ? {
+    body: fs.readFileSync(new URL("./stage0-s25/json-reference.body.mjs.txt", import.meta.url), "utf8"),
+    manifest: JSON.parse(fs.readFileSync(new URL("./stage0-s25/json-reference.manifest.json", import.meta.url), "utf8")),
+  } : JSON.parse(fs.readFileSync(new URL(`${name.replace(/[^a-z0-9-]/gi, "")}.json`, AUTHORED), "utf8"));
   const slot = data.slot === "wrong" ? "000000000000" : [...prompt.matchAll(/testSlot ([0-9a-f]{12})/g)].at(-1)?.[1] || "";
   const body = Array.isArray(data.body) ? data.body.join("\n") : String(data.body || "");
   const markerIndex = prompt.lastIndexOf("# Test de acceptanță");

@@ -49,6 +49,7 @@ export function checkSpec(input = {}, { hubPorts = [8011, 8012] } = {}) {
     schema: SPEC_SCHEMA_VERSION,
     workType: String(input.workType || "").toUpperCase(),
     ...(input.changesExisting !== undefined ? { changesExisting: input.changesExisting === true } : {}),
+    ...(input.hubHelpers !== undefined ? { hubHelpers: Array.isArray(input.hubHelpers) ? [...new Set(input.hubHelpers.filter((name) => name === "json-exposure"))] : [] } : {}),
     title: str(input.title, 160),
     objective: str(input.objective, 4000),
     inScope: list(input.inScope, 20, 300),
@@ -68,6 +69,7 @@ export function checkSpec(input = {}, { hubPorts = [8011, 8012] } = {}) {
     },
   };
   if (input.changesExisting !== undefined && typeof input.changesExisting !== "boolean") problems.push("changesExisting trebuie să fie true/false");
+  if (input.hubHelpers !== undefined && (!Array.isArray(input.hubHelpers) || input.hubHelpers.some((name) => name !== "json-exposure"))) problems.push("hubHelpers trebuie să fie o listă care conține doar json-exposure");
   if (!WORK_TYPES.includes(spec.workType)) problems.push(`workType trebuie să fie ${WORK_TYPES.join(" / ")}`);
   if (spec.title.length < 3) problems.push("titlul are minimum 3 caractere");
   if (spec.objective.length < 10) problems.push("obiectivul are minimum 10 caractere");

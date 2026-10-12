@@ -1744,7 +1744,7 @@ export function createFactory(deps) {
     const facts = authoringFacts(missionId, a, projects.get(missions.get(missionId).projectId));
     const lint = lintTestBody(parsed.body, { manifest: parsed.manifest, criteria: spec.spec.acceptance, workType: f.workType, testRef: a.testRef, stagingRef: a.stagingRef,
       projectFiles: facts.files, moduleExports: facts.exports, spec: spec.spec });
-    const file = assembleTestFile({ body: parsed.body, needs: parsed.manifest.needs, missionId, specVersion: spec.version, specSha: spec.sha256 });
+    const file = assembleTestFile({ body: parsed.body, needs: parsed.manifest.needs, helpers: spec.spec.hubHelpers || [], missionId, specVersion: spec.version, specSha: spec.sha256 });
     const { removed: inventoryRemoved, contextChanged } = compareInventory(previousCandidate?.inventory || [], { text: file.text, manifest: parsed.manifest, headerLines: file.header.length, sha: file.sha256 });
     const removedDeclared = parsed.manifest.removed || [];
     lint.violations.push(...amendmentViolations(inventoryRemoved, removedDeclared, previousCandidate?.review?.checks || []));
@@ -1834,10 +1834,10 @@ export function createFactory(deps) {
     const proof = classifyProof({ runs: results.map((r) => ({ status: r.status, reason: r.reason, counts: r.counts, cases: r.cases || [], fileLevelFailure: r.fileLevelFailure || null, overflow: r.overflow || 0 })),
       manifest: c.manifest, criteria: spec.spec.acceptance, workType: f.workType, testRef: a.stagingRef, changedFiles, missingAtBase: c.lint?.facts?.missingModules || [], spec: spec.spec, facts: c.lint?.facts || {},
       test: { text: readBlob(blobDir(missionId), c.sha), headerLines: c.headerLines, refs: [path.posix.basename(a.stagingRef), path.posix.basename(a.testRef)] } });
-    updateAuthoring(missionId, (x) => ({ proof: { sha: c.sha, verdict: proof.verdict, cause: proof.cause, reasons: proof.reasons.slice(0, 20), signature: proof.signature, table: proof.table.slice(0, 20),
+    updateAuthoring(missionId, (x) => ({ proof: { sha: c.sha, helpers: proof.helpers, verdict: proof.verdict, cause: proof.cause, reasons: proof.reasons.slice(0, 20), signature: proof.signature, table: proof.table.slice(0, 20),
       failingCriteria: proof.failingCriteria, passingCriteria: proof.passingCriteria, evidenceIds: results.map((r) => r.id), counts: results.map((r) => r.counts || {}), at: now() },
     candidate: { ...x.candidate, status: proof.verdict === "PROVEN" ? "PROVEN" : proof.verdict } }));
-    bus.emit({ type: "factory.test_proof", scopeType: "mission", scopeId: missionId, source: "factory", payload: { sha: c.sha, verdict: proof.verdict, cause: proof.cause, runs: results.length } });
+    bus.emit({ type: "factory.test_proof", scopeType: "mission", scopeId: missionId, source: "factory", payload: { sha: c.sha, helpers: proof.helpers, verdict: proof.verdict, cause: proof.cause, runs: results.length } });
     if (proof.verdict === "PROVEN") return dispatchTestReview(missionId);
     if (proof.verdict === "ALREADY_PASSES") return holdStageZero(missionId, { kind: "already_passes", text: T_ALREADY_PASSES, details: proof.reasons, taskId });
     if (proof.verdict === "NOT_HERMETIC") return holdStageZero(missionId, { kind: "not_hermetic", text: T_NOT_HERMETIC(changedFiles), details: proof.reasons, files: changedFiles, taskId });

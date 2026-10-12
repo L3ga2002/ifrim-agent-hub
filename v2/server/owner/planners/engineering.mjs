@@ -377,6 +377,7 @@ export function buildEngineeringSpec({ text, args = {}, project, hubWrites = {},
     workType, title: finalTitle, objective: words,
     spec: testFirst?.ok ? {
       ...(derived?.changesExisting ? { changesExisting: true } : {}),
+      ...(derived?.hubHelpers ? { hubHelpers: derived.hubHelpers } : {}),
       inScope: (Array.isArray(args.inScope) ? args.inScope : []).map((s) => String(s).slice(0, 300)).filter(Boolean).slice(0, 10),
       outOfScope: ["deploy, commit, push", "alte proiecte", "dependențe noi necerute de tine"],
       acceptance,

@@ -1,5 +1,6 @@
 import path from "node:path";
 import vm from "node:vm";
+import ts from "typescript";
 import { hashCanonical, sha256 } from "../core/canonical.mjs";
 import { redactText } from "../security/redact.mjs";
 import { isTestPath, isControlPath, SNAPSHOT_SKIP_DIRS } from "./snapshot.mjs";
@@ -51,6 +52,41 @@ export const NEEDS = Object.freeze({
   "node:http": Object.freeze({ binding: "http", line: 'import http from "node:http";' }),
 });
 export const ALLOWED_NEEDS = Object.freeze(Object.keys(NEEDS));
+
+// Hash the canonical source, then render its identity comment separately (no self-referential digest).
+export const HUB_HELPERS = Object.freeze({
+  "json-exposure": Object.freeze({ version: 1, lines: Object.freeze([
+    'function exposes(text, config) {',
+    '  const fail = (why) => assert.fail(`HUB_SETUP exposes: ${why}`);',
+    '  if (typeof text !== "string") fail("corpul răspunsului nu este text");',
+    '  const { keys, values } = config || {};',
+    '  if (!Array.isArray(keys) || !Array.isArray(values)) fail("cheile și valorile trebuie să fie liste");',
+    '  if (!keys.length || !values.length) fail("listele de chei și valori nu pot fi goale");',
+    '  if ([...keys].some((k) => typeof k !== "string" || !k.trim())) fail("o cheie nu este text nevid");',
+    '  if ([...values].some((v) => typeof v !== "string" || v.trim().length < 3)) fail("o valoare nu este text cu minimum trei caractere");',
+    '  let data; try { data = JSON.parse(text); } catch { fail("corpul răspunsului nu este JSON valid"); }',
+    '  const found = [], add = (p, kind, i) => { if (found.length < 50) found.push(`${p}: ${kind}${i === undefined ? "" : `, valoarea #${i + 1}`}`); };',
+    '  const contains = (s, v) => s.includes(v) || s.includes(v.trim());',
+    '  const matches = (s, p, kind) => values.forEach((v, i) => { if (contains(s, v)) add(p, kind, i); });',
+    '  const walk = (v, p) => { if (typeof v === "string" || typeof v === "number") matches(String(v), p, "valoare"); else if (v && typeof v === "object") { for (const [i, [k, child]] of Object.entries(v).entries()) { const segment = Array.isArray(v) ? `[${i}]` : values.some((s) => contains(k, s)) || k.length > 40 ? "[*]" : `[${JSON.stringify(k)}]`; const next = `${p.length > 120 ? "$.." : p}${segment}`; if (keys.includes(k)) add(next, "cheie"); matches(k, next, "cheie-valoare"); walk(child, next); } } };',
+    '  try { walk(data, "$"); } catch { fail("răspunsul nu poate fi parcurs în siguranță"); }',
+    '  return found;',
+    '}',
+  ]) }),
+});
+
+export function hubHelperIdentity(name) {
+  const helper = Object.hasOwn(HUB_HELPERS, name) ? HUB_HELPERS[name] : null;
+  if (!helper) throw new Error(`Helper Hub necunoscut: ${name}`);
+  return { name, version: helper.version, sha256: sha256(helper.lines.join("\n")) };
+}
+
+function helperHeader(helpers) {
+  return [...new Set(helpers)].flatMap((name) => {
+    const id = hubHelperIdentity(name);
+    return [`// ${id.name} v${id.version} sha256 ${id.sha256.slice(0, 12)}: checks only the given response; not a general personal-data certification.`, ...HUB_HELPERS[name].lines];
+  });
+}
 
 // ---------------------------------------------------------------------------------------------------------------------
 // Owner texts (§2, §5.6). Romanian, shown as they are.
@@ -129,6 +165,7 @@ export const T_PROOF_INCONCLUSIVE = (reason) => `Nu am putut verifica testul pe 
 
 /** One plain phrase per class of proof outcome (classifyProof's `cause`): no paths, no error codes, no jargon. */
 export const PROOF_CAUSES = Object.freeze({
+  helper: "verificarea pusă de Hub lipsește sau a fost modificată",
   wrong: "testul nu a picat din motivul cerut",
   setup_failed: "testul pică la pregătire, nu pe comportamentul cerut",
   provenance: "locul eșecului nu poate fi verificat sigur",
@@ -673,6 +710,21 @@ export function browserCriteriaOf(criteria) {
 }
 
 const fenceSafe = (value) => String(value ?? "").replace(/```/g, "'''");
+function exposureBrief(review = false) {
+  return [
+    "## Verificări puse de Hub",
+    "exposes(text, { keys, values }) citește o singură dată JSON-ul din textul brut; caută cheile exacte la orice adâncime și valorile cunoscute ca subșir în valori text, numere și nume de chei, inclusiv prin escape JSON. Întoarce constatări fără valorile sensibile (cel mult 50); [] înseamnă că nu a găsit nimic în acel răspuns. Datele sau configurația invalide produc un eșec de pregătire, niciodată absență. Nu certifică toate datele personale ale aplicației.",
+    'Exemplu în corpul testului: assert.deepEqual(exposes(res.body, { keys: ["phone"], values: [existingPhone, createdPhone] }), [], "Lista nu expune telefoanele");',
+    "values trebuie să conțină telefoanele exacte citite din stocare / trimise în cerere, nu variante reintroduse manual. Căutarea include valoarea dată și forma ei fără spații la capete.",
+    "Acoperirea cere assert.deepEqual/deepStrictEqual(X, []) (sau argumentele inversate) ori assert.equal/strictEqual(X.length, 0), cu X apelul exposes direct sau const legat direct de el în același caz ori în funcția locală verificată. Nu modifica funcțiile și prototipurile standard.",
+    "Verificarea poate fi o instrucțiune directă, inclusiv în blocuri simple, în try { … } finally { … } fără catch, în for (const p of [..]) peste o listă literală nevidă (sau const legat de ea), ori într-o funcție locală async pe care cazul o așteaptă cu await, sau sincronă pe care o apelează direct. Un catch, un if ori un callback .map/Promise.all în jurul verificării sau apelului nu contează, nici verificările după return/throw necondiționat; se urmărește un singur nivel de funcții locale.",
+    "FIECARE caz public_omits / anon_params folosește această funcție pe ÎNTREGUL corp BRUT al răspunsului HTTP al cererii verificate: keys include câmpul sensibil, values include telefoanele AMBELOR înregistrări; rezultatul se verifică egal cu [] printr-o aserțiune în corpul testului. Sunt interzise un literal, un obiect gol, un corp filtrat sau reconstruit și un răspuns fără legătură. Numele exposes poate fi folosit doar ca apel direct, fără alias sau redefinire.",
+    "Înregistrarea existentă este creată determinist prin mecanismele existente ale aplicației (de exemplu POST într-o primă sesiune de server, apoi închidere și repornire pe același dbPath) sau identificată. Pentru AMBELE înregistrări se citesc din stocarea internă id-ul, ziua testată și telefonul exact; ambele id-uri trebuie găsite în tabloul de înregistrări al listei publice. Pentru FIECARE parametru anonim lista rămâne funcțională, conține ambele înregistrări și nu expune niciun telefon. O listă goală sau id-uri doar în metadate nu trec; seed: true plus o constantă de telefon nu dovedesc existența.",
+    "La amendare, apelurile funcției adăugate lângă verificările păstrate sunt completări; nu elimină și nu schimbă verificările existente.",
+    ...(review ? ["Verifică argumentele și aserțiunea FIECĂRUI apel, dovada din stocare pentru ambele înregistrări (id, zi, telefon exact), apartenența prin id la tabloul listei și fiecare parametru anonim. Simpla prezență a numelui funcției nu este acoperire. Orice lipsă devine finding și lasă criteriul deschis (covered: false)."] : []),
+    "",
+  ];
+}
 const AMEND_RULE = "„O verificare insuficientă se completează. O verificare greșită poate fi corectată sau înlocuită, cu justificare și verificare independentă.”";
 const CHECK_ID = /^P[1-9]\d*(?:\.[1-9]\d*)?$/;
 const COMPLETION_REF = /^(F[1-9]\d*|P[1-9]\d*(?:\.[1-9]\d*)?|AC-\d{1,3})$/;
@@ -706,7 +758,7 @@ export function completionSignals(previousCandidate, completes = []) {
 }
 
 /** The Hub-owned header of the test file (also shown to the author). */
-export function testHeader({ missionId = "", specVersion = 1, specSha = "", needs = [] } = {}) {
+export function testHeader({ missionId = "", specVersion = 1, specSha = "", needs = [], helpers = [] } = {}) {
   const id = String(missionId || "").replace(/[^\w-]/g, "").slice(0, 80) || "—";
   const sha12 = String(specSha || "").replace(/[^0-9a-f]/gi, "").slice(0, 12) || "—";
   const wanted = new Set(Array.isArray(needs) ? needs : []);
@@ -719,6 +771,7 @@ export function testHeader({ missionId = "", specVersion = 1, specSha = "", need
     'const load = async (rel) => { try { return await import(new URL(rel, import.meta.url)); } catch (e) { assert.fail(`HUB_LOAD ${rel}: ${e?.code || e?.name || "eroare"}`); } };',
     'const need = (m, name) => { if (typeof m[name] === "function") return m[name]; assert.fail(`HUB_SETUP export ${name}: ${name in m ? typeof m[name] : "lipsește"}`); };',
     'const setup = async (label, fn) => { try { return await fn(); } catch (e) { assert.fail(`HUB_SETUP ${label}: ${e?.code || e?.name || "eroare"}`); } };',
+    ...helperHeader(helpers),
     "// ---- corpul testului ----",
   ];
 }
@@ -757,7 +810,7 @@ export function buildAuthorBrief({ mission = {}, spec = {}, specVersion = 1, spe
     "## Fișierul",
     `Testul ajunge la ${testRef || "test/hub/…"}. Hub-ul pune antetul de mai jos; tu scrii DOAR corpul (fără import, require sau import()).`,
     "```js",
-    ...testHeader({ missionId: mission.id, specVersion, specSha, needs: ALLOWED_NEEDS }),
+    ...testHeader({ missionId: mission.id, specVersion, specSha, needs: ALLOWED_NEEDS, helpers: spec.hubHelpers || [] }),
     "```",
     `Built-in-urile se cer în "needs" (doar: ${ALLOWED_NEEDS.join(", ")}); antetul le dă ca ${ALLOWED_NEEDS.map((k) => NEEDS[k].binding).join(", ")}.`,
     `Codul proiectului se încarcă DOAR în interiorul unui test, cu un literal relativ la fișierul testului: const m = await load("${depthUp}src/…"). Nu teste, nu node_modules, nu .ifrim-hub.`,
@@ -777,6 +830,7 @@ export function buildAuthorBrief({ mission = {}, spec = {}, specVersion = 1, spe
     "- testul nu lasă fișiere în proiect (date temporare doar în fs.mkdtemp(path.join(os.tmpdir(), …))); server http doar pe 127.0.0.1, închis la final; fără timere peste 1 s, fără Date.now/Math.random în aserțiuni",
     "",
   ];
+  if (spec.hubHelpers?.includes("json-exposure")) lines.push(...exposureBrief());
   if (files.length) {
     lines.push("## Fișierele sursă ale proiectului (azi)", ...files.map((f) => `- ${f}${Array.isArray(exportsOf[f]) && exportsOf[f].length ? ` — exportă: ${exportsOf[f].slice(0, 30).join(", ")}` : ""}`), "");
   }
@@ -1025,6 +1079,12 @@ export function parseAuthorOutput(text, { testSlot = null, workType = "", criter
 // ---------------------------------------------------------------------------------------------------------------------
 
 const RULE_PLAIN = Object.freeze({
+  exposure_helper_vacuous: "rezultatul verificării de neexpunere este folosit într-o aserțiune fără dovadă sau într-un bloc care poate ascunde eșecul",
+  builtin_patched: "testul modifică funcțiile sau prototipurile standard folosite de verificarea Hub-ului",
+  exposure_helper_unused: "un criteriu de neexpunere nu verifică rezultatul funcției puse de Hub",
+  exposure_helper_shadowed: "funcția de neexpunere a Hub-ului este redefinită sau folosită altfel decât prin apel direct",
+  exposure_helper_literal: "verificarea de neexpunere primește date construite în test, nu corpul răspunsului",
+  exposure_helper_unavailable: "testul folosește o verificare a Hub-ului care nu este cerută în specificație",
   coverage_insufficient_removed: "o verificare criticată ca insuficientă a fost eliminată sau schimbată în loc să fie completată",
   export_missing_undeclared: "testul folosește un export care nu există azi și nu e declarat ca API nou cerut",
   export_existence_assert: 'existența unui export se cere cu need(m, "nume"), nu printr-o aserțiune',
@@ -1066,6 +1126,7 @@ const RULE_PLAIN = Object.freeze({
 });
 
 const SIGNAL_PLAIN = Object.freeze({
+  existing_record_unproven: "existența înregistrărilor nu este verificată printr-o citire internă recunoscută",
   date_now: "folosește ora curentă (Date.now / new Date())",
   random: "folosește Math.random",
   long_timer: "folosește un timer de peste 1 secundă",
@@ -1154,6 +1215,146 @@ function resolveLoad(arg, testRef) {
  *   testRef (final path; staging has the same depth), projectFiles (base paths; optional), moduleExports ({rel: [names]}).
  * Returns { ok, violations: [{ rule, plain, detail, line }], signals: [{ signal, plain, detail, line }], facts }.
  */
+// Structural checks use the installed JS parser: token containment cannot prove an assertion runs.
+// Keep the coverage grammar deliberately small; the reviewer still checks response/record relevance.
+function exposureStructure(text, add) {
+  const tree = ts.createSourceFile("candidate.js", text, ts.ScriptTarget.Latest, true, ts.ScriptKind.JS);
+  const nodes = [];
+  const visit = (node) => { nodes.push(node); ts.forEachChild(node, visit); };
+  visit(tree);
+  const named = (node, name) => node && ts.isIdentifier(node) && node.text === name;
+  const direct = (node) => node && ts.isCallExpression(node) && named(node.expression, "exposes");
+  const isConst = (d) => d && ts.isVariableDeclaration(d) && (d.parent.flags & ts.NodeFlags.Const) !== 0;
+  const declaration = (id) => {
+    if (!id || !ts.isIdentifier(id)) return null;
+    if ((ts.isPropertyAccessExpression(id.parent) || ts.isPropertyAssignment(id.parent)) && id.parent.name === id) return null;
+    for (let scope = id.parent; scope; scope = scope.parent) {
+      if (ts.isFunctionLike(scope) && scope.parameters.some((p) => named(p.name, id.text))) return null;
+      const lists = (ts.isBlock(scope) || ts.isSourceFile(scope))
+        ? scope.statements.filter(ts.isVariableStatement).map((s) => s.declarationList)
+        : ts.isForOfStatement(scope) && ts.isVariableDeclarationList(scope.initializer) ? [scope.initializer] : [];
+      const found = lists.flatMap((l) => [...l.declarations]).find((d) => named(d.name, id.text));
+      if (found) return found;
+    }
+    return null;
+  };
+  const exposureValue = (n) => direct(n) || (isConst(declaration(n)) && direct(declaration(n).initializer));
+  const containsExposure = (n) => {
+    if (exposureValue(n)) return true;
+    return Boolean(ts.forEachChild(n, containsExposure));
+  };
+  const member = (n) => {
+    if (!n) return null;
+    if (ts.isParenthesizedExpression(n)) return member(n.expression);
+    if (ts.isIdentifier(n)) return n.text;
+    if (ts.isPropertyAccessExpression(n)) return `${member(n.expression)}.${n.name.text}`;
+    if (ts.isElementAccessExpression(n)) return `${member(n.expression)}.${n.argumentExpression && ts.isStringLiteral(n.argumentExpression) ? n.argumentExpression.text : "*"}`;
+    return null;
+  };
+  const protectedName = (name) => /^(?:JSON(?:\.|$)|(?:Array|String|Object|Number)\.prototype(?:\.|$)|Object\.(?:entries|keys)(?:\.|$))/.test(name || "");
+  const patchedTarget = (n) => {
+    if (protectedName(member(n))) return true;
+    // Destructuring assignment targets can contain the same protected members.
+    if (ts.isPropertyAssignment(n)) return patchedTarget(n.initializer);
+    if (ts.isShorthandPropertyAssignment(n)) return patchedTarget(n.name);
+    if (ts.isSpreadElement(n) || ts.isSpreadAssignment(n) || ts.isParenthesizedExpression(n)) return patchedTarget(n.expression);
+    return (ts.isArrayLiteralExpression(n) || ts.isObjectLiteralExpression(n)) && Boolean(ts.forEachChild(n, patchedTarget));
+  };
+  const vacuous = new Set(["assert", ...["ok", "notDeepEqual", "notDeepStrictEqual", "notEqual", "notStrictEqual", "throws", "doesNotThrow", "rejects", "doesNotReject"].map((m) => `assert.${m}`)]);
+  for (const n of nodes) {
+    if (ts.isVariableDeclaration(n) && named(n.name, "JSON")) add("builtin_patched", n.getText(tree), n.getStart(tree));
+    if (ts.isCallExpression(n) && vacuous.has(member(n.expression)) && n.arguments.some(containsExposure)) add("exposure_helper_vacuous", member(n.expression), n.getStart(tree));
+    if (direct(n) || (ts.isCallExpression(n) && /^assert(?:\.|$)/.test(member(n.expression) || "") && n.arguments.some(containsExposure))) for (let p = n.parent; p; p = p.parent) {
+      if (ts.isTryStatement(p) && p.catchClause) { add("exposure_helper_vacuous", "exposes în try/catch", n.getStart(tree)); break; }
+    }
+    if ((ts.isBinaryExpression(n) && n.operatorToken.kind >= ts.SyntaxKind.FirstAssignment && n.operatorToken.kind <= ts.SyntaxKind.LastAssignment && patchedTarget(n.left)) ||
+        ((ts.isPrefixUnaryExpression(n) || ts.isPostfixUnaryExpression(n)) && [ts.SyntaxKind.PlusPlusToken, ts.SyntaxKind.MinusMinusToken].includes(n.operator) && patchedTarget(n.operand))) add("builtin_patched", n.getText(tree), n.getStart(tree));
+    if (ts.isCallExpression(n) && ["Object.defineProperty", "Object.assign", "Object.setPrototypeOf"].includes(member(n.expression)) && n.arguments[0]) {
+      const target = member(n.arguments[0]), method = member(n.expression);
+      let patched = protectedName(target);
+      if (method === "Object.defineProperty" && n.arguments[1] && ts.isStringLiteral(n.arguments[1])) patched ||= protectedName(`${target}.${n.arguments[1].text}`);
+      if (method === "Object.assign") for (const arg of n.arguments.slice(1)) {
+        if (ts.isObjectLiteralExpression(arg)) patched ||= arg.properties.some((p) => p.name && protectedName(`${target}.${p.name.text}`));
+      }
+      if (patched) add("builtin_patched", n.getText(tree), n.getStart(tree));
+    }
+  }
+  const nonemptyList = (expr) => {
+    if (ts.isIdentifier(expr)) {
+      const d = declaration(expr);
+      expr = isConst(d) && d.end < expr.pos ? d.initializer : null;
+    }
+    // A spread alone does not prove that the loop executes even once.
+    return expr && ts.isArrayLiteralExpression(expr) && expr.elements.some((e) => !ts.isSpreadElement(e));
+  };
+  const statementLevel = (statement, body) => {
+    for (let n = statement; n && n !== body;) {
+      const p = n.parent;
+      if (!p) return false;
+      if (ts.isBlock(p) || ts.isSourceFile(p)) {
+        const index = p.statements.indexOf(n);
+        if (index < 0 || p.statements.slice(0, index).some((s) => ts.isReturnStatement(s) || ts.isThrowStatement(s) || ts.isBreakStatement(s) || ts.isContinueStatement(s))) return false;
+        if (p === body) return true;
+        n = p; continue;
+      }
+      if (ts.isTryStatement(p) && p.tryBlock === n && !p.catchClause) { n = p; continue; }
+      if (ts.isForOfStatement(p) && p.statement === n && nonemptyList(p.expression)) { n = p; continue; }
+      return false;
+    }
+    return false;
+  };
+  const ownAssertion = (body) => {
+    const value = (x, assertion) => {
+      if (direct(x)) return true;
+      const d = declaration(x);
+      if (!isConst(d) || !direct(d.initializer) || d.end >= assertion.pos || !ts.isVariableStatement(d.parent.parent)) return false;
+      return d.getStart(tree) > body.pos && statementLevel(d.parent.parent, body);
+    };
+    return nodes.some((n) => {
+      if (!ts.isCallExpression(n) || !ts.isExpressionStatement(n.parent) || n.parent.expression !== n || !statementLevel(n.parent, body)) return false;
+      const [a, b] = n.arguments;
+      if (!a || !b) return false;
+      const method = member(n.expression), empty = (x) => ts.isArrayLiteralExpression(x) && x.elements.length === 0;
+      if (["assert.deepEqual", "assert.deepStrictEqual"].includes(method)) return (empty(b) && value(a, n)) || (empty(a) && value(b, n));
+      return ["assert.equal", "assert.strictEqual"].includes(method) && ts.isNumericLiteral(b) && b.text === "0" && ts.isPropertyAccessExpression(a) && a.name.text === "length" && value(a.expression, n);
+    });
+  };
+  const localHelper = (id) => {
+    if (!ts.isIdentifier(id)) return null;
+    for (let scope = id.parent; scope; scope = scope.parent) {
+      if (ts.isFunctionLike(scope) && scope.parameters.some((p) => named(p.name, id.text))) return null;
+      if (ts.isCatchClause(scope) && named(scope.variableDeclaration?.name, id.text)) return null;
+      if (ts.isForOfStatement(scope) && ts.isVariableDeclarationList(scope.initializer) && scope.initializer.declarations.some((d) => named(d.name, id.text))) return null;
+      if (!ts.isBlock(scope) && !ts.isSourceFile(scope)) continue;
+      for (const s of scope.statements) {
+        if (ts.isFunctionDeclaration(s) && named(s.name, id.text)) return s.asteriskToken ? null : { fn: s, statement: s };
+        if (!ts.isVariableStatement(s)) continue;
+        const d = s.declarationList.declarations.find((d) => named(d.name, id.text));
+        if (d) return isConst(d) && d.initializer && ts.isArrowFunction(d.initializer) && d.end < id.pos ? { fn: d.initializer, statement: s } : null;
+      }
+    }
+    return null;
+  };
+  const helperCoverage = new Map();
+  return (t) => {
+    const body = nodes.find((n) => ts.isBlock(n) && n.getStart(tree) === t.bodyOpen);
+    if (!body) return false;
+    if (ownAssertion(body)) return true;
+    return nodes.some((n) => {
+      if (!ts.isCallExpression(n)) return false;
+      const awaited = ts.isAwaitExpression(n.parent), expression = awaited ? n.parent : n;
+      if (!ts.isExpressionStatement(expression.parent) || !statementLevel(expression.parent, body)) return false;
+      const helper = localHelper(n.expression);
+      if (!helper || !helper.fn.body || !ts.isBlock(helper.fn.body)) return false;
+      if (helper.fn.modifiers?.some((m) => m.kind === ts.SyntaxKind.AsyncKeyword) && !awaited) return false;
+      if (!statementLevel(helper.statement, body) && !statementLevel(helper.statement, tree)) return false;
+      // Inspect only this helper's own assertions; never follow another helper call.
+      if (!helperCoverage.has(helper.fn)) helperCoverage.set(helper.fn, ownAssertion(helper.fn.body));
+      return helperCoverage.get(helper.fn);
+    });
+  };
+}
+
 export function lintTestBody(body, { manifest = null, criteria = [], workType = "", testRef = "", stagingRef = "", projectFiles = null, moduleExports = {}, spec = {} } = {}) {
   const text = normalizeBody(body);
   const kind = String(workType || "").toUpperCase();
@@ -1343,6 +1544,32 @@ export function lintTestBody(body, { manifest = null, criteria = [], workType = 
     if (kind === "BUGFIX" && !cases.some((x) => x.criterion === c.id && x.kind === "control")) add("control_missing", c.id);
   }
 
+  // R-JSON: only direct calls are permitted; source/record relevance remains the independent reviewer's job.
+  const exposureRequired = spec.hubHelpers?.includes("json-exposure");
+  for (const m of code.matchAll(/(?<![\w$])exposes(?![\w$])/g)) {
+    const rest = code.slice(m.index + 7), before = code.slice(0, m.index);
+    const direct = /^\s*\(/.test(rest) && !/(?:\.|\bfunction\s*\*?|\bnew)\s*$/.test(before);
+    const open = direct ? m.index + 7 + rest.indexOf("(") : -1;
+    const call = direct ? callArgs(code, open) : null;
+    const declaration = call && /^\s*(?:\{|=>)/.test(code.slice(call.close + 1));
+    if (!exposureRequired) { if (direct && !declaration) add("exposure_helper_unavailable", "exposes", m.index); continue; }
+    if (!direct || declaration) { add("exposure_helper_shadowed", "exposes", m.index); continue; }
+    if (!call) continue;
+    const first = call.args[0];
+    // Strip grouping parentheses so ("literal") and (JSON.stringify(...)) cannot evade this rule.
+    const arg = first ? code.slice(first.start, first.end).trim().replace(/^(?:\(\s*)+/, "") : "";
+    if (/^(?:["'`{\[]|[+-]?\s*(?:\d|\.\d)|true\b|false\b|null\b|JSON\s*\.\s*stringify\s*\()/.test(arg)) add("exposure_helper_literal", "exposes", m.index);
+  }
+  const exposureCovered = exposureStructure(text, add);
+  if (exposureRequired) {
+    for (const c of criteria.filter((c) => ["public_omits", "anon_params"].includes(c?.kind))) {
+      const checks = tests.filter((t) => t.criterion === c.id && cases.some((x) => x.name === t.name && x.kind === "check"));
+      const covered = checks.some(exposureCovered);
+      if (!covered) add("exposure_helper_unused", c.id);
+      if (checks.some((t) => !/(?<![.\w$])sqlite\s*\./.test(code.slice(t.segStart, t.segEnd)))) signal("existing_record_unproven", c.id);
+    }
+  }
+
   // --- bindings from load() and the exports each test references ---------------------------------------------------
   const nsVars = new Map();
   const localNames = new Map();
@@ -1400,7 +1627,7 @@ export function lintTestBody(body, { manifest = null, criteria = [], workType = 
   for (const t of tests) {
     const seg = code.slice(t.segStart, t.segEnd);
     t.exports = [...new Set(referencesIn(t.segStart, t.segEnd).map((r) => `${r.module}#${r.name}`))];
-    if (!/(?<![.\w$])assert\b/.test(seg)) add("no_assert", t.name.slice(0, 80), t.index);
+    if (!/(?<![.\w$])assert\b/.test(seg) && !(exposureRequired && exposureCovered(t))) add("no_assert", t.name.slice(0, 80), t.index);
     facts.tests.push({ name: t.name, criterion: t.criterion || null, control: Boolean(t.control), line: lineOf(t.index), exports: t.exports });
   }
   for (const m of code.matchAll(/(?<![.\w$])assert\b(?:\s*\.\s*([\w$]+))?\s*\(/g)) {
@@ -1526,8 +1753,8 @@ function failIsUnconditional(code, pos, test) {
 }
 
 /** The test file: the Hub-owned header + the body. Returns { text, sha256, header }. */
-export function assembleTestFile({ body, needs = [], missionId = "", specVersion = 1, specSha = "" } = {}) {
-  const header = testHeader({ missionId, specVersion, specSha, needs });
+export function assembleTestFile({ body, needs = [], missionId = "", specVersion = 1, specSha = "", helpers = [] } = {}) {
+  const header = testHeader({ missionId, specVersion, specSha, needs, helpers });
   const text = `${header.join("\n")}\n${normalizeBody(body)}`;
   return { text, sha256: sha256(text), header };
 }
@@ -1663,11 +1890,17 @@ export function proofSignature(run) {
  * (createTapCaseCollector fed every line), never the cases parsed from the 300-line tail.
  */
 export function classifyProof({ runs = [], manifest = {}, criteria = [], workType = "", testRef = "", changedFiles = [], missingAtBase = [], test = {}, spec = {}, facts = {} } = {}) {
+  const requiredHelpers = Array.isArray(spec.hubHelpers) ? [...new Set(spec.hubHelpers)] : [];
+  const helpers = requiredHelpers.filter((name) => Object.hasOwn(HUB_HELPERS, name)).map(hubHelperIdentity);
   const kind = String(workType || "").toUpperCase();
   const testCriteria = testCriteriaOf(criteria);
   const cases = Array.isArray(manifest?.cases) ? manifest.cases : [];
   const byName = new Map(cases.map((c) => [c.name, c]));
-  const result = (verdict, cause, reasons, extra = {}) => ({ verdict, cause, reasons: [...new Set([...reasons.map(String), ...(extra.table || []).filter((r) => r.today === "fail").map((r) => `${r.name}: ${r.origin}, linia ${r.at || "?"}: ${r.statement}`)])], signature: extra.signature ?? null, table: extra.table ?? [], failingCriteria: extra.failingCriteria ?? [], passingCriteria: extra.passingCriteria ?? [] });
+  const result = (verdict, cause, reasons, extra = {}) => ({ verdict, cause, helpers, reasons: [...new Set([...reasons.map(String), ...(extra.table || []).filter((r) => r.today === "fail").map((r) => `${r.name}: ${r.origin}, linia ${r.at || "?"}: ${r.statement}`)])], signature: extra.signature ?? null, table: extra.table ?? [], failingCriteria: extra.failingCriteria ?? [], passingCriteria: extra.passingCriteria ?? [] });
+  if (requiredHelpers.length) {
+    const header = String(test.text || "").split("\n").slice(0, test.headerLines).join("\n");
+    if (helpers.length !== requiredHelpers.length || !header.endsWith([...helperHeader(requiredHelpers), "// ---- corpul testului ----"].join("\n"))) return result("INCONCLUSIVE", "helper", [PROOF_CAUSES.helper]);
+  }
   const list = Array.isArray(runs) ? runs : [];
   if (list.length < TEST_FIRST_LIMITS.proofRuns) return result("INCONCLUSIVE", "runs", [`dovada are nevoie de ${TEST_FIRST_LIMITS.proofRuns} rulări (am ${list.length})`]);
   const changed = (Array.isArray(changedFiles) ? changedFiles : []).filter(Boolean);
@@ -1801,6 +2034,7 @@ export function buildTestReviewBrief({ mission = {}, spec = {}, specVersion = 1,
     ...(signals.length ? signals.map((s) => `- ${s.plain}${s.detail ? ` (${fenceSafe(s.detail)})` : ""}${s.line ? `, linia ${s.line}` : ""}`) : ["- (niciunul)"]),
     "",
   ];
+  if (spec.hubHelpers?.includes("json-exposure")) lines.push(...exposureBrief(true));
   lines.push("## Inventarul variantei curente", AMEND_RULE,
     "Când o constatare critică o verificare existentă, clasifică-o în checks: [{ id, nature: insufficient | wrong, why }]. insufficient = corectă, dar nu acoperă tot ce se cere: va fi completată, niciodată eliminată. wrong = verifică ceva necerut de proprietar, ar respinge o implementare corectă sau nu poate trece niciodată: poate fi corectată ori înlocuită. O critică nu este permisiune de ștergere. why: 10–200 caractere.",
     "```json", fenceSafe(JSON.stringify(inventory.map(({ id, test, criterion, statement }) => ({ id, test, criterion, statement })), null, 2)), "```");

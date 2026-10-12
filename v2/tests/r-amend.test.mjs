@@ -68,7 +68,11 @@ async function stateHub() {
   const built = buildEngineeringSpec({ text: words, project: t.project, hubTests: [{ ref: oldRef, sha256: sha256(oldText), text: oldText, missionId: t.old.id, specVersion: 1, previousSpec: oldSpec }] });
   assert.deepEqual(built.problems, []);
   assert.equal(built.input.spec.supersedes.length, 1);
-  t.child = await prepareMission(t, built.input);
+  assert.deepEqual(built.input.spec.hubHelpers, ["json-exposure"]);
+  // Replay the historical pre-helper spec against its immutable c5/c6 bodies and inventory IDs.
+  // Current helper-enabled authoring/proof integration is exercised in r-json.test.mjs.
+  const { hubHelpers, ...legacySpec } = built.input.spec;
+  t.child = await prepareMission(t, { ...built.input, spec: legacySpec });
   t.newSpec = stored(t, t.child.id).spec;
   return t;
 }
