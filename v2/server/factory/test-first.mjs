@@ -718,10 +718,11 @@ function exposureBrief(review = false) {
     "values trebuie să conțină telefoanele exacte citite din stocare / trimise în cerere, nu variante reintroduse manual. Căutarea include valoarea dată și forma ei fără spații la capete.",
     "Acoperirea cere assert.deepEqual/deepStrictEqual(X, []) (sau argumentele inversate) ori assert.equal/strictEqual(X.length, 0), cu X apelul exposes direct sau const legat direct de el în același caz ori în funcția locală verificată. Nu modifica funcțiile și prototipurile standard.",
     "Verificarea poate fi o instrucțiune directă, inclusiv în blocuri simple, în try { … } finally { … } fără catch, în for (const p of [..]) peste o listă literală nevidă (sau const legat de ea), ori într-o funcție locală async pe care cazul o așteaptă cu await, sau sincronă pe care o apelează direct. Un catch, un if ori un callback .map/Promise.all în jurul verificării sau apelului nu contează, nici verificările după return/throw necondiționat; se urmărește un singur nivel de funcții locale.",
-    "FIECARE caz public_omits / anon_params folosește această funcție pe ÎNTREGUL corp BRUT al răspunsului HTTP al cererii verificate: keys include câmpul sensibil, values include telefoanele AMBELOR înregistrări; rezultatul se verifică egal cu [] printr-o aserțiune în corpul testului. Sunt interzise un literal, un obiect gol, un corp filtrat sau reconstruit și un răspuns fără legătură. Numele exposes poate fi folosit doar ca apel direct, fără alias sau redefinire.",
-    "Înregistrarea existentă este creată determinist prin mecanismele existente ale aplicației (de exemplu POST într-o primă sesiune de server, apoi închidere și repornire pe același dbPath) sau identificată. Pentru AMBELE înregistrări se citesc din stocarea internă id-ul, ziua testată și telefonul exact; ambele id-uri trebuie găsite în tabloul de înregistrări al listei publice. Pentru FIECARE parametru anonim lista rămâne funcțională, conține ambele înregistrări și nu expune niciun telefon. O listă goală sau id-uri doar în metadate nu trec; seed: true plus o constantă de telefon nu dovedesc existența.",
+    "FIECARE caz public_omits / anon_params folosește această funcție pe ÎNTREGUL corp BRUT al răspunsului HTTP al cererii verificate: keys include câmpul sensibil, values include telefoanele TUTUROR înregistrărilor relevante ale zilei; rezultatul se verifică egal cu [] printr-o aserțiune în corpul testului. Sunt interzise un literal, un obiect gol, un corp filtrat sau reconstruit și un răspuns fără legătură. Numele exposes poate fi folosit doar ca apel direct, fără alias sau redefinire.",
+    "Aplicația pornește cu inițializarea ei normală: nu dezactiva și nu șterge datele pe care și le creează singură la pornire (citește sursele ei) ca să simplifici testul. Înregistrările relevante sunt TOATE înregistrările zilei testate citite din stocarea internă după pornire: cele puse de aplicație, cea creată determinist prin API într-o primă sesiune, înainte de închidere și repornire pe aceeași stocare, și cea nouă, creată după repornire. Pentru FIECARE se citesc din stocare id-ul, ziua testată și telefonul exact (cel trimis, pentru cele create de test); toate telefoanele lor nevide intră în values; fiecare id trebuie găsit în tabloul de înregistrări al listei publice, la cererea de bază și la FIECARE parametru anonim, iar tabloul nu are rânduri în plus față de înregistrările zilei. Lipsa telefonului nu înseamnă eliminarea înregistrării din listă.",
+    "Intervalele noi se aleg fără suprapunere cu înregistrările existente, din contractul aplicației (grila sau lista ei de intervale libere), nu din presupuneri. O listă goală, id-uri doar în metadate, o opțiune de pornire sau o constantă în locul citirii din stocare nu dovedesc nimic. Un control care refuză o cerere invalidă dovedește că refuzul nu a adăugat și nu a modificat niciun rând (compară stocarea de dinainte cu cea de după fiecare refuz); nu cere ca stocarea să fie goală.",
     "La amendare, apelurile funcției adăugate lângă verificările păstrate sunt completări; nu elimină și nu schimbă verificările existente.",
-    ...(review ? ["Verifică argumentele și aserțiunea FIECĂRUI apel, dovada din stocare pentru ambele înregistrări (id, zi, telefon exact), apartenența prin id la tabloul listei și fiecare parametru anonim. Simpla prezență a numelui funcției nu este acoperire. Orice lipsă devine finding și lasă criteriul deschis (covered: false)."] : []),
+    ...(review ? ["Verifică argumentele și aserțiunea FIECĂRUI apel; dovada din stocare pentru TOATE înregistrările relevante ale zilei (puse de aplicație la pornirea normală, păstrată după repornire, nouă: id, zi, telefon exact); că values conține toate telefoanele lor; apartenența prin id la tabloul listei pentru fiecare, la cererea de bază și la fiecare parametru anonim. Un test care pornește aplicația fără datele ei inițiale, care dovedește doar înregistrările create de el sau care acceptă o listă fără una dintre ele lasă criteriul deschis (covered: false). Simpla prezență a numelui funcției nu este acoperire."] : []),
     "",
   ];
 }
@@ -885,6 +886,7 @@ function assertionKey(source) {
   return normalizeAssertion(`${method}(${args.slice(0, keep).map((a) => a.trim()).join(", ")})`);
 }
 
+/** Top-level assertions retain their enclosing declaration name for helper-context comparison. */
 export function assertionInventory(text, manifest = {}, { headerLines = 0, sha = null } = {}) {
   const source = String(text || ""), lex = scanSource(source), cases = [];
   for (const m of lex.code.matchAll(/(?<![.\w$])test\s*\(/g)) {
@@ -902,7 +904,7 @@ export function assertionInventory(text, manifest = {}, { headerLines = 0, sha =
     const entry = manifest.cases?.find((c) => c.name === owner?.name), call = source.slice(m.index, end + 1);
     spans.push({ start: m.index, end: lex.code[end + 1] === ";" ? end + 2 : end + 1 });
     out.push({ id: `P${line}`, sha, test: owner?.name || null, criterion: entry?.criterion || null, kind: entry?.kind || null,
-      statement: normalizeAssertion(call), key: assertionKey(call) });
+      statement: normalizeAssertion(call), key: assertionKey(call), helper: null });
   }
   const counts = new Map(), ordinals = new Map();
   for (const e of out) counts.set(e.id, (counts.get(e.id) || 0) + 1);
@@ -940,6 +942,7 @@ export function assertionInventory(text, manifest = {}, { headerLines = 0, sha =
         if (!block && binding !== null) bindings.push(lex.code.slice(binding, end).replace(/;$/, ""));
         const names = block ? [m[1]] : bindings.flatMap((b) => [...b.matchAll(/(?<![\w$])([A-Za-z_$][\w$]*)(?![\w$])/g)].filter((n) => !/^\s*:/.test(b.slice(n.index + n[1].length))).map((n) => n[1]));
         for (const name of names) context.decls[name] = normalizeAssertion(source.slice(i, end));
+        for (const [index, span] of spans.entries()) if (out[index].test === null && span.start >= i && span.end <= end) out[index].helper = names[0] || null;
         excluded.push({ start: i, end });
         i = end - 1;
         continue;
@@ -955,6 +958,7 @@ export function assertionInventory(text, manifest = {}, { headerLines = 0, sha =
   return out;
 }
 
+/** Top-level entries match unused top-level entries by assertion key and track enclosing helper and setup changes. */
 export function compareInventory(previous = {}, next = {}) {
   const before = Array.isArray(previous) ? previous : assertionInventory(previous.text, previous.manifest, previous);
   const after = Array.isArray(next) ? next : assertionInventory(next.text, next.manifest, next);
@@ -964,7 +968,7 @@ export function compareInventory(previous = {}, next = {}) {
   for (const entry of before) {
     const renames = [...new Set(nextCases.filter((e) => !names.has(e.test) && e.criterion === entry.criterion && e.kind === entry.kind).map((e) => e.test))];
     const name = nextNames.has(entry.test) ? entry.test : renames.length === 1 ? renames[0] : null;
-    const index = after.findIndex((e, i) => !used.has(i) && name !== null && e.test === name && e.criterion === entry.criterion && e.kind === entry.kind && (e.key || assertionKey(e.statement)) === (entry.key || assertionKey(entry.statement)));
+    const index = after.findIndex((e, i) => !used.has(i) && (entry.test === null ? e.test === null : name !== null && e.test === name && e.criterion === entry.criterion && e.kind === entry.kind) && (e.key || assertionKey(e.statement)) === (entry.key || assertionKey(entry.statement)));
     if (index < 0) { removed.push(entry); continue; }
     used.add(index);
     const nextEntry = after[index], row = { ...entry, nextId: nextEntry.id };
@@ -972,6 +976,7 @@ export function compareInventory(previous = {}, next = {}) {
     const oldCase = before.context?.cases[entry.test], newCase = after.context?.cases[name], reasons = [];
     if (oldCase && newCase && oldCase.flow !== newCase.flow) reasons.push("case_flow");
     const decls = before.context?.decls || {}, helpers = new Set();
+    if (entry.test === null && entry.helper && decls[entry.helper] !== after.context?.decls[entry.helper]) reasons.push(`helper:${entry.helper}`);
     const addReferences = (code) => { for (const name of code.match(/[A-Za-z_$][\w$]*/g) || []) if (Object.hasOwn(decls, name)) helpers.add(name); };
     addReferences(oldCase?.code || "");
     // Set iteration visits newly added references too, and terminates even for recursive helpers.

@@ -69,3 +69,92 @@ Calibrarea rh1 (29 de variante): trece pe aplicația corectă și pică pe cea i
 de existență și listă, dar **trece** pe „existing records only” (telefon doar pentru programările de la 11:00 încolo) și pe o variantă
 suplimentară „doar programările sintetice (seed)”: testul își creează înregistrarea existentă la 09:00, cu `seed: false`. Referința
 `json-reference` are aceeași limită pentru seed. Repetiția e incompletă; dovezi pentru etapa următoare.
+
+## Referința R-EXISTING v2 (2.14.11-m11)
+
+`existing-reference.body.mjs.txt` și `existing-reference.manifest.json` au identitate nouă.
+Fișierul asamblat cu metadatele implicite ale antetului și `helpers: ["json-exposure"]` are
+SHA-256 `8bf1d3f7465e45e8621385d5cc5bfd54b774751bf6575a6ddfc8db51d7648245`.
+Helperul rămâne `json-exposure`, versiunea 1,
+SHA-256 `984e7cf2876ddbf514b1a6b6c86741736946f64adf8edf0ef0215369b136704f`.
+
+Aplicația pornește cu inițializarea normală, pe stocare temporară și cu ora injectată fixă.
+Referința citește toate programările zilei din SQLite, verifică id-ul, ziua și telefonul exact,
+apoi creează prin API o programare pe un interval liber oferit de API-ul slots, repornește pe
+aceeași stocare și creează încă una pe un interval liber recitit. Toate programările inițiale,
+cea păstrată și cea nouă trebuie să rămână în tabloul listei, fără rânduri suplimentare, atât la
+cererea de bază, cât și pentru fiecare parametru anonim. Toate telefoanele lor intră în `values`;
+`exposes` verifică întregul corp brut după curățarea resurselor. Fiecare refuz compară toate
+rândurile și coloanele din stocare cu cele de dinainte, fără să ceară o tabelă goală.
+
+Cele cinci criterii pentru telefon au 478 / 451 / 322 / 323 / 126 caractere și rămân identice
+prin `checkSpec`; AC-1 este comprimat față de șablonul de 510 caractere, fără pierderea obligațiilor.
+Specificația 2.14.10 are un hash diferit: schimbarea textelor definește un contract nou.
+
+Rezultate înregistrate de `T-EXIST-MATRIX` din `r-existing.test.mjs`, fără furnizori de modele:
+aplicația corectă trece 5/5 cu fiecare dintre cele trei teste. Inventarul fix, în ordinea din cod:
+
+| Nr. | Variantă defectă | json-reference | rh1 | existing-reference |
+|---|---|---|---|---|
+| 1 | original | FAIL | FAIL | FAIL |
+| 2 | refuse-all | FAIL | FAIL¹ | FAIL |
+| 3 | phone lost on save | FAIL | FAIL | FAIL |
+| 4 | browser-only validation | FAIL | FAIL | FAIL |
+| 5 | masked value | FAIL | FAIL | FAIL |
+| 6 | includePhone bypass | FAIL | FAIL | FAIL |
+| 7 | debug other key | FAIL | FAIL | FAIL |
+| 8 | empty list | FAIL | FAIL | FAIL |
+| 9 | invalid request saved | FAIL | FAIL | FAIL |
+| 10 | missing-property accepted | FAIL | FAIL | FAIL |
+| 11 | id only in metadata | FAIL | FAIL | FAIL |
+| 12 | fields=phone other key | FAIL | FAIL | FAIL |
+| 13 | phone in text | FAIL | FAIL | FAIL |
+| 14 | phone as key | FAIL | FAIL | FAIL |
+| 15 | escaped key and value | FAIL | FAIL | FAIL |
+| 16 | escaped value other key | FAIL | FAIL | FAIL |
+| 17 | existing records only | FAIL | PASS | FAIL |
+| 18 | escape in text other key | FAIL | FAIL | FAIL |
+| 19 | seed ignored, leak only before restart | FAIL | FAIL | FAIL |
+| 20 | existing record absent after restart | FAIL | FAIL | FAIL |
+| 21 | existing record on another day | FAIL | FAIL | FAIL |
+| 22 | existing phone not persisted | FAIL | FAIL | FAIL |
+| 23 | empty list, base | FAIL | FAIL | FAIL |
+| 24 | empty list, debug | FAIL | FAIL | FAIL |
+| 25 | existing omitted, base | FAIL | FAIL | FAIL |
+| 26 | existing omitted, debug | FAIL | FAIL | FAIL |
+| 27 | ids only in metadata, base | FAIL | FAIL | FAIL |
+| 28 | ids only in metadata, debug | FAIL | FAIL | FAIL |
+| 29 | seed rows only | PASS | PASS | FAIL |
+
+¹ Pentru `refuse-all`, rh1 pică la AC-1/AC-2 cu `HUB_SETUP idA/idC: Error`, iar controalele
+AC-4/AC-5 pică prin aserțiuni. Noua referință pică prin `ERR_ASSERTION` la POST-ul care trebuia
+să răspundă 201 și la AC-4/AC-5. Toate eșecurile noii referințe pe cele 29 de variante sunt
+`ERR_ASSERTION`, fără mesaje `HUB_`; json-reference respinge celelalte 28 de variante,
+iar rh1 respinge celelalte 27. Testele istorice rulează cu octeții lor originali.
+
+Pe aplicația originală, noua referință este `PROVEN` în două rulări identice: numai AC-1 și AC-2
+pică, exclusiv pe aserțiunile directe `assert.deepEqual(exposes(`, cu originea `behaviour`.
+Controalele trec. Lintul nu are încălcări și nici semnalul `existing_record_unproven`.
+
+Variantele suplimentare enumerate pentru calibrare în T-EXIST-ALL-01/02/05 sunt opt (2 + 3 + 3),
+în afara inventarului de 29; nu se adaugă variante nespecificate pentru a ajunge la unsprezece:
+
+| Test | Variantă suplimentară | existing-reference | Criterii care pică |
+|---|---|---|---|
+| T-EXIST-ALL-01 | initial data not created | FAIL | AC-1, AC-2: datele inițiale lipsesc |
+| T-EXIST-ALL-01 | initial data without phone | FAIL | AC-1, AC-2: telefonul inițial lipsește |
+| T-EXIST-ALL-02 | initial rows omitted | FAIL | AC-1, AC-2 |
+| T-EXIST-ALL-02 | kept row omitted | FAIL | AC-1, AC-2 |
+| T-EXIST-ALL-02 | new row omitted | FAIL | AC-1, AC-2 |
+| T-EXIST-ALL-05 | seed rows only under any parameter | FAIL | numai AC-2; AC-1 trece |
+| T-EXIST-ALL-05 | threshold only under any parameter | FAIL | numai AC-2; AC-1 trece |
+| T-EXIST-ALL-05 | seed rows only under all=1 | FAIL | numai AC-2; AC-1 trece |
+
+T-EXIST-ALL-03/04 reiau cele două diferențe documentate față de referințele vechi;
+T-EXIST-ALL-06 reia cele șase variante de listă și `empty list`, fără a mări inventarul.
+Pragul orar și marcajul intern apar numai în variantele defecte de calibrare, nu sunt reguli de produs.
+
+Fișierele imuabile rămân identice octet cu octet: `json-reference.*`, `rh0-*`, `rh1-*`,
+c1–c8 (inclusiv manifestele și review-urile), `r1-*`, `amend-reference.body.mjs.txt`,
+`variant-*.js.txt` și `new-protocol.*`. În acest director se adaugă doar noua pereche de referință
+și această secțiune din README; nimic din dovezile anterioare nu este rescris.

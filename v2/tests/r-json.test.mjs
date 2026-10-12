@@ -345,14 +345,15 @@ test("T-JSON-SPEC-BRIEFS", () => {
   const old = checkSpec(raw).spec, next = checkSpec({ ...raw, hubHelpers: helpers }).spec;
   assert.ok(!Object.hasOwn(old, "hubHelpers")); assert.deepEqual(next.hubHelpers, helpers); assert.notEqual(specHash(old), specHash(next));
   assert.deepEqual(next.acceptance.map((c) => c.kind), criteria.map((c) => c.kind));
-  for (const c of criteria.slice(0, 2)) { assert.ok(c.text.length <= 500, `${c.kind}: ${c.text.length}`); assert.equal(next.acceptance.find((a) => a.id === c.id).text, c.text); }
+  assert.notEqual(specHash(next), "ae88c513d096e43c71963535dbc2347b3b227181dd6e245fa80d1a8268f20b93", "2.14.10 has a different acceptance contract");
+  for (const c of criteria) { assert.ok(c.text.length <= 480, `${c.kind}: ${c.text.length}`); assert.equal(next.acceptance.find((a) => a.id === c.id).text, c.text); }
   assert.ok(criteria[0].text.includes("cerută direct de la server (fără browser)"));
-  assert.ok(criteria[0].text.includes("identificată prin id-ul întors la creare"));
-  assert.ok(criteria[1].text.includes("cererea listei publice"));
+  assert.ok(criteria[0].text.includes("inițializarea ei normală"));
+  assert.ok(criteria[1].text.includes("pornirea normală"));
   assert.ok(buildTestReviewBrief({ spec }).includes("telefoanele exacte citite din stocare / trimise în cerere, nu variante reintroduse manual"));
   for (const hubHelpers of ["json-exposure", ["unknown"], [null], ["json-exposure", "unknown"]]) assert.ok(checkSpec({ ...raw, hubHelpers }).problems.some((p) => p.startsWith("hubHelpers")));
   for (const cycle of [0, 1]) for (const brief of [buildAuthorBrief({ spec, cycle }), buildTestReviewBrief({ spec, cycle })]) {
-    for (const phrase of ["Verificări puse de Hub", "ÎNTREGUL corp BRUT", "AMBELOR", "seed: true", "metadate", "stocarea internă", "completări", "instrucțiune directă", "try { … } finally { … } fără catch", "for (const p of [..])", "funcție locală async", "Un catch, un if ori un callback .map/Promise.all", "return/throw necondiționat"]) assert.ok(brief.includes(phrase), phrase);
+    for (const phrase of ["Verificări puse de Hub", "ÎNTREGUL corp BRUT", "TUTUROR", "inițializarea ei normală", "rânduri în plus", "nu cere ca stocarea să fie goală", "metadate", "stocarea internă", "completări", "instrucțiune directă", "try { … } finally { … } fără catch", "for (const p of [..])", "funcție locală async", "Un catch, un if ori un callback .map/Promise.all", "return/throw necondiționat"]) assert.ok(brief.includes(phrase), phrase);
   }
   assert.ok(buildAuthorBrief({ spec }).includes(HUB_HELPERS["json-exposure"].lines.join("\n")));
   assert.match(buildTestReviewBrief({ spec }), /covered: false/);
@@ -375,7 +376,7 @@ test("T-JSON-FACTORY", { timeout: 120000 }, async () => {
       for (const provider of ["codex", "claude"]) h.hub.grants.create({ provider, projectId: project.id, access: provider === "codex" ? "workspace-write" : "read-only", maxAttempts: 5, maxDurationS: 900, ttlMinutes: 60 }, "test");
     });
     // Two independent rejecting fake reviews exercise both author cycles without starting an implementation.
-    h.queue("claude", "author:json-reference", "author:json-reference"); h.queue("codex", "test-review:changes", "test-review:changes-again");
+    h.queue("claude", "author:existing-reference", "author:existing-reference"); h.queue("codex", "test-review:changes", "test-review:changes-again");
     const req = await dispatch("factory.start", h.hub.factory.view(mission.id).scope);
     await dispatch("approval.decide", { approvalId: req.approval.id, decision: "approved", displayedHash: req.approval.payloadHash });
     await h.hub.commands.executeApproved(req.command.id, "user");
