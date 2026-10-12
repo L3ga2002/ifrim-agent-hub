@@ -1,5 +1,18 @@
 # Open Issues - Ifrim Agent Hub
 
+## 2026-10-12 — Deterministic "does not expose" checks (code `2.14.10-m11`, contract 13, schema 12; detail: `.ifrim/STAGE_2026-10-12_NEEXPUNERE_JSON.md`)
+
+This section takes precedence over every older one where they overlap. Baseline: HEAD = origin = `c168283`; the 2.14.10 commit is local (push by the owner).
+
+Closed:
+- **Item 1 below, the helper part**: the Hub-owned header helper `exposes` (decoded JSON, keys at any depth, values as substrings incl. escaped text and keys; invalid input = setup) detects the c8 miss; lint rejects vacuous/shadowed/literal uses and patched built-ins; the proof records the helper identity. Two review rounds (Claude, separate session), final verification PASS. Affected suites 494/494, build green.
+- The plan `env_mv49pmjs_74958c8740` expired (closed at the 06:32 UTC boot); nothing revived.
+
+Open:
+1. **Isolated rehearsal incomplete → §25 not released or probed**: Claude cycle 0 PROVEN, Codex CHANGES_REQUESTED (saved phone not compared to the sent one), cycle-1 completion PROVEN with nothing lost and Codex PASS; but the test passes two defective variants (phone exposed only for 11:00+ bookings / only for seeded synthetic bookings) because R-EXISTING lets the test create its own existing record with `seed: false`. Candidate fix (owner's approval): R-EXISTING also covers the app's own existing data (seeded bookings identified in storage and found in the list) + the "seed only" variant in the matrix and the reference; then one new rehearsal.
+2. **Live Hub on unreleased code**: the 06:31 UTC reboot autostarted the Hub from the working tree (`2.14.10-m11` with the round-1 lint; no upgrade run, no backup). No migration, no active mission. The next restart loads the committed code; a formal upgrade/backup belongs to the next release.
+3. **Parent delivery `dlv_mv1eo8oo_d120460140` stays STALE**; `git push` stays the owner's. M12 stays DRAFT.
+
 ## 2026-10-11 (evening) — Test completion without losing checks (code and live `2.14.9-m11`, contract 13, schema 12; detail: `.ifrim/STAGE_2026-10-11_COMPLETARE_TESTE.md`)
 
 This section takes precedence over every older one where they overlap. `8a91d3f` (2.14.9) pushed by the owner (origin verified 20:21 UTC); live upgrade `upg_mv487hiw` (19:38 UTC) after verified backups `bkp_mv486gvm_fe29fa3bd1` (Hub) and `bkp_mv486kzh_4e6ef724dc` (§25 project). Full `test:v2`: 1848, 1847 pass, 1 skip (T25), 0 fail (CPU avg 93 %).

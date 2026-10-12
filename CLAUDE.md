@@ -1,6 +1,10 @@
 # IfrimDigital Ifrim Agent Hub - Claude Code Context
 
-## Current state - 2026-10-11 evening (read first)
+## Current state - 2026-10-12 (read first)
+
+Read `.ifrim/STAGE_2026-10-12_NEEXPUNERE_JSON.md` and the first section of `.ifrim/OPEN_ISSUES.md` first; they take precedence over everything below. Code `2.14.10-m11` (contract 13, schema 12, no migration) committed locally on `v2-milestone-01` over `c168283` (= origin); push by the owner. 2.14.10 adds the Hub-owned header helper `exposes` (`json-exposure` v1, sha256 `984e7cf2…`) for "does not expose" checks (R-JSON), its lint and proof identity (R-PROOF, R-INTEGRITY) and the R-EXISTING criteria. The live Hub reports `2.14.10-m11` only because the 06:31 UTC reboot autostarted it from the uncommitted working tree (no upgrade run, no backup). The isolated rehearsal reached Codex PASS but two defective variants pass (phone leaked only for 11:00+ / seeded bookings: the test creates its own existing record with `seed: false`), so the §25 release and probe were not done; the R-EXISTING follow-up needs the owner's approval. The §25 plan `env_mv49pmjs` expired. `.ifrim/M12_PROMPT.md` stays DRAFT.
+
+## State - 2026-10-11 evening (history)
 
 Read `.ifrim/STAGE_2026-10-11_COMPLETARE_TESTE.md` and the first section of `.ifrim/OPEN_ISSUES.md` first; they take precedence over everything below. Code and live Hub `2.14.9-m11` (contract 13, schema 12, no migration; upgrade `upg_mv487hiw`); `8a91d3f` pushed by the owner, plus this docs commit. 2.14.9 (R-AMEND, R-INVENTORY): at a rewrite the author repairs the previous candidate identified by sha (an insufficient check is supplemented, only a wrong one may be replaced with basis/why/by; removing a check the reviewer classified insufficient is a hard lint violation; an explicit "Ce trebuie completat" list), the reviewer classifies checks insufficient/wrong and judges removed and context-changed checks naming the replacing one (`lost` blocks), and the inventory has unique per-line ids, case + criterion matching and transitive helper / setup context. The fourth live §25 attempt (`env_mv49pmjs_74958c8740`) kept every check but stopped at step 0 again: the completion was incomplete (escaped phone inside a longer text). The next fix (Hub-provided "does not expose" helpers) needs the owner's approval. `.ifrim/M12_PROMPT.md` stays DRAFT.
 
