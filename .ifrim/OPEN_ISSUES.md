@@ -1,5 +1,38 @@
 # Open Issues - Ifrim Agent Hub
 
+## 2026-10-13 (afternoon) — Mechanical step-0 blockers closed (code `2.14.12-m11` on local branch `claude/project-thread-wn8xqf`, NOT released; live `2.14.10-m11`, contract 13, schema 12; detail: `.ifrim/STAGE_2026-10-13_BLOCARI_MECANICE.md`)
+
+This section takes precedence over every older one where they overlap. Baseline: HEAD = origin = `eeeb136` on `v2-milestone-01`; 2.14.12 is
+`614c42e` + evidence `53fe75e` on the local branch `claude/project-thread-wn8xqf` (base `88cb6c6` = 2.14.11), fetched from the isolated clone,
+not merged (the logon autostart loads the working tree; five unmanaged starts recorded by 2026-10-13 07:55 UTC); push by the owner.
+
+Closed (in code, not released):
+- **Item 1 of the section below, the mechanical part**: R-NEEDS (the Hub completes `needs` deterministically from the free uses of the six
+  permitted built-ins before lint and assembly; declared / completed / effective kept apart in one manifest), R-CLEANUP (test header v2:
+  resources returned by `setup()` are registered at once and closed on pass and on fail, `# HUB_CLEANUP` TAP report per case, forgery-
+  resistant collector, `classifyProof` INCONCLUSIVE `cleanup`, lint `harness_reserved` + extended `builtin_patched`; header v1 byte-identical
+  for historic candidates), R-BASELINE (`baselineGate` refuses the writer after a timeout, stop, crash, incomplete summary, missing or
+  cancelled cases, name mismatch or unconfirmed cleanup, even on a matching signature). Three independent review rounds (last PASS),
+  affected 27/27 suites 515/515, full V2 regression 1923/1933 (8 clone-location failures of the folder-import / Studio family, 26/26 in the
+  main tree). Demonstrated in the rehearsal: `needs: []` completed twice without consuming the rewrite; the failing test exited normally in
+  0.3 s with the resources closed (proof PROVEN without `--test-force-exit`).
+
+Open:
+1. **Isolated rehearsal stopped at the content gate → no release, no §25 card.** The Codex review (gpt-6.1-sol) was CHANGES_REQUESTED at
+   cycle 0 and again after the one completion (every previous check `kept`, none lost; AC-1/AC-2 open: non-string phones excluded from the
+   assertion and from `values`, the initial rows' identity and phones not fixed before the restart, the second created id not captured);
+   the matrix rejects 29/29 inventory variants but the test passes the extra calibration variant "initial data without phone". Candidate
+   fix (owner's approval, no new rewrites, same models): the author brief / criteria state explicitly that every initial record has a
+   non-empty phone that enters `values`, that both created records are identified by the id the API returned, and that every refusal
+   compares a full storage snapshot; then one new rehearsal, release (backup + upgrade), one §25 card.
+2. **Residual, low (documented by review round 3)**: `builtin_patched` does not follow aliases (`const E = Error; E.prototype.code = …`);
+   a body may misreport its own resource as already closed by construction; the sandbox, not the cleanup, stays the security boundary.
+3. **Author model loop**: the first rehearsal author attempt (sonnet, medium) looped in thinking (4 × max_tokens, no text, $2.09); the Hub
+   would count it as an unreadable answer (new attempt). Observed once; no Hub change (the Hub passes only `--effort`).
+4. **Live Hub started five times without upgrade/backup** (10-12 06:32, 15:55, 21:35 UTC; 10-13 02:44, 07:55 UTC), all by the logon task;
+   provenance `570ced3` + docs. DRAFT: autostart starts only a validated release. Parent delivery `dlv_mv1eo8oo_d120460140` stays STALE;
+   historic §25 test active; M12 stays DRAFT.
+
 ## 2026-10-13 — Existing-data coverage (code `2.14.11-m11` on local branch `claude/project-thread-c7i593`, NOT released; live `2.14.10-m11`, contract 13, schema 12; detail: `.ifrim/STAGE_2026-10-12_ACOPERIRE_DATE_EXISTENTE.md`)
 
 This section takes precedence over every older one where they overlap. Baseline: HEAD = origin = `570ced3` on `v2-milestone-01`; 2.14.11 is
