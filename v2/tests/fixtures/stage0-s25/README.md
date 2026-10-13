@@ -274,3 +274,130 @@ Duratele celor două rulări e1 din T-CLEAN-01: 349 ms și 331 ms (ieșire norma
 Cele două blocaje mecanice ale repetiției 2.14.11 nu au mai apărut: omisiunea `needs` a fost completată de Hub în ambele cicluri, fără să
 consume rescrierea, iar testul care pică pe AC-1/AC-2 a ieșit normal în sub o secundă, cu resursele închise de antetul v2. Oprirea s-a
 făcut la poarta de conținut (review-ul Codex al completării), nu la cea mecanică; release-ul și cardul §25 nu au fost făcute.
+
+## Contractul experimentului (2.14.13-m11)
+
+Contractul leagă sursele proiectului hub-test §25 (`server-app.js` sha256 `5cd66295…`); un proiect proaspăt materializat din `v2/fixtures/factory/booking-demo` are alte surse (`server-app.js` sha256 `16baf1ca…`), deci nu primește dataset, iar plannerul adaugă presupunerea „sursele inițializării diferă”, prin proiectare.
+
+Contractul `booking-demo` v1 fixează datele martor ale fixture-ului §25, nu o regulă pentru toate datele istorice. Ceasul injectat este `2026-10-11T08:00:00` (local, fără fus), ziua `2026-10-11`; pornirea este normală. Coloanele comparate exact, în ordinea `start_min, id`: `id, service_id, day, start_min, end_min, name, vehicle, phone, synthetic`.
+
+```json
+[
+  {
+    "id": "seed-2026-10-11-1000",
+    "service_id": "spalare-exterior",
+    "day": "2026-10-11",
+    "start_min": 600,
+    "end_min": 630,
+    "name": "Client Demo A",
+    "vehicle": "Autoturism test",
+    "phone": "0700 123 456",
+    "synthetic": 1
+  },
+  {
+    "id": "seed-2026-10-11-1130",
+    "service_id": "curatare-interior",
+    "day": "2026-10-11",
+    "start_min": 690,
+    "end_min": 750,
+    "name": "Client Demo B",
+    "vehicle": "Autoturism test",
+    "phone": "0700 123 456",
+    "synthetic": 1
+  },
+  {
+    "id": "seed-2026-10-11-1500",
+    "service_id": "polish-faruri",
+    "day": "2026-10-11",
+    "start_min": 900,
+    "end_min": 930,
+    "name": "Client Demo C",
+    "vehicle": "Autoturism test",
+    "phone": "0700 123 456",
+    "synthetic": 1
+  }
+]
+```
+
+Telefonul nevid este proprietatea datelor demo ale ACESTUI fixture, niciodată o regulă pentru fiecare înregistrare istorică.
+Tipuri: `id`: șir; `day`: șir AAAA-LL-ZZ; `start_min`: întreg; `end_min`: întreg; `phone`: șir nevid, exact cum este stocat.
+
+Controlul pozitiv `hist-2026-10-11-1300`: serviciu `spalare-exterior`, ziua declarată, 780–810, „Client Istoric”, „Autoturism istoric”, `synthetic: 0`. Testul confirmă prin slots că 13:00 este liber, închide prima sesiune și inserează rândul fără coloana `phone`; valoarea implicită `''` este aceeași cu cea dată de migrarea aplicației unui rând vechi. După repornire verifică listarea id-ului și rândul întreg neschimbat, inclusiv telefonul gol, după fiecare cerere.
+
+Proveniența este fixată pe octeții fixture-ului; schimbarea surselor invalidează precondiția, fără recalcularea faptelor:
+
+| Sursă | SHA-256 | Linii | Fapt |
+|---|---|---|---|
+| src/catalog.js | `28f44825f9d684d4529a0da7aea9e2b433870f614d8742f3768e4d118ed1b232` | 13–20 | Vehiculul și cele trei programări demo |
+| src/server-app.js | `5cd662956742cca906efa5581330052e745d3bc810722e6671d47d2964628f64` | 103–109 | Schema și migrarea: telefon implicit gol |
+| src/server-app.js | `5cd662956742cca906efa5581330052e745d3bc810722e6671d47d2964628f64` | 134–149 | Inițializarea și telefonul literal |
+| src/server-app.js | `5cd662956742cca906efa5581330052e745d3bc810722e6671d47d2964628f64` | 283–283 | Inițializarea normală la pornire |
+| src/slots.js | `6e624d8d46d856e6c68708f722f9bb42995efe77943fa2fd33680cce139bd9de` | 4–7 | Grila și numărul zilelor |
+| src/slots.js | `6e624d8d46d856e6c68708f722f9bb42995efe77943fa2fd33680cce139bd9de` | 33–33 | Zilele afișate, după ceasul local injectat |
+
+- Identitatea dataset: `76c76ccd28ff67c356afff9f4dd56dde8b40f3f8716ed2840419622aed673ae0`.
+- Referința asamblată cu metadatele implicite: `81e7ef5acaf7534d60fa6ecb3eb53873a090ad0ca73f664b0c0f133d52373fb5`; antet v2, `helpers: ["json-exposure"]`.
+- Helperul rămâne v1, SHA-256 `984e7cf2876ddbf514b1a6b6c86741736946f64adf8edf0ef0215369b136704f`.
+- `dataset-before.json` păstrează ieșirile plannerului și cele două brief-uri 2.14.12 înaintea schimbării; cazurile fără dataset sunt comparate exact.
+- `dataset-matrix.json` păstrează toate numerele brute și numele complete ale cazurilor, comparate exact de suită.
+
+`dataset-reference` este PROVEN în două rulări pe original: numai cele două cazuri AC-1 și cazul AC-2 pică, exclusiv prin `assert.deepEqual(exposes(`, origine `behaviour`. Comparațiile DATE MARTOR, ID API și CONTROL ISTORIC trec. Pe aplicația corectă trec 6/6. Toate cele 41 de surse defecte sunt respinse, fiecare eșec fiind `ERR_ASSERTION`, fără `HUB_`; procesele ies singure, cu `HUB_CLEANUP ok` la fiecare caz. AC-3/AC-4/AC-5 sunt identice octet cu octet cu referința existentă.
+
+Matrice fără provideri, Node v24.14.0, timeout 20000 ms/proces. `f1` rulează octeții stocați (antet v2); `existing-reference` este asamblată cu antet v2, ca în secțiunea anterioară. Numerele sunt trecute/total. Categoriile sunt eticheta PRIMEI aserțiuni eșuate: `dataset` = DATE MARTOR, `ids` = ID API, `historical` = CONTROL ISTORIC, `exposure` = EXPUNERE, `other` = fără aceste etichete (inclusiv toate aserțiunile istorice din f1/existing-reference).
+
+| Variantă | dataset-reference (caz:categorie) | f1 | existing-reference |
+|---|---|---|---|
+| correct | PASS 6/6 | PASS 5/5 | PASS 5/5 |
+| original | FAIL 3/6 — AC-1:exposure, AC-2:exposure, AC-1 istoric:exposure | FAIL 3/5 — AC-1:other, AC-2:other | FAIL 3/5 — AC-1:other, AC-2:other |
+| refuse-all | FAIL 2/6 — AC-1:ids, AC-2:ids, AC-4:other, AC-5:other | FAIL 1/5 — AC-1:other, AC-2:other, AC-4:other, AC-5:other | FAIL 1/5 — AC-1:other, AC-2:other, AC-4:other, AC-5:other |
+| phone lost on save | FAIL 3/6 — AC-1:ids, AC-2:ids, AC-4:other | FAIL 2/5 — AC-1:other, AC-2:other, AC-4:other | FAIL 2/5 — AC-1:other, AC-2:other, AC-4:other |
+| browser-only validation | FAIL 5/6 — AC-3:other | FAIL 4/5 — AC-3:other | FAIL 4/5 — AC-3:other |
+| masked value | FAIL 3/6 — AC-1:exposure, AC-2:exposure, AC-1 istoric:exposure | FAIL 3/5 — AC-1:other, AC-2:other | FAIL 3/5 — AC-1:other, AC-2:other |
+| includePhone bypass | FAIL 4/6 — AC-2:exposure, AC-1 istoric:exposure | FAIL 4/5 — AC-2:other | FAIL 4/5 — AC-2:other |
+| debug other key | FAIL 4/6 — AC-2:exposure, AC-1 istoric:exposure | FAIL 4/5 — AC-2:other | FAIL 4/5 — AC-2:other |
+| empty list | FAIL 3/6 — AC-1:ids, AC-2:ids, AC-1 istoric:historical | FAIL 3/5 — AC-1:other, AC-2:other | FAIL 3/5 — AC-1:other, AC-2:other |
+| invalid request saved | FAIL 5/6 — AC-3:other | FAIL 4/5 — AC-3:other | FAIL 4/5 — AC-3:other |
+| missing-property accepted | FAIL 5/6 — AC-3:other | FAIL 4/5 — AC-3:other | FAIL 4/5 — AC-3:other |
+| id only in metadata | FAIL 3/6 — AC-1:ids, AC-2:ids, AC-1 istoric:historical | FAIL 3/5 — AC-1:other, AC-2:other | FAIL 3/5 — AC-1:other, AC-2:other |
+| fields=phone other key | FAIL 4/6 — AC-2:exposure, AC-1 istoric:exposure | FAIL 4/5 — AC-2:other | FAIL 4/5 — AC-2:other |
+| phone in text | FAIL 3/6 — AC-1:exposure, AC-2:exposure, AC-1 istoric:exposure | FAIL 3/5 — AC-1:other, AC-2:other | FAIL 3/5 — AC-1:other, AC-2:other |
+| phone as key | FAIL 3/6 — AC-1:exposure, AC-2:exposure, AC-1 istoric:exposure | FAIL 3/5 — AC-1:other, AC-2:other | FAIL 3/5 — AC-1:other, AC-2:other |
+| escaped key and value | FAIL 3/6 — AC-1:exposure, AC-2:exposure, AC-1 istoric:exposure | FAIL 3/5 — AC-1:other, AC-2:other | FAIL 3/5 — AC-1:other, AC-2:other |
+| escaped value other key | FAIL 3/6 — AC-1:exposure, AC-2:exposure, AC-1 istoric:exposure | FAIL 3/5 — AC-1:other, AC-2:other | FAIL 3/5 — AC-1:other, AC-2:other |
+| existing records only | FAIL 3/6 — AC-1:exposure, AC-2:exposure, AC-1 istoric:exposure | FAIL 3/5 — AC-1:other, AC-2:other | FAIL 3/5 — AC-1:other, AC-2:other |
+| escape in text other key | FAIL 3/6 — AC-1:exposure, AC-2:exposure, AC-1 istoric:exposure | FAIL 3/5 — AC-1:other, AC-2:other | FAIL 3/5 — AC-1:other, AC-2:other |
+| seed ignored, leak only before restart | FAIL 3/6 — AC-1:dataset, AC-2:dataset, AC-1 istoric:dataset | FAIL 3/5 — AC-1:other, AC-2:other | FAIL 3/5 — AC-1:other, AC-2:other |
+| existing record absent after restart | FAIL 3/6 — AC-1:ids, AC-2:ids, AC-1 istoric:historical | FAIL 3/5 — AC-1:other, AC-2:other | FAIL 3/5 — AC-1:other, AC-2:other |
+| existing record on another day | FAIL 3/6 — AC-1:dataset, AC-2:dataset, AC-1 istoric:dataset | FAIL 3/5 — AC-1:other, AC-2:other | FAIL 3/5 — AC-1:other, AC-2:other |
+| existing phone not persisted | FAIL 3/6 — AC-1:dataset, AC-2:dataset, AC-1 istoric:dataset | FAIL 3/5 — AC-1:other, AC-2:other | FAIL 3/5 — AC-1:other, AC-2:other |
+| empty list, base | FAIL 3/6 — AC-1:ids, AC-2:ids, AC-1 istoric:historical | FAIL 3/5 — AC-1:other, AC-2:other | FAIL 3/5 — AC-1:other, AC-2:other |
+| empty list, debug | FAIL 4/6 — AC-2:ids, AC-1 istoric:historical | FAIL 4/5 — AC-2:other | FAIL 4/5 — AC-2:other |
+| existing omitted, base | FAIL 3/6 — AC-1:ids, AC-2:ids, AC-1 istoric:historical | FAIL 3/5 — AC-1:other, AC-2:other | FAIL 3/5 — AC-1:other, AC-2:other |
+| existing omitted, debug | FAIL 4/6 — AC-2:ids, AC-1 istoric:historical | FAIL 4/5 — AC-2:other | FAIL 4/5 — AC-2:other |
+| ids only in metadata, base | FAIL 3/6 — AC-1:ids, AC-2:ids, AC-1 istoric:historical | FAIL 3/5 — AC-1:other, AC-2:other | FAIL 3/5 — AC-1:other, AC-2:other |
+| ids only in metadata, debug | FAIL 4/6 — AC-2:ids, AC-1 istoric:historical | FAIL 4/5 — AC-2:other | FAIL 4/5 — AC-2:other |
+| seed rows only | FAIL 3/6 — AC-1:exposure, AC-2:exposure, AC-1 istoric:exposure | FAIL 3/5 — AC-1:other, AC-2:other | FAIL 3/5 — AC-1:other, AC-2:other |
+| initial data not created | FAIL 3/6 — AC-1:dataset, AC-2:dataset, AC-1 istoric:dataset | FAIL 3/5 — AC-1:other, AC-2:other | FAIL 3/5 — AC-1:other, AC-2:other |
+| initial data without phone | FAIL 3/6 — AC-1:dataset, AC-2:dataset, AC-1 istoric:dataset | PASS 5/5 | FAIL 3/5 — AC-1:other, AC-2:other |
+| initial rows omitted | FAIL 3/6 — AC-1:ids, AC-2:ids, AC-1 istoric:historical | FAIL 3/5 — AC-1:other, AC-2:other | FAIL 3/5 — AC-1:other, AC-2:other |
+| kept row omitted | FAIL 3/6 — AC-1:ids, AC-2:ids, AC-1 istoric:historical | FAIL 3/5 — AC-1:other, AC-2:other | FAIL 3/5 — AC-1:other, AC-2:other |
+| new row omitted | FAIL 4/6 — AC-1:ids, AC-2:ids | FAIL 3/5 — AC-1:other, AC-2:other | FAIL 3/5 — AC-1:other, AC-2:other |
+| seed rows only under any parameter | FAIL 4/6 — AC-2:exposure, AC-1 istoric:exposure | FAIL 4/5 — AC-2:other | FAIL 4/5 — AC-2:other |
+| threshold only under any parameter | FAIL 4/6 — AC-2:exposure, AC-1 istoric:exposure | FAIL 4/5 — AC-2:other | FAIL 4/5 — AC-2:other |
+| seed rows only under all=1 | FAIL 4/6 — AC-2:exposure, AC-1 istoric:exposure | FAIL 4/5 — AC-2:other | FAIL 4/5 — AC-2:other |
+| returned id differs | FAIL 3/6 — AC-1:ids, AC-2:ids, AC-4:other | FAIL 2/5 — AC-1:other, AC-2:other, AC-4:other | FAIL 2/5 — AC-1:other, AC-2:other, AC-4:other |
+| second returned id differs | FAIL 4/6 — AC-1:ids, AC-2:ids | PASS 5/5 | FAIL 3/5 — AC-1:other, AC-2:other |
+| historical phone filled | FAIL 5/6 — AC-1 istoric:historical | PASS 5/5 | PASS 5/5 |
+| historical row omitted | FAIL 5/6 — AC-1 istoric:historical | PASS 5/5 | PASS 5/5 |
+
+Cele opt variante suplimentare se interpretează astfel:
+
+- `initial data not created`, `initial data without phone`: numai `dataset`, regresii ale inițializării / precondiții invalide; nu sunt scăpări JSON și nu pretindem un eșec `exposure`. f1 trece lipsa telefonului inițial.
+- `initial rows omitted`, `kept row omitted`, `new row omitted`: apartenență prin id/numărul rândurilor din listă (`ids`; controlul istoric poate raporta `historical`), înaintea aserțiunii de expunere.
+- `seed rows only under any parameter`, `threshold only under any parameter`, `seed rows only under all=1`: `exposure`, în AC-2 și în AC-1 istoric. Cererea de bază a primului AC-1 trece. Controlul istoric cerut verifică și fiecare parametru anonim cu telefoanele inițiale; de aceea „numai AC-2” nu poate fi adevărat simultan cu acel control. Păstrăm toate verificările și documentăm rezultatul efectiv.
+
+Noile defecte: id-ul returnat greșit este prins prin `ids` (AC-4 neschimbat raportează suplimentar `other` când fiecare POST are id greșit); al doilea id greșit este ratat de f1. Umplerea telefonului istoric și omiterea rândului istoric sunt prinse numai de cazul separat, categoria `historical`; atât f1, cât și existing-reference trec aceste două variante.
+
+R-CODES folosește aceleași coduri T-001/T-002 în constatări, completări și review, prin `codedReviewFindings`; candidații istorici fără cod păstrează F1/F2. Fluxul simulat trece prin două cicluri de autor, reviewer independent, protejare, baseline, implementare, verificări și QA până la DELIVERY_READY; niciun furnizor real nu este apelat.
+
+Verificare finală: secțiunea contractului are 6134 octeți pentru autor și 6144 pentru reviewer (limită testată 6 KB, inclusiv extrase). Cele 11 suite cerute: 307 teste trecute, 0 eșuate, 0 sărite la ultimele rulări; INT-05 a fost rerulat după înlocuirea tuturor aparițiilor versiunii în acel caz. Nicio suită blocată de sandbox. Cele 58 de fișiere existente din cele două directoare de dovezi au fost comparate cu HEAD: identice, cu excepția README, al cărui prefix original este identic și căruia i s-a adăugat numai această secțiune.

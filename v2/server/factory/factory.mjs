@@ -1,3 +1,5 @@
+import { findingCode, codedReviewFindings } from "./review.mjs";
+import { datasetProblem } from "./dataset.mjs";
 import fs from "node:fs";
 import path from "node:path";
 import crypto from "node:crypto";
@@ -861,10 +863,10 @@ export function createFactory(deps) {
   function addFinding(missionId, f) {
     const count = db.prepare("SELECT COUNT(*) AS n FROM factory_findings WHERE mission_id = ?").get(missionId).n;
     // M11 L5: "T" for the independent review of the Hub-written test (source test_review; the code review's filter never sees them).
-    const prefix = f.source === "reviewer" ? "F" : f.source === "qa" ? "Q" : f.source === "test_review" ? "T" : "I";
+    const code = findingCode(f.source, count + 1);
     const id = newId("fnd");
     db.prepare(`INSERT INTO factory_findings (id, mission_id, code, source, review_id, evidence_id, change_set_id, severity, file, area, observation, impact, evidence, reproduction, fingerprint, status, created_at, updated_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'OPEN', ?, ?)`).run(id, missionId, `${prefix}-${String(count + 1).padStart(3, "0")}`, f.source, f.reviewId || null, f.evidenceId || null,
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'OPEN', ?, ?)`).run(id, missionId, code, f.source, f.reviewId || null, f.evidenceId || null,
       f.changeSetId, f.severity, String(f.file || "").slice(0, 300), String(f.area || "").slice(0, 200), String(f.observation).slice(0, 2000), String(f.impact || "").slice(0, 1000),
       String(f.evidence || "").slice(0, 2000), String(f.reproduction || "").slice(0, 2000), String(f.fingerprint || hashCanonical([f.file, f.observation])).slice(0, 200), now(), now());
     return id;
@@ -1715,11 +1717,21 @@ export function createFactory(deps) {
 
   const holdPreviousMissing = (missionId, a) => holdStageZero(missionId, { kind: "previous_missing", text: "Copia variantei anterioare lipsește sau are alți octeți. Pasul 0 se oprește.", details: ["copia variantei anterioare lipsește sau are alți octeți"], taskId: a.authorTaskId });
 
+  function holdDataset(missionId, spec, taskId) {
+    if (!spec.spec.dataset) return false;
+    const project = projects.get(missions.get(missionId).projectId);
+    const problem = project ? datasetProblem(spec.spec.dataset, project.path) : "proiectul lipsește";
+    if (!problem) return false;
+    holdStageZero(missionId, { kind: "dataset", text: `Datele martor ale experimentului nu mai corespund surselor inițializării (${problem}): precondiție invalidă. Nu scriu și nu verific testul; codul nu e atins.`, details: [problem], taskId });
+    return true;
+  }
+
   async function dispatchTestAuthor(missionId) {
     { const stop = halted(missionId); if (stop) return stop; }
     const f = fm(missionId);
     const spec = approvedSpec(f);
     const a = authoringOf(spec);
+    if (holdDataset(missionId, spec, a.authorTaskId)) return;
     const mission = missions.get(missionId);
     const previous = [...(a.rejected || []).filter((r) => r.cycle === a.cycle - 1).flatMap((r) => r.reasons || []), ...(a.retryProblems || [])].slice(0, 20);
     const previousCandidate = previousCandidateOf(missionId, a);
@@ -1863,6 +1875,7 @@ export function createFactory(deps) {
     const f = fm(missionId);
     const spec = approvedSpec(f);
     const a = authoringOf(spec);
+    if (holdDataset(missionId, spec, a.reviewTaskId)) return;
     const c = a.candidate;
     const testText = readBlob(blobDir(missionId), c.sha);
     const previousCandidate = previousCandidateOf(missionId, a);
@@ -1901,6 +1914,7 @@ export function createFactory(deps) {
         json({ kind: "acceptance_test", harness: c.harness ?? 1, manifest: c.manifest, valid: parsed.valid, problems: parsed.problems, claimedVerdict: parsed.claimedVerdict, cause: parsed.cause, criteria: parsed.criteria, gate: parsed.gate, previousChecks: parsed.previousChecks, checks: parsed.checks, notes: parsed.notes }),
         changed ? "STALE" : parsed.valid ? "VALID" : "INVALID", now());
       if (!changed) {
+        parsed.findings = codedReviewFindings(parsed.findings, { source: "test_review", firstOrdinal: db.prepare("SELECT COUNT(*) AS n FROM factory_findings WHERE mission_id = ?").get(missionId).n + 1 });
         for (const finding of parsed.findings) addFinding(missionId, { ...finding, source: "test_review", reviewId, changeSetId, fingerprint: `test_review:${finding.file}:${finding.observation.slice(0, 80)}` });
         for (const prev of openPrev) {
           const state = parsed.previous[prev.code];

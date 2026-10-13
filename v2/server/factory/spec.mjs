@@ -1,4 +1,5 @@
 import path from "node:path";
+import { normalizeDataset } from "./dataset.mjs";
 import { HubError } from "../core/errors.mjs";
 import { hashCanonical } from "../core/canonical.mjs";
 import { redactText } from "../security/redact.mjs";
@@ -68,6 +69,11 @@ export function checkSpec(input = {}, { hubPorts = [8011, 8012] } = {}) {
       assumptions: list(input.sources?.assumptions, 20, 500),
     },
   };
+  if (input.dataset !== undefined) {
+    const { dataset, problem } = normalizeDataset(input.dataset);
+    if (problem) problems.push(problem);
+    else spec.dataset = dataset;
+  }
   if (input.changesExisting !== undefined && typeof input.changesExisting !== "boolean") problems.push("changesExisting trebuie să fie true/false");
   if (input.hubHelpers !== undefined && (!Array.isArray(input.hubHelpers) || input.hubHelpers.some((name) => name !== "json-exposure"))) problems.push("hubHelpers trebuie să fie o listă care conține doar json-exposure");
   if (!WORK_TYPES.includes(spec.workType)) problems.push(`workType trebuie să fie ${WORK_TYPES.join(" / ")}`);

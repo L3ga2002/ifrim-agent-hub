@@ -49,7 +49,7 @@ const AUTHORED = new URL("./factory-authored/", import.meta.url);
  */
 function authorAnswer(name, prompt) {
   const reference = name === "existing-reference-noneeds" ? "existing-reference" : name;
-  const data = ["json-reference", "existing-reference"].includes(reference) ? {
+  const data = ["json-reference", "existing-reference", "dataset-reference"].includes(reference) ? {
     body: fs.readFileSync(new URL(`./stage0-s25/${reference}.body.mjs.txt`, import.meta.url), "utf8"),
     manifest: JSON.parse(fs.readFileSync(new URL(`./stage0-s25/${reference}.manifest.json`, import.meta.url), "utf8")),
   } : JSON.parse(fs.readFileSync(new URL(`${name.replace(/[^a-z0-9-]/gi, "")}.json`, AUTHORED), "utf8"));
@@ -60,6 +60,7 @@ function authorAnswer(name, prompt) {
   const current = markerIndex < 0 ? "" : prompt.slice(markerIndex);
   const amends = current.match(/Repari varianta anterioară \(sha ([0-9a-f]{64})\)/)?.[1];
   const manifest = { testSlot: slot, needs: [], api: "", ...(amends ? { amends } : {}), ...(data.manifest || {}) };
+  if (reference === "dataset-reference" && amends) manifest.completes = [...current.matchAll(/^\d+\. (T-\d{3}):/gm)].map((m) => ({ ref: m[1], by: "Cazurile păstrate verifică datele martor, id-urile API și controlul istoric." }));
   return `SIMULARE (author fixture ${name}).\n\n\`\`\`js\n${body}\n\`\`\`\n\n\`\`\`json\n${JSON.stringify(manifest, null, 2)}\n\`\`\`\n`;
 }
 const logFile = opt("log");

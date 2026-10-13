@@ -1,3 +1,5 @@
+import { datasetBrief } from "./dataset.mjs";
+export { datasetBrief } from "./dataset.mjs";
 import path from "node:path";
 import vm from "node:vm";
 import ts from "typescript";
@@ -730,7 +732,7 @@ function exposureBrief(review = false) {
 }
 const AMEND_RULE = "„O verificare insuficientă se completează. O verificare greșită poate fi corectată sau înlocuită, cu justificare și verificare independentă.”";
 const CHECK_ID = /^P[1-9]\d*(?:\.[1-9]\d*)?$/;
-const COMPLETION_REF = /^(F[1-9]\d*|P[1-9]\d*(?:\.[1-9]\d*)?|AC-\d{1,3})$/;
+const COMPLETION_REF = /^(T-\d{3}|F[1-9]\d*|P[1-9]\d*(?:\.[1-9]\d*)?|AC-\d{1,3})$/;
 
 /** Bounded, quoted review data shared by both amendment briefs and the advisory mapping signal. */
 export function completionItems(previousCandidate) {
@@ -742,7 +744,7 @@ export function completionItems(previousCandidate) {
   const add = (ref, text) => {
     if (items.length < 30) items.push({ ref, text: fenceSafe(redactText(`${ref}: ${text}`)).replace(/\s+/g, " ").trim().slice(0, 396) });
   };
-  for (const [i, finding] of findings.entries()) add(`F${i + 1}`, `${finding.severity}: ${finding.observation}${finding.impact ? ` — ${finding.impact}` : ""}`);
+  for (const [i, finding] of findings.entries()) add(finding.code || `F${i + 1}`, `${finding.severity}: ${finding.observation}${finding.impact ? ` — ${finding.impact}` : ""}`);
   for (const check of review.checks || []) if (check.nature === "insufficient" && CHECK_ID.test(check.id)) {
     add(check.id, `${inventory.find((entry) => entry.id === check.id)?.statement || ""} — ${check.why || ""}`);
   }
@@ -845,6 +847,7 @@ export function buildAuthorBrief({ mission = {}, spec = {}, specVersion = 1, spe
     "",
   ];
   if (spec.hubHelpers?.includes("json-exposure")) lines.push(...exposureBrief());
+  if (spec.dataset) lines.push(datasetBrief(spec.dataset));
   if (files.length) {
     lines.push("## Fișierele sursă ale proiectului (azi)", ...files.map((f) => `- ${f}${Array.isArray(exportsOf[f]) && exportsOf[f].length ? ` — exportă: ${exportsOf[f].slice(0, 30).join(", ")}` : ""}`), "");
   }
@@ -867,7 +870,7 @@ export function buildAuthorBrief({ mission = {}, spec = {}, specVersion = 1, spe
     JSON.stringify({ testSlot: slot, needs: [], newApi: [], ...(cycle > 0 && previousCandidate ? { amends: previousCandidate.sha, removed: [{ id: "P1", basis: "wrong", why: "justificarea verificării greșite", by: "verificarea înlocuitoare" }] } : { removed: [] }), api: workType === "FEATURE" ? "o propoziție: forma API aleasă" : "", cases: criteria.flatMap((c) => c.guard ? [{ name: `${c.id} control: …`, criterion: c.id, kind: "control", today: "pass" }] : [
       { name: `${c.id}: …`, criterion: c.id, kind: "check", today: "fail" },
       ...(workType === "BUGFIX" ? [{ name: `${c.id} control: …`, criterion: c.id, kind: "control", today: "pass" }] : []),
-    ]), ...(cycle > 0 ? { completes: [{ ref: "F1", by: "numele cazului: ce verifică noua verificare" }] } : {}) }, null, 2),
+    ]), ...(cycle > 0 ? { completes: [{ ref: completionItems(previousCandidate)[0]?.ref || "F1", by: "numele cazului: ce verifică noua verificare" }] } : {}) }, null, 2),
     "```");
   return redactText(lines.join("\n"));
 }
@@ -1145,6 +1148,8 @@ const RULE_PLAIN = Object.freeze({
 });
 
 const SIGNAL_PLAIN = Object.freeze({
+  dataset_unfixed: "datele martor nu sunt fixate prin id-uri literale și aserțiuni DATE MARTOR",
+  values_filtered: "filtrarea telefoanelor poate elimina o valoare așteptată din verificarea expunerii",
   needs_unused: "un modul cerut în needs nu e folosit în corp",
   existing_record_unproven: "existența înregistrărilor nu este verificată printr-o citire internă recunoscută",
   date_now: "folosește ora curentă (Date.now / new Date())",
@@ -1637,13 +1642,25 @@ export function lintTestBody(body, { manifest = null, criteria = [], workType = 
     const arg = first ? code.slice(first.start, first.end).trim().replace(/^(?:\(\s*)+/, "") : "";
     if (/^(?:["'`{\[]|[+-]?\s*(?:\d|\.\d)|true\b|false\b|null\b|JSON\s*\.\s*stringify\s*\()/.test(arg)) add("exposure_helper_literal", "exposes", m.index);
   }
+  if (spec.dataset) {
+    const missing = spec.dataset.initial.filter((row) => !lex.strings.some((s) => s.value === row.id));
+    const labelled = [...code.matchAll(/(?<![.\w$])assert(?:\s*\.\s*\w+)?\s*\(/g)].some((m) => {
+      const call = callArgs(code, m.index + m[0].length - 1), last = call?.args.at(-1);
+      return last && lex.strings.some((s) => s.start >= last.start && s.end <= last.end && s.value.startsWith("DATE MARTOR"));
+    });
+    if (missing.length || !labelled) signal("dataset_unfixed", missing.length ? missing.map((r) => r.id).join(", ") : "lipsește mesajul DATE MARTOR");
+  }
   const exposureCovered = exposureStructure(text, add);
+  const contentContext = assertionInventory(text, manifest || {}).context;
   if (exposureRequired) {
     for (const c of criteria.filter((c) => ["public_omits", "anon_params"].includes(c?.kind))) {
       const checks = tests.filter((t) => t.criterion === c.id && cases.some((x) => x.name === t.name && x.kind === "check"));
       const covered = checks.some(exposureCovered);
       if (!covered) add("exposure_helper_unused", c.id);
       if (checks.some((t) => !/(?<![.\w$])sqlite\s*\./.test(code.slice(t.segStart, t.segEnd)))) signal("existing_record_unproven", c.id);
+      for (const check of checks) {
+        if (filteredExposureValues(contentContext.cases[check.name]?.code || "", contentContext.decls)) signal("values_filtered", c.id);
+      }
     }
   }
 
@@ -1775,6 +1792,36 @@ export function lintTestBody(body, { manifest = null, criteria = [], workType = 
   if ((needs.has("node:fs") || facts.needsUsed.includes("node:fs")) && facts.missingModules.length) signal("fs_with_missing_module", facts.missingModules.join(", "));
 
   return { ok: violations.length === 0, violations, signals, facts };
+}
+
+/** Advisory data-flow through local bindings/helpers; only the lexer's code view is inspected. */
+function filteredExposureValues(caseCode, declarations) {
+  const parts = [caseCode], used = new Set();
+  for (const part of parts) for (const name of part.match(/[A-Za-z_$][\w$]*/g) || []) {
+    if (used.has(name) || !Object.hasOwn(declarations, name)) continue;
+    used.add(name); parts.push(scanSource(declarations[name]).code);
+  }
+  const code = parts.join("\n"), bindings = new Map();
+  for (const m of code.matchAll(/(?<![.\w$])([A-Za-z_$][\w$]*)\s*=(?!=|>)/g)) {
+    const start = m.index + m[0].length, end = code.indexOf(";", start);
+    const expr = code.slice(start, end < 0 ? code.length : end);
+    bindings.set(m[1], [...(bindings.get(m[1]) || []), expr]);
+  }
+  for (const name of used) bindings.set(name, [...(bindings.get(name) || []), scanSource(declarations[name]).code]);
+  for (const m of code.matchAll(/(?<![.\w$])exposes\s*\(/g)) {
+    const call = callArgs(code, m.index + m[0].length - 1), options = call?.args[1];
+    if (!options) continue;
+    const object = code.slice(options.start, options.end), value = /\bvalues\b\s*(?::\s*([\s\S]*))?/.exec(object);
+    if (!value) continue;
+    const pending = [value[1] || "values"], visited = new Set();
+    for (const expr of pending) {
+      if (/\.\s*filter\s*\(/.test(expr) && /\btypeof\b|\.\s*length\b|\btrim\b/.test(expr)) return true;
+      for (const name of expr.match(/[A-Za-z_$][\w$]*/g) || []) if (!visited.has(name)) {
+        visited.add(name); pending.push(...(bindings.get(name) || []));
+      }
+    }
+  }
+  return false;
 }
 
 /**
@@ -2142,6 +2189,7 @@ export function classifyProof({ runs = [], manifest = {}, criteria = [], workTyp
 
 /** The test reviewer's package (Codex, read-only, its own conversation). */
 export function buildTestReviewBrief({ mission = {}, spec = {}, specVersion = 1, testRef = "", testSha = "", testText = "", manifest = {}, proof = {}, lint = {}, cycle = 0, previousCandidate = null, inventoryRemoved = [], contextChanged = [], inventory = [], removedDeclared = [], openFindings = [], harness = 1 } = {}) {
+  openFindings = openFindings.map((f, i) => ({ ...f, code: f.code || `F${i + 1}` }));
   if (!inventory.length) inventory = assertionInventory(testText, manifest, { sha: testSha || null, headerLines: String(testText).split("\n").findIndex((l) => l === "// ---- corpul testului ----") + 1 });
   const criteria = testCriteriaOf(spec.acceptance);
   const words = [...new Set([...(Array.isArray(spec.sources?.user) ? spec.sources.user : []), spec.objective].filter(Boolean).map(String))];
@@ -2195,6 +2243,7 @@ export function buildTestReviewBrief({ mission = {}, spec = {}, specVersion = 1,
     "",
   ];
   if (spec.hubHelpers?.includes("json-exposure")) lines.push(...exposureBrief(true));
+  if (spec.dataset) lines.push(datasetBrief(spec.dataset, { review: true }));
   lines.push("## Inventarul variantei curente", AMEND_RULE,
     "Când o constatare critică o verificare existentă, clasifică-o în checks: [{ id, nature: insufficient | wrong, why }]. insufficient = corectă, dar nu acoperă tot ce se cere: va fi completată, niciodată eliminată. wrong = verifică ceva necerut de proprietar, ar respinge o implementare corectă sau nu poate trece niciodată: poate fi corectată ori înlocuită. O critică nu este permisiune de ștergere. why: 10–200 caractere.",
     "```json", fenceSafe(JSON.stringify(inventory.map(({ id, test, criterion, statement }) => ({ id, test, criterion, statement })), null, 2)), "```");
@@ -2208,7 +2257,7 @@ export function buildTestReviewBrief({ mission = {}, spec = {}, specVersion = 1,
     "```json", fenceSafe(JSON.stringify(judged.map((r) => ({ ...r, context: r.reasons ? `text păstrat, context schimbat: ${r.reasons.join(", ")}` : "eliminată sau înlocuită", "afirmația autorului (nu e dovadă)": removedDeclared.find((d) => d.id === r.id) || "nedeclarat" })), null, 2)), "```");
   if (openFindings.length) {
     lines.push("## Findings deschise din verificarea anterioară", "Pentru FIECARE cod de mai jos spune în previousFindings dacă este resolved, still_open sau disputed:",
-      ...openFindings.map((f) => `- ${f.code} [${f.severity}] ${f.file}: ${fenceSafe(f.observation)}`), "");
+      ...openFindings.map((f) => `- ${f.code} [${f.severity}] ${f.file || "—"}: ${fenceSafe(f.observation)}`), "");
   }
   lines.push("## Răspuns obligatoriu",
     "Încheie răspunsul cu un singur bloc ```json, exact cu această structură:",

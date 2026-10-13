@@ -10,12 +10,17 @@ import { e2eStepLines } from "./spec.mjs";
 export const VERDICTS = Object.freeze(["PASS", "CHANGES_REQUESTED", "INCONCLUSIVE"]);
 export const SEVERITIES = Object.freeze(["critical", "high", "medium", "low", "info"]);
 export const BLOCKING_SEVERITIES = Object.freeze(new Set(["critical", "high"]));
+export const FINDING_PREFIXES = Object.freeze({ reviewer: "F", qa: "Q", test_review: "T", otherwise: "I" });
+export const findingCode = (source, ordinal) => `${Object.hasOwn(FINDING_PREFIXES, source) ? FINDING_PREFIXES[source] : FINDING_PREFIXES.otherwise}-${String(ordinal).padStart(3, "0")}`;
+/** The Factory and isolated rehearsals share the mission-wide ordinal scheme. */
+export const codedReviewFindings = (findings, { source = "test_review", firstOrdinal = 1 } = {}) => findings.map((finding, i) => ({ ...finding, code: findingCode(source, firstOrdinal + i) }));
 const MAX_DIFF_IN_BRIEF = 40000;
 
 export const changeSetMarker = (sha) => `CHANGE_SET ${String(sha).slice(0, 12)}`;
 
 /** The reviewer's instructions and package (one user message in the mission's review conversation). */
 export function buildReviewBrief({ mission, spec, specVersion, changeSet, checks = [], openFindings = [], cycle = 0 }) {
+  openFindings = openFindings.map((f, i) => ({ ...f, code: f.code || `F${i + 1}` }));
   const diff = String(changeSet.diffText || "");
   const lines = [
     `# Review independent — ${mission.title}`,
@@ -43,7 +48,7 @@ export function buildReviewBrief({ mission, spec, specVersion, changeSet, checks
   ];
   if (openFindings.length) {
     lines.push("## Findings deschise din review-ul anterior", "Pentru FIECARE cod de mai jos spune în previousFindings dacă este resolved, still_open sau disputed:",
-      ...openFindings.map((f) => `- ${f.code} [${f.severity}] ${f.file}: ${f.observation}`), "");
+      ...openFindings.map((f) => `- ${f.code} [${f.severity}] ${f.file || "—"}: ${f.observation}`), "");
   }
   lines.push("## Diff", "```diff", diff.length > MAX_DIFF_IN_BRIEF ? `${diff.slice(0, MAX_DIFF_IN_BRIEF)}\n[diff trunchiat; citește fișierele listate]` : diff || "(gol)", "```", "",
     "## Răspuns obligatoriu",

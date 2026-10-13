@@ -33,6 +33,7 @@
 //   cancelled, or when the preserved request it belongs to is cancelled or expires. A draft the owner made (no intake provenance)
 //   or one that already started is never touched.
 import fs from "node:fs";
+import { experimentDataset } from "../../factory/dataset.mjs";
 import crypto from "node:crypto";
 import path from "node:path";
 import { HubError } from "../../core/errors.mjs";
@@ -372,12 +373,19 @@ export function buildEngineeringSpec({ text, args = {}, project, hubWrites = {},
       ...supersedes.map((x) => `Diferența de contract pentru ${x.testRef}: ${x.contract.conflicts.map((c) => `${c.case} citea ${x.contract.field} din ${c.routes.join(", ")} (lista publică) → înlocuit de ${c.replacedBy.join(", ")}`).join("; ")}${x.contract.kept.length ? `; ${x.contract.kept.map((k) => `${k.case} (${k.kind}) rămâne acoperit de ${k.coveredBy.join(", ")}`).join("; ")}` : ""}${x.contract.internalReads.length ? `; citirile interne (${x.contract.internalReads.join(", ")}) rămân compatibile` : ""}`));
     derived.assumptions.push(`Contractul vechi și cel nou se contrazic la ${supersedes.length === 1 ? "un test" : `${supersedes.length} teste`} scris${supersedes.length === 1 ? "" : "e"} de Hub înainte; criteriile noi verifică separat păstrarea internă și neexpunerea publică`);
   }
+  let dataset = null;
+  if (derived?.shape === "hide_public" && project.source === "hub-test") {
+    const declared = experimentDataset(project.path);
+    if (declared?.ok && requestShapeField(words)?.key === declared.dataset.field) dataset = declared.dataset;
+    else if (declared?.ok === false && requestShapeField(words)?.key === "phone") derived.assumptions.push("Datele martor nu sunt declarate deoarece sursele inițializării diferă de cele declarate.");
+  }
   const checkCommand =checks.length ? checks : [scripts.test && !/^\s*node --test\b/.test(String(scripts.test)) ? "npm test" : "node --test"];
   const input = {
     workType, title: finalTitle, objective: words,
     spec: testFirst?.ok ? {
       ...(derived?.changesExisting ? { changesExisting: true } : {}),
       ...(derived?.hubHelpers ? { hubHelpers: derived.hubHelpers } : {}),
+      ...(dataset ? { dataset } : {}),
       inScope: (Array.isArray(args.inScope) ? args.inScope : []).map((s) => String(s).slice(0, 300)).filter(Boolean).slice(0, 10),
       outOfScope: ["deploy, commit, push", "alte proiecte", "dependențe noi necerute de tine"],
       acceptance,
