@@ -158,3 +158,17 @@ Fișierele imuabile rămân identice octet cu octet: `json-reference.*`, `rh0-*`
 c1–c8 (inclusiv manifestele și review-urile), `r1-*`, `amend-reference.body.mjs.txt`,
 `variant-*.js.txt` și `new-protocol.*`. În acest director se adaugă doar noua pereche de referință
 și această secțiune din README; nimic din dovezile anterioare nu este rescris.
+
+## Repetiția izolată 2.14.11 (2026-10-13, aplicația sintetică, fără Hub-ul live)
+
+Spec-ul repetiției = cel produs de `buildEngineeringSpec` pentru cerința salvată (aceleași 5 criterii, `hubHelpers`); brief-urile din codul
+2.14.11 (criteriile și brief-urile R-EXISTING v2). Fluxul urmează `factory.mjs`: un candidat respins de lint consumă rescrierea unică.
+
+| Fișier | Rulare | Rezultat |
+|---|---|---|
+| e0-ad7e4544c066 (+ manifest) | autor Claude sonnet medium, doar citire, sesiunea `2541f7ba-feed-44f6-8a9b-41e98d818f6b` (încercarea 3; încercările 1–2 au primit HTTP 429 de la furnizor, fără test) | respins de lint înainte de rulare: `needs_missing` × 5 (manifestul a păstrat `"needs": []` din șablon) |
+| e1-b8f25b9882ac (+ manifest) | aceeași conversație Claude, ciclul 1 (`amends` = e0), corp identic, doar `needs` completat | lint curat, nimic eliminat; dovada Hub-ului: INCONCLUSIVE (timeout) — cele 5 cazuri raportează rezultatul așteptat, dar procesul nu se închide cât timp AC-1/AC-2 pică (serverul e închis după aserțiunea care pică, fără `try/finally`); ciclul 1 = `reauthorMax` → pasul 0 epuizat, fără review Codex |
+| e1-calibration.json | diagnostic, NU dovada Hub-ului: același fișier rulat cu `node --test --test-force-exit` | PASS 5/5 pe aplicația corectă; respinge pe aserțiuni aplicația inițială, toate cele 29 de variante din inventar și cele 8 variante de calibrare (38/38) |
+
+Concluzie: conținutul testului scris de autorul real acoperă datele inițiale ale aplicației, programarea păstrată și cea nouă și respinge
+toate variantele defecte; repetiția nu trece porțile din cauza a două greșeli mecanice ale autorului, prinse corect de Hub (lint și timeout).
