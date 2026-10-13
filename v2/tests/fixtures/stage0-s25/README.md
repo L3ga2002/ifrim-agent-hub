@@ -260,3 +260,17 @@ test.after(async (t) => { await hubCleanup(t, registry.file.splice(0)); });
 ```
 
 Duratele celor două rulări e1 din T-CLEAN-01: 349 ms și 331 ms (ieșire normală, fără timeout).
+
+## Repetiția izolată 2.14.12 (2026-10-13, aplicația sintetică, antet v2, fără Hub-ul live, fără `--test-force-exit`)
+
+| Fișier | Rulare | Rezultat |
+|---|---|---|
+| f0-682a820d4e17 (+ manifest) | autor Claude sonnet medium, doar citire, sesiunea `866326c0-75ff-4d77-b90e-cac723a4aef8` (încercarea 2 a ciclului 0; încercarea 1, sesiunea `566bc518-…`, s-a blocat în gândire: patru mesaje oprite la `max_tokens`, fără text → răspuns necitibil, încercare nouă, nu rescriere) | `needs` declarat `[]`, completat de Hub cu `node:path, node:os, node:fs, node:sqlite, node:http`; lint curat; dovadă PROVEN, 2 rulări a câte 321 / 330 ms, ieșire normală, fiecare caz cu raport `HUB_CLEANUP ok` |
+| f0-review.parsed.json | verificator Codex gpt-6.1-sol medium, doar citire, sesiunea `01a1354d-b379-7531-b37b-cf77da0a3aad` | CHANGES_REQUESTED: stocarea comparată doar prin numărul rândurilor; `values` poate omite telefoane; înregistrarea păstrată identificată doar prin telefon; intervalele fixate fără contractul grilei; P211/P220/P229/P140 `insufficient` |
+| f1-a3f0c1f5b54d (+ manifest) | completare Claude, `amends` = f0, aceeași conversație (`--resume`) | `needs` completat din nou de Hub; lint curat; nimic eliminat (35 de verificări cu context schimbat, 3 semnale `completion_unmapped`); PROVEN, 318 / 321 ms, ieșire normală |
+| f1-review.parsed.json | Codex, sesiunea `01a13554-ede1-7232-bf38-d1667cdbe2d5` | CHANGES_REQUESTED: toate verificările anterioare `kept`, niciun `lost`; AC-3/AC-4/AC-5 acoperite; AC-1/AC-2 deschise (telefoanele care nu sunt șiruri excluse din aserțiune și din `values`; identitatea și telefoanele rândurilor inițiale nefixate înainte de repornire; id-ul celei de-a doua creări necapturat) → pasul 0 epuizat |
+| f1-calibration.json | matricea fără `--test-force-exit` (29 + 8 variante + aplicația corectă), nod `C:\Program Files\nodejs\node.exe` v24.14.0 | f0 și f1: aplicația corectă PASS 5/5; cele 29 de variante din inventar respinse pe aserțiuni; dintre cele 8 de calibrare suplimentare, **„initial data without phone” trece** (testul nu afirmă că telefoanele rândurilor inițiale sunt nevide); 0 procese blocate, `cleanup.ok` la fiecare caz |
+
+Cele două blocaje mecanice ale repetiției 2.14.11 nu au mai apărut: omisiunea `needs` a fost completată de Hub în ambele cicluri, fără să
+consume rescrierea, iar testul care pică pe AC-1/AC-2 a ieșit normal în sub o secundă, cu resursele închise de antetul v2. Oprirea s-a
+făcut la poarta de conținut (review-ul Codex al completării), nu la cea mecanică; release-ul și cardul §25 nu au fost făcute.
