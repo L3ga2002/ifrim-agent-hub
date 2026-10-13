@@ -219,7 +219,7 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 async function factoryWrite(msg, turnId, name) {
   const cwd = msg.params.cwd;
   let patch;
-  try { patch = JSON.parse(fs.readFileSync(path.join(FACTORY_PATCHES, `${name.replace(/[^a-z0-9-]/gi, "")}.json`), "utf8")); }
+  try { patch = name === "privacy-harness" ? { write: { "src/server-app.js": fs.readFileSync(path.join(cwd, "src/server-app.js"), "utf8").replace("phone: row.phone, ", "") } } : JSON.parse(fs.readFileSync(path.join(FACTORY_PATCHES, `${name.replace(/[^a-z0-9-]/gi, "")}.json`), "utf8")); }
   catch { return send({ method: "turn/completed", params: { threadId, turn: { id: turnId, status: "failed", items: [], error: { message: `fake: patch ${name} missing` } } } }); }
   const inside = (rel) => { const abs = path.resolve(cwd, rel); return abs.startsWith(path.resolve(cwd) + path.sep) ? abs : null; };
   // M11 L5: "{PROTECTED_TEST}" in a patch path stands for the protected acceptance test the CURRENT writer brief names (a Hub-written

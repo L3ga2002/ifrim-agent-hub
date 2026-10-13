@@ -172,3 +172,91 @@ Spec-ul repetiției = cel produs de `buildEngineeringSpec` pentru cerința salva
 
 Concluzie: conținutul testului scris de autorul real acoperă datele inițiale ale aplicației, programarea păstrată și cea nouă și respinge
 toate variantele defecte; repetiția nu trece porțile din cauza a două greșeli mecanice ale autorului, prinse corect de Hub (lint și timeout).
+
+## Antet v2 / R-NEEDS (2.14.12-m11)
+
+Antetul 1 și toate dovezile istorice rămân identice octet cu octet. Identitățile de mai jos folosesc
+metadatele implicite ale antetului, `harness: 2`, `helpers: ["json-exposure"]` și corpul original:
+
+- e0, `normalizeNeeds(body, [])`: SHA-256 `9fd197172c5c896df2a6ee578cb6e77f10e9ae73ff4ee375f6a65f76c435de44`.
+- e1, manifestul original: SHA-256 `9fd197172c5c896df2a6ee578cb6e77f10e9ae73ff4ee375f6a65f76c435de44`.
+- existing-reference, manifestul original: SHA-256 `894c2836be1b37d51abedbc420a409b6bf69a96e1e8d77cb794eee48599f5536`.
+- Lista completată pentru e0, exact în ordinea antetului: `node:path, node:os, node:fs, node:sqlite, node:http`.
+  Primele folosiri libere sunt la liniile 37, 37, 37, 69, respectiv 3 ale corpului. Corpurile e0 și e1 sunt identice; după normalizare au aceeași identitate v2.
+- Helperul `json-exposure` rămâne v1, SHA-256 `984e7cf2876ddbf514b1a6b6c86741736946f64adf8edf0ef0215369b136704f`.
+
+Calibrare fără model pe Node v24.14.0, `node --test --test-reporter=tap`, timeout 20000 ms.
+Fiecare proces a ieșit singur (`error === undefined`, `signal === null`); fiecare caz are `cleanup.ok === true`.
+Toate eșecurile matricei sunt `ERR_ASSERTION`, fără mesaje `HUB_`. Coloanele arată teste/trecute/picate.
+
+| Variantă | existing-reference / antet 2 | e1 / antet 2 |
+|---|---|---|
+| corect | PASS (5/5/0) | PASS (5/5/0) |
+| original | FAIL (5/3/2) | FAIL (5/3/2) |
+| refuse-all | FAIL (5/1/4) | FAIL (5/1/4) |
+| phone lost on save | FAIL (5/2/3) | FAIL (5/2/3) |
+| browser-only validation | FAIL (5/4/1) | FAIL (5/4/1) |
+| masked value | FAIL (5/3/2) | FAIL (5/3/2) |
+| includePhone bypass | FAIL (5/4/1) | FAIL (5/4/1) |
+| debug other key | FAIL (5/4/1) | FAIL (5/4/1) |
+| empty list | FAIL (5/3/2) | FAIL (5/3/2) |
+| invalid request saved | FAIL (5/4/1) | FAIL (5/4/1) |
+| missing-property accepted | FAIL (5/4/1) | FAIL (5/4/1) |
+| id only in metadata | FAIL (5/3/2) | FAIL (5/3/2) |
+| fields=phone other key | FAIL (5/4/1) | FAIL (5/4/1) |
+| phone in text | FAIL (5/3/2) | FAIL (5/3/2) |
+| phone as key | FAIL (5/3/2) | FAIL (5/3/2) |
+| escaped key and value | FAIL (5/3/2) | FAIL (5/3/2) |
+| escaped value other key | FAIL (5/3/2) | FAIL (5/3/2) |
+| existing records only | FAIL (5/3/2) | FAIL (5/3/2) |
+| escape in text other key | FAIL (5/3/2) | FAIL (5/3/2) |
+| seed ignored, leak only before restart | FAIL (5/3/2) | FAIL (5/2/3) |
+| existing record absent after restart | FAIL (5/3/2) | FAIL (5/3/2) |
+| existing record on another day | FAIL (5/3/2) | FAIL (5/3/2) |
+| existing phone not persisted | FAIL (5/3/2) | FAIL (5/3/2) |
+| empty list, base | FAIL (5/3/2) | FAIL (5/3/2) |
+| empty list, debug | FAIL (5/4/1) | FAIL (5/4/1) |
+| existing omitted, base | FAIL (5/3/2) | FAIL (5/3/2) |
+| existing omitted, debug | FAIL (5/4/1) | FAIL (5/4/1) |
+| ids only in metadata, base | FAIL (5/3/2) | FAIL (5/3/2) |
+| ids only in metadata, debug | FAIL (5/4/1) | FAIL (5/4/1) |
+| seed rows only | FAIL (5/3/2) | FAIL (5/3/2) |
+| initial data not created | FAIL (5/3/2) | FAIL (5/2/3) |
+| initial data without phone | FAIL (5/3/2) | FAIL (5/3/2) |
+| initial rows omitted | FAIL (5/3/2) | FAIL (5/3/2) |
+| kept row omitted | FAIL (5/3/2) | FAIL (5/3/2) |
+| new row omitted | FAIL (5/3/2) | FAIL (5/3/2) |
+| seed rows only under any parameter | FAIL (5/4/1) | FAIL (5/4/1) |
+| threshold only under any parameter | FAIL (5/4/1) | FAIL (5/4/1) |
+| seed rows only under all=1 | FAIL (5/4/1) | FAIL (5/4/1) |
+
+T-NEEDS-01 și T-CLEAN-01: originalul este PROVEN în două rulări identice, numai AC-1/AC-2 pică
+pe aserțiunile `exposes`; controalele trec. T-CLEAN-04 verifică închiderea dublă, SQLite deja închis,
+închideri care aruncă, corp eșuat urmat de cleanup eșuat, ordinea inversă și izolarea între cazuri,
+resurse la nivel de fișier și închiderea blocată limitată la 5000 ms. Diagnosticul rămâne autoritar
+chiar când Node păstrează eroarea aserțiunii și ascunde eroarea hook-ului. T-RUN-02 păstrează raportul
+de activitate asincronă după test (`file_crash`).
+
+T-RUN-01 folosește obiectul public `hub.factoryRunner.run` numai în test: după execuția reală a
+UNUI baseline, păstrează cazurile și semnătura și întoarce `reason: "timeout", timedOut: true`.
+Poarta oprește writerul, cu `factory.acceptance_unstable.cause: "incomplete"`; nu se schimbă timeout-ul
+runnerului. T-FLOW-01 pornește de la copia sintetică §25 (fără testele altui contract din booking-demo),
+folosește numai furnizorii falși, completează cele cinci imports fără rescriere, păstrează manifestul
+și sha din pending până la protejare/baseline, apoi trece prin CHECKING, review și QA la DELIVERY_READY.
+Comenzile QA și protecția testelor istorice sunt neschimbate.
+
+Liniile exacte care înlocuiesc `setup` în antetul 2:
+
+```js
+// Antet Hub v2: resursele întoarse de setup() se înregistrează pe cazul curent și sunt închise de Hub la sfârșitul lui, la succes și la eșec (raport HUB_CLEANUP în TAP).
+const hubTimer = setTimeout, hubClear = clearTimeout;
+const registry = { current: null, file: [] }; const hubAdd = (label, value) => { if (value && (typeof value === "object" || typeof value === "function") && typeof value.close === "function") (registry.current?.items || registry.file).push({ label: String(label).replace(/\s+/g, " ").slice(0, 60), target: value }); return value; };
+const setup = async (label, fn) => { let value; try { value = await fn(); } catch (e) { assert.fail(`HUB_SETUP ${label}: ${e?.code || e?.name || "eroare"}`); } return hubAdd(label, value); };
+const hubClose = ({ target }) => new Promise((resolve) => { let settled = false; const finish = (ok, status) => { if (!settled) { settled = true; hubClear(timer); resolve({ ok, status }); } }; const timer = hubTimer(() => { try { target.closeAllConnections?.(); } catch {} try { target.unref?.(); } catch {} finish(false, "blocat"); }, 5000); timer.unref(); (async () => { try { if (target.listening === false || target.isOpen === false) { finish(true, "deja închis"); return; } if (typeof target.listening === "boolean") await new Promise((done, fail) => target.close((e) => e ? fail(e) : done())); else await target.close(); finish(true, "închis"); } catch (e) { if (e?.code === "ERR_SERVER_NOT_RUNNING" || e?.code === "ERR_INVALID_STATE") finish(true, "deja închis"); else finish(false, `eroare ${String(e?.code || e?.name || "necunoscută").replace(/\s+/g, " ").slice(0, 60)}`); } })(); });
+const hubCleanup = async (t, items) => { const details = [], bad = []; for (const item of [...items].reverse()) { const { ok, status } = await hubClose(item), detail = `${item.label}: ${status}`; details.push(detail); if (!ok) bad.push(detail); } t.diagnostic(`HUB_CLEANUP ${bad.length ? "fail" : "ok"} ${items.length}${details.length ? ` ${details.join("; ")}` : ""}`); if (bad.length) throw new Error(`HUB_CLEANUP ${bad.join("; ")}`); };
+test.beforeEach(() => { registry.current = { items: [] }; });
+test.afterEach(async (t) => { const items = registry.current?.items || []; registry.current = null; await hubCleanup(t, items); });
+test.after(async (t) => { await hubCleanup(t, registry.file.splice(0)); });
+```
+
+Duratele celor două rulări e1 din T-CLEAN-01: 349 ms și 331 ms (ieșire normală, fără timeout).

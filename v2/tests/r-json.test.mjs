@@ -383,6 +383,7 @@ test("T-JSON-FACTORY", { timeout: 120000 }, async () => {
     await waitFor(() => stored().authoring?.blocked?.kind === "exhausted", 100000, 50);
     await h.hub.factory.idle(mission.id);
     const authoring = stored().authoring, identity = [hubHelperIdentity("json-exposure")];
+    assert.equal(authoring.candidate.harness, 2);
     assert.deepEqual(authoring.proof.helpers, identity); assert.equal(authoring.proof.verdict, "PROVEN");
     assert.equal(authoring.cycle, 1); assert.equal(h.hub.factory.writerStarted(mission.id), false);
     assert.deepEqual(authoring.candidate.inventoryRemoved, []);

@@ -52,6 +52,7 @@ export const NEEDS = Object.freeze({
   "node:http": Object.freeze({ binding: "http", line: 'import http from "node:http";' }),
 });
 export const ALLOWED_NEEDS = Object.freeze(Object.keys(NEEDS));
+export const TEST_HARNESS_VERSION = 2;
 
 // Hash the canonical source, then render its identity comment separately (no self-referential digest).
 export const HUB_HELPERS = Object.freeze({
@@ -165,6 +166,7 @@ export const T_PROOF_INCONCLUSIVE = (reason) => `Nu am putut verifica testul pe 
 
 /** One plain phrase per class of proof outcome (classifyProof's `cause`): no paths, no error codes, no jargon. */
 export const PROOF_CAUSES = Object.freeze({
+  cleanup: "resursele cazului nu s-au închis",
   helper: "verificarea pusă de Hub lipsește sau a fost modificată",
   wrong: "testul nu a picat din motivul cerut",
   setup_failed: "testul pică la pregătire, nu pe comportamentul cerut",
@@ -759,7 +761,7 @@ export function completionSignals(previousCandidate, completes = []) {
 }
 
 /** The Hub-owned header of the test file (also shown to the author). */
-export function testHeader({ missionId = "", specVersion = 1, specSha = "", needs = [], helpers = [] } = {}) {
+export function testHeader({ missionId = "", specVersion = 1, specSha = "", needs = [], helpers = [], harness = 1 } = {}) {
   const id = String(missionId || "").replace(/[^\w-]/g, "").slice(0, 80) || "—";
   const sha12 = String(specSha || "").replace(/[^0-9a-f]/gi, "").slice(0, 12) || "—";
   const wanted = new Set(Array.isArray(needs) ? needs : []);
@@ -771,7 +773,17 @@ export function testHeader({ missionId = "", specVersion = 1, specSha = "", need
     ...ALLOWED_NEEDS.filter((k) => wanted.has(k)).map((k) => NEEDS[k].line),
     'const load = async (rel) => { try { return await import(new URL(rel, import.meta.url)); } catch (e) { assert.fail(`HUB_LOAD ${rel}: ${e?.code || e?.name || "eroare"}`); } };',
     'const need = (m, name) => { if (typeof m[name] === "function") return m[name]; assert.fail(`HUB_SETUP export ${name}: ${name in m ? typeof m[name] : "lipsește"}`); };',
-    'const setup = async (label, fn) => { try { return await fn(); } catch (e) { assert.fail(`HUB_SETUP ${label}: ${e?.code || e?.name || "eroare"}`); } };',
+    ...(harness < 2 ? ['const setup = async (label, fn) => { try { return await fn(); } catch (e) { assert.fail(`HUB_SETUP ${label}: ${e?.code || e?.name || "eroare"}`); } };'] : [
+      '// Antet Hub v2: resursele întoarse de setup() se înregistrează pe cazul curent și sunt închise de Hub la sfârșitul lui, la succes și la eșec (raport HUB_CLEANUP în TAP).',
+      'const hubTimer = setTimeout, hubClear = clearTimeout;',
+      'const registry = { current: null, file: [] }; const hubAdd = (label, value) => { if (value && (typeof value === "object" || typeof value === "function") && typeof value.close === "function") (registry.current?.items || registry.file).push({ label: String(label).replace(/\\s+/g, " ").slice(0, 60), target: value }); return value; };',
+      'const setup = async (label, fn) => { let value; try { value = await fn(); } catch (e) { assert.fail(`HUB_SETUP ${label}: ${e?.code || e?.name || "eroare"}`); } return hubAdd(label, value); };',
+      'const hubClose = ({ target }) => new Promise((resolve) => { let settled = false; const finish = (ok, status) => { if (!settled) { settled = true; hubClear(timer); resolve({ ok, status }); } }; const timer = hubTimer(() => { try { target.closeAllConnections?.(); } catch {} try { target.unref?.(); } catch {} finish(false, "blocat"); }, 5000); timer.unref(); (async () => { try { if (target.listening === false || target.isOpen === false) { finish(true, "deja închis"); return; } if (typeof target.listening === "boolean") await new Promise((done, fail) => target.close((e) => e ? fail(e) : done())); else await target.close(); finish(true, "închis"); } catch (e) { if (e?.code === "ERR_SERVER_NOT_RUNNING" || e?.code === "ERR_INVALID_STATE") finish(true, "deja închis"); else finish(false, `eroare ${String(e?.code || e?.name || "necunoscută").replace(/\\s+/g, " ").slice(0, 60)}`); } })(); });',
+      'const hubCleanup = async (t, items) => { const details = [], bad = []; for (const item of [...items].reverse()) { const { ok, status } = await hubClose(item), detail = `${item.label}: ${status}`; details.push(detail); if (!ok) bad.push(detail); } t.diagnostic(`HUB_CLEANUP ${bad.length ? "fail" : "ok"} ${items.length}${details.length ? ` ${details.join("; ")}` : ""}`); if (bad.length) throw new Error(`HUB_CLEANUP ${bad.join("; ")}`); };',
+      'test.beforeEach(() => { registry.current = { items: [] }; });',
+      'test.afterEach(async (t) => { const items = registry.current?.items || []; registry.current = null; await hubCleanup(t, items); });',
+      'test.after(async (t) => { await hubCleanup(t, registry.file.splice(0)); });',
+    ]),
     ...helperHeader(helpers),
     "// ---- corpul testului ----",
   ];
@@ -781,7 +793,7 @@ export function testHeader({ missionId = "", specVersion = 1, specSha = "", need
  * The author's instructions (one user message in the author conversation). The owner's words, the criteria and any earlier
  * rejection reasons are quoted as data. `facts.files` = project files at base (paths), `facts.exports` = {rel: [names]}.
  */
-export function buildAuthorBrief({ mission = {}, spec = {}, specVersion = 1, specSha = "", authoring = {}, cycle = 0, previousProblems = [], previousCandidate = null, facts = {} } = {}) {
+export function buildAuthorBrief({ mission = {}, spec = {}, specVersion = 1, specSha = "", authoring = {}, cycle = 0, previousProblems = [], previousCandidate = null, facts = {}, harness = 1 } = {}) {
   const workType = String(spec.workType || "").toUpperCase();
   const criteria = testCriteriaOf(spec.acceptance);
   const browser = browserCriteriaOf(spec.acceptance);
@@ -811,16 +823,17 @@ export function buildAuthorBrief({ mission = {}, spec = {}, specVersion = 1, spe
     "## Fișierul",
     `Testul ajunge la ${testRef || "test/hub/…"}. Hub-ul pune antetul de mai jos; tu scrii DOAR corpul (fără import, require sau import()).`,
     "```js",
-    ...testHeader({ missionId: mission.id, specVersion, specSha, needs: ALLOWED_NEEDS, helpers: spec.hubHelpers || [] }),
+    ...testHeader({ missionId: mission.id, specVersion, specSha, needs: ALLOWED_NEEDS, helpers: spec.hubHelpers || [], harness }),
     "```",
     `Built-in-urile se cer în "needs" (doar: ${ALLOWED_NEEDS.join(", ")}); antetul le dă ca ${ALLOWED_NEEDS.map((k) => NEEDS[k].binding).join(", ")}.`,
+    'Dacă omiți un modul folosit liber în corp, Hub-ul îl completează singur din corp (nu e o respingere); un modul nepermis rămâne respins.',
     `Codul proiectului se încarcă DOAR în interiorul unui test, cu un literal relativ la fișierul testului: const m = await load("${depthUp}src/…"). Nu teste, nu node_modules, nu .ifrim-hub.`,
     "",
     "## Reguli (un test care le încalcă e respins înainte de rulare)",
     `- cel mult ${TEST_FIRST_LIMITS.maxTests} teste, corpul sub ${TEST_FIRST_LIMITS.maxBodyBytes / 1024} KB; fiecare test la nivelul de sus: test("AC-1: …", async () => { … }), fără parametri, fără opțiuni, fără subteste`,
     '- numele: „AC-n: descriere” sau „AC-n control: descriere”, unice, fără #, \\ sau ghilimele; exact numele din manifest',
     '- numele fără spații la început sau la sfârșit și fără text care seamănă cu o cheie sau o parolă (api_key=…, sk-…)',
-    "- interzis: skip/only/todo, describe, suite, process, globalThis, global, eval, Function, constructor, __proto__, Reflect, getOwnPropertyDescriptor, getBuiltinModule, child_process, worker_threads, homedir, userInfo, fetch, loadExtension, căi absolute (și „/” sau „\\” la început într-un apel fs/path/url), URL-uri care nu sunt 127.0.0.1/localhost, căi cu ..",
+    "- interzis: nume rezervate antetului Hub și hook-uri de test, skip/only/todo, describe, suite, process, globalThis, global, eval, Function, constructor, __proto__, Reflect, getOwnPropertyDescriptor, getBuiltinModule, child_process, worker_threads, homedir, userInfo, fetch, loadExtension, căi absolute (și „/” sau „\\” la început într-un apel fs/path/url), URL-uri care nu sunt 127.0.0.1/localhost, căi cu ..",
     '- acces calculat doar cu un număr sau un nume scris direct: x[0], x["nume"]; pentru un index variabil folosește x.at(i), pentru chei variabile Object.entries(x)',
     "- assert doar ca apel direct: assert(…) sau assert.metodă(…), niciodată ca valoare sau parametru",
     "- fiecare test are aserțiuni reale; fără tautologii (assert.ok(true), literal comparat cu literal, aceeași variabilă pe ambele părți), fără assert.fail sau throw necondiționat",
@@ -828,7 +841,7 @@ export function buildAuthorBrief({ mission = {}, spec = {}, specVersion = 1, spe
     ...(workType === "BUGFIX" ? ["- BUGFIX: fiecare criteriu are și cel puțin un caz „control” („AC-n control: …”) pe ACEEAȘI funcție, care trece azi (arată că testul nu pică din alt motiv); folosește exact numele exportate de azi"] : []),
     'Testul exercită contractul real al aplicației de azi (exporturile, rutele, câmpurile existente). Pornirea, datele de test și încărcarea se fac cu load(), need(m, "nume") și setup("etichetă", () => …); un eșec acolo e eșec de pregătire, nu dovadă. Fiecare check trebuie să pice azi pe o aserțiune despre comportament.',
     ...(spec.changesExisting ? ["Cerința schimbă un comportament existent: nu introduce exporturi, funcții sau rute noi pentru test."] : workType === "FEATURE" ? ['Un export nou doar dacă cerința cere o funcție nouă: îl declari în newApi [{ module, name, criterion }] și îl obții cu need(); existența lui singură nu e dovadă — testul îi verifică și comportamentul.'] : []),
-    "- testul nu lasă fișiere în proiect (date temporare doar în fs.mkdtemp(path.join(os.tmpdir(), …))); server http doar pe 127.0.0.1, închis la final; fără timere peste 1 s, fără Date.now/Math.random în aserțiuni",
+    `- testul nu lasă fișiere în proiect (date temporare doar în fs.mkdtemp(path.join(os.tmpdir(), …))); ${harness >= 2 ? "server http doar pe 127.0.0.1; orice resursă cu close() obținută prin setup() (server, bază de date) e închisă de Hub la sfârșitul cazului, la succes și la eșec — pornește fiecare resursă prin propriul apel setup() și întoarce-o imediat; poți să o închizi și tu, o singură dată" : "server http doar pe 127.0.0.1, închis la final"}; fără timere peste 1 s, fără Date.now/Math.random în aserțiuni`,
     "",
   ];
   if (spec.hubHelpers?.includes("json-exposure")) lines.push(...exposureBrief());
@@ -1116,6 +1129,7 @@ const RULE_PLAIN = Object.freeze({
   name_duplicate: "două cazuri au același nume",
   name_manifest: "cazurile din test nu sunt exact cele anunțate",
   test_shape: "un caz are altă formă decât test(\"AC-n: …\", async () => { … })",
+  harness_reserved: "corpul folosește un nume rezervat antetului Hub sau înregistrează hook-uri de test",
   test_top_level: "un caz nu e la nivelul de sus al fișierului",
   test_alias: "funcția test e folosită altfel decât ca apel direct",
   coverage: "un criteriu nu are niciun caz care să-l verifice",
@@ -1131,6 +1145,7 @@ const RULE_PLAIN = Object.freeze({
 });
 
 const SIGNAL_PLAIN = Object.freeze({
+  needs_unused: "un modul cerut în needs nu e folosit în corp",
   existing_record_unproven: "existența înregistrărilor nu este verificată printr-o citire internă recunoscută",
   date_now: "folosește ora curentă (Date.now / new Date())",
   random: "folosește Math.random",
@@ -1256,7 +1271,7 @@ function exposureStructure(text, add) {
     if (ts.isElementAccessExpression(n)) return `${member(n.expression)}.${n.argumentExpression && ts.isStringLiteral(n.argumentExpression) ? n.argumentExpression.text : "*"}`;
     return null;
   };
-  const protectedName = (name) => /^(?:JSON(?:\.|$)|(?:Array|String|Object|Number)\.prototype(?:\.|$)|Object\.(?:entries|keys)(?:\.|$))/.test(name || "");
+  const protectedName = (name) => /^(?:(?:JSON|RegExp|Promise|Error|Symbol)(?:\.|$)|(?:Array|String|Object|Number|Map|Set|WeakMap|Function|Boolean)\.prototype(?:\.|$)|Object\.(?:entries|keys)(?:\.|$)|(?:setTimeout|clearTimeout|setImmediate|clearImmediate|queueMicrotask|structuredClone)$)/.test(name || "");
   const patchedTarget = (n) => {
     if (protectedName(member(n))) return true;
     // Destructuring assignment targets can contain the same protected members.
@@ -1267,6 +1282,7 @@ function exposureStructure(text, add) {
   };
   const vacuous = new Set(["assert", ...["ok", "notDeepEqual", "notDeepStrictEqual", "notEqual", "notStrictEqual", "throws", "doesNotThrow", "rejects", "doesNotReject"].map((m) => `assert.${m}`)]);
   for (const n of nodes) {
+    if ((ts.isPropertyAccessExpression(n) && n.name.text === "diagnostic") || (ts.isElementAccessExpression(n) && n.argumentExpression && ts.isStringLiteral(n.argumentExpression) && n.argumentExpression.text === "diagnostic")) add("harness_reserved", n.getText(tree), n.getStart(tree));
     if (ts.isVariableDeclaration(n) && named(n.name, "JSON")) add("builtin_patched", n.getText(tree), n.getStart(tree));
     if (ts.isCallExpression(n) && vacuous.has(member(n.expression)) && n.arguments.some(containsExposure)) add("exposure_helper_vacuous", member(n.expression), n.getStart(tree));
     if (direct(n) || (ts.isCallExpression(n) && /^assert(?:\.|$)/.test(member(n.expression) || "") && n.arguments.some(containsExposure))) for (let p = n.parent; p; p = p.parent) {
@@ -1274,11 +1290,11 @@ function exposureStructure(text, add) {
     }
     if ((ts.isBinaryExpression(n) && n.operatorToken.kind >= ts.SyntaxKind.FirstAssignment && n.operatorToken.kind <= ts.SyntaxKind.LastAssignment && patchedTarget(n.left)) ||
         ((ts.isPrefixUnaryExpression(n) || ts.isPostfixUnaryExpression(n)) && [ts.SyntaxKind.PlusPlusToken, ts.SyntaxKind.MinusMinusToken].includes(n.operator) && patchedTarget(n.operand))) add("builtin_patched", n.getText(tree), n.getStart(tree));
-    if (ts.isCallExpression(n) && ["Object.defineProperty", "Object.assign", "Object.setPrototypeOf"].includes(member(n.expression)) && n.arguments[0]) {
+    if (ts.isCallExpression(n) && ["Object.defineProperty", "Object.defineProperties", "Object.assign", "Object.setPrototypeOf"].includes(member(n.expression)) && n.arguments[0]) {
       const target = member(n.arguments[0]), method = member(n.expression);
       let patched = protectedName(target);
       if (method === "Object.defineProperty" && n.arguments[1] && ts.isStringLiteral(n.arguments[1])) patched ||= protectedName(`${target}.${n.arguments[1].text}`);
-      if (method === "Object.assign") for (const arg of n.arguments.slice(1)) {
+      if (method === "Object.assign" || method === "Object.defineProperties") for (const arg of n.arguments.slice(1)) {
         if (ts.isObjectLiteralExpression(arg)) patched ||= arg.properties.some((p) => p.name && protectedName(`${target}.${p.name.text}`));
       }
       if (patched) add("builtin_patched", n.getText(tree), n.getStart(tree));
@@ -1360,6 +1376,60 @@ function exposureStructure(text, add) {
   };
 }
 
+/** Free built-in references; binding ranges include declarations, and member names are declaration sites too. */
+export function freeNeedsUses(body) {
+  const lex = scanSource(body), code = lex.code, names = Object.values(NEEDS).map((n) => n.binding), bindings = [], sites = new Set(), functions = [], pairs = new Map(), stack = [];
+  let broken = lex.problems.length > 0;
+  for (let i = 0; i < code.length; i++) { if ("([{".includes(code[i])) stack.push(i); else if (")]}".includes(code[i])) { const open = stack.pop(); if (open === undefined || "([{".indexOf(code[open]) !== ")]}".indexOf(code[i])) broken = true; else pairs.set(open, i); } }
+  broken ||= stack.length > 0;
+  if (!broken) {
+    const tree = ts.createSourceFile("needs.js", String(body), ts.ScriptTarget.Latest, true, ts.ScriptKind.JS);
+    const visit = (node) => {
+      if ((ts.isPropertyDeclaration(node) || ts.isMethodDeclaration(node) || ts.isGetAccessorDeclaration(node) || ts.isSetAccessorDeclaration(node)) && node.name && ts.isIdentifier(node.name)) sites.add(node.name.getStart(tree));
+      ts.forEachChild(node, visit);
+    };
+    visit(tree);
+  }
+  const skip = (i) => { while (/\s/.test(code[i] || "x")) i++; return i; };
+  const end = (a, b, stops) => { for (let i = a; i < b; i++) { if (pairs.has(i)) i = pairs.get(i); else if (stops.includes(code[i])) return i; } return b; };
+  const scope = (pos, fn = false) => fn ? functions.filter((s) => s[0] < pos && pos < s[1]).sort((a, b) => b[0] - a[0])[0] || [-1, code.length] : ((o) => [o, pairs.get(o) ?? code.length])(enclosingBrace(code, pos));
+  const bind = (a, b, range) => {
+    a = skip(a); b = end(a, b, "="); if (code.slice(a, a + 3) === "...") a = skip(a + 3);
+    if (code[a] === "{" || code[a] === "[") { const stop = Math.min(pairs.get(a) ?? b, b); for (let p = a + 1; p < stop;) { const q = end(p, stop, ","), colon = code[a] === "{" ? end(p, q, ":") : q; bind(colon < q ? colon + 1 : p, q, range); p = q + 1; } }
+    else { const m = code.slice(a, b).match(/^([A-Za-z_$][\w$]*)/); if (m && names.includes(m[1])) { sites.add(a); bindings.push({ name: m[1], range }); } }
+  };
+  // Parenthesized functions, methods and arrows (control statements do not introduce function scopes).
+  for (const [a, b] of pairs) if (code[a] === "(") {
+    const after = skip(b + 1), arrow = code.slice(after, after + 2) === "=>", start = arrow ? skip(after + 2) : after;
+    const word = code.slice(0, a).match(/([\w$]+)\s*$/)?.[1], control = ["if", "for", "while", "switch", "with"].includes(word);
+    if (!control && (arrow || code[start] === "{")) { const range = [a, pairs.get(start) ?? end(start, code.length, ",;\n)}]")]; if (!arrow && names.includes(word)) sites.add(a - code.slice(0, a).match(/[\w$]+\s*$/)[0].length); if (word !== "catch") functions.push(range); for (let p = a + 1; p < b;) { const q = end(p, b, ","); bind(p, q, range); p = q + 1; } }
+  }
+  for (const m of code.matchAll(/\b([A-Za-z_$][\w$]*)\s*=>/g)) { const start = skip(m.index + m[0].length), range = [m.index, pairs.get(start) ?? end(start, code.length, ",;\n)}]")]; functions.push(range); bind(m.index, m.index + m[1].length, range); }
+  for (const m of code.matchAll(/\b(const|let|var|class|function)\s+(?:\*\s*)?/g)) {
+    let a = skip(m.index + m[0].length), range = scope(m.index, m[1] === "var" || m[1] === "function");
+    if (m[1] === "class" || m[1] === "function") { bind(a, a + (code.slice(a).match(/^[\w$]+/)?.[0].length || 0), range); continue; }
+    const loop = code.slice(0, m.index).match(/\bfor\s*\(\s*$/); if (loop && m[1] !== "var") { const o = code.lastIndexOf("(", m.index), close = pairs.get(o), start = skip(close + 1); range = [o, pairs.get(start) ?? end(start, code.length, ";")]; }
+    while (a < code.length) { const b = end(a, code.length, ",;)"); const segment = code.slice(a, b), inOf = segment.match(/\s+(?:of|in)\s/); bind(a, inOf ? a + inOf.index : b, range); if (code[b] !== ",") break; a = skip(b + 1); }
+  }
+  const first = {}, local = new Set();
+  for (const m of code.matchAll(/\b(path|url|os|fs|sqlite|http)\b/g)) {
+    const pos = m.index, name = m[0], before = code.slice(0, pos).trimEnd(), after = code.slice(pos + name.length).trimStart();
+    if (/\.$/.test(before) || /[$\w]$/.test(code.slice(Math.max(0, pos - 1), pos)) || /[$\w]/.test(code[pos + name.length] || " ")) continue;
+    if (/^[{,]$/.test(before.slice(-1)) && after.startsWith(":")) continue;
+    if (broken) { if (/^(?:\.|\?\.)/.test(after)) first[name] ??= pos; continue; }
+    if (sites.has(pos)) continue;
+    if (bindings.some((b) => b.name === name && b.range[0] <= pos && pos <= b.range[1])) local.add(name); else first[name] ??= pos;
+  }
+  return { used: names.filter((n) => first[n] !== undefined), shadowed: names.filter((n) => local.has(n) && first[n] === undefined), first: Object.fromEntries(Object.entries(first).map(([n, p]) => [n, lex.lineOf(p)])) };
+}
+
+export function normalizeNeeds(body, declared = []) {
+  declared = ALLOWED_NEEDS.filter((k) => Array.isArray(declared) && declared.includes(k));
+  const { used, shadowed, first } = freeNeedsUses(body), effective = ALLOWED_NEEDS.filter((k) => declared.includes(k) || used.includes(NEEDS[k].binding));
+  const completed = effective.filter((k) => !declared.includes(k)).map((module) => { const binding = NEEDS[module].binding, line = first[binding]; return { module, binding, line, reason: `„${binding}” e folosit liber în corp (linia ${line}), fără declarație în needs` }; });
+  return { declared, effective, completed, used, shadowed };
+}
+
 export function lintTestBody(body, { manifest = null, criteria = [], workType = "", testRef = "", stagingRef = "", projectFiles = null, moduleExports = {}, spec = {} } = {}) {
   const text = normalizeBody(body);
   const kind = String(workType || "").toUpperCase();
@@ -1395,6 +1465,7 @@ export function lintTestBody(body, { manifest = null, criteria = [], workType = 
     const m = code.match(re);
     if (m) add("forbidden", token, m.index);
   }
+  for (const m of code.matchAll(/(?<![.\w$])(?:registry|hubAdd|hubClose|hubCleanup|hubTimer|hubClear)(?![\w$])|(?<![.\w$])(?:test\s*\.\s*)?(?:before|after|beforeEach|afterEach)\s*\(/g)) add("harness_reserved", m[0].trim(), m.index);
   if (/(?<![.\w$])import\b/.test(code)) add("import", "import", code.search(/(?<![.\w$])import\b/));
   if (/(?<![.\w$])require\b/.test(code)) add("import", "require", code.search(/(?<![.\w$])require\b/));
   const allStrings = [...lex.strings, ...lex.templates.map((t) => ({ ...t, value: t.parts.join("") })), ...lex.regexes.map((r) => ({ start: r.start, value: r.source, regex: true }))];
@@ -1520,6 +1591,7 @@ export function lintTestBody(body, { manifest = null, criteria = [], workType = 
   if (tests.length > TEST_FIRST_LIMITS.maxTests) add("test_count", String(tests.length));
   const names = new Map();
   for (const t of tests) {
+    for (const m of code.slice(t.segStart, t.segEnd).matchAll(/(?<![.\w$])(?:this|arguments)(?![\w$])/g)) add("harness_reserved", m[0], t.segStart + m.index);
     const m = t.name.match(NAME_RE);
     // The runner redacts every output line: a name that looks like a secret (api_key=…, sk-…) comes back as [redacted].
     if (!m || m[3].length < 3 || t.name.length > TEST_FIRST_LIMITS.nameMax || /[#\\"'`\n\r\t]/.test(t.name) || redactText(t.name) !== t.name) { add("name_format", t.name.slice(0, 80), t.index); continue; }
@@ -1677,14 +1749,12 @@ export function lintTestBody(body, { manifest = null, criteria = [], workType = 
 
   // --- needs ---------------------------------------------------------------------------------------------------------
   const needs = new Set(Array.isArray(manifest?.needs) ? manifest.needs : []);
+  const freeNeeds = freeNeedsUses(body);
   for (const k of ALLOWED_NEEDS) {
-    const b = NEEDS[k].binding;
-    const used = new RegExp(`(?<![.\\w$])${b}\\s*\\.`).test(code);
-    const declared = new RegExp(`(?:const|let|var|function)\\s+${b}\\b|[{,(]\\s*${b}\\s*[,})=]`).test(code);
-    if (used && !declared) {
+    if (freeNeeds.used.includes(NEEDS[k].binding)) {
       facts.needsUsed.push(k);
       if (!needs.has(k)) add("needs_missing", k);
-    }
+    } else if (needs.has(k)) signal("needs_unused", k);
   }
 
   // --- soft signals --------------------------------------------------------------------------------------------------
@@ -1758,8 +1828,8 @@ function failIsUnconditional(code, pos, test) {
 }
 
 /** The test file: the Hub-owned header + the body. Returns { text, sha256, header }. */
-export function assembleTestFile({ body, needs = [], missionId = "", specVersion = 1, specSha = "", helpers = [] } = {}) {
-  const header = testHeader({ missionId, specVersion, specSha, needs, helpers });
+export function assembleTestFile({ body, needs = [], missionId = "", specVersion = 1, specSha = "", helpers = [], harness = 1 } = {}) {
+  const header = testHeader({ missionId, specVersion, specSha, needs, helpers, harness });
   const text = `${header.join("\n")}\n${normalizeBody(body)}`;
   return { text, sha256: sha256(text), header };
 }
@@ -1805,6 +1875,30 @@ const TAP_LATE_RE = /^\s*# Error: Test "(.*)" at .* generated asynchronous activ
  */
 export function createTapCaseCollector({ maxCases = 500 } = {}) {
   const cases = [];
+  let fileCleanup;
+  let fileCleanupReports = 0;
+  let fileCleanupCase = null;
+  let reportCase = null;
+  let pendingReports = [];
+  const mergeReports = (reports) => reports.length === 1 ? reports[0] : {
+    ok: false, count: reports.reduce((n, r) => n + r.count, 0), detail: `rapoarte multiple / ${reports.map((r) => `${r.ok ? "ok" : "fail"}${r.detail ? `: ${r.detail}` : ""}`).join("; ")}`,
+  };
+  const addFileReport = (report) => {
+    fileCleanupReports++;
+    fileCleanup = fileCleanup ? mergeReports([fileCleanup, report]) : report;
+  };
+  const flushReports = (atEnd = false) => {
+    if (!pendingReports.length) return;
+    // Node emits test.after's diagnostic directly after the last case's diagnostics, before 1..N.
+    const finalReport = atEnd && pendingReports.length > 1 ? pendingReports.pop() : null;
+    (reportCase.cleanupReports ||= []).push(...pendingReports);
+    reportCase.cleanup = mergeReports(reportCase.cleanupReports);
+    // Extra case diagnostics have no authenticated origin. Also retain them at file level, where
+    // they could be forged test.after reports; a later genuine ok must never erase their failure.
+    for (const report of pendingReports.slice(1)) addFileReport(report);
+    if (finalReport) addFileReport(finalReport);
+    pendingReports = [];
+  };
   let fileLevelFailure = null;
   let overflow = 0;
   let cur = null; // { item, yamlIndent, state: "after" | "yaml", fields, blockKey, blockFirst }
@@ -1821,6 +1915,8 @@ export function createTapCaseCollector({ maxCases = 500 } = {}) {
       item.failureType = fields.failureType ?? null;
       const error = fields.error ?? null;
       item.message = error === null ? null : String(error).split("\n").map((s) => s.trim()).find(Boolean)?.slice(0, 300) ?? "";
+      // Node emits a synthetic file-named case when test.after throws; its diagnostic belongs to the file.
+      if (item.failureType === "hookFailed" && /^HUB_CLEANUP/.test(item.message || "") && item.name.replace(/\\+/g, "/") === String(fields.location || "").replace(/:\d+:\d+$/, "").replace(/\\+/g, "/")) fileCleanupCase = item;
       if ("exitCode" in fields || "signal" in fields) {
         item.fileLevel = true;
         fileLevelFailure ||= `fișierul de test a căzut în afara unui test (${item.name.slice(0, 80)})`;
@@ -1828,6 +1924,7 @@ export function createTapCaseCollector({ maxCases = 500 } = {}) {
     }
     if (cases.length < maxCases) cases.push(item);
     else overflow += 1;
+    reportCase = item;
     cur = null;
   };
   function push(raw) {
@@ -1854,10 +1951,20 @@ export function createTapCaseCollector({ maxCases = 500 } = {}) {
       }
       return;
     }
+    const cleanup = line.match(/^\s*# HUB_CLEANUP (ok|fail) (\d+)(?: (.*))?$/);
+    if (cleanup) {
+      const report = { ok: cleanup[1] === "ok", count: Number(cleanup[2]), detail: cleanup[3] || "" };
+      if (reportCase && reportCase !== fileCleanupCase) pendingReports.push(report);
+      else addFileReport(report);
+      return;
+    }
+    if (/^1\.\.\d+\s*$/.test(line)) { flushReports(true); reportCase = null; }
+    if (/^\s*# Subtest:/.test(line)) { flushReports(); reportCase = null; }
     const late = line.match(TAP_LATE_RE);
-    if (late) { fileLevelFailure ||= `activitate asincronă după terminarea testului „${late[1].slice(0, 120)}”`; return; }
+    if (late) { flushReports(true); reportCase = null; fileLevelFailure ||= `activitate asincronă după terminarea testului „${late[1].slice(0, 120)}”`; return; }
     const m = line.match(TAP_CASE_RE);
     if (!m) return;
+    flushReports();
     const indent = m[1].length;
     cur = {
       item: { name: m[3].replace(/\\(.)/g, "$1").trim(), ok: m[2] === "ok", depth: Math.floor(indent / 4), skip: /^skip$/i.test(m[4] || ""), todo: /^todo$/i.test(m[4] || ""),
@@ -1868,7 +1975,8 @@ export function createTapCaseCollector({ maxCases = 500 } = {}) {
   /** Ends the stream (a case still open is closed as read so far) and returns { cases, fileLevelFailure, overflow }. */
   function result() {
     finish();
-    return { cases: [...cases], fileLevelFailure, overflow };
+    flushReports(true);
+    return { cases: [...cases], fileLevelFailure, overflow, ...(fileCleanupReports ? { fileCleanupReports } : {}), ...(fileCleanup ? { fileCleanup } : {}) };
   }
   return { push, result };
 }
@@ -1881,6 +1989,48 @@ export function proofSignature(run) {
     .map((c) => [String(c.name), c.ok ? "ok" : `${c.code || "?"}${isHubLoad(c.message) ? ":HUB_LOAD" : ""}`])
     .sort((a, b) => (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : a[1] < b[1] ? -1 : a[1] > b[1] ? 1 : 0));
   return hashCanonical({ cases: entries, fileLevel: Boolean(run?.fileLevelFailure) });
+}
+
+function cleanupProblem(run) {
+  const problems = [];
+  const reportProblems = (r) => {
+    const causes = [];
+    if (r.ok && /: (?:eroare|blocat)\b/.test(r.detail || "")) causes.push("raport ok cu detalii de eșec");
+    const entries = String(r.detail || "").split("; ").filter((entry) => /^.+: (?:închis|deja închis|eroare(?: .+)?|blocat)$/.test(entry));
+    if (r.count !== entries.length) causes.push(`număr de resurse diferit de detalii (${r.count} / ${entries.length})`);
+    return causes;
+  };
+  for (const c of run.cases || []) {
+    const reports = c.cleanupReports || [];
+    const causes = [];
+    if (!reports.length || !c.cleanup) causes.push("lipsește raportul de închidere");
+    if (reports.length > 1) causes.push(`rapoarte multiple de închidere (${reports.length})`);
+    if (reports.some((r) => !r.ok) || c.cleanup?.ok === false) causes.push(c.cleanup?.detail || "închidere nereușită");
+    for (const r of [...reports, ...(c.cleanup ? [c.cleanup] : [])]) causes.push(...reportProblems(r));
+    if (/HUB_CLEANUP/.test(c.message || "")) causes.push(c.message);
+    if (causes.length) problems.push(`${c.name}: ${causes.join(" / ")}`);
+  }
+  if (run.fileCleanupReports > 1) problems.push(`fișier: rapoarte multiple de închidere (${run.fileCleanupReports}; așteptat unul din test.after)`);
+  if (run.fileCleanup?.ok !== true) problems.push(`fișier: ${run.fileCleanup?.detail || "lipsește raportul de închidere"}`);
+  if (run.fileCleanup) for (const cause of reportProblems(run.fileCleanup)) problems.push(`fișier: ${cause}`);
+  return problems.join("; ");
+}
+
+/** A protected acceptance test may admit the writer only after a complete, normally terminated baseline. */
+export function baselineGate(run, { manifest, harness = 1 } = {}) {
+  if (!run || !["PASS", "FAIL"].includes(run.status)) return "rularea nu are un rezultat complet";
+  if (run.reason === "timeout" || run.timedOut || run.stopped) return "rularea a expirat sau a fost oprită";
+  const counts = run.counts || {}, cases = run.cases || [];
+  if (run.fileLevelFailure || cases.some((c) => c.fileLevel)) return run.fileLevelFailure || "fișierul a căzut în afara cazurilor";
+  if (!(counts.tests > 0)) return "lipsește totalul testelor sau nu a rulat niciun caz";
+  if (Number(counts.tests) !== cases.length || run.overflow > 0) return "numărul cazurilor citite nu corespunde totalului";
+  if ((counts.skipped || 0) + (counts.todo || 0) + (counts.cancelled || 0) > 0 || cases.some((c) => c.skip || c.todo)) return "cazuri sărite sau anulate";
+  if (Number(counts.fail) !== cases.filter((c) => !c.ok).length) return "numărul eșecurilor nu corespunde cazurilor";
+  if ((run.status === "PASS") !== cases.every((c) => c.ok)) return "statusul nu corespunde cazurilor";
+  if (harness >= 2) { const problem = cleanupProblem(run); if (problem) return problem; }
+  const names = cases.map((c) => c.name).sort(), expected = (manifest?.cases || []).map((c) => c.name).sort();
+  if (names.length !== expected.length || names.some((n, i) => n !== expected[i])) return "numele cazurilor diferă de manifest";
+  return null;
 }
 
 /**
@@ -1934,6 +2084,8 @@ export function classifyProof({ runs = [], manifest = {}, criteria = [], workTyp
     if (Number(counts.fail ?? 0) !== failed) return result("INCONCLUSIVE", "unreadable", [`${label}: numărătoarea eșecurilor nu se potrivește cu cazurile citite`]);
     if (Number(counts.tests) < testCriteria.length) return result("INCONCLUSIVE", "too_few", [`${label}: mai puține teste decât criterii`]);
     if ((run.status === "PASS") !== (failed === 0)) return result("INCONCLUSIVE", "unreadable", [`${label}: statusul (${run.status}) nu se potrivește cu cazurile`]);
+    // A failed file cleanup adds Node's synthetic hook case; report its cause before comparing manifest names.
+    if (test.harness >= 2) { const problem = cleanupProblem(run); if (problem) return result("INCONCLUSIVE", "cleanup", [problem]); }
     const names = runCases.map((c) => c.name).sort();
     if (names.length !== manifestNames.length || names.some((n, k) => n !== manifestNames[k])) return result("INCONCLUSIVE", "names", [`${label}: numele cazurilor diferă de manifest`]);
   }
@@ -1989,7 +2141,7 @@ export function classifyProof({ runs = [], manifest = {}, criteria = [], workTyp
 // ---------------------------------------------------------------------------------------------------------------------
 
 /** The test reviewer's package (Codex, read-only, its own conversation). */
-export function buildTestReviewBrief({ mission = {}, spec = {}, specVersion = 1, testRef = "", testSha = "", testText = "", manifest = {}, proof = {}, lint = {}, cycle = 0, previousCandidate = null, inventoryRemoved = [], contextChanged = [], inventory = [], removedDeclared = [], openFindings = [] } = {}) {
+export function buildTestReviewBrief({ mission = {}, spec = {}, specVersion = 1, testRef = "", testSha = "", testText = "", manifest = {}, proof = {}, lint = {}, cycle = 0, previousCandidate = null, inventoryRemoved = [], contextChanged = [], inventory = [], removedDeclared = [], openFindings = [], harness = 1 } = {}) {
   if (!inventory.length) inventory = assertionInventory(testText, manifest, { sha: testSha || null, headerLines: String(testText).split("\n").findIndex((l) => l === "// ---- corpul testului ----") + 1 });
   const criteria = testCriteriaOf(spec.acceptance);
   const words = [...new Set([...(Array.isArray(spec.sources?.user) ? spec.sources.user : []), spec.objective].filter(Boolean).map(String))];
@@ -2019,6 +2171,9 @@ export function buildTestReviewBrief({ mission = {}, spec = {}, specVersion = 1,
     ...(browserCriteriaOf(spec.acceptance).length ? ["## Verificate separat în browser de Hub, după implementare (context, nu ale acestui test)", ...browserCriteriaOf(spec.acceptance).map((c) => `- ${c.id}: ${fenceSafe(c.text)}`), ""] : []),
     "## API ales de autor",
     fenceSafe(manifest.api || "(nedeclarat)"),
+    `Completări needs de către Hub: ${manifest.needsCompleted?.length ? manifest.needsCompleted.map((n) => `${n.module}, linia ${n.line}: ${n.reason}`).join("; ") : "niciuna"}.`,
+    `Antet Hub v${harness}: ${harness >= 2 ? "Hub-ul închide resursele întoarse de setup() la succes și la eșec; un close() al autorului care nu mai este atins după o aserțiune eșuată nu este o constatare" : "resursele sunt închise de corpul testului"}.`,
+    "## Manifest efectiv (date)", "```json", fenceSafe(JSON.stringify(manifest, null, 2)), "```",
     "",
     "## Testul (întreg, cu numere de linie)",
     "```js",
