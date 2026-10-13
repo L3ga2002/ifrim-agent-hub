@@ -1,5 +1,30 @@
 # Open Issues - Ifrim Agent Hub
 
+## 2026-10-13 — Existing-data coverage (code `2.14.11-m11` on local branch `claude/project-thread-c7i593`, NOT released; live `2.14.10-m11`, contract 13, schema 12; detail: `.ifrim/STAGE_2026-10-12_ACOPERIRE_DATE_EXISTENTE.md`)
+
+This section takes precedence over every older one where they overlap. Baseline: HEAD = origin = `570ced3` on `v2-milestone-01`; 2.14.11 is
+`189241b` + evidence `88cb6c6` on the local branch `claude/project-thread-c7i593` (not merged into `v2-milestone-01`, so the logon autostart
+cannot load unreleased code); push by the owner.
+
+Closed (in code, not released):
+- **Item 1 below, the R-EXISTING part**: criteria and briefs require the app's own initial data (normal start), the record kept across a
+  restart and the new record, proven in storage and present by id in the list for every anonymous parameter; the new reference
+  `existing-reference` rejects all 29 defective variants of the fixed inventory (json-reference passes "seed rows only", rh1 also
+  "existing records only"); T-EXIST-ALL-01…06. R-INVENTORY defect fixed: assertions in a top-level helper were always "removed" at cycle 1.
+  Two independent Claude reviews PASS; affected suites 26/26, 502/502 on the clone aligned byte for byte with the working tree.
+
+Open:
+1. **Isolated rehearsal did not pass the gates → no release, no §25 card.** The real author's test (Claude sonnet) has the right content
+   (diagnostic with forced exit: correct app PASS, 29/29 + 8 calibration variants rejected), but the Hub stopped it twice for mechanical
+   reasons: cycle 0 lint `needs_missing` (the manifest kept `"needs": []` from the template), cycle 1 (the one rewrite) proof INCONCLUSIVE
+   timeout (servers closed after the expected failing assertion without try/finally, so the test process never exits; runner limit 180 s).
+   Codex review never reached. Candidate fix (owner's approval, no new rewrites): proof runs with `--test-force-exit` (open handle = reviewer
+   signal) and `needs` completed by the Hub from the body; then one new rehearsal, release (backup + upgrade), one §25 card.
+2. **Live Hub started three times without upgrade/backup** (06:32 UTC uncommitted 2.14.10; 15:55 and 21:35 UTC committed `570ced3`), all by the
+   logon task. Provenance now clear (`570ced3`, UI built 2026-10-12 07:05 UTC). DRAFT: autostart starts only a validated release.
+3. **Full V2 regression not run** (no release); an attempt in the clone was stopped on a CRLF clone artifact. Parent delivery
+   `dlv_mv1eo8oo_d120460140` stays STALE; historic §25 test active; M12 stays DRAFT.
+
 ## 2026-10-12 — Deterministic "does not expose" checks (code `2.14.10-m11`, contract 13, schema 12; detail: `.ifrim/STAGE_2026-10-12_NEEXPUNERE_JSON.md`)
 
 This section takes precedence over every older one where they overlap. Baseline: HEAD = origin = `c168283`; the 2.14.10 commit is local (push by the owner).
