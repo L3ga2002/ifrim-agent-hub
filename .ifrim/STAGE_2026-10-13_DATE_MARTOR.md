@@ -255,6 +255,9 @@ De ce s-a blocat regresia pe `d096459`:
 - Oprirea procesului de test a fost refuzată de stratul de permisiuni („Interfere With Workloads”); comanda e la proprietar.
 - **Defect de test:** r-turn trebuie să-și oprească procesele copil simulate și atunci când un test pică prin timeout.
 
+**Regresia completă pe `d096459` — rezultat final** (deblocată de proprietar la 22:37 UTC prin `taskkill /PID 30364 /F`; încheiată 23:08 UTC, CPU 84–100 %, consumatorul principal fiind `UninstallMonitor` din IObit Uninstaller): **1982 teste: 1969 PASS, 6 FAIL, 6 anulate, 1 SKIP (T25)**. Eșecuri: 7 cazuri r-turn (timeout sub sarcină), RM-10, S0R-27, DP-06, DP-07, OFF-06. Reluate izolat pe același cod: r-turn **26/26**, r-stage0-repair (S0R-27) **78/78**, stage-dev-profile (DP-06/07) **7/7**; RM-10 (r-media-holds 10/11) și OFF-06 (stage-office-delivery 5/6) **pică și izolat la CPU 100 %** (captură reală Chromium + ffmpeg; flux combinat de 177 s) — cod media/office neatins de această etapă, aceleași teste sensibile la sarcină ca în etapele anterioare (RM-10 trecuse izolat la CPU mai mic). Raportate brut; nu sunt reconstruite într-o regresie „verde”.
+
+
 ### 9.3 Repetițiile reale (Hub izolat de unică folosință, Factory dispatch + runtime reale)
 
 Configurația comună:
