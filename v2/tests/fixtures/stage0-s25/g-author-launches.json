@@ -1,0 +1,110 @@
+{
+  "stage": "2.14.13 / 2.14.14 isolated rehearsals of the §25 step-0 author (synthetic app, no live Hub)",
+  "spec": {
+    "2.14.13": "2e273af4b12d",
+    "2.14.14": "a4b52eed0547"
+  },
+  "briefSha256": {
+    "2.14.13": "f1403904d4dd558016dfe293bfc4d1989018ca069f63efb902cd5fc24f7a2ebf",
+    "2.14.14": "c30ec056e7408412a808655d503e53d292d9df3a7f8270d939da40fabb683ac5"
+  },
+  "launches": [
+    {
+      "label": "2.14.13 author cycle 0 attempt 1",
+      "session": "5f14b0d4-ede6-4e5e-8d7f-0bf65727be4d",
+      "model": [
+        "claude-sonnet-4-6"
+      ],
+      "cli": "2.1.175",
+      "launcher": "claude -p --output-format json (rehearsal script, full parent env, no Hub guard env, no turn limit)",
+      "env": {
+        "CLAUDE_CODE_MAX_OUTPUT_TOKENS": null
+      },
+      "isError": true,
+      "result": "API Error: Claude's response exceeded the 32000 output token maximum. To configure this behavior, set the CLAUDE_CODE_MAX_OUTPUT_TOKENS environment variable.",
+      "stopReasons": [
+        "tool_use",
+        "tool_use",
+        "tool_use",
+        "tool_use",
+        "tool_use",
+        "max_tokens",
+        "max_tokens",
+        "max_tokens",
+        "max_tokens",
+        "stop_sequence"
+      ],
+      "outputTokens": 128278,
+      "durationMs": 1811928,
+      "turns": 4,
+      "cliCostUsd": 2.0982497999999996,
+      "candidate": null
+    },
+    {
+      "label": "2.14.13 author cycle 0 attempt 2",
+      "session": "23066dba-9de5-4386-92a8-d54f06919100",
+      "model": [
+        "claude-sonnet-4-6"
+      ],
+      "cli": "2.1.175",
+      "launcher": "claude -p --output-format json (rehearsal script, full parent env, no Hub guard env, no turn limit)",
+      "env": {
+        "CLAUDE_CODE_MAX_OUTPUT_TOKENS": null
+      },
+      "isError": true,
+      "result": "API Error: Claude's response exceeded the 32000 output token maximum. To configure this behavior, set the CLAUDE_CODE_MAX_OUTPUT_TOKENS environment variable.",
+      "stopReasons": [
+        "tool_use",
+        "tool_use",
+        "tool_use",
+        "tool_use",
+        "tool_use",
+        "tool_use",
+        "max_tokens",
+        "max_tokens",
+        "max_tokens",
+        "max_tokens",
+        "stop_sequence"
+      ],
+      "outputTokens": 129062,
+      "durationMs": 1870625,
+      "turns": 4,
+      "cliCostUsd": 2.0753961,
+      "candidate": null
+    },
+    {
+      "label": "2.14.14 author cycle 0 launch (interrupted)",
+      "session": "d226aa7a-6219-4adb-8e84-d5d243866502",
+      "launcher": "Hub createClaudeAdapter.startTurn (claudeTurnLaunch, guard env, deny rules, stream-json), model sonnet, effort medium, read-only, maxOutputTokens 64000",
+      "startedAt": "2026-10-14T00:12:17.691Z",
+      "lastEventAt": "2026-10-14T00:13:04.018Z",
+      "outcome": "killed with the coordinating session when the Remote Control connection dropped (~00:15 UTC); no result event, no stop_reason max_tokens, no candidate",
+      "candidate": null
+    },
+    {
+      "label": "2.14.14 author cycle 0 single launch",
+      "session": "4189afb6-105c-4943-9998-b6b33b3cacc3",
+      "launcher": "Hub createClaudeAdapter.startTurn (same as above), detached from the session",
+      "startedAt": "2026-10-14T07:51:17.943Z",
+      "endedAt": "2026-10-14T08:49:54.095Z",
+      "durationMs": 3516152,
+      "status": "failed",
+      "errorCategory": "transport",
+      "error": "Request timed out",
+      "apiRetries": 10,
+      "authorOutputLimit": {
+        "requested": 64000,
+        "settingsOverride": null,
+        "effective": null,
+        "evidence": "nedemonstrat"
+      },
+      "outputTokens": 1583,
+      "finalTextChars": 89,
+      "cliEstimateUsd": 0.161105,
+      "candidate": null,
+      "note": "no max_tokens stop: the CLI reported 10 API retries (9 unknown, 1 authentication_failed) then Request timed out; the Hub per-turn limit of the step-0 author (role reviewer, BALANCED) is 15 min and was NOT applied by the rehearsal"
+    }
+  ],
+  "verdict": "no candidate in any launch: experiment stopped before lint / proof / review; no release, no §25 card",
+  "billing": "costs are the CLI client-side figures, not verified charges (subscription route)"
+}
