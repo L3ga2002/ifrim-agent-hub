@@ -1,5 +1,31 @@
 # Open Issues - Ifrim Agent Hub
 
+## 2026-10-14 — Content gaps closed in code, step-0 author still blocked (code `2.14.14-m11` on branch `claude/project-thread-5c9bak` = `854e3fc`, NOT released; live `2.14.10-m11`, contract 13, schema 12; detail: `.ifrim/STAGE_2026-10-13_DATE_MARTOR.md`)
+
+This section takes precedence over every older one where they overlap. Baseline: `v2-milestone-01` = `c1db213` (+ this docs commit);
+2.14.13 `53132ed` + 2.14.14 `6a9d174` + evidence `854e3fc` over `53fe75e` (2.14.12) on `claude/project-thread-5c9bak`, fetched from the
+isolated clone `C:Usersmihaihub-rc` (outside AppData), not merged (the logon autostart loads the working tree).
+
+Closed (in code, not released): items 1 (content part) and 3 of the section below — R-DATASET (Hub-owned experiment contract for the
+booking-demo fixture, sha-bound provenance, step-0 hold kind `dataset`), R-VALUES / R-IDS / historical positive control in the briefs and the
+new reference `dataset-reference` (rejects all 41 defective sources with categories; the two initial-data variants are initialisation
+regressions, not leaks), R-CODES (one finding code end to end), R-OUTPUT (`CLAUDE_CODE_MAX_OUTPUT_TOKENS=64000` only for the TEST_AUTHORING
+Claude process of a new plan carrying `authoring.authorLimits`, cause `output_token_limit`, requested / override / effective recorded apart).
+Two independent reviews (two rounds each, final PASS); affected 35/35; full V2 regression on `6a9d174`: 1956 tests, 1955 pass, 0 fail,
+1 skip (T25 symlink privilege). The 8 clone-location failures of the previous stage: 26/26 on the same tree outside AppData (cause:
+import-access refuses %USERPROFILE%AppData).
+
+Open:
+1. **No step-0 candidate → no release, no §25 card.** The author (Claude sonnet, medium) produced no test in any launch: 2.14.13 twice hit
+   the CLI's 32000 output-token maximum (thinking only); with 64000 one launch died with the Remote Control session, the single relaunch
+   (my decision on the owner's "continuă", written before my Da/Nu question) ended in a transport failure after 10 API retries; effective
+   limit not demonstrated.
+2. **Author turn limit (new, owner's decision)**: TEST_AUTHORING uses the reviewer role's per-turn limit (15 min BALANCED); every failed
+   author launch ran 30–58 min (the one success 8 min), so live the Hub would stop them as `turn_timeout` first; the rehearsal scripts did
+   not apply that limit. 64000 alone cannot make the live flow pass.
+3. **Live Hub started seven times without upgrade/backup** (now also 2026-10-14 06:39 and 06:49 UTC after a reboot), all 2.14.10-m11 by
+   the logon task. Parent delivery STALE; historic §25 test protected; M12 stays DRAFT; validated-release autostart stays DRAFT.
+
 ## 2026-10-13 (afternoon) — Mechanical step-0 blockers closed (code `2.14.12-m11` on local branch `claude/project-thread-wn8xqf`, NOT released; live `2.14.10-m11`, contract 13, schema 12; detail: `.ifrim/STAGE_2026-10-13_BLOCARI_MECANICE.md`)
 
 This section takes precedence over every older one where they overlap. Baseline: HEAD = origin = `eeeb136` on `v2-milestone-01`; 2.14.12 is
