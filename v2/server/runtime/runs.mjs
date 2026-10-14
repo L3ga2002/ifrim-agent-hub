@@ -27,7 +27,7 @@ const TURN_TIMEOUT_MAX_MS = 6 * 3600000;
  * A failure the adapter reports with a more specific cause than the deadline (a billing / quota / policy stop, a refused export…) keeps
  * that cause when both arrive together; only an interruption or a transport/task end the deadline itself caused becomes the timeout.
  */
-const TIMEOUT_KEEPS = new Set(["billing", "quota", "policy", "authentication", "validation", "export", "tool", "model"]);
+const TIMEOUT_KEEPS = new Set(["billing", "quota", "policy", "authentication", "validation", "export", "tool", "model", "output_token_limit"]);
 /**
  * Review R3-F5: on an execution environment the per-turn deadline bounds the provider's TURN, not the adapter's own work after it (reap,
  * post-inspection, export validation, apply: providers/codex-wsl.mjs, claude-wsl.mjs). When the deadline passes there while the
@@ -134,7 +134,7 @@ export function createRunManager(deps) {
    * inference (its grant attempt given back). A Pause, a Stop, an interruption and Stop All clear it; it never fires after the run ended.
    */
   async function start({ conversationId, provider, access = "read-only", model = "", effort = "", profile = DEFAULT_PROFILE, taskId = null, stage = "assist", roleId = "", grantId = null,
-    actor = "user", correlationId = null, requestedAt = null, approval = null, exportPolicy = null, binding = null, turnTimeoutMs = null }) {
+    actor = "user", correlationId = null, requestedAt = null, approval = null, exportPolicy = null, binding = null, turnTimeoutMs = null, maxOutputTokens = null }) {
     if (!providers[provider]) throw new HubError("validation", `Unknown provider ${provider}`);
     const turnLimitMs = turnTimeoutMs === null || turnTimeoutMs === undefined ? null : Number(turnTimeoutMs);
     if (turnLimitMs !== null && !(Number.isFinite(turnLimitMs) && turnLimitMs >= 1 && turnLimitMs <= TURN_TIMEOUT_MAX_MS)) {
@@ -311,6 +311,10 @@ export function createRunManager(deps) {
       let lastPersist = 0;
       const handle = adapter.startTurn({
         runId, cwd: project.path, prompt: prompt.text, access, model: plan.model, effort: plan.effort,
+        // The option belongs only to a real Factory author dispatch, never to manual/chat/reviewer runs.
+        ...(maxOutputTokens === 64000 && actor === "factory" && provider === "claude" && environment === "windows"
+          && db.prepare("SELECT 1 FROM factory_dispatches WHERE id = ? AND stage = 'TEST_AUTHORING' AND status = 'CLAIMED' AND json_extract(request_json, '$.maxOutputTokens') = 64000").get(correlationId)
+          ? { maxOutputTokens: 64000 } : {}),
         threadId: provider === "codex" ? sessionId : undefined, sessionId: provider === "claude" ? sessionId : undefined,
         trustedWorkspace: project.trustedConfig, projectId: project.id, exportPolicy: exportPolicy || {},
         // M09: Claude's init model is compared with the bound (or explicitly requested) model; a mismatch stops before the model.
@@ -662,6 +666,7 @@ export function createRunManager(deps) {
         native_turn_id = COALESCE(native_turn_id, ?), usage_json = ?, evidence_json = ? WHERE id = ?`)
         .run(status, result.errorCategory || null, result.error ? redactText(String(result.error)).slice(0, 2000) : null, pre ? 1 : 0, clock().toISOString(),
           result.threadId || result.sessionId || null, result.turnId || null, json(result.usage || run.usage), json({ ...run.evidence, permissionDenials: result.permissionDenials, numTurns: result.numTurns, promptPackage: entry?.promptPackage, ...(result.environment ? { environment: result.environment } : {}),
+          ...(result.authorOutputLimit ? { authorOutputLimit: result.authorOutputLimit } : {}),
           ...(result.turnTimeout ? { turnTimeout: result.turnTimeout } : {}) }), runId);
       if (entry?.outputMessageId) {
         conversations.finalize(entry.outputMessageId, { content: content || (result.error ? `Run ${status}: ${redactText(String(result.error))}` : ""), status: status === "completed" ? "final" : status,

@@ -24,6 +24,13 @@ import { makeTestHub, enableLive, waitFor } from "./helpers.mjs";
 const here = path.dirname(fileURLToPath(import.meta.url)), fixture = path.join(here, "fixtures/stage0-s25"), app = path.join(here, "fixtures/r-priv-booking");
 const read = (name) => fs.readFileSync(path.join(fixture, name), "utf8");
 const before = JSON.parse(read("dataset-before.json")), words = before.words;
+// R-OUTPUT adds exactly this approved option to new Hub-written plans; all pre-existing snapshot fields still compare exactly.
+const withAuthorLimit = (snapshot) => {
+  const expected = structuredClone(snapshot);
+  if (expected.input.spec.authoring) expected.input.spec.authoring.authorLimits = { maxOutputTokens: 64000,
+    provenance: "decizia proprietarului 2026-10-13 21:32 UTC: limită de ieșire 64000 doar pentru autorul testului de la pasul 0" };
+  return expected;
+};
 const declaration = EXPERIMENT_DATASETS["booking-demo"], helpers = ["json-exposure"];
 const manifest = JSON.parse(read("dataset-reference.manifest.json")), body = read("dataset-reference.body.mjs.txt");
 const protocol = assembleTestFile({ body, needs: manifest.needs, helpers, harness: 2 });
@@ -120,10 +127,10 @@ test("T-DATASET-03", (t) => {
     assert.ok(checkSpec({ ...input, dataset: value }).problems.length, "unknown keys cannot disappear during canonical hashing");
   }
   for (const [i, text] of before.requests.entries()) {
-    if (i) { const result = buildEngineeringSpec({ text, project }); assert.equal(result.input.spec.dataset, undefined); assert.deepEqual(result, before.specs[i]); }
+    if (i) { const result = buildEngineeringSpec({ text, project }); assert.equal(result.input.spec.dataset, undefined); assert.deepEqual(result, withAuthorLimit(before.specs[i])); }
   }
   fs.unlinkSync(path.join(dir, TEST_PROJECT_MARKER));
-  assert.deepEqual(buildEngineeringSpec({ text: words, project }), before.specs[0]);
+  assert.deepEqual(buildEngineeringSpec({ text: words, project }), withAuthorLimit(before.specs[0]));
   write(dir, TEST_PROJECT_MARKER, JSON.stringify(marker));
   const real = buildEngineeringSpec({ text: words, project: { ...project, source: "registry" } });
   fs.unlinkSync(path.join(dir, TEST_PROJECT_MARKER)); assert.deepEqual(real, buildEngineeringSpec({ text: words, project: { ...project, source: "registry" } })); assert.equal(real.input.spec.dataset, undefined);

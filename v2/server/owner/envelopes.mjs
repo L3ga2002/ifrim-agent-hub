@@ -216,7 +216,8 @@ export function createEnvelopes({ db, bus, clock, settings, projects, missions, 
     const criteria = (v.spec.spec.acceptance || []).filter((c) => ids.has(c.id)).map((c) => ({ id: c.id, text: c.text }));
     const role = (b, provider) => ({ provider: b?.provider || provider, model: b?.resolvedAlias || "", effort: b?.effort || "" });
     return { testRef: a.testRef, criteria, author: role(v.scope?.bindings?.reviewer, "claude"), testReviewer: role(v.scope?.bindings?.writer, "codex"),
-      reauthorMax: a.reauthorMax, proofRuns: a.proofRuns, mustFail: true, protectedAfterReview: true, remainingAuthoring: remaining };
+      reauthorMax: a.reauthorMax, proofRuns: a.proofRuns, mustFail: true, protectedAfterReview: true, remainingAuthoring: remaining,
+      ...(a.authorLimits ? { authorLimits: a.authorLimits } : {}) };
   }
 
   // ---------- readiness & eligibility ----------
@@ -441,7 +442,9 @@ export function createEnvelopes({ db, bus, clock, settings, projects, missions, 
       // M09: the exact models and efforts the steps run with (the bindings; checked again before every start and at the provider's report).
       models: `Modele: ${[...new Set(m.map((e) => `writer ${bindingLabel(e.bindings?.writer)}; reviewer ${bindingLabel(e.bindings?.reviewer)}`))].join(" | ")}${tfEntries.length ? T_MODELS_SUFFIX : ""}. Verificate din nou înainte de fiecare pornire; o schimbare oprește execuția înainte de model.`,
       // M11 L5 (§2): the step-0 lines of the card (the same words the page builds from the hashed body.testFirst) and what the test proves.
-      ...(tfEntries.length ? { testFirst: { step0: tfEntries.every((e) => e.testFirst.reauthorMax === 0) ? T_CARD_STEP0_NO_REWRITE : T_CARD_STEP0, proves: T_CARD_PROVES(tfCriteria), criteria: tfCriteria, missions: tfEntries.map((e) => e.missionId) } } : {}),
+      ...(tfEntries.length ? { testFirst: { step0: (tfEntries.every((e) => e.testFirst.reauthorMax === 0) ? T_CARD_STEP0_NO_REWRITE : T_CARD_STEP0)
+        + (tfEntries.some((e) => e.testFirst.authorLimits?.maxOutputTokens === 64000) ? "\nAutorul testului de la pasul 0: limită de ieșire cerută de 64000 de tokeni, conform planului." : ""),
+        proves: T_CARD_PROVES(tfCriteria), criteria: tfCriteria, missions: tfEntries.map((e) => e.missionId) } } : {}),
       never: "Fără deploy, commit, push, mesaje, bani, schimbări de acces sau izolare, instalări, ștergeri de date reale.",
       stops: `Mă opresc la ${body.limits.maxDurationMin} min, ${body.limits.maxAttemptsPerStage} încercări pe etapă, sau când livrarea e gata de verificarea ta (nu accept singur). Continui și dacă închizi pagina, dar numai în aceste limite; nu încep alte misiuni${body.continuationPolicy.nextMissionWithoutConfirmation ? " decât pe cele din acest plan" : ""}.`,
       // 2.12.2 (P0-R3): the per-turn limits (hashed in body.limits.turnTimeoutMin), next to the mission's own deadline.

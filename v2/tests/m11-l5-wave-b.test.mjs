@@ -182,6 +182,8 @@ test("U9 body and card: body.testFirst (top level and in the mission entry), one
     const missionId = env.missionIds[0];
     const v = view(t, missionId);
     const a = v.spec.spec.authoring;
+    const authorLimits = { maxOutputTokens: 64000, provenance: "decizia proprietarului 2026-10-13 21:32 UTC: limită de ieșire 64000 doar pentru autorul testului de la pasul 0" };
+    assert.deepEqual(a.authorLimits, authorLimits);
     assert.deepEqual([a.mode, a.criteria, a.reauthorMax, a.proofRuns, a.controls, a.author, a.testReviewer], ["hub", ["AC-1"], 1, 2, "bugfix", "claude", "codex"]);
     assert.match(a.testRef, /^test\/hub\/repara-validarea-un-nume-format-[0-9a-f]{6}\.test\.mjs$/);
     assert.equal(a.stagingRef, a.testRef.replace(/^test\/hub\//, ".ifrim-hub/staging/").replace(/\.test\.mjs$/, ".mjs"));
@@ -189,7 +191,7 @@ test("U9 body and card: body.testFirst (top level and in the mission entry), one
     assert.deepEqual(v.spec.protected.problems, []);
     const tf = env.body.testFirst;
     assert.deepEqual(tf, { testRef: a.testRef, criteria: [{ id: "AC-1", text: v.spec.spec.acceptance[0].text }], author: { provider: "claude", model: "sonnet", effort: "medium" },
-      testReviewer: { provider: "codex", model: "gpt-6.1-sol", effort: "medium" }, reauthorMax: 1, proofRuns: 2, mustFail: true, protectedAfterReview: true, remainingAuthoring: 2, missionId });
+      testReviewer: { provider: "codex", model: "gpt-6.1-sol", effort: "medium" }, reauthorMax: 1, proofRuns: 2, mustFail: true, protectedAfterReview: true, remainingAuthoring: 2, authorLimits, missionId });
     const { missionId: _m, ...entryTf } = tf;
     assert.deepEqual(env.body.missions[0].testFirst, entryTf, "the mission entry carries the same step 0 (budget, authority)");
     assert.equal(env.body.allowedEffects.at(-1), TEST_FIRST_EFFECT);
@@ -200,7 +202,7 @@ test("U9 body and card: body.testFirst (top level and in the mission entry), one
     assert.equal(s.state, "PLAN_READY", JSON.stringify(s.blockers));
     assert.ok(s.steps.startsWith(`${T_STEPS_PREFIX}implementare (Codex), verificări, review (Claude, doar citire), până la 2 cicluri de remediere`), s.steps);
     assert.ok(s.models.endsWith(`${T_MODELS_SUFFIX}. Verificate din nou înainte de fiecare pornire; o schimbare oprește execuția înainte de model.`), s.models);
-    assert.deepEqual(s.testFirst, { step0: T_CARD_STEP0, proves: T_CARD_PROVES(tf.criteria), criteria: tf.criteria, missions: [missionId] });
+    assert.deepEqual(s.testFirst, { step0: T_CARD_STEP0 + "\nAutorul testului de la pasul 0: limită de ieșire cerută de 64000 de tokeni, conform planului.", proves: T_CARD_PROVES(tf.criteria), criteria: tf.criteria, missions: [missionId] });
     assert.match(s.limits, /termen misiune 180 min/);
     assert.match(s.stops, /^Mă opresc la 180 min/);
     for (const line of [s.headline, s.where, s.steps, s.models, s.stops, s.limits, s.files, s.testFirst.step0, s.testFirst.proves, r.note]) assert.doesNotMatch(line, NO_FILE, line);

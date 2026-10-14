@@ -1027,7 +1027,8 @@ export function createFactory(deps) {
     // 2.12.2 (P0-R3): the role's per-turn limit from the mission's (hashed) limits; recorded with the dispatch, enforced by runs.start.
     const turn = turnLimitOf(f, role);
     const request = { stage, cycle, changeSeq, attempt: prior.length + 1, counted: attempts + 1, provider: route.provider, access, model: binding.resolvedAlias, effort: binding.effort, profile: binding.profile,
-      specVersion: f.approvedSpecVersion, bindingHash: binding.bindingHash, turnTimeoutMin: turn.min };
+      specVersion: f.approvedSpecVersion, bindingHash: binding.bindingHash, turnTimeoutMin: turn.min,
+      ...(stage === "TEST_AUTHORING" && approvedSpec(f)?.spec.authoring?.authorLimits?.maxOutputTokens === 64000 ? { maxOutputTokens: 64000 } : {}) };
     const key = `${missionId}:${stage}:c${cycle}:cs${changeSeq}:a${prior.length + 1}`;
     const id = newId("dsp");
     const inserted = db.prepare(`INSERT OR IGNORE INTO factory_dispatches (id, mission_id, stage, task_id, idempotency_key, status, request_json, created_at, updated_at)
@@ -1051,7 +1052,8 @@ export function createFactory(deps) {
       // the step really runs with (M11 L5: a writer binding narrowed to read-only exports nothing).
       const exportPolicy = access === "workspace-write" ? { protectedPaths: Object.keys(approvedSpec(f)?.protected?.files || {}) } : null;
       ({ run } = await tracked(missionId, () => runs.start({ conversationId, provider: route.provider, access, model: request.model, effort: request.effort, profile: request.profile,
-        taskId, stage: task.stage, roleId: task.roleId, actor: "factory", correlationId: id, requestedAt: f.updatedAt, exportPolicy, binding, turnTimeoutMs: turn.ms })));
+        taskId, stage: task.stage, roleId: task.roleId, actor: "factory", correlationId: id, requestedAt: f.updatedAt, exportPolicy, binding, turnTimeoutMs: turn.ms,
+        ...(request.maxOutputTokens === 64000 ? { maxOutputTokens: 64000 } : {}) })));
     } catch (error) {
       // A Stop / Pause that arrived while the start was in flight: the refusal is its consequence, not a new blocker.
       if (isHalted(missionId)) {
@@ -1185,6 +1187,11 @@ export function createFactory(deps) {
       const fresh = rowToDispatch(db.prepare("SELECT * FROM factory_dispatches WHERE id = ?").get(dispatch.id));
       if (fresh.runId && fresh.runId !== runId) return null;
       const f = fm(dispatch.missionId);
+      if (dispatch.stage === "TEST_AUTHORING" && !db.prepare("SELECT 1 FROM events WHERE type = 'factory.author_output_limit' AND run_id = ?").get(runId)) {
+        const limit = run.evidence?.authorOutputLimit || { requested: fresh.request?.maxOutputTokens ?? null, settingsOverride: null, effective: null, evidence: "nedemonstrat" };
+        bus.emit({ type: "factory.author_output_limit", scopeType: "mission", scopeId: f.missionId, source: "factory", runId,
+          payload: { ...limit, runId } });
+      }
       if (fresh.status === "INTERRUPTED") {
         // Interrupted by the owner (Pause, Stop, the time limit): archived, never evaluated now and never resets the stage
         // (a resume may already be running). A result that completed anyway is kept for the next resume.
@@ -1223,6 +1230,13 @@ export function createFactory(deps) {
       if (run.status !== "completed") {
         // 2.12.2 (P0-R3): the turn ran out of its per-turn time — TIMEOUT, its own outcome (never the generic failure below).
         if (run.errorCategory === "turn_timeout") return afterTurnTimeout(f, fresh, run);
+        if (dispatch.stage === "TEST_AUTHORING" && run.errorCategory === "output_token_limit") {
+          const { counted } = modelAttempts(f.missionId, dispatch.stage, dispatch.request.cycle, dispatch.request.changeSeq);
+          const limit = attemptLimit(f, dispatch.stage);
+          blockTask(dispatch.taskId, "bugetul de ieșire epuizat");
+          return setStage(f.missionId, counted >= limit ? "NEEDS_OWNER_DECISION" : "BLOCKED", { waitReason: "owner_decision",
+            reason: `Autorul testului a folosit întregul buget de ieșire fără să încheie răspunsul (output_token_limit); ${counted} încercări folosite din ${limit}. Decizia este a ta.` });
+        }
         const reason = `${dispatch.stage}: execuția ${run.status}${run.errorCategory ? ` (${run.errorCategory})` : ""}${run.errorMessage ? ` — ${run.errorMessage.slice(0, 300)}` : ""}`;
         // A refused or conflicting export from an execution environment: nothing reached the project; the owner decides
         // (the quarantined export is in the run evidence), never an automatic repair on an unknown state.

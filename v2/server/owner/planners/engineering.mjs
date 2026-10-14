@@ -396,7 +396,8 @@ export function buildEngineeringSpec({ text, args = {}, project, hubWrites = {},
       // §5.1 S1: the folders the tests write at run time (top-level folder entries of .gitignore), so a test that writes data is no
       // "left files behind" for the proof; checkSpec refuses src / test / public / the Hub's own work area.
       workspace: { ignore: deriveIgnore(readGitignore(project.path)) },
-      authoring: { mode: "hub", testRef: testFirst.testRef, stagingRef: testFirst.stagingRef, criteria: testFirst.criteria },
+      authoring: { mode: "hub", testRef: testFirst.testRef, stagingRef: testFirst.stagingRef, criteria: testFirst.criteria,
+        authorLimits: { maxOutputTokens: 64000, provenance: "decizia proprietarului 2026-10-13 21:32 UTC: limită de ieșire 64000 doar pentru autorul testului de la pasul 0" } },
       ...(supersedes.length ? { supersedes } : {}),
       sources: { user: [words], code: [], assumptions: ["Testul de acceptanță nu există încă: îl scrie Hub-ul la pasul 0 din cuvintele tale; trebuie să pice pe codul de acum din motivul potrivit, e verificat independent, apoi îl protejez",
         ...(useDerived ? [`Criteriile sunt derivate de Hub din cererea ta (tipul cererii: ${derived.shape}), fără model; cuvintele tale rămân cererea`, ...derived.assumptions] : [])] },

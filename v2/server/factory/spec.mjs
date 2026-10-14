@@ -274,6 +274,16 @@ function checkAuthoring(raw, spec) {
     testReviewer: input.testReviewer === undefined ? "codex" : str(input.testReviewer, 20),
   };
   if (authoring.mode !== "hub") problems.push("authoring.mode: doar „hub” (testul îl scrie Hub-ul)");
+  if (input.authorLimits !== undefined) {
+    const limits = input.authorLimits;
+    const valid = limits && typeof limits === "object" && !Array.isArray(limits)
+      && Object.keys(limits).length === 2 && Object.keys(limits).every((key) => ["maxOutputTokens", "provenance"].includes(key))
+      && limits.maxOutputTokens === 64000 && typeof limits.provenance === "string"
+      && limits.provenance.trim().length > 0 && limits.provenance.length <= 300;
+    if (!valid) problems.push("authoring.authorLimits: doar maxOutputTokens 64000 și provenance (text de 1–300 caractere)");
+    // Keep an invalid marker: saving a draft must never silently turn an invalid option into an approvable old spec.
+    authoring.authorLimits = valid ? { maxOutputTokens: 64000, provenance: str(limits.provenance, 300) } : null;
+  }
   if (!AUTHORING_WORK_TYPES.includes(spec.workType)) problems.push(`authoring: testul scris de Hub e disponibil doar pentru ${AUTHORING_WORK_TYPES.join(" / ")} (o refactorizare are nevoie de un test de caracterizare)`);
   const testStem = testRef.match(TEST_REF_RE)?.[1] || null;
   const stagingStem = stagingRef.match(STAGING_REF_RE)?.[1] || null;
@@ -333,5 +343,6 @@ export const e2eStepLines = (a) => (a.verify === "e2e" && Array.isArray(a.steps)
 
 /** Short, owner-facing summary of a spec (Lega, lists). */
 export function specSummary(spec) {
-  return `${spec.workType} · ${spec.title}: ${spec.acceptance.length} criterii (${spec.acceptance.filter((a) => a.verify === "test").length} prin test), verificare ${spec.verification.acceptance.join(", ")}`;
+  return `${spec.workType} · ${spec.title}: ${spec.acceptance.length} criterii (${spec.acceptance.filter((a) => a.verify === "test").length} prin test), verificare ${spec.verification.acceptance.join(", ")}`
+    + (spec.authoring?.authorLimits?.maxOutputTokens === 64000 ? "\nAutorul testului de la pasul 0: limită de ieșire cerută de 64000 de tokeni." : "");
 }
