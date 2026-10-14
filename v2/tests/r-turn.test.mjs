@@ -10,7 +10,7 @@ import { buildEngineeringSpec } from "../server/owner/planners/engineering.mjs";
 import { materializeFixture, demoSpec } from "../server/factory/fixtures.mjs";
 import { defaultModelLimits, TURN_TIMEOUT_BOUNDS } from "../server/factory/plan.mjs";
 import { hashCanonical } from "../server/core/canonical.mjs";
-import { runRehearsal, S25_WORDS, codexReviewArgs, createRehearsalCodex, rehearsalCodexAuth, recordedProcessTree,
+import { runRehearsal, S25_WORDS, codexReviewArgs, createRehearsalCodex, probeRehearsalProviders, recordedProcessTree,
   recordedSurvivors, emergencyKillRecorded, cleanupRecordedProcesses, createRehearsalStop } from "./manual/s25-isolated-rehearsal.mjs";
 
 const OLD = { maxOutputTokens: 64000, provenance: "decizia proprietarului 2026-10-13 21:32 UTC: limită de ieșire 64000 doar pentru autorul testului de la pasul 0" };
@@ -280,15 +280,66 @@ test("T-TURN driver CLI recipe is read-only; a writer is refused without resolvi
   assert.equal(result.preInference, true); assert.equal(result.errorCategory, "policy"); assert.match(result.error, /înaintea writer/);
 });
 
-test("T-TURN rehearsal auth uses only successful login status, with tuple identity and no plan claim", () => {
-  for (const wording of ["using", "with"]) {
-    const auth = rehearsalCodexAuth({ exitCode: 0, text: `Logged in ${wording} ChatGPT` }, "fixture-salt-0123456789");
-    assert.equal(auth.accountType, "chatgpt"); assert.equal(auth.planType, null);
-    assert.equal(auth.requiresOpenaiAuth, false); assert.equal(auth.accountIdentity.basis, "tuple"); assert.equal(auth.accountIdentity.plan, null);
-  }
-  for (const status of [{ exitCode: 1, text: "Logged in using ChatGPT" }, { exitCode: 0, text: "Logged in using an API key" }, { exitCode: null }]) {
-    const auth = rehearsalCodexAuth(status, "fixture-salt-0123456789");
-    assert.equal(auth.accountType, "none"); assert.equal(auth.planType, null); assert.equal(auth.requiresOpenaiAuth, true);
+test("T-TURN real-style Codex wiring preserves Hub probe facts and installation; only exec handles review", async (t) => {
+  const dir = temp(t), evidence = { probes: {} }, providerState = new Map(), calls = [], starts = [], prompts = [];
+  const config = { testMode: false, hubRoot: dir, dataDir: dir, backupDir: path.join(dir, "backups"),
+    providerBinaries: { codex: { executable: process.execPath, prefixArgs: ["fake-review-only.mjs"] } } };
+  const supervisor = { start(options) {
+    starts.push(options);
+    return { pid: 123, child: { stdin: { end: (prompt) => prompts.push(prompt) } }, stderrTail: [], exit: Promise.resolve({ code: 0 }) };
+  } };
+  const result = { provider: "codex", ok: true, probedAt: new Date().toISOString(),
+    auth: { accountType: "chatgpt", planType: "pro", requiresOpenaiAuth: false, accountIdentity: { hash: "fake-account", plan: "pro" } },
+    models: [{ id: "probe-model", model: "probe-model", efforts: ["low", "high"] }],
+    usage: { primary: { usedPercent: 12 } }, sandbox: { readiness: "ready", profiles: [{ id: "reported-profile", allowed: true }] } };
+  const installation = { provider: "codex", installed: true, binary: "reported-binary", version: "reported-version" };
+  const codex = createRehearsalCodex({ config, supervisor, dataDir: dir, homeDir: dir, identitySalt: "fake-salt",
+    codexAdapterFactory(options) {
+      calls.push("factory");
+      assert.strictEqual(options.config, config); assert.equal(options.config.testMode, false);
+      assert.strictEqual(options.supervisor, supervisor); assert.equal(options.homeDir, dir); assert.equal(options.identitySalt(), "fake-salt");
+      return { probe: async (args) => { calls.push("probe"); assert.deepEqual(args, { withModels: true }); return result; },
+        inspectInstallation: async () => { calls.push("installation"); return installation; },
+        startTurn() { assert.fail("Hub app-server turns must never be used"); } };
+    }, onProbe: (record) => { evidence.probes.codex = record; } });
+  const claude = { probe: async () => ({ ok: true, auth: { loggedIn: true, authMethod: "claude.ai", apiProvider: "firstParty", subscriptionType: "pro" } }),
+    inspectInstallation: async () => ({ installed: true }) };
+  await probeRehearsalProviders({ providers: { claude, codex }, providerState, mode: "real", evidence });
+  assert.deepEqual(calls, ["factory", "probe", "installation"]); assert.equal(starts.length, 0);
+  assert.strictEqual(evidence.probes.codex.probe, result); assert.strictEqual(evidence.probes.codex.installation, installation);
+  for (const key of ["auth", "usage", "models", "sandbox"]) assert.strictEqual(providerState.get("codex")[key], result[key]);
+  assert.equal(providerState.get("codex").auth.planType, "pro");
+  assert.match(evidence.probes.codex.source, /Hub real Codex probe: codex app-server; no thread, no turn, no command/);
+  assert.ok(Date.parse(evidence.probes.codex.startedAt) <= Date.parse(evidence.probes.codex.finishedAt));
+  const turn = codex.startTurn({ runId: "review", cwd: dir, prompt: "Review only", access: "read-only", model: "probe-model", effort: "high", onEvent() {} });
+  assert.equal((await turn.done).status, "completed"); assert.deepEqual(prompts, ["Review only"]);
+  assert.equal(starts.length, 1); assert.equal(starts[0].executable, process.execPath);
+  assert.deepEqual(starts[0].args, ["fake-review-only.mjs", ...codexReviewArgs({ model: "probe-model", effort: "high", output: path.join(dir, "review.review.txt") })]);
+  assert.ok(!starts[0].args.some((a) => /app-server|permissions\.|default_permissions|sandbox$/.test(a)));
+  for (const access of ["workspace-write", "full-access", undefined]) assert.equal((await codex.startTurn({ runId: "refused", access }).done).preInference, true);
+  assert.equal(starts.length, 1); assert.deepEqual(calls, ["factory", "probe", "installation"]);
+});
+
+test("T-TURN Hub probe missing a ChatGPT plan stops preflight before any dispatch", async () => {
+  for (const auth of [{ accountType: "chatgpt", planType: null }, { accountType: "chatgpt" },
+    { accountType: "chatgpt", planType: " " }, { accountType: "api", planType: "pro" }, undefined]) {
+    let dispatches = 0, probes = 0;
+    const evidence = { probes: {} }, providerState = new Map(), result = { ok: true, auth, models: [{ id: "must-not-run" }] };
+    const codex = createRehearsalCodex({ codexAdapterFactory: () => ({
+      probe: async (options) => { probes++; assert.deepEqual(options, { withModels: true }); return result; },
+      inspectInstallation() { assert.fail("invalid account must stop immediately"); },
+      startTurn() { assert.fail("must never start app-server turn"); },
+    }), supervisor: { start() { assert.fail("must not launch a CLI"); } } });
+    const providers = { codex, claude: {
+      probe: async () => ({ ok: true, auth: { loggedIn: true, authMethod: "claude.ai", apiProvider: "firstParty", subscriptionType: "pro" } }),
+      inspectInstallation: async () => ({ installed: true }),
+    } };
+    await assert.rejects(async () => {
+      await probeRehearsalProviders({ providers, providerState, mode: "real", evidence });
+      dispatches++;
+    }, /Codex subscription precondition failed:.*ChatGPT and planType; stopped before any model or dispatch/);
+    assert.equal(dispatches, 0); assert.equal(probes, 1); assert.equal(providerState.has("codex"), false);
+    assert.strictEqual(evidence.probes.codex.probe, result);
   }
 });
 

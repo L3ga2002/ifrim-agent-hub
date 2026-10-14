@@ -9,10 +9,8 @@ import { promisify } from "node:util";
 import { makeTestHub, declareBillingFixture, waitFor, HUB_ROOT, FIXTURES } from "../helpers.mjs";
 import { buildEngineeringSpec } from "../../server/owner/planners/engineering.mjs";
 import { createClaudeAdapter } from "../../server/providers/claude.mjs";
-import { resolveCodexBinary, inspectCodexConfig, CODEX_APP_SERVER_OVERRIDES } from "../../server/providers/codex.mjs";
+import { createCodexAdapter, resolveCodexBinary, inspectCodexConfig, CODEX_APP_SERVER_OVERRIDES } from "../../server/providers/codex.mjs";
 import { createSupervisor } from "../../server/runtime/supervisor.mjs";
-import { buildChildEnv } from "../../server/policy/billing.mjs";
-import { deriveAccountIdentity } from "../../server/policy/billing-evidence.mjs";
 import { classifyText } from "../../server/providers/classify.mjs";
 import { AGENT_COMMANDS } from "../../server/runtime/commands.mjs";
 import { baselineGate } from "../../server/factory/test-first.mjs";
@@ -24,12 +22,6 @@ const DELEGATION = "aprobarea proprietarului 2026-10-14 10:09 UTC (thread Lipsur
 const inside = (root, target) => { const r = path.relative(root, target); return !r || (!r.startsWith("..") && !path.isAbsolute(r)); };
 const stamp = () => new Date().toISOString();
 const jsonFile = (file, value) => fs.writeFileSync(file, JSON.stringify(value, null, 2) + "\n", { flag: "wx" });
-
-export function rehearsalCodexAuth(loginStatus, identitySalt) {
-  const chatgpt = loginStatus.exitCode === 0 && /logged in (?:using|with) chatgpt/i.test(loginStatus.text || "");
-  return { accountType: chatgpt ? "chatgpt" : "none", planType: null, requiresOpenaiAuth: !chatgpt,
-    accountIdentity: deriveAccountIdentity({ salt: identitySalt, tuple: [chatgpt ? "chatgpt" : "none"], plan: null }) };
-}
 
 // CreationDate is the process identity: a reused PID is never a survivor or a cleanup target.
 export function recordedProcessTree(records, snapshot) {
@@ -121,28 +113,19 @@ export function codexReviewArgs({ model, effort, output, mcpServerNames = [] }) 
     "-c", 'model_provider="openai"', "-c", 'forced_login_method="chatgpt"', "-c", 'approval_policy="never"', "-o", output, "-"];
 }
 
-/** Rehearsal-only CLI route. It never launches app-server/sandbox or passes a Hub permission profile. */
-export function createRehearsalCodex({ supervisor, dataDir, homeDir, identitySalt }) {
-  const binary = () => { const b = resolveCodexBinary({ providerBinaries: {} }); if (!b) throw new Error("Codex CLI lipsește"); return b; };
-  const inspectInstallation = async () => {
-    try {
-      const b = binary(), r = await exec(b.executable, [...b.prefixArgs, "--version"], { env: buildChildEnv(), windowsHide: true, timeout: 20000 });
-      return { provider: "codex", installed: true, binary: b.executable, version: r.stdout.trim(), route: "rehearsal:codex-exec" };
-    } catch (error) { return { provider: "codex", installed: false, reason: error.message }; }
-  };
+/** Hub app-server probe only (no thread/turn/command); review turns use exec read-only without a Hub profile. */
+export function createRehearsalCodex({ config, supervisor, dataDir, homeDir, identitySalt, codexAdapterFactory = createCodexAdapter, onProbe = () => {} }) {
+  let adapter;
+  const hubAdapter = () => adapter ||= codexAdapterFactory({ config, supervisor, homeDir, identitySalt: () => identitySalt });
+  const binary = () => { const b = resolveCodexBinary(config); if (!b) throw new Error("Codex CLI lipsește"); return b; };
+  const inspectInstallation = () => hubAdapter().inspectInstallation();
   const probe = async () => {
-    const out = { provider: "codex", probedAt: stamp(), config: inspectCodexConfig(homeDir),
-      models: [{ id: "gpt-6.1-sol", model: "gpt-6.1-sol", efforts: ["medium"] }],
-      modelsSource: "declared by the rehearsal", sandbox: { readiness: "unverified", profiles: [], source: "Hub profile not exercised" } };
+    const record = { source: "Hub real Codex probe: codex app-server; no thread, no turn, no command execution", startedAt: stamp() };
     try {
-      const b = binary();
-      const r = await exec(b.executable, [...b.prefixArgs, "login", "status"], { env: buildChildEnv(), windowsHide: true, timeout: 20000 });
-      out.loginStatus = { exitCode: 0, text: (r.stdout + r.stderr).trim() };
-    } catch (error) { out.error = error.message; out.loginStatus = { exitCode: error.code ?? null, text: `${error.stdout || ""}${error.stderr || ""}`.trim() }; }
-    out.auth = rehearsalCodexAuth(out.loginStatus, identitySalt);
-    out.authSource = "codex login status; declared by the rehearsal / unverified plan";
-    out.ok = out.auth.accountType === "chatgpt";
-    return out;
+      record.probe = await hubAdapter().probe({ withModels: true });
+      return record.probe;
+    } catch (error) { record.error = error.message; throw error; }
+    finally { record.finishedAt = stamp(); onProbe(record); }
   };
   return { id: "codex", environment: "windows", inspectInstallation, probe,
     startTurn({ runId, cwd, prompt, access, model, effort, onEvent }) {
@@ -169,6 +152,27 @@ export function createRehearsalCodex({ supervisor, dataDir, homeDir, identitySal
     } };
 }
 
+/** Shared preflight boundary: all provider checks finish before any rehearsal command dispatch. */
+export async function probeRehearsalProviders({ providers, providerState, mode, evidence, signal }) {
+  signal?.throwIfAborted();
+  const cp = await providers.claude.probe(); evidence.probes.claude = { probe: cp };
+  signal?.throwIfAborted();
+  if (mode === "real" && !(cp.ok && cp.auth?.loggedIn && cp.auth.authMethod === "claude.ai" && cp.auth.apiProvider === "firstParty" && ["pro", "max", "team", "enterprise"].includes(cp.auth.subscriptionType))) throw new Error("Claude subscription precondition failed");
+  for (const provider of ["claude", "codex"]) {
+    const probe = provider === "claude" ? cp : await providers.codex.probe({ withModels: true });
+    evidence.probes[provider] = { ...evidence.probes[provider], probe };
+    signal?.throwIfAborted();
+    if (mode === "real" && provider === "codex" && (probe.auth?.accountType !== "chatgpt" || typeof probe.auth?.planType !== "string" || !probe.auth.planType.trim())) {
+      throw new Error("Codex subscription precondition failed: Hub account/read must report ChatGPT and planType; stopped before any model or dispatch");
+    }
+    const installation = await providers[provider].inspectInstallation();
+    signal?.throwIfAborted();
+    evidence.probes[provider].installation = installation;
+    providerState.set(provider, { ...probe, installation });
+    if (mode === "real" && (!probe.ok || !installation.installed)) throw new Error(`${provider}: precondiția locală a clientului nu este îndeplinită`);
+  }
+}
+
 /** Every caller must choose a mode; real is implemented for the coordinator and is never used by automated tests. */
 export async function runRehearsal({ mode = "fake", out, scenario = "success", fakeTurnMs = 1600, isolationFixture = false, signal, realProcesses = [] } = {}) {
   signal?.throwIfAborted();
@@ -184,7 +188,7 @@ export async function runRehearsal({ mode = "fake", out, scenario = "success", f
   const evidence = { schema: "s25-isolated-rehearsal/v1", mode, scenario, startedAt: stamp(), out, projectDir,
     runtime: { node: process.version, executable: process.execPath, platform: process.platform },
     runner: "PASS_SIMULATED: test-mode proof RUNNER executes node --test on the host without a sandbox, as in earlier rehearsals",
-    codexRoute: mode === "real" ? "rehearsal codex exec -s read-only; Hub real Codex app-server route is NOT exercised" : "harness fake-codex",
+    codexRoute: mode === "real" ? "probe: Hub real Codex app-server (no thread/turn/command); TEST_REVIEW: codex exec -s read-only, no Hub permission profile" : "harness fake-codex",
     billingDeclaration: { source: "test:fixture", scope: "throwaway isolated DB only" }, probes: {}, processes: [], pidChecks: [] };
   let h, missionId, timer, supervisor, failure, processTimer, startRequestedAt;
   evidence.realProcessCleanup = { records: realProcesses, scans: [], taskkill: [], survivors: [] };
@@ -231,8 +235,10 @@ export async function runRehearsal({ mode = "fake", out, scenario = "success", f
       };
       if (process.platform === "win32") processTimer = setInterval(() => scanReal().catch((error) => { evidence.realProcessCleanup.scanError = error.message; }), 1000);
       let claude, codex;
-      const realClaude = () => claude ||= createClaudeAdapter({ config: { ...h.config, testMode: false, providerBinaries: {}, hubRoot: HUB_ROOT }, supervisor, homeDir: os.homedir(), identitySalt: () => identitySalt });
-      const realCodex = () => codex ||= createRehearsalCodex({ supervisor, dataDir: h.dataDir, homeDir: os.homedir(), identitySalt });
+      const realConfig = () => ({ ...h.config, testMode: false, providerBinaries: {}, hubRoot: HUB_ROOT, dataDir: h.dataDir });
+      const realClaude = () => claude ||= createClaudeAdapter({ config: realConfig(), supervisor, homeDir: os.homedir(), identitySalt: () => identitySalt });
+      const realCodex = () => codex ||= createRehearsalCodex({ config: realConfig(), supervisor, dataDir: h.dataDir, homeDir: os.homedir(), identitySalt,
+        onProbe: (record) => { evidence.probes.codex = record; } });
       for (const [name, get] of [["claude", realClaude], ["codex", realCodex]]) providerOverrides[name] = Object.fromEntries(["probe", "inspectInstallation", "startTurn"].map((key) => [key, (...args) => get()[key](...args)]));
     }
     const failureBinary = mode === "fake" && scenario !== "success" ? { executable: process.execPath, prefixArgs: [path.join(FIXTURES, "fake-turn.mjs"), `--turn-scenario=${scenario}`] } : null;
@@ -259,19 +265,7 @@ export async function runRehearsal({ mode = "fake", out, scenario = "success", f
       h.hub.factory.setTurnTimeScaleForTests(scale); evidence.isolation.turnTimeScale = scale;
     }
     // Claude is checked first; a wrong account stops before the other provider or any mission work.
-    signal?.throwIfAborted();
-    const cp = await h.hub.providers.claude.probe(); evidence.probes.claude = { probe: cp };
-    signal?.throwIfAborted();
-    if (mode === "real" && !(cp.ok && cp.auth?.loggedIn && cp.auth.authMethod === "claude.ai" && cp.auth.apiProvider === "firstParty" && ["pro", "max", "team", "enterprise"].includes(cp.auth.subscriptionType))) throw new Error("Claude subscription precondition failed");
-    for (const provider of ["claude", "codex"]) {
-      const probe = provider === "claude" ? cp : await h.hub.providers.codex.probe({ withModels: true });
-      signal?.throwIfAborted();
-      const installation = await h.hub.providers[provider].inspectInstallation();
-      signal?.throwIfAborted();
-      evidence.probes[provider] = { probe, installation };
-      h.hub.providerState.set(provider, { ...probe, installation });
-      if (mode === "real" && (!probe.ok || !installation.installed)) throw new Error(`${provider}: precondiția locală a clientului nu este îndeplinită`);
-    }
+    await probeRehearsalProviders({ providers: h.hub.providers, providerState: h.hub.providerState, mode, evidence, signal });
     if (mode === "fake") { h.queue("claude", "author:dataset-reference"); h.queue("codex", "test-review:pass"); }
     signal?.throwIfAborted();
     if (mode === "real") {
