@@ -1,5 +1,24 @@
 # Open Issues - Ifrim Agent Hub
 
+## 2026-10-14 evening — 2.14.15 author turn limit; real isolated rehearsal reached a PROVEN rewrite but not Codex PASS (code on `claude/project-thread-5c9bak` = `b111d1c`, NOT released; live `2.14.10-m11`; detail: `.ifrim/STAGE_2026-10-13_DATE_MARTOR.md` §9)
+
+This section takes precedence over every older one where they overlap. 2.14.15 (`015d266`) adds the 45-min turn limit only for the step-0
+author of the §25 hub-test plan (`authoring.authorLimits.turnTimeoutMin`, dispatch-recorded, runtime-checked, card-visible) and R-PARITY deadline
+evidence; the manual driver `v2/tests/manual/s25-isolated-rehearsal.mjs` runs a real rehearsal through the Factory dispatch + runtime in a
+throwaway test Hub (grants sized like the plan, real Hub probes, Codex review via codex exec read-only, no credential reads, CreationDate-checked
+process cleanup). Independent reviews PASS.
+
+Open:
+1. **No release, no §25 card**: rehearsal h2 (16:38–17:09 UTC) — cycle 0 rejected by lint (reserved `hubAdd`, project load outside a test)
+   consumed the rewrite; the rewrite was PROVEN and calibrated 41/41 by assertions, but Codex stayed CHANGES_REQUESTED (post-restart full-set
+   revalidation, historical row per anonymous parameter, slots check for 13:00). Rewrite exhausted; owner's decision.
+2. **64000**: a message of 58 417 output tokens (h1) proves the old 32 000 cap was exceeded; a message reached 64 000 (h2); the exact cap is not
+   observed separately (no stop_reason recorded for that message).
+3. **Regression on `d096459` stuck** in r-turn since 19:17 UTC: under 84–100 % CPU 7 r-turn tests timed out and one left its fake "hang" child
+   alive (PID 30364), keeping the suite open; the agent's kill was refused by the permission layer. Test defect to fix (kill fake children on a
+   timeout failure). Previous full regression on `0bf94aa`: 1979/1981 (RF-02 flaky under load, 1 skip T25).
+4. Live Hub started seven times without upgrade/backup (logon task); parent delivery STALE; historic §25 test protected; M12 DRAFT.
+
 ## 2026-10-14 — Content gaps closed in code, step-0 author still blocked (code `2.14.14-m11` on branch `claude/project-thread-5c9bak` = `854e3fc`, NOT released; live `2.14.10-m11`, contract 13, schema 12; detail: `.ifrim/STAGE_2026-10-13_DATE_MARTOR.md`)
 
 This section takes precedence over every older one where they overlap. Baseline: `v2-milestone-01` = `c1db213` (+ this docs commit);

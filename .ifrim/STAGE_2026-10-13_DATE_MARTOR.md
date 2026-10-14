@@ -202,3 +202,118 @@ Costurile din tabel sunt cifrele estimate de CLI, nu facturi verificate. Ruta a 
 
 Revenire: nimic nu s-a schimbat live. Revenirea validată a Hub-ului rămâne `c168283` + `node v2/scripts/upgrade.mjs --apply`. Revenirea
 pentru 2.14.14 înseamnă eliminarea opțiunii, iar pentru 2.14.13 ramura de bază `53fe75e`.
+
+
+## 9. Continuare 2026-10-14: limita dedicată de 45 de minute (2.14.15) și repetiția completă
+
+Deciziile proprietarului:
+- 2026-10-14 10:09 UTC: varianta 1 — o limită pe tură de 45 min, numai pentru autorul de la pasul 0 al planului §25 hub-test, și o
+  singură repetiție izolată completă, prin dispatch-ul și runtime-ul Hub-ului;
+- 2026-10-14 16:24 UTC: corecția driverului (grant-uri dimensionate după bugetul planului) și o singură repetiție nouă, completă.
+
+### 9.1 Cod (clona `C:\Users\mihai\hub-rc`, ramura `claude/project-thread-5c9bak` = `b111d1c`, NEÎMBINAT, nelansat)
+
+| Commit | Conținut |
+|---|---|
+| `015d266` 2.14.15-m11 | R-TURN, R-PARITY, card, testele r-turn și driverul repetiției izolate (detalii sub tabel) |
+| `cf6b55f` | driverul ia faptele Codex (cont, plan, modele) din probe-ul real al Hub-ului (app-server, fără thread, tură sau comandă), fără fișiere de credențiale |
+| `0bf94aa`, `d096459` | grant-urile pasului 0 dimensionate ca un plan confirmat (ciclul 0 + rescrierea unică); scenariul simulat „amend” care o dovedește determinist |
+| `b111d1c` | dovezile repetițiilor (`h-rehearsals.json`, candidații `h1-*`, `h2-*`, calibrările) |
+
+Ce aduce `015d266`:
+- **R-TURN.** `authoring.authorLimits.turnTimeoutMin` e acceptat numai cu valoarea 45 și numai împreună cu contractul de date §25.
+  - Plannerul îl atașează doar planului care are dataset.
+  - Un singur resolver (`dispatchTurnLimit`) îl aplică dispatch-ului TEST_AUTHORING al unui spec APROBAT. Nu identifică niciodată autorul după rolul „reviewer” sau după etapa „qa”.
+  - Dispatch-ul înregistrează `turnTimeoutMin: 45` și `turnTimeoutSource: "authorLimits"`.
+  - `runs.start` acceptă limita numai pentru dispatch-ul TEST_AUTHORING CLAIMED al Factory-ului.
+- **R-PARITY.** Evidența `turnDeadline` și evenimentul `run.turn_deadline` înregistrează: armarea la admitere, `turn_sent`, rearmarea, deadline-ul efectiv, dacă s-a declanșat sau cine l-a curățat, plus notificările și reîncercările CLI de după `turn_sent`. Semantica termenului rămâne neschimbată.
+- **Card.** Cele 45 de minute apar în `summary.limits` și la pasul 0, numai pentru acest plan.
+- Testele r-turn și driverul repetiției izolate.
+
+Roluri:
+- Codex (gpt-6-astra, high) a implementat.
+- Claude, în sesiuni separate (agentul doar-citire `ifrim-claude-code-reviewer`), a revizuit:
+  - runda 1: un flux de 5 recenzenți pe unghiuri diferite, cu fiecare constatare verificată de 2 sceptici. Au rezultat 6 constatări confirmate; între ele, driverul citea `~/.codex/auth.json` (un fișier de credențiale) și putea lăsa procese orfane;
+  - runda 2: toate cele 6 închise;
+  - ultima rundă (doar driverul) și corectura probe-ului Codex: PASS.
+
+Citirea de credențiale exista doar în modul real al driverului, care nu fusese încă rulat, și a fost eliminată înainte de orice rulare reală.
+
+### 9.2 Teste
+
+| Rulare | Cod | Rezultat |
+|---|---|---|
+| Suite afectate (36, 13:02–13:35 UTC) | `cf6b55f` | 36/36 |
+| r-turn izolat | `d096459` | 26/26, inclusiv „amend”: grant-urile admit ciclul 0, rescrierea și ambele review-uri, iar writer-ul rămâne refuzat |
+| Regresia V2 completă (13:34–14:53 UTC) | `0bf94aa` | 1981 teste: 1979 PASS, 1 FAIL (RF-02 lease/heartbeat sub CPU 100 %; reluat izolat, 10/10 de două ori), 1 SKIP (T25) |
+| Regresia V2 completă (din 16:38 UTC, CPU 84–100 %) | `d096459` | **blocată** din 19:17 UTC în r-turn — detalii sub tabel |
+
+De ce s-a blocat regresia pe `d096459`:
+- Sub sarcină, 7 teste r-turn au picat pe timeout. Unul a lăsat în viață copilul simulat „hang” (PID 30364), care ține deschis procesul suitei.
+- Au rămas neatinse 5 suite: runs-handoff și stage-*.
+- Până acolo: 9 FAIL (7 r-turn, RM-10, S0R-27, toate timeout-uri sub sarcină) și 1 SKIP (T25).
+- Oprirea procesului de test a fost refuzată de stratul de permisiuni („Interfere With Workloads”); comanda e la proprietar.
+- **Defect de test:** r-turn trebuie să-și oprească procesele copil simulate și atunci când un test pică prin timeout.
+
+### 9.3 Repetițiile reale (Hub izolat de unică folosință, Factory dispatch + runtime reale)
+
+Configurația comună:
+- **Autor:** Claude Code CLI 2.1.175, `sonnet` · `medium`, doar citire, `CLAUDE_CODE_MAX_OUTPUT_TOKENS=64000` cerut.
+- **Termen:** 45 min, armat la admitere și rearmat o singură dată la `turn_sent`; reîncercările CLI intră în același termen.
+- **Încercări:** `maxAttemptsPerStage: 1`, numai pentru misiunea izolată.
+- **Verificator:** Codex `gpt-6.1-sol` · `medium`, prin `codex exec -s read-only`. Ruta reală a Hub-ului (app-server) ar fi scris ACL-uri DENY persistente pe căi noi, ceea ce nu era autorizat.
+- **Probe de dovadă:** în runner-ul simulat al modului de test (fără sandbox), ca în toate repetițiile anterioare.
+- **Probe reale:** Claude (`claude.ai`, `firstParty`, `max`) și Codex (`chatgpt`, plan `prolite`).
+- **Fixture-uri:** etichetate `test:fixture`, numai în baza de unică folosință (mod, poartă, consimțământ de izolare, declarația de facturare).
+
+**Pregătire (12:44 UTC).** Poarta izolată a refuzat Codex, pentru că planul nu era raportat (`codex login status` nu îl afișează). Oprirea s-a produs înaintea oricărui model; am corectat-o folosind probe-ul real Codex.
+
+**h1 (12:58–13:13 UTC, grant-uri 1/1)**
+- Autorul a produs candidatul `c30a5d98` în 14 min 19 s.
+- Un mesaj a avut **58 417 tokeni de ieșire** (total 63 574). Asta demonstrează depășirea plafonului vechi de 32 000; limita cerută e 64 000, dar plafonul exact nu a fost observat.
+- Lint valid; dovada PROVEN.
+- Review Codex (1 min): CHANGES_REQUESTED — AC-2: rândul istoric după fiecare parametru; AC-3: `created_at` lipsea din snapshot.
+- Rescrierea permisă a fost refuzată la `live_grant`, înaintea modelului, din cauza grant-urilor driverului (o singură încercare).
+- Driverul a închis apoi misiunea (CANCELLED); n-am mai atins-o după aceea.
+- Calibrare: aplicația corectă 5/5; 41/41 variante defecte respinse. Una dintre ele („returned id differs”) e respinsă printr-un TypeError în AC-4, nu printr-o aserțiune.
+
+**h2 (16:38–17:09 UTC, grant-uri 2/2 după bugetul planului)**
+- Ciclul 0 (24 min 34 s): un mesaj a atins **64 000** de tokeni (usage; total 104 755). Plafonul cerut a fost deci atins, dar `stop_reason` al acelui mesaj nu e înregistrat separat.
+- Candidatul `8ec8618e` a fost **respins de lint**: folosea numele rezervat `hubAdd` și încărca `../../src/server-app.js` în afara unui test. Respingerea a consumat rescrierea unică.
+- Rescrierea (3 min 22 s): candidatul `87a6755f`, lint valid, nicio verificare pierdută, dovada PROVEN.
+- Review Codex (1 min 16 s): **CHANGES_REQUESTED** (`created_at` rezolvat):
+  - T-001: setul complet nu e revalidat după repornire;
+  - T-002: rândul istoric e comparat înainte și după toată bucla, nu la fiecare parametru;
+  - T-003: lipsește confirmarea prin slots a intervalului de la 13:00.
+- Rescrierea e epuizată, iar misiunea e în NEEDS_OWNER_DECISION. Am oprit experimentul.
+- Calibrare pe `87a6755f`: aplicația corectă 5/5; **41/41 variante respinse, toate prin aserțiuni comportamentale** (niciun TypeError, niciun eșec de pregătire).
+
+Pentru ambele repetiții:
+- Termenul nu s-a declanșat în nicio tură. În h2: `turn_sent` la 16:39:05 cu deadline la 17:24:05; la rescriere, `turn_sent` la 17:03:28 cu deadline la 17:48:28.
+- Reîncercări CLI după `turn_sent`: 0.
+- Toate procesele înregistrate (probe, autor, runner, verificator) s-au oprit. Verificarea după PID și CreationDate nu a găsit niciun proces rămas.
+- Costuri afișate de CLI (estimări ale clientului, nu facturi verificate): h1 autor 1,46 $; h2 autor 1,74 $ și 0,58 $.
+
+### 9.4 Porți, release, §25
+
+Porțile cerute înainte de live:
+
+| Poartă | Rezultat |
+|---|---|
+| Lint valid | da, la rescriere |
+| Două rulări PROVEN | da |
+| Cleanup | da |
+| Baseline normal | neatins |
+| **Review Codex PASS** | **nu** |
+| Calibrare | da, 41/41 |
+
+**Nu am făcut release și nu am creat cardul §25.**
+- Hub-ul live rămâne pe 2.14.10-m11; nimic nu e îmbinat în `v2-milestone-01`.
+- Misiunea CANCELLED din h1 și dovezile ei au rămas nemodificate.
+- M12 rămâne DRAFT.
+
+### 9.5 Ce rămâne
+
+1. Autorul nu atinge pragul verificatorului în rescrierea unică. În h1 și h2 constatările sunt mici și precise (comparația integrală a rândului istoric la fiecare parametru, revalidarea setului complet după repornire, confirmarea prin slots), dar cer o a doua completare. Decizia e a proprietarului: o regulă suplimentară în brief (tiparul exact al acestor verificări în contractul experimentului) sau oprirea.
+2. Defectul testelor r-turn sub sarcină: procesul copil simulat rămâne viu după un timeout, iar regresia completă pe `d096459` rămâne neîncheiată.
+3. Ciclul 0 din h2 a fost respins de lint pentru o greșeală mecanică a autorului (`hubAdd`, încărcare în afara testului), care a consumat rescrierea. R-NEEDS completează automat `needs`, dar aceste două reguli rămân respingeri dure.
