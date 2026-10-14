@@ -13,7 +13,7 @@ import { createCodexAdapter, resolveCodexBinary, inspectCodexConfig, CODEX_APP_S
 import { createSupervisor } from "../../server/runtime/supervisor.mjs";
 import { classifyText } from "../../server/providers/classify.mjs";
 import { AGENT_COMMANDS } from "../../server/runtime/commands.mjs";
-import { baselineGate } from "../../server/factory/test-first.mjs";
+import { baselineGate, TEST_FIRST_LIMITS } from "../../server/factory/test-first.mjs";
 import { hubProtectedPaths, PROTECTED_HOME_PATHS } from "../../server/policy/isolation.mjs";
 
 const exec = promisify(execFile);
@@ -294,7 +294,11 @@ export async function runRehearsal({ mode = "fake", out, scenario = "success", f
     const dispatch = (type, payload) => h.hub.commands.dispatch({ type, payload, channel, actor: channel === "agent" ? "agent" : "test", delegation: DELEGATION });
     const project = (await dispatch("project.register_test", { path: projectDir, name: "Repetiție izolată §25" })).result;
     signal?.throwIfAborted();
-    h.hub.bus.transaction(() => { for (const provider of ["claude", "codex"]) h.hub.grants.create({ provider, projectId: project.id, access: "read-only", maxAttempts: 1, maxDurationS: 7200, ttlMinutes: 240 }, "test"); });
+    // Step 0 budget as a confirmed plan would derive it: one author turn and one test review per cycle (cycle 0 + the single R-AMEND rewrite);
+    // maxAttemptsPerStage 1 still forbids any repeat of a cycle. A 1-attempt grant refused the reviewer-requested rewrite at live_grant (2026-10-14).
+    const stepZeroTurns = 1 + TEST_FIRST_LIMITS.reauthorMax;
+    evidence.grants = { claude: stepZeroTurns, codex: stepZeroTurns, basis: "cycle 0 + reauthorMax rewrite, read-only" };
+    h.hub.bus.transaction(() => { for (const provider of ["claude", "codex"]) h.hub.grants.create({ provider, projectId: project.id, access: "read-only", maxAttempts: stepZeroTurns, maxDurationS: 7200, ttlMinutes: 240 }, "test"); });
     evidence.preflight = Object.fromEntries(["claude", "codex"].map((provider) => [provider, h.hub.gate.evaluate({ provider, projectId: project.id, access: "read-only" })]));
     if (Object.values(evidence.preflight).some((decision) => !decision.allowed)) throw new Error("Poarta refuză precondițiile repetiției; nimic nu a ajuns la model");
     const built = buildEngineeringSpec({ text: S25_WORDS, project });
