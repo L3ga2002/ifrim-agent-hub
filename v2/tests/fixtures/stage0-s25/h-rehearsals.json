@@ -1,0 +1,1208 @@
+{
+  "schema": "s25-rehearsals-2.14.15/v1",
+  "note": "Isolated real rehearsals through the Hub Factory dispatch + runtime (throwaway test Hub). Costs are CLI client estimates, not verified billing.",
+  "rehearsals": [
+    {
+      "label": "h1 2026-10-14 12:58 UTC (grants 1/1: rewrite refused at live_grant)",
+      "evidenceFile": "C:/Users/mihai/AppData/Local/Temp/s25-real-20261014/evidence.json",
+      "missionId": "mis_mv847zpb_f73468b150",
+      "specSha": "627c6813ab26814bf5309baffa0cee49aed36cdc571a1e7f486602acf32e0d3b",
+      "authorLimits": {
+        "maxOutputTokens": 64000,
+        "turnTimeoutMin": 45,
+        "provenance": "decizia proprietarului 2026-10-13 21:32 UTC: limită de ieșire 64000 doar pentru autorul testului de la pasul 0; decizia proprietarului 2026-10-14 10:09 UTC: limită pe tură 45 min doar pentru autorul testului de la pasul 0 al planului §25 hub-test"
+      },
+      "grants": {
+        "claude": 1,
+        "codex": 1
+      },
+      "probes": {
+        "claude": {
+          "loggedIn": true,
+          "authMethod": "claude.ai",
+          "apiProvider": "firstParty",
+          "subscriptionType": "max",
+          "accountIdentity": {
+            "scheme": "sha256-salted:v1",
+            "value": "b8cbdb8e9348f348",
+            "basis": "email",
+            "plan": "max"
+          }
+        },
+        "codex": {
+          "accountType": "chatgpt",
+          "planType": "prolite",
+          "requiresOpenaiAuth": true,
+          "accountIdentity": {
+            "scheme": "sha256-salted:v1",
+            "value": "9fdce797504269f5",
+            "basis": "email",
+            "plan": "prolite"
+          }
+        }
+      },
+      "dispatches": [
+        {
+          "stage": "TEST_AUTHORING",
+          "status": "DONE",
+          "request": {
+            "stage": "TEST_AUTHORING",
+            "cycle": 0,
+            "changeSeq": 0,
+            "attempt": 1,
+            "counted": 1,
+            "provider": "claude",
+            "access": "read-only",
+            "model": "sonnet",
+            "effort": "medium",
+            "profile": "BALANCED",
+            "specVersion": 1,
+            "bindingHash": "e4131f9b8518009da021702fca7a1b20269649eadc43e6e1b14331eb24996568",
+            "turnTimeoutMin": 45,
+            "maxOutputTokens": 64000,
+            "turnTimeoutSource": "authorLimits"
+          },
+          "error": null
+        },
+        {
+          "stage": "TEST_REVIEW",
+          "status": "DONE",
+          "request": {
+            "stage": "TEST_REVIEW",
+            "cycle": 0,
+            "changeSeq": 0,
+            "attempt": 1,
+            "counted": 1,
+            "provider": "codex",
+            "access": "read-only",
+            "model": "gpt-6.1-sol",
+            "effort": "medium",
+            "profile": "BALANCED",
+            "specVersion": 1,
+            "bindingHash": "30e6fe837c7dd8bf234dacd057cae6286656a5990d185f6129f7aeb0aa90f64c",
+            "turnTimeoutMin": 25
+          },
+          "error": null
+        },
+        {
+          "stage": "TEST_AUTHORING",
+          "status": "FAILED",
+          "request": {
+            "stage": "TEST_AUTHORING",
+            "cycle": 1,
+            "changeSeq": 0,
+            "attempt": 1,
+            "counted": 1,
+            "provider": "claude",
+            "access": "read-only",
+            "model": "sonnet",
+            "effort": "medium",
+            "profile": "BALANCED",
+            "specVersion": 1,
+            "bindingHash": "e4131f9b8518009da021702fca7a1b20269649eadc43e6e1b14331eb24996568",
+            "turnTimeoutMin": 45,
+            "maxOutputTokens": 64000,
+            "turnTimeoutSource": "authorLimits"
+          },
+          "error": "live_grant: Niciun grant de validare live pentru acest provider și proiect"
+        }
+      ],
+      "runs": [
+        {
+          "id": "run_mv847zse_06752c9d40",
+          "stage": "qa",
+          "provider": "claude",
+          "model": "sonnet",
+          "effort": "medium",
+          "status": "completed",
+          "errorCategory": null,
+          "pid": 38484,
+          "startedAt": "2026-10-14T12:58:06.604Z",
+          "finishedAt": "2026-10-14T13:12:25.963Z",
+          "turnTimeoutMs": 2700000,
+          "turnDeadline": {
+            "limitMs": 2700000,
+            "admissionArmedAt": "2026-10-14T12:58:06.633Z",
+            "admissionDeadlineAt": "2026-10-14T13:43:06.633Z",
+            "turnSentAt": "2026-10-14T12:58:08.607Z",
+            "turnArmedAt": "2026-10-14T12:58:08.607Z",
+            "deadlineAt": "2026-10-14T13:43:08.607Z",
+            "fired": false,
+            "firedAt": null,
+            "clearedBy": "finished",
+            "admissionArms": 1,
+            "turnArms": 1,
+            "noticesAfterTurnSent": 0,
+            "apiRetriesAfterTurnSent": 0
+          },
+          "authorOutputLimit": {
+            "requested": 64000,
+            "settingsOverride": null,
+            "effective": 58417,
+            "evidence": "at least 58417 (usage.output_tokens al unui mesaj assistant)"
+          },
+          "usageOutputTokens": 63574,
+          "cliEstimateUsd": 1.4605095000000001
+        },
+        {
+          "id": "run_mv84qiu6_c12260d1f2",
+          "stage": "reviewer",
+          "provider": "codex",
+          "model": "gpt-6.1-sol",
+          "effort": "medium",
+          "status": "completed",
+          "errorCategory": null,
+          "pid": 45312,
+          "startedAt": "2026-10-14T13:12:27.986Z",
+          "finishedAt": "2026-10-14T13:13:33.702Z",
+          "turnTimeoutMs": 1500000,
+          "turnDeadline": {
+            "limitMs": 1500000,
+            "admissionArmedAt": "2026-10-14T13:12:28.013Z",
+            "admissionDeadlineAt": "2026-10-14T13:37:28.013Z",
+            "turnSentAt": "2026-10-14T13:12:28.014Z",
+            "turnArmedAt": "2026-10-14T13:12:28.014Z",
+            "deadlineAt": "2026-10-14T13:37:28.014Z",
+            "fired": false,
+            "firedAt": null,
+            "clearedBy": "finished",
+            "admissionArms": 1,
+            "turnArms": 1,
+            "noticesAfterTurnSent": 879,
+            "apiRetriesAfterTurnSent": 0
+          },
+          "authorOutputLimit": null,
+          "usageOutputTokens": null,
+          "cliEstimateUsd": null
+        },
+        {
+          "id": "run_mv84ry56_160b6ae394",
+          "stage": "qa",
+          "provider": "claude",
+          "model": "sonnet",
+          "effort": "medium",
+          "status": "blocked",
+          "errorCategory": "gate",
+          "pid": null,
+          "startedAt": null,
+          "finishedAt": "2026-10-14T13:13:34.362Z",
+          "turnTimeoutMs": 2700000,
+          "turnDeadline": {
+            "limitMs": 2700000,
+            "admissionArmedAt": null,
+            "admissionDeadlineAt": null,
+            "turnSentAt": null,
+            "turnArmedAt": null,
+            "deadlineAt": null,
+            "fired": false,
+            "firedAt": null,
+            "clearedBy": "blocked",
+            "admissionArms": 0,
+            "turnArms": 0,
+            "noticesAfterTurnSent": 0,
+            "apiRetriesAfterTurnSent": 0
+          },
+          "authorOutputLimit": null,
+          "usageOutputTokens": null,
+          "cliEstimateUsd": null
+        }
+      ],
+      "rejected": [
+        {
+          "cycle": 0,
+          "kind": "review",
+          "verdict": "CHANGES_REQUESTED",
+          "sha": "c30a5d98a9498d82aab489cb47c61f54edc591383a608e5507ffd4f44dc97053",
+          "reasons": [
+            "[high] test/hub/telefonul-ramane-obligatoriu-si-02314b.test.mjs: Bucla parametrilor anonimi verifică lista și expunerea, dar nu compară rândul istoric integral înainte și după fiecare cerere.",
+            "[high] test/hub/telefonul-ramane-obligatoriu-si-02314b.test.mjs: QALL compară toate rândurile bookings, dar omite coloana existentă created_at.",
+            "AC-2: nu e acoperit",
+            "AC-3: nu e acoperit",
+            "rezumatul verificatorului: Testul poate trece după o implementare corectă și nu contrazice proprietarul. AC-2 nu verifică păstrarea rândului istoric după fiecare parametru anonim, iar AC-3 omite created_at din comparația stocării."
+          ]
+        }
+      ],
+      "reviews": [
+        {
+          "verdict": "CHANGES_REQUESTED",
+          "summary": "Testul poate trece după o implementare corectă și nu contrazice proprietarul. AC-2 nu verifică păstrarea rândului istoric după fiecare parametru anonim, iar AC-3 omite created_at din comparația stocării.",
+          "sha": "c30a5d98a9498d82aab489cb47c61f54edc591383a608e5507ffd4f44dc97053",
+          "validation": {
+            "kind": "acceptance_test",
+            "harness": 2,
+            "manifest": {
+              "testSlot": "f7bae07aa7b1",
+              "needs": [
+                "node:path",
+                "node:os",
+                "node:fs",
+                "node:sqlite",
+                "node:http"
+              ],
+              "api": "GET /api/bookings?date=YYYY-MM-DD returnează {bookings:[…]} cu toate înregistrările zilei; POST /api/bookings creează o programare; GET /api/slots?date=…&service=… returnează grila de intervale libere/ocupate",
+              "cases": [
+                {
+                  "name": "AC-1: Lista publică a zilei nu expune telefonul",
+                  "criterion": "AC-1",
+                  "kind": "check",
+                  "today": "fail"
+                },
+                {
+                  "name": "AC-2: Lista publică cu parametri anonimi nu expune telefonul",
+                  "criterion": "AC-2",
+                  "kind": "check",
+                  "today": "fail"
+                },
+                {
+                  "name": "AC-3 control: Programare refuzata fara telefon sau cu telefon invalid",
+                  "criterion": "AC-3",
+                  "kind": "control",
+                  "today": "pass"
+                },
+                {
+                  "name": "AC-4 control: Telefonul trimis este salvat exact in stocare",
+                  "criterion": "AC-4",
+                  "kind": "control",
+                  "today": "pass"
+                },
+                {
+                  "name": "AC-5 control: Programare valida cu telefon este acceptata",
+                  "criterion": "AC-5",
+                  "kind": "control",
+                  "today": "pass"
+                }
+              ],
+              "newApi": [],
+              "removed": [],
+              "amends": null,
+              "needsDeclared": [],
+              "needsCompleted": [
+                {
+                  "module": "node:path",
+                  "binding": "path",
+                  "line": 43,
+                  "reason": "„path” e folosit liber în corp (linia 43), fără declarație în needs"
+                },
+                {
+                  "module": "node:os",
+                  "binding": "os",
+                  "line": 43,
+                  "reason": "„os” e folosit liber în corp (linia 43), fără declarație în needs"
+                },
+                {
+                  "module": "node:fs",
+                  "binding": "fs",
+                  "line": 43,
+                  "reason": "„fs” e folosit liber în corp (linia 43), fără declarație în needs"
+                },
+                {
+                  "module": "node:sqlite",
+                  "binding": "sqlite",
+                  "line": 46,
+                  "reason": "„sqlite” e folosit liber în corp (linia 46), fără declarație în needs"
+                },
+                {
+                  "module": "node:http",
+                  "binding": "http",
+                  "line": 29,
+                  "reason": "„http” e folosit liber în corp (linia 29), fără declarație în needs"
+                }
+              ]
+            },
+            "valid": true,
+            "problems": [],
+            "claimedVerdict": "CHANGES_REQUESTED",
+            "cause": null,
+            "criteria": [
+              {
+                "id": "AC-1",
+                "covered": true,
+                "failsForRightReason": true,
+                "canEverPass": true,
+                "contradictsOwner": false,
+                "trivialPassRisk": "low",
+                "plain": "Lista de bază trebuie să păstreze toate programările zilei și să elimine telefonul din întregul răspuns."
+              },
+              {
+                "id": "AC-2",
+                "covered": false,
+                "failsForRightReason": true,
+                "canEverPass": true,
+                "contradictsOwner": false,
+                "trivialPassRisk": "medium",
+                "plain": "Parametrii anonimi sunt testați, dar nu se verifică dacă fiecare cerere păstrează intactă programarea istorică."
+              },
+              {
+                "id": "AC-3",
+                "covered": false,
+                "failsForRightReason": true,
+                "canEverPass": true,
+                "contradictsOwner": false,
+                "trivialPassRisk": "medium",
+                "plain": "Cele trei telefoane invalide sunt refuzate, dar modificarea datei de creare a unui rând ar rămâne nedetectată."
+              },
+              {
+                "id": "AC-4",
+                "covered": true,
+                "failsForRightReason": true,
+                "canEverPass": true,
+                "contradictsOwner": false,
+                "trivialPassRisk": "low",
+                "plain": "Telefonul unei programări valide este verificat exact în baza internă, fără o rută publică de recitire."
+              },
+              {
+                "id": "AC-5",
+                "covered": true,
+                "failsForRightReason": true,
+                "canEverPass": true,
+                "contradictsOwner": false,
+                "trivialPassRisk": "medium",
+                "plain": "O programare validă pe un interval liber trebuie să primească acceptare și un identificator."
+              }
+            ],
+            "gate": [
+              {
+                "id": "AC-2",
+                "why": [
+                  "nu e acoperit"
+                ]
+              },
+              {
+                "id": "AC-3",
+                "why": [
+                  "nu e acoperit"
+                ]
+              }
+            ],
+            "previousChecks": {},
+            "checks": [
+              {
+                "id": "P178",
+                "nature": "insufficient",
+                "why": "Absența expunerii este verificată corect, dar fiecare cerere anonimă necesită și comparația integrală pre/post a istoricului."
+              },
+              {
+                "id": "P208",
+                "nature": "insufficient",
+                "why": "Comparația după fiecare refuz este corectă, dar proiecția QALL omite created_at și permite modificări nedetectate."
+              }
+            ],
+            "notes": []
+          }
+        }
+      ],
+      "outcome": {
+        "stage": "BLOCKED",
+        "reason": "TEST_AUTHORING: live_grant: Niciun grant de validare live pentru acest provider și proiect",
+        "limits": {
+          "maxRepairCycles": 2,
+          "maxDurationMin": 120,
+          "maxAttemptsPerStage": 1,
+          "concurrency": 1,
+          "profile": "BALANCED",
+          "turnTimeoutMin": {
+            "writer": 25,
+            "reviewer": 15,
+            "source": "profile"
+          },
+          "writerModel": "gpt-6.1-sol",
+          "writerEffort": "medium",
+          "reviewerModel": "sonnet",
+          "reviewerEffort": "medium"
+        }
+      },
+      "processCleanup": {
+        "pidsGone": true,
+        "win32Survivors": [],
+        "verified": true
+      },
+      "isolation": {
+        "dataDir": "C:\\Users\\mihai\\hub-rc\\.ifrim\\tmp\\v2-tests\\hub-mv847uoa-3beccc",
+        "scheduler": "off; factory.tick every 15 seconds",
+        "listener": false,
+        "turnTimeScale": 1,
+        "admissionFixture": {
+          "readiness": "ready",
+          "profiles": [
+            {
+              "id": "ifrim_hub_ro",
+              "allowed": true
+            },
+            {
+              "id": "ifrim_hub_rw",
+              "allowed": true
+            }
+          ],
+          "source": "test:fixture; simulated Hub isolation admission, NOT a verified profile or ACL consent"
+        },
+        "gateFixtures": {
+          "mode": {
+            "source": "test:fixture",
+            "value": "LIVE_VALIDATION"
+          },
+          "executionGate": {
+            "source": "test:fixture",
+            "status": "open",
+            "reason": "isolated rehearsal",
+            "changedAt": "2026-10-14T12:58:03.188Z",
+            "changedBy": "test"
+          },
+          "isolationConsent": {
+            "source": "test:fixture",
+            "fingerprint": "be882049684d547e"
+          },
+          "billingDeclaration": {
+            "source": "test:fixture"
+          }
+        }
+      },
+      "runner": "PASS_SIMULATED: test-mode proof RUNNER executes node --test on the host without a sandbox, as in earlier rehearsals",
+      "codexRoute": "probe: Hub real Codex app-server (no thread/turn/command); TEST_REVIEW: codex exec -s read-only, no Hub permission profile"
+    },
+    {
+      "label": "h2 2026-10-14 16:38 UTC (grants sized like the plan)",
+      "evidenceFile": "C:/Users/mihai/AppData/Local/Temp/s25-real2-20261014/evidence.json",
+      "missionId": "mis_mv8c3o3u_7e97950793",
+      "specSha": "6b6101adb4e2182657d099c20c9a77643210217be27a4a3de61e5baa67224ba1",
+      "authorLimits": {
+        "maxOutputTokens": 64000,
+        "turnTimeoutMin": 45,
+        "provenance": "decizia proprietarului 2026-10-13 21:32 UTC: limită de ieșire 64000 doar pentru autorul testului de la pasul 0; decizia proprietarului 2026-10-14 10:09 UTC: limită pe tură 45 min doar pentru autorul testului de la pasul 0 al planului §25 hub-test"
+      },
+      "grants": {
+        "claude": 2,
+        "codex": 2,
+        "basis": "cycle 0 + reauthorMax rewrite, read-only"
+      },
+      "probes": {
+        "claude": {
+          "loggedIn": true,
+          "authMethod": "claude.ai",
+          "apiProvider": "firstParty",
+          "subscriptionType": "max",
+          "accountIdentity": {
+            "scheme": "sha256-salted:v1",
+            "value": "c52e8a6e397128fd",
+            "basis": "email",
+            "plan": "max"
+          }
+        },
+        "codex": {
+          "accountType": "chatgpt",
+          "planType": "prolite",
+          "requiresOpenaiAuth": true,
+          "accountIdentity": {
+            "scheme": "sha256-salted:v1",
+            "value": "4fe68dcb43a2ecbc",
+            "basis": "email",
+            "plan": "prolite"
+          }
+        }
+      },
+      "dispatches": [
+        {
+          "stage": "TEST_AUTHORING",
+          "status": "DONE",
+          "request": {
+            "stage": "TEST_AUTHORING",
+            "cycle": 0,
+            "changeSeq": 0,
+            "attempt": 1,
+            "counted": 1,
+            "provider": "claude",
+            "access": "read-only",
+            "model": "sonnet",
+            "effort": "medium",
+            "profile": "BALANCED",
+            "specVersion": 1,
+            "bindingHash": "e4131f9b8518009da021702fca7a1b20269649eadc43e6e1b14331eb24996568",
+            "turnTimeoutMin": 45,
+            "maxOutputTokens": 64000,
+            "turnTimeoutSource": "authorLimits"
+          },
+          "error": null
+        },
+        {
+          "stage": "TEST_AUTHORING",
+          "status": "DONE",
+          "request": {
+            "stage": "TEST_AUTHORING",
+            "cycle": 1,
+            "changeSeq": 0,
+            "attempt": 1,
+            "counted": 1,
+            "provider": "claude",
+            "access": "read-only",
+            "model": "sonnet",
+            "effort": "medium",
+            "profile": "BALANCED",
+            "specVersion": 1,
+            "bindingHash": "e4131f9b8518009da021702fca7a1b20269649eadc43e6e1b14331eb24996568",
+            "turnTimeoutMin": 45,
+            "maxOutputTokens": 64000,
+            "turnTimeoutSource": "authorLimits"
+          },
+          "error": null
+        },
+        {
+          "stage": "TEST_REVIEW",
+          "status": "DONE",
+          "request": {
+            "stage": "TEST_REVIEW",
+            "cycle": 1,
+            "changeSeq": 0,
+            "attempt": 1,
+            "counted": 1,
+            "provider": "codex",
+            "access": "read-only",
+            "model": "gpt-6.1-sol",
+            "effort": "medium",
+            "profile": "BALANCED",
+            "specVersion": 1,
+            "bindingHash": "30e6fe837c7dd8bf234dacd057cae6286656a5990d185f6129f7aeb0aa90f64c",
+            "turnTimeoutMin": 25
+          },
+          "error": null
+        }
+      ],
+      "runs": [
+        {
+          "id": "run_mv8c3p9o_277281b193",
+          "stage": "qa",
+          "provider": "claude",
+          "model": "sonnet",
+          "effort": "medium",
+          "status": "completed",
+          "errorCategory": null,
+          "pid": 33912,
+          "startedAt": "2026-10-14T16:38:48.739Z",
+          "finishedAt": "2026-10-14T17:03:22.791Z",
+          "turnTimeoutMs": 2700000,
+          "turnDeadline": {
+            "limitMs": 2700000,
+            "admissionArmedAt": "2026-10-14T16:38:48.960Z",
+            "admissionDeadlineAt": "2026-10-14T17:23:48.960Z",
+            "turnSentAt": "2026-10-14T16:39:05.411Z",
+            "turnArmedAt": "2026-10-14T16:39:05.411Z",
+            "deadlineAt": "2026-10-14T17:24:05.411Z",
+            "fired": false,
+            "firedAt": null,
+            "clearedBy": "finished",
+            "admissionArms": 1,
+            "turnArms": 1,
+            "noticesAfterTurnSent": 0,
+            "apiRetriesAfterTurnSent": 0
+          },
+          "authorOutputLimit": {
+            "requested": 64000,
+            "settingsOverride": null,
+            "effective": 64000,
+            "evidence": "at least 64000 (usage.output_tokens al unui mesaj assistant)"
+          },
+          "usageOutputTokens": 104755,
+          "cliEstimateUsd": 1.7443705999999999
+        },
+        {
+          "id": "run_mv8czia3_d7ba68f85a",
+          "stage": "qa",
+          "provider": "claude",
+          "model": "sonnet",
+          "effort": "medium",
+          "status": "completed",
+          "errorCategory": null,
+          "pid": 42856,
+          "startedAt": "2026-10-14T17:03:24.134Z",
+          "finishedAt": "2026-10-14T17:06:46.765Z",
+          "turnTimeoutMs": 2700000,
+          "turnDeadline": {
+            "limitMs": 2700000,
+            "admissionArmedAt": "2026-10-14T17:03:24.155Z",
+            "admissionDeadlineAt": "2026-10-14T17:48:24.155Z",
+            "turnSentAt": "2026-10-14T17:03:28.216Z",
+            "turnArmedAt": "2026-10-14T17:03:28.216Z",
+            "deadlineAt": "2026-10-14T17:48:28.216Z",
+            "fired": false,
+            "firedAt": null,
+            "clearedBy": "finished",
+            "admissionArms": 1,
+            "turnArms": 1,
+            "noticesAfterTurnSent": 0,
+            "apiRetriesAfterTurnSent": 0
+          },
+          "authorOutputLimit": {
+            "requested": 64000,
+            "settingsOverride": null,
+            "effective": null,
+            "evidence": "nedemonstrat"
+          },
+          "usageOutputTokens": 15110,
+          "cliEstimateUsd": 0.58224
+        },
+        {
+          "id": "run_mv8d3xmi_cdc7a5a839",
+          "stage": "reviewer",
+          "provider": "codex",
+          "model": "gpt-6.1-sol",
+          "effort": "medium",
+          "status": "completed",
+          "errorCategory": null,
+          "pid": 48896,
+          "startedAt": "2026-10-14T17:06:50.706Z",
+          "finishedAt": "2026-10-14T17:08:06.926Z",
+          "turnTimeoutMs": 1500000,
+          "turnDeadline": {
+            "limitMs": 1500000,
+            "admissionArmedAt": "2026-10-14T17:06:51.325Z",
+            "admissionDeadlineAt": "2026-10-14T17:31:51.325Z",
+            "turnSentAt": "2026-10-14T17:06:51.326Z",
+            "turnArmedAt": "2026-10-14T17:06:51.326Z",
+            "deadlineAt": "2026-10-14T17:31:51.326Z",
+            "fired": false,
+            "firedAt": null,
+            "clearedBy": "finished",
+            "admissionArms": 1,
+            "turnArms": 1,
+            "noticesAfterTurnSent": 1983,
+            "apiRetriesAfterTurnSent": 0
+          },
+          "authorOutputLimit": null,
+          "usageOutputTokens": null,
+          "cliEstimateUsd": null
+        }
+      ],
+      "rejected": [
+        {
+          "cycle": 0,
+          "kind": "lint",
+          "verdict": null,
+          "sha": "8ec8618e364deff357fffedbcee94bf39f690715d4e6a0a45409c5edb6e4d228",
+          "reasons": [
+            "corpul folosește un nume rezervat antetului Hub sau înregistrează hook-uri de test (hubAdd), linia 47",
+            "codul proiectului se încarcă doar în interiorul unui test (../../src/server-app.js), linia 41"
+          ]
+        },
+        {
+          "cycle": 1,
+          "kind": "review",
+          "verdict": "CHANGES_REQUESTED",
+          "sha": "87a6755f97fb296a49dcc8bdd536d8e209ad0f3f28e70965e5735d32e909745c",
+          "reasons": [
+            "[high] test/hub/telefonul-ramane-obligatoriu-si-55e68b.test.mjs: Setul complet al zilei este comparat exact doar înainte de primul POST. După repornire nu sunt recitite și validate toate înregistrările, inclusiv telefonul programării din prima sesiune.",
+            "[high] test/hub/telefonul-ramane-obligatoriu-si-55e68b.test.mjs: Rândul istoric este comparat înaintea buclei și după toate cele cinci cereri, nu înainte și după fiecare parametru anonim.",
+            "[medium] test/hub/telefonul-ramane-obligatoriu-si-55e68b.test.mjs: Înregistrarea istorică este inserată la 13:00 fără confirmarea prealabilă prin API-ul slots că acel interval este liber.",
+            "AC-1: nu e acoperit",
+            "AC-2: nu e acoperit",
+            "rezumatul verificatorului: Verificările existente sunt păstrate și pot trece după o implementare corectă. AC-1 și AC-2 rămân neacoperite integral: lipsește validarea setului intern după repornire și confirmarea intervalului istoric liber; AC-2 verifică istoricul doar după întreaga buclă. Raportul Hub furnizat susține motivele eșecurilor și trecerea controalelor, fără rulări proprii în această tură"
+          ]
+        }
+      ],
+      "reviews": [
+        {
+          "verdict": "CHANGES_REQUESTED",
+          "summary": "Verificările existente sunt păstrate și pot trece după o implementare corectă. AC-1 și AC-2 rămân neacoperite integral: lipsește validarea setului intern după repornire și confirmarea intervalului istoric liber; AC-2 verifică istoricul doar după întreaga buclă. Raportul Hub furnizat susține motivele eșecurilor și trecerea controalelor, fără rulări proprii în această tură.",
+          "sha": "87a6755f97fb296a49dcc8bdd536d8e209ad0f3f28e70965e5735d32e909745c",
+          "validation": {
+            "kind": "acceptance_test",
+            "harness": 2,
+            "manifest": {
+              "testSlot": "2875f7425632",
+              "needs": [
+                "node:path",
+                "node:os",
+                "node:fs",
+                "node:sqlite",
+                "node:http"
+              ],
+              "api": "GET /api/bookings?date=AAAA-LL-ZZ returnează lista publică a zilei; testul verifică că răspunsul nu conține câmpul phone",
+              "cases": [
+                {
+                  "name": "AC-1: Lista publică a zilei nu expune câmpul phone",
+                  "criterion": "AC-1",
+                  "kind": "check",
+                  "today": "fail"
+                },
+                {
+                  "name": "AC-2: Parametri anonimi nu produc scurgere de phone",
+                  "criterion": "AC-2",
+                  "kind": "check",
+                  "today": "fail"
+                },
+                {
+                  "name": "AC-3 control: Refuz la phone lipsă, gol, spații",
+                  "criterion": "AC-3",
+                  "kind": "control",
+                  "today": "pass"
+                },
+                {
+                  "name": "AC-4 control: Telefon salvat exact în stocare",
+                  "criterion": "AC-4",
+                  "kind": "control",
+                  "today": "pass"
+                },
+                {
+                  "name": "AC-5 control: Programare validă cu telefon acceptată",
+                  "criterion": "AC-5",
+                  "kind": "control",
+                  "today": "pass"
+                }
+              ],
+              "newApi": [],
+              "removed": [],
+              "amends": "8ec8618e364deff357fffedbcee94bf39f690715d4e6a0a45409c5edb6e4d228",
+              "completes": [
+                {
+                  "ref": "P108",
+                  "by": "AC-1: adăugat deepEqual pe rândul complet al înregistrării istorice înainte și după cererea de listă, verificând phone gol și că rândul nu se modifică"
+                },
+                {
+                  "ref": "P108",
+                  "by": "AC-2: adăugat deepEqual pe rândul complet al înregistrării istorice înainte și după fiecare parametru anonim, verificând phone gol și că rândul nu se modifică"
+                }
+              ],
+              "completesNotes": [],
+              "needsDeclared": [],
+              "needsCompleted": [
+                {
+                  "module": "node:path",
+                  "binding": "path",
+                  "line": 41,
+                  "reason": "„path” e folosit liber în corp (linia 41), fără declarație în needs"
+                },
+                {
+                  "module": "node:os",
+                  "binding": "os",
+                  "line": 41,
+                  "reason": "„os” e folosit liber în corp (linia 41), fără declarație în needs"
+                },
+                {
+                  "module": "node:fs",
+                  "binding": "fs",
+                  "line": 41,
+                  "reason": "„fs” e folosit liber în corp (linia 41), fără declarație în needs"
+                },
+                {
+                  "module": "node:sqlite",
+                  "binding": "sqlite",
+                  "line": 45,
+                  "reason": "„sqlite” e folosit liber în corp (linia 45), fără declarație în needs"
+                },
+                {
+                  "module": "node:http",
+                  "binding": "http",
+                  "line": 16,
+                  "reason": "„http” e folosit liber în corp (linia 16), fără declarație în needs"
+                }
+              ]
+            },
+            "valid": true,
+            "problems": [],
+            "claimedVerdict": "CHANGES_REQUESTED",
+            "cause": null,
+            "criteria": [
+              {
+                "id": "AC-1",
+                "covered": false,
+                "failsForRightReason": true,
+                "canEverPass": true,
+                "contradictsOwner": false,
+                "trivialPassRisk": "medium",
+                "plain": "Verifică lista completă fără telefoane, dar nu reconfirmă toate datele salvate după repornire."
+              },
+              {
+                "id": "AC-2",
+                "covered": false,
+                "failsForRightReason": true,
+                "canEverPass": true,
+                "contradictsOwner": false,
+                "trivialPassRisk": "medium",
+                "plain": "Verifică fiecare parametru anonim, dar nu verifică păstrarea istoricului după fiecare cerere."
+              },
+              {
+                "id": "AC-3",
+                "covered": true,
+                "failsForRightReason": true,
+                "canEverPass": true,
+                "contradictsOwner": false,
+                "trivialPassRisk": "low",
+                "plain": "Telefonul lipsă, gol sau format din spații este refuzat fără schimbarea programărilor salvate."
+              },
+              {
+                "id": "AC-4",
+                "covered": true,
+                "failsForRightReason": true,
+                "canEverPass": true,
+                "contradictsOwner": false,
+                "trivialPassRisk": "low",
+                "plain": "Citește direct stocarea și confirmă telefonul exact pentru programările create înainte și după repornire."
+              },
+              {
+                "id": "AC-5",
+                "covered": true,
+                "failsForRightReason": true,
+                "canEverPass": true,
+                "contradictsOwner": false,
+                "trivialPassRisk": "medium",
+                "plain": "Confirmă acceptarea unei programări valide pe un interval liber și existența unui identificator în răspuns."
+              }
+            ],
+            "gate": [
+              {
+                "id": "AC-1",
+                "why": [
+                  "nu e acoperit"
+                ]
+              },
+              {
+                "id": "AC-2",
+                "why": [
+                  "nu e acoperit"
+                ]
+              }
+            ],
+            "previousChecks": {
+              "P88": {
+                "verdict": "kept",
+                "by": [
+                  "P86"
+                ],
+                "why": "Aceeași comparație internă inițială este executată în helper-ul așteptat de fiecare caz."
+              },
+              "P91": {
+                "verdict": "kept",
+                "by": [
+                  "P89"
+                ],
+                "why": "Prima cerere slots și verificarea statusului 200 păstrează același comportament."
+              },
+              "P93": {
+                "verdict": "kept",
+                "by": [
+                  "P91"
+                ],
+                "why": "Primul POST folosește în continuare un interval declarat liber de API."
+              },
+              "P96": {
+                "verdict": "kept",
+                "by": [
+                  "P94"
+                ],
+                "why": "Crearea prin API înainte de repornire trebuie în continuare să răspundă cu 201."
+              },
+              "P99": {
+                "verdict": "kept",
+                "by": [
+                  "P97"
+                ],
+                "why": "Prima înregistrare este recitită intern după id și comparată cu ziua și telefonul trimis."
+              },
+              "P108": {
+                "verdict": "kept",
+                "by": [
+                  "P106"
+                ],
+                "why": "Istoricul inserat fără coloana phone este verificat intern cu telefonul implicit gol."
+              },
+              "P113": {
+                "verdict": "kept",
+                "by": [
+                  "P111"
+                ],
+                "why": "Cererea slots după repornire verifică în continuare statusul 200."
+              },
+              "P115": {
+                "verdict": "kept",
+                "by": [
+                  "P113"
+                ],
+                "why": "Al doilea POST folosește în continuare un interval liber obținut după repornire."
+              },
+              "P118": {
+                "verdict": "kept",
+                "by": [
+                  "P116"
+                ],
+                "why": "Crearea noii programări după repornire trebuie să răspundă în continuare cu 201."
+              },
+              "P121": {
+                "verdict": "kept",
+                "by": [
+                  "P119"
+                ],
+                "why": "Noua înregistrare este verificată intern după id, zi și telefon exact."
+              },
+              "P129": {
+                "verdict": "kept",
+                "by": [
+                  "P131"
+                ],
+                "why": "Lista publică de bază trebuie în continuare să răspundă cu statusul 200."
+              },
+              "P132": {
+                "verdict": "kept",
+                "by": [
+                  "P134"
+                ],
+                "why": "Numărul elementelor listei rămâne egal cu numărul id-urilor așteptate."
+              },
+              "P134": {
+                "verdict": "kept",
+                "by": [
+                  "P136"
+                ],
+                "why": "Fiecare id așteptat este căutat în tabloul bookings al răspunsului de bază."
+              },
+              "P137": {
+                "verdict": "kept",
+                "by": [
+                  "P141"
+                ],
+                "why": "Aceeași verificare exposes primește corpul brut integral și telefoanele declarate."
+              },
+              "P146": {
+                "verdict": "kept",
+                "by": [
+                  "P154"
+                ],
+                "why": "Fiecare dintre cei cinci parametri anonimi trebuie să primească statusul 200."
+              },
+              "P148": {
+                "verdict": "kept",
+                "by": [
+                  "P156"
+                ],
+                "why": "Numărul programărilor este verificat în continuare pentru fiecare parametru anonim."
+              },
+              "P150": {
+                "verdict": "kept",
+                "by": [
+                  "P158"
+                ],
+                "why": "Toate id-urile așteptate sunt căutate în bookings pentru fiecare parametru anonim."
+              },
+              "P152": {
+                "verdict": "kept",
+                "by": [
+                  "P160"
+                ],
+                "why": "Fiecare răspuns anonim integral este verificat prin exposes, fără filtrarea corpului."
+              },
+              "P160": {
+                "verdict": "kept",
+                "by": [
+                  "P172"
+                ],
+                "why": "Controlul refuzurilor obține în continuare intervalele printr-un răspuns slots cu status 200."
+              },
+              "P162": {
+                "verdict": "kept",
+                "by": [
+                  "P174"
+                ],
+                "why": "Cererile invalide folosesc în continuare un interval declarat liber de API."
+              },
+              "P167": {
+                "verdict": "kept",
+                "by": [
+                  "P179"
+                ],
+                "why": "Cererea fără proprietatea phone trebuie în continuare refuzată cu statusul 400."
+              },
+              "P168": {
+                "verdict": "kept",
+                "by": [
+                  "P180"
+                ],
+                "why": "Refuzul pentru proprietatea lipsă trebuie să conțină în continuare errors.phone."
+              },
+              "P169": {
+                "verdict": "kept",
+                "by": [
+                  "P181"
+                ],
+                "why": "Toate rândurile salvate sunt comparate înainte și după refuzul telefonului lipsă."
+              },
+              "P173": {
+                "verdict": "kept",
+                "by": [
+                  "P185"
+                ],
+                "why": "Cererea cu telefon gol trebuie în continuare refuzată cu statusul 400."
+              },
+              "P174": {
+                "verdict": "kept",
+                "by": [
+                  "P186"
+                ],
+                "why": "Refuzul telefonului gol trebuie să conțină în continuare errors.phone."
+              },
+              "P175": {
+                "verdict": "kept",
+                "by": [
+                  "P187"
+                ],
+                "why": "Toate rândurile salvate sunt comparate înainte și după refuzul telefonului gol."
+              },
+              "P179": {
+                "verdict": "kept",
+                "by": [
+                  "P191"
+                ],
+                "why": "Cererea cu telefon format din spații trebuie în continuare refuzată cu statusul 400."
+              },
+              "P180": {
+                "verdict": "kept",
+                "by": [
+                  "P192"
+                ],
+                "why": "Refuzul telefonului format din spații trebuie să conțină în continuare errors.phone."
+              },
+              "P181": {
+                "verdict": "kept",
+                "by": [
+                  "P193"
+                ],
+                "why": "Toate rândurile salvate sunt comparate înainte și după refuzul telefonului format din spații."
+              },
+              "P187": {
+                "verdict": "kept",
+                "by": [
+                  "P201"
+                ],
+                "why": "Telefonul primei programări este recitit direct din stocare după repornire și comparat exact."
+              },
+              "P189": {
+                "verdict": "kept",
+                "by": [
+                  "P203"
+                ],
+                "why": "Telefonul programării noi este recitit direct din stocare și comparat exact."
+              },
+              "P195": {
+                "verdict": "kept",
+                "by": [
+                  "P211"
+                ],
+                "why": "Controlul programării valide verifică în continuare statusul 200 al API-ului slots."
+              },
+              "P197": {
+                "verdict": "kept",
+                "by": [
+                  "P213"
+                ],
+                "why": "Programarea validă folosește în continuare un interval liber indicat de API."
+              },
+              "P199": {
+                "verdict": "kept",
+                "by": [
+                  "P215"
+                ],
+                "why": "Programarea validă cu telefon trebuie în continuare acceptată cu statusul 201."
+              },
+              "P201": {
+                "verdict": "kept",
+                "by": [
+                  "P217"
+                ],
+                "why": "Răspunsul programării acceptate trebuie să conțină în continuare un id nevid."
+              }
+            },
+            "checks": [
+              {
+                "id": "P86",
+                "nature": "insufficient",
+                "why": "Comparația inițială este corectă, dar trebuie completată cu validarea întregului set după repornire."
+              },
+              {
+                "id": "P97",
+                "nature": "insufficient",
+                "why": "Confirmă telefonul înainte de repornire; AC-1 și AC-2 necesită și recitirea lui după repornire."
+              },
+              {
+                "id": "P91",
+                "nature": "insufficient",
+                "why": "Dovedește un interval liber pentru POST1, dar nu confirmă intervalul istoric de la 13:00."
+              },
+              {
+                "id": "P163",
+                "nature": "insufficient",
+                "why": "Comparația finală este corectă, dar nu dovedește istoricul neschimbat după fiecare parametru anonim."
+              }
+            ],
+            "notes": []
+          }
+        }
+      ],
+      "outcome": {
+        "stage": "NEEDS_OWNER_DECISION",
+        "reason": "Verificarea independentă a testului cere schimbări: AC-1: nu e acoperit; AC-2: nu e acoperit. Nu protejez testul și nu modific codul.",
+        "limits": {
+          "maxRepairCycles": 2,
+          "maxDurationMin": 120,
+          "maxAttemptsPerStage": 1,
+          "concurrency": 1,
+          "profile": "BALANCED",
+          "turnTimeoutMin": {
+            "writer": 25,
+            "reviewer": 15,
+            "source": "profile"
+          },
+          "writerModel": "gpt-6.1-sol",
+          "writerEffort": "medium",
+          "reviewerModel": "sonnet",
+          "reviewerEffort": "medium"
+        }
+      },
+      "processCleanup": {
+        "pidsGone": true,
+        "win32Survivors": [],
+        "verified": true
+      },
+      "isolation": {
+        "dataDir": "C:\\Users\\mihai\\hub-rc\\.ifrim\\tmp\\v2-tests\\hub-mv8c3g7l-874604",
+        "scheduler": "off; factory.tick every 15 seconds",
+        "listener": false,
+        "turnTimeScale": 1,
+        "admissionFixture": {
+          "readiness": "ready",
+          "profiles": [
+            {
+              "id": "ifrim_hub_ro",
+              "allowed": true
+            },
+            {
+              "id": "ifrim_hub_rw",
+              "allowed": true
+            }
+          ],
+          "source": "test:fixture; simulated Hub isolation admission, NOT a verified profile or ACL consent"
+        },
+        "gateFixtures": {
+          "mode": {
+            "source": "test:fixture",
+            "value": "LIVE_VALIDATION"
+          },
+          "executionGate": {
+            "source": "test:fixture",
+            "status": "open",
+            "reason": "isolated rehearsal",
+            "changedAt": "2026-10-14T16:38:38.434Z",
+            "changedBy": "test"
+          },
+          "isolationConsent": {
+            "source": "test:fixture",
+            "fingerprint": "e61d45f6f1ed7156"
+          },
+          "billingDeclaration": {
+            "source": "test:fixture"
+          }
+        }
+      },
+      "runner": "PASS_SIMULATED: test-mode proof RUNNER executes node --test on the host without a sandbox, as in earlier rehearsals",
+      "codexRoute": "probe: Hub real Codex app-server (no thread/turn/command); TEST_REVIEW: codex exec -s read-only, no Hub permission profile"
+    }
+  ],
+  "preflightStop": {
+    "at": "2026-10-14T12:44:30Z",
+    "reason": "isolated gate: Codex billing_route plan not reported (login status only); nothing reached a model"
+  }
+}

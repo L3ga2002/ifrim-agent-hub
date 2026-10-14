@@ -1,0 +1,599 @@
+[
+  {
+    "name": "CORRECT",
+    "status": "PASS",
+    "pass": 5,
+    "tests": 5,
+    "failed": [],
+    "ms": 892,
+    "hung": false,
+    "cleanupOk": true,
+    "asExpected": true
+  },
+  {
+    "name": "original",
+    "status": "FAIL",
+    "pass": 3,
+    "tests": 5,
+    "failed": [
+      "AC-1:EXPUNERE:assertion",
+      "AC-2:EXPUNERE:assertion"
+    ],
+    "ms": 1593,
+    "hung": false,
+    "cleanupOk": true,
+    "asExpected": true
+  },
+  {
+    "name": "refuse-all",
+    "status": "FAIL",
+    "pass": 0,
+    "tests": 5,
+    "failed": [
+      "AC-1:ID API:assertion",
+      "AC-2:ID API:assertion",
+      "AC-3 control:ID API:assertion",
+      "AC-4 control:ID API:assertion",
+      "AC-5 control:ID API:assertion"
+    ],
+    "ms": 523,
+    "hung": false,
+    "cleanupOk": true,
+    "asExpected": true
+  },
+  {
+    "name": "phone lost on save",
+    "status": "FAIL",
+    "pass": 0,
+    "tests": 5,
+    "failed": [
+      "AC-1:ID API:assertion",
+      "AC-2:ID API:assertion",
+      "AC-3 control:ID API:assertion",
+      "AC-4 control:ID API:assertion",
+      "AC-5 control:ID API:assertion"
+    ],
+    "ms": 1595,
+    "hung": false,
+    "cleanupOk": true,
+    "asExpected": true
+  },
+  {
+    "name": "browser-only validation",
+    "status": "FAIL",
+    "pass": 4,
+    "tests": 5,
+    "failed": [
+      "AC-3 control:other:assertion"
+    ],
+    "ms": 1441,
+    "hung": false,
+    "cleanupOk": true,
+    "asExpected": true
+  },
+  {
+    "name": "masked value",
+    "status": "FAIL",
+    "pass": 3,
+    "tests": 5,
+    "failed": [
+      "AC-1:EXPUNERE:assertion",
+      "AC-2:EXPUNERE:assertion"
+    ],
+    "ms": 720,
+    "hung": false,
+    "cleanupOk": true,
+    "asExpected": true
+  },
+  {
+    "name": "includePhone bypass",
+    "status": "FAIL",
+    "pass": 4,
+    "tests": 5,
+    "failed": [
+      "AC-2:EXPUNERE:assertion"
+    ],
+    "ms": 1696,
+    "hung": false,
+    "cleanupOk": true,
+    "asExpected": true
+  },
+  {
+    "name": "debug other key",
+    "status": "FAIL",
+    "pass": 4,
+    "tests": 5,
+    "failed": [
+      "AC-2:EXPUNERE:assertion"
+    ],
+    "ms": 1522,
+    "hung": false,
+    "cleanupOk": true,
+    "asExpected": true
+  },
+  {
+    "name": "empty list",
+    "status": "FAIL",
+    "pass": 3,
+    "tests": 5,
+    "failed": [
+      "AC-1:other:assertion",
+      "AC-2:other:assertion"
+    ],
+    "ms": 710,
+    "hung": false,
+    "cleanupOk": true,
+    "asExpected": true
+  },
+  {
+    "name": "invalid request saved",
+    "status": "FAIL",
+    "pass": 4,
+    "tests": 5,
+    "failed": [
+      "AC-3 control:other:assertion"
+    ],
+    "ms": 1192,
+    "hung": false,
+    "cleanupOk": true,
+    "asExpected": true
+  },
+  {
+    "name": "missing-property accepted",
+    "status": "FAIL",
+    "pass": 4,
+    "tests": 5,
+    "failed": [
+      "AC-3 control:other:assertion"
+    ],
+    "ms": 693,
+    "hung": false,
+    "cleanupOk": true,
+    "asExpected": true
+  },
+  {
+    "name": "id only in metadata",
+    "status": "FAIL",
+    "pass": 3,
+    "tests": 5,
+    "failed": [
+      "AC-1:other:assertion",
+      "AC-2:other:assertion"
+    ],
+    "ms": 1627,
+    "hung": false,
+    "cleanupOk": true,
+    "asExpected": true
+  },
+  {
+    "name": "fields=phone other key",
+    "status": "FAIL",
+    "pass": 4,
+    "tests": 5,
+    "failed": [
+      "AC-2:EXPUNERE:assertion"
+    ],
+    "ms": 1460,
+    "hung": false,
+    "cleanupOk": true,
+    "asExpected": true
+  },
+  {
+    "name": "phone in text",
+    "status": "FAIL",
+    "pass": 3,
+    "tests": 5,
+    "failed": [
+      "AC-1:EXPUNERE:assertion",
+      "AC-2:EXPUNERE:assertion"
+    ],
+    "ms": 2069,
+    "hung": false,
+    "cleanupOk": true,
+    "asExpected": true
+  },
+  {
+    "name": "phone as key",
+    "status": "FAIL",
+    "pass": 3,
+    "tests": 5,
+    "failed": [
+      "AC-1:EXPUNERE:assertion",
+      "AC-2:EXPUNERE:assertion"
+    ],
+    "ms": 834,
+    "hung": false,
+    "cleanupOk": true,
+    "asExpected": true
+  },
+  {
+    "name": "escaped key and value",
+    "status": "FAIL",
+    "pass": 3,
+    "tests": 5,
+    "failed": [
+      "AC-1:EXPUNERE:assertion",
+      "AC-2:EXPUNERE:assertion"
+    ],
+    "ms": 1799,
+    "hung": false,
+    "cleanupOk": true,
+    "asExpected": true
+  },
+  {
+    "name": "escaped value other key",
+    "status": "FAIL",
+    "pass": 3,
+    "tests": 5,
+    "failed": [
+      "AC-1:EXPUNERE:assertion",
+      "AC-2:EXPUNERE:assertion"
+    ],
+    "ms": 1363,
+    "hung": false,
+    "cleanupOk": true,
+    "asExpected": true
+  },
+  {
+    "name": "existing records only",
+    "status": "FAIL",
+    "pass": 3,
+    "tests": 5,
+    "failed": [
+      "AC-1:EXPUNERE:assertion",
+      "AC-2:EXPUNERE:assertion"
+    ],
+    "ms": 764,
+    "hung": false,
+    "cleanupOk": true,
+    "asExpected": true
+  },
+  {
+    "name": "escape in text other key",
+    "status": "FAIL",
+    "pass": 3,
+    "tests": 5,
+    "failed": [
+      "AC-1:EXPUNERE:assertion",
+      "AC-2:EXPUNERE:assertion"
+    ],
+    "ms": 1451,
+    "hung": false,
+    "cleanupOk": true,
+    "asExpected": true
+  },
+  {
+    "name": "seed ignored, leak only before restart",
+    "status": "FAIL",
+    "pass": 0,
+    "tests": 5,
+    "failed": [
+      "AC-1:DATE MARTOR:assertion",
+      "AC-2:DATE MARTOR:assertion",
+      "AC-3 control:DATE MARTOR:assertion",
+      "AC-4 control:DATE MARTOR:assertion",
+      "AC-5 control:DATE MARTOR:assertion"
+    ],
+    "ms": 401,
+    "hung": false,
+    "cleanupOk": true,
+    "asExpected": true
+  },
+  {
+    "name": "existing record absent after restart",
+    "status": "FAIL",
+    "pass": 2,
+    "tests": 5,
+    "failed": [
+      "AC-1:CONTROL ISTORIC:assertion",
+      "AC-2:CONTROL ISTORIC:assertion",
+      "AC-4 control:other:assertion"
+    ],
+    "ms": 1759,
+    "hung": false,
+    "cleanupOk": true,
+    "asExpected": true
+  },
+  {
+    "name": "existing record on another day",
+    "status": "FAIL",
+    "pass": 2,
+    "tests": 5,
+    "failed": [
+      "AC-1:CONTROL ISTORIC:assertion",
+      "AC-2:CONTROL ISTORIC:assertion",
+      "AC-4 control:other:assertion"
+    ],
+    "ms": 1230,
+    "hung": false,
+    "cleanupOk": true,
+    "asExpected": true
+  },
+  {
+    "name": "existing phone not persisted",
+    "status": "FAIL",
+    "pass": 2,
+    "tests": 5,
+    "failed": [
+      "AC-1:CONTROL ISTORIC:assertion",
+      "AC-2:CONTROL ISTORIC:assertion",
+      "AC-4 control:other:assertion"
+    ],
+    "ms": 1264,
+    "hung": false,
+    "cleanupOk": true,
+    "asExpected": true
+  },
+  {
+    "name": "empty list, base",
+    "status": "FAIL",
+    "pass": 3,
+    "tests": 5,
+    "failed": [
+      "AC-1:other:assertion",
+      "AC-2:other:assertion"
+    ],
+    "ms": 1623,
+    "hung": false,
+    "cleanupOk": true,
+    "asExpected": true
+  },
+  {
+    "name": "empty list, debug",
+    "status": "FAIL",
+    "pass": 4,
+    "tests": 5,
+    "failed": [
+      "AC-2:other:assertion"
+    ],
+    "ms": 1714,
+    "hung": false,
+    "cleanupOk": true,
+    "asExpected": true
+  },
+  {
+    "name": "existing omitted, base",
+    "status": "FAIL",
+    "pass": 3,
+    "tests": 5,
+    "failed": [
+      "AC-1:other:assertion",
+      "AC-2:other:assertion"
+    ],
+    "ms": 2603,
+    "hung": false,
+    "cleanupOk": true,
+    "asExpected": true
+  },
+  {
+    "name": "existing omitted, debug",
+    "status": "FAIL",
+    "pass": 4,
+    "tests": 5,
+    "failed": [
+      "AC-2:other:assertion"
+    ],
+    "ms": 3707,
+    "hung": false,
+    "cleanupOk": true,
+    "asExpected": true
+  },
+  {
+    "name": "ids only in metadata, base",
+    "status": "FAIL",
+    "pass": 3,
+    "tests": 5,
+    "failed": [
+      "AC-1:other:assertion",
+      "AC-2:other:assertion"
+    ],
+    "ms": 1750,
+    "hung": false,
+    "cleanupOk": true,
+    "asExpected": true
+  },
+  {
+    "name": "ids only in metadata, debug",
+    "status": "FAIL",
+    "pass": 4,
+    "tests": 5,
+    "failed": [
+      "AC-2:other:assertion"
+    ],
+    "ms": 1915,
+    "hung": false,
+    "cleanupOk": true,
+    "asExpected": true
+  },
+  {
+    "name": "seed rows only",
+    "status": "FAIL",
+    "pass": 3,
+    "tests": 5,
+    "failed": [
+      "AC-1:EXPUNERE:assertion",
+      "AC-2:EXPUNERE:assertion"
+    ],
+    "ms": 1656,
+    "hung": false,
+    "cleanupOk": true,
+    "asExpected": true
+  },
+  {
+    "name": "initial data not created",
+    "status": "FAIL",
+    "pass": 0,
+    "tests": 5,
+    "failed": [
+      "AC-1:DATE MARTOR:assertion",
+      "AC-2:DATE MARTOR:assertion",
+      "AC-3 control:DATE MARTOR:assertion",
+      "AC-4 control:DATE MARTOR:assertion",
+      "AC-5 control:DATE MARTOR:assertion"
+    ],
+    "ms": 799,
+    "hung": false,
+    "cleanupOk": true,
+    "asExpected": true
+  },
+  {
+    "name": "initial data without phone",
+    "status": "FAIL",
+    "pass": 0,
+    "tests": 5,
+    "failed": [
+      "AC-1:DATE MARTOR:assertion",
+      "AC-2:DATE MARTOR:assertion",
+      "AC-3 control:DATE MARTOR:assertion",
+      "AC-4 control:DATE MARTOR:assertion",
+      "AC-5 control:DATE MARTOR:assertion"
+    ],
+    "ms": 1625,
+    "hung": false,
+    "cleanupOk": true,
+    "asExpected": true
+  },
+  {
+    "name": "initial rows omitted",
+    "status": "FAIL",
+    "pass": 3,
+    "tests": 5,
+    "failed": [
+      "AC-1:other:assertion",
+      "AC-2:other:assertion"
+    ],
+    "ms": 1546,
+    "hung": false,
+    "cleanupOk": true,
+    "asExpected": true
+  },
+  {
+    "name": "kept row omitted",
+    "status": "FAIL",
+    "pass": 3,
+    "tests": 5,
+    "failed": [
+      "AC-1:other:assertion",
+      "AC-2:other:assertion"
+    ],
+    "ms": 1921,
+    "hung": false,
+    "cleanupOk": true,
+    "asExpected": true
+  },
+  {
+    "name": "new row omitted",
+    "status": "FAIL",
+    "pass": 3,
+    "tests": 5,
+    "failed": [
+      "AC-1:other:assertion",
+      "AC-2:other:assertion"
+    ],
+    "ms": 1150,
+    "hung": false,
+    "cleanupOk": true,
+    "asExpected": true
+  },
+  {
+    "name": "seed rows only under any parameter",
+    "status": "FAIL",
+    "pass": 4,
+    "tests": 5,
+    "failed": [
+      "AC-2:EXPUNERE:assertion"
+    ],
+    "ms": 1840,
+    "hung": false,
+    "cleanupOk": true,
+    "asExpected": true
+  },
+  {
+    "name": "threshold only under any parameter",
+    "status": "FAIL",
+    "pass": 4,
+    "tests": 5,
+    "failed": [
+      "AC-2:EXPUNERE:assertion"
+    ],
+    "ms": 1921,
+    "hung": false,
+    "cleanupOk": true,
+    "asExpected": true
+  },
+  {
+    "name": "seed rows only under all=1",
+    "status": "FAIL",
+    "pass": 4,
+    "tests": 5,
+    "failed": [
+      "AC-2:EXPUNERE:assertion"
+    ],
+    "ms": 2101,
+    "hung": false,
+    "cleanupOk": true,
+    "asExpected": true
+  },
+  {
+    "name": "returned id differs",
+    "status": "FAIL",
+    "pass": 0,
+    "tests": 5,
+    "failed": [
+      "AC-1:ID API:assertion",
+      "AC-2:ID API:assertion",
+      "AC-3 control:ID API:assertion",
+      "AC-4 control:ID API:assertion",
+      "AC-5 control:ID API:assertion"
+    ],
+    "ms": 1752,
+    "hung": false,
+    "cleanupOk": true,
+    "asExpected": true
+  },
+  {
+    "name": "second returned id differs",
+    "status": "FAIL",
+    "pass": 0,
+    "tests": 5,
+    "failed": [
+      "AC-1:ID API:assertion",
+      "AC-2:ID API:assertion",
+      "AC-3 control:ID API:assertion",
+      "AC-4 control:ID API:assertion",
+      "AC-5 control:ID API:assertion"
+    ],
+    "ms": 1326,
+    "hung": false,
+    "cleanupOk": true,
+    "asExpected": true
+  },
+  {
+    "name": "historical phone filled",
+    "status": "FAIL",
+    "pass": 3,
+    "tests": 5,
+    "failed": [
+      "AC-1:CONTROL ISTORIC:assertion",
+      "AC-2:CONTROL ISTORIC:assertion"
+    ],
+    "ms": 749,
+    "hung": false,
+    "cleanupOk": true,
+    "asExpected": true
+  },
+  {
+    "name": "historical row omitted",
+    "status": "FAIL",
+    "pass": 3,
+    "tests": 5,
+    "failed": [
+      "AC-1:other:assertion",
+      "AC-2:other:assertion"
+    ],
+    "ms": 1759,
+    "hung": false,
+    "cleanupOk": true,
+    "asExpected": true
+  }
+]
