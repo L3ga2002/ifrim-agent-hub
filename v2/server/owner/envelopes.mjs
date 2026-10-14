@@ -103,7 +103,8 @@ function turnLimitsLine(body) {
   if (!t || typeof t !== "object") return null;
   const durations = [...new Set((body.missions || []).map((m) => Number(m.limits?.maxDurationMin)).filter((n) => n > 0))];
   const mission = durations.length === 1 ? `${durations[0]} min` : durations.length ? `cel mult ${Math.max(...durations)} min` : "—";
-  return `Limită pe tură: writer ${t.writer} min, reviewer ${t.reviewer} min; termen misiune ${mission}. O tură care depășește limita e oprită; o reiau automat doar în încercările din plan, după cel puțin un minut.`;
+  return `Limită pe tură: writer ${t.writer} min, reviewer ${t.reviewer} min; termen misiune ${mission}. O tură care depășește limita e oprită; o reiau automat doar în încercările din plan, după cel puțin un minut.`
+    + ((body.missions || []).some((m) => m.testFirst?.authorLimits?.turnTimeoutMin === 45) ? " Autorul testului (pasul 0): 45 min de la trimiterea turei, reîncercările incluse." : "");
 }
 const RUN_PROVIDERS = new Set(["codex", "claude"]);
 const RUN_ACCESS = new Set(["read-only", "workspace-write"]);
@@ -443,7 +444,8 @@ export function createEnvelopes({ db, bus, clock, settings, projects, missions, 
       models: `Modele: ${[...new Set(m.map((e) => `writer ${bindingLabel(e.bindings?.writer)}; reviewer ${bindingLabel(e.bindings?.reviewer)}`))].join(" | ")}${tfEntries.length ? T_MODELS_SUFFIX : ""}. Verificate din nou înainte de fiecare pornire; o schimbare oprește execuția înainte de model.`,
       // M11 L5 (§2): the step-0 lines of the card (the same words the page builds from the hashed body.testFirst) and what the test proves.
       ...(tfEntries.length ? { testFirst: { step0: (tfEntries.every((e) => e.testFirst.reauthorMax === 0) ? T_CARD_STEP0_NO_REWRITE : T_CARD_STEP0)
-        + (tfEntries.some((e) => e.testFirst.authorLimits?.maxOutputTokens === 64000) ? "\nAutorul testului de la pasul 0: limită de ieșire cerută de 64000 de tokeni, conform planului." : ""),
+        + (tfEntries.some((e) => e.testFirst.authorLimits?.maxOutputTokens === 64000) ? "\nAutorul testului de la pasul 0: limită de ieșire cerută de 64000 de tokeni, conform planului." : "")
+        + (tfEntries.some((e) => e.testFirst.authorLimits?.turnTimeoutMin === 45) ? "\nAutorul testului (pasul 0): 45 min de la trimiterea turei, reîncercările incluse." : ""),
         proves: T_CARD_PROVES(tfCriteria), criteria: tfCriteria, missions: tfEntries.map((e) => e.missionId) } } : {}),
       never: "Fără deploy, commit, push, mesaje, bani, schimbări de acces sau izolare, instalări, ștergeri de date reale.",
       stops: `Mă opresc la ${body.limits.maxDurationMin} min, ${body.limits.maxAttemptsPerStage} încercări pe etapă, sau când livrarea e gata de verificarea ta (nu accept singur). Continui și dacă închizi pagina, dar numai în aceste limite; nu încep alte misiuni${body.continuationPolicy.nextMissionWithoutConfirmation ? " decât pe cele din acest plan" : ""}.`,

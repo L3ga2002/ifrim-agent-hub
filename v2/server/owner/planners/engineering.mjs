@@ -397,7 +397,8 @@ export function buildEngineeringSpec({ text, args = {}, project, hubWrites = {},
       // "left files behind" for the proof; checkSpec refuses src / test / public / the Hub's own work area.
       workspace: { ignore: deriveIgnore(readGitignore(project.path)) },
       authoring: { mode: "hub", testRef: testFirst.testRef, stagingRef: testFirst.stagingRef, criteria: testFirst.criteria,
-        authorLimits: { maxOutputTokens: 64000, provenance: "decizia proprietarului 2026-10-13 21:32 UTC: limită de ieșire 64000 doar pentru autorul testului de la pasul 0" } },
+        authorLimits: { maxOutputTokens: 64000, ...(dataset ? { turnTimeoutMin: 45 } : {}), provenance: "decizia proprietarului 2026-10-13 21:32 UTC: limită de ieșire 64000 doar pentru autorul testului de la pasul 0"
+          + (dataset ? "; decizia proprietarului 2026-10-14 10:09 UTC: limită pe tură 45 min doar pentru autorul testului de la pasul 0 al planului §25 hub-test" : "") } },
       ...(supersedes.length ? { supersedes } : {}),
       sources: { user: [words], code: [], assumptions: ["Testul de acceptanță nu există încă: îl scrie Hub-ul la pasul 0 din cuvintele tale; trebuie să pice pe codul de acum din motivul potrivit, e verificat independent, apoi îl protejez",
         ...(useDerived ? [`Criteriile sunt derivate de Hub din cererea ta (tipul cererii: ${derived.shape}), fără model; cuvintele tale rămân cererea`, ...derived.assumptions] : [])] },
@@ -623,7 +624,8 @@ export function registerEngineeringPlanner(hub, intake) {
     // M11 L5 (§5.1): the Hub-written test's path joins the request's identity only on a test-first draft (an ordinary request keeps its hash).
     const testFirst = built.testFirst?.ok ? built.testFirst : null;
     const requestHash = hashCanonical({ projectId: project.id, workType: built.input.workType, objective: built.input.objective, testRef: built.testRef, models: models.limits,
-      ...(testFirst ? { testFirst: testFirst.testRef } : {}) }).slice(0, 32);
+      ...(testFirst ? { testFirst: testFirst.testRef } : {}),
+      ...(built.input.spec.authoring?.authorLimits?.turnTimeoutMin !== undefined ? { authorLimits: built.input.spec.authoring.authorLimits } : {}) }).slice(0, 32);
     const flight = `${project.id}:${requestHash}`;
     if (inFlight.has(flight)) return { kind: "message", projectId: project.id, text: "Pregătesc deja planul pentru această cerere; îl vezi imediat." };
     inFlight.add(flight);

@@ -94,6 +94,11 @@ export function createRunManager(deps) {
   function recordBlockedRun({ conversation, provider, access, taskId, stage, roleId, inputMessageId, category, message, evidence, timeline = null, plan = null, environment = "windows" }) {
     const id = newId("run");
     const now = clock().toISOString();
+    // A gate refusal never arms a timer, but still records why the requested deadline had no active lifetime.
+    const turnDeadline = plan?.turnTimeoutMs ? { limitMs: plan.turnTimeoutMs, admissionArmedAt: null, admissionDeadlineAt: null,
+      turnSentAt: null, turnArmedAt: null, deadlineAt: null, fired: false, firedAt: null, clearedBy: "blocked",
+      admissionArms: 0, turnArms: 0, noticesAfterTurnSent: 0, apiRetriesAfterTurnSent: 0 } : null;
+    if (turnDeadline) evidence = { ...evidence, turnDeadline };
     bus.transaction(() => {
       db.prepare(`INSERT INTO agent_runs (id, task_id, conversation_id, role_id, stage, provider, model, effort, access, status, input_message_id, error_category, error_message, pre_inference, evidence_json,
         timeline_json, plan_json, created_at, finished_at, environment)
@@ -101,6 +106,7 @@ export function createRunManager(deps) {
         inputMessageId, category, message, json(evidence), json(timeline ? timeline.toJSON() : {}), json(plan ? planRecord(plan) : {}), now, now, environment);
       bus.append({ type: "run.blocked", scopeType: "conversation", scopeId: conversation.id, projectId: conversation.projectId, source: "hub", runId: id,
         payload: { provider, category, message, preInference: true } });
+      if (turnDeadline) bus.append({ type: "run.turn_deadline", scopeType: "conversation", scopeId: conversation.id, source: "hub", runId: id, payload: turnDeadline });
     });
     return getRun(id);
   }
@@ -139,6 +145,15 @@ export function createRunManager(deps) {
     const turnLimitMs = turnTimeoutMs === null || turnTimeoutMs === undefined ? null : Number(turnTimeoutMs);
     if (turnLimitMs !== null && !(Number.isFinite(turnLimitMs) && turnLimitMs >= 1 && turnLimitMs <= TURN_TIMEOUT_MAX_MS)) {
       throw new HubError("validation", `Limita pe tură trebuie să fie între 1 ms și ${TURN_TIMEOUT_MAX_MS / 3600000} h`);
+    }
+    const authorDispatch = correlationId && db.prepare("SELECT * FROM factory_dispatches WHERE id = ? AND json_extract(request_json, '$.turnTimeoutSource') = 'authorLimits'").get(correlationId);
+    if (authorDispatch) {
+      const request = parse(authorDispatch.request_json, {});
+      const expected = actor === "factory" && authorDispatch.status === "CLAIMED" && authorDispatch.stage === "TEST_AUTHORING"
+        && authorDispatch.task_id === taskId ? factory?.dispatchTurnLimit(authorDispatch.mission_id, authorDispatch.stage) : null;
+      if (expected?.source !== "authorLimits" || request.turnTimeoutMin !== expected.min || turnLimitMs !== expected.ms) {
+        throw new HubError("validation", "Limita autorului testului nu corespunde dispatch-ului aprobat și scalei Factory");
+      }
     }
     const conversation = conversations.get(conversationId);
     if (!conversation) throw new HubError("not_found", "Conversation not found");
@@ -327,7 +342,8 @@ export function createRunManager(deps) {
         }),
       });
       active.set(runId, { handle, conversationId, provider, environment, leaseId: lease.id, taskId, outputMessageId: outputMessage.id, promptPackage: prompt.packageRef, startedAt: clock().toISOString(), lastEventAt: null, firstOutputAt: null, timeline,
-        turnLimitMs: plan.turnTimeoutMs || null, turnDeadline: null });
+        turnLimitMs: plan.turnTimeoutMs || null, turnDeadline: null, admissionDeadline: null, admissionArms: 0, turnArms: 0,
+        noticesAfterTurnSent: 0, apiRetriesAfterTurnSent: 0 });
       // 2.12.2 (P0-R3): armed now (the backstop before the turn); onProviderEvent arms it again with the full limit at turn_sent.
       if (plan.turnTimeoutMs) armTurnDeadline(runId, timeline.has("turn_sent") ? "turn" : "admission");
       if (handle.pid) markPhase(runId, "process_spawned");
@@ -353,6 +369,7 @@ export function createRunManager(deps) {
   }
 
   // ---------- 2.12.2 (P0-R3): the per-turn deadline ----------
+  // limita turei: armată la admitere, rearmată o singură dată la turn_sent; reîncercările CLI de după turn_sent intră în același termen
   /**
    * Arms the turn's deadline: "admission" when the run is admitted (a backstop: a process start, an account or thread check that
    * hangs is bounded too), then "turn" ONCE when the turn reaches the model, with the full limit from that moment. A deadline that
@@ -370,7 +387,20 @@ export function createRunManager(deps) {
     deadline.timer = setTimeout(() => onTurnDeadline(runId, deadline), entry.turnLimitMs);
     deadline.timer.unref?.();
     entry.turnDeadline = deadline;
+    if (phase === "admission") { entry.admissionDeadline = deadline; entry.admissionArms += 1; }
+    else entry.turnArms += 1;
     return deadline;
+  }
+
+  /** Additive parity evidence, including successful and interrupted turns; the legacy timeout evidence keeps its shape. */
+  function turnDeadlineEvidence(entry) {
+    const d = entry?.turnDeadline;
+    if (!d) return null;
+    return { limitMs: d.limitMs, admissionArmedAt: entry.admissionDeadline?.armedAt || null,
+      admissionDeadlineAt: entry.admissionDeadline?.deadlineAt || null, turnSentAt: entry.timeline?.toJSON().turn_sent || null,
+      turnArmedAt: d.phase === "turn" ? d.armedAt : null, deadlineAt: d.deadlineAt, fired: d.fired, firedAt: d.firedAt || null,
+      clearedBy: d.clearedBy, admissionArms: entry.admissionArms, turnArms: entry.turnArms,
+      noticesAfterTurnSent: entry.noticesAfterTurnSent, apiRetriesAfterTurnSent: entry.apiRetriesAfterTurnSent };
   }
 
   /** Ends a deadline that has not fired (Pause, Stop, an interruption, Stop All, the run's own end): its timer can no longer fire. */
@@ -512,6 +542,10 @@ export function createRunManager(deps) {
     // Observable phase only (no progress is inferred): waiting for the provider until the first output arrives.
     const entry = active.get(runId);
     if (entry) { entry.lastEventAt = now; if (event.type === "delta" && !entry.firstOutputAt) entry.firstOutputAt = now; }
+    if (entry?.timeline?.has("turn_sent") && event.type === "notice") {
+      entry.noticesAfterTurnSent += 1;
+      if (event.subtype === "api_retry" || /^Claude API retry \d+\/\d+:/u.test(event.text || "")) entry.apiRetriesAfterTurnSent += 1;
+    }
     if (event.type === "phase") {
       markPhase(runId, event.phase, event.at || null);
       // 2.12.2 (P0-R3): the turn reached the model: its deadline restarts once, with the full limit from now.
@@ -649,6 +683,7 @@ export function createRunManager(deps) {
     stoppedRuns.delete(runId); // from here on the run is no longer active: a late callback is refused by that (waitForApproval)
     // 2.12.2 (P0-R3): the turn's deadline ends with the run; one that fired makes the outcome a timeout (turnTimeoutOutcome).
     const firedDeadline = settleTurnDeadline(entry);
+    const turnDeadline = turnDeadlineEvidence(entry);
     if (firedDeadline) result = turnTimeoutOutcome(result, firedDeadline, entry);
     const run = getRun(runId);
     if (!run || !["running", "waiting_approval", "starting"].includes(run.status)) return;
@@ -667,7 +702,9 @@ export function createRunManager(deps) {
         .run(status, result.errorCategory || null, result.error ? redactText(String(result.error)).slice(0, 2000) : null, pre ? 1 : 0, clock().toISOString(),
           result.threadId || result.sessionId || null, result.turnId || null, json(result.usage || run.usage), json({ ...run.evidence, permissionDenials: result.permissionDenials, numTurns: result.numTurns, promptPackage: entry?.promptPackage, ...(result.environment ? { environment: result.environment } : {}),
           ...(result.authorOutputLimit ? { authorOutputLimit: result.authorOutputLimit } : {}),
+          ...(turnDeadline ? { turnDeadline } : {}),
           ...(result.turnTimeout ? { turnTimeout: result.turnTimeout } : {}) }), runId);
+      if (turnDeadline) bus.append({ type: "run.turn_deadline", scopeType: "conversation", scopeId: run.conversationId, source: "hub", runId, payload: turnDeadline });
       if (entry?.outputMessageId) {
         conversations.finalize(entry.outputMessageId, { content: content || (result.error ? `Run ${status}: ${redactText(String(result.error))}` : ""), status: status === "completed" ? "final" : status,
           metadata: { runStatus: status, errorCategory: result.errorCategory || null, preInference: pre } });

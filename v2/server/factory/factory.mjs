@@ -13,7 +13,7 @@ import { transitionTask, TERMINAL_STATES } from "../runtime/state-machine.mjs";
 import { workspaceResource } from "../runtime/runs.mjs";
 import { summarizeTimeline } from "../runtime/timeline.mjs";
 import { MISSION_TEMPLATES } from "../domain/missions.mjs";
-import { checkSpec, normalizeSpec, specHash, protectedTestRefs, specSummary, e2eStepLines } from "./spec.mjs";
+import { checkSpec, normalizeSpec, specHash, protectedTestRefs, specSummary, e2eStepLines, AUTHOR_TURN_TIMEOUT_MIN } from "./spec.mjs";
 import { buildPlan, normalizeLimits, turnTimeoutsOf, ROUTES } from "./plan.mjs";
 import { takeSnapshot, diffManifests, readGitEntry, gitEntryHash, readBlob, isTestPath, skippedTreeFingerprint, skippedTreeChanges } from "./snapshot.mjs";
 import { renderChanges } from "./diff.mjs";
@@ -105,6 +105,14 @@ export function createFactory(deps) {
   function turnLimitOf(f, role) {
     const t = turnTimeoutsOf(f?.limits || {});
     return { min: t[role], source: t.source, ms: Math.max(1, Math.round(t[role] * 60000 * turnTimeScale)) };
+  }
+  /** Only the approved step-0 author may use the dedicated limit; its reviewer role alone grants nothing. */
+  function dispatchTurnLimit(f, stage, role = ROLE_OF_STAGE[stage] || "writer") {
+    const spec = approvedSpec(f);
+    if (stage === "TEST_AUTHORING" && spec?.status === "APPROVED" && spec.spec.authoring?.authorLimits?.turnTimeoutMin === AUTHOR_TURN_TIMEOUT_MIN) {
+      return { min: AUTHOR_TURN_TIMEOUT_MIN, ms: Math.max(1, Math.round(AUTHOR_TURN_TIMEOUT_MIN * 60000 * turnTimeScale)), source: "authorLimits" };
+    }
+    return turnLimitOf(f, role);
   }
   const workRoot = (missionId) => path.join(config.workDir, "factory", missionId);
   const blobDir = (missionId) => path.join(workRoot(missionId), "blobs");
@@ -1025,10 +1033,11 @@ export function createFactory(deps) {
       authority(missionId, { stage: "GRANT", role, bindingHash: binding.bindingHash });
     }
     // 2.12.2 (P0-R3): the role's per-turn limit from the mission's (hashed) limits; recorded with the dispatch, enforced by runs.start.
-    const turn = turnLimitOf(f, role);
+    const turn = dispatchTurnLimit(f, stage, role);
     const request = { stage, cycle, changeSeq, attempt: prior.length + 1, counted: attempts + 1, provider: route.provider, access, model: binding.resolvedAlias, effort: binding.effort, profile: binding.profile,
       specVersion: f.approvedSpecVersion, bindingHash: binding.bindingHash, turnTimeoutMin: turn.min,
-      ...(stage === "TEST_AUTHORING" && approvedSpec(f)?.spec.authoring?.authorLimits?.maxOutputTokens === 64000 ? { maxOutputTokens: 64000 } : {}) };
+      ...(stage === "TEST_AUTHORING" && approvedSpec(f)?.spec.authoring?.authorLimits?.maxOutputTokens === 64000 ? { maxOutputTokens: 64000 } : {}),
+      ...(turn.source === "authorLimits" ? { turnTimeoutSource: "authorLimits" } : {}) };
     const key = `${missionId}:${stage}:c${cycle}:cs${changeSeq}:a${prior.length + 1}`;
     const id = newId("dsp");
     const inserted = db.prepare(`INSERT OR IGNORE INTO factory_dispatches (id, mission_id, stage, task_id, idempotency_key, status, request_json, created_at, updated_at)
@@ -1260,7 +1269,8 @@ export function createFactory(deps) {
    */
   function afterTurnTimeout(f, dispatch, run) {
     const role = ROLE_OF_STAGE[dispatch.stage] || "writer";
-    const limitMin = Number(dispatch.request?.turnTimeoutMin) || turnLimitOf(f, role).min;
+    const roleLabel = dispatch.stage === "TEST_AUTHORING" && dispatch.request?.turnTimeoutSource === "authorLimits" ? "autorul testului" : role;
+    const limitMin = Number(dispatch.request?.turnTimeoutMin) || dispatchTurnLimit(f, dispatch.stage, role).min;
     const payload = { stage: dispatch.stage, role, limitMin, dispatchId: dispatch.id, limitMs: run.evidence?.turnTimeout?.limitMs ?? null, elapsedMs: run.evidence?.turnTimeout?.elapsedMs ?? null };
     // The dispatch row says TIMEOUT too (its status stays FAILED: modelAttempts counts it only when the turn had been sent).
     db.prepare("UPDATE factory_dispatches SET error = ?, updated_at = ? WHERE id = ?").run(`turn_timeout: limita de ${limitMin} min pe tură (${role})`, now(), dispatch.id);
@@ -1268,11 +1278,11 @@ export function createFactory(deps) {
       blockTask(dispatch.taskId, "limita pe tură, înainte de model");
       bus.emit({ type: "factory.turn_timeout", scopeType: "mission", scopeId: f.missionId, source: "factory", runId: run.id, payload: { ...payload, reachedModel: false, retry: false } });
       return setStage(f.missionId, "BLOCKED", { waitReason: "owner_decision",
-        reason: `Etapa ${dispatch.stage} (${role}): providerul nu a trimis tura modelului în limita de ${limitMin} min pe tură; nimic nu a ajuns la model, încercarea nu se numără. Verifică providerul, apoi reia` });
+        reason: `Etapa ${dispatch.stage} (${roleLabel}): providerul nu a trimis tura modelului în limita de ${limitMin} min pe tură; nimic nu a ajuns la model, încercarea nu se numără. Verifică providerul, apoi reia` });
     }
     const { counted } = modelAttempts(f.missionId, dispatch.stage, dispatch.request.cycle, dispatch.request.changeSeq);
     const limit = attemptLimit(f, dispatch.stage);
-    const base = `Etapa ${dispatch.stage} (${role}) a depășit limita de ${limitMin} min pe tură (încercarea ${counted} din ${limit})`;
+    const base = `Etapa ${dispatch.stage} (${roleLabel}) a depășit limita de ${limitMin} min pe tură (încercarea ${counted} din ${limit})`;
     // Review R3-F3: ONE automatic re-dispatch per step (stage, cycle, change set), whatever maxAttemptsPerStage allows: after it, a
     // further timeout of the same step waits for the owner even with attempts left (the texts promise „o singură dată”).
     if (counted < limit && turnRetriesFired(f.missionId, dispatch.stage, dispatch.request.cycle, dispatch.request.changeSeq) > 0) {
@@ -2761,7 +2771,8 @@ export function createFactory(deps) {
       authoring: authoringView(approvedSpec(f) || spec),
       grantsNeeded: grantsNeeded(f),
       // 2.12.2 (P0-R3): the per-turn limits the model steps run with (separate from the mission's deadline) and a scheduled retry.
-      turnLimits: { ...turnTimeoutsOf(f.limits), missionMin: f.limits?.maxDurationMin ?? null },
+      turnLimits: { ...turnTimeoutsOf(f.limits), missionMin: f.limits?.maxDurationMin ?? null,
+        ...(dispatchTurnLimit(f, "TEST_AUTHORING").source === "authorLimits" ? { author: dispatchTurnLimit(f, "TEST_AUTHORING").min } : {}) },
       turnRetry: f.waitReason === "retry" ? (() => { const p = parse(db.prepare("SELECT payload_json FROM events WHERE type = 'factory.turn_timeout' AND scope_type = 'mission' AND scope_id = ? ORDER BY seq DESC LIMIT 1").get(missionId)?.payload_json, {}); return p.retry ? { stage: p.stage, retryAt: p.retryAt, attempt: p.attempt, limit: p.limit } : null; })() : null,
       runnerReadiness: runner.readiness(project),
       stageEnvironments: runner.stageMap ? runner.stageMap(project) : null,
@@ -2907,6 +2918,8 @@ export function createFactory(deps) {
     // M11 L5: step 0 of a test-first mission is open (no repair cycle there); the Hub's own files in its work area on a project.
     inStageZero, hubWrites, remainingAuthoring: (missionId) => remainingAuthoring(missionId),
     attachAuthority: (fn) => { authority = typeof fn === "function" ? fn : null; },
+    // Runtime verifies a claimed dispatch against the same approved spec and this instance's scale (no global override).
+    dispatchTurnLimit: (missionId, stage) => dispatchTurnLimit(need(fm(missionId)), stage),
     /** 2.12.2 (P0-R3), test mode only: scales the per-turn limits sent to the run manager (0 < scale ≤ 1); refused outside test mode. */
     setTurnTimeScaleForTests: (scale) => {
       if (!config.testMode) throw new HubError("policy", "Scala limitelor pe tură există doar în modul de test");
