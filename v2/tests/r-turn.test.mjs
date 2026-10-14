@@ -445,3 +445,16 @@ for (const scenario of ["success", "hang"]) test(`T-TURN driver --fake ${scenari
   } else { assert.equal(run.error_category, "turn_timeout"); assert.equal(e.outcome.stage, "NEEDS_OWNER_DECISION"); }
   assert.deepEqual(JSON.parse(fs.readFileSync(path.join(out, "evidence.json"), "utf8")), e);
 });
+
+test("T-TURN driver --fake amend: step-0 grants admit cycle 0, the single R-AMEND rewrite and both Codex reviews, nothing more", { timeout: 180000 }, async (t) => {
+  const out = temp(t), e = await runRehearsal({ mode: "fake", out, scenario: "amend" });
+  assert.equal(e.hubClosed, true); assert.ok(e.pidChecks.length > 0 && e.pidChecks.every((p) => p.gone));
+  assert.deepEqual([e.grants.claude, e.grants.codex], [2, 2]);
+  const step0 = e.dispatches.filter((d) => ["TEST_AUTHORING", "TEST_REVIEW"].includes(d.stage)).map((d) => [d.stage, JSON.parse(d.request_json).cycle, d.status]);
+  assert.deepEqual(step0, [["TEST_AUTHORING", 0, "DONE"], ["TEST_REVIEW", 0, "DONE"], ["TEST_AUTHORING", 1, "DONE"], ["TEST_REVIEW", 1, "DONE"]]);
+  for (const d of e.dispatches.filter((x) => x.stage === "TEST_AUTHORING")) assert.equal(JSON.parse(d.request_json).turnTimeoutMin, 45);
+  assert.deepEqual(e.testReviews.map((r) => r.parsed.verdict), ["CHANGES_REQUESTED", "PASS"]);
+  assert.equal(e.authoring.status, "PROTECTED"); assert.equal(e.outcome.limits.maxAttemptsPerStage, 1);
+  assert.match(e.outcome.stageReason, /IMPLEMENTING: live_grant/);
+  assert.ok(e.runs.filter((r) => r.access === "workspace-write").every((r) => r.status === "blocked" && !r.pid));
+});

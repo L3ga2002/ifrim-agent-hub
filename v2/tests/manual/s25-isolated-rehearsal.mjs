@@ -241,7 +241,10 @@ export async function runRehearsal({ mode = "fake", out, scenario = "success", f
         onProbe: (record) => { evidence.probes.codex = record; } });
       for (const [name, get] of [["claude", realClaude], ["codex", realCodex]]) providerOverrides[name] = Object.fromEntries(["probe", "inspectInstallation", "startTurn"].map((key) => [key, (...args) => get()[key](...args)]));
     }
-    const failureBinary = mode === "fake" && scenario !== "success" ? { executable: process.execPath, prefixArgs: [path.join(FIXTURES, "fake-turn.mjs"), `--turn-scenario=${scenario}`] } : null;
+    // "amend" (fake only): the reviewer asks for changes at cycle 0, the single R-AMEND rewrite runs and the second review passes — the
+    // deterministic proof that the step-0 grants admit cycle 0, the rewrite and both Codex reviews before any real model.
+    const passing = scenario === "success" || scenario === "amend";
+    const failureBinary = mode === "fake" && !passing ? { executable: process.execPath, prefixArgs: [path.join(FIXTURES, "fake-turn.mjs"), `--turn-scenario=${scenario}`] } : null;
     signal?.throwIfAborted();
     h = await makeTestHub({ queues: true, configOverrides: { projectsRoot: parent, ...(failureBinary ? { providerBinaries: {
       claude: failureBinary, codex: { executable: process.execPath, prefixArgs: [path.join(FIXTURES, "fake-codex.mjs"), `--models-file=${path.join(parent, "models.json")}`] } } } : {}) }, hubOptions: { providerOverrides } });
@@ -261,12 +264,13 @@ export async function runRehearsal({ mode = "fake", out, scenario = "success", f
     if (mode === "fake") {
       const models = [{ id: "gpt-6.1-sol", model: "gpt-6.1-sol", isDefault: true, efforts: ["medium"] }];
       jsonFile(`${h.logs.codex}.models.json`, models); jsonFile(path.join(parent, "models.json"), models);
-      const scale = scenario === "success" ? 1 : fakeTurnMs / (45 * 60000);
+      const scale = passing ? 1 : fakeTurnMs / (45 * 60000);
       h.hub.factory.setTurnTimeScaleForTests(scale); evidence.isolation.turnTimeScale = scale;
     }
     // Claude is checked first; a wrong account stops before the other provider or any mission work.
     await probeRehearsalProviders({ providers: h.hub.providers, providerState: h.hub.providerState, mode, evidence, signal });
-    if (mode === "fake") { h.queue("claude", "author:dataset-reference"); h.queue("codex", "test-review:pass"); }
+    if (mode === "fake" && scenario === "amend") { h.queue("claude", "author:dataset-reference", "author:dataset-reference"); h.queue("codex", "test-review:dataset-two", "test-review:pass"); }
+    else if (mode === "fake") { h.queue("claude", "author:dataset-reference"); h.queue("codex", "test-review:pass"); }
     signal?.throwIfAborted();
     if (mode === "real") {
       if (!isolationFixture) throw new Error("Ruta codex exec nu verifică profilul Hub cerut de poartă; folosește explicit --isolation-fixture pentru admitere simulată în această repetiție sau oprește aici");
