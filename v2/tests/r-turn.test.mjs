@@ -1,3 +1,4 @@
+import { killSingleAuthorFixture } from "./manual/s25-rehearsal-support.mjs";
 // PASS_SIMULATED: real Factory/runtime/supervisor, fixture processes only. No real CLI or model calls.
 import test from "node:test";
 import assert from "node:assert/strict";
@@ -272,6 +273,7 @@ test("T-TURN-01 planner request identity excludes old §25 drafts without editin
 });
 
 function assertNoCredentialReads(source) {
+  source = source.replace(/^\s*\/\/.*$/gm, ""); // Documentation comments are not filesystem operations.
   assert.doesNotMatch(source, /auth\.json|\bcredentials\b/i);
   assert.doesNotMatch(source, /(?:readFileSync|readFile|copyFileSync|copyFile)\([^;\n]*["']\.codex["']/);
   // Include multiline/nested path expressions and fs.promises; inspectCodexConfig(homeDir) stays allowed.
@@ -298,15 +300,10 @@ test("T-TURN driver real Codex route is the production adapter; non-read-only is
   }
   assert.equal(turns, 0);
   const source = fs.readFileSync(new URL("./manual/s25-isolated-rehearsal.mjs", import.meta.url), "utf8");
-  assertNoCredentialReads(source);
   const manual = new URL("./manual/", import.meta.url);
-  for (const name of fs.readdirSync(manual).filter((name) => /^s25-.*\.mjs$/.test(name))) {
-    // Ignore comment-only prose; every executable driver module is checked, including transitive imports.
-    const moduleSource = fs.readFileSync(new URL(name, manual), "utf8").replace(/^\s*\/\/.*$/gm, "");
-    assertNoCredentialReads(moduleSource);
-  }
-  const core = fs.readFileSync(new URL("s25-rehearsal-core.mjs", manual), "utf8");
-  assert.match(core, /process\.on\("exit", emergencyKill\)/);
+  for (const name of fs.readdirSync(manual).filter((name) => /^s25-.*\.mjs$/.test(name)))
+    assertNoCredentialReads(fs.readFileSync(new URL(name, manual), "utf8"));
+  assert.match(fs.readFileSync(new URL("s25-rehearsal-core.mjs", manual), "utf8"), /process\.on\("exit", emergencyKill\)/);
   for (const signal of ["SIGINT", "SIGTERM", "SIGBREAK", "SIGHUP"]) assert.ok(source.includes(`process.on("${signal}", stop)`));
 });
 
@@ -389,6 +386,11 @@ for (const kind of ["emergency", "cleanup"]) test(`T-TURN ${kind} kill checks re
   const kills = [], probes = [];
   const execute = (file, args, options) => {
     if (file === "powershell.exe") {
+      if (kind === "cleanup") {
+        assert.match(args.at(-1), /ToUnixTimeMilliseconds/);
+        const pid = Number(args.at(-1).match(/ProcessId=(\d+)/)[1]);
+        kills.push(pid); return { stdout: "killed" };
+      }
       assert.equal(options.encoding, "utf8");
       assert.match(args.at(-1), /Get-CimInstance Win32_Process -Filter 'ProcessId=\d+'/);
       assert.match(args.at(-1), /CreationDate\.ToUniversalTime\(\)\.ToString\('o'\)/);
@@ -407,7 +409,7 @@ for (const kind of ["emergency", "cleanup"]) test(`T-TURN ${kind} kill checks re
   } else {
     let scans = 0;
     const result = await cleanupRecordedProcesses(records, { exec: execute, snapshot: async () => { scans++; return rows; } });
-    assert.equal(scans, records.length);
+    assert.equal(scans, 1);
     assert.equal(result.filter((r) => r.exitCode === 0).length, 3);
     assert.equal(result.filter((r) => r.skipped).length, 6);
   }
@@ -436,21 +438,27 @@ test("T-TURN pre-aborted rehearsal stops before filesystem setup", async () => {
 });
 
 for (const scenario of ["success", "hang", "amend"]) test(`T-TURN driver --fake ${scenario}: envelope grants and writer boundary`, { timeout: 180000 }, async (t) => {
-  const out = temp(t), e = await runRehearsal({ mode: "fake", out, scenario, calibrate: false });
+  const out = temp(t), e = await runRehearsal({ mode: "fake", out, scenario, calibrate: false, fakeSeams: scenario === "hang" ? { supervisor: { treeKill: killSingleAuthorFixture } } : {} });
   assert.equal(e.hubClosed, true); assert.ok(e.pidChecks.length > 0 && e.pidChecks.every((p) => p.gone));
   assert.equal(e.admin.mode, "BUILD_SAFE"); assert.equal(e.admin.label, "throwaway admin path");
   assert.equal(e.billingDeclaration.source, "test:fixture"); assert.match(e.ownerSession, /PASS_SIMULATED/);
-  assert.equal(e.configuration.maxDurationMin, 180); assert.equal(e.spec.authorLimits.turnTimeoutMin, 45);
+  assert.equal(e.outcome.limits.maxDurationMin, 180); assert.equal(e.outcome.limits.maxAttemptsPerStage, 1);
+  assert.equal(Date.parse(e.deadline_at) - Date.parse(e.outcome.startedAt), 180 * 60000);
+  assert.ok(Date.parse(e.expiresAt) >= Date.parse(e.deadline_at));
+  assert.equal(fs.existsSync(e.parent), false, "automatic fake parent removed");
+  assert.equal(fs.existsSync(e.isolation.dataDir), false, "fake Hub data removed"); assert.equal(e.spec.authorLimits.turnTimeoutMin, 45);
   assert.deepEqual(e.grants.map((g) => [g.provider, g.access, g.maxAttempts, g.maxDurationS]).sort(), [["claude", "read-only", 5, 7200], ["codex", "workspace-write", 5, 7200]]);
   for (const g of e.grants) assert.ok(g.binding.bindingHash && g.binding.missionId && g.binding.model);
   assert.equal(e.dispatches.filter((r) => ["IMPLEMENTING", "REPAIRING"].includes(r.stage)).length, 0);
   assert.equal(e.runs.filter((r) => r.access === "workspace-write").length, 0); assert.equal(e.writerStarted, false);
   const authors = e.dispatches.filter((d) => d.stage === "TEST_AUTHORING");
   assert.equal(authors.length, scenario === "amend" ? 2 : 1);
-  for (const d of authors) { assert.equal(JSON.parse(d.request_json).turnTimeoutSource, "authorLimits"); assert.equal(JSON.parse(d.request_json).turnTimeoutMin, 45); }
+  for (const d of authors) { assert.equal(JSON.parse(d.request_json).turnTimeoutSource, "authorLimits"); assert.equal(JSON.parse(d.request_json).turnTimeoutMin, 45); assert.equal(JSON.parse(d.request_json).maxOutputTokens, 64000); }
   if (scenario === "hang") {
     assert.equal(e.classification, "TECHNICAL_STOP"); assert.equal(e.runs[0].error_category, "turn_timeout"); assert.equal(e.boundaryHits.length, 0);
   } else {
+    assert.deepEqual(e.dispatches.map((d) => [d.stage, JSON.parse(d.request_json).cycle, d.status]),
+      (scenario === "amend" ? [0, 1] : [0]).flatMap((cycle) => [["TEST_AUTHORING", cycle, "DONE"], ["TEST_REVIEW", cycle, "DONE"]]));
     assert.equal(e.classification, "INTENTIONAL_STOP_BEFORE_WRITER"); assert.equal(e.boundaryHits.length, 1);
     assert.equal(e.outcome.stageReason, "REHEARSAL_INTENTIONAL_STOP_BEFORE_WRITER");
     assert.equal(e.authoring.status, "PROTECTED"); assert.equal(e.baselineGate.length, 1); assert.equal(e.baselineGate[0].result, null);

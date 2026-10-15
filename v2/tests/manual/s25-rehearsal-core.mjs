@@ -2,7 +2,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import crypto from "node:crypto";
-import { HUB_ROOT, declareBillingFixture, enrolOwner, waitFor } from "../helpers.mjs";
+import { HUB_ROOT, declareBillingFixture, enrolOwner, waitFor } from "./s25-rehearsal-support.mjs";
 import { createClaudeAdapter } from "../../server/providers/claude.mjs";
 import { createCodexAdapter } from "../../server/providers/codex.mjs";
 import { createSupervisor } from "../../server/runtime/supervisor.mjs";
@@ -14,15 +14,73 @@ import { codexDeniedEntries, denyListFingerprint, CODEX_ACL_CONSENT_TEXT } from 
 import { s25Context } from "./s25-context.mjs";
 import { makeRehearsalHub } from "./s25-rehearsal-hub.mjs";
 import { calibrateS25 } from "./s25-calibrate.mjs";
-import { STOP, CONSENT_PROVENANCE, checkLayout, physicalPath, exportManifest, verifyManifest, within, classifyDenyEntries, aclDiff, snapshotAcls, digest } from "./s25-parity-safety.mjs";
-import { windowsProcessSnapshot, compareProcessIdentity } from "./s25-process-identity.mjs";
-import { binaryIdentity, recipes, layoutIsolation, assertHeadroom, runnerPreflight } from "./s25-real-preflight.mjs";
-import { recordedProcessTree, windowsProcesses, recordedSurvivors, cleanupRecordedProcesses, emergencyKillRecorded } from "./s25-isolated-rehearsal.mjs";
+import { STOP, CONSENT_PROVENANCE, checkLayout, physicalPath, exportManifest, verifyManifest, within, aclDiff, snapshotAcls, digest } from "./s25-parity-safety.mjs";
+import { compareProcessIdentity } from "./s25-process-identity.mjs";
+import { binaryIdentity, recipes, layoutIsolation, assertHeadroom, runnerPreflight, rehearsalClaudeLauncher, liveClaudeDenyRules, assertDenyClassification, assertAclDiff } from "./s25-real-preflight.mjs";
+import { trackSupervisedProcess, recordedProcessTree, windowsProcesses, recordedSurvivors, cleanupRecordedProcesses, emergencyKillRecorded } from "./s25-isolated-rehearsal.mjs";
 
 const stamp = () => new Date().toISOString();
 const jsonFile = (file, value) => fs.writeFileSync(file, JSON.stringify(value, null, 2) + "\n", { flag: "wx" });
 const copy = (value) => JSON.parse(JSON.stringify(value));
 export const technicalResult = (result) => result?.status === "BLOCKED" || /timeout|transport|rate.?limit|overage|quota|credit|billing|permission|EACCES|EPERM|access.denied|spawn/i.test(`${result?.errorCategory || ""} ${result?.error || ""} ${result?.reason || ""}`);
+
+// Candidate execution timeouts are FAIL evidence for production proof/amend, not route failures.
+export const runnerTechnicalResult = (result) => result?.status === "BLOCKED" ||
+  (result?.reason !== "timeout" && technicalResult(result));
+
+export function assertRealPreloadAbsent() {
+  if (globalThis[Symbol.for("s25.fake.gitGuard")]) throw new Error("Real mode refuses s25-test-guard preload");
+}
+
+export function installEmergencyCleanup(records, { kill = emergencyKillRecorded, report = () => {} } = {}) {
+  const emergencyKill = () => { const outcomes = kill(records); report(outcomes); };
+  process.on("exit", emergencyKill);
+  return () => process.removeListener("exit", emergencyKill);
+}
+
+// Both real rehearsals and fake-binary tests call this exact composition function.
+export function wireRehearsalRuntime({ h, config, evidence, ready, beforeTurn, onEvent, forceWrite = false, supervisorOptions = {} }) {
+  const shared = createSupervisor({ config, onEvent, ...supervisorOptions });
+  Object.assign(h.hub.supervisor, shared);
+  const salt = crypto.randomBytes(32).toString("hex");
+  const author = createClaudeAdapter({ config, supervisor: h.hub.supervisor, homeDir: h.homeDir,
+    launcher: rehearsalClaudeLauncher({ config, homeDir: h.homeDir }), identitySalt: () => salt });
+  Object.assign(h.hub.providers.claude, observeAdapter(() => author, { provider: "claude", evidence, ready, beforeTurn }));
+  Object.assign(h.hub.providers.codex, createRehearsalCodex({ config, supervisor: h.hub.supervisor, homeDir: h.homeDir,
+    identitySalt: salt, evidence, ready, beforeTurn, forceWrite }));
+  const runner = createFactoryRunner({ config, supervisor: h.hub.supervisor, settings: h.hub.settings,
+    providerState: h.hub.providerState, codexIsolation: h.hub.codexIsolation, homeDir: h.homeDir });
+  Object.assign(h.hub.factoryRunner, { run: runner.run, readiness: (project) => ({ ...runner.readiness(project), route: "windows" }), stop: runner.stop });
+  evidence.wiring = { sharedSupervisor: true, supervisorTestMode: config.testMode, injectedSupervisor: Object.keys(supervisorOptions), runner: "production createFactoryRunner",
+    adapter: "production createCodexAdapter", claudeLiveDenyRules: liveClaudeDenyRules() };
+}
+
+export function rehearsalAuthority({ missionId, evidence, getFailure, preflightOnly, gateBeforeDispatch, delegate }) {
+  return (mid, step) => {
+    if (mid === missionId && ["TEST_AUTHORING", "TEST_REVIEW", "IMPLEMENTING", "REPAIRING"].includes(step.stage)
+        && (getFailure() || evidence.terminalTechnical)) return { reason: "REHEARSAL_TECHNICAL_STOP" };
+    if (mid === missionId && ["IMPLEMENTING", "REPAIRING"].includes(step.stage)) {
+      evidence.boundaryHits.push({ at: stamp(), ...step }); return { reason: STOP };
+    }
+    if (mid === missionId && step.stage === "TEST_AUTHORING") gateBeforeDispatch();
+    if (mid === missionId && preflightOnly && ["TEST_AUTHORING", "TEST_REVIEW"].includes(step.stage)) return { reason: "REHEARSAL_PREFLIGHT_ONLY_COMPLETE" };
+    return delegate(mid, step);
+  };
+}
+
+export function calibrationGate(calibration) {
+  const correct = calibration?.matrix?.filter((r) => r.name === "CORRECT") || [];
+  const variants = calibration?.matrix?.filter((r) => r.name !== "CORRECT") || [];
+  const assertion = (r) => r.verdict === "ASSERTION_REJECTION" && r.errors?.length > 0 && r.errors.every((x) => x.errorClass === "ERR_ASSERTION");
+  return correct.length === 1 && correct[0].verdict === "PASS" && calibration.proof?.verdict === "PROVEN"
+    && calibration.originalRuns?.length === 2 && calibration.originalRuns.every(assertion)
+    && variants.length === 41 && new Set(variants.map((r) => r.name)).size === 41 && variants.every(assertion);
+}
+export function rehearsalGate(e) {
+  const final = e.candidates.find((c) => c.sha === e.authoring?.candidate?.sha && c.cycle === e.authoring?.candidate?.cycle);
+  return e.classification === "INTENTIONAL_STOP_BEFORE_WRITER" && Boolean(final && calibrationGate(final.calibration))
+    && e.candidates.every((c) => c.noValidCheckLost);
+}
 
 // The only adapter intervention is observation and a fail-closed read-only boundary BEFORE inference.
 export function observeAdapter(getAdapter, { provider, evidence, ready = () => true, forceWrite = false, onProbe = () => {}, beforeTurn = () => {} }) {
@@ -53,7 +111,11 @@ export function observeAdapter(getAdapter, { provider, evidence, ready = () => t
         evidence.declinedApprovals.push({ runId: options.runId, at: stamp(), decision, source: "production envelope approval path" });
         return decision;
       } });
-      return { ...handle, done: handle.done.then((result) => {
+      return { ...handle, interrupt: async (...args) => {
+        const result = await handle.interrupt(...args);
+        (evidence.killOutcomes ||= []).push({ at: stamp(), provider, runId: options.runId, kind: "adapter.interrupt", result });
+        return result;
+      }, done: handle.done.then((result) => {
         record.result = result;
         if (technicalResult(result)) evidence.terminalTechnical = { at: stamp(), provider, runId: options.runId, result };
         return result;
@@ -63,10 +125,10 @@ export function observeAdapter(getAdapter, { provider, evidence, ready = () => t
 }
 
 export function createRehearsalCodex({ config, supervisor, homeDir, identitySalt, codexAdapterFactory = createCodexAdapter,
-  evidence = { writerGuardHits: [], adapterTurns: [], declinedApprovals: [] }, onProbe = () => {} } = {}) {
+  evidence = { writerGuardHits: [], adapterTurns: [], declinedApprovals: [] }, onProbe = () => {}, ready, beforeTurn, forceWrite } = {}) {
   let adapter;
   return observeAdapter(() => adapter ||= codexAdapterFactory({ config, supervisor, homeDir, identitySalt: () => identitySalt }),
-    { provider: "codex", evidence, onProbe });
+    { provider: "codex", evidence, onProbe, ready, beforeTurn, forceWrite });
 }
 
 export async function probeRehearsalProviders({ providers, providerState, mode, evidence, signal }) {
@@ -97,7 +159,7 @@ export function classifyRehearsal(e) {
   if (e.writerGuardHits?.length || e.writerStarted || e.dispatches?.some((r) => ["IMPLEMENTING", "REPAIRING"].includes(r.stage)) || e.runs?.some((r) => r.access === "workspace-write")) return "DEFECT_WRITER_REACHED";
   const technical = e.error || e.terminalTechnical || e.cleanupErrors?.length || e.runs?.some((r) => ["turn_timeout", "transport", "rate_limit", "quota", "overage", "billing", "gate"].includes(r.error_category))
     || e.adapterTurns?.some((t) => /rate.?limit|overage|quota|credit|transport/i.test(`${t.result?.errorCategory || ""} ${t.result?.error || ""}`))
-    || e.runnerResults?.some((r) => r.result.status === "BLOCKED" || r.result.reason === "timeout")
+    || e.runnerResults?.some((r) => runnerTechnicalResult(r.result))
     || ["BLOCKED", "PAUSED"].includes(e.outcome?.stage) || /Limita de timp|deadline/i.test(e.outcome?.stageReason || "");
   if (technical) return "TECHNICAL_STOP";
   if (e.preflightOnly && e.preflight?.passedAt && !e.adapterTurns?.length && !e.dispatches?.length) return "PREFLIGHT_ONLY_PASSED";
@@ -111,11 +173,19 @@ export function classifyRehearsal(e) {
 }
 
 export async function runRehearsal({ mode = "fake", out, parent, scenario = "success", fakeTurnMs = 8000, commit, manifestSha256,
-  isolationConsent, homeAclChangeApproved, claudeHeadroomChecked, signal, realProcesses = [], calibrate = true, preflightOnly = false } = {}) {
+  isolationConsent, homeAclChangeApproved, claudeHeadroomChecked, signal, realProcesses = [], calibrate = true, preflightOnly = false, fakeSeams = {} } = {}) {
   signal?.throwIfAborted();
   if (!["fake", "real"].includes(mode)) throw new Error("mode must be fake or real");
-  if (mode === "real" && (scenario !== "success" || calibrate !== true)) throw new Error("Real mode forbids scenario overrides or skipped calibration");
-  if (!parent && mode === "fake") parent = fs.mkdtempSync(path.join(os.tmpdir(), "s25-parity-"));
+  if (mode === "real" && (scenario !== "success" || calibrate !== true || Object.keys(fakeSeams).length)) throw new Error("Real mode forbids scenario overrides or skipped calibration");
+  if (mode === "real") assertRealPreloadAbsent();
+  if (mode === "fake") await import("./s25-test-guard.mjs");
+  if (out && fs.existsSync(path.resolve(out)) && fs.readdirSync(path.resolve(out)).length) throw new Error("Evidence directory must be empty");
+  const autoParent = !parent && mode === "fake";
+  if (autoParent) {
+    const base = path.join(HUB_ROOT, ".ifrim", "tmp"); fs.mkdirSync(base, { recursive: true });
+    parent = fs.mkdtempSync(path.join(base, "s25-parity-"));
+    out ||= path.join(HUB_ROOT, ".ifrim", "s25-evidence", path.basename(parent));
+  }
   if (!parent) throw new Error("--parent is required");
   parent = path.resolve(parent); out = path.resolve(out || path.join(parent, "evidence"));
   const projectDir = path.join(parent, "booking");
@@ -133,26 +203,28 @@ export async function runRehearsal({ mode = "fake", out, parent, scenario = "suc
     stream: [], preflight: {}, configuration: { author: { model: "sonnet", effort: "medium", access: "read-only", maxOutputTokens: 64000, turnTimeoutMin: 45 },
       reviewer: { model: "gpt-6.1-sol", effort: "medium", access: "read-only" }, maxAttemptsPerStage: 1, reauthorMax: 1, maxDurationMin: 180,
       deadlineSource: "coordinator decision: live test-first plan 180 min", runnerTimeoutMs: 180000, waitLimitMin: 185 } };
-  let h, missionId, timer, failure, realConfig, acl, baselineProcesses = [], processTimer, scanPending, pendingTick, preflightPassed = false;
+  let h, missionId, timer, failure, realConfig, acl, baselineProcesses = [], scanPending, pendingTick, preflightPassed = false;
   e.realProcessCleanup = { records: realProcesses, survivors: [], verified: false };
   const scan = async () => {
     if (scanPending) return scanPending;
     scanPending = (async () => {
       const rows = await windowsProcesses();
       recordedProcessTree(realProcesses, rows);
-      for (const row of rows.filter((r) => /^CodexSandbox/i.test(r.owner || ""))) {
-        if (!baselineProcesses.some((p) => p.pid === row.pid && p.creationDate === row.creationDate)
-            && !realProcesses.some((p) => p.pid === row.pid && p.creationDate === row.creationDate)) {
-          (e.unattributedSandboxProcesses ||= []).push(row);
-          throw new Error(`Unattributed new sandbox-user process ${row.pid}; cannot safely claim ownership or kill it`);
-        }
-      }
+      e.processScans.push({ at: stamp(), total: rows.length, owned: realProcesses.length });
       return rows;
     })().finally(() => { scanPending = null; });
     return scanPending;
   };
-  const emergencyKill = () => emergencyKillRecorded(realProcesses);
-  if (mode === "real") process.on("exit", emergencyKill);
+  e.processScans = [];
+  const removeEmergency = mode === "real" ? installEmergencyCleanup(realProcesses, { report: (outcomes) => {
+    fs.writeFileSync(path.join(out, "emergency-kill.json"), JSON.stringify({ at: stamp(), outcomes }));
+  } }) : () => {};
+  let lastScan = 0;
+  const phaseScan = async () => {
+    if (mode !== "real" || Date.now() - lastScan < 30000) return;
+    lastScan = Date.now();
+    try { await scan(); } catch (error) { (e.processScanErrors ||= []).push({ at: stamp(), message: error.message }); }
+  };
   function authoring() {
     if (!missionId) return null;
     const row = h?.hub.db.prepare("SELECT protected_json FROM factory_specs WHERE mission_id = ? ORDER BY version DESC LIMIT 1").get(missionId);
@@ -214,21 +286,20 @@ export async function runRehearsal({ mode = "fake", out, parent, scenario = "suc
     if (mode === "real") {
       // P10 begins before probes/P7, so short-lived and sandbox-account roots are covered too.
       baselineProcesses = await windowsProcesses(); e.processBaseline = baselineProcesses;
-      e.processOwnerCoverage = { queried: baselineProcesses.length, unavailable: baselineProcesses.filter((r) => r.ownerQueryCode !== 0).map((r) => ({ pid: r.pid, code: r.ownerQueryCode })) };
-      // PID 0 (Idle) and PID 4 (System) cannot be sandbox-account processes. All other unknown owners fail closed.
-      if (e.processOwnerCoverage.unavailable.some((r) => ![0, 4].includes(r.pid))) throw new Error(`P10 process owner metadata refused: ${JSON.stringify(e.processOwnerCoverage.unavailable)}`);
-      const shared = createSupervisor({ config: { testMode: false }, onEvent: recordProcess });
-      Object.assign(h.hub.supervisor, shared);
-      realConfig = { ...h.config, testMode: false, providerBinaries: {}, hubRoot: HUB_ROOT };
-      const salt = crypto.randomBytes(32).toString("hex");
-      Object.assign(h.hub.providers.claude, createClaudeAdapter({ config: realConfig, supervisor: h.hub.supervisor, homeDir: os.homedir(), identitySalt: () => salt }));
-      Object.assign(h.hub.providers.codex, createCodexAdapter({ config: realConfig, supervisor: h.hub.supervisor, homeDir: os.homedir(), identitySalt: () => salt }));
-      const runner = createFactoryRunner({ config: realConfig, supervisor: h.hub.supervisor, settings: h.hub.settings, providerState: h.hub.providerState, codexIsolation: h.hub.codexIsolation, homeDir: os.homedir() });
-      h.hub.factoryRunner.run = runner.run;
-      h.hub.factoryRunner.readiness = (project) => ({ ...runner.readiness(project), route: "windows" });
-      h.hub.factoryRunner.stop = runner.stop;
-      e.binaryBefore = binaryIdentity(realConfig);
-      processTimer = setInterval(() => scan().catch((error) => { failure ||= error; e.error = { message: error.message }; }), 1000);
+    }
+    realConfig = { ...h.config, testMode: false, ...(mode === "real" ? { providerBinaries: {}, hubRoot: HUB_ROOT } : {}) };
+    wireRehearsalRuntime({ h, config: realConfig, evidence: e, onEvent: recordProcess,
+      ready: () => preflightPassed && !e.terminalTechnical && !failure,
+      supervisorOptions: mode === "fake" ? fakeSeams.supervisor : undefined,
+      beforeTurn: () => { captureCandidate(); void phaseScan(); }, forceWrite: mode === "fake" && scenario === "review-write" });
+    if (mode === "real") e.binaryBefore = binaryIdentity(realConfig);
+    for (const method of ["stop", "stopAll", "close"]) {
+      const original = h.hub.supervisor[method];
+      h.hub.supervisor[method] = async (...args) => {
+        const result = await original(...args);
+        (e.killOutcomes ||= []).push({ at: stamp(), kind: `supervisor.${method}`, key: args[0] || null, result });
+        return result;
+      };
     }
     const start = h.hub.supervisor.start;
     h.hub.supervisor.start = (options) => {
@@ -236,7 +307,7 @@ export async function runRehearsal({ mode = "fake", out, parent, scenario = "suc
       const assertions = args.includes("app-server") ? { roProfile: args.includes('default_permissions="ifrim_hub_ro"') }
         : args.includes("sandbox") ? { rwProfile: args.includes('default_permissions="ifrim_hub_rw"'), dedicatedWorkspace: within(parent, options.cwd) }
         : options.label === "claude -p" ? { tools: value("--tools") === "Read,Glob,Grep", permissionMode: value("--permission-mode") === "dontAsk",
-          output64000: options.env?.CLAUDE_CODE_MAX_OUTPUT_TOKENS === "64000" } : {};
+          output64000: options.env?.CLAUDE_CODE_MAX_OUTPUT_TOKENS === "64000", livePrivateReadDenied: liveClaudeDenyRules().every((rule) => args.includes(rule)) } : {};
       (e.launchAssertions ||= []).push({ at: stamp(), key: options.key, executable: options.executable, cwd: options.cwd, assertions });
       if (Object.values(assertions).some((ok) => !ok)) throw new Error("Effective provider launch differs from preflight recipe");
       const startRequestedAt = stamp(), stdout = options.onStdoutLine;
@@ -247,40 +318,42 @@ export async function runRehearsal({ mode = "fake", out, parent, scenario = "suc
           if (["assistant", "result", "system"].includes(m.type) || m.event?.type === "message_start" || m.event?.type === "message_delta")
             e.stream.push({ key: options.key, at: stamp(), type: m.type, subtype: m.subtype || null, attempt: m.attempt || null, retryDelayMs: m.retry_delay_ms || null,
               stop_reason: msg?.stop_reason ?? m.event?.delta?.stop_reason ?? m.stop_reason ?? "nedemonstrat", usage: msg?.usage ?? m.event?.usage ?? m.usage ?? "nedemonstrat" });
-          if (m.result?.thread) e.stream.push({ key: options.key, at: stamp(), thread: { id: m.result.thread.id, model: m.result.thread.model,
-            reasoningEffort: m.result.thread.reasoningEffort, sandbox: m.result.thread.sandbox, approvalsReviewer: m.result.thread.approvalsReviewer ?? "nedemonstrat" } });
+          if (m.result?.thread) e.stream.push({ key: options.key, at: stamp(), thread: { id: m.result.thread.id, nativeSessionId: m.result.thread.id, model: m.result.model,
+            reasoningEffort: m.result.reasoningEffort, sandbox: m.result.sandbox, approvalsReviewer: m.result.approvalsReviewer ?? "nedemonstrat" } });
+          if (m.id !== undefined && m.method) (e.serverRequests ||= []).push({ key: options.key, at: stamp(), id: m.id, method: m.method,
+            source: "app-server request; response recorded on stdin" });
         } catch { /* non-JSON CLI line */ }
         stdout?.(line);
       } });
       if (record.pid) {
-        const row = { pid: record.pid, key: record.key, root: true, startRequestedAt, startedAt: stamp(), exitedAt: null };
-        realProcesses.push(row);
-        record.exit.then(() => { row.exitedAt = stamp(); });
-        if (mode === "real") {
-          const snapshot = windowsProcessSnapshot([row.pid]), identity = snapshot.rows.find((p) => p.pid === row.pid);
-          if (identity) { row.creationDate = identity.creationDate; row.startTimeSource = "Win32_Process.CreationDate"; }
-          else { row.identityError = snapshot.error || "Process exited before OS identity capture"; failure ||= new Error(row.identityError); }
-        }
+        // Capture shared supervisor fields only; no synchronous WMI/launch identity query.
+        trackSupervisedProcess(realProcesses, record, startRequestedAt);
+        const write = record.child.stdin.write.bind(record.child.stdin);
+        record.child.stdin.write = (chunk, ...args) => {
+          try {
+            const reply = JSON.parse(String(chunk)), request = e.serverRequests?.find((r) => r.key === options.key && r.id === reply.id);
+            if (request && !reply.method) request.response = { result: reply.result, error: reply.error };
+          } catch { /* partial protocol line */ }
+          return write(chunk, ...args);
+        };
       }
       return record;
     };
-    for (const provider of ["claude", "codex"]) {
-      const original = { ...h.hub.providers[provider] };
-      Object.assign(h.hub.providers[provider], observeAdapter(() => original, { provider, evidence: e, ready: () => preflightPassed && !e.terminalTechnical && !failure,
-        forceWrite: mode === "fake" && scenario === "review-write" && provider === "codex", beforeTurn: captureCandidate }));
-    }
-    const runProof = h.hub.factoryRunner.run;
+    const runProof = mode === "fake" && fakeSeams.runner ? fakeSeams.runner(h.hub.factoryRunner.run) : h.hub.factoryRunner.run;
     h.hub.factoryRunner.run = async (options) => {
       captureCandidate();
+      await phaseScan();
       const result = failure || e.terminalTechnical
-        ? { status: "BLOCKED", reason: "REHEARSAL_TECHNICAL_STOP: no subsequent runner launch", counts: {}, outputTail: "", exitCode: null }
+        ? { status: "BLOCKED", reason: "REHEARSAL_TECHNICAL_STOP: no subsequent runner launch", runner: "codex-sandbox", isolation: "not launched",
+          command: options.command, durationMs: 0, counts: {}, failures: [], cases: [], outputTail: "", exitCode: null }
         : await runProof(options);
       e.runnerResults.push({ at: stamp(), key: options.key, command: options.command, result });
-      if (technicalResult(result)) e.terminalTechnical = { at: stamp(), key: options.key, result };
+      if (runnerTechnicalResult(result)) e.terminalTechnical = { at: stamp(), key: options.key, result };
       return result;
     };
     if (mode === "fake" && scenario === "hang") { h.hub.factory.setTurnTimeScaleForTests(fakeTurnMs / (45 * 60000)); e.isolation.turnTimeScale = fakeTurnMs / (45 * 60000); }
     await probeRehearsalProviders({ providers: h.hub.providers, providerState: h.hub.providerState, mode, evidence: e, signal });
+    await phaseScan();
     if (mode === "real") {
       e.recipes = recipes({ config: realConfig, homeDir: h.homeDir, projectDir, mcpServerNames: e.probes.codex.probe.config.realtime.mcpServerNames });
       e.headroom = assertHeadroom(e.probes, claudeHeadroomChecked);
@@ -290,12 +363,10 @@ export async function runRehearsal({ mode = "fake", out, parent, scenario = "suc
     } else {
       e.denyList = { ...h.hub.codexIsolation(), label: "PASS_SIMULATED: fake home; no ACL operation" };
       if (scenario === "deny-other") {
-        e.denyList.classification = classifyDenyEntries([path.join(parent, "..", "other-project")], { parent });
-        throw new Error("P4 deny entry outside dedicated/consented paths");
+        assertDenyClassification([path.join(parent, "..", "other-project")], { parent }, e);
       }
       if (scenario === "acl-outside") {
-        e.aclPreflightDiff = aclDiff([{ path: "C:/outside", exists: true, aces: [] }], [{ path: "C:/outside", exists: true, aces: ["CodexSandboxUsers:(DENY)(R)"] }], { allowed: [{ path: parent, recursive: true }] });
-        throw new Error("P8 ACL changed outside allowed paths (PASS_SIMULATED injection)");
+        assertAclDiff([{ path: "C:/outside", exists: true, aces: [] }], [{ path: "C:/outside", exists: true, aces: ["CodexSandboxUsers:(DENY)(R)"] }], { allowed: [{ path: parent, recursive: true }] }, e);
       }
     }
     console.log(`S25 deny-list fingerprint: ${e.denyList.fingerprint}`);
@@ -360,13 +431,8 @@ export async function runRehearsal({ mode = "fake", out, parent, scenario = "suc
       }
       preflightPassed = true; e.preflight.passedAt = stamp();
     }
-    const authority = (mid, step) => {
-      if (mid === missionId && (failure || e.terminalTechnical)) return { reason: `REHEARSAL_TECHNICAL_STOP: ${failure?.message || e.terminalTechnical.result?.error || e.terminalTechnical.result?.reason}` };
-      if (mid === missionId && ["IMPLEMENTING", "REPAIRING"].includes(step.stage)) { e.boundaryHits.push({ at: stamp(), ...step }); return { reason: STOP }; }
-      if (mid === missionId && step.stage === "TEST_AUTHORING" && !preflightPassed) gateBeforeDispatch();
-      if (mid === missionId && preflightOnly && ["TEST_AUTHORING", "TEST_REVIEW"].includes(step.stage)) return { reason: "REHEARSAL_PREFLIGHT_ONLY_COMPLETE" };
-      return h.hub.envelopes.authorityFor(mid, step);
-    };
+    const authority = rehearsalAuthority({ missionId, evidence: e, getFailure: () => failure, preflightOnly,
+      gateBeforeDispatch, delegate: (mid, step) => h.hub.envelopes.authorityFor(mid, step) });
     // confirm starts background work synchronously; install BEFORE confirm, repeat immediately after for the requested boundary.
     h.hub.factory.attachAuthority(authority);
     await dispatch("envelope.confirm", { envelopeId: env.id, nonce: env.nonce, displayedHash: env.envelopeHash }, { ownerSession: owner.session });
@@ -384,7 +450,7 @@ export async function runRehearsal({ mode = "fake", out, parent, scenario = "suc
     failure = error; e.error = { message: error.message, stack: error.stack };
     if (h && missionId) { try { captureOutcome(); } catch (captureError) { e.captureError = captureError.message; } }
   } finally {
-    clearInterval(timer); clearInterval(processTimer); await pendingTick;
+    clearInterval(timer); await pendingTick; await scanPending;
     const cleanup = async (step, fn) => { try { return await fn(); } catch (error) { failure ||= error; (e.cleanupErrors ||= []).push({ step, message: error.message }); } };
     if (mode === "real" && h) await cleanup("process scan", scan);
     if (h) {
@@ -400,11 +466,11 @@ export async function runRehearsal({ mode = "fake", out, parent, scenario = "suc
     }
     if (mode === "real" && h) {
       await cleanup("CreationDate cleanup", async () => {
-        await scan(); e.realProcessCleanup.taskkill = await cleanupRecordedProcesses(realProcesses, { snapshot: scan });
-        e.realProcessCleanup.survivors = recordedSurvivors(realProcesses, await scan());
+        e.realProcessCleanup.taskkill = await cleanupRecordedProcesses(realProcesses, { snapshot: scan });
+        const snapshot = { rows: await scan(), error: null };
+        e.realProcessCleanup.survivors = recordedSurvivors(realProcesses, snapshot.rows);
         if (e.realProcessCleanup.survivors.length) throw new Error("Recorded processes survived (including sandbox-account processes)");
-        const snapshot = windowsProcessSnapshot(realProcesses.map((r) => r.pid));
-        e.realProcessCleanup.identities = realProcesses.map((r) => ({ pid: r.pid, ...compareProcessIdentity({ ...r, startTimeSource: r.creationDate ? "Win32_Process.CreationDate" : null }, snapshot) }));
+        e.realProcessCleanup.identities = realProcesses.map((r) => ({ pid: r.pid, ...(r.exitedAt ? { gone: true, source: "shared supervisor observed exit" } : compareProcessIdentity({ ...r, startTimeSource: r.creationDate ? "Win32_Process.CreationDate" : null }, snapshot)) }));
         if (e.realProcessCleanup.identities.some((r) => !r.gone)) throw new Error("OS process identity/exit could not be verified");
         e.realProcessCleanup.verified = true;
       });
@@ -418,23 +484,33 @@ export async function runRehearsal({ mode = "fake", out, parent, scenario = "suc
         if (!e.binaryUnchanged) throw new Error("Codex binary changed during rehearsal; stop, never relaunch");
       });
     }
-    if (mode === "real" && e.realProcessCleanup.verified) process.removeListener("exit", emergencyKill);
+    if (mode === "real" && e.realProcessCleanup.verified) removeEmergency();
     // After Hub shutdown, independently calibrate every materialized candidate, including rejected ones.
     // Temporary environment redirection keeps the unmodified part-A calibrator's scratch inside evidence.
     for (const c of e.candidates) {
       if (!calibrate) { c.calibration = "NOT_RUN: explicit fake test option"; continue; }
-      await cleanup(`calibration ${c.file}`, async () => {
+      try {
         const prior = { TEMP: process.env.TEMP, TMP: process.env.TMP };
         try {
           process.env.TEMP = out; process.env.TMP = out;
-          c.calibration = await calibrateS25({ candidate: path.join(out, c.file), manifest: c.manifest });
+          c.calibration = await (mode === "fake" && fakeSeams.calibrate || calibrateS25)({ candidate: path.join(out, c.file), manifest: c.manifest });
           jsonFile(path.join(out, `${c.file}.calibration.json`), c.calibration);
         } finally { for (const [key, value] of Object.entries(prior)) { if (value === undefined) delete process.env[key]; else process.env[key] = value; } }
-      });
+      } catch (error) { c.calibrationError = { message: error.message }; }
+      c.calibrationGate = calibrationGate(c.calibration);
+      c.correctionProbes = c.calibration?.correctionProbes || null;
     }
+    if (mode === "fake" && h?.dataDir) await cleanup("remove fake Hub data", async () => {
+      if (!within(path.join(HUB_ROOT, ".ifrim", "tmp"), h.dataDir) || !path.basename(h.dataDir).startsWith("s25-parity-")) throw new Error("Unsafe fake data cleanup target");
+      fs.rmSync(h.dataDir, { recursive: true, force: true, maxRetries: 5 });
+    });
+    if (autoParent) await cleanup("remove automatic fake parent", async () => {
+      if (!within(path.join(HUB_ROOT, ".ifrim", "tmp"), parent) || within(parent, out)) throw new Error("Unsafe automatic parent cleanup target");
+      fs.rmSync(parent, { recursive: true, force: true, maxRetries: 5 });
+    });
     if (!e.stream.length) e.stopReasonEvidence = "nedemonstrat: no per-message stop_reason/usage exposed";
     e.finishedAt = stamp(); e.classification = classifyRehearsal(e);
-    e.rehearsalGate = e.classification === "INTENTIONAL_STOP_BEFORE_WRITER" && e.candidates.length > 0 && e.candidates.every((c) => c.calibration?.ok && c.noValidCheckLost);
+    e.rehearsalGate = rehearsalGate(e);
     jsonFile(path.join(out, "evidence.json"), e);
   }
   if (failure) throw Object.assign(failure, { evidence: e });

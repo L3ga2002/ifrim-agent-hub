@@ -7,6 +7,14 @@ import { runRehearsal } from "./s25-rehearsal-core.mjs";
 export { runRehearsal, createRehearsalCodex, probeRehearsalProviders } from "./s25-rehearsal-core.mjs";
 export { S25_WORDS } from "./s25-context.mjs";
 const exec = promisify(execFile);
+export function trackSupervisedProcess(records, record, requestedAt) {
+  const row = { pid: record.pid, key: record.key, root: true, startRequestedAt: record.startRequestedAt || requestedAt,
+    startedAt: record.startedAt || new Date().toISOString(), creationDate: record.creationDate || null, exitedAt: record.exitedAt || null };
+  Object.defineProperty(row, "supervisorRecord", { value: record }); // exclude child handles from JSON evidence
+  records.push(row);
+  record.exit.then(() => { row.exitedAt = record.exitedAt || new Date().toISOString(); });
+  return row;
+}
 // CreationDate is the process identity: a reused PID is never a survivor or a cleanup target.
 export function recordedProcessTree(records, snapshot) {
   const found = [];
@@ -14,13 +22,18 @@ export function recordedProcessTree(records, snapshot) {
     const row = snapshot.find((p) => p.pid === record.pid && (record.creationDate
       ? p.creationDate === record.creationDate
       : Date.parse(p.creationDate) >= Date.parse(record.startRequestedAt) && Date.parse(p.creationDate) <= Date.parse(record.startedAt)));
-    if (row) { record.creationDate = row.creationDate; found.push(row); }
+    if (row) {
+      record.creationDate = row.creationDate;
+      if (record.supervisorRecord) record.supervisorRecord.creationDate = row.creationDate;
+      found.push(row);
+    }
   }
   // Keep recorded ancestors in the chain even when they exited before this snapshot.
   const parents = [...records];
   for (let i = 0; i < parents.length; i++) {
     const record = parents[i];
-    const replacement = snapshot.find((p) => p.pid === record.pid && p.creationDate !== record.creationDate);
+    const replacement = snapshot.find((p) => p.pid === record.pid && (record.creationDate ? p.creationDate !== record.creationDate
+      : Date.parse(p.creationDate) > Date.parse(record.startedAt)));
     const end = record.exitedAt || replacement?.creationDate;
     for (const row of snapshot) {
       if (row.parentPid !== record.pid || found.some((p) => p.pid === row.pid)
@@ -34,12 +47,14 @@ export function recordedProcessTree(records, snapshot) {
   return found;
 }
 
-export async function windowsProcesses() {
-  const { stdout } = await exec("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command",
-    "$ErrorActionPreference = 'Stop'; @(Get-CimInstance Win32_Process | ForEach-Object { $o = Invoke-CimMethod -InputObject $_ -MethodName GetOwner; [pscustomobject]@{ pid = $_.ProcessId; parentPid = $_.ParentProcessId; creationDate = $_.CreationDate.ToUniversalTime().ToString('o'); owner = $o.User; ownerQueryCode = $o.ReturnValue } }) | ConvertTo-Json -Compress"],
-  { windowsHide: true, timeout: 20000 });
+const processSnapshotCommand = "$ErrorActionPreference = 'Stop'; @(Get-CimInstance Win32_Process | Where-Object { $_.CreationDate } | ForEach-Object { [pscustomobject]@{ pid = $_.ProcessId; parentPid = $_.ParentProcessId; creationDate = $_.CreationDate.ToUniversalTime().ToString('o'); name = $_.Name } }) | ConvertTo-Json -Compress";
+const normalizeSnapshot = (stdout) => (String(stdout).trim() ? [].concat(JSON.parse(stdout)) : [])
+  .map((row) => ({ ...row, creationDate: new Date(row.creationDate).toISOString() }));
+export async function windowsProcesses({ execute = exec } = {}) {
+  const { stdout } = await execute("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", processSnapshotCommand],
+    { windowsHide: true, timeout: 10000, maxBuffer: 4 * 1024 * 1024 });
   // Normalize sub-millisecond CIM precision to the JS timestamps recorded before/after spawn.
-  return (stdout.trim() ? [].concat(JSON.parse(stdout)) : []).map((row) => ({ ...row, creationDate: new Date(row.creationDate).toISOString() }));
+  return normalizeSnapshot(stdout);
 }
 
 // Only an already recorded, still-live identity can be a kill target or survivor.
@@ -49,30 +64,49 @@ export function recordedSurvivors(records, snapshot) {
 }
 
 export function emergencyKillRecorded(records, { execSync = execFileSync } = {}) {
+  const results = [];
+  // A crash can happen before the first phase scan. Resolve uncaptured roots by supervisor launch window.
+  if (records.some((r) => !r.creationDate && r.startRequestedAt)) {
+    try {
+      const stdout = execSync("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", processSnapshotCommand],
+        { windowsHide: true, timeout: 10000, encoding: "utf8", maxBuffer: 4 * 1024 * 1024 });
+      recordedProcessTree(records, normalizeSnapshot(stdout));
+    } catch (error) { results.push({ kind: "snapshot", error: error.message }); }
+  }
   for (const record of records) {
-    if (record.exitedAt || !record.creationDate || !Number.isSafeInteger(record.pid) || record.pid <= 0) continue;
+    if (record.exitedAt || !record.creationDate || !Number.isSafeInteger(record.pid) || record.pid <= 0) {
+      results.push({ pid: record.pid, skipped: record.exitedAt ? "supervisor observed exit" : "unverified identity" });
+      continue;
+    }
     try {
       const output = execSync("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command",
         `$p = Get-CimInstance Win32_Process -Filter 'ProcessId=${record.pid}'; if ($p) { $p.CreationDate.ToUniversalTime().ToString('o') }`],
       { windowsHide: true, timeout: 10000, encoding: "utf8" });
       const date = String(output).trim();
-      if (!date || !recordedSurvivors([record], [{ pid: record.pid, creationDate: new Date(date).toISOString() }]).length) continue;
+      if (!date || !recordedSurvivors([record], [{ pid: record.pid, creationDate: new Date(date).toISOString() }]).length) {
+        results.push({ pid: record.pid, skipped: "original identity absent or replaced" }); continue;
+      }
       execSync("taskkill", ["/PID", String(record.pid), "/T", "/F"], { windowsHide: true, timeout: 10000, stdio: "ignore" });
-    } catch { /* Missing/unreadable identity or failed kill: best effort at synchronous exit. */ }
+      results.push({ pid: record.pid, method: "taskkill", ok: true });
+    } catch (error) { results.push({ pid: record.pid, method: "taskkill", ok: false, error: error.message }); }
   }
+  return results;
 }
 
 export async function cleanupRecordedProcesses(records, { exec: execute = exec, snapshot = windowsProcesses } = {}) {
   const results = [];
+  const current = await snapshot();
   for (const record of records) {
-    const current = await snapshot();
     if (!recordedSurvivors([record], current).length) {
       results.push({ pid: record.pid, root: record.root, skipped: "original process absent (CreationDate checked)" });
       continue;
     }
     try {
-      await execute("taskkill", ["/PID", String(record.pid), "/T", "/F"], { windowsHide: true, timeout: 10000 });
-      results.push({ pid: record.pid, root: record.root, exitCode: 0 });
+      // Recheck identity inside the same bounded cleanup command; no full snapshot per PID.
+      const { stdout } = await execute("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command",
+        `$p = Get-CimInstance Win32_Process -Filter 'ProcessId=${record.pid}'; if ($p -and ([DateTimeOffset]$p.CreationDate).ToUnixTimeMilliseconds() -eq ${Date.parse(record.creationDate)}) { & taskkill /PID ${record.pid} /T /F; if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE } }`],
+        { windowsHide: true, timeout: 10000 });
+      results.push({ pid: record.pid, root: record.root, method: "CreationDate-checked taskkill", exitCode: 0, output: stdout || "" });
     } catch (error) { results.push({ pid: record.pid, root: record.root, exitCode: error.code ?? null }); }
   }
   return results;

@@ -7,6 +7,7 @@ import { execFileSync } from "node:child_process";
 export const STOP = "REHEARSAL_INTENTIONAL_STOP_BEFORE_WRITER";
 export const MAIN_HUB = String.raw`C:\Users\mihai\OneDrive\Desktop\Ifrim Digital Proiecte\Ifrim Agent Hub`;
 export const LIVE_DATA = String.raw`C:\Users\mihai\IfrimHub\hub-data`;
+export const LIVE_PRIVATE_PATHS = [...["private", "BACKUPS", "tmp"].map((p) => path.win32.join(MAIN_HUB, ".ifrim", p)), LIVE_DATA];
 export const LIVE_FINGERPRINT = "0b85ddbd40f8b446";
 export const CONSENT_PROVENANCE = Object.freeze({ kind: "AGENT_RECORDED_FROM_OWNER_TEXT",
   liveConsent: "0b85ddbd40f8b446 2026-10-03T18:29:02Z (home entries)",
@@ -160,5 +161,7 @@ export function codexHeadroom(probe) {
   const u = probe?.usage, credits = u?.creditsReported;
   return Boolean(u && !u.error && u.windows?.length && u.windows.every((w) => Number.isFinite(w.usedPercent) && w.usedPercent >= 0 && w.usedPercent < 100)
     && !u.limitReached && !u.spendControlReached && u.ordinaryUsageAllowed !== false
-    && credits && credits.unlimited === false && (credits.hasCredits === false || Number(credits.balance) === 0));
+    && credits && credits.unlimited === false && (credits.hasCredits === false ||
+      ((typeof credits.balance === "number" || typeof credits.balance === "string" && credits.balance.trim() !== "")
+        && Number.isFinite(Number(credits.balance)) && Number(credits.balance) === 0)));
 }
