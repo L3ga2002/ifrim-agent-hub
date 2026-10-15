@@ -1,5 +1,31 @@
 # Open Issues - Ifrim Agent Hub
 
+## 2026-10-15 night — 2.14.16 live; §25 delivered READY and verified; summary/clip criterion citations wrong (live `2.14.16-m11`, contract 13, schema 12; detail: `.ifrim/STAGE_2026-10-15_CORECTII_S25.md` §8–§10)
+
+This section takes precedence over every older one where they overlap. Closed: items 1–4 of the 2026-10-14 evening section (release,
+§25 card, author limits: the live author finished in 92 s; the r-turn hang was the cleanup defect fixed in 2.14.16; the live Hub now runs
+the managed 2.14.16 upgrade `upg_mv9zgbrl`, so the working tree and the live code match).
+
+Open:
+1. **Refresh delivery cites the original spec's criterion ids (medium, owner's decision for the fix).** The summary's „Ce demonstrăm” /
+   „Ce beneficii putem afirma” and the clip's technical texts come from the fixture's delivery block
+   (`v2/server/factory/booking-demo-def.mjs:94-113`), gated on AC ids written for the original booking spec. The §25 spec renumbers its
+   criteria, so every gate passes and the texts cite unrelated checks (e.g. „Corectura a fost verificată de un reviewer independent.
+   (verificat: AC-4)” while AC-4 is now „telefon salvat exact”; clip „AC-1 + AC-6: interval ocupat → indisponibil (390 px)”). The
+   factual QA only checks that the ids exist. The Word/PDF document and the campaign list the new criteria correctly. Fix direction:
+   map gated texts by criterion meaning (or regenerate them from the delivery's spec) and make factual QA refuse a citation whose
+   criterion text changed from the fixture's reference spec. Until then the owner should not approve the summary / clip of
+   `dlv_mva09x21_b0b0cbfb2a`.
+2. **Owner decisions pending in the Delivery Room** of `dlv_mva09x21_b0b0cbfb2a`: local acceptance of bundle `bnd_mva0hc23_b3d65a8da9`,
+   creative approval (PENDING), summary approval. Media QA WARN: 16:9 has 8 frozen-image segments not covered by capture holds and a
+   rights warning (platform unspecified); 9:16 has 5 frozen segments.
+3. **The step-0 author adds nothing to the Hub skeleton** (rehearsal and live: 150 lines, 0 added, 0 removed when comments and blank
+   lines are ignored). The test's strength comes from the Hub-owned skeleton (calibrated) and the Codex review, not from the author.
+   Design question for the owner (keep the author step, or let the Hub write the skeleton directly for dataset FEATURE plans).
+4. Low: the red banner's „Deschide livrarea care o înlocuiește” links the newest child even when it is EXPIRED / CANCELLED; AC-7 and
+   AC-8 repeat the clause „câmpul „Telefon” are etichetă și se completează” (inherited demo criteria merged twice).
+5. Unchanged: sandbox-user processes cannot be identified without elevation (limitation); M12 stays DRAFT.
+
 ## 2026-10-14 evening — 2.14.15 author turn limit; real isolated rehearsal reached a PROVEN rewrite but not Codex PASS (code on `claude/project-thread-5c9bak` = `b111d1c`, NOT released; live `2.14.10-m11`; detail: `.ifrim/STAGE_2026-10-13_DATE_MARTOR.md` §9)
 
 This section takes precedence over every older one where they overlap. 2.14.15 (`015d266`) adds the 45-min turn limit only for the step-0

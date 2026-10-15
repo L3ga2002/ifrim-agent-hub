@@ -1,8 +1,12 @@
 # IfrimDigital Ifrim Agent Hub - Claude Code Context
 
-## Current state - 2026-10-15 evening (read first)
+## Current state - 2026-10-15 night (read first)
 
-Read `.ifrim/STAGE_2026-10-15_CORECTII_S25.md` first; it takes precedence over everything below. Code `2.14.16-m11` (contract 13, schema 12, no migration; validated criteria-driven skeleton + pre-dispatch lint gate for the §25 step-0 author, minimal R-CLEANUP, Codex CLI registry fix, real-route rehearsal driver) is merged into `v2-milestone-01` = `abc5a8d` (branch `claude/project-thread-tjpzls` = `cc15765`). Final gate on `f454909`: test:v2 2132/2133 (0 FAIL, 0 cancelled, T25 skip), V1 551/552 (symlink skip). The single real-route rehearsal ended INTENTIONAL_STOP_BEFORE_WRITER with every step-0 gate (Codex PASS, 41/41); the candidate is the Hub skeleton without comments. The managed upgrade (`[Production Deploy]`) and the push were refused to the agent: the owner runs them; until then live stays `2.14.10-m11` and a reboot would autostart 2.14.16 unmanaged. Verified backup `bkp_mv9xo51k_96494a32dd`. The §25 card is prepared after the upgrade. Opus + ultracode for every stage. `.ifrim/M12_PROMPT.md` stays DRAFT.
+Read `.ifrim/STAGE_2026-10-15_CORECTII_S25.md` (§8–§10) and the first section of `.ifrim/OPEN_ISSUES.md` first; they take precedence over everything below. Code and live Hub `2.14.16-m11` (contract 13, schema 12, no migration; validated criteria-driven skeleton + pre-dispatch lint gate for the §25 step-0 author, minimal R-CLEANUP, Codex CLI registry fix, real-route rehearsal driver), merged into `v2-milestone-01` = `abc5a8d` + docs, pushed by the owner; managed upgrade `upg_mv9zgbrl` run by the owner at 2026-10-15 20:20 UTC. The §25 card (envelope `env_mva09x4g_5e4b294b66`, mission `mis_mva09tjh_7692421b52`) ran on its own to a verified READY delivery `dlv_mva09x21_b0b0cbfb2a` (20:51 UTC): step 0 passed on the first cycle (the candidate is exactly the Hub skeleton), checks 21/21, acceptance test 6/6, browser 4/4, Claude review PASS, bundle `bnd_mva0hc23_b3d65a8da9` awaits the owner's local acceptance; the historical §25 test was retired unchanged (sha256 `8d944644…`). Open defect: the refresh delivery's summary and clip technical texts cite criterion ids of the original spec (fixture block in `v2/server/factory/booking-demo-def.mjs`), so their evidence references are wrong; the fix needs the owner's decision. Opus + ultracode for every stage. `.ifrim/M12_PROMPT.md` stays DRAFT.
+
+## State - 2026-10-15 evening (history)
+
+Code `2.14.16-m11` merged into `v2-milestone-01` = `abc5a8d`; final gate on `f454909` test:v2 2132/2133, V1 551/552; the single real-route rehearsal ended INTENTIONAL_STOP_BEFORE_WRITER with every step-0 gate; managed upgrade and push refused to the agent (the owner ran them at 20:20 UTC); verified backup `bkp_mv9xo51k_96494a32dd`.
 
 ## State - 2026-10-14 evening (history)
 
