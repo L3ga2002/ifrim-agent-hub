@@ -5,6 +5,7 @@ import fs from "node:fs";
 import path from "node:path";
 import * as helpers from "../helpers.mjs";
 import { buildEngineeringSpec } from "../../server/owner/planners/engineering.mjs";
+import { createHub } from "../../server/hub.mjs";
 import { windowsProcesses } from "../../server/runtime/supervisor.mjs";
 
 const { makeTestHub, enableLive, waitFor, FIXTURES } = helpers;
@@ -19,8 +20,8 @@ process.on("uncaughtExceptionMonitor", uncaught);
 process.on("unhandledRejection", uncaught);
 let hubSnapshots = [];
 const h = await makeTestHub({ configOverrides: { providerBinaries: {
-  // Outlives the restored 8s exit wait plus both bounded identity observations, including under load.
-  claude: { executable: process.execPath, prefixArgs: [path.join(FIXTURES, "cleanup-bounded.mjs"), "--life=30000"] },
+  // RT-3b outlives two 15s identity queries, factory close and the 8s exit wait.
+  claude: { executable: process.execPath, prefixArgs: [path.join(FIXTURES, "cleanup-bounded.mjs"), `--life=${mode === "RT-3b" ? 60000 : 30000}`] },
   codex: { executable: process.execPath, prefixArgs: [path.join(FIXTURES, "fake-codex.mjs")] },
 } }, hubOptions: mode === "RT-3b" ? { supervisorOptions: {
   treeKill: async () => { throw Object.assign(new Error("injected taskkill failure"), { code: "TEST_KILL" }); },
@@ -55,7 +56,7 @@ const originalFactoryClose = hub.factory.close;
 hub.factory.close = () => { release.resolve(); return originalFactoryClose(); };
 const originalDbClose = hub.db.close.bind(hub.db);
 hub.db.close = () => {
-  proof = { runs: hub.runs.listRuns(), leases: hub.db.prepare("SELECT status, release_reason FROM leases").all(), grant: hub.grants.get(grant.id), gate: hub.settings.get("executionGate"), live: hub.supervisor.list() };
+  proof = { dispatches: hub.factory.view(mission.id).dispatches, runs: hub.runs.listRuns(), leases: hub.db.prepare("SELECT status, release_reason FROM leases").all(), grant: hub.grants.get(grant.id), gate: hub.settings.get("executionGate"), live: hub.supervisor.list() };
   return originalDbClose();
 };
 async function start() {
@@ -67,7 +68,7 @@ async function start() {
   await waitFor(() => hub.runs.admittingCount() || child, 15000);
   await held.promise;
 }
-async function cleanup() { closing = true; await h.cleanup(); }
+async function cleanup() { closing = true; if (mode === "RT-1") await hub.close(); else await h.cleanup(); }
 
 if (mode === "RT-4") {
   // Complete expensive setup/admission first; only the deliberately suspended body has a short timeout.
@@ -77,7 +78,7 @@ if (mode === "RT-4") {
     await waitFor(() => false, 10000, 10, { signal: t.signal });
   });
 } else {
-  test(`${mode} original body error`, { timeout: 45000 }, async (t) => {
+  test(`${mode} original body error`, { timeout: mode === "RT-3b" ? 75000 : 45000 }, async (t) => {
     t.after(cleanup);
     await start();
     if (mode === "RT-3b") {
@@ -95,7 +96,8 @@ if (mode === "RT-4") {
   });
 }
 
-test(`${mode} observer`, { timeout: 30000 }, async () => {
+test(`${mode} observer`, { timeout: mode === "RT-3b" ? 75000 : 45000 }, async (t) => {
+  if (mode === "RT-1") t.after(() => h.cleanup());
   assert.ok(proof, "db.close always called");
   assert.equal(lateStarts, 0, "no start succeeded after cleanup began");
   assert.equal(hub.runs.admittingCount(), 0);
@@ -122,6 +124,9 @@ test(`${mode} observer`, { timeout: 30000 }, async () => {
     assert.equal(run.evidence.stopAll, false);
     assert.ok(proof.leases.some((r) => r.release_reason === "Hub-ul se oprește înainte de pornire"));
     assert.ok(proof.leases.every((r) => r.status === "released"));
+    assert.equal(proof.dispatches.length, 1);
+    assert.equal(proof.dispatches[0].status, "CANCELLED", "shutdown admission cannot leave CLAIMED");
+    assert.equal(proof.dispatches[0].runId, run.id, "blocked run remains linked to dispatch");
     assert.equal(proof.grant.attemptsUsed, 0, "pre-inference attempt refunded");
     assert.equal(proof.grant.status, "active", "close did not persist Stop All revocation");
     assert.equal(proof.gate.status, "open", "close did not persist a gate suspension");
@@ -132,6 +137,22 @@ test(`${mode} observer`, { timeout: 30000 }, async () => {
   if (child && identity && process.platform === "win32") {
     const { windowsProcesses } = await import("../../server/runtime/supervisor.mjs");
     assert.equal((await windowsProcesses()).some((r) => r.pid === child.pid && r.creationDate === identity?.creationDate), false);
+  }
+  if (mode === "RT-1") {
+    const next = createHub(h.config, { homeDir: h.homeDir });
+    try {
+      await next.boot();
+      await enableLive(next, { access: "workspace-write" });
+      assert.equal(next.factory.view(mission.id).dispatches[0].status, "CANCELLED");
+      await next.factory.resume(mission.id);
+      await waitFor(() => next.factory.view(mission.id).dispatches.some((d) => d.status === "STARTED"), 15000, 20, { signal: t.signal });
+      const resumed = next.factory.view(mission.id);
+      assert.equal(resumed.factory.limits.maxAttemptsPerStage, 1);
+      assert.equal(resumed.dispatches.length, 2);
+      assert.equal(resumed.dispatches[1].request.counted, 1, "interrupted admission did not consume the sole model attempt");
+    } finally {
+      try { await next.close(); } catch (error) { helpers.cleanupFailures.push({ dataDir: h.dataDir, error }); }
+    }
   }
   await sleep(1000);
   assert.deepEqual(problems, []);

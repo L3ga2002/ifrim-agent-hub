@@ -375,7 +375,8 @@ export function createRunManager(deps) {
       if (handle.pid) markPhase(runId, "process_spawned");
       db.prepare("UPDATE agent_runs SET pid = ?, pid_started_at = ? WHERE id = ?").run(handle.pid || null, clock().toISOString(), runId);
       const completion = handle.done.then((result) => finalize(runId, result, () => content))
-        .catch((error) => finalize(runId, { status: "failed", errorCategory: "internal", error: error.message, output: content }, () => content));
+        .catch((error) => finalize(runId, { status: "failed", errorCategory: "internal", error: error.message, output: content }, () => content))
+        .finally(() => { clearTurnDeadline(active.get(runId), "finalized"); active.delete(runId); stoppedRuns.delete(runId); });
       completions.set(completion, Boolean(deps.supervisorRecord?.(handle.key)?.child) || environment !== "windows");
       completion.then(() => completions.delete(completion), () => { completions.set(completion, true); }); // retain finalization errors for shutdown
       return { run: getRun(runId), gate: decision };

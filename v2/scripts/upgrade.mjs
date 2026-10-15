@@ -13,7 +13,6 @@ import { DatabaseSync } from "node:sqlite";
 import { DATA_DIR, HUB_ROOT, request, readPid, pidAlive, sleep, health } from "./common.mjs";
 import { HUB_VERSION, API_CONTRACT, loadConfig } from "../server/config.mjs";
 import { buildOperator } from "./build-operator.mjs";
-import { STOP_WAIT_MS } from "../server/runtime/shutdown.mjs";
 import { dryRunMigration, createUpgradeState, rowCounts, COUNTED_TABLES } from "../server/storage/upgrade.mjs";
 
 const args = new Set(process.argv.slice(2));
@@ -54,7 +53,7 @@ async function stopHub() {
   const r = await request("POST", "/api/system/shutdown", { body: { force: false }, token: t });
   if (r.status !== 200) throw new Error(r.json?.error?.message || `oprirea a fost refuzată (${r.status})`);
   const pid = readPid()?.pid;
-  for (let i = 0; i < Math.ceil(STOP_WAIT_MS / 300); i += 1) { await sleep(300); if (!pid || !pidAlive(pid)) return { ok: true, pid }; }
+  for (let i = 0; i < 60; i += 1) { await sleep(300); if (!pid || !pidAlive(pid)) return { ok: true, pid }; }
   throw new Error("Oprirea a fost cerută, dar procesul încă rulează");
 }
 

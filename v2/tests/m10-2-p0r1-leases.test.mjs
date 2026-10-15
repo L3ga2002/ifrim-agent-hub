@@ -771,3 +771,19 @@ test("LR-13 the system probe outside test mode reads this process's start time f
   assert.ok(Math.abs(Date.parse(started) - ownStart) < 60000, `${started} vs ${new Date(ownStart).toISOString()}`);
   assert.equal(await sys.startTime(0), null);
 });
+
+test("review B lease: same-boot unverified tree never claims that the Hub rebooted", async () => {
+  const t = await runHub();
+  try {
+    const { run, handle } = await startRun(t);
+    const lease = leaseOfRun(t.hub, run.id);
+    await ownerStop(t);
+    await waitFor(() => leaseRow(t.hub, lease.id).status === "retained");
+    handle.record.exited = true;
+    handle.record.treeUnverified = true;
+    const assessment = t.hub.leaseReconciler.assess(lease.id);
+    assert.equal(assessment.treeUnknown, true);
+    assert.match(assessment.reason, /oprirea arborelui lui de procese nu a fost confirmată/);
+    assert.doesNotMatch(assessment.reason, /a repornit|nu l-a oprit acest Hub/);
+  } finally { t.fake.restore(); await t.cleanup(); }
+});

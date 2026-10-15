@@ -1,3 +1,5 @@
+import { registerCleanupGuard } from "./helpers.mjs";
+registerCleanupGuard();
 import test from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
@@ -6,26 +8,10 @@ import { makeTestHub, enableLive, enrolOwner, waitFor, tempDir } from "./helpers
 import { materializeFixture, demoSpec } from "../server/factory/fixtures.mjs";
 import { createHub } from "../server/hub.mjs";
 import { fakeLaunchers } from "./media-helpers.mjs";
-import { createExecutors } from "../server/ops/executors.mjs";
 import { finishShutdown } from "../server/runtime/production-shutdown.mjs";
-import { STOP_WAIT_MS, SHUTDOWN_PREPARE_MS, HUB_DRAIN_MS, HUB_SETTLE_MS } from "../server/runtime/shutdown.mjs";
 
 const deferred = () => { let resolve; const promise = new Promise((r) => { resolve = r; }); return { promise, resolve }; };
 const dispatch = (h, type, payload) => h.hub.commands.dispatch({ type, payload, channel: "test", actor: "test" });
-
-test("review B pause: render cancellation cannot hold the executor's STOPPED response", async () => {
-  const cancel = deferred(); let cancelled = false, stopped = false;
-  const executors = createExecutors({ settings: { get: () => ({}) }, media: { render: {
-    request: () => ({ id: "render" }), get: () => ({ status: "RUNNING" }),
-    cancel: () => { cancelled = true; return cancel.promise; },
-  } } });
-  const work = executors["media.render"].run({ params: { editVersionId: "edit" }, planId: "plan", abort: { aborted: true, reason: "Pauză" }, authorize: () => {} });
-  const observed = work.catch((e) => { assert.equal(e.code, "STOPPED"); stopped = true; });
-  try {
-    for (let i = 0; i < 10; i++) await Promise.resolve();
-    assert.equal(cancelled, true); assert.equal(stopped, true, "STOPPED must not await render.cancel");
-  } finally { cancel.resolve(); await observed; }
-});
 
 for (const target of ["TEST_PROVING", "CHECKING", "QA"]) test(`review B: shutdown during ${target} cannot evaluate a partial stage`, { timeout: 60000 }, async (t) => {
   const h = await makeTestHub({ queues: true }); t.after(() => h.cleanup());
@@ -67,6 +53,19 @@ for (const target of ["TEST_PROVING", "CHECKING", "QA"]) test(`review B: shutdow
   assert.deepEqual(after.findings, before.findings, "no finding resolved from partial checks");
   assert.deepEqual(after.tasks, before.tasks, "no task walked to VERIFYING");
   assert.deepEqual(after.bundles, before.bundles, "no QA bundle from partial evidence");
+  const next = createHub(h.config, { homeDir: h.homeDir });
+  try {
+    await next.boot();
+    assert.equal(next.db.prepare("SELECT COUNT(*) AS n FROM leases WHERE holder = ? AND status != 'released'").get(`factory-runner:${mission.id}`).n, 0, "runner lease released across reboot");
+    await enableLive(next, { provider: "codex", access: "read-only" });
+    next.bus.transaction(() => next.grants.create({ provider: "codex", projectId: project.id, access: "read-only", maxAttempts: 2, maxDurationS: 600, ttlMinutes: 30 }, "test"));
+    h.queue("codex", "ok");
+    const conversation = next.bus.transaction(() => next.conversations.create({ projectId: project.id, title: "After runner shutdown" }, "test"));
+    next.bus.transaction(() => next.conversations.addMessage({ conversationId: conversation.id, role: "user", content: "Synthetic next admission" }, "test"));
+    const { run } = await next.runs.start({ conversationId: conversation.id, provider: "codex", access: "read-only", model: "gpt-fake-sol", effort: "medium" });
+    assert.notEqual(run.status, "blocked", "project admits its next run after reboot");
+    await waitFor(() => next.runs.activeCount() === 0, 10000, 20, { signal: t.signal });
+  } finally { await next.close(); }
 });
 
 test("review B D22: real media pin interrupted at close recovers plan and ACTIVE delivery on new boot", { timeout: 30000 }, async (t) => {
@@ -124,22 +123,32 @@ test("review B finalize: a rolled-back conversation finalize is retried as faile
   await h.hub.close();
 });
 
-test("review B shutdown worst-case bounded waits fit both managed stop budgets", async (t) => {
+
+test("review B finalize: two failures remove active entry and report the persistence failure at close", async (t) => {
   const h = await makeTestHub(); t.after(() => h.cleanup());
-  const never = () => new Promise(() => {});
-  for (const [service, name] of [[h.hub.factory, "close"], [h.hub.runs, "drain"], [h.hub.lega, "stopAll"], [h.hub.deliveries, "close_"],
-    [h.hub.opsPlans, "close"], [h.hub.media, "close"], [h.hub.desktop, "close"], [h.hub.supervisor, "close"], [h.hub.runs, "settle"]]) service[name] = never;
-  t.mock.timers.enable({ apis: ["setTimeout", "Date"] });
-  const start = Date.now(), exits = [], logs = [];
-  const work = finishShutdown({ hub: h.hub, prepare: never, pidFile: path.join(h.dataDir, "absent.json"), exit: (code) => exits.push(code), log: (s) => logs.push(s) });
-  const flush = async () => { for (let i = 0; i < 30; i++) await Promise.resolve(); };
-  await flush(); t.mock.timers.tick(SHUTDOWN_PREPARE_MS); await flush();
-  t.mock.timers.tick(HUB_DRAIN_MS); await flush();
-  assert.deepEqual(exits, []);
-  t.mock.timers.tick(HUB_SETTLE_MS); await work;
-  assert.equal(Date.now() - start, 60000); assert.ok(Date.now() - start < STOP_WAIT_MS);
-  assert.deepEqual(exits, [0]); assert.equal(logs.length, 10);
-  assert.throws(() => h.hub.db.prepare("SELECT 1"), /not open/);
-  h.hub.close = async () => {}; // intentional aggregated failures already checked above
-  t.mock.timers.reset();
+  await enableLive(h.hub, { provider: "codex", access: "read-only" });
+  const conversation = h.hub.bus.transaction(() => h.hub.conversations.create({ projectId: h.hub.projects.hub().id, title: "Double finalize" }, "test"));
+  h.hub.bus.transaction(() => h.hub.conversations.addMessage({ conversationId: conversation.id, role: "user", content: "Fixture only" }, "test"));
+  let calls = 0;
+  h.hub.conversations.finalize = () => { calls++; throw new Error("double finalize sentinel"); };
+  const { run } = await h.hub.runs.start({ conversationId: conversation.id, provider: "codex", access: "read-only", model: "gpt-fake-sol", effort: "medium" });
+  await waitFor(() => calls === 2 && h.hub.runs.activeCount() === 0, 10000, 20, { signal: t.signal });
+  assert.equal(h.hub.runs.getRun(run.id).status, "running", "failed persistence remains available to boot recovery");
+  await assert.rejects(h.hub.close(), /double finalize sentinel/);
+  h.hub.close = async () => {}; // expected error already asserted, fixture directory still removed
+});
+
+for (const provider of ["claude", "codex"]) test(`review B ${provider}: failed stop never reports interrupted true`, async (t) => {
+  const h = await makeTestHub({ [provider]: "hang" }); t.after(() => h.cleanup());
+  await enableLive(h.hub, { provider, access: "read-only" });
+  const conversation = h.hub.bus.transaction(() => h.hub.conversations.create({ projectId: h.hub.projects.hub().id, title: "Stop result" }, "test"));
+  h.hub.bus.transaction(() => h.hub.conversations.addMessage({ conversationId: conversation.id, role: "user", content: "Fixture only" }, "test"));
+  const { run } = await h.hub.runs.start({ conversationId: conversation.id, provider, access: "read-only", model: provider === "codex" ? "gpt-fake-sol" : "sonnet", effort: "medium" });
+  await waitFor(() => h.hub.runs.getRun(run.id).timeline.turn_sent, 10000, 20, { signal: t.signal });
+  const stop = h.hub.supervisor.stop;
+  h.hub.supervisor.stop = async () => ({ stopped: false, method: "handle", taskkill: { ok: false } });
+  try {
+    const result = await h.hub.runs.interrupt(run.id, "turn-timeout");
+    assert.equal(result.interrupted, false); assert.equal(result.stop.stopped, false);
+  } finally { h.hub.supervisor.stop = stop; }
 });

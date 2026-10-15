@@ -508,15 +508,6 @@ export function createMediaQa({ db, bus, clock = () => new Date(), tools = null,
   if (!db || !bus) throw new Error("createMediaQa requires db and bus");
   const now = () => clock().toISOString();
   const busy = new Set();
-  let closing = false, detached = false;
-  const pending = new Set();
-  const assertAttached = () => { if (detached) throw new HubError("policy", "Hub-ul s-a oprit; verificarea rămâne pentru recuperare.", { code: "HUB_SHUTDOWN" }); };
-  function run(input) {
-    if (closing) return Promise.reject(new HubError("policy", "Hub-ul se oprește; nicio verificare nouă nu pornește", { code: "HUB_SHUTDOWN" }));
-    const work = runReport(input); pending.add(work);
-    work.then(() => pending.delete(work), () => pending.delete(work));
-    return work;
-  }
   const getVersion = typeof assets?.getVersion === "function" ? (id) => assets.getVersion(id) : null;
   void paths;
 
@@ -778,7 +769,7 @@ export function createMediaQa({ db, bus, clock = () => new Date(), tools = null,
    * Runs every check for an edit version and persists one row per DB kind. `assetVersionId` defaults to the latest DONE render of the
    * version; without a render the technical report is NOT_RUN (with the reason). → { runId, status, reports, reportIds }
    */
-  async function runReport({ editVersionId, assetVersionId = null, renderJobId = null, platform = null, brief = undefined, claims = undefined, use = "organic", at = null, actor = "system:qa" } = {}) {
+  async function run({ editVersionId, assetVersionId = null, renderJobId = null, platform = null, brief = undefined, claims = undefined, use = "organic", at = null, actor = "system:qa" } = {}) {
     if (typeof actor !== "string" || !actor.trim() || actor.length > 120) throw new HubError("validation", "Lipsește autorul operației (actor).", { code: "ACTOR_REQUIRED" });
     const row = db.prepare("SELECT * FROM media_edit_versions WHERE id = ?").get(String(editVersionId || ""));
     if (!row) throw new HubError("not_found", "Versiunea de editare nu există.", { code: "EDIT_VERSION_MISSING" });
@@ -822,7 +813,6 @@ export function createMediaQa({ db, bus, clock = () => new Date(), tools = null,
         add({ code: "NO_RENDER", severity: "info", criterion: "QA tehnic pe randare", message: "Nu există o randare terminată pentru această versiune; QA tehnic nu a rulat.", proposedFix: "Randează versiunea (draft sau final) și rulează din nou QA." });
         tech = { kind: "technical", status: "NOT_RUN", findings: list, measurements: { qaVersion: QA_VERSION } };
       }
-      assertAttached();
       const lay = layout({ ir, profile: profileKey });
       const edi = editorial({ ir, brief: briefBody });
       const fac = factual({ ir, claims: claimList });
@@ -830,7 +820,6 @@ export function createMediaQa({ db, bus, clock = () => new Date(), tools = null,
       // M10: legibility measured on the rendered file (part of the editorial row; NOT_RUN without a usable render).
       const leg = target && tech.status !== "FAIL" ? await legibility({ assetVersionId: target, ir }).catch(() => ({ kind: "legibility", status: "NOT_RUN", findings: [], measurements: { reason: "eroare la măsurare" } }))
         : { kind: "legibility", status: "NOT_RUN", findings: [], measurements: { reason: target ? "randarea nu a trecut QA tehnic" : "fără randare" } };
-      assertAttached();
       const editorialRow = { status: worstStatus([lay.status, edi.status === "NOT_RUN" ? null : edi.status, leg.status === "NOT_RUN" ? null : leg.status]), findings: [...lay.findings, ...edi.findings, ...leg.findings],
         measurements: { qaVersion: QA_VERSION, layout: lay.measurements, editorial: edi.measurements, legibility: leg.measurements, statuses: { layout: lay.status, editorial: edi.status, legibility: leg.status } } };
       const runId = newId("mqr");
@@ -871,7 +860,5 @@ export function createMediaQa({ db, bus, clock = () => new Date(), tools = null,
   const list = ({ editVersionId, limit = 100 } = {}) => db.prepare("SELECT * FROM media_qa_reports WHERE edit_version_id = ? ORDER BY created_at DESC, rowid DESC LIMIT ?")
     .all(String(editVersionId || ""), Math.min(1000, Math.max(1, limit))).map(mapReport);
 
-  return { technical, layout, factual, rightsCheck, editorial, run, summary, get, list,
-    boot: () => { closing = false; detached = false; }, beginClose: () => { closing = true; },
-    close: () => Promise.allSettled([...pending]), detach: () => { detached = true; } };
+  return { technical, layout, factual, rightsCheck, editorial, run, summary, get, list };
 }

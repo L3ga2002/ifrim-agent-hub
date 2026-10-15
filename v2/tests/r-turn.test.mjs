@@ -299,6 +299,14 @@ test("T-TURN driver real Codex route is the production adapter; non-read-only is
   assert.equal(turns, 0);
   const source = fs.readFileSync(new URL("./manual/s25-isolated-rehearsal.mjs", import.meta.url), "utf8");
   assertNoCredentialReads(source);
+  const manual = new URL("./manual/", import.meta.url);
+  for (const name of fs.readdirSync(manual).filter((name) => /^s25-.*\.mjs$/.test(name))) {
+    // Ignore comment-only prose; every executable driver module is checked, including transitive imports.
+    const moduleSource = fs.readFileSync(new URL(name, manual), "utf8").replace(/^\s*\/\/.*$/gm, "");
+    assertNoCredentialReads(moduleSource);
+  }
+  const core = fs.readFileSync(new URL("s25-rehearsal-core.mjs", manual), "utf8");
+  assert.match(core, /process\.on\("exit", emergencyKill\)/);
   for (const signal of ["SIGINT", "SIGTERM", "SIGBREAK", "SIGHUP"]) assert.ok(source.includes(`process.on("${signal}", stop)`));
 });
 

@@ -1,6 +1,5 @@
 // Graceful stop through the authenticated local API. Refuses while runs are active unless --force.
 import { PORT, readPid, request, sleep, pidAlive } from "./common.mjs";
-import { STOP_WAIT_MS } from "../server/runtime/shutdown.mjs";
 
 const force = process.argv.includes("--force");
 const session = await request("GET", "/api/session");
@@ -20,7 +19,7 @@ if (result.status !== 200) {
   process.exit(1);
 }
 const pid = readPid()?.pid;
-for (let i = 0; i < Math.ceil(STOP_WAIT_MS / 300); i += 1) {
+for (let i = 0; i < 30; i += 1) {
   await sleep(300);
   if (!pid || !pidAlive(pid)) { console.log(`Stopped${result.json.activeRunsInterrupted ? ` (${result.json.activeRunsInterrupted} runs interrupted)` : ""}.`); process.exit(0); }
 }

@@ -18,7 +18,6 @@ import { createArmedWindows } from "../owner/armed-window.mjs";
 import { createStopScope, STOP_HOLD_CLASSES } from "../owner/stop-scope.mjs";
 import { classifySuspension } from "../policy/gate-state.mjs";
 import { proposalWindowMin } from "../policy/proposal-window.mjs";
-import { drainWithin } from "../runtime/shutdown.mjs";
 
 export const PLAN_LIMITS = Object.freeze({ confirmWindowMin: 15, slackMin: 30, maxSteps: 16, defaultMaxDurationMin: 30, maxDurationMin: 240, maxActionsPerStep: 200 });
 export const NEVER_IN_PLANS = Object.freeze(["publicare pe platforme", "încărcare (upload)", "trimiterea de mesaje", "plăți sau cumpărături", "ștergeri externe", "schimbarea setărilor de securitate"]);
@@ -40,14 +39,8 @@ export function createOpsPlans({ db, bus, clock, settings, trust, voice = null, 
   stopScope = null }) {
   const now = () => clock().toISOString();
   const runs = new Map(); // planId → { promise, abort }
-  let closing = false, detached = false;
-  function beginClose() {
-    closing = true;
-  }
-  async function close(ms = 10000) {
-    beginClose();
-    await drainWithin(Promise.all([...runs.values()].map((r) => r.promise)), ms, "operation plans");
-  }
+  let closing = false;
+  const close = () => { closing = true; };
   const used = new Map(); // planId → actions used (also persisted in progress_json)
   // Transient secrets a step needs (e.g. the OBS WebSocket password the owner typed at confirmation): memory only, never in the plan
   // body, its hash, the database or a log; dropped when the plan ends.
@@ -371,7 +364,7 @@ export function createOpsPlans({ db, bus, clock, settings, trust, voice = null, 
       bus.transaction(() => setStatus(planId, "RUNNING", "Rulează", {}, ["CONFIRMED", "PAUSED", "NEEDS_OWNER"]));
       for (const st of stepsOf(planId)) {
         if (st.status === "DONE" || st.status === "SKIPPED") continue;
-        if (closing || detached) return;
+        if (closing) return;
         if (abort.aborted) break;
         if (row(planId).status !== "RUNNING") break;
         const ex = executors[st.kind];
@@ -380,13 +373,13 @@ export function createOpsPlans({ db, bus, clock, settings, trust, voice = null, 
         try {
           const params = resolveRefs(st.params, stepsOf(planId));
           const result = await ex.run({ planId, stepId: st.id, params, authorize: (action) => authorize(planId, st.id, action), abort, plan: view(planId), secrets: secrets.get(planId) || {} });
-          if (closing || detached) return; // D22: boot reconciles the in-flight step as uncertain.
+          if (closing) return; // D22: boot reconciles the in-flight step as uncertain.
           bus.transaction(() => {
             db.prepare("UPDATE ops_plan_steps SET status = 'DONE', result_json = ?, evidence_json = ?, finished_at = ?, updated_at = ? WHERE id = ?").run(json(result?.result ?? result ?? {}), json(result?.evidence || []), now(), now(), st.id);
             bus.append({ type: "ops.step.done", scopeType: "ops_plan", scopeId: planId, source: "ops", payload: { seq: st.seq, kind: st.kind } });
           });
         } catch (error) {
-          if (closing || detached) return;
+          if (closing) return;
           const code = error.code || "FAILED";
           const uncertain = ["OPERATOR_TIMEOUT", "OPERATOR_EXITED", "OUTCOME_UNKNOWN"].includes(code);
           const owner = ["USER_INPUT", "SECURE_DESKTOP", "STOPPED", "PAUSED", "NOT_FOREGROUND", "IDENTITY_CHANGED", "DESKTOP_PAUSED", "PLAN_NOT_RUNNING", "SESSION_CLOSED", "PLAN_EXPIRED", "PLAN_BUDGET", "NEEDS_DECISION", "OCCLUDED"].includes(code);
@@ -399,7 +392,7 @@ export function createOpsPlans({ db, bus, clock, settings, trust, voice = null, 
           break;
         }
       }
-      if (closing || detached) return;
+      if (closing) return;
       if (row(planId).status === "RUNNING") {
         const left = stepsOf(planId).filter((x) => !["DONE", "SKIPPED"].includes(x.status));
         if (!left.length) bus.transaction(() => setStatus(planId, "DONE", "Toți pașii au rezultat verificat", {}, ["RUNNING"]));
@@ -575,7 +568,7 @@ export function createOpsPlans({ db, bus, clock, settings, trust, voice = null, 
   const active = () => db.prepare("SELECT id FROM ops_plans WHERE status IN ('CONFIRMED','RUNNING','PAUSED','NEEDS_OWNER') ORDER BY updated_at DESC").all().map((r) => view(r.id));
   /** Boot: a plan that was running when the Hub stopped is NOT resumed: it waits for the owner (its running step is uncertain). */
   function recover() {
-    closing = false; detached = false;
+    closing = false;
     const left = db.prepare("SELECT id FROM ops_plans WHERE status IN ('CONFIRMED','RUNNING')").all();
     bus.transaction(() => {
       for (const r of left) {
@@ -616,6 +609,6 @@ export function createOpsPlans({ db, bus, clock, settings, trust, voice = null, 
     return bus.transaction(() => ids.filter((id) => setStatus(id, "SUPERSEDED", reason || "Corectura a fost rezolvată în Studio", {}, ["PROPOSED"]) === 1));
   }
 
-  return { beginClose, close, detach: () => { detached = true; }, propose, confirm, authorize, pause, cancel, resume, reconfirm, view, list, active, recover, idle, buildBody, armForLega, confirmFromArmed, armedFor, registerParent, adoptDerived,
+  return { close, propose, confirm, authorize, pause, cancel, resume, reconfirm, view, list, active, recover, idle, buildBody, armForLega, confirmFromArmed, armedFor, registerParent, adoptDerived,
     disarm: (planId, reason) => armedWindows.disarm(planId, reason), correctionPlans, supersedeCorrections };
 }

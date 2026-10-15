@@ -22,7 +22,6 @@ import { createMediaTranscriber } from "./transcribe.mjs";
 import { seedPresets, listPresets, getPreset, resolveFonts } from "./visual-bible.mjs";
 import { createImportAccess } from "./import-access.mjs";
 import { createProjectBundles } from "./project-bundle.mjs";
-import { drainWithin } from "../runtime/shutdown.mjs";
 
 /**
  * M09 Content / Media / Growth department — one composition over the same database, bus, supervisor and settings as the rest of
@@ -114,14 +113,8 @@ export function createMedia({ db, bus, live = null, clock = () => new Date(), co
   }
 
   let detach = null;
-  let closing = false, closePromise = null;
   /** Boot: folders, pinned presets, and recovery that only MARKS interrupted work (never resumes it). */
   function boot() {
-    closing = false;
-    closePromise = null;
-    tools.boot();
-    qa.boot();
-    assets.boot();
     paths.ensure();
     const presets = seedPresets(db, clock, { bus, actor: "system:seed" });
     const report = {
@@ -137,7 +130,6 @@ export function createMedia({ db, bus, live = null, clock = () => new Date(), co
 
   /** Scheduler tick: claim the next render when allowed; check schedules (never dispatches anything external). */
   function tick() {
-    if (closing) return;
     try {
       const r = render.tick();
       if (r?.done && typeof r.done.catch === "function") r.done.catch(() => { /* the job row records the failure */ });
@@ -145,20 +137,10 @@ export function createMedia({ db, bus, live = null, clock = () => new Date(), co
     try { distribution.tick(); } catch { /* idem */ }
   }
 
-  function beginClose() {
-    closing = true;
+  function close() {
     try { detach?.(); } catch { /* ignore */ }
     detach = null;
-    render.beginClose();
-    capture.beginClose();
-    tools.beginClose();
-    qa.beginClose();
-  }
-  function close(ms = 15000) {
-    beginClose();
-    if (!closePromise) closePromise = drainWithin(Promise.allSettled([tools.close(), render.close(), capture.close(), qa.close(), transcriber.stopAll("hub:close")])
-      .then((results) => { const errors = results.filter((r) => r.status === "rejected").map((r) => r.reason); if (errors.length) throw new AggregateError(errors, "Media shutdown failed"); }), ms, "media jobs");
-    return closePromise;
+    return transcriber.stopAll("hub:close").catch(() => {});
   }
 
   /** Read-only state for the Studio header: storage, tools, policy (what is off and why). */
@@ -180,7 +162,7 @@ export function createMedia({ db, bus, live = null, clock = () => new Date(), co
 
   return {
     paths, tools, assets, rights, edits, render, editors, qa, variants, reviews, content, distribution, analytics, campaigns, capture, transcriber,
-    importRoots, importAccess, bundles, exportsDir, exportLocal, boot, tick, beginClose, close, detach: () => { render.detach(); capture.detach(); qa.detach(); assets.detach(); }, status, PLATFORM_REGISTRY, PLATFORM_PROFILES,
+    importRoots, importAccess, bundles, exportsDir, exportLocal, boot, tick, close, status, PLATFORM_REGISTRY, PLATFORM_PROFILES,
     presets: { list: () => listPresets(db), get: (id, version) => getPreset(db, id, version), fonts: (preset) => resolveFonts(preset) },
   };
 }

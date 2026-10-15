@@ -18,7 +18,16 @@ export function createSupervisor({ config, onEvent = () => {}, treeKill = killOw
   killHandle = (record) => record.child.kill("SIGKILL") }) {
   const children = new Map();
   const failedStops = new Map();
-  let closing = false, closePromise = null;
+  let closing = false, closePromise = null, snapshotInFlight = null;
+  async function captureFailedTree(record) {
+    if (process.platform !== "win32") return;
+    try {
+      // Concurrent failed stops share one bounded snapshot, before any handle fallback.
+      if (!snapshotInFlight) snapshotInFlight = drainWithin(Promise.resolve().then(snapshot), 15000, "process snapshot")
+        .finally(() => { snapshotInFlight = null; });
+      record.failureTree = ownedProcessTree([record], await snapshotInFlight);
+    } catch (error) { record.snapshotError = error.message; }
+  }
 
   function assertSpawnAllowed(executable) {
     if (!config.testMode) return;
@@ -97,7 +106,13 @@ export function createSupervisor({ config, onEvent = () => {}, treeKill = killOw
         record.taskkill = { ok: false, elapsedMs: Date.now() - at, ...error };
         record.treeUnverified = true;
       }
-      if (!record.exited && (error || !(await exitedWithin(record, 8000)))) {
+      const fallback = Boolean(error) || (!record.exited && !(await exitedWithin(record, 8000)));
+      if (fallback) {
+        record.treeUnverified = true;
+        failedStops.set(record.key, record);
+        await captureFailedTree(record);
+      }
+      if (!record.exited && fallback) {
         method = "handle";
         try { if (!killHandle(record)) throw new Error("Owned process handle refused termination"); }
         catch (cause) { error = { ...error, handle: cause.message }; }
@@ -129,22 +144,23 @@ export function createSupervisor({ config, onEvent = () => {}, treeKill = killOw
     closePromise = (async () => {
       const results = await stopAll();
       let survivors = list();
-      // One full snapshot, only after a failed termination. PID reuse is never attributed to this Hub.
-      if ((survivors.length || failedStops.size) && process.platform === "win32") {
-        try {
-          const rows = await drainWithin(snapshot(), 5000, "process snapshot");
-          const records = [...new Map([...failedStops, ...survivors.map((r) => [r.key, children.get(r.key)])]).values()];
-          const found = ownedProcessTree(records, rows);
-          survivors = survivors.map((r) => ({ ...r, creationDate: found.find((p) => p.rootKey === r.key && p.pid === r.pid)?.creationDate || null,
-            descendants: found.filter((p) => p.rootKey === r.key && p.pid !== r.pid) }));
-          // The root's handle may be gone while its children remain after the tree kill failed.
-          for (const row of found) if (!survivors.some((r) => r.key === row.rootKey) && row.pid !== records.find((r) => r.key === row.rootKey)?.pid)
-            survivors.push({ key: `${row.rootKey}:descendant:${row.pid}`, label: row.name, pid: row.pid, startedAt: row.creationDate, creationDate: row.creationDate, parentPid: row.parentPid });
-        } catch (error) {
-          survivors = survivors.map((r) => ({ ...r, snapshotError: error.message }));
-          for (const record of failedStops.values()) if (!survivors.some((r) => r.key === record.key))
-            survivors.push({ key: record.key, pid: record.pid, startedAt: record.startedAt, unverified: true, snapshotError: error.message });
-          for (const result of results) if (result.error) result.snapshotError = error.message;
+      // Failure evidence was captured while the root could still identify its descendants.
+      for (const record of failedStops.values()) {
+        const alive = (record.failureTree || []).filter((row) => {
+          try { process.kill(row.pid, 0); return true; } catch (error) { return error.code === "EPERM"; }
+        });
+        const root = survivors.find((r) => r.key === record.key);
+        if (root) {
+          root.creationDate = alive.find((r) => r.pid === record.pid)?.creationDate || null;
+          root.descendants = alive.filter((r) => r.pid !== record.pid);
+        }
+        for (const row of alive) if (row.pid !== record.pid)
+          survivors.push({ key: `${record.key}:descendant:${row.pid}`, label: row.name, pid: row.pid,
+            startedAt: row.creationDate, creationDate: row.creationDate, parentPid: row.parentPid });
+        if (record.snapshotError) {
+          if (root) root.snapshotError = record.snapshotError;
+          else survivors.push({ key: record.key, pid: record.pid, startedAt: record.startedAt, unverified: true, snapshotError: record.snapshotError });
+          for (const result of results) if (result.key === record.key) result.snapshotError = record.snapshotError;
         }
       }
       return { results, survivors };
@@ -185,7 +201,8 @@ async function exitedWithin(record, ms) {
   finally { clearTimeout(timer); }
 }
 
-// The un-exited ChildProcess handle pins this PID. WMI diagnostics must never gate a tree kill.
+// Check the owned root immediately before taskkill; Node can release its handle during taskkill startup.
+// This narrows, but does not eliminate, PID reuse races. WMI diagnostics never gate a normal tree kill.
 export async function killOwnedTree(record) {
   if (record.exited || record.child.exitCode !== null || record.child.signalCode !== null) return { alreadyExited: true };
   if (process.platform !== "win32") { record.child.kill("SIGTERM"); return { method: "handle" }; }
@@ -196,7 +213,7 @@ export async function killOwnedTree(record) {
 export async function windowsProcesses() {
   const { stdout } = await execFileAsync("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command",
     "$ErrorActionPreference = 'Stop'; @(Get-CimInstance Win32_Process | ForEach-Object { [pscustomobject]@{ pid=$_.ProcessId; parentPid=$_.ParentProcessId; creationDate=$_.CreationDate.ToUniversalTime().ToString('o'); name=$_.Name } }) | ConvertTo-Json -Compress"],
-  { windowsHide: true, timeout: 4500, maxBuffer: 4 * 1024 * 1024 });
+  { windowsHide: true, timeout: 14500, maxBuffer: 4 * 1024 * 1024 });
   return (stdout.trim() ? [].concat(JSON.parse(stdout)) : []).map((r) => ({ ...r, creationDate: new Date(r.creationDate).toISOString() }));
 }
 

@@ -180,14 +180,6 @@ export function createProgressParser() {
 export function createMediaTools({ config, supervisor, settings = null, bus = null, clock = () => new Date(), finder = null }) {
   if (!config || !supervisor) throw new Error("createMediaTools requires config and supervisor");
   const running = new Map(); // key → { cancelled, timedOut }
-  let closing = false;
-  const boot = () => { closing = false; };
-  const assertOpen = () => { if (closing) throw new HubError("policy", "Hub-ul se oprește; nicio operație nouă nu pornește", { code: "HUB_SHUTDOWN" }); };
-  const beginClose = () => { closing = true; };
-  const close = async () => {
-    beginClose();
-    await Promise.all([...running.values()].map((state) => state.done));
-  };
   const identityCache = new Map(); // file → { sig, sha256 }
   const lookupCache = new Map(); // tool → absolute path found on PATH (production)
   const versionCache = new Map(); // tool → { identityFile, sig, at, version } (a `-version` read, valid INSPECT_TTL_MS)
@@ -337,7 +329,7 @@ export function createMediaTools({ config, supervisor, settings = null, bus = nu
    */
   async function inspect() {
     if (inspecting) return inspecting;
-    inspecting = (async () => { const ids = await identifyAll(); assertOpen(); return summarize(ids, currentPins()); })();
+    inspecting = (async () => summarize(await identifyAll(), currentPins()))();
     try { return await inspecting; } finally { inspecting = null; }
   }
 
@@ -363,7 +355,6 @@ export function createMediaTools({ config, supervisor, settings = null, bus = nu
     const why = String(reason || "").slice(0, 200);
     const shown = expectedOf(expect);
     const ids = await identifyAll();
-    assertOpen();
     const missing = MEDIA_TOOL_NAMES.filter((t) => !ids[t]);
     if (missing.length) {
       summarize(ids, currentPins());
@@ -465,7 +456,6 @@ export function createMediaTools({ config, supervisor, settings = null, bus = nu
     const who = actorOf(actor);
     if (!settings || !bus) throw new HubError("internal", "Setările nu sunt disponibile.");
     const ids = await identifyAll();
-    assertOpen();
     const info = ids[tool];
     if (!info) throw new HubError("tool", `${tool} nu este disponibil; nu am ce confirma.`, { code: "TOOL_MISSING" });
     const again = [
@@ -552,7 +542,6 @@ export function createMediaTools({ config, supervisor, settings = null, bus = nu
   }
 
   function spawnTool({ tool, launcher, argv, cwd, timeoutMs, key, onProgress = null, collectStderr = true, onStderrLine = null, maxStdoutLines = 50000 }) {
-    if (closing) throw new HubError("policy", "Hub-ul se oprește; nicio operație nouă nu pornește", { code: "HUB_SHUTDOWN" });
     if (supervisor.get(key) && !supervisor.get(key).exited) throw new HubError("conflict", "Există deja un proces media cu această cheie.", { code: "MEDIA_KEY_BUSY" });
     const state = { cancelled: false, timedOut: false };
     running.set(key, state);
@@ -583,7 +572,7 @@ export function createMediaTools({ config, supervisor, settings = null, bus = nu
       throw new HubError("tool", `${tool} nu a putut porni: ${error.message}`, { code: /ENOENT/.test(error.message) ? "TOOL_MISSING" : "TOOL_FAILED" });
     }
     const timer = setTimeout(() => { state.timedOut = true; supervisor.stop(key, { graceMs: 500 }).catch(() => {}); }, timeoutMs);
-    state.done = record.exit.then(({ code, error }) => {
+    return record.exit.then(({ code, error }) => {
       clearTimeout(timer);
       running.delete(key);
       supervisor.forget(key);
@@ -593,7 +582,6 @@ export function createMediaTools({ config, supervisor, settings = null, bus = nu
       return { code, stdoutLines, stderrLines, timedOut: state.timedOut, cancelled: state.cancelled && !state.timedOut, durationMs: Date.now() - started,
         stdoutTruncated, stderrDropped, key };
     });
-    return state.done;
   }
 
   /**
@@ -601,7 +589,6 @@ export function createMediaTools({ config, supervisor, settings = null, bus = nu
    * result, not an exception); throws TOOL_MISSING when the binary is absent and policy/validation errors for refused argv.
    */
   async function run({ tool, args, cwd = null, key = null, timeoutMs = null, onProgress = null, collectStderr = true, onStderrLine = null, maxStdoutLines = 50000 }) {
-    if (closing) throw new HubError("policy", "Hub-ul se oprește; nicio operație nouă nu pornește", { code: "HUB_SHUTDOWN" });
     const dir = cwd ? path.resolve(cwd) : workCwd();
     if (!fs.existsSync(dir) || !fs.statSync(dir).isDirectory()) throw new HubError("validation", "Dosarul de lucru pentru unealta media nu există.", { code: "MEDIA_CWD_MISSING" });
     const argv = prepareArgs(tool, args, { cwd: dir, progress: Boolean(onProgress) });
@@ -637,5 +624,5 @@ export function createMediaTools({ config, supervisor, settings = null, bus = nu
     return normalized;
   }
 
-  return { boot, beginClose, close, inspect, pin, resolve, requirePinned, acknowledgeChange, run, cancel, probe, inputArgs, outputArg, prepareArgs, running: () => [...running.keys()], lastResolved: () => resolved };
+  return { inspect, pin, resolve, requirePinned, acknowledgeChange, run, cancel, probe, inputArgs, outputArg, prepareArgs, running: () => [...running.keys()], lastResolved: () => resolved };
 }

@@ -169,16 +169,9 @@ export function createDeliveries({ db, bus, clock, config, settings, projects, m
    * The activation checklist (design §4). The first failure stops it: the delivery becomes FAILED or EXPIRED with the reason, nothing is
    * captured, and the Room offers a re-package card (one confirmation).
    */
-  const pendingActivations = new Set();
   let closing = false;
-  function activate(id, options) {
-    if (closing) return Promise.resolve({ activated: false, reason: "Hub shutdown" });
-    const pending = activateOpen(id, options);
-    pendingActivations.add(pending);
-    pending.then(() => pendingActivations.delete(pending), () => pendingActivations.delete(pending));
-    return pending;
-  }
-  async function activateOpen(id, { actor = "hub" } = {}) {
+  async function activate(id, { actor = "hub" } = {}) {
+    if (closing) return { activated: false, reason: "Hub shutdown" };
     const d = need(id);
     if (d.status !== "ARMED") return { activated: false, reason: `livrarea e ${d.status}` };
     const fail = (status, reason) => { bus.transaction(() => setStatus(id, status, reason, {}, { from: ["ARMED"] })); return { activated: false, reason }; };
@@ -744,6 +737,5 @@ export function createDeliveries({ db, bus, clock, config, settings, projects, m
 
   return { createPlanned, sectionFor, sectionForMission, arm, activate, startDirect, bindItem, bindSoftware, currentItem, items: itemsOfDelivery, trigger, verify, reconcileStale, renderDocument, exportDocument, editDocument, approveDocument,
     currentDoc, recordRevision, getRevision, updateRevision, revisionOfPlan, view, get, need, list, latestForProject, close, cancel, setStatus, readiness, boot, tick, onEvent, attachEnvelopes, patch, bindService, startPreview,
-    beginClose: () => { closing = true; if (detach) detach(); detach = null; },
-    close_: async () => { closing = true; if (detach) detach(); detach = null; await Promise.allSettled([...pendingActivations]); }, mediaFacts, markerOf };
+    close_: () => { closing = true; if (detach) detach(); detach = null; }, mediaFacts, markerOf };
 }

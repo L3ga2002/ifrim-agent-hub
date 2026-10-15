@@ -1,7 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { makeTestHub, enrolOwner, waitFor, registerCleanupGuard } from "./helpers.mjs";
-import { fakeLaunchers } from "./media-helpers.mjs";
 import * as capture from "../server/media/capture.mjs";
 import { measureHold } from "../server/media/holds.mjs";
 
@@ -26,30 +25,6 @@ test("part B restart: deliveries boot reopens event handling after each close", 
   }
 });
 
-test("part B restart: media boot reopens render, capture and tools; next close drains again", async (t) => {
-  const h = await makeTestHub({ configOverrides: { mediaTools: { launcher: fakeLaunchers(), ffmpeg: null, ffprobe: null } } });
-  t.after(() => h.cleanup());
-  const media = h.hub.media;
-  let previous;
-  for (let cycle = 0; cycle < 2; cycle++) {
-    const closing = media.close();
-    if (previous) assert.notEqual(closing, previous, "boot clears the cached close promise");
-    previous = closing;
-    await closing; media.detach();
-    assert.deepEqual(media.render.tick(), { idle: true, reason: "shutdown" });
-    await assert.rejects(media.capture.captureBrowserDemo({ actor: "test" }), (e) => e.code === "HUB_SHUTDOWN");
-    await assert.rejects(media.tools.run({ tool: "ffmpeg", args: ["-version"] }), (e) => e.code === "HUB_SHUTDOWN");
-    media.boot();
-    assert.deepEqual(media.render.tick(), { idle: true });
-    await assert.rejects(media.capture.captureBrowserDemo({ actor: "test" }), (e) => e.code === "DEMO_ALLOW_ORIGIN_REQUIRED");
-    const result = await media.tools.run({ tool: "ffmpeg", args: ["-version"], cwd: h.config.mediaWorkDir });
-    assert.equal(result.code, 0);
-    const tick = media.render.tick; let ticks = 0;
-    media.render.tick = () => { ticks++; return tick(); };
-    try { media.tick(); assert.equal(ticks, 1); } finally { media.render.tick = tick; }
-  }
-});
-
 test("part B restart: recovered operation plans execute and finalize newly confirmed work", async (t) => {
   const h = await makeTestHub(); t.after(() => h.cleanup());
   const owner = await enrolOwner(h);
@@ -58,7 +33,7 @@ test("part B restart: recovered operation plans execute and finalize newly confi
     describe: () => ({ title: "Restart", params: {}, ops: [{ op: "media.render" }], observed: [], transmitted: [], outputs: [] }),
     run: async ({ authorize }) => { authorize({ op: "media.render" }); calls++; return { result: { restarted: true } }; },
   };
-  await h.hub.opsPlans.close(); h.hub.opsPlans.detach();
+  await h.hub.opsPlans.close();
   h.hub.opsPlans.recover();
   const plan = await h.hub.opsPlans.propose({ kind: "test.restart", title: "Restart", actor: "test", steps: [{ kind: "test.restart", params: {} }] });
   await h.hub.opsPlans.confirm({ planId: plan.id, nonce: plan.nonce, displayedHash: plan.hash, session: owner.session });

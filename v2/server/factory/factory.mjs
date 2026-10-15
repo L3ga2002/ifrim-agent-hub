@@ -894,7 +894,7 @@ export function createFactory(deps) {
     let lease;
     try { lease = bus.transaction(() => leases.acquire({ resource, holder: `factory-runner:${missionId}`, taskId: null, runId: null, ttlSeconds: 1800 })); }
     catch (error) { return { blocked: `Workspace-ul e ocupat (${error.message}); aștept eliberarea` }; }
-    try { return await fn(); } finally { if (!closed) bus.transaction(() => leases.release(lease.id, "factory runner finished")); }
+    try { return await fn(); } finally { bus.transaction(() => leases.release(lease.id, "factory runner finished")); }
   }
 
   async function runCommands(missionId, stage, commands, changeSetId) {
@@ -1069,7 +1069,10 @@ export function createFactory(deps) {
         ...(request.maxOutputTokens === 64000 ? { maxOutputTokens: 64000 } : {}) })));
     } catch (error) {
       // A Stop / Pause that arrived while the start was in flight: the refusal is its consequence, not a new blocker.
-      if (closed) return null;
+      if (closed) {
+        db.prepare("UPDATE factory_dispatches SET status = 'CANCELLED', run_id = ?, error = ?, updated_at = ? WHERE id = ?").run(error.details?.runId || null, String(error.message).slice(0, 2000), now(), id);
+        return null;
+      }
       if (isHalted(missionId)) {
         db.prepare("UPDATE factory_dispatches SET status = 'CANCELLED', error = ?, updated_at = ? WHERE id = ?").run(String(error.message).slice(0, 2000), now(), id);
         return halted(missionId);
@@ -1086,7 +1089,10 @@ export function createFactory(deps) {
     }
     // Stop / Pause during the start: the run became visible only now and is interrupted before it can work. Its result is
     // then archived (onRunFinished), the dispatch ends INTERRUPTED (not an attempt) and a resume repeats this step.
-    if (closed) return null;
+    if (closed) {
+      db.prepare("UPDATE factory_dispatches SET status = 'INTERRUPTED', run_id = ?, updated_at = ? WHERE id = ?").run(run.id, now(), id);
+      return null;
+    }
     if (isHalted(missionId)) {
       db.prepare("UPDATE factory_dispatches SET status = 'INTERRUPTED', run_id = ?, updated_at = ? WHERE id = ?").run(run.id, now(), id);
       await runs.interrupt(run.id, fm(missionId)?.cancelRequestedAt ? "factory-stop" : "factory-pause").catch(() => {});

@@ -190,10 +190,12 @@ export function createLeaseReconciler(hub, { subscribe = true, probe = null } = 
     if (proc.state === "alive") return { ...base, label, verdict: "process_alive", tie: proc.tie, pid: proc.pid, key: proc.key || null, reason: `procesul pornit de Hub (PID ${proc.pid}) încă rulează`, evidence };
     // Review R1-F2: a Windows provider this Hub process never supervised (another boot) — its own end proves nothing about the commands
     // it started. Unknown: the owner's acknowledgement on the card, never a release by itself (no PID to stop: tie null).
-      if (proc.state === "gone" && env === "windows" && (proc.why !== "supervisor_exited" || record?.treeUnverified)) {
+    if (proc.state === "gone" && env === "windows" && (proc.why !== "supervisor_exited" || record?.treeUnverified)) {
       evidence.process.tree = "unknown";
       return { ...base, label, verdict: "unknown", tie: null, pid: null, treeUnknown: true,
-        reason: proc.why === "pid_reused"
+        reason: proc.why === "supervisor_exited" && record?.treeUnverified
+          ? `procesul providerului (PID ${proc.pid}) s-a oprit, dar oprirea arborelui lui de procese nu a fost confirmată: comenzile pornite de el pot rula încă`
+          : proc.why === "pid_reused"
           ? `procesul providerului s-a oprit (PID-ul ${proc.pid} aparține acum altui proces), dar nu l-a oprit acest Hub: comenzile pornite de el (teste, servere) pot rula încă`
           : `procesul providerului (PID ${proc.pid}) nu mai rulează, dar nu l-a oprit acest Hub (a repornit în timpul execuției): comenzile pornite de el (teste, servere) pot rula încă`,
         evidence };

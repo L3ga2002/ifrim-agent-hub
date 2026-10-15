@@ -60,20 +60,6 @@ function junction(target, link, t) {
 
 // ---------------------------------------------------------------- paths
 
-test("review B assets: a probe completing after detach cannot read or write the closed DB", async () => {
-  const s = setup(); let release, entered;
-  const held = new Promise((r) => { release = r; });
-  const ready = new Promise((r) => { entered = r; });
-  s.tools.probe = async () => { entered(); await held; return normalizeProbe(VIDEO_PROBE); };
-  const work = s.assets.ingestFile({ sourcePath: s.put("late.mp4", fakeMp4()), allowedRoots: [s.inbox], actor: "test" });
-  const refused = assert.rejects(work, (e) => e.code === "HUB_SHUTDOWN");
-  await ready;
-  s.assets.detach(); await s.env.cleanup(); release();
-  await refused;
-  fs.rmSync(s.env.dir, { recursive: true, force: true });
-  assert.equal(fs.existsSync(s.env.dir), false, "cleanup settled before directory removal");
-});
-
 test("M09-AS-01: paths are content-addressed or id-based and resolvers refuse traversal, absolute paths and NUL", async () => {
   const { env, paths } = setup();
   try {

@@ -438,7 +438,7 @@ export function createClaudeAdapter({ config, supervisor, homeDir = os.homedir()
     async function interrupt(reason = "user") {
       interruptedBy = reason;
       const result = await supervisor.stop(key, { graceMs: 300 });
-      return { interrupted: true, graceful: false, reason, stop: result };
+      return { interrupted: result.stopped, graceful: false, reason, stop: result };
     }
 
     return { key, pid: record.pid, nativeSessionId, newSession, done, interrupt };

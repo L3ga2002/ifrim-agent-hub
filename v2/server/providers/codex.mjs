@@ -457,18 +457,18 @@ export function createCodexAdapter({ config, supervisor, homeDir = os.homedir(),
       if (!turnRequested) {
         const stopped = await supervisor.stop(key, { graceMs: 0 });
         finish({ status: "interrupted", output, usage, threadId: currentThread, turnId: "", errorCategory: null, error: `interrupted (${reason})`, preInference: true });
-        return { interrupted: true, graceful: false, reason, stop: stopped };
+        return { interrupted: stopped.stopped, graceful: false, reason, stop: stopped };
       }
       // If turn/start is in flight, wait briefly for its id so the turn can be interrupted properly.
       for (let waited = 0; !turnId && !finished && waited < 3000; waited += 50) await new Promise((r) => setTimeout(r, 50));
       if (currentThread && turnId) {
         await session.peer.request("turn/interrupt", { threadId: currentThread, turnId }, 5000).catch(() => {});
         const graceful = await Promise.race([completion.then(() => true), new Promise((r) => setTimeout(() => r(false), 5000))]);
-        if (graceful) { await supervisor.stop(key, { graceMs: 1000 }); return { interrupted: true, graceful: true, reason }; }
+        if (graceful) { const stopped = await supervisor.stop(key, { graceMs: 1000 }); return { interrupted: stopped.stopped, graceful: true, reason, stop: stopped }; }
       }
       const stopped = await supervisor.stop(key, { graceMs: 500 });
       finish({ status: "interrupted", output, usage, threadId: currentThread, turnId, errorCategory: null, error: `interrupted (${reason})`, preInference: !turnId });
-      return { interrupted: true, graceful: false, reason, stop: stopped };
+      return { interrupted: stopped.stopped, graceful: false, reason, stop: stopped };
     }
 
     const done = (async () => {
