@@ -17,7 +17,7 @@ import { calibrateS25 } from "./s25-calibrate.mjs";
 import { STOP, CONSENT_PROVENANCE, checkLayout, physicalPath, exportManifest, verifyManifest, within, aclDiff, snapshotAcls, digest } from "./s25-parity-safety.mjs";
 import { compareProcessIdentity } from "./s25-process-identity.mjs";
 import { binaryIdentity, recipes, layoutIsolation, assertHeadroom, runnerPreflight, rehearsalClaudeLauncher, liveClaudeDenyRules, assertDenyClassification, assertAclDiff } from "./s25-real-preflight.mjs";
-import { trackSupervisedProcess, recordedProcessTree, windowsProcesses, recordedSurvivors, cleanupRecordedProcesses, emergencyKillRecorded } from "./s25-isolated-rehearsal.mjs";
+import { trackSupervisedProcess, recordedProcessTree, windowsProcesses, recordedSurvivors, cleanupRecordedProcesses, emergencyKillRecorded, sandboxProcessLimitations, canaryProcessEvidence } from "./s25-isolated-rehearsal.mjs";
 
 const stamp = () => new Date().toISOString();
 const jsonFile = (file, value) => fs.writeFileSync(file, JSON.stringify(value, null, 2) + "\n", { flag: "wx" });
@@ -172,7 +172,15 @@ export function classifyRehearsal(e) {
   return "BASELINE_REFUSED";
 }
 
-export async function runRehearsal({ mode = "fake", out, parent, scenario = "success", fakeTurnMs = 8000, commit, manifestSha256,
+export function reviewResumeEvidence(turns) {
+  const reviews = turns.filter((r) => r.provider === "codex");
+  const actual = (r) => r.events.filter((v) => v.type === "session" && v.nativeSessionId).at(-1)?.nativeSessionId || null;
+  const sessions = reviews.map((r) => ({ runId: r.runId, requestedThreadId: r.requestedThreadId, actualThreadId: actual(r),
+    sessionEvents: r.events.filter((v) => v.type === "session"), notices: r.events.filter((v) => v.type === "notice") }));
+  return { sessions, reused: reviews.length < 2 ? "not applicable" : Boolean(actual(reviews[0]) && actual(reviews[1]) === actual(reviews[0])) };
+}
+
+export async function runRehearsal({ mode = "fake", out, parent, dedicatedRoot, scenario = "success", fakeTurnMs = 8000, commit, manifestSha256,
   isolationConsent, homeAclChangeApproved, claudeHeadroomChecked, signal, realProcesses = [], calibrate = true, preflightOnly = false, fakeSeams = {} } = {}) {
   signal?.throwIfAborted();
   if (!["fake", "real"].includes(mode)) throw new Error("mode must be fake or real");
@@ -189,11 +197,11 @@ export async function runRehearsal({ mode = "fake", out, parent, scenario = "suc
   if (!parent) throw new Error("--parent is required");
   parent = path.resolve(parent); out = path.resolve(out || path.join(parent, "evidence"));
   const projectDir = path.join(parent, "booking");
-  if (mode === "real") checkLayout({ parent, hubRoot: HUB_ROOT, projectDir, out, homeDir: os.homedir(), realpath: physicalPath });
+  if (mode === "real") checkLayout({ parent, dedicatedRoot, hubRoot: HUB_ROOT, projectDir, out, homeDir: os.homedir(), realpath: physicalPath });
   if (fs.existsSync(out) && fs.readdirSync(out).length) throw new Error("Evidence directory must be empty");
   if (fs.existsSync(projectDir)) throw new Error("Project copy already exists; no relaunch or reuse");
   fs.mkdirSync(out, { recursive: true });
-  const e = { schema: "s25-isolated-rehearsal/v2", mode, scenario, preflightOnly, parent, out, projectDir, startedAt: stamp(), commit: commit || "PASS_SIMULATED: no commit claim",
+  const e = { schema: "s25-isolated-rehearsal/v2", mode, scenario, preflightOnly, parent, dedicatedRoot: dedicatedRoot || null, dedicatedRootDeclaration: "--dedicated-root is coordinator's declaration: folder created only for experiments", out, projectDir, startedAt: stamp(), commit: commit || "PASS_SIMULATED: no commit claim",
     runtime: { node: process.version, executable: process.execPath, platform: process.platform },
     gitAvailability: globalThis[Symbol.for("s25.fake.gitGuard")] ? "PASS_SIMULATED: test preload returns ENOENT for git; no git command executes" : "not overridden",
     runner: mode === "real" ? "production codex sandbox, ifrim_hub_rw, 180 s" : "PASS_SIMULATED: fake-codex executes host Node, no OS isolation",
@@ -203,13 +211,14 @@ export async function runRehearsal({ mode = "fake", out, parent, scenario = "suc
     stream: [], preflight: {}, configuration: { author: { model: "sonnet", effort: "medium", access: "read-only", maxOutputTokens: 64000, turnTimeoutMin: 45 },
       reviewer: { model: "gpt-6.1-sol", effort: "medium", access: "read-only" }, maxAttemptsPerStage: 1, reauthorMax: 1, maxDurationMin: 180,
       deadlineSource: "coordinator decision: live test-first plan 180 min", runnerTimeoutMs: 180000, waitLimitMin: 185 } };
-  let h, missionId, timer, failure, realConfig, acl, baselineProcesses = [], scanPending, pendingTick, preflightPassed = false;
+  let h, missionId, timer, failure, realConfig, acl, baselineProcesses = [], scanPending, pendingTick, canaryCapture, preflightPassed = false;
   e.realProcessCleanup = { records: realProcesses, survivors: [], verified: false };
   const scan = async () => {
     if (scanPending) return scanPending;
     scanPending = (async () => {
-      const rows = await windowsProcesses();
-      recordedProcessTree(realProcesses, rows);
+      const observedAt = stamp(), rows = await windowsProcesses();
+      recordedProcessTree(realProcesses, rows, observedAt);
+      (e.processLimitations ||= []).push({ at: observedAt, ...sandboxProcessLimitations(baselineProcesses, rows, realProcesses) });
       e.processScans.push({ at: stamp(), total: rows.length, owned: realProcesses.length });
       return rows;
     })().finally(() => { scanPending = null; });
@@ -268,8 +277,8 @@ export async function runRehearsal({ mode = "fake", out, parent, scenario = "suc
     e.grantsAfter = e.envelope ? copy(h.hub.grants.ofEnvelope(e.envelope.id)) : [];
     captureCandidate();
     e.deadlines = e.runs.map((r) => ({ runId: r.id, turnDeadline: JSON.parse(r.evidence_json).turnDeadline }));
-    const reviews = e.adapterTurns.filter((r) => r.provider === "codex");
-    e.reviewThreadReuse = reviews.length < 2 ? "not applicable" : reviews[1].requestedThreadId === reviews[0].events.find((v) => v.type === "session")?.nativeSessionId;
+    e.reviewResumeEvidence = reviewResumeEvidence(e.adapterTurns);
+    e.reviewThreadReuse = e.reviewResumeEvidence.reused;
     e.classification = classifyRehearsal(e);
   }
   try {
@@ -278,7 +287,7 @@ export async function runRehearsal({ mode = "fake", out, parent, scenario = "suc
       if (process.platform !== "win32") throw new Error("Real rehearsal requires Windows");
     }
     const ctx = s25Context(parent);
-    if (mode === "real") checkLayout({ parent, hubRoot: HUB_ROOT, projectDir, out, homeDir: os.homedir(), realpath: fs.realpathSync });
+    if (mode === "real") checkLayout({ parent, dedicatedRoot, hubRoot: HUB_ROOT, projectDir, out, homeDir: os.homedir(), realpath: fs.realpathSync });
     h = await makeRehearsalHub({ parent, mode, scenario });
     e.isolation = { dataDir: h.dataDir, listener: false, scheduler: "off; explicit scheduler.tick every 15 seconds", turnTimeScale: 1 };
     const recordProcess = (event) => { e.processes.push({ ...event, at: stamp() }); };
@@ -286,6 +295,7 @@ export async function runRehearsal({ mode = "fake", out, parent, scenario = "suc
     if (mode === "real") {
       // P10 begins before probes/P7, so short-lived and sandbox-account roots are covered too.
       baselineProcesses = await windowsProcesses(); e.processBaseline = baselineProcesses;
+      e.processLimitations = [{ at: stamp(), phase: "baseline", ...sandboxProcessLimitations(baselineProcesses, baselineProcesses, realProcesses) }];
     }
     realConfig = { ...h.config, testMode: false, ...(mode === "real" ? { providerBinaries: {}, hubRoot: HUB_ROOT } : {}) };
     wireRehearsalRuntime({ h, config: realConfig, evidence: e, onEvent: recordProcess,
@@ -312,6 +322,9 @@ export async function runRehearsal({ mode = "fake", out, parent, scenario = "suc
       if (Object.values(assertions).some((ok) => !ok)) throw new Error("Effective provider launch differs from preflight recipe");
       const startRequestedAt = stamp(), stdout = options.onStdoutLine;
       const record = start({ ...options, onStdoutLine(line) {
+        const canary = mode === "real" && options.key === "s25-preflight" && line.match(/S25_PREFLIGHT_READY (\d+)/);
+        if (canary && !canaryCapture) canaryCapture = scan().then((rows) => canaryProcessEvidence(realProcesses, rows, Number(canary[1])))
+          .catch((error) => ({ verified: false, error: error.message }));
         // Observe only protocol metadata, never save prompts, auth responses or complete raw streams.
         try {
           const m = JSON.parse(line), msg = m.message || m.event?.message;
@@ -359,7 +372,7 @@ export async function runRehearsal({ mode = "fake", out, parent, scenario = "suc
       e.headroom = assertHeadroom(e.probes, claudeHeadroomChecked);
       const applied = codexDeniedEntries({ homeDir: h.homeDir, extra: [h.config.dataDir, h.config.backupDir] });
       if (denyListFingerprint(applied) !== h.hub.codexIsolation().fingerprint) throw new Error("Applied/gate fingerprint mismatch");
-      acl = layoutIsolation({ hub: h.hub, parent, homeDir: h.homeDir, hubRoot: HUB_ROOT, evidence: e });
+      acl = layoutIsolation({ hub: h.hub, parent, dedicatedRoot, homeDir: h.homeDir, hubRoot: HUB_ROOT, evidence: e });
     } else {
       e.denyList = { ...h.hub.codexIsolation(), label: "PASS_SIMULATED: fake home; no ACL operation" };
       if (scenario === "deny-other") {
@@ -381,7 +394,8 @@ export async function runRehearsal({ mode = "fake", out, parent, scenario = "suc
     e.admin = { label: "throwaway admin path", channel: "test", mode: "BUILD_SAFE", executionGate: h.hub.settings.get("executionGate") };
     declareBillingFixture(h.hub);
     const project = (await dispatch("project.register_test", { path: projectDir, name: "Repetiție izolată §25" })).result;
-    if (mode === "real") await runnerPreflight({ h, parent, project, evidence: e, acl, homeAclChangeApproved });
+    if (mode === "real") await runnerPreflight({ h, parent, project, evidence: e, acl, homeAclChangeApproved,
+      processEvidence: async () => canaryCapture ? await canaryCapture : { verified: false, reason: "No live canary marker/snapshot" } });
     signal?.throwIfAborted();
     const limits = { writerModel: "gpt-6.1-sol", writerEffort: "medium", reviewerModel: "sonnet", reviewerEffort: "medium", maxAttemptsPerStage: 1, maxDurationMin: 180 };
     const prepared = (await dispatch("factory.prepare", { projectId: project.id, ...ctx.built.input, limits })).result;
@@ -476,6 +490,7 @@ export async function runRehearsal({ mode = "fake", out, parent, scenario = "suc
       });
       if (acl) await cleanup("final ACL diff", async () => {
         e.aclAfter = snapshotAcls(acl.targets); e.aclFinalDiff = aclDiff(e.aclBefore, e.aclAfter, acl);
+        if (!e.aclFinalDiff.ok) e.aclDefect = { kind: "ACL_CHANGED_OUTSIDE_ALLOWED_SCOPE", phase: "post-run", violations: e.aclFinalDiff.violations };
         e.homeAclReport = e.aclAfter.filter((r) => /[\\/]\.(claude|openclaw)$/.test(r.path));
         if (e.aclAfter.some((r) => r.error) || !e.aclFinalDiff.ok) throw new Error("Post-run ACL metadata refused or changed outside allowed paths");
       });

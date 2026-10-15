@@ -8,10 +8,21 @@ import { codexDeniedEntries, denyListFingerprint, codexIsolationArgs, claudeAbso
 import { commandArgv, RUNNER_TIMEOUT_MS } from "../../server/factory/runner.mjs";
 import { assembleTestFile, baselineGate } from "../../server/factory/test-first.mjs";
 import { classifyDenyEntries, snapshotAcls, predictHomeAclChanges, requireHomeApproval, aclDiff,
-  MAIN_HUB, LIVE_DATA, LIVE_PRIVATE_PATHS, LIVE_FINGERPRINT, within, digest, codexHeadroom, validIso, exactOrGlob } from "./s25-parity-safety.mjs";
+  MAIN_HUB, LIVE_DATA, LIVE_FINGERPRINT, within, digest, codexHeadroom, validIso, exactOrGlob, ancestorPaths } from "./s25-parity-safety.mjs";
+
+// Coordinator-supplied live pointer facts (SPEC C / confirmed R3); no live config or credential reads.
+// Same mapping as resolveDataLocation(pointer): private and backups/v2, never the data root.
+export function consentedLivePaths(homeDir = String.raw`C:\Users\mihai`) {
+  const location = { source: "coordinator live data-location pointer facts", dataRoot: LIVE_DATA,
+    dataDir: path.join(LIVE_DATA, "private"), backupDir: path.join(LIVE_DATA, "backups", "v2") };
+  const live = codexDeniedEntries({ homeDir, hubRoot: MAIN_HUB, extra: [location.dataDir, location.backupDir] });
+  if (denyListFingerprint(live) !== LIVE_FINGERPRINT) throw new Error("P4 live home-consent list no longer matches 0b85ddbd40f8b446");
+  const privatePaths = live.filter((p) => within(path.join(MAIN_HUB, ".ifrim"), p) || within(location.dataRoot, p));
+  return { live, privatePaths, location };
+}
 
 // Read rules only: this wrapper never changes the filesystem or Codex ACL profiles.
-export const liveClaudeDenyRules = () => LIVE_PRIVATE_PATHS.map((p) => `Read(${claudeAbsolute(p)}/**)`);
+export const liveClaudeDenyRules = () => [...consentedLivePaths().privatePaths, LIVE_DATA].map((p) => `Read(${claudeAbsolute(p)}/**)`);
 export function rehearsalClaudeLauncher(options) {
   const host = windowsClaudeLauncher(options);
   return { ...host, deniedReads: (cwd) => [...new Set([...host.deniedReads(cwd), ...liveClaudeDenyRules()])] };
@@ -29,16 +40,17 @@ export function assertAclDiff(before, after, acl, evidence) {
   if (!evidence.aclPreflightDiff.ok) throw new Error("P8 ACL changed outside allowed paths");
   return evidence.aclPreflightDiff;
 }
-export function assertLivePrivateProtection(rows, evidence) {
-  const paths = LIVE_PRIVATE_PATHS.map((target) => {
+export function assertLivePrivateProtection(rows, evidence, { privatePaths = consentedLivePaths().privatePaths, claudeRules = liveClaudeDenyRules() } = {}) {
+  const paths = privatePaths.map((target) => {
     const row = rows.find((r) => exactOrGlob(target, r.path));
     const group = row?.aces?.filter((a) => /(?:\\|^)CodexSandboxUsers:/i.test(a)) || [];
     return { path: target, classification: "live-consented-existing-ACE", profileMutation: false,
+      claudeReadDenied: claudeRules.includes(`Read(${claudeAbsolute(target)}/**)`),
       protected: row?.exists === true && !row.error && group.some((a) => /\(DENY\)\(R\)/.test(a))
         && group.some((a) => /\(OI\)\(CI\)\(IO\)\(DENY\)\(R,GR\)/.test(a)) };
   });
-  evidence.livePrivateProtection = { claudeRules: liveClaudeDenyRules(), codex: paths, source: "existing owner-consented ACE metadata; no ACL mutation" };
-  if (paths.some((p) => !p.protected)) throw new Error("P5 live Hub private data protection unverified; stop before any model");
+  evidence.livePrivateProtection = { claudeRules, codex: paths, source: "existing owner-consented ACE metadata; no ACL mutation" };
+  if (paths.some((p) => !p.protected || !p.claudeReadDenied)) throw new Error("P5 live Hub private data protection unverified; stop before any model");
 }
 
 export function binaryIdentity(config) {
@@ -75,25 +87,26 @@ export function recipes({ config, homeDir, projectDir, mcpServerNames = [] }) {
     appServer: { executable: reviewer.executable, args: reviewer.args, approvalsReviewer: "user (recipe; wire response recorded separately)" }, runner, assertions };
 }
 
-export function layoutIsolation({ hub, parent, homeDir, hubRoot, evidence, snapshot = snapshotAcls }) {
-  const live = codexDeniedEntries({ homeDir, hubRoot: MAIN_HUB, extra: [path.join(LIVE_DATA, "private"), path.join(LIVE_DATA, "backups", "v2")] });
-  if (denyListFingerprint(live) !== LIVE_FINGERPRINT) throw new Error("P4 live home-consent list no longer matches 0b85ddbd40f8b446");
+export function layoutIsolation({ hub, parent, dedicatedRoot, homeDir, hubRoot, evidence, snapshot = snapshotAcls }) {
+  const { live, privatePaths, location } = consentedLivePaths(homeDir);
   const liveConsented = live.filter((p) => within(homeDir, p) && !within(MAIN_HUB, p) && !within(LIVE_DATA, p));
   const isolation = hub.codexIsolation();
   // The caller supplies the exact Hub list; independently applied list is checked in the driver using the real config.
-  evidence.denyList = { ...isolation, liveConsented };
+  evidence.denyList = { ...isolation, liveConsented, livePrivatePaths: privatePaths, liveLocation: location };
   assertDenyClassification(isolation.paths, { parent, liveConsented }, evidence);
   if (isolation.paths.some((p) => within(p, path.join(parent, "booking")) || within(p, path.join(parent, "evidence")))) throw new Error("Project or evidence is under a denied path");
   const sentinels = [String.raw`C:\Users\mihai\hub-rc`, String.raw`C:\Users\mihai\hub-rc\.ifrim`, String.raw`C:\Users\mihai\hub-rc\.ifrim\tmp`,
     String.raw`C:\Users\mihai\hub-rc2`, String.raw`C:\Users\mihai\hub-rc2\.ifrim`, String.raw`C:\Users\mihai\hub-rc2\.ifrim\tmp`,
     MAIN_HUB, path.join(MAIN_HUB, ".ifrim", "BACKUPS"), homeDir, process.env.TEMP, parent, hubRoot, path.join(parent, "booking"), path.join(parent, "evidence")];
-  const targets = [...isolation.paths, ...sentinels, ...LIVE_PRIVATE_PATHS].filter(Boolean);
+  const ancestors = ancestorPaths(parent);
+  evidence.aclAncestors = { dedicatedRoot, paths: ancestors, outsideDedicatedRoot: ancestors.filter((p) => !within(dedicatedRoot || parent, p)) };
+  const targets = [...isolation.paths, ...sentinels, ...privatePaths, ...ancestors].filter(Boolean);
   evidence.aclBefore = snapshot(targets);
   const unreadable = evidence.aclBefore.filter((r) => r.error);
   if (unreadable.length) throw new Error(`P5 ACL metadata refused: ${unreadable.map((r) => r.error).join("\n")}`);
-  assertLivePrivateProtection(evidence.aclBefore, evidence);
+  assertLivePrivateProtection(evidence.aclBefore, evidence, { privatePaths });
   evidence.aclPrediction = predictHomeAclChanges(evidence.aclBefore.filter((r) => liveConsented.some((p) => exactOrGlob(p, r.path))), { parent });
-  return { targets, allowed: [{ path: parent, recursive: true }, ...liveConsented] };
+  return { targets, allowed: [{ path: dedicatedRoot || parent, recursive: true }, ...liveConsented] };
 }
 
 export function assertHeadroom(probes, checked) {
@@ -116,11 +129,13 @@ export function runnerPreflightSource(canary) {
     });
     assert.equal(await (await fetch("http://127.0.0.1:" + server.address().port)).text(), "seven");
     assert.throws(() => fs.readFileSync(${JSON.stringify(canary)}), (e) => ["EACCES", "EPERM"].includes(e.code));
+    console.log("S25_PREFLIGHT_READY " + process.pid);
+    await new Promise((resolve) => setTimeout(resolve, 2000));
   });\n`;
   return { name, text: assembleTestFile({ body, needs: ["node:fs", "node:http", "node:sqlite"], harness: 2 }).text };
 }
 
-export async function runnerPreflight({ h, parent, project, evidence, acl, homeAclChangeApproved, snapshot = snapshotAcls }) {
+export async function runnerPreflight({ h, parent, project, evidence, acl, homeAclChangeApproved, snapshot = snapshotAcls, processEvidence = async () => ({ verified: false, reason: "P7 process observation absent" }) }) {
   requireHomeApproval(evidence.aclPrediction, homeAclChangeApproved);
   evidence.homeAclChangeApproved = { at: homeAclChangeApproved,
     source: "coordinator supplied explicit flag; owner approval 2026-10-15T10:52:29Z",
@@ -138,9 +153,11 @@ export async function runnerPreflight({ h, parent, project, evidence, acl, homeA
   const result = await h.hub.factoryRunner.run({ key: "s25-preflight", ws: project.path, command: `node --test ${ref}`, timeoutMs: RUNNER_TIMEOUT_MS, project });
   evidence.P7 = { startedAt, durationMs: Math.round(performance.now() - t0), result,
     cleanup: result.fileCleanup, gate: baselineGate(result, { manifest: { cases: [{ name }] }, harness: 2 }) };
+  evidence.P7.R7 = await processEvidence();
   assertAclDiff(evidence.aclBefore, snapshot(acl.targets), acl, evidence);
   evidence.homeAclReport = evidence.aclAfterPreflight.filter((r) => /[\\/]\.(claude|openclaw)$/.test(r.path));
   if (result.status !== "PASS" || evidence.P7.gate !== null) throw new Error(`P7 real runner refused: ${result.reason}; ${result.outputTail}`);
+  if (!evidence.P7.R7.verified) throw new Error("P7 R7 canary parent chain not demonstrated; stop before any model");
   // The scratch test must not alter the mission's later project snapshot.
   fs.unlinkSync(target);
 }

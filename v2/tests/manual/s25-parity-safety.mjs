@@ -7,7 +7,6 @@ import { execFileSync } from "node:child_process";
 export const STOP = "REHEARSAL_INTENTIONAL_STOP_BEFORE_WRITER";
 export const MAIN_HUB = String.raw`C:\Users\mihai\OneDrive\Desktop\Ifrim Digital Proiecte\Ifrim Agent Hub`;
 export const LIVE_DATA = String.raw`C:\Users\mihai\IfrimHub\hub-data`;
-export const LIVE_PRIVATE_PATHS = [...["private", "BACKUPS", "tmp"].map((p) => path.win32.join(MAIN_HUB, ".ifrim", p)), LIVE_DATA];
 export const LIVE_FINGERPRINT = "0b85ddbd40f8b446";
 export const CONSENT_PROVENANCE = Object.freeze({ kind: "AGENT_RECORDED_FROM_OWNER_TEXT",
   liveConsent: "0b85ddbd40f8b446 2026-10-03T18:29:02Z (home entries)",
@@ -26,10 +25,18 @@ export function classifyDenyEntries(entries, { parent, liveConsented = [] }) {
   return entries.map((entry) => ({ path: entry, classification: within(parent, entry) ? "dedicated" : home.has(pathKey(entry)) ? "home-consented" : "other" }));
 }
 
-export function checkLayout({ parent, hubRoot, projectDir, out, env = process.env, homeDir, realpath = null }) {
+export function ancestorPaths(target) {
+  const api = pathApi(target), rows = [];
+  for (let p = api.dirname(target); ; p = api.dirname(p)) {
+    rows.push(p);
+    if (api.dirname(p) === p) return rows;
+  }
+}
+
+export function checkLayout({ parent, dedicatedRoot, hubRoot, projectDir, out, env = process.env, homeDir, realpath = null }) {
   if (!parent || !pathApi(parent).isAbsolute(parent)) throw new Error("--parent must be an absolute dedicated directory");
   const api = pathApi(parent);
-  const forbidden = [String.raw`C:\Users\mihai\hub-rc`, String.raw`C:\Users\mihai\hub-rc2`, MAIN_HUB,
+  const forbidden = [String.raw`C:\Users\mihai\hub-rc`, String.raw`C:\Users\mihai\hub-rc2`, MAIN_HUB, LIVE_DATA,
     api.join(homeDir || String.raw`C:\Users\mihai`, "OneDrive"), env.OneDrive, env.OneDriveCommercial, env.OneDriveConsumer,
     env.LOCALAPPDATA, env.TEMP, env.TMP].filter(Boolean);
   forbidden.push(...[".codex", ".claude", ".openclaw", ".ssh", ".aws"].map((name) => api.join(homeDir || String.raw`C:\Users\mihai`, name)));
@@ -39,15 +46,22 @@ export function checkLayout({ parent, hubRoot, projectDir, out, env = process.en
       throw new Error(`Forbidden rehearsal parent: ${p}`);
   };
   check(parent);
+  if (!dedicatedRoot || !api.isAbsolute(dedicatedRoot) || pathKey(api.dirname(parent)) !== pathKey(dedicatedRoot))
+    throw new Error("Layout requires --dedicated-root <DEDICATED_ROOT> and --parent <DEDICATED_ROOT>/<run>");
+  check(dedicatedRoot);
+  const container = api.dirname(dedicatedRoot);
+  if (pathKey(container) !== pathKey(homeDir || String.raw`C:\Users\mihai`) && container !== api.parse(container).root)
+    throw new Error("Dedicated root must be directly under the home or drive root, created only for experiments");
   for (const [actual, name] of [[hubRoot, "hub"], [projectDir, "booking"], [out, "evidence"]]) {
     if (!actual || pathKey(actual) !== pathKey(api.join(parent, name))) throw new Error(`Layout requires <PARENT>/${name}`);
   }
   if (realpath) {
+    if (pathKey(realpath(dedicatedRoot)) !== pathKey(dedicatedRoot)) throw new Error("Dedicated root must not resolve through a junction");
     check(realpath(parent));
     if (pathKey(realpath(parent)) !== pathKey(parent)) throw new Error("Rehearsal parent must not resolve through a junction");
     for (const actual of [hubRoot, projectDir, out]) if (pathKey(realpath(actual)) !== pathKey(actual)) throw new Error(`Layout resolves through a link: ${actual}`);
   }
-  return { parent, hubRoot, projectDir, out, forbidden };
+  return { parent, dedicatedRoot, hubRoot, projectDir, out, forbidden, ancestors: ancestorPaths(parent) };
 }
 
 export function physicalPath(target) {
@@ -98,7 +112,7 @@ export function aclDiff(before, after, { allowed = [] } = {}) {
 
 export function predictHomeAclChanges(rows, { parent }) {
   return rows.filter((row) => !within(parent, row.path)).flatMap((row) => {
-    if (row.glob && row.exists === false) return [];
+    if (row.glob) return [];
     const aces = row.aces || [], group = aces.filter((a) => /(?:\\|^)CodexSandboxUsers:/i.test(a));
     const changes = [];
     if (row.error || row.exists === null) changes.push("ACL state unreadable; change cannot be bounded");
@@ -140,20 +154,38 @@ export function parseAclSnapshot(raw, target) {
   return rows;
 }
 
-export function snapshotAcls(targets, { execute = execFileSync } = {}) {
-  return [...new Set(targets)].flatMap((target) => {
+// Enumerate names only, never file contents; called only by explicit real mode (or fictive tests).
+export function expandAclGlob(target) {
+  const api = pathApi(target), directory = api.dirname(target);
+  if (/[*?]/.test(directory)) throw new Error("ACL glob directories must be literal");
+  try { return fs.readdirSync(directory).map((name) => api.join(directory, name)).filter((p) => exactOrGlob(target, p)); }
+  catch (error) { if (error.code === "ENOENT") return []; throw error; }
+}
+
+export function snapshotAcls(targets, { execute = execFileSync, expand = expandAclGlob } = {}) {
+  const snapshot = (target) => {
     try {
-      // No /T, no content reads, no credential directory enumeration by the driver.
+      target = pathApi(target).normalize(target);
       const raw = execute("icacls.exe", [target], { windowsHide: true, timeout: 30000, encoding: "utf8" });
+      if (/Failed processing [1-9]\d* files/i.test(String(raw))) throw new Error(String(raw));
       const rows = parseAclSnapshot(raw, target);
-      if (!rows.length && /[*?]/.test(target) && /Successfully processed 0 files; Failed processing 0 files/i.test(String(raw))) return { path: target, exists: false, glob: true, aces: [] };
       if (!rows.length || rows.some((r) => !r.aces.length)) throw new Error(`No ACEs returned for ${target}`);
       return rows;
     } catch (error) {
       const exact = `${error.message}\n${error.stdout || ""}\n${error.stderr || ""}`.trim();
+      // Concrete absent targets are legitimate preflight predictions (the sandbox creates them).
+      // A failure count alone never proves absence; glob expressions never reach this call.
       const missing = /cannot find|not found|nu poate găsi/i.test(exact);
       return { path: target, exists: missing ? false : null, glob: /[*?]/.test(target), aces: [], ...(missing ? { missingText: exact } : { error: exact }) };
     }
+  };
+  return [...new Set(targets)].flatMap((target) => {
+    if (!/[*?]/.test(target)) return snapshot(target);
+    try {
+      const matches = expand(target);
+      if (matches.some((p) => !exactOrGlob(target, p))) throw new Error("Unexpected glob expansion");
+      return [{ path: target, glob: true, status: `glob — expanded ${matches.length} matches`, matches, aces: [] }, ...matches.flatMap(snapshot)];
+    } catch (error) { return [{ path: target, glob: true, status: "glob — expansion refused", aces: [], error: error.message }]; }
   });
 }
 
@@ -161,7 +193,7 @@ export function codexHeadroom(probe) {
   const u = probe?.usage, credits = u?.creditsReported;
   return Boolean(u && !u.error && u.windows?.length && u.windows.every((w) => Number.isFinite(w.usedPercent) && w.usedPercent >= 0 && w.usedPercent < 100)
     && !u.limitReached && !u.spendControlReached && u.ordinaryUsageAllowed !== false
-    && credits && credits.unlimited === false && (credits.hasCredits === false ||
-      ((typeof credits.balance === "number" || typeof credits.balance === "string" && credits.balance.trim() !== "")
-        && Number.isFinite(Number(credits.balance)) && Number(credits.balance) === 0)));
+    && credits && credits.unlimited === false
+    && (typeof credits.balance === "number" || typeof credits.balance === "string" && credits.balance.trim() !== "")
+    && Number.isFinite(Number(credits.balance)) && Number(credits.balance) === 0);
 }

@@ -5,20 +5,20 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
-import { classifyDenyEntries, aclDiff, checkLayout, exportManifest, verifyManifest, predictHomeAclChanges, requireHomeApproval, codexHeadroom, parseAclSnapshot, snapshotAcls, STOP } from "./manual/s25-parity-safety.mjs";
-import { recipes, runnerPreflightSource, layoutIsolation, runnerPreflight, assertLivePrivateProtection, assertHeadroom } from "./manual/s25-real-preflight.mjs";
-import { LIVE_PRIVATE_PATHS } from "./manual/s25-parity-safety.mjs";
-import { trackSupervisedProcess, recordedProcessTree, windowsProcesses } from "./manual/s25-isolated-rehearsal.mjs";
+import { classifyDenyEntries, aclDiff, checkLayout, exportManifest, verifyManifest, predictHomeAclChanges, requireHomeApproval, codexHeadroom, parseAclSnapshot, snapshotAcls, ancestorPaths, expandAclGlob, LIVE_DATA, STOP } from "./manual/s25-parity-safety.mjs";
+import { recipes, runnerPreflightSource, layoutIsolation, runnerPreflight, assertLivePrivateProtection, assertHeadroom, consentedLivePaths, liveClaudeDenyRules } from "./manual/s25-real-preflight.mjs";
+import { trackSupervisedProcess, recordedProcessTree, windowsProcesses, recordedSurvivors, sandboxProcessLimitations, canaryProcessEvidence } from "./manual/s25-isolated-rehearsal.mjs";
 import { parseTapCases } from "../server/factory/test-first.mjs";
-import { runRehearsal, classifyRehearsal, observeAdapter, calibrationGate, rehearsalGate, rehearsalAuthority, assertRealPreloadAbsent, wireRehearsalRuntime } from "./manual/s25-rehearsal-core.mjs";
+import { runRehearsal, classifyRehearsal, observeAdapter, calibrationGate, rehearsalGate, rehearsalAuthority, assertRealPreloadAbsent, wireRehearsalRuntime, reviewResumeEvidence } from "./manual/s25-rehearsal-core.mjs";
 import { registerCleanupGuard } from "./helpers.mjs";
+import { rehearsalInputs } from "./manual/s25-rehearsal-inputs.mjs";
 registerCleanupGuard();
 const roots = [];
 const testBase = path.resolve(".ifrim/tmp/r-parity-round2");
 fs.mkdirSync(testBase, { recursive: true });
 const root = () => { const dir = fs.mkdtempSync(path.join(testBase, "run-")); roots.push(dir); return dir; };
 after(() => { for (const dir of roots) { assert.equal(path.dirname(dir), testBase); fs.rmSync(dir, { recursive: true, force: true, maxRetries: 5 }); } });
-const layout = (parent) => ({ parent, hubRoot: `${parent}/hub`, projectDir: `${parent}/booking`, out: `${parent}/evidence`, homeDir: "C:/Users/test",
+const layout = (parent) => ({ parent, dedicatedRoot: path.win32.dirname(parent), hubRoot: `${parent}/hub`, projectDir: `${parent}/booking`, out: `${parent}/evidence`, homeDir: "C:/Users/test",
   env: { LOCALAPPDATA: "C:/Users/test/AppData/Local", TEMP: "C:/Temp" } });
 
 test("P4 exact home allowlist and dedicated descendants, case and separators", () => {
@@ -59,7 +59,7 @@ test("P5 prediction preserves exact ALLOW removal and requires explicit approval
   assert.doesNotThrow(() => requireHomeApproval(predicted, "2026-10-15T10:52:29Z"));
 });
 test("P12 quota exhaustion, unknown allowance and credits fail closed", () => {
-  const probe = { usage: { windows: [{ usedPercent: 2 }], limitReached: false, creditsReported: { hasCredits: false, unlimited: false } } };
+  const probe = { usage: { windows: [{ usedPercent: 2 }], limitReached: false, creditsReported: { hasCredits: false, unlimited: false, balance: "0" } } };
   assert.equal(codexHeadroom(probe), true);
   for (const change of [{ windows: [] }, { windows: [{ usedPercent: 100 }] }, { limitReached: true }, { ordinaryUsageAllowed: false }, { creditsReported: { hasCredits: true, balance: 2 } }])
     assert.equal(codexHeadroom({ usage: { ...probe.usage, ...change } }), false);
@@ -167,7 +167,8 @@ test("ACL metadata preserves account spaces, individual glob identities and exac
   assert.equal(parseAclSnapshot(raw.replaceAll("fictive", "fictive with spaces"), target.replace("fictive", "fictive with spaces"))[0].path, "C:\\fictive with spaces\\.env.one");
   assert.equal(aclDiff([], rows, { allowed: [target] }).ok, true);
   assert.equal(aclDiff([], [{ path: "C:/fictive/.env.two/child", aces: [] }], { allowed: [target] }).ok, false);
-  assert.equal(snapshotAcls([target], { execute: () => raw }).length, 2);
+  const snap = snapshotAcls([target], { expand: () => rows.map((r) => r.path), execute: (file, [p]) => `${p} NT AUTHORITY\\SYSTEM:(F)` });
+  assert.equal(snap.length, 3); assert.equal(snap[0].status, "glob — expanded 2 matches");
   const error = Object.assign(new Error("Access denied"), { stderr: "exact refusal" });
   assert.match(snapshotAcls(["C:/fictive"], { execute: () => { throw error; } })[0].error, /exact refusal/);
   assert.throws(() => requireHomeApproval([], undefined), /explicit/);
@@ -227,21 +228,27 @@ test("P8 real runner preflight decision rejects an outside ACL diff after the in
 });
 
 test("P5 live private data requires existing DENY ACEs and records separate non-mutating Claude/Codex protection", () => {
-  const rows = LIVE_PRIVATE_PATHS.map((p) => ({ path: p, exists: true,
+  const { live, privatePaths } = consentedLivePaths();
+  assert.equal(privatePaths.length, 5); assert.ok(privatePaths.every((p) => live.includes(p)));
+  assert.ok(!privatePaths.includes(LIVE_DATA));
+  const rows = privatePaths.map((p) => ({ path: p, exists: true,
     aces: ["HOST\\CodexSandboxUsers:(DENY)(R)", "HOST\\CodexSandboxUsers:(OI)(CI)(IO)(DENY)(R,GR)"] }));
   const evidence = {};
+  rows.push({ path: LIVE_DATA, exists: true, aces: ["CATALIN\\mihai:(OI)(CI)(F)", "NT AUTHORITY\\SYSTEM:(OI)(CI)(F)"] });
   assertLivePrivateProtection(rows, evidence);
-  assert.equal(evidence.livePrivateProtection.claudeRules.length, 4);
+  assert.equal(evidence.livePrivateProtection.claudeRules.length, 6);
   assert.ok(evidence.livePrivateProtection.codex.every((p) => p.protected && !p.profileMutation));
+  assert.throws(() => assertLivePrivateProtection(rows, {}, { privatePaths, claudeRules: liveClaudeDenyRules().slice(1) }), /before any model/);
   for (const after of [rows.slice(1), rows.map((r) => ({ ...r, aces: ["HOST\\CodexSandboxUsers:(OI)(CI)(RX)"] }))])
     assert.throws(() => assertLivePrivateProtection(after, {}), /before any model/);
 });
 
 test("P10 one bounded snapshot, no owner queries; short-lived roots, conhost and unrelated sandbox PIDs", async () => {
   const at = (n) => new Date(1790000000000 + n).toISOString();
-  const records = [{ pid: 10, root: true, startRequestedAt: at(0), startedAt: at(10), exitedAt: at(25) },
+  const records = [{ pid: 10, root: true, startRequestedAt: at(0), startedAt: at(10), exitedAt: null },
     { pid: 20, root: true, startRequestedAt: at(0), startedAt: at(10), exitedAt: at(5) }];
   const rows = [
+    { pid: 10, parentPid: 1, creationDate: at(5), name: "codex.exe" },
     { pid: 11, parentPid: 10, creationDate: at(15), name: "conhost.exe" },
     { pid: 12, parentPid: 11, creationDate: at(20), name: "node.exe" },
     { pid: 99, parentPid: 1, creationDate: at(15), name: "codex.exe", owner: "CodexSandboxUnrelated" },
@@ -252,7 +259,7 @@ test("P10 one bounded snapshot, no owner queries; short-lived roots, conhost and
     assert.equal((args.at(-1).match(/Get-CimInstance/g) || []).length, 1); assert.equal(options.timeout, 10000);
     return { stdout: JSON.stringify(rows) };
   } });
-  assert.equal(calls, 1); assert.deepEqual(recordedProcessTree(records, snapshot).map((r) => r.pid), [11, 12]);
+  assert.equal(calls, 1); assert.deepEqual(recordedProcessTree(records, snapshot).map((r) => r.pid), [10, 11, 12]);
   assert.equal(records.some((r) => r.pid === 99), false);
 });
 
@@ -362,4 +369,148 @@ test("plain node crash and rejection run the driver's exit emergency handler wit
 test("real mode refuses the test guard preload before layout, probes or models", async () => {
   assert.ok(globalThis[Symbol.for("s25.fake.gitGuard")], "run this suite with --import ./v2/tests/manual/s25-test-guard.mjs");
   assert.throws(assertRealPreloadAbsent, /refuses s25-test-guard/);
+});
+
+test("R3 P12 measured prolite account/rateLimits shape passes; unknown balance and spend fail closed", () => {
+  const usage = { planType: "prolite", windows: [{ name: "primary", usedPercent: 2, windowMinutes: 10080, resetsAt: 1792108800 }],
+    ordinaryUsageAllowed: true, limitReached: false, limitReachedType: null, spendControlReached: false,
+    creditsReported: { hasCredits: false, unlimited: false, balance: "0" } };
+  assert.equal(codexHeadroom({ usage }), true);
+  assert.deepEqual(assertHeadroom({ codex: { probe: { usage } }, claude: { probe: {} } }, "2026-10-15T10:52:29Z").codex, usage);
+  for (const delta of [{ limitReached: true }, { spendControlReached: true }, { ordinaryUsageAllowed: false }])
+    assert.equal(codexHeadroom({ usage: { ...usage, ...delta } }), false);
+  for (const balance of [undefined, null, "", "unknown", "1", 1])
+    assert.equal(codexHeadroom({ usage: { ...usage, creditsReported: { ...usage.creditsReported, balance } } }), false);
+  assert.equal(codexHeadroom({ usage: { ...usage, creditsReported: { ...usage.creditsReported, unlimited: true } } }), false);
+});
+
+test("R3 P5 forward-slash glob enumerates real fictive matches, snapshots concrete targets and records zero matches", () => {
+  const dir = root();
+  for (const name of [".env.one", ".env.two", "other"]) fs.writeFileSync(path.join(dir, name), "synthetic");
+  const glob = path.join(dir, ".env.*").replaceAll("\\", "/"), calls = [];
+  const rows = snapshotAcls([glob], { execute: (file, [target]) => {
+    calls.push(target); assert.equal(file, "icacls.exe"); assert.doesNotMatch(target, /[*?]/);
+    assert.ok(fs.existsSync(target)); return `${target} NT AUTHORITY\\SYSTEM:(F)`;
+  } });
+  assert.equal(rows[0].status, "glob — expanded 2 matches"); assert.equal(rows[0].exists, undefined);
+  assert.equal(calls.length, 2); assert.equal(rows.filter((r) => r.exists).length, 2);
+  assert.equal(expandAclGlob(glob).length, 2);
+  const empty = snapshotAcls([path.join(dir, "absent.*")], { execute: () => assert.fail("no concrete matches") });
+  assert.equal(empty[0].status, "glob — expanded 0 matches"); assert.equal(empty[0].exists, undefined);
+  const changed = rows.map((r) => r.glob ? r : { ...r, aces: ["HOST\\CodexSandboxUsers:(DENY)(R)"] });
+  assert.equal(aclDiff(rows, changed, { allowed: [] }).violations.length, 2);
+  assert.equal(predictHomeAclChanges(rows, { parent: "C:/elsewhere" }).length, 2);
+  assert.match(snapshotAcls([dir], { execute: () => "Successfully processed 0 files; Failed processing 1 files" })[0].error, /Failed processing 1/);
+  const missing = snapshotAcls([path.join(dir, ".env")], { execute: () => { throw Object.assign(new Error("The system cannot find the file specified"),
+    { stdout: "Successfully processed 0 files; Failed processing 1 files" }); } });
+  assert.equal(missing[0].exists, false); assert.equal(missing[0].error, undefined);
+});
+
+test("R3 P8 includes all ancestors and permits dedicated root but refuses home and drive changes", () => {
+  const parent = "C:/Users/mihai/s25-real/run1", dedicatedRoot = "C:/Users/mihai/s25-real";
+  const ancestors = ancestorPaths(parent);
+  assert.deepEqual(ancestors.map((p) => p.replaceAll("\\", "/")), [dedicatedRoot, "C:/Users/mihai", "C:/Users", "C:/"]);
+  assert.doesNotThrow(() => checkLayout({ ...layout(parent), homeDir: "C:/Users/mihai" }));
+  assert.throws(() => checkLayout({ ...layout(parent), dedicatedRoot: undefined }), /dedicated-root/);
+  assert.throws(() => checkLayout({ ...layout("C:/Users/mihai/shared/s25-real/run1"), homeDir: "C:/Users/mihai" }), /directly under/);
+  const evidence = {}, { privatePaths } = consentedLivePaths();
+  const acl = layoutIsolation({ hub: { codexIsolation: () => ({ paths: [] }) }, parent, dedicatedRoot,
+    homeDir: "C:/Users/mihai", hubRoot: `${parent}/hub`, evidence, snapshot: (targets) => targets.map((p) => ({ path: p, exists: true,
+      aces: privatePaths.includes(p) ? ["HOST\\CodexSandboxUsers:(DENY)(R)", "HOST\\CodexSandboxUsers:(OI)(CI)(IO)(DENY)(R,GR)"] : ["OWNER:(F)"] })) });
+  assert.ok(ancestors.every((p) => acl.targets.includes(p)));
+  for (const p of ancestors) {
+    const before = [{ path: p, exists: true, aces: [] }], after = [{ ...before[0], aces: ["HOST\\CodexSandboxUsers:(OI)(CI)(RX)"] }];
+    assert.equal(aclDiff(before, after, acl).ok, p === ancestors[0]);
+  }
+});
+
+test("R3 descendants get an exit bound and cannot adopt children of an absent or recycled PID", () => {
+  const at = (n) => new Date(1790000000000 + n).toISOString();
+  const records = [{ pid: 100, root: true, creationDate: at(0) }];
+  recordedProcessTree(records, [{ pid: 100, parentPid: 1, creationDate: at(0) }, { pid: 500, parentPid: 100, creationDate: at(1) }], at(2));
+  recordedProcessTree(records, [], at(3));
+  assert.equal(records[1].absentAt, at(3)); assert.equal(records[1].exitBound.at, at(3));
+  const later = [{ pid: 777, parentPid: 500, creationDate: at(5000) }];
+  assert.deepEqual(recordedProcessTree(records, later, at(5001)), []);
+  assert.deepEqual(recordedSurvivors(records, later), []);
+  assert.deepEqual(recordedProcessTree(records, [{ pid: 500, parentPid: 1, creationDate: at(4999) }, ...later], at(5002)), []);
+  assert.equal(records.length, 2);
+  const launchedDuringScan = [{ pid: 900, root: true, startRequestedAt: at(9), startedAt: at(10) }];
+  recordedProcessTree(launchedDuringScan, [], at(8));
+  assert.equal(launchedDuringScan[0].absentAt, undefined);
+  assert.deepEqual(recordedProcessTree(launchedDuringScan, [{ pid: 900, parentPid: 1, creationDate: at(9) }], at(11)).map((r) => r.pid), [900]);
+});
+
+test("R3 P10 baseline sandbox users outside the trees remain report-only limitations", () => {
+  const baseline = [{ pid: 99, creationDate: "2026-10-15T00:00:00Z", user: "HOST\\CodexSandboxUser1" }];
+  const current = [...baseline, { pid: 100, creationDate: "2026-10-15T00:00:01Z", owner: "CodexSandboxUser2" },
+    { pid: 101, creationDate: "2026-10-15T00:00:02Z", user: "CodexSandboxUser2" }];
+  const records = [{ ...current[2], root: true }], result = sandboxProcessLimitations(baseline, current, records);
+  assert.deepEqual(result.outsideRunTrees.map((r) => [r.pid, r.presentAtBaseline]), [[99, true], [100, false]]);
+  assert.match(result.action, /never kill or abort/); assert.deepEqual(recordedSurvivors(records, current).map((r) => r.pid), [101]);
+  assert.match(sandboxProcessLimitations([], [{ pid: 1, user: "unknown" }], []).userVisibility, /unknown/);
+});
+
+test("R3 review resume evidence distinguishes actual native thread reuse from resume fallback", async () => {
+  for (const actual of ["cycle-zero", "fallback-new", null]) {
+    const evidence = { adapterTurns: [], writerGuardHits: [], declinedApprovals: [] };
+    let cycle = 0;
+    const adapter = observeAdapter(() => ({ startTurn(options) {
+      const nativeSessionId = cycle++ === 0 ? "cycle-zero" : actual;
+      if (nativeSessionId) options.onEvent({ type: "session", nativeSessionId });
+      if (actual === "fallback-new") options.onEvent({ type: "notice", message: "resume failed; thread/start" });
+      return { done: Promise.resolve({ status: "completed" }) };
+    } }), { provider: "codex", evidence });
+    await adapter.startTurn({ access: "read-only", runId: "c0" }).done;
+    await adapter.startTurn({ access: "read-only", runId: "c1", threadId: "cycle-zero" }).done;
+    const result = reviewResumeEvidence(evidence.adapterTurns);
+    assert.equal(result.reused, actual === "cycle-zero");
+    assert.equal(result.sessions[1].requestedThreadId, "cycle-zero"); assert.equal(result.sessions[1].actualThreadId, actual);
+  }
+});
+
+test("R3 P7 native canary records actual chain and user or unknown, rejecting detached/unobserved ancestry", () => {
+  const creationDate = "2026-10-15T00:00:00Z", records = [{ pid: 10, creationDate, root: true, key: "s25-preflight" }];
+  const rows = [{ pid: 10, parentPid: 1, creationDate, name: "codex.exe" },
+    { pid: 11, parentPid: 10, creationDate, name: "runner.exe", user: "CodexSandboxUser1" },
+    { pid: 12, parentPid: 11, creationDate, name: "node.exe" }];
+  recordedProcessTree(records, rows);
+  const result = canaryProcessEvidence(records, rows, 12);
+  assert.equal(result.verified, true); assert.deepEqual(result.parentChain.map((r) => r.pid), [12, 11, 10]);
+  assert.equal(result.parentChain[0].user, "unknown"); assert.equal(result.parentChain[1].user, "CodexSandboxUser1");
+  assert.match(result.limitation, /kill-on-close/);
+  assert.equal(canaryProcessEvidence(records, rows.map((r) => r.pid === 11 ? { ...r, parentPid: 999 } : r), 12).verified, false);
+  assert.equal(canaryProcessEvidence(records, [], 12).verified, false);
+});
+
+test("R3 preparation prints separate fresh-layout commands with explicit dedicated root", () => {
+  const dedicatedRoot = String.raw`C:\Users\mihai\s25-real`, commit = "a".repeat(40);
+  const commands = ["preflight1", "run1"].map((run) => {
+    const parent = path.join(dedicatedRoot, run);
+    const result = rehearsalInputs({ parent, dedicatedRoot, commit, homeAclChangeApproved: "2026-10-15T10:52:29Z", claudeHeadroomChecked: "2026-10-15T10:52:29Z" },
+      { identity: (args) => { assert.deepEqual(args, { parent, dedicatedRoot, commit }); return { manifestSha256: "b".repeat(64), fingerprint: "simulated" }; } });
+    assert.ok(result.preflightOnlyPowerShell.endsWith(" --preflight-only"));
+    assert.doesNotMatch(result.singleRehearsalPowerShell, /--preflight-only/);
+    assert.ok(result.singleRehearsalPowerShell.includes(`'--dedicated-root' '${dedicatedRoot}'`));
+    assert.ok(result.singleRehearsalPowerShell.includes(`'--parent' '${parent}'`));
+    assert.match(result.warning, /created only for experiments/);
+    return result;
+  });
+  assert.notEqual(commands[0].parent, commands[1].parent);
+});
+
+test("R3 P7 wrapper refuses missing ancestry before a model and keeps R7 evidence", async () => {
+  for (const verified of [false, true]) {
+    const parent = root(), project = { path: path.join(parent, "booking") }, evidence = { aclPrediction: [], aclBefore: [] };
+    const cleanup = { ok: true, count: 0, detail: "" };
+    const result = { status: "PASS", counts: { tests: 1, pass: 1, fail: 0 }, fileCleanup: cleanup, fileCleanupReports: 1,
+      cases: [{ name: "AC-1: loopback SQLite and deny canary", ok: true, cleanup, cleanupReports: [cleanup] }] };
+    const h = { homeDir: "C:/Users/mihai", hub: { factoryRunner: { run: async () => result } } };
+    const promise = runnerPreflight({ h, parent, project, evidence, acl: { targets: [], allowed: [] },
+      homeAclChangeApproved: "2026-10-15T10:52:29Z", snapshot: () => [],
+      processEvidence: async () => ({ verified, parentChain: [], source: "PASS_SIMULATED test snapshot" }) });
+    if (verified) await promise;
+    else await assert.rejects(promise, /P7 R7.*before any model/);
+    assert.equal(evidence.P7.R7.verified, verified); assert.equal(evidence.P7.gate, null);
+  }
 });

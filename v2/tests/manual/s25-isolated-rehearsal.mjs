@@ -12,42 +12,72 @@ export function trackSupervisedProcess(records, record, requestedAt) {
     startedAt: record.startedAt || new Date().toISOString(), creationDate: record.creationDate || null, exitedAt: record.exitedAt || null };
   Object.defineProperty(row, "supervisorRecord", { value: record }); // exclude child handles from JSON evidence
   records.push(row);
-  record.exit.then(() => { row.exitedAt = record.exitedAt || new Date().toISOString(); });
+  record.exit.then(() => { row.exitedAt = record.exitedAt || new Date().toISOString(); row.exitBound = { at: row.exitedAt, source: "supervisor exit" }; });
   return row;
 }
 // CreationDate is the process identity: a reused PID is never a survivor or a cleanup target.
-export function recordedProcessTree(records, snapshot) {
-  const found = [];
+export function recordedProcessTree(records, snapshot, observedAt = new Date().toISOString()) {
+  const found = [], parents = [];
   for (const record of records) {
     const row = snapshot.find((p) => p.pid === record.pid && (record.creationDate
       ? p.creationDate === record.creationDate
-      : Date.parse(p.creationDate) >= Date.parse(record.startRequestedAt) && Date.parse(p.creationDate) <= Date.parse(record.startedAt)));
-    if (row) {
+      : record.root && Date.parse(p.creationDate) >= Date.parse(record.startRequestedAt) && Date.parse(p.creationDate) <= Date.parse(record.startedAt)));
+    if (row && !record.absentAt) {
       record.creationDate = row.creationDate;
       if (record.supervisorRecord) record.supervisorRecord.creationDate = row.creationDate;
       found.push(row);
+      parents.push(record);
+    } else if (Date.parse(record.startedAt || record.creationDate || record.startRequestedAt) <= Date.parse(observedAt)) {
+      record.absentAt ||= observedAt;
+      record.exitBound ||= { at: observedAt, source: "snapshot: identity absent or replaced" };
     }
   }
-  // Keep recorded ancestors in the chain even when they exited before this snapshot.
-  const parents = [...records];
+  // New descendants require a verified parent present in THIS snapshot. An exited or
+  // absent ancestor is never used to adopt a later process with a recycled ParentProcessId.
   for (let i = 0; i < parents.length; i++) {
     const record = parents[i];
-    const replacement = snapshot.find((p) => p.pid === record.pid && (record.creationDate ? p.creationDate !== record.creationDate
-      : Date.parse(p.creationDate) > Date.parse(record.startedAt)));
-    const end = record.exitedAt || replacement?.creationDate;
     for (const row of snapshot) {
       if (row.parentPid !== record.pid || found.some((p) => p.pid === row.pid)
-        || Date.parse(row.creationDate) < Date.parse(record.creationDate || record.startRequestedAt)
-        || (end && Date.parse(row.creationDate) >= Date.parse(end))) continue;
+        || records.some((p) => p.pid === row.pid && p.creationDate === row.creationDate)
+        || Date.parse(row.creationDate) < Date.parse(record.creationDate)
+        || record.exitedAt && Date.parse(row.creationDate) >= Date.parse(record.exitedAt)) continue;
       found.push(row);
-      const child = { ...row, root: false, startedAt: row.creationDate };
+      const child = { ...row, root: false, startedAt: row.creationDate, exitedAt: null, absentAt: null,
+        exitBound: null, ownedParent: { pid: record.pid, creationDate: record.creationDate } };
       records.push(child); parents.push(child);
     }
   }
   return found;
 }
 
-const processSnapshotCommand = "$ErrorActionPreference = 'Stop'; @(Get-CimInstance Win32_Process | Where-Object { $_.CreationDate } | ForEach-Object { [pscustomobject]@{ pid = $_.ProcessId; parentPid = $_.ParentProcessId; creationDate = $_.CreationDate.ToUniversalTime().ToString('o'); name = $_.Name } }) | ConvertTo-Json -Compress";
+export function sandboxProcessLimitations(baseline, snapshot, records) {
+  const identity = (r) => `${r.pid}/${r.creationDate}`;
+  const owned = new Set(records.map(identity)), before = new Set(baseline.map(identity));
+  return { status: "RECORDED_LIMITATION", action: "report only; never kill or abort",
+    unknownUserCount: snapshot.filter((r) => !(r.user || r.owner) || (r.user || r.owner) === "unknown").length,
+    userVisibility: snapshot.some((r) => /CodexSandbox/i.test(r.user || r.owner || "")) ? "available for listed rows" : "unknown: snapshot exposes no sandbox user identity; no GetOwner queries",
+    outsideRunTrees: snapshot.filter((r) => /CodexSandbox/i.test(r.user || r.owner || "") && !owned.has(identity(r)))
+      .map((r) => ({ ...r, presentAtBaseline: before.has(identity(r)) })) };
+}
+
+export function canaryProcessEvidence(records, snapshot, canaryPid) {
+  const chain = [], visited = new Set();
+  let row = snapshot.find((r) => r.pid === canaryPid), verified = false;
+  while (row && !visited.has(row.pid)) {
+    visited.add(row.pid);
+    chain.push({ pid: row.pid, parentPid: row.parentPid, creationDate: row.creationDate, name: row.name, user: row.user || row.owner || "unknown" });
+    const owned = records.find((r) => r.root && r.key === "s25-preflight" && r.pid === row.pid && r.creationDate === row.creationDate);
+    if (owned) { verified = true; break; }
+    const parent = snapshot.find((r) => r.pid === row.parentPid);
+    if (parent && Date.parse(parent.creationDate) > Date.parse(row.creationDate)) break;
+    row = parent;
+  }
+  return { verified, canaryPid, parentChain: chain,
+    observedOwnedProcesses: recordedSurvivors(records, snapshot).map((r) => ({ ...r, user: r.user || r.owner || "unknown" })),
+    limitation: "Windows libuv non-detached children use a kill-on-close job; fake Node trees do not prove native Codex sandbox ancestry. This evidence covers only the observed P7 canary." };
+}
+
+const processSnapshotCommand = "$ErrorActionPreference = 'Stop'; $s25Users = @{}; try { Get-Process -IncludeUserName -ErrorAction Stop | ForEach-Object { try { $s25Users[$_.Id] = @{ user = $_.UserName; started = $_.StartTime.ToUniversalTime() } } catch {} } } catch {}; @(Get-CimInstance Win32_Process | Where-Object { $_.CreationDate } | ForEach-Object { $s25User = $s25Users[[int]$_.ProcessId]; $s25Name = 'unknown'; if ($s25User -and $s25User.started -eq $_.CreationDate.ToUniversalTime()) { $s25Name = $s25User.user }; [pscustomobject]@{ pid = $_.ProcessId; parentPid = $_.ParentProcessId; creationDate = $_.CreationDate.ToUniversalTime().ToString('o'); name = $_.Name; user = $s25Name } }) | ConvertTo-Json -Compress";
 const normalizeSnapshot = (stdout) => (String(stdout).trim() ? [].concat(JSON.parse(stdout)) : [])
   .map((row) => ({ ...row, creationDate: new Date(row.creationDate).toISOString() }));
 export async function windowsProcesses({ execute = exec } = {}) {
@@ -59,7 +89,7 @@ export async function windowsProcesses({ execute = exec } = {}) {
 
 // Only an already recorded, still-live identity can be a kill target or survivor.
 export function recordedSurvivors(records, snapshot) {
-  return snapshot.filter((row) => records.some((record) => !record.exitedAt && record.creationDate
+  return snapshot.filter((row) => records.some((record) => !record.exitedAt && !record.absentAt && record.creationDate
     && record.pid === row.pid && record.creationDate === row.creationDate));
 }
 
@@ -74,7 +104,7 @@ export function emergencyKillRecorded(records, { execSync = execFileSync } = {})
     } catch (error) { results.push({ kind: "snapshot", error: error.message }); }
   }
   for (const record of records) {
-    if (record.exitedAt || !record.creationDate || !Number.isSafeInteger(record.pid) || record.pid <= 0) {
+    if (record.exitedAt || record.absentAt || !record.creationDate || !Number.isSafeInteger(record.pid) || record.pid <= 0) {
       results.push({ pid: record.pid, skipped: record.exitedAt ? "supervisor observed exit" : "unverified identity" });
       continue;
     }
@@ -84,9 +114,11 @@ export function emergencyKillRecorded(records, { execSync = execFileSync } = {})
       { windowsHide: true, timeout: 10000, encoding: "utf8" });
       const date = String(output).trim();
       if (!date || !recordedSurvivors([record], [{ pid: record.pid, creationDate: new Date(date).toISOString() }]).length) {
+        record.absentAt ||= new Date().toISOString();
+        record.exitBound ||= { at: record.absentAt, source: "emergency identity absent or replaced" };
         results.push({ pid: record.pid, skipped: "original identity absent or replaced" }); continue;
       }
-      execSync("taskkill", ["/PID", String(record.pid), "/T", "/F"], { windowsHide: true, timeout: 10000, stdio: "ignore" });
+      execSync("taskkill", ["/PID", String(record.pid), ...(record.root ? ["/T"] : []), "/F"], { windowsHide: true, timeout: 10000, stdio: "ignore" });
       results.push({ pid: record.pid, method: "taskkill", ok: true });
     } catch (error) { results.push({ pid: record.pid, method: "taskkill", ok: false, error: error.message }); }
   }
@@ -97,6 +129,9 @@ export async function cleanupRecordedProcesses(records, { exec: execute = exec, 
   const results = [];
   const current = await snapshot();
   for (const record of records) {
+    if (!Number.isSafeInteger(record.pid) || record.pid <= 0 || !Number.isFinite(Date.parse(record.creationDate))) {
+      results.push({ pid: record.pid, skipped: "unverified identity" }); continue;
+    }
     if (!recordedSurvivors([record], current).length) {
       results.push({ pid: record.pid, root: record.root, skipped: "original process absent (CreationDate checked)" });
       continue;
@@ -104,7 +139,7 @@ export async function cleanupRecordedProcesses(records, { exec: execute = exec, 
     try {
       // Recheck identity inside the same bounded cleanup command; no full snapshot per PID.
       const { stdout } = await execute("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command",
-        `$p = Get-CimInstance Win32_Process -Filter 'ProcessId=${record.pid}'; if ($p -and ([DateTimeOffset]$p.CreationDate).ToUnixTimeMilliseconds() -eq ${Date.parse(record.creationDate)}) { & taskkill /PID ${record.pid} /T /F; if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE } }`],
+        `$p = Get-CimInstance Win32_Process -Filter 'ProcessId=${record.pid}'; if ($p -and ([DateTimeOffset]$p.CreationDate).ToUnixTimeMilliseconds() -eq ${Date.parse(record.creationDate)}) { & taskkill /PID ${record.pid} ${record.root ? "/T " : ""}/F; if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE } }`],
         { windowsHide: true, timeout: 10000 });
       results.push({ pid: record.pid, root: record.root, method: "CreationDate-checked taskkill", exitCode: 0, output: stdout || "" });
     } catch (error) { results.push({ pid: record.pid, root: record.root, exitCode: error.code ?? null }); }
@@ -127,7 +162,7 @@ export function createRehearsalStop({ controller, emergencyKill, exit = (code) =
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   const args = process.argv.slice(2);
   const switches = new Set(["--real", "--fake", "--preflight-only"]);
-  const values = new Set(["--parent", "--out", "--commit", "--manifest-sha256", "--isolation-consent", "--home-acl-change-approved", "--claude-headroom-checked", "--scenario"]);
+  const values = new Set(["--parent", "--dedicated-root", "--out", "--commit", "--manifest-sha256", "--isolation-consent", "--home-acl-change-approved", "--claude-headroom-checked", "--scenario"]);
   const seen = new Set();
   for (let i = 0; i < args.length; i++) {
     const flag = args[i];
@@ -143,7 +178,7 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
   process.on("SIGINT", stop); process.on("SIGTERM", stop);
   process.on("SIGBREAK", stop); process.on("SIGHUP", stop);
   try {
-    const evidence = await runRehearsal({ mode: args.includes("--real") ? "real" : "fake", out: value("--out"), parent: value("--parent"),
+    const evidence = await runRehearsal({ mode: args.includes("--real") ? "real" : "fake", out: value("--out"), parent: value("--parent"), dedicatedRoot: value("--dedicated-root"),
       commit: value("--commit"), manifestSha256: value("--manifest-sha256"), isolationConsent: value("--isolation-consent"),
       homeAclChangeApproved: value("--home-acl-change-approved"), claudeHeadroomChecked: value("--claude-headroom-checked"),
       scenario: value("--scenario") || "success", preflightOnly: args.includes("--preflight-only"), signal: controller.signal, realProcesses });

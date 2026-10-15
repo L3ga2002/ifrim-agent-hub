@@ -362,10 +362,10 @@ test("T-TURN cleanup follows recorded parent chains, retains orphans, and exclud
   assert.deepEqual(recordedProcessTree(records, [grandchild, child, root]).map((p) => p.pid), [10, 11, 12]);
   records[0].exitedAt = at(4);
   const lateChild = { pid: 13, parentPid: 10, creationDate: at(3) };
-  assert.deepEqual(recordedProcessTree(records, [grandchild, lateChild]).map((p) => p.pid), [12, 13]);
+  assert.deepEqual(recordedProcessTree(records, [grandchild, lateChild]).map((p) => p.pid), [12]);
   const reused = [root, child, grandchild, lateChild].map((p) => ({ ...p, creationDate: at(10) }));
   assert.deepEqual(recordedProcessTree(records, reused), []);
-  assert.equal(records.length, 4);
+  assert.equal(records.length, 3);
 });
 
 for (const kind of ["emergency", "cleanup"]) test(`T-TURN ${kind} kill checks recorded roots and descendants by CreationDate`, async () => {
@@ -389,6 +389,7 @@ for (const kind of ["emergency", "cleanup"]) test(`T-TURN ${kind} kill checks re
       if (kind === "cleanup") {
         assert.match(args.at(-1), /ToUnixTimeMilliseconds/);
         const pid = Number(args.at(-1).match(/ProcessId=(\d+)/)[1]);
+        assert.equal(args.at(-1).includes("/T"), pid === 10);
         kills.push(pid); return { stdout: "killed" };
       }
       assert.equal(options.encoding, "utf8");
@@ -399,7 +400,7 @@ for (const kind of ["emergency", "cleanup"]) test(`T-TURN ${kind} kill checks re
       return row ? row.creationDate.replace(".000Z", ".0000000Z") + "\r\n" : "";
     }
     assert.equal(file, "taskkill");
-    assert.deepEqual(args, ["/PID", args[1], "/T", "/F"]);
+    assert.deepEqual(args, ["/PID", args[1], ...(Number(args[1]) === 10 ? ["/T"] : []), "/F"]);
     kills.push(Number(args[1]));
     return { stdout: "" };
   };
