@@ -1,3 +1,5 @@
+import { findingCode, codedReviewFindings } from "./review.mjs";
+import { datasetProblem } from "./dataset.mjs";
 import fs from "node:fs";
 import path from "node:path";
 import crypto from "node:crypto";
@@ -11,14 +13,14 @@ import { transitionTask, TERMINAL_STATES } from "../runtime/state-machine.mjs";
 import { workspaceResource } from "../runtime/runs.mjs";
 import { summarizeTimeline } from "../runtime/timeline.mjs";
 import { MISSION_TEMPLATES } from "../domain/missions.mjs";
-import { checkSpec, normalizeSpec, specHash, protectedTestRefs, specSummary, e2eStepLines } from "./spec.mjs";
+import { checkSpec, normalizeSpec, specHash, protectedTestRefs, specSummary, e2eStepLines, AUTHOR_TURN_TIMEOUT_MIN } from "./spec.mjs";
 import { buildPlan, normalizeLimits, turnTimeoutsOf, ROUTES } from "./plan.mjs";
 import { takeSnapshot, diffManifests, readGitEntry, gitEntryHash, readBlob, isTestPath, skippedTreeFingerprint, skippedTreeChanges } from "./snapshot.mjs";
 import { renderChanges } from "./diff.mjs";
 import { integrityFindings, isTestFirstBlocking } from "./integrity.mjs";
 import { contractDrift, publicReadRoutes, readPublicClient } from "./supersede.mjs";
 import { buildReviewBrief, parseReview, BLOCKING_SEVERITIES } from "./review.mjs";
-import { buildAuthorBrief, parseAuthorOutput, lintTestBody, assembleTestFile, classifyProof, proofSignature, buildTestReviewBrief, parseTestReview, ownerSummary, ownerOutcome,
+import { buildAuthorBrief, lintDatasetBrief, parseAuthorOutput, lintTestBody, normalizeNeeds, TEST_HARNESS_VERSION, baselineGate, assembleTestFile, classifyProof, proofSignature, buildTestReviewBrief, parseTestReview, ownerSummary, ownerOutcome,
   assertionInventory, compareInventory, amendmentViolations, completionSignals, exportNamesOf, testSlotOf, testFirstScope, T_STAGE, T_ALREADY_PASSES, T_NOT_HERMETIC, T_PROJECT_CHANGED, T_REVIEW_INCONCLUSIVE, T_STOP_STAGE0, REVIEW_CAUSES, PROOF_CAUSES, TEST_FIRST_LIMITS, HUB_TEST_DIR } from "./test-first.mjs";
 import { runE2E, browserStatus } from "../tools/browser.mjs";
 import { resolveRoleBindings, resolveBinding, normalizeBindingRequest, bindingLabel } from "../policy/model-binding.mjs";
@@ -95,6 +97,7 @@ export function createFactory(deps) {
   // 2.12.2 (P0-R3): test mode only (setTurnTimeScaleForTests) — shrinks the per-turn limits sent to the run manager so a timeout can be
   // exercised in seconds; the minutes recorded, shown and hashed stay the plan's own. Always 1 outside test mode.
   let turnTimeScale = 1;
+  let authorBriefRenderer = buildAuthorBrief;
   // Closure R-ROLL-02, test mode only (setStartFaultForTests): called at the interruption points of a start (the moves, the snapshot,
   // the start record) so a test can fail the start there. Always null outside test mode.
   let startFault = null;
@@ -103,6 +106,14 @@ export function createFactory(deps) {
   function turnLimitOf(f, role) {
     const t = turnTimeoutsOf(f?.limits || {});
     return { min: t[role], source: t.source, ms: Math.max(1, Math.round(t[role] * 60000 * turnTimeScale)) };
+  }
+  /** Only the approved step-0 author may use the dedicated limit; its reviewer role alone grants nothing. */
+  function dispatchTurnLimit(f, stage, role = ROLE_OF_STAGE[stage] || "writer") {
+    const spec = approvedSpec(f);
+    if (stage === "TEST_AUTHORING" && spec?.status === "APPROVED" && spec.spec.authoring?.authorLimits?.turnTimeoutMin === AUTHOR_TURN_TIMEOUT_MIN) {
+      return { min: AUTHOR_TURN_TIMEOUT_MIN, ms: Math.max(1, Math.round(AUTHOR_TURN_TIMEOUT_MIN * 60000 * turnTimeScale)), source: "authorLimits" };
+    }
+    return turnLimitOf(f, role);
   }
   const workRoot = (missionId) => path.join(config.workDir, "factory", missionId);
   const blobDir = (missionId) => path.join(workRoot(missionId), "blobs");
@@ -231,8 +242,9 @@ export function createFactory(deps) {
    * not an active one (a Pause, the deadline's NEEDS_OWNER_DECISION, BLOCKED, a final stage) leaves the mission where it is.
    * The result of an interrupted step is never interpreted: no finding, no repair, no next stage, no model run.
    */
-  const isHalted = (missionId) => { const s = fm(missionId); return !s || Boolean(s.cancelRequestedAt) || !ACTIVE_STAGES.has(s.stage); };
+  const isHalted = (missionId) => { if (closed) return true; const s = fm(missionId); return !s || Boolean(s.cancelRequestedAt) || !ACTIVE_STAGES.has(s.stage); };
   function halted(missionId) {
+    if (closed) return { halted: true, shutdown: true };
     const s = fm(missionId);
     if (s?.cancelRequestedAt) return confirmCancel(missionId);
     if (!s || !ACTIVE_STAGES.has(s.stage)) return view(missionId);
@@ -243,6 +255,7 @@ export function createFactory(deps) {
    * started; a browser E2E). While one is in flight a Stop stays CANCEL_REQUESTED; the step itself confirms it afterwards.
    */
   function haltStep(missionId, taskId) {
+    if (closed) return halted(missionId);
     if (fm(missionId)?.stage === "PAUSED" && taskId && missions.task(taskId)?.status === "RUNNING") {
       try { transitionTask(db, bus, clock, { taskId, to: "PAUSED", reason: "Factory: pauză în timpul pasului", actor: "factory" }); } catch { /* left as is */ }
     }
@@ -861,10 +874,10 @@ export function createFactory(deps) {
   function addFinding(missionId, f) {
     const count = db.prepare("SELECT COUNT(*) AS n FROM factory_findings WHERE mission_id = ?").get(missionId).n;
     // M11 L5: "T" for the independent review of the Hub-written test (source test_review; the code review's filter never sees them).
-    const prefix = f.source === "reviewer" ? "F" : f.source === "qa" ? "Q" : f.source === "test_review" ? "T" : "I";
+    const code = findingCode(f.source, count + 1);
     const id = newId("fnd");
     db.prepare(`INSERT INTO factory_findings (id, mission_id, code, source, review_id, evidence_id, change_set_id, severity, file, area, observation, impact, evidence, reproduction, fingerprint, status, created_at, updated_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'OPEN', ?, ?)`).run(id, missionId, `${prefix}-${String(count + 1).padStart(3, "0")}`, f.source, f.reviewId || null, f.evidenceId || null,
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'OPEN', ?, ?)`).run(id, missionId, code, f.source, f.reviewId || null, f.evidenceId || null,
       f.changeSetId, f.severity, String(f.file || "").slice(0, 300), String(f.area || "").slice(0, 200), String(f.observation).slice(0, 2000), String(f.impact || "").slice(0, 1000),
       String(f.evidence || "").slice(0, 2000), String(f.reproduction || "").slice(0, 2000), String(f.fingerprint || hashCanonical([f.file, f.observation])).slice(0, 200), now(), now());
     return id;
@@ -896,10 +909,11 @@ export function createFactory(deps) {
     const outcome = await withRunnerLease(missionId, project, async () => {
       db.prepare("UPDATE factory_evidence SET stale = 1 WHERE mission_id = ? AND change_set_id = ? AND stage = ? AND stale = 0").run(missionId, changeSetId || "base", stage);
       for (const [i, command] of commands.entries()) {
-        if (isHalted(missionId)) break;
+        if (closed || isHalted(missionId)) break;
         // Tracked (M05 §20): a Stop during a runner command stays CANCEL_REQUESTED until the command is gone and its evidence
         // is written, so CANCELLED is never confirmed while a test process still runs.
         const result = await tracked(missionId, () => runner.run({ key: `factory-run-${missionId}-${stage}-${i}`, ws: project.path, command, project, shouldStop: () => isHalted(missionId) }));
+        if (closed) return { results, shutdown: true }; // Partial stages carry no verdict; boot owns recovery.
         // A command killed by Stop / Pause says nothing about the code: kept as INTERRUPTED and stale (never counted).
         const interrupted = isHalted(missionId);
         const status = interrupted ? "INTERRUPTED" : result.status;
@@ -925,6 +939,15 @@ export function createFactory(deps) {
     const { blocked, results } = await runCommands(missionId, "BASELINE", spec.verification.acceptance, null);
     { const stop = haltStep(missionId, taskId); if (stop) return stop; }
     if (blocked || results.some((r) => r.status === "BLOCKED")) return pauseFor(missionId, taskId, "runner", blocked || results.find((r) => r.status === "BLOCKED").reason);
+    const authoring = authoringOf(approvedSpec(f));
+    if (authoring?.status === "PROTECTED") {
+      const incomplete = results.map((r) => ({ command: r.command, reason: baselineGate(r, { manifest: authoring.candidate?.manifest, harness: authoring.candidate?.harness ?? 1 }) })).find((r) => r.reason);
+      if (incomplete) {
+        blockTask(taskId, "baseline incomplet");
+        bus.emit({ type: "factory.acceptance_unstable", scopeType: "mission", scopeId: missionId, source: "factory", payload: { cause: "incomplete", ref: authoring.testRef, ...incomplete } });
+        return setStage(missionId, "NEEDS_OWNER_DECISION", { waitReason: "owner_decision", reason: `Testul de acceptanță scris de Hub nu a terminat normal la baseline (${incomplete.reason}); un test neverificat nu ajunge la implementare. Nu modific codul.` });
+      }
+    }
     // BUGFIX/FEATURE: the independent tests must fail before the change (the bug is reproduced / the feature is missing).
     // REFACTOR: they must pass (the behaviour to preserve).
     const expectPass = f.workType === "REFACTOR";
@@ -939,12 +962,11 @@ export function createFactory(deps) {
     }
     // M11 L5 (§5.3): the Hub-written test must fail here exactly as in its two proof runs (case → ok / code). Any other failure is an
     // unstable test, and an unstable test never reaches the writer.
-    const authoring = authoringOf(approvedSpec(f));
     if (authoring?.status === "PROTECTED" && authoring.proof?.signature) {
       const drifted = results.filter((r) => proofSignature({ cases: r.cases || [], fileLevelFailure: r.fileLevelFailure || null }) !== authoring.proof.signature);
       if (drifted.length) {
         blockTask(taskId, "baseline diferit de probă");
-        bus.emit({ type: "factory.acceptance_unstable", scopeType: "mission", scopeId: missionId, source: "factory", payload: { ref: authoring.testRef, commands: drifted.map((r) => r.command) } });
+        bus.emit({ type: "factory.acceptance_unstable", scopeType: "mission", scopeId: missionId, source: "factory", payload: { cause: "drift", ref: authoring.testRef, commands: drifted.map((r) => r.command) } });
         return setStage(missionId, "NEEDS_OWNER_DECISION", { waitReason: "owner_decision",
           reason: `Testul de acceptanță scris de Hub a dat la baseline alt rezultat decât la cele două rulări de probă (${PROOF_CAUSES.flaky}); un test instabil nu ajunge la implementare. Nu modific codul.` });
       }
@@ -1015,9 +1037,11 @@ export function createFactory(deps) {
       authority(missionId, { stage: "GRANT", role, bindingHash: binding.bindingHash });
     }
     // 2.12.2 (P0-R3): the role's per-turn limit from the mission's (hashed) limits; recorded with the dispatch, enforced by runs.start.
-    const turn = turnLimitOf(f, role);
+    const turn = dispatchTurnLimit(f, stage, role);
     const request = { stage, cycle, changeSeq, attempt: prior.length + 1, counted: attempts + 1, provider: route.provider, access, model: binding.resolvedAlias, effort: binding.effort, profile: binding.profile,
-      specVersion: f.approvedSpecVersion, bindingHash: binding.bindingHash, turnTimeoutMin: turn.min };
+      specVersion: f.approvedSpecVersion, bindingHash: binding.bindingHash, turnTimeoutMin: turn.min,
+      ...(stage === "TEST_AUTHORING" && approvedSpec(f)?.spec.authoring?.authorLimits?.maxOutputTokens === 64000 ? { maxOutputTokens: 64000 } : {}),
+      ...(turn.source === "authorLimits" ? { turnTimeoutSource: "authorLimits" } : {}) };
     const key = `${missionId}:${stage}:c${cycle}:cs${changeSeq}:a${prior.length + 1}`;
     const id = newId("dsp");
     const inserted = db.prepare(`INSERT OR IGNORE INTO factory_dispatches (id, mission_id, stage, task_id, idempotency_key, status, request_json, created_at, updated_at)
@@ -1041,9 +1065,14 @@ export function createFactory(deps) {
       // the step really runs with (M11 L5: a writer binding narrowed to read-only exports nothing).
       const exportPolicy = access === "workspace-write" ? { protectedPaths: Object.keys(approvedSpec(f)?.protected?.files || {}) } : null;
       ({ run } = await tracked(missionId, () => runs.start({ conversationId, provider: route.provider, access, model: request.model, effort: request.effort, profile: request.profile,
-        taskId, stage: task.stage, roleId: task.roleId, actor: "factory", correlationId: id, requestedAt: f.updatedAt, exportPolicy, binding, turnTimeoutMs: turn.ms })));
+        taskId, stage: task.stage, roleId: task.roleId, actor: "factory", correlationId: id, requestedAt: f.updatedAt, exportPolicy, binding, turnTimeoutMs: turn.ms,
+        ...(request.maxOutputTokens === 64000 ? { maxOutputTokens: 64000 } : {}) })));
     } catch (error) {
       // A Stop / Pause that arrived while the start was in flight: the refusal is its consequence, not a new blocker.
+      if (closed) {
+        db.prepare("UPDATE factory_dispatches SET status = 'CANCELLED', run_id = ?, error = ?, updated_at = ? WHERE id = ?").run(error.details?.runId || null, String(error.message).slice(0, 2000), now(), id);
+        return null;
+      }
       if (isHalted(missionId)) {
         db.prepare("UPDATE factory_dispatches SET status = 'CANCELLED', error = ?, updated_at = ? WHERE id = ?").run(String(error.message).slice(0, 2000), now(), id);
         return halted(missionId);
@@ -1060,6 +1089,10 @@ export function createFactory(deps) {
     }
     // Stop / Pause during the start: the run became visible only now and is interrupted before it can work. Its result is
     // then archived (onRunFinished), the dispatch ends INTERRUPTED (not an attempt) and a resume repeats this step.
+    if (closed) {
+      db.prepare("UPDATE factory_dispatches SET status = 'INTERRUPTED', run_id = ?, updated_at = ? WHERE id = ?").run(run.id, now(), id);
+      return null;
+    }
     if (isHalted(missionId)) {
       db.prepare("UPDATE factory_dispatches SET status = 'INTERRUPTED', run_id = ?, updated_at = ? WHERE id = ?").run(run.id, now(), id);
       await runs.interrupt(run.id, fm(missionId)?.cancelRequestedAt ? "factory-stop" : "factory-pause").catch(() => {});
@@ -1175,6 +1208,11 @@ export function createFactory(deps) {
       const fresh = rowToDispatch(db.prepare("SELECT * FROM factory_dispatches WHERE id = ?").get(dispatch.id));
       if (fresh.runId && fresh.runId !== runId) return null;
       const f = fm(dispatch.missionId);
+      if (dispatch.stage === "TEST_AUTHORING" && !db.prepare("SELECT 1 FROM events WHERE type = 'factory.author_output_limit' AND run_id = ?").get(runId)) {
+        const limit = run.evidence?.authorOutputLimit || { requested: fresh.request?.maxOutputTokens ?? null, settingsOverride: null, effective: null, evidence: "nedemonstrat" };
+        bus.emit({ type: "factory.author_output_limit", scopeType: "mission", scopeId: f.missionId, source: "factory", runId,
+          payload: { ...limit, runId } });
+      }
       if (fresh.status === "INTERRUPTED") {
         // Interrupted by the owner (Pause, Stop, the time limit): archived, never evaluated now and never resets the stage
         // (a resume may already be running). A result that completed anyway is kept for the next resume.
@@ -1213,6 +1251,13 @@ export function createFactory(deps) {
       if (run.status !== "completed") {
         // 2.12.2 (P0-R3): the turn ran out of its per-turn time — TIMEOUT, its own outcome (never the generic failure below).
         if (run.errorCategory === "turn_timeout") return afterTurnTimeout(f, fresh, run);
+        if (dispatch.stage === "TEST_AUTHORING" && run.errorCategory === "output_token_limit") {
+          const { counted } = modelAttempts(f.missionId, dispatch.stage, dispatch.request.cycle, dispatch.request.changeSeq);
+          const limit = attemptLimit(f, dispatch.stage);
+          blockTask(dispatch.taskId, "bugetul de ieșire epuizat");
+          return setStage(f.missionId, counted >= limit ? "NEEDS_OWNER_DECISION" : "BLOCKED", { waitReason: "owner_decision",
+            reason: `Autorul testului a folosit întregul buget de ieșire fără să încheie răspunsul (output_token_limit); ${counted} încercări folosite din ${limit}. Decizia este a ta.` });
+        }
         const reason = `${dispatch.stage}: execuția ${run.status}${run.errorCategory ? ` (${run.errorCategory})` : ""}${run.errorMessage ? ` — ${run.errorMessage.slice(0, 300)}` : ""}`;
         // A refused or conflicting export from an execution environment: nothing reached the project; the owner decides
         // (the quarantined export is in the run evidence), never an automatic repair on an unknown state.
@@ -1236,7 +1281,8 @@ export function createFactory(deps) {
    */
   function afterTurnTimeout(f, dispatch, run) {
     const role = ROLE_OF_STAGE[dispatch.stage] || "writer";
-    const limitMin = Number(dispatch.request?.turnTimeoutMin) || turnLimitOf(f, role).min;
+    const roleLabel = dispatch.stage === "TEST_AUTHORING" && dispatch.request?.turnTimeoutSource === "authorLimits" ? "autorul testului" : role;
+    const limitMin = Number(dispatch.request?.turnTimeoutMin) || dispatchTurnLimit(f, dispatch.stage, role).min;
     const payload = { stage: dispatch.stage, role, limitMin, dispatchId: dispatch.id, limitMs: run.evidence?.turnTimeout?.limitMs ?? null, elapsedMs: run.evidence?.turnTimeout?.elapsedMs ?? null };
     // The dispatch row says TIMEOUT too (its status stays FAILED: modelAttempts counts it only when the turn had been sent).
     db.prepare("UPDATE factory_dispatches SET error = ?, updated_at = ? WHERE id = ?").run(`turn_timeout: limita de ${limitMin} min pe tură (${role})`, now(), dispatch.id);
@@ -1244,11 +1290,11 @@ export function createFactory(deps) {
       blockTask(dispatch.taskId, "limita pe tură, înainte de model");
       bus.emit({ type: "factory.turn_timeout", scopeType: "mission", scopeId: f.missionId, source: "factory", runId: run.id, payload: { ...payload, reachedModel: false, retry: false } });
       return setStage(f.missionId, "BLOCKED", { waitReason: "owner_decision",
-        reason: `Etapa ${dispatch.stage} (${role}): providerul nu a trimis tura modelului în limita de ${limitMin} min pe tură; nimic nu a ajuns la model, încercarea nu se numără. Verifică providerul, apoi reia` });
+        reason: `Etapa ${dispatch.stage} (${roleLabel}): providerul nu a trimis tura modelului în limita de ${limitMin} min pe tură; nimic nu a ajuns la model, încercarea nu se numără. Verifică providerul, apoi reia` });
     }
     const { counted } = modelAttempts(f.missionId, dispatch.stage, dispatch.request.cycle, dispatch.request.changeSeq);
     const limit = attemptLimit(f, dispatch.stage);
-    const base = `Etapa ${dispatch.stage} (${role}) a depășit limita de ${limitMin} min pe tură (încercarea ${counted} din ${limit})`;
+    const base = `Etapa ${dispatch.stage} (${roleLabel}) a depășit limita de ${limitMin} min pe tură (încercarea ${counted} din ${limit})`;
     // Review R3-F3: ONE automatic re-dispatch per step (stage, cycle, change set), whatever maxAttemptsPerStage allows: after it, a
     // further timeout of the same step waits for the owner even with attempts left (the texts promise „o singură dată”).
     if (counted < limit && turnRetriesFired(f.missionId, dispatch.stage, dispatch.request.cycle, dispatch.request.changeSeq) > 0) {
@@ -1702,22 +1748,40 @@ export function createFactory(deps) {
     if (text === null || sha256(text) !== prev.sha) return null;
     const manifest = prev.candidate?.manifest || {};
     const headerLines = prev.candidate?.headerLines ?? text.split("\n").findIndex((l) => l === "// ---- corpul testului ----") + 1;
-    return { sha: prev.sha, cycle: prev.cycle, text, manifest, headerLines, proof: prev.proof, review: prev.review, findings: prev.findings || [], inventory: assertionInventory(text, manifest, { headerLines, sha: prev.sha }) };
+    return { sha: prev.sha, harness: prev.candidate?.harness ?? prev.harness ?? 1, cycle: prev.cycle, text, manifest, headerLines, proof: prev.proof, review: prev.review, findings: prev.findings || [], inventory: assertionInventory(text, manifest, { headerLines, sha: prev.sha }) };
   }
 
   const holdPreviousMissing = (missionId, a) => holdStageZero(missionId, { kind: "previous_missing", text: "Copia variantei anterioare lipsește sau are alți octeți. Pasul 0 se oprește.", details: ["copia variantei anterioare lipsește sau are alți octeți"], taskId: a.authorTaskId });
+
+  function holdDataset(missionId, spec, taskId) {
+    if (!spec.spec.dataset) return false;
+    const project = projects.get(missions.get(missionId).projectId);
+    const problem = project ? datasetProblem(spec.spec.dataset, project.path) : "proiectul lipsește";
+    if (!problem) return false;
+    holdStageZero(missionId, { kind: "dataset", text: `Datele martor ale experimentului nu mai corespund surselor inițializării (${problem}): precondiție invalidă. Nu scriu și nu verific testul; codul nu e atins.`, details: [problem], taskId });
+    return true;
+  }
 
   async function dispatchTestAuthor(missionId) {
     { const stop = halted(missionId); if (stop) return stop; }
     const f = fm(missionId);
     const spec = approvedSpec(f);
     const a = authoringOf(spec);
+    if (holdDataset(missionId, spec, a.authorTaskId)) return;
     const mission = missions.get(missionId);
     const previous = [...(a.rejected || []).filter((r) => r.cycle === a.cycle - 1).flatMap((r) => r.reasons || []), ...(a.retryProblems || [])].slice(0, 20);
     const previousCandidate = previousCandidateOf(missionId, a);
     if (a.cycle > 0 && !previousCandidate) return holdPreviousMissing(missionId, a);
-    const brief = buildAuthorBrief({ mission: { id: missionId, title: mission.title }, spec: spec.spec, specVersion: spec.version, specSha: spec.sha256, authoring: { testRef: a.testRef },
-      cycle: a.cycle, previousProblems: previous, previousCandidate, facts: authoringFacts(missionId, a, projects.get(mission.projectId)) });
+    const facts = authoringFacts(missionId, a, projects.get(mission.projectId));
+    const brief = authorBriefRenderer({ harness: TEST_HARNESS_VERSION, mission: { id: missionId, title: mission.title }, spec: spec.spec, specVersion: spec.version, specSha: spec.sha256, authoring: { testRef: a.testRef },
+      cycle: a.cycle, previousProblems: previous, previousCandidate, facts });
+    if (spec.spec.dataset && spec.spec.hubHelpers?.includes("json-exposure")) {
+      const evidence = lintDatasetBrief(brief, { spec: spec.spec, facts, testRef: a.testRef, stagingRef: a.stagingRef, workType: f.workType });
+      updateAuthoring(missionId, { briefValidation: { ...evidence, cycle: a.cycle, at: now() } });
+      bus.emit({ type: "factory.test_brief_validated", scopeType: "mission", scopeId: missionId, source: "factory", payload: { cycle: a.cycle, ...evidence } });
+      if (!evidence.skipped && !evidence.lint.ok) return holdStageZero(missionId, { kind: "brief", text: "Exemplul de test pregătit de Hub nu trece verificarea proprie. Pasul 0 se oprește înainte de apelul autorului.",
+        details: evidence.lint.violations.map((v) => v.plain + " (" + v.detail + ")"), taskId: a.authorTaskId });
+    }
     const reason = authorStageReason(a, spec);
     if (f.stage !== "TEST_AUTHORING" || f.stageReason !== reason) bus.transaction(() => setStage(missionId, "TEST_AUTHORING", { waitReason: "provider", reason }));
     return dispatchRun(missionId, { stage: "TEST_AUTHORING", taskId: a.authorTaskId, role: ROLE_OF_STAGE.TEST_AUTHORING, access: "read-only", conversationId: a.authorConversationId,
@@ -1741,10 +1805,12 @@ export function createFactory(deps) {
       bus.emit({ type: "factory.test_unreadable", scopeType: "mission", scopeId: missionId, source: "factory", runId: run.id, payload: { cycle: a.cycle, problems: parsed.problems.slice(0, 5) } });
       return dispatchTestAuthor(missionId);
     }
+    const needs = normalizeNeeds(parsed.body, parsed.manifest.needs);
+    parsed.manifest = { ...parsed.manifest, needs: needs.effective, needsDeclared: needs.declared, needsCompleted: needs.completed };
     const facts = authoringFacts(missionId, a, projects.get(missions.get(missionId).projectId));
     const lint = lintTestBody(parsed.body, { manifest: parsed.manifest, criteria: spec.spec.acceptance, workType: f.workType, testRef: a.testRef, stagingRef: a.stagingRef,
       projectFiles: facts.files, moduleExports: facts.exports, spec: spec.spec });
-    const file = assembleTestFile({ body: parsed.body, needs: parsed.manifest.needs, helpers: spec.spec.hubHelpers || [], missionId, specVersion: spec.version, specSha: spec.sha256 });
+    const file = assembleTestFile({ harness: TEST_HARNESS_VERSION, body: parsed.body, needs: parsed.manifest.needs, helpers: spec.spec.hubHelpers || [], missionId, specVersion: spec.version, specSha: spec.sha256 });
     const { removed: inventoryRemoved, contextChanged } = compareInventory(previousCandidate?.inventory || [], { text: file.text, manifest: parsed.manifest, headerLines: file.header.length, sha: file.sha256 });
     const removedDeclared = parsed.manifest.removed || [];
     lint.violations.push(...amendmentViolations(inventoryRemoved, removedDeclared, previousCandidate?.review?.checks || []));
@@ -1754,12 +1820,12 @@ export function createFactory(deps) {
     if (!lint.ok) {
       storeTestBlob(missionId, file.text);
       return reAuthorOrDecide(missionId, { kind: "lint", violations: lint.violations, taskId: a.authorTaskId,
-        rejectedCandidate: { sha: file.sha256, headerLines: file.header.length, cycle: a.cycle, manifest: parsed.manifest, lint, previousSha: previousCandidate?.sha || null, inventoryRemoved, contextChanged, removedDeclared } });
+        rejectedCandidate: { harness: TEST_HARNESS_VERSION, sha: file.sha256, headerLines: file.header.length, cycle: a.cycle, manifest: parsed.manifest, lint, previousSha: previousCandidate?.sha || null, inventoryRemoved, contextChanged, removedDeclared } });
     }
     // Write-ahead (§5.1): the exact bytes and the record first, the file after; a crash in between is finished from the blob at the next
     // resume (same sha) or stops at the owner (another file there).
     storeTestBlob(missionId, file.text);
-    updateAuthoring(missionId, { retryProblems: [], pending: { previousSha: previousCandidate?.sha || null, inventoryRemoved, contextChanged, removedDeclared, headerLines: file.header.length, sha: file.sha256, cycle: a.cycle, runId: run.id, manifest: parsed.manifest, lint: { signals: lint.signals, facts: lint.facts }, at: now() } });
+    updateAuthoring(missionId, { retryProblems: [], pending: { harness: TEST_HARNESS_VERSION, previousSha: previousCandidate?.sha || null, inventoryRemoved, contextChanged, removedDeclared, headerLines: file.header.length, sha: file.sha256, cycle: a.cycle, runId: run.id, manifest: parsed.manifest, lint: { signals: lint.signals, facts: lint.facts }, at: now() } });
     return writePendingTest(missionId);
   }
 
@@ -1798,8 +1864,8 @@ export function createFactory(deps) {
       const files = outcome.diff.others.length ? outcome.diff.others : [a.stagingRef];
       return holdStageZero(missionId, { kind: "changed", text: T_PROJECT_CHANGED(files), files, taskId: a.authorTaskId });
     }
-    updateAuthoring(missionId, { pending: null, candidate: { previousSha: p.previousSha || null, inventoryRemoved: p.inventoryRemoved || [], contextChanged: p.contextChanged || [], removedDeclared: p.removedDeclared || [], headerLines: p.headerLines, cycle: p.cycle, sha: p.sha, manifest: p.manifest, lint: p.lint, runId: p.runId, status: "STAGED", writtenAt: now() } });
-    bus.emit({ type: "factory.test_staged", scopeType: "mission", scopeId: missionId, source: "factory", payload: { ref: a.stagingRef, sha: p.sha, cycle: p.cycle, cases: p.manifest.cases.length } });
+    updateAuthoring(missionId, { pending: null, candidate: { harness: p.harness ?? 1, previousSha: p.previousSha || null, inventoryRemoved: p.inventoryRemoved || [], contextChanged: p.contextChanged || [], removedDeclared: p.removedDeclared || [], headerLines: p.headerLines, cycle: p.cycle, sha: p.sha, manifest: p.manifest, lint: p.lint, runId: p.runId, status: "STAGED", writtenAt: now() } });
+    bus.emit({ type: "factory.test_staged", scopeType: "mission", scopeId: missionId, source: "factory", payload: { ref: a.stagingRef, sha: p.sha, cycle: p.cycle, cases: p.manifest.cases.length, needsCompleted: p.manifest.needsCompleted?.length || 0 } });
     return runTestProving(missionId);
   }
 
@@ -1831,13 +1897,13 @@ export function createFactory(deps) {
     if (diff.staged !== c.sha) return holdStageZero(missionId, { kind: "changed", text: T_PROJECT_CHANGED([a.stagingRef]), files: [a.stagingRef], taskId });
     const outside = skippedTreeChanges(outsideBefore, skippedTreeFingerprint(project.path, { ignore: ignoreOf(missionId) })).slice(0, 20);
     const changedFiles = [...diff.others, ...outside];
-    const proof = classifyProof({ runs: results.map((r) => ({ status: r.status, reason: r.reason, counts: r.counts, cases: r.cases || [], fileLevelFailure: r.fileLevelFailure || null, overflow: r.overflow || 0 })),
+    const proof = classifyProof({ runs: results.map((r) => ({ status: r.status, reason: r.reason, stopped: r.stopped, counts: r.counts, cases: r.cases || [], fileCleanup: r.fileCleanup, fileCleanupReports: r.fileCleanupReports, fileLevelFailure: r.fileLevelFailure || null, overflow: r.overflow || 0 })),
       manifest: c.manifest, criteria: spec.spec.acceptance, workType: f.workType, testRef: a.stagingRef, changedFiles, missingAtBase: c.lint?.facts?.missingModules || [], spec: spec.spec, facts: c.lint?.facts || {},
-      test: { text: readBlob(blobDir(missionId), c.sha), headerLines: c.headerLines, refs: [path.posix.basename(a.stagingRef), path.posix.basename(a.testRef)] } });
-    updateAuthoring(missionId, (x) => ({ proof: { sha: c.sha, helpers: proof.helpers, verdict: proof.verdict, cause: proof.cause, reasons: proof.reasons.slice(0, 20), signature: proof.signature, table: proof.table.slice(0, 20),
+      test: { harness: c.harness ?? 1, text: readBlob(blobDir(missionId), c.sha), headerLines: c.headerLines, refs: [path.posix.basename(a.stagingRef), path.posix.basename(a.testRef)] } });
+    updateAuthoring(missionId, (x) => ({ proof: { harness: c.harness ?? 1, manifest: c.manifest, sha: c.sha, helpers: proof.helpers, verdict: proof.verdict, cause: proof.cause, reasons: proof.reasons.slice(0, 20), signature: proof.signature, table: proof.table.slice(0, 20),
       failingCriteria: proof.failingCriteria, passingCriteria: proof.passingCriteria, evidenceIds: results.map((r) => r.id), counts: results.map((r) => r.counts || {}), at: now() },
     candidate: { ...x.candidate, status: proof.verdict === "PROVEN" ? "PROVEN" : proof.verdict } }));
-    bus.emit({ type: "factory.test_proof", scopeType: "mission", scopeId: missionId, source: "factory", payload: { sha: c.sha, helpers: proof.helpers, verdict: proof.verdict, cause: proof.cause, runs: results.length } });
+    bus.emit({ type: "factory.test_proof", scopeType: "mission", scopeId: missionId, source: "factory", payload: { harness: c.harness ?? 1, manifest: c.manifest, sha: c.sha, helpers: proof.helpers, verdict: proof.verdict, cause: proof.cause, runs: results.length } });
     if (proof.verdict === "PROVEN") return dispatchTestReview(missionId);
     if (proof.verdict === "ALREADY_PASSES") return holdStageZero(missionId, { kind: "already_passes", text: T_ALREADY_PASSES, details: proof.reasons, taskId });
     if (proof.verdict === "NOT_HERMETIC") return holdStageZero(missionId, { kind: "not_hermetic", text: T_NOT_HERMETIC(changedFiles), details: proof.reasons, files: changedFiles, taskId });
@@ -1853,6 +1919,7 @@ export function createFactory(deps) {
     const f = fm(missionId);
     const spec = approvedSpec(f);
     const a = authoringOf(spec);
+    if (holdDataset(missionId, spec, a.reviewTaskId)) return;
     const c = a.candidate;
     const testText = readBlob(blobDir(missionId), c.sha);
     const previousCandidate = previousCandidateOf(missionId, a);
@@ -1860,7 +1927,7 @@ export function createFactory(deps) {
     if (testText === null || sha256(testText) !== c.sha) return holdStageZero(missionId, { kind: "blob_missing", text: T_PROJECT_CHANGED([a.stagingRef]), details: ["copia Hub-ului a testului lipsește"], files: [a.stagingRef], taskId: a.reviewTaskId });
     const open = findings(missionId, "OPEN").filter((x) => x.source === "test_review");
     bus.transaction(() => setStage(missionId, "TEST_REVIEW", { waitReason: "provider", reason: T_STAGE.TEST_REVIEW }));
-    const brief = buildTestReviewBrief({ mission: { id: missionId, title: missions.get(missionId).title }, spec: spec.spec, specVersion: spec.version, testRef: a.testRef, testSha: c.sha,
+    const brief = buildTestReviewBrief({ harness: c.harness ?? 1, mission: { id: missionId, title: missions.get(missionId).title }, spec: spec.spec, specVersion: spec.version, testRef: a.testRef, testSha: c.sha,
       testText, manifest: c.manifest, proof: a.proof || {}, lint: c.lint || {}, cycle: a.cycle, previousCandidate, inventory: assertionInventory(testText, c.manifest, { headerLines: c.headerLines, sha: c.sha }), inventoryRemoved: c.inventoryRemoved || [], contextChanged: c.contextChanged || [], removedDeclared: c.removedDeclared || [], openFindings: open });
     return dispatchRun(missionId, { stage: "TEST_REVIEW", taskId: a.reviewTaskId, role: ROLE_OF_STAGE.TEST_REVIEW, access: "read-only", conversationId: a.testReviewConversationId,
       brief, cycle: a.cycle, changeSeq: 0 });
@@ -1888,9 +1955,10 @@ export function createFactory(deps) {
     bus.transaction(() => {
       db.prepare(`INSERT INTO factory_reviews (id, mission_id, change_set_id, change_set_sha, run_id, reviewer, verdict, summary, missing_json, validation_json, status, created_at)
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(reviewId, missionId, changeSetId, c.sha, run.id, run.provider, parsed.verdict, parsed.summary, json(parsed.missingContext),
-        json({ kind: "acceptance_test", valid: parsed.valid, problems: parsed.problems, claimedVerdict: parsed.claimedVerdict, cause: parsed.cause, criteria: parsed.criteria, gate: parsed.gate, previousChecks: parsed.previousChecks, checks: parsed.checks, notes: parsed.notes }),
+        json({ kind: "acceptance_test", harness: c.harness ?? 1, manifest: c.manifest, valid: parsed.valid, problems: parsed.problems, claimedVerdict: parsed.claimedVerdict, cause: parsed.cause, criteria: parsed.criteria, gate: parsed.gate, previousChecks: parsed.previousChecks, checks: parsed.checks, notes: parsed.notes }),
         changed ? "STALE" : parsed.valid ? "VALID" : "INVALID", now());
       if (!changed) {
+        parsed.findings = codedReviewFindings(parsed.findings, { source: "test_review", firstOrdinal: db.prepare("SELECT COUNT(*) AS n FROM factory_findings WHERE mission_id = ?").get(missionId).n + 1 });
         for (const finding of parsed.findings) addFinding(missionId, { ...finding, source: "test_review", reviewId, changeSetId, fingerprint: `test_review:${finding.file}:${finding.observation.slice(0, 80)}` });
         for (const prev of openPrev) {
           const state = parsed.previous[prev.code];
@@ -1931,7 +1999,7 @@ export function createFactory(deps) {
     // What the author reads in the next brief (data): the exact rule or reason, with lines and codes, and the reviewer's per-criterion answers.
     const forAuthor = [...outcome.details, ...gate.map((g) => `${g.id}: ${(g.why || []).join(", ")}`), ...(summary ? [`rezumatul verificatorului: ${summary}`] : [])]
       .map((r) => redactText(String(r)).slice(0, 400)).slice(0, 20);
-    const entry = { candidate: rejectedCandidate || a.candidate || a.pending || null, proof: a.proof || null, review: a.review || null, findings: findings(missionId).filter((x) => x.source === "test_review"), cycle: a.cycle, sha: rejectedCandidate?.sha || a.candidate?.sha || a.pending?.sha || null, kind, verdict, cause, reasons: forAuthor, plain: outcome.text, at: now() };
+    const entry = { harness: (rejectedCandidate || a.candidate || a.pending)?.harness ?? 1, candidate: rejectedCandidate || a.candidate || a.pending || null, proof: a.proof || null, review: a.review || null, findings: findings(missionId).filter((x) => x.source === "test_review"), cycle: a.cycle, sha: rejectedCandidate?.sha || a.candidate?.sha || a.pending?.sha || null, kind, verdict, cause, reasons: forAuthor, plain: outcome.text, at: now() };
     const rewrite = (a.cycle || 0) < reauthorMaxOf(spec);
     bus.emit({ type: "factory.test_rejected", scopeType: "mission", scopeId: missionId, source: "factory", payload: { cycle: a.cycle, kind, verdict, sha: entry.sha, rewrite } });
     if (rewrite) {
@@ -2723,7 +2791,8 @@ export function createFactory(deps) {
       authoring: authoringView(approvedSpec(f) || spec),
       grantsNeeded: grantsNeeded(f),
       // 2.12.2 (P0-R3): the per-turn limits the model steps run with (separate from the mission's deadline) and a scheduled retry.
-      turnLimits: { ...turnTimeoutsOf(f.limits), missionMin: f.limits?.maxDurationMin ?? null },
+      turnLimits: { ...turnTimeoutsOf(f.limits), missionMin: f.limits?.maxDurationMin ?? null,
+        ...(dispatchTurnLimit(f, "TEST_AUTHORING").source === "authorLimits" ? { author: dispatchTurnLimit(f, "TEST_AUTHORING").min } : {}) },
       turnRetry: f.waitReason === "retry" ? (() => { const p = parse(db.prepare("SELECT payload_json FROM events WHERE type = 'factory.turn_timeout' AND scope_type = 'mission' AND scope_id = ? ORDER BY seq DESC LIMIT 1").get(missionId)?.payload_json, {}); return p.retry ? { stage: p.stage, retryAt: p.retryAt, attempt: p.attempt, limit: p.limit } : null; })() : null,
       runnerReadiness: runner.readiness(project),
       stageEnvironments: runner.stageMap ? runner.stageMap(project) : null,
@@ -2869,6 +2938,8 @@ export function createFactory(deps) {
     // M11 L5: step 0 of a test-first mission is open (no repair cycle there); the Hub's own files in its work area on a project.
     inStageZero, hubWrites, remainingAuthoring: (missionId) => remainingAuthoring(missionId),
     attachAuthority: (fn) => { authority = typeof fn === "function" ? fn : null; },
+    // Runtime verifies a claimed dispatch against the same approved spec and this instance's scale (no global override).
+    dispatchTurnLimit: (missionId, stage) => dispatchTurnLimit(need(fm(missionId)), stage),
     /** 2.12.2 (P0-R3), test mode only: scales the per-turn limits sent to the run manager (0 < scale ≤ 1); refused outside test mode. */
     setTurnTimeScaleForTests: (scale) => {
       if (!config.testMode) throw new HubError("policy", "Scala limitelor pe tură există doar în modul de test");
@@ -2876,6 +2947,11 @@ export function createFactory(deps) {
       if (!(Number.isFinite(n) && n > 0 && n <= 1)) throw new HubError("validation", "Scala limitelor pe tură e între 0 și 1");
       turnTimeScale = n;
       return n;
+    },
+    /** R-BRIEF fault injection is instance-local and refused outside test mode. */
+    setAuthorBriefRendererForTests: (fn) => {
+      if (!config.testMode) throw new HubError("policy", "Rendererul de brief poate fi înlocuit doar în modul de test");
+      authorBriefRenderer = typeof fn === "function" ? fn : buildAuthorBrief;
     },
     /** Closure R-ROLL-02, test mode only: fn(point, item) is called at copy / verify / rename / remove / record / snapshot / start_record. */
     setStartFaultForTests: (fn) => {

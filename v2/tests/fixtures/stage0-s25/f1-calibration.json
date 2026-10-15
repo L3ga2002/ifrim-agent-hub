@@ -1,0 +1,1048 @@
+{
+  "candidates": {
+    "f0": {
+      "sha": "682a820d4e179d933340e9cf7923a42ecd2d94f2042e386576a85b3f3336c85e",
+      "cycle": 0,
+      "harness": 2,
+      "headerLines": 38,
+      "needsDeclared": [],
+      "needs": [
+        "node:path",
+        "node:os",
+        "node:fs",
+        "node:sqlite",
+        "node:http"
+      ],
+      "needsCompleted": [
+        {
+          "module": "node:path",
+          "binding": "path",
+          "line": 43,
+          "reason": "„path” e folosit liber în corp (linia 43), fără declarație în needs"
+        },
+        {
+          "module": "node:os",
+          "binding": "os",
+          "line": 43,
+          "reason": "„os” e folosit liber în corp (linia 43), fără declarație în needs"
+        },
+        {
+          "module": "node:fs",
+          "binding": "fs",
+          "line": 43,
+          "reason": "„fs” e folosit liber în corp (linia 43), fără declarație în needs"
+        },
+        {
+          "module": "node:sqlite",
+          "binding": "sqlite",
+          "line": 65,
+          "reason": "„sqlite” e folosit liber în corp (linia 65), fără declarație în needs"
+        },
+        {
+          "module": "node:http",
+          "binding": "http",
+          "line": 3,
+          "reason": "„http” e folosit liber în corp (linia 3), fără declarație în needs"
+        }
+      ],
+      "proof": {
+        "verdict": "PROVEN",
+        "cause": "proven",
+        "failingCriteria": [
+          "AC-1",
+          "AC-2"
+        ],
+        "helpers": [
+          {
+            "name": "json-exposure",
+            "version": 1,
+            "sha256": "984e7cf2876ddbf514b1a6b6c86741736946f64adf8edf0ef0215369b136704f"
+          }
+        ],
+        "signature": "6e56a5062651ab4ccefcac827e631ce7966815d5f7fa8bb4e3595a1ae41f31e0"
+      },
+      "lintSignals": [
+        "existing_record_unproven",
+        "existing_record_unproven",
+        "http"
+      ],
+      "review": {
+        "verdict": "CHANGES_REQUESTED",
+        "summary": "Dovada Hub arată eșecuri relevante pentru expunerea telefonului și controale care trec azi. Testul trebuie completat: verificarea stocării prin numărarea rândurilor nu detectează modificările, iar verificările listei pot omite unele telefoane și nu confirmă identitatea programării păstrate după repornire.",
+        "criteria": [
+          {
+            "id": "AC-1",
+            "covered": false,
+            "failsForRightReason": true,
+            "canEverPass": true,
+            "contradictsOwner": false,
+            "trivialPassRisk": "medium",
+            "plain": "Verifică lista integrală și id-urile din stocare, dar poate omite telefoane și nu confirmă id-ul păstrat după repornire."
+          },
+          {
+            "id": "AC-2",
+            "covered": false,
+            "failsForRightReason": true,
+            "canEverPass": true,
+            "contradictsOwner": false,
+            "trivialPassRisk": "medium",
+            "plain": "Verifică toți cei cinci parametri anonimi, cu aceleași lacune privind telefoanele și programarea păstrată."
+          },
+          {
+            "id": "AC-3",
+            "covered": false,
+            "failsForRightReason": true,
+            "canEverPass": true,
+            "contradictsOwner": false,
+            "trivialPassRisk": "high",
+            "plain": "Verifică cele trei refuzuri și erorile pentru telefon, dar numărarea rândurilor nu detectează modificarea lor."
+          },
+          {
+            "id": "AC-4",
+            "covered": true,
+            "failsForRightReason": true,
+            "canEverPass": true,
+            "contradictsOwner": false,
+            "trivialPassRisk": "low",
+            "plain": "Citește direct baza de date și confirmă telefonul exact pentru id-ul programării acceptate, fără rută publică de recitire."
+          },
+          {
+            "id": "AC-5",
+            "covered": true,
+            "failsForRightReason": true,
+            "canEverPass": true,
+            "contradictsOwner": false,
+            "trivialPassRisk": "medium",
+            "plain": "Confirmă acceptarea unei cereri valide prin status și id; dovada salvării efective este completată de AC-4."
+          }
+        ],
+        "findings": [
+          {
+            "severity": "high",
+            "observation": "Testul compară numai numărul rândurilor, nu conținutul stocării înainte și după fiecare cerere invalidă."
+          },
+          {
+            "severity": "high",
+            "observation": "Lista values exclude telefoanele care nu sunt șiruri sau au mai puțin de trei caractere după trim. Pentru rândurile inițiale nu există o aserțiune care să garanteze că toate telefoanele relevante intră în values."
+          },
+          {
+            "severity": "medium",
+            "observation": "Răspunsul primei creări nu este citit pentru id, iar înregistrarea este identificată după repornire numai prin telefon."
+          },
+          {
+            "severity": "medium",
+            "observation": "Citirea SQLite este o citire internă reală, dar sursele inițializării nu sunt furnizate. Intervalele 09:00 și 09:30 sunt fixate direct, fără dovadă din contractul grilei sau al intervalelor libere."
+          }
+        ]
+      }
+    },
+    "f1": {
+      "sha": "a3f0c1f5b54dac75b24a45d5ee87531a127e2848785edb7fdfe4e69954b6aa5b",
+      "cycle": 1,
+      "amends": "682a820d4e179d933340e9cf7923a42ecd2d94f2042e386576a85b3f3336c85e",
+      "harness": 2,
+      "headerLines": 38,
+      "needsDeclared": [],
+      "needs": [
+        "node:path",
+        "node:os",
+        "node:fs",
+        "node:sqlite",
+        "node:http"
+      ],
+      "needsCompleted": [
+        {
+          "module": "node:path",
+          "binding": "path",
+          "line": 50,
+          "reason": "„path” e folosit liber în corp (linia 50), fără declarație în needs"
+        },
+        {
+          "module": "node:os",
+          "binding": "os",
+          "line": 50,
+          "reason": "„os” e folosit liber în corp (linia 50), fără declarație în needs"
+        },
+        {
+          "module": "node:fs",
+          "binding": "fs",
+          "line": 50,
+          "reason": "„fs” e folosit liber în corp (linia 50), fără declarație în needs"
+        },
+        {
+          "module": "node:sqlite",
+          "binding": "sqlite",
+          "line": 42,
+          "reason": "„sqlite” e folosit liber în corp (linia 42), fără declarație în needs"
+        },
+        {
+          "module": "node:http",
+          "binding": "http",
+          "line": 3,
+          "reason": "„http” e folosit liber în corp (linia 3), fără declarație în needs"
+        }
+      ],
+      "inventoryRemoved": 0,
+      "contextChanged": 35,
+      "proof": {
+        "verdict": "PROVEN",
+        "cause": "proven",
+        "failingCriteria": [
+          "AC-1",
+          "AC-2"
+        ],
+        "helpers": [
+          {
+            "name": "json-exposure",
+            "version": 1,
+            "sha256": "984e7cf2876ddbf514b1a6b6c86741736946f64adf8edf0ef0215369b136704f"
+          }
+        ],
+        "signature": "6e56a5062651ab4ccefcac827e631ce7966815d5f7fa8bb4e3595a1ae41f31e0"
+      },
+      "lintSignals": [
+        "existing_record_unproven",
+        "existing_record_unproven",
+        "http",
+        "completion_unmapped",
+        "completion_unmapped",
+        "completion_unmapped"
+      ],
+      "review": {
+        "verdict": "CHANGES_REQUESTED",
+        "summary": "F1 și F3 sunt închise prin comparațiile complete ale stocării și verificarea id-ului păstrat după repornire; AC-3, AC-4 și AC-5 sunt acoperite. F2 rămâne deschis pentru telefoanele care nu sunt șiruri, iar F4 este completat numai pentru verificarea intervalelor libere, fără dovada inițializării complete. AC-1 și AC-2 necesită completări; nicio verificare anterioară nu este pierdută.",
+        "criteria": [
+          {
+            "id": "AC-1",
+            "covered": false,
+            "failsForRightReason": true,
+            "canEverPass": true,
+            "contradictsOwner": false,
+            "trivialPassRisk": "high",
+            "plain": "Testul detectează expunerea actuală, dar poate omite telefoane din stocare și nu dovedește identitatea tuturor programărilor."
+          },
+          {
+            "id": "AC-2",
+            "covered": false,
+            "failsForRightReason": true,
+            "canEverPass": true,
+            "contradictsOwner": false,
+            "trivialPassRisk": "high",
+            "plain": "Toți cei cinci parametri sunt verificați, dar aceleași lipsuri privind telefoanele și programările rămân."
+          },
+          {
+            "id": "AC-3",
+            "covered": true,
+            "failsForRightReason": true,
+            "canEverPass": true,
+            "contradictsOwner": false,
+            "trivialPassRisk": "low",
+            "plain": "Fiecare telefon absent, gol sau format din spații este refuzat cu eroare de câmp, fără schimbarea rândurilor salvate."
+          },
+          {
+            "id": "AC-4",
+            "covered": true,
+            "failsForRightReason": true,
+            "canEverPass": true,
+            "contradictsOwner": false,
+            "trivialPassRisk": "low",
+            "plain": "Telefonul trimis este recitit exact din baza internă, pentru id-ul și ziua programării, fără o rută publică suplimentară."
+          },
+          {
+            "id": "AC-5",
+            "covered": true,
+            "failsForRightReason": true,
+            "canEverPass": true,
+            "contradictsOwner": false,
+            "trivialPassRisk": "medium",
+            "plain": "Programarea validă primește acceptare și un id; salvarea efectivă este verificată separat de celelalte controale."
+          }
+        ],
+        "previousChecksKept": 35,
+        "previousChecksLost": 0,
+        "findings": [
+          {
+            "severity": "high",
+            "observation": "Noile aserțiuni verifică lungimea numai dacă telefonul este deja un șir nevid. Un telefon numeric sau de alt tip este exclus atât din aserțiune, cât și din values. F2 și completările asociate rămân deschise."
+          },
+          {
+            "severity": "medium",
+            "observation": "Verificările noi consultă lista intervalelor libere, dar nu furnizează sursele inițializării și nu fixează identitatea și telefoanele înregistrărilor puse de aplicație înainte de repornire. Pragul de cinci rânduri nu dovedește proveniența lor."
+          },
+          {
+            "severity": "medium",
+            "observation": "Id-ul returnat de a doua creare nu este capturat. Programarea nouă este identificată în stocare exclusiv prin PHONE2, deși criteriile cer verificarea internă a id-ului, zilei și telefonului exact pentru fiecare programare relevantă."
+          }
+        ]
+      }
+    }
+  },
+  "hubOutcome": "cycle 0: needs completed by the Hub (declared [] → path/os/fs/sqlite/http), lint clean, proof PROVEN with normal exit (no --test-force-exit; 321/330 ms), Codex review CHANGES_REQUESTED; cycle 1 (the one rewrite): needs completed again, nothing removed, proof PROVEN (318/321 ms), Codex review CHANGES_REQUESTED (AC-1/AC-2 still open, every previous check kept) → step 0 exhausted; no release, no §25 card",
+  "matrix": {
+    "note": "node --test --test-reporter=tap WITHOUT --test-force-exit, Program Files node v24.14.0, 180 s cap; every process exited by itself; cleanup ok on every case",
+    "f0": [
+      {
+        "name": "CORRECT",
+        "status": "PASS",
+        "tests": 5,
+        "failed": "",
+        "ms": 342,
+        "hung": false,
+        "cleanupOk": true,
+        "expected": "yes"
+      },
+      {
+        "name": "ORIGINAL",
+        "status": "FAIL",
+        "tests": 5,
+        "failed": "AC-1,AC-2",
+        "ms": 325,
+        "hung": false,
+        "cleanupOk": true,
+        "expected": "yes"
+      },
+      {
+        "name": "refuse-all",
+        "status": "FAIL",
+        "tests": 5,
+        "failed": "AC-1,AC-2,AC-4 control,AC-5 control",
+        "ms": 425,
+        "hung": false,
+        "cleanupOk": true,
+        "expected": "yes"
+      },
+      {
+        "name": "phone lost on save",
+        "status": "FAIL",
+        "tests": 5,
+        "failed": "AC-1,AC-2,AC-4 control",
+        "ms": 306,
+        "hung": false,
+        "cleanupOk": true,
+        "expected": "yes"
+      },
+      {
+        "name": "browser-only validation",
+        "status": "FAIL",
+        "tests": 5,
+        "failed": "AC-3 control",
+        "ms": 324,
+        "hung": false,
+        "cleanupOk": true,
+        "expected": "yes"
+      },
+      {
+        "name": "masked value",
+        "status": "FAIL",
+        "tests": 5,
+        "failed": "AC-1,AC-2",
+        "ms": 347,
+        "hung": false,
+        "cleanupOk": true,
+        "expected": "yes"
+      },
+      {
+        "name": "includePhone bypass",
+        "status": "FAIL",
+        "tests": 5,
+        "failed": "AC-2",
+        "ms": 516,
+        "hung": false,
+        "cleanupOk": true,
+        "expected": "yes"
+      },
+      {
+        "name": "debug other key",
+        "status": "FAIL",
+        "tests": 5,
+        "failed": "AC-2",
+        "ms": 320,
+        "hung": false,
+        "cleanupOk": true,
+        "expected": "yes"
+      },
+      {
+        "name": "empty list",
+        "status": "FAIL",
+        "tests": 5,
+        "failed": "AC-1,AC-2",
+        "ms": 325,
+        "hung": false,
+        "cleanupOk": true,
+        "expected": "yes"
+      },
+      {
+        "name": "invalid request saved",
+        "status": "FAIL",
+        "tests": 5,
+        "failed": "AC-3 control",
+        "ms": 582,
+        "hung": false,
+        "cleanupOk": true,
+        "expected": "yes"
+      },
+      {
+        "name": "missing-property accepted",
+        "status": "FAIL",
+        "tests": 5,
+        "failed": "AC-3 control",
+        "ms": 344,
+        "hung": false,
+        "cleanupOk": true,
+        "expected": "yes"
+      },
+      {
+        "name": "id only in metadata",
+        "status": "FAIL",
+        "tests": 5,
+        "failed": "AC-1,AC-2",
+        "ms": 484,
+        "hung": false,
+        "cleanupOk": true,
+        "expected": "yes"
+      },
+      {
+        "name": "fields=phone other key",
+        "status": "FAIL",
+        "tests": 5,
+        "failed": "AC-2",
+        "ms": 472,
+        "hung": false,
+        "cleanupOk": true,
+        "expected": "yes"
+      },
+      {
+        "name": "phone in text",
+        "status": "FAIL",
+        "tests": 5,
+        "failed": "AC-1,AC-2",
+        "ms": 324,
+        "hung": false,
+        "cleanupOk": true,
+        "expected": "yes"
+      },
+      {
+        "name": "phone as key",
+        "status": "FAIL",
+        "tests": 5,
+        "failed": "AC-1,AC-2",
+        "ms": 445,
+        "hung": false,
+        "cleanupOk": true,
+        "expected": "yes"
+      },
+      {
+        "name": "escaped key and value",
+        "status": "FAIL",
+        "tests": 5,
+        "failed": "AC-1,AC-2",
+        "ms": 380,
+        "hung": false,
+        "cleanupOk": true,
+        "expected": "yes"
+      },
+      {
+        "name": "escaped value other key",
+        "status": "FAIL",
+        "tests": 5,
+        "failed": "AC-1,AC-2",
+        "ms": 306,
+        "hung": false,
+        "cleanupOk": true,
+        "expected": "yes"
+      },
+      {
+        "name": "existing records only",
+        "status": "FAIL",
+        "tests": 5,
+        "failed": "AC-1,AC-2",
+        "ms": 299,
+        "hung": false,
+        "cleanupOk": true,
+        "expected": "yes"
+      },
+      {
+        "name": "escape in text other key",
+        "status": "FAIL",
+        "tests": 5,
+        "failed": "AC-1,AC-2",
+        "ms": 508,
+        "hung": false,
+        "cleanupOk": true,
+        "expected": "yes"
+      },
+      {
+        "name": "seed ignored, leak only before restart",
+        "status": "FAIL",
+        "tests": 5,
+        "failed": "AC-1,AC-2",
+        "ms": 349,
+        "hung": false,
+        "cleanupOk": true,
+        "expected": "yes"
+      },
+      {
+        "name": "existing record absent after restart",
+        "status": "FAIL",
+        "tests": 5,
+        "failed": "AC-1,AC-2",
+        "ms": 351,
+        "hung": false,
+        "cleanupOk": true,
+        "expected": "yes"
+      },
+      {
+        "name": "existing record on another day",
+        "status": "FAIL",
+        "tests": 5,
+        "failed": "AC-1,AC-2",
+        "ms": 569,
+        "hung": false,
+        "cleanupOk": true,
+        "expected": "yes"
+      },
+      {
+        "name": "existing phone not persisted",
+        "status": "FAIL",
+        "tests": 5,
+        "failed": "AC-1,AC-2",
+        "ms": 295,
+        "hung": false,
+        "cleanupOk": true,
+        "expected": "yes"
+      },
+      {
+        "name": "empty list, base",
+        "status": "FAIL",
+        "tests": 5,
+        "failed": "AC-1,AC-2",
+        "ms": 308,
+        "hung": false,
+        "cleanupOk": true,
+        "expected": "yes"
+      },
+      {
+        "name": "empty list, debug",
+        "status": "FAIL",
+        "tests": 5,
+        "failed": "AC-2",
+        "ms": 520,
+        "hung": false,
+        "cleanupOk": true,
+        "expected": "yes"
+      },
+      {
+        "name": "existing omitted, base",
+        "status": "FAIL",
+        "tests": 5,
+        "failed": "AC-1,AC-2",
+        "ms": 310,
+        "hung": false,
+        "cleanupOk": true,
+        "expected": "yes"
+      },
+      {
+        "name": "existing omitted, debug",
+        "status": "FAIL",
+        "tests": 5,
+        "failed": "AC-2",
+        "ms": 340,
+        "hung": false,
+        "cleanupOk": true,
+        "expected": "yes"
+      },
+      {
+        "name": "ids only in metadata, base",
+        "status": "FAIL",
+        "tests": 5,
+        "failed": "AC-1,AC-2",
+        "ms": 495,
+        "hung": false,
+        "cleanupOk": true,
+        "expected": "yes"
+      },
+      {
+        "name": "ids only in metadata, debug",
+        "status": "FAIL",
+        "tests": 5,
+        "failed": "AC-2",
+        "ms": 317,
+        "hung": false,
+        "cleanupOk": true,
+        "expected": "yes"
+      },
+      {
+        "name": "seed rows only",
+        "status": "FAIL",
+        "tests": 5,
+        "failed": "AC-1,AC-2",
+        "ms": 381,
+        "hung": false,
+        "cleanupOk": true,
+        "expected": "yes"
+      },
+      {
+        "name": "initial data not created",
+        "status": "FAIL",
+        "tests": 5,
+        "failed": "AC-1,AC-2",
+        "ms": 508,
+        "hung": false,
+        "cleanupOk": true,
+        "expected": "yes"
+      },
+      {
+        "name": "initial data without phone",
+        "status": "PASS",
+        "tests": 5,
+        "failed": "",
+        "ms": 341,
+        "hung": false,
+        "cleanupOk": true,
+        "expected": "NO"
+      },
+      {
+        "name": "initial rows omitted",
+        "status": "FAIL",
+        "tests": 5,
+        "failed": "AC-1,AC-2",
+        "ms": 349,
+        "hung": false,
+        "cleanupOk": true,
+        "expected": "yes"
+      },
+      {
+        "name": "kept row omitted",
+        "status": "FAIL",
+        "tests": 5,
+        "failed": "AC-1,AC-2",
+        "ms": 507,
+        "hung": false,
+        "cleanupOk": true,
+        "expected": "yes"
+      },
+      {
+        "name": "new row omitted",
+        "status": "FAIL",
+        "tests": 5,
+        "failed": "AC-1,AC-2",
+        "ms": 285,
+        "hung": false,
+        "cleanupOk": true,
+        "expected": "yes"
+      },
+      {
+        "name": "seed rows only under any parameter",
+        "status": "FAIL",
+        "tests": 5,
+        "failed": "AC-2",
+        "ms": 316,
+        "hung": false,
+        "cleanupOk": true,
+        "expected": "yes"
+      },
+      {
+        "name": "threshold only under any parameter",
+        "status": "FAIL",
+        "tests": 5,
+        "failed": "AC-2",
+        "ms": 440,
+        "hung": false,
+        "cleanupOk": true,
+        "expected": "yes"
+      },
+      {
+        "name": "seed rows only under all=1",
+        "status": "FAIL",
+        "tests": 5,
+        "failed": "AC-2",
+        "ms": 365,
+        "hung": false,
+        "cleanupOk": true,
+        "expected": "yes"
+      }
+    ],
+    "f1": [
+      {
+        "name": "CORRECT",
+        "status": "PASS",
+        "tests": 5,
+        "failed": "",
+        "ms": 574,
+        "hung": false,
+        "cleanupOk": true,
+        "expected": "yes"
+      },
+      {
+        "name": "ORIGINAL",
+        "status": "FAIL",
+        "tests": 5,
+        "failed": "AC-1,AC-2",
+        "ms": 368,
+        "hung": false,
+        "cleanupOk": true,
+        "expected": "yes"
+      },
+      {
+        "name": "refuse-all",
+        "status": "FAIL",
+        "tests": 5,
+        "failed": "AC-1,AC-2,AC-4 control,AC-5 control",
+        "ms": 264,
+        "hung": false,
+        "cleanupOk": true,
+        "expected": "yes"
+      },
+      {
+        "name": "phone lost on save",
+        "status": "FAIL",
+        "tests": 5,
+        "failed": "AC-1,AC-2,AC-4 control",
+        "ms": 302,
+        "hung": false,
+        "cleanupOk": true,
+        "expected": "yes"
+      },
+      {
+        "name": "browser-only validation",
+        "status": "FAIL",
+        "tests": 5,
+        "failed": "AC-3 control",
+        "ms": 551,
+        "hung": false,
+        "cleanupOk": true,
+        "expected": "yes"
+      },
+      {
+        "name": "masked value",
+        "status": "FAIL",
+        "tests": 5,
+        "failed": "AC-1,AC-2",
+        "ms": 372,
+        "hung": false,
+        "cleanupOk": true,
+        "expected": "yes"
+      },
+      {
+        "name": "includePhone bypass",
+        "status": "FAIL",
+        "tests": 5,
+        "failed": "AC-2",
+        "ms": 326,
+        "hung": false,
+        "cleanupOk": true,
+        "expected": "yes"
+      },
+      {
+        "name": "debug other key",
+        "status": "FAIL",
+        "tests": 5,
+        "failed": "AC-2",
+        "ms": 674,
+        "hung": false,
+        "cleanupOk": true,
+        "expected": "yes"
+      },
+      {
+        "name": "empty list",
+        "status": "FAIL",
+        "tests": 5,
+        "failed": "AC-1,AC-2",
+        "ms": 369,
+        "hung": false,
+        "cleanupOk": true,
+        "expected": "yes"
+      },
+      {
+        "name": "invalid request saved",
+        "status": "FAIL",
+        "tests": 5,
+        "failed": "AC-3 control",
+        "ms": 479,
+        "hung": false,
+        "cleanupOk": true,
+        "expected": "yes"
+      },
+      {
+        "name": "missing-property accepted",
+        "status": "FAIL",
+        "tests": 5,
+        "failed": "AC-3 control",
+        "ms": 378,
+        "hung": false,
+        "cleanupOk": true,
+        "expected": "yes"
+      },
+      {
+        "name": "id only in metadata",
+        "status": "FAIL",
+        "tests": 5,
+        "failed": "AC-1,AC-2",
+        "ms": 337,
+        "hung": false,
+        "cleanupOk": true,
+        "expected": "yes"
+      },
+      {
+        "name": "fields=phone other key",
+        "status": "FAIL",
+        "tests": 5,
+        "failed": "AC-2",
+        "ms": 313,
+        "hung": false,
+        "cleanupOk": true,
+        "expected": "yes"
+      },
+      {
+        "name": "phone in text",
+        "status": "FAIL",
+        "tests": 5,
+        "failed": "AC-1,AC-2",
+        "ms": 544,
+        "hung": false,
+        "cleanupOk": true,
+        "expected": "yes"
+      },
+      {
+        "name": "phone as key",
+        "status": "FAIL",
+        "tests": 5,
+        "failed": "AC-1,AC-2",
+        "ms": 338,
+        "hung": false,
+        "cleanupOk": true,
+        "expected": "yes"
+      },
+      {
+        "name": "escaped key and value",
+        "status": "FAIL",
+        "tests": 5,
+        "failed": "AC-1,AC-2",
+        "ms": 296,
+        "hung": false,
+        "cleanupOk": true,
+        "expected": "yes"
+      },
+      {
+        "name": "escaped value other key",
+        "status": "FAIL",
+        "tests": 5,
+        "failed": "AC-1,AC-2",
+        "ms": 552,
+        "hung": false,
+        "cleanupOk": true,
+        "expected": "yes"
+      },
+      {
+        "name": "existing records only",
+        "status": "FAIL",
+        "tests": 5,
+        "failed": "AC-1,AC-2",
+        "ms": 321,
+        "hung": false,
+        "cleanupOk": true,
+        "expected": "yes"
+      },
+      {
+        "name": "escape in text other key",
+        "status": "FAIL",
+        "tests": 5,
+        "failed": "AC-1,AC-2",
+        "ms": 313,
+        "hung": false,
+        "cleanupOk": true,
+        "expected": "yes"
+      },
+      {
+        "name": "seed ignored, leak only before restart",
+        "status": "FAIL",
+        "tests": 5,
+        "failed": "AC-1,AC-2",
+        "ms": 537,
+        "hung": false,
+        "cleanupOk": true,
+        "expected": "yes"
+      },
+      {
+        "name": "existing record absent after restart",
+        "status": "FAIL",
+        "tests": 5,
+        "failed": "AC-1,AC-2",
+        "ms": 353,
+        "hung": false,
+        "cleanupOk": true,
+        "expected": "yes"
+      },
+      {
+        "name": "existing record on another day",
+        "status": "FAIL",
+        "tests": 5,
+        "failed": "AC-1,AC-2",
+        "ms": 295,
+        "hung": false,
+        "cleanupOk": true,
+        "expected": "yes"
+      },
+      {
+        "name": "existing phone not persisted",
+        "status": "FAIL",
+        "tests": 5,
+        "failed": "AC-1,AC-2",
+        "ms": 644,
+        "hung": false,
+        "cleanupOk": true,
+        "expected": "yes"
+      },
+      {
+        "name": "empty list, base",
+        "status": "FAIL",
+        "tests": 5,
+        "failed": "AC-1,AC-2",
+        "ms": 328,
+        "hung": false,
+        "cleanupOk": true,
+        "expected": "yes"
+      },
+      {
+        "name": "empty list, debug",
+        "status": "FAIL",
+        "tests": 5,
+        "failed": "AC-2",
+        "ms": 299,
+        "hung": false,
+        "cleanupOk": true,
+        "expected": "yes"
+      },
+      {
+        "name": "existing omitted, base",
+        "status": "FAIL",
+        "tests": 5,
+        "failed": "AC-1,AC-2",
+        "ms": 608,
+        "hung": false,
+        "cleanupOk": true,
+        "expected": "yes"
+      },
+      {
+        "name": "existing omitted, debug",
+        "status": "FAIL",
+        "tests": 5,
+        "failed": "AC-2",
+        "ms": 305,
+        "hung": false,
+        "cleanupOk": true,
+        "expected": "yes"
+      },
+      {
+        "name": "ids only in metadata, base",
+        "status": "FAIL",
+        "tests": 5,
+        "failed": "AC-1,AC-2",
+        "ms": 311,
+        "hung": false,
+        "cleanupOk": true,
+        "expected": "yes"
+      },
+      {
+        "name": "ids only in metadata, debug",
+        "status": "FAIL",
+        "tests": 5,
+        "failed": "AC-2",
+        "ms": 515,
+        "hung": false,
+        "cleanupOk": true,
+        "expected": "yes"
+      },
+      {
+        "name": "seed rows only",
+        "status": "FAIL",
+        "tests": 5,
+        "failed": "AC-1,AC-2",
+        "ms": 310,
+        "hung": false,
+        "cleanupOk": true,
+        "expected": "yes"
+      },
+      {
+        "name": "initial data not created",
+        "status": "FAIL",
+        "tests": 5,
+        "failed": "AC-1,AC-2",
+        "ms": 349,
+        "hung": false,
+        "cleanupOk": true,
+        "expected": "yes"
+      },
+      {
+        "name": "initial data without phone",
+        "status": "PASS",
+        "tests": 5,
+        "failed": "",
+        "ms": 492,
+        "hung": false,
+        "cleanupOk": true,
+        "expected": "NO"
+      },
+      {
+        "name": "initial rows omitted",
+        "status": "FAIL",
+        "tests": 5,
+        "failed": "AC-1,AC-2",
+        "ms": 296,
+        "hung": false,
+        "cleanupOk": true,
+        "expected": "yes"
+      },
+      {
+        "name": "kept row omitted",
+        "status": "FAIL",
+        "tests": 5,
+        "failed": "AC-1,AC-2",
+        "ms": 372,
+        "hung": false,
+        "cleanupOk": true,
+        "expected": "yes"
+      },
+      {
+        "name": "new row omitted",
+        "status": "FAIL",
+        "tests": 5,
+        "failed": "AC-1,AC-2",
+        "ms": 565,
+        "hung": false,
+        "cleanupOk": true,
+        "expected": "yes"
+      },
+      {
+        "name": "seed rows only under any parameter",
+        "status": "FAIL",
+        "tests": 5,
+        "failed": "AC-2",
+        "ms": 468,
+        "hung": false,
+        "cleanupOk": true,
+        "expected": "yes"
+      },
+      {
+        "name": "threshold only under any parameter",
+        "status": "FAIL",
+        "tests": 5,
+        "failed": "AC-2",
+        "ms": 669,
+        "hung": false,
+        "cleanupOk": true,
+        "expected": "yes"
+      },
+      {
+        "name": "seed rows only under all=1",
+        "status": "FAIL",
+        "tests": 5,
+        "failed": "AC-2",
+        "ms": 459,
+        "hung": false,
+        "cleanupOk": true,
+        "expected": "yes"
+      }
+    ]
+  }
+}

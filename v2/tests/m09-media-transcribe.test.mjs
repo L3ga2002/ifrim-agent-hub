@@ -51,7 +51,7 @@ function makeEnv({ wcliEnv = {}, limits = {}, extractAudio = null, voiceEngine =
   const req = (absPath, extra = {}) => ({ absPath, allowedRoots: [src], actor: "test", channel: "test", ...extra });
   const rows = () => env.db.prepare("SELECT * FROM media_transcripts ORDER BY created_at").all();
   const eventTypes = () => env.db.prepare("SELECT type FROM events ORDER BY seq").all().map((r) => r.type);
-  const cleanup = async () => { await transcriber.stopAll().catch(() => {}); await env.supervisor.stopAll(); env.cleanup(); rm(env.dir); rm(path.dirname(log)); };
+  const cleanup = async () => { await transcriber.stopAll().catch(() => {}); await env.supervisor.stopAll(); await env.cleanup(); rm(env.dir); rm(path.dirname(log)); };
   return { ...env, engine, engineEvents: events, src, transcriber, put, req, rows, eventTypes, log, cleanup };
 }
 

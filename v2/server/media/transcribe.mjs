@@ -381,7 +381,7 @@ export function createMediaTranscriber({ db, bus, clock = () => new Date(), conf
   }
 
   function runProcess({ key, launch, cwd, timeoutMs }) {
-    return new Promise((resolve) => {
+    return new Promise((resolve, reject) => {
       const flags = { timedOut: false, cancelled: false, stdoutOver: false, memoryOver: false };
       const stderrTail = [];
       let stdoutBytes = 0;
@@ -391,7 +391,7 @@ export function createMediaTranscriber({ db, bus, clock = () => new Date(), conf
         record = supervisor.start({ key, label: "transcriere media (whisper-cli)", executable: launch.executable, args: launch.args, cwd, env: launch.env,
           onStdoutLine: (line) => { stdoutBytes += line.length + 1; if (stdoutBytes > L.maxStdoutBytes && !flags.stdoutOver) kill("stdoutOver"); },
           onStderrLine: (line) => { stderrTail.push(line.slice(0, 300)); if (stderrTail.length > 20) stderrTail.shift(); } });
-      } catch (error) { resolve({ code: -1, spawnError: String(error.message || error), ...flags, stderrTail }); return; }
+      } catch (error) { if (error?.code === "HUB_SHUTDOWN") reject(error); else resolve({ code: -1, spawnError: String(error.message || error), ...flags, stderrTail }); return; }
       if (running) running.kill = kill;
       if (running?.cancelled) kill("cancelled");
       const timer = setTimeout(() => kill("timedOut"), timeoutMs);
@@ -444,7 +444,7 @@ export function createMediaTranscriber({ db, bus, clock = () => new Date(), conf
         // M09 review: a cancel during the audio extraction stops that ffmpeg process too (its key belongs to this job).
         const extractKey = `media-stt-extract:${id}`;
         running.kill = () => { if (tools && typeof tools.cancel === "function") tools.cancel(extractKey).catch(() => {}); };
-        try { await extract(copied, wav, { key: extractKey }); } catch (error) { checkCancel(); throw jobError("EXTRACT_FAILED", `extragerea audio a eșuat: ${String(error?.message || error).slice(0, 200)}`); }
+        try { await extract(copied, wav, { key: extractKey }); } catch (error) { if (error?.code === "HUB_SHUTDOWN") throw error; checkCancel(); throw jobError("EXTRACT_FAILED", `extragerea audio a eșuat: ${String(error?.message || error).slice(0, 200)}`); }
         running.kill = null;
         checkCancel();
         let st;
@@ -493,6 +493,11 @@ export function createMediaTranscriber({ db, bus, clock = () => new Date(), conf
       { type: "media.transcript.final", actor, payload: { wordCount: parsed.wordCount, durationMs: durationMs ?? null, language: lang, gpu: decision.gpu, gpuReason: decision.reason, truncated: parsed.truncated, wordsDropped: parsed.wordsDropped } });
       written = [];
     } catch (error) {
+      if (error?.code === "HUB_SHUTDOWN") {
+        // Commands intentionally keep only .transcript, so background completion must resolve.
+        // Leave the row for boot recovery; shutdown is never a content verdict.
+        try { return view(getRow(id)); } catch { return null; }
+      }
       const code = error?.jobCode || (error instanceof HubError ? error.code : "INTERNAL");
       const status = code === "CANCELLED" ? "cancelled" : code === "TIMEOUT" ? "timeout" : "failed";
       const message = String(error?.message || error).slice(0, 400);

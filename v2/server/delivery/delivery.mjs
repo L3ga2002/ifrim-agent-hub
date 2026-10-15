@@ -169,7 +169,9 @@ export function createDeliveries({ db, bus, clock, config, settings, projects, m
    * The activation checklist (design §4). The first failure stops it: the delivery becomes FAILED or EXPIRED with the reason, nothing is
    * captured, and the Room offers a re-package card (one confirmation).
    */
+  let closing = false;
   async function activate(id, { actor = "hub" } = {}) {
+    if (closing) return { activated: false, reason: "Hub shutdown" };
     const d = need(id);
     if (d.status !== "ARMED") return { activated: false, reason: `livrarea e ${d.status}` };
     const fail = (status, reason) => { bus.transaction(() => setStatus(id, status, reason, {}, { from: ["ARMED"] })); return { activated: false, reason }; };
@@ -182,6 +184,7 @@ export function createDeliveries({ db, bus, clock, config, settings, projects, m
     const snap = factory.snapshotCheck(d.missionId);
     if (!snap.equal) return fail("FAILED", `Proiectul nu mai e versiunea verificată (${snap.changedFiles.slice(0, 5).join(", ") || "snapshot diferit"})`);
     const tools = await toolsFacts();
+    if (closing) return { activated: false, reason: "Hub shutdown" };
     for (const k of ["ffmpeg", "ffprobe"]) if (d.template.tools?.[k]?.sha256 && tools.identity?.[k]?.sha256 && tools.identity[k].sha256 !== d.template.tools[k].sha256) return fail("FAILED", `${k} s-a schimbat după confirmare`);
     const consent = d.consent || {};
     try { trust.requireSession({ id: consent.sessionId }, "livrarea confirmată"); } catch { /* the derived plan stops at its first operation with SESSION_CLOSED → NEEDS_OWNER */ }
@@ -191,6 +194,7 @@ export function createDeliveries({ db, bus, clock, config, settings, projects, m
     if (startOrigin && startOrigin !== d.template.preview.origin) return fail("FAILED", "Adresa preview-ului din pachet diferă de cea confirmată");
     const steps = packageSteps(d.template, d.id);
     const body = await opsPlans.buildBody({ kind: PACKAGE_KIND, title: d.title, steps, limits: { maxDurationMin: DELIVERY_LIMITS.phaseMinutes, maxActions: DELIVERY_LIMITS.maxActions } });
+    if (closing) return { activated: false, reason: "Hub shutdown" };
     if (hashCanonical(body) !== d.opsBodySha) return fail("FAILED", "Pașii livrării s-au schimbat față de planul confirmat");
     bus.transaction(() => {
       bindSoftware(d, binding, actor);
@@ -204,6 +208,7 @@ export function createDeliveries({ db, bus, clock, config, settings, projects, m
         onCreated: (planId, { expiresAt }) => db.prepare("UPDATE deliveries SET ops_plan_id = ?, phase_expires_at = ?, updated_at = ? WHERE id = ?").run(planId, expiresAt, now(), id) });
       return { activated: true, planId: plan.id };
     } catch (error) {
+      if (closing) return { activated: false, reason: "Hub shutdown" };
       bus.transaction(() => setStatus(id, "NEEDS_OWNER", `Planul de livrare nu a pornit: ${String(error.message).slice(0, 200)}`, {}, { from: ["ACTIVE"] }));
       return { activated: false, reason: error.message };
     }
@@ -654,6 +659,7 @@ export function createDeliveries({ db, bus, clock, config, settings, projects, m
   // ---------------------------------------------------------------- listeners (post-commit, deferred)
   const deliveriesOfMission = (missionId) => db.prepare("SELECT id FROM deliveries WHERE mission_id = ? AND status NOT IN ('CLOSED','CANCELLED','EXPIRED')").all(String(missionId || "")).map((r) => r.id);
   function onEvent(e) {
+    if (closing) return;
     const p = e.payload || {};
     try {
       if (e.type === "factory.bundle.status" && ["STALE", "REJECTED"].includes(p.status)) {
@@ -693,6 +699,7 @@ export function createDeliveries({ db, bus, clock, config, settings, projects, m
   }
   let detach = null;
   function boot() {
+    closing = false;
     if (detach || !bus.subscribe) return;
     detach = bus.subscribe((e) => setTimeout(() => onEvent(e), 0));
     // A crash after committing a verified restore may precede its deferred listener. Replay only for still-stale projects.
@@ -705,6 +712,7 @@ export function createDeliveries({ db, bus, clock, config, settings, projects, m
   /** Housekeeping: activation retry after a restart (within activate_by), and READY deliveries re-verified every 10 minutes. */
   let lastVerify = 0;
   async function tick() {
+    if (closing) return;
     // A derived delivery plan the Hub refused before any step did work — no ops plan (an operation the phase list lacked) or a plan that
     // FAILED with no step done (its step 1 ran before the plan id was bound) — goes back to ARMED once per Hub version, so the same
     // checks run again on the current code: the confirmation, the steps' hash, the snapshot and the tools are re-checked by activate().
@@ -718,9 +726,10 @@ export function createDeliveries({ db, bus, clock, config, settings, projects, m
       });
     }
     for (const r of db.prepare("SELECT id, mission_id FROM deliveries WHERE status = 'ARMED'").all()) {
+      if (closing) return;
       try { const f = factory.view(r.mission_id)?.factory; if (f && ["DELIVERY_READY", "ACCEPTED"].includes(f.stage)) await activate(r.id); } catch { /* next tick */ }
     }
-    if (clock().getTime() - lastVerify > 10 * 60000) {
+    if (!closing && clock().getTime() - lastVerify > 10 * 60000) {
       lastVerify = clock().getTime();
       for (const r of db.prepare("SELECT id FROM deliveries WHERE status = 'READY'").all()) { try { verify(r.id, { by: "hub" }); } catch { /* next tick */ } }
     }
@@ -728,5 +737,5 @@ export function createDeliveries({ db, bus, clock, config, settings, projects, m
 
   return { createPlanned, sectionFor, sectionForMission, arm, activate, startDirect, bindItem, bindSoftware, currentItem, items: itemsOfDelivery, trigger, verify, reconcileStale, renderDocument, exportDocument, editDocument, approveDocument,
     currentDoc, recordRevision, getRevision, updateRevision, revisionOfPlan, view, get, need, list, latestForProject, close, cancel, setStatus, readiness, boot, tick, onEvent, attachEnvelopes, patch, bindService, startPreview,
-    close_: () => { if (detach) detach(); detach = null; }, mediaFacts, markerOf };
+    close_: () => { closing = true; if (detach) detach(); detach = null; }, mediaFacts, markerOf };
 }

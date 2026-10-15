@@ -96,8 +96,7 @@ export function createRunCaseReader() {
     push: (line) => collector.push(line),
     finish(stderrTail = []) {
       for (const line of stderrTail) collector.push(`[stderr] ${line}`);
-      const { cases, fileLevelFailure, overflow } = collector.result();
-      return { cases, fileLevelFailure, overflow };
+      return collector.result();
     },
   };
 }

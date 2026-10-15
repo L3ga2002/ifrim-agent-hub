@@ -601,6 +601,16 @@ test("TT-09 races at the deadline: a turn that completes just before it is never
     const c = await untilRun(t, quota.id, ["completed", "failed", "interrupted", "blocked"], 10000);
     assert.deepEqual([c.status, c.errorCategory], ["failed", "quota"]);
     assert.equal(c.evidence.turnTimeout.outcome, "quota");
+
+    fake.next = { onInterrupt: () => ({ status: "failed", errorCategory: "output_token_limit", error: "Bugetul de ieșire este epuizat", output: "Răspuns parțial", usage: {}, preInference: false }) };
+    const limited = await startRun(t, { turnTimeoutMs: 300 });
+    const d = await untilRun(t, limited.id, ["completed", "failed", "interrupted", "blocked"], 10000);
+    assert.deepEqual([d.status, d.errorCategory], ["failed", "output_token_limit"]);
+    assert.equal(d.evidence.turnTimeout.outcome, "output_token_limit");
+    assert.ok(d.evidence.turnTimeout.firedAt);
+    assert.equal(events(t.hub, "run.turn_timeout").filter((e) => e._run === limited.id).length, 1);
+    assert.deepEqual(fake.handles[3].interrupts, ["turn-timeout"]);
+    assert.equal(d.errorMessage, "Bugetul de ieșire este epuizat");
   } finally { fake.restore(); await t.cleanup(); }
 });
 

@@ -87,7 +87,7 @@ export function makeMediaEnv({ launchers = realLaunchers(), clock = () => new Da
   return {
     dir, dataDir, db, bus, settings, config, supervisor, clock, launchers,
     hasRealTools: Boolean(launchers.available && launchers.paths?.ffmpeg && launchers.paths.ffmpeg !== FAKE_FFMPEG),
-    cleanup() { try { supervisor.stopAll?.(); } catch { /* ignore */ } try { db.close(); } catch { /* ignore */ } },
+    async cleanup() { try { await supervisor.stopAll?.(); } finally { db.close(); } },
   };
 }
 

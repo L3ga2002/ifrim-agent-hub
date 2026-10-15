@@ -1,0 +1,395 @@
+{
+  "verdict": "CHANGES_REQUESTED",
+  "claimedVerdict": "CHANGES_REQUESTED",
+  "summary": "F1 și F3 sunt închise prin comparațiile complete ale stocării și verificarea id-ului păstrat după repornire; AC-3, AC-4 și AC-5 sunt acoperite. F2 rămâne deschis pentru telefoanele care nu sunt șiruri, iar F4 este completat numai pentru verificarea intervalelor libere, fără dovada inițializării complete. AC-1 și AC-2 necesită completări; nicio verificare anterioară nu este pierdută.",
+  "findings": [
+    {
+      "severity": "high",
+      "file": "test/hub/telefonul-ramane-obligatoriu-si-e75c25.test.mjs",
+      "area": "AC-1, AC-2 — F2 și completările P140/P175",
+      "observation": "Noile aserțiuni verifică lungimea numai dacă telefonul este deja un șir nevid. Un telefon numeric sau de alt tip este exclus atât din aserțiune, cât și din values. F2 și completările asociate rămân deschise.",
+      "impact": "Un telefon relevant exclus poate apărea sub altă cheie în răspuns și testul poate trece. Adăugarea aserțiunilor închide cazul șirurilor scurte, dar nu garantează includerea tuturor valorilor relevante.",
+      "evidence": "Liniile 155–163 și 196–204: condiția typeof row.phone === \"string\" precedă aserțiunea, iar filtrul repetă aceeași excludere.",
+      "reproduction": "Prin analiză statică: un rând inițial cu phone numeric este ignorat de ambele bucle și filtre; publicarea valorii sub cheia contact nu este detectată dacă valoarea nu coincide cu alt telefon inclus."
+    },
+    {
+      "severity": "medium",
+      "file": "test/hub/telefonul-ramane-obligatoriu-si-e75c25.test.mjs",
+      "area": "AC-1, AC-2 — F4, inițializarea normală și înregistrările inițiale",
+      "observation": "Verificările noi consultă lista intervalelor libere, dar nu furnizează sursele inițializării și nu fixează identitatea și telefoanele înregistrărilor puse de aplicație înainte de repornire. Pragul de cinci rânduri nu dovedește proveniența lor.",
+      "impact": "F4 este închis pentru alegerea intervalelor, dar rămâne deschis pentru inițializarea completă. Eliminarea sau înlocuirea unor înregistrări inițiale poate deveni noua referință citită după repornire.",
+      "evidence": "Liniile 91–97 și 110–113 verifică intervalele; liniile 126–128 citesc numai starea finală; P142/P183 cer doar rows.length >= 5.",
+      "reproduction": "Sursele inițializării nu sunt incluse în material. O implementare care înlocuiește înregistrările inițiale cu alte rânduri păstrând pragul numeric poate satisface verificările finale."
+    },
+    {
+      "severity": "medium",
+      "file": "test/hub/telefonul-ramane-obligatoriu-si-e75c25.test.mjs",
+      "area": "AC-1, AC-2 — identitatea programării noi",
+      "observation": "Id-ul returnat de a doua creare nu este capturat. Programarea nouă este identificată în stocare exclusiv prin PHONE2, deși criteriile cer verificarea internă a id-ului, zilei și telefonului exact pentru fiecare programare relevantă.",
+      "impact": "Un răspuns de creare cu un id diferit de rândul salvat sau găsirea unui alt rând cu același telefon poate trece testul.",
+      "evidence": "Liniile 117–124 verifică numai statusul p2; liniile 151–153 și 192–194 caută rândul după telefon, fără comparație cu id-ul din p2.",
+      "reproduction": "Prin analiză statică: POST-ul al doilea poate returna booking.id diferit de id-ul rândului cu PHONE2; verificările ulterioare folosesc doar id-ul citit din stocare."
+    }
+  ],
+  "previous": {},
+  "missingContext": [
+    "Sursele inițializării aplicației nu sunt furnizate; citirea SQLite este reală, dar pragul numeric nu certifică înregistrările inițiale.",
+    "Toate cele patru findings anterioare au codul undefined. Structura cerută permite o singură cheie: verdictul agregat este still_open; individual, F1 este resolved, F2 still_open, F3 resolved și F4 still_open parțial."
+  ],
+  "valid": true,
+  "problems": [],
+  "cause": null,
+  "criteria": [
+    {
+      "id": "AC-1",
+      "covered": false,
+      "failsForRightReason": true,
+      "canEverPass": true,
+      "contradictsOwner": false,
+      "trivialPassRisk": "high",
+      "plain": "Testul detectează expunerea actuală, dar poate omite telefoane din stocare și nu dovedește identitatea tuturor programărilor."
+    },
+    {
+      "id": "AC-2",
+      "covered": false,
+      "failsForRightReason": true,
+      "canEverPass": true,
+      "contradictsOwner": false,
+      "trivialPassRisk": "high",
+      "plain": "Toți cei cinci parametri sunt verificați, dar aceleași lipsuri privind telefoanele și programările rămân."
+    },
+    {
+      "id": "AC-3",
+      "covered": true,
+      "failsForRightReason": true,
+      "canEverPass": true,
+      "contradictsOwner": false,
+      "trivialPassRisk": "low",
+      "plain": "Fiecare telefon absent, gol sau format din spații este refuzat cu eroare de câmp, fără schimbarea rândurilor salvate."
+    },
+    {
+      "id": "AC-4",
+      "covered": true,
+      "failsForRightReason": true,
+      "canEverPass": true,
+      "contradictsOwner": false,
+      "trivialPassRisk": "low",
+      "plain": "Telefonul trimis este recitit exact din baza internă, pentru id-ul și ziua programării, fără o rută publică suplimentară."
+    },
+    {
+      "id": "AC-5",
+      "covered": true,
+      "failsForRightReason": true,
+      "canEverPass": true,
+      "contradictsOwner": false,
+      "trivialPassRisk": "medium",
+      "plain": "Programarea validă primește acceptare și un id; salvarea efectivă este verificată separat de celelalte controale."
+    }
+  ],
+  "gate": [
+    {
+      "id": "AC-1",
+      "why": [
+        "nu e acoperit",
+        "poate fi trecut de o implementare trivială"
+      ]
+    },
+    {
+      "id": "AC-2",
+      "why": [
+        "nu e acoperit",
+        "poate fi trecut de o implementare trivială"
+      ]
+    }
+  ],
+  "checks": [
+    {
+      "id": "P157",
+      "nature": "insufficient",
+      "why": "Verifică șirurile nevide scurte, dar condiția exterioară ignoră telefoanele care nu sunt șiruri."
+    },
+    {
+      "id": "P198",
+      "nature": "insufficient",
+      "why": "Verifică șirurile nevide scurte, dar nu garantează că fiecare telefon relevant poate intra în values."
+    },
+    {
+      "id": "P175",
+      "nature": "insufficient",
+      "why": "Verifică întregul corp corect, dar values poate exclude telefoane relevante care nu sunt șiruri."
+    },
+    {
+      "id": "P217",
+      "nature": "insufficient",
+      "why": "Verifică fiecare parametru și corpul integral, dar folosește aceeași listă incomplet garantată de telefoane."
+    },
+    {
+      "id": "P142",
+      "nature": "insufficient",
+      "why": "Pragul numeric nu dovedește identitatea și păstrarea tuturor înregistrărilor inițiale ale aplicației."
+    },
+    {
+      "id": "P183",
+      "nature": "insufficient",
+      "why": "Cel puțin cinci rânduri nu garantează că înregistrările inițiale corecte sunt încă prezente."
+    },
+    {
+      "id": "P152",
+      "nature": "insufficient",
+      "why": "Găsește telefonul nou în stocare, dar nu leagă rândul de id-ul returnat de a doua creare."
+    },
+    {
+      "id": "P193",
+      "nature": "insufficient",
+      "why": "Identificarea după telefon trebuie completată cu verificarea id-ului returnat de a doua creare."
+    }
+  ],
+  "notes": [],
+  "previousChecks": {
+    "P92": {
+      "verdict": "kept",
+      "by": [
+        "P106"
+      ],
+      "why": "Aceeași creare din prima sesiune trebuie acceptată; verificarea intervalului liber adaugă o condiție de pregătire."
+    },
+    "P102": {
+      "verdict": "kept",
+      "by": [
+        "P124"
+      ],
+      "why": "A doua creare este în continuare verificată după repornirea pe aceeași stocare."
+    },
+    "P114": {
+      "verdict": "kept",
+      "by": [
+        "P142"
+      ],
+      "why": "Pragul de cinci rânduri se aplică în continuare citirii interne finale a zilei."
+    },
+    "P116": {
+      "verdict": "kept",
+      "by": [
+        "P144"
+      ],
+      "why": "Fiecare rând din citirea internă finală trebuie să aparțină zilei testate."
+    },
+    "P117": {
+      "verdict": "kept",
+      "by": [
+        "P145"
+      ],
+      "why": "Fiecare rând intern păstrează verificarea unui id de tip șir nevid."
+    },
+    "P120": {
+      "verdict": "kept",
+      "by": [
+        "P148"
+      ],
+      "why": "Căutarea telefonului primei programări este păstrată și completată cu verificarea id-ului original."
+    },
+    "P121": {
+      "verdict": "kept",
+      "by": [
+        "P149"
+      ],
+      "why": "Ziua primei programări găsite după telefon este verificată în continuare."
+    },
+    "P123": {
+      "verdict": "kept",
+      "by": [
+        "P152"
+      ],
+      "why": "Prezența în stocare a telefonului celei de-a doua programări este verificată în continuare."
+    },
+    "P124": {
+      "verdict": "kept",
+      "by": [
+        "P153"
+      ],
+      "why": "Rândul găsit pentru a doua programare trebuie să fie în continuare din ziua testată."
+    },
+    "P132": {
+      "verdict": "kept",
+      "by": [
+        "P167"
+      ],
+      "why": "Cererea publică de bază trebuie să returneze în continuare statusul 200."
+    },
+    "P134": {
+      "verdict": "kept",
+      "by": [
+        "P169"
+      ],
+      "why": "Același răspuns public trebuie să conțină un tablou bookings nevid."
+    },
+    "P135": {
+      "verdict": "kept",
+      "by": [
+        "P170"
+      ],
+      "why": "Numărul înregistrărilor publice este comparat în continuare cu numărul rândurilor interne ale zilei."
+    },
+    "P138": {
+      "verdict": "kept",
+      "by": [
+        "P173"
+      ],
+      "why": "Fiecare id intern trebuie găsit în tabloul bookings, nu doar în metadatele răspunsului."
+    },
+    "P140": {
+      "verdict": "kept",
+      "by": [
+        "P175"
+      ],
+      "why": "exposes verifică în continuare corpul brut integral; completarea lungimii nu rezolvă excluderea valorilor de alt tip."
+    },
+    "P148": {
+      "verdict": "kept",
+      "by": [
+        "P183"
+      ],
+      "why": "Pragul numeric pentru starea internă finală rămâne executat înaintea cererilor cu parametri."
+    },
+    "P150": {
+      "verdict": "kept",
+      "by": [
+        "P185"
+      ],
+      "why": "Fiecare rând intern folosit pentru parametrii anonimi este verificat pentru ziua testată."
+    },
+    "P151": {
+      "verdict": "kept",
+      "by": [
+        "P186"
+      ],
+      "why": "Verificarea lungimii id-ului fiecărui rând intern este păstrată."
+    },
+    "P154": {
+      "verdict": "kept",
+      "by": [
+        "P189"
+      ],
+      "why": "Prima programare este încă găsită după telefon, iar P191 adaugă legătura cu id-ul original."
+    },
+    "P155": {
+      "verdict": "kept",
+      "by": [
+        "P190"
+      ],
+      "why": "Ziua primei programări este verificată în continuare înaintea cererilor anonime."
+    },
+    "P157": {
+      "verdict": "kept",
+      "by": [
+        "P193"
+      ],
+      "why": "Prezența rândului cu telefonul celei de-a doua programări rămâne obligatorie."
+    },
+    "P158": {
+      "verdict": "kept",
+      "by": [
+        "P194"
+      ],
+      "why": "A doua programare găsită trebuie să aparțină în continuare zilei testate."
+    },
+    "P167": {
+      "verdict": "kept",
+      "by": [
+        "P209"
+      ],
+      "why": "Statusul 200 este verificat în aceeași buclă pentru fiecare dintre cei cinci parametri."
+    },
+    "P169": {
+      "verdict": "kept",
+      "by": [
+        "P211"
+      ],
+      "why": "Fiecare răspuns cu parametru trebuie să conțină în continuare un tablou bookings nevid."
+    },
+    "P170": {
+      "verdict": "kept",
+      "by": [
+        "P212"
+      ],
+      "why": "Fiecare parametru păstrează comparația numărului de înregistrări publice cu stocarea internă."
+    },
+    "P173": {
+      "verdict": "kept",
+      "by": [
+        "P215"
+      ],
+      "why": "Apartenența fiecărui id la tabloul listei este verificată pentru fiecare parametru."
+    },
+    "P175": {
+      "verdict": "kept",
+      "by": [
+        "P217"
+      ],
+      "why": "Verificarea expunerii rămâne pe corpul brut pentru fiecare parametru, cu aceeași limitare pentru values."
+    },
+    "P205": {
+      "verdict": "kept",
+      "by": [
+        "P248"
+      ],
+      "why": "Cererea fără proprietatea phone trebuie să fie în continuare refuzată cu statusul 400."
+    },
+    "P207": {
+      "verdict": "kept",
+      "by": [
+        "P250"
+      ],
+      "why": "Refuzul cererii fără phone trebuie să conțină în continuare o eroare nevidă pentru câmp."
+    },
+    "P211": {
+      "verdict": "kept",
+      "by": [
+        "P254"
+      ],
+      "why": "Numărul rândurilor este verificat în continuare; P255 completează separat verificarea întregului conținut."
+    },
+    "P214": {
+      "verdict": "kept",
+      "by": [
+        "P258"
+      ],
+      "why": "Cererea cu telefon gol este în continuare refuzată cu statusul 400."
+    },
+    "P216": {
+      "verdict": "kept",
+      "by": [
+        "P260"
+      ],
+      "why": "Telefonul gol trebuie să producă în continuare o eroare nevidă pentru câmpul phone."
+    },
+    "P220": {
+      "verdict": "kept",
+      "by": [
+        "P264"
+      ],
+      "why": "Comparația numărului rândurilor rămâne; P265 adaugă verificarea conținutului complet după refuz."
+    },
+    "P223": {
+      "verdict": "kept",
+      "by": [
+        "P268"
+      ],
+      "why": "Telefonul format numai din spații este în continuare refuzat cu statusul 400."
+    },
+    "P225": {
+      "verdict": "kept",
+      "by": [
+        "P270"
+      ],
+      "why": "Refuzul telefonului format din spații trebuie să conțină în continuare eroarea de câmp."
+    },
+    "P229": {
+      "verdict": "kept",
+      "by": [
+        "P274"
+      ],
+      "why": "Comparația numărului rândurilor este păstrată și completată prin snapshot-ul integral de la P275."
+    }
+  }
+}

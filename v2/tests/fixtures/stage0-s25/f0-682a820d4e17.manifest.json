@@ -1,0 +1,79 @@
+{
+  "testSlot": "689f51f90b64",
+  "needs": [
+    "node:path",
+    "node:os",
+    "node:fs",
+    "node:sqlite",
+    "node:http"
+  ],
+  "api": "GET /api/bookings?date=YYYY-MM-DD returnează lista de programări a zilei; POST /api/bookings creează o programare cu câmpul phone obligatoriu",
+  "cases": [
+    {
+      "name": "AC-1: lista publica a zilei nu contine campul phone sau vreo valoare a lui",
+      "criterion": "AC-1",
+      "kind": "check",
+      "today": "fail"
+    },
+    {
+      "name": "AC-2: lista publica nu expune telefonul la niciun parametru anonim",
+      "criterion": "AC-2",
+      "kind": "check",
+      "today": "fail"
+    },
+    {
+      "name": "AC-3 control: programarile fara telefon, cu telefon gol sau numai spatii sunt refuzate iar stocarea ramane neschimbata",
+      "criterion": "AC-3",
+      "kind": "control",
+      "today": "pass"
+    },
+    {
+      "name": "AC-4 control: telefonul din programarea valida e salvat exact in stocarea interna",
+      "criterion": "AC-4",
+      "kind": "control",
+      "today": "pass"
+    },
+    {
+      "name": "AC-5 control: o programare cu date valide si telefon completat este acceptata",
+      "criterion": "AC-5",
+      "kind": "control",
+      "today": "pass"
+    }
+  ],
+  "newApi": [],
+  "removed": [],
+  "amends": null,
+  "needsDeclared": [],
+  "needsCompleted": [
+    {
+      "module": "node:path",
+      "binding": "path",
+      "line": 43,
+      "reason": "„path” e folosit liber în corp (linia 43), fără declarație în needs"
+    },
+    {
+      "module": "node:os",
+      "binding": "os",
+      "line": 43,
+      "reason": "„os” e folosit liber în corp (linia 43), fără declarație în needs"
+    },
+    {
+      "module": "node:fs",
+      "binding": "fs",
+      "line": 43,
+      "reason": "„fs” e folosit liber în corp (linia 43), fără declarație în needs"
+    },
+    {
+      "module": "node:sqlite",
+      "binding": "sqlite",
+      "line": 65,
+      "reason": "„sqlite” e folosit liber în corp (linia 65), fără declarație în needs"
+    },
+    {
+      "module": "node:http",
+      "binding": "http",
+      "line": 3,
+      "reason": "„http” e folosit liber în corp (linia 3), fără declarație în needs"
+    }
+  ]
+}

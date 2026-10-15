@@ -4,7 +4,7 @@ import path from "node:path";
 import crypto from "node:crypto";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
-import { classifyClaudeRetry, classifyText } from "./classify.mjs";
+import { classifyClaudeRetry, classifyText, claudeOutputTokenMaximum } from "./classify.mjs";
 import { buildChildEnv, BILLING_RISK_ENV } from "../policy/billing.mjs";
 import { deriveAccountIdentity, normalizeClaudeRateLimit, classifyClaudeRateLimit } from "../policy/billing-evidence.mjs";
 import { claudeDeniedReads } from "../policy/isolation.mjs";
@@ -100,21 +100,41 @@ export function resolveClaudeBinary(config) {
   return null;
 }
 
+/**
+ * Pure launch recipe shared with isolated rehearsals. Pass the parent's environment explicitly; launcher facts are already
+ * resolved (prefixArgs includes any platform wrapper). Without the option this is exactly the supervisor's former child env.
+ * Revert: remove authorLimits handling and the one env assignment below; there is no global state or settings to clean up.
+ */
+export function claudeTurnLaunch({ binary, cwd, deniedReads, access, model, effort, newSession, sessionId,
+  parentEnv = {}, launcherEnv = CLAUDE_GUARD_ENV, environment = "windows", maxOutputTokens }) {
+  const env = buildChildEnv(launcherEnv, parentEnv);
+  if (environment === "windows" && maxOutputTokens === 64000) env.CLAUDE_CODE_MAX_OUTPUT_TOKENS = "64000";
+  return { executable: binary.executable, args: [...binary.prefixArgs, ...claudeTurnArgs({ access, deniedReads, model, effort, newSession, sessionId })], cwd, env };
+}
+
 function readJson(file) {
   try { return JSON.parse(fs.readFileSync(file, "utf8")); } catch { return null; }
 }
 
-/** Reports whether Claude settings could select a separately billed credential. Names only. */
+/** Reports billing-risk names (never credentials) and the non-secret user-settings output-token override, read-only. */
 export function inspectClaudeConfig(homeDir, projectDir = null) {
   const files = [path.join(homeDir, ".claude", "settings.json"), path.join(homeDir, ".claude", "settings.local.json")];
   if (projectDir) files.push(path.join(projectDir, ".claude", "settings.json"), path.join(projectDir, ".claude", "settings.local.json"));
   let apiKeyHelper = false;
   let fallbackModelSet = false;
+  let outputTokenLimitOverride = null;
   const riskyEnvInSettings = new Set();
   const inspected = [];
   for (const [i, file] of files.entries()) {
     const data = readJson(file);
     if (!data) continue;
+    // --setting-sources user loads settings.json; local/project files are not evidence of this override.
+    if (i === 0 && data.env?.CLAUDE_CODE_MAX_OUTPUT_TOKENS !== undefined) {
+      const value = data.env.CLAUDE_CODE_MAX_OUTPUT_TOKENS;
+      const scalar = typeof value === "string" || typeof value === "number";
+      const text = scalar ? String(value).trim() : "";
+      outputTokenLimitOverride = scalar && text.length <= 20 ? (typeof value === "string" ? text : value) : "invalid";
+    }
     inspected.push(path.relative(homeDir, file) || file);
     if (data.apiKeyHelper) apiKeyHelper = true;
     // Only the user files count: Hub runs load --setting-sources user.
@@ -123,7 +143,7 @@ export function inspectClaudeConfig(homeDir, projectDir = null) {
   }
   const anthropicDir = path.join(process.env.APPDATA || path.join(homeDir, "AppData", "Roaming"), "Anthropic");
   const federationProfile = fs.existsSync(path.join(anthropicDir, "active_config"));
-  return { inspectedFiles: inspected.length, apiKeyHelper, fallbackModelSet, riskyEnvInSettings: [...riskyEnvInSettings], anthropicActiveProfilePresent: federationProfile };
+  return { inspectedFiles: inspected.length, apiKeyHelper, fallbackModelSet, outputTokenLimitOverride, riskyEnvInSettings: [...riskyEnvInSettings], anthropicActiveProfilePresent: federationProfile };
 }
 
 /**
@@ -152,6 +172,7 @@ export function inspectWorkspaceStartup(projectDir) {
  *   deniedReads(cwd)             → the --disallowedTools rules for this platform
  *   startupProblem(cwd, trusted) → a refusal text when the workspace defines startup hooks/MCP, else null
  *   fallbackModelSet()           → whether the settings the run loads define fallbackModel
+ *   outputTokenLimitOverride()   → optional, the output-token value in the loaded user settings
  *   spawn({ binary, args, cwd, launchVars }) → { executable, args, cwd, env } for the supervisor
  */
 export function windowsClaudeLauncher({ config, homeDir = os.homedir() }) {
@@ -165,6 +186,7 @@ export function windowsClaudeLauncher({ config, homeDir = os.homedir() }) {
       return !trusted && startup.some((item) => item.kind !== "definitions") ? `Workspace defines startup hooks/MCP (${startup.map((s) => s.file).join(", ")}); mark the project trusted after review` : null;
     },
     fallbackModelSet: () => inspectClaudeConfig(homeDir).fallbackModelSet,
+    outputTokenLimitOverride: () => inspectClaudeConfig(homeDir).outputTokenLimitOverride,
     spawn: ({ binary, args, cwd }) => ({ executable: binary.executable, args: [...binary.prefixArgs, ...args], cwd, env: CLAUDE_GUARD_ENV }),
   };
 }
@@ -236,36 +258,54 @@ export function createClaudeAdapter({ config, supervisor, homeDir = os.homedir()
    * `verifyInitModel(reportedModel)` (M09, given by the run manager): returns null when the model Claude Code reports at init is
    * the approved one (the bound family or dated id), otherwise the reason to stop before the model.
    */
-  function startTurn({ runId, cwd, prompt, access = "read-only", model = "", effort = "", sessionId = "", trustedWorkspace = false, onEvent, launchVars = {}, verifyInitModel = null }) {
+  function startTurn({ runId, cwd, prompt, access = "read-only", model = "", effort = "", sessionId = "", trustedWorkspace = false, onEvent, launchVars = {}, verifyInitModel = null, maxOutputTokens = null }) {
     const binary = host.resolve();
     const key = `run-${runId}`;
-    if (!binary) return failedHandle(key, "transport", "Claude Code not installed");
+    const requested = host.environment === "windows" && maxOutputTokens === 64000 ? 64000 : null;
+    const settingsOverride = host.outputTokenLimitOverride?.() ?? null;
+    const evidenceSuffix = settingsOverride !== null ? "; env din setările utilizatorului poate suprascrie variabila procesului" : "";
+    const fail = (category, message) => {
+      const handle = failedHandle(key, category, message);
+      handle.done = handle.done.then((result) => ({ ...result, authorOutputLimit: { requested, settingsOverride, effective: null, evidence: "nedemonstrat" + evidenceSuffix } }));
+      return handle;
+    };
+    if (!binary) return fail("transport", "Claude Code not installed");
     const startupProblem = host.startupProblem(cwd, trustedWorkspace);
-    if (startupProblem) return failedHandle(key, "policy", startupProblem);
+    if (startupProblem) return fail("policy", startupProblem);
     if (model && CLAUDE_REFUSED_MODELS.test(model)) {
-      return failedHandle(key, "billing", `Modelul ${model} este refuzat: ${refusedModelReason(model)}`);
+      return fail("billing", `Modelul ${model} este refuzat: ${refusedModelReason(model)}`);
     }
     // A fallbackModel in the user settings lets the CLI switch to another model by itself during the run (overload, model
     // not found): the same paid-fallback risk as the forbidden --fallback-model flag. Checked on every launch.
     if (host.fallbackModelSet()) {
-      return failedHandle(key, "billing", "Setările Claude Code ale utilizatorului definesc fallbackModel: Claude ar putea comuta singur pe alt model (inclusiv Fable) în timpul execuției; oprit înainte de model. Scoate cheia fallbackModel din setări.");
+      return fail("billing", "Setările Claude Code ale utilizatorului definesc fallbackModel: Claude ar putea comuta singur pe alt model (inclusiv Fable) în timpul execuției; oprit înainte de model. Scoate cheia fallbackModel din setări.");
     }
     const newSession = !sessionId;
     const nativeSessionId = sessionId || crypto.randomUUID();
     let spec;
-    try { spec = host.spawn({ binary, args: claudeTurnArgs({ access, deniedReads: host.deniedReads(cwd), newSession, sessionId: nativeSessionId, model, effort }), cwd, launchVars }); }
-    catch (error) { return failedHandle(key, error.category || "transport", String(error.message || error).slice(0, 300)); }
-    if (spec.args.some((arg) => CLAUDE_FORBIDDEN_FLAGS.includes(arg))) return failedHandle(key, "policy", "Forbidden Claude flag");
+    try {
+      const launch = host.spawn({ binary, args: [], cwd, launchVars });
+      spec = claudeTurnLaunch({ binary: { executable: launch.executable, prefixArgs: launch.args }, cwd: launch.cwd,
+        access, deniedReads: host.deniedReads(cwd), newSession, sessionId: nativeSessionId, model, effort,
+        parentEnv: process.env, launcherEnv: launch.env, environment: host.environment, maxOutputTokens });
+    }
+    catch (error) { return fail(error.category || "transport", String(error.message || error).slice(0, 300)); }
+    if (spec.args.some((arg) => CLAUDE_FORBIDDEN_FLAGS.includes(arg))) return fail("policy", "Forbidden Claude flag");
 
     let output = "";
     let usage = {};
     let resultEvent = null;
+    let terminalMaximum = null;
     let billingStop = false;
     let quotaStop = null;
     let initSeen = false;
     let initStop = null;
     let initMismatch = null;
-    const record = supervisor.start({ key, label: host.label || "claude -p", executable: spec.executable, args: spec.args, cwd: spec.cwd,
+    let lastAssistantStop = null;
+    let largestMessageOutput = 0;
+    const observeUsage = (tokens) => { if (Number.isSafeInteger(tokens) && tokens > largestMessageOutput) largestMessageOutput = tokens; };
+    let record;
+    try { record = supervisor.start({ key, label: host.label || "claude -p", executable: spec.executable, args: spec.args, cwd: spec.cwd,
       env: spec.env,
       onStdoutLine: (line) => {
         let event;
@@ -300,8 +340,16 @@ export function createClaudeAdapter({ config, supervisor, homeDir = os.homedir()
         } else if (event.type === "stream_event" && event.event?.type === "content_block_delta" && event.event.delta?.type === "text_delta") {
           output += event.event.delta.text || "";
           onEvent({ type: "delta", text: event.event.delta.text || "" });
-        } else if (event.type === "assistant" && Array.isArray(event.message?.content)) {
-          for (const block of event.message.content) {
+        } else if (event.type === "stream_event" && event.event?.type === "message_start") {
+          lastAssistantStop = event.event.message?.stop_reason ?? null;
+          observeUsage(event.event.message?.usage?.output_tokens);
+        } else if (event.type === "stream_event" && event.event?.type === "message_delta") {
+          if (event.event.delta?.stop_reason) lastAssistantStop = event.event.delta.stop_reason;
+          observeUsage(event.event.usage?.output_tokens);
+        } else if (event.type === "assistant") {
+          lastAssistantStop = event.message?.stop_reason ?? null;
+          observeUsage(event.message?.usage?.output_tokens);
+          for (const block of Array.isArray(event.message?.content) ? event.message.content : []) {
             if (block.type === "tool_use") { onEvent({ type: "phase", phase: "first_command_started" }); onEvent({ type: "activity", label: `Claude tool: ${String(block.name).slice(0, 60)}` }); }
           }
         } else if (event.type === "system" && event.subtype === "api_retry") {
@@ -342,6 +390,8 @@ export function createClaudeAdapter({ config, supervisor, homeDir = os.homedir()
           onEvent({ type: "activity", label: `Claude permission denied: ${String(event.tool_name || event.tool || "").slice(0, 60)}` });
         } else if (event.type === "result") {
           resultEvent = event;
+          const terminalText = [event.result, ...(Array.isArray(event.errors) ? event.errors : [])].filter((s) => typeof s === "string").join("\n");
+          terminalMaximum = event.is_error ? claudeOutputTokenMaximum(terminalText) : null;
           const used = Object.keys(event.modelUsage || {});
           const refused = used.find((m) => CLAUDE_REFUSED_MODELS.test(m));
           if (refused) billingStop = `Rezultatul raportează folosirea modelului ${refused.slice(0, 60)}: rezultatul nu e acceptat`;
@@ -350,6 +400,7 @@ export function createClaudeAdapter({ config, supervisor, homeDir = os.homedir()
           onEvent({ type: "usage", usage });
         }
       } });
+    } catch (error) { return fail("policy", String(error.message || error).slice(0, 300)); }
     try {
       record.child.stdin.write(prompt);
       record.child.stdin.end();
@@ -363,17 +414,31 @@ export function createClaudeAdapter({ config, supervisor, homeDir = os.homedir()
       if (billingStop) return { status: "failed", errorCategory: "billing", preInference: false, error: typeof billingStop === "string" ? billingStop : "Stopped: provider reported a billing error", output, usage, sessionId: nativeSessionId };
       if (quotaStop) return { status: "failed", errorCategory: "quota", preInference: false, error: quotaStop, output, usage, sessionId: nativeSessionId };
       if (interruptedBy) return { status: "interrupted", errorCategory: null, preInference: !initSeen, error: `interrupted (${interruptedBy}); turn left unfinished, session resumable`, output, usage, sessionId: nativeSessionId };
+      // Only the Windows author requesting 64000 may turn a successful CLI result into an output-limit failure.
+      // A terminal CLI output-maximum error was already a failure for every run; only its category changes.
+      if ((requested === 64000 && lastAssistantStop === "max_tokens") || terminalMaximum !== null) {
+        return { status: "failed", errorCategory: "output_token_limit", preInference: !initSeen,
+          error: "Modelul a folosit întregul buget de ieșire fără să încheie răspunsul (output_token_limit).", output, usage, sessionId: nativeSessionId };
+      }
       if (resultEvent && !resultEvent.is_error && exit.code === 0) {
         return { status: "completed", output, usage, sessionId: resultEvent.session_id || nativeSessionId, permissionDenials: resultEvent.permission_denials || [], numTurns: resultEvent.num_turns };
       }
       const message = resultEvent?.result || stderr || exit.error || `claude exited ${exit.code}`;
-      return { status: "failed", errorCategory: classifyText(message), preInference: !initSeen, error: String(message).slice(0, 2000), output, usage, sessionId: nativeSessionId };
+      const category = classifyText(message);
+      // An stderr fragment alone is not a verifiable terminal result.
+      return { status: "failed", errorCategory: category === "output_token_limit" ? "model" : category, preInference: !initSeen, error: String(message).slice(0, 2000), output, usage, sessionId: nativeSessionId };
+    }).then((result) => {
+      const effective = terminalMaximum ?? (largestMessageOutput > 32000 ? largestMessageOutput : null);
+      const proof = terminalMaximum !== null ? `CLI: exceeded the ${terminalMaximum} output token maximum`
+        : effective !== null ? `at least ${effective} (usage.output_tokens al unui mesaj assistant)` : "nedemonstrat";
+      return { ...result, authorOutputLimit: { requested, settingsOverride, effective,
+        evidence: proof + evidenceSuffix } };
     });
 
     async function interrupt(reason = "user") {
       interruptedBy = reason;
       const result = await supervisor.stop(key, { graceMs: 300 });
-      return { interrupted: result.stopped, graceful: false, reason };
+      return { interrupted: result.stopped, graceful: false, reason, stop: result };
     }
 
     return { key, pid: record.pid, nativeSessionId, newSession, done, interrupt };

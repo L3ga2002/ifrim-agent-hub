@@ -179,6 +179,18 @@ test("assembleTestFile: the Hub-owned header with load(), only the needed built-
   assert.ok(!file.text.includes("\r"));
   assert.ok(file.text.endsWith(GOOD_BODY));
   assert.equal(file.sha256, sha256(file.text));
+  const v2 = assembleTestFile({ body: GOOD_BODY, needs: ["node:http", "node:fs"], missionId: "mis_1\n// injectat", specVersion: 2, specSha: "0123456789abcdef", harness: 2 });
+  assert.deepEqual(v2.header.slice(0, 8), file.header.slice(0, 8));
+  assert.match(v2.header[8], /^\/\/ Antet Hub v2:/);
+  assert.equal(v2.header[9], 'const hubTimer = setTimeout, hubClear = clearTimeout;');
+  assert.match(v2.header[10], /^const registry =/);
+  assert.match(v2.header[11], /^const setup = async/);
+  assert.match(v2.header[12], /^const hubClose =/);
+  assert.match(v2.header[13], /^const hubCleanup =/);
+  assert.match(v2.header[14], /^test.beforeEach/);
+  assert.match(v2.header[15], /^test.afterEach/);
+  assert.match(v2.header[16], /^test.after\(/);
+  assert.equal(v2.header[17], "// ---- corpul testului ----");
 });
 
 // ---------------------------------------------------------------------------------------------------------------------

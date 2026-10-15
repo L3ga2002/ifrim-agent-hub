@@ -362,6 +362,7 @@ export function createRenderQueue({ db, bus, live = null, clock = () => new Date
     let probe;
     try { probe = await tools.probe(abs); }
     catch (error) {
+      if (error?.code === "HUB_SHUTDOWN") throw error;
       if (error?.code === "TOOL_MISSING") throw renderError("TOOL_MISSING", error.message);
       throw renderError("INVALID_OUTPUT", `Fișierul produs nu poate fi citit ca video (${label}).`);
     }
@@ -380,7 +381,7 @@ export function createRenderQueue({ db, bus, live = null, clock = () => new Date
     if (problems.length) throw renderError("INVALID_OUTPUT", `Validarea a eșuat (${label}): ${problems.join("; ")}.`, { problems });
     // A complete decode: a file whose header is fine but whose packets are damaged must not be promoted or cached.
     const d = await ffmpegStep({ jobId, rec, jobDir, label: `${label}-decode`, expectedMs, args: ["-v", "error", "-xerror", "-protocol_whitelist", "file,pipe", "-i", rel, "-map", "0", "-f", "null", "-"] })
-      .catch((error) => { if (["CANCELLED", "TOOL_MISSING", "TIMEOUT"].includes(error.code)) throw error; throw renderError("INVALID_OUTPUT", `Fișierul produs nu se decodează complet (${label}).`); });
+      .catch((error) => { if (["HUB_SHUTDOWN", "CANCELLED", "TOOL_MISSING", "TIMEOUT"].includes(error.code)) throw error; throw renderError("INVALID_OUTPUT", `Fișierul produs nu se decodează complet (${label}).`); });
     if (d.stderrLines.some((l) => /error|invalid|corrupt/i.test(l))) throw renderError("INVALID_OUTPUT", `Decodarea completă a raportat erori (${label}).`);
     return probe;
   }
@@ -568,6 +569,7 @@ export function createRenderQueue({ db, bus, live = null, clock = () => new Date
       for (const sub of ["seg", "fonts"]) rmQuiet(path.join(jobDir, sub));
       rmQuiet(path.join(jobDir, plan.final.output));
     } catch (error) {
+      if (error?.code === "HUB_SHUTDOWN") return; // Boot recovers interrupted work; shutdown is no content verdict.
       const failure = rec.cancelRequested ? { code: "CANCELLED", message: FAILURE_TEXT.CANCELLED } : classifyRenderError(error);
       journal.status = failure.code === "CANCELLED" ? "CANCELLED" : "FAILED";
       journal.error = failure;

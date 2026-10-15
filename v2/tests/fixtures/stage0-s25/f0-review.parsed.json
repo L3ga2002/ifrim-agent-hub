@@ -1,0 +1,158 @@
+{
+  "verdict": "CHANGES_REQUESTED",
+  "claimedVerdict": "CHANGES_REQUESTED",
+  "summary": "Dovada Hub arată eșecuri relevante pentru expunerea telefonului și controale care trec azi. Testul trebuie completat: verificarea stocării prin numărarea rândurilor nu detectează modificările, iar verificările listei pot omite unele telefoane și nu confirmă identitatea programării păstrate după repornire.",
+  "findings": [
+    {
+      "severity": "high",
+      "file": "test/hub/telefonul-ramane-obligatoriu-si-e75c25.test.mjs",
+      "area": "AC-3: stocarea după fiecare refuz",
+      "observation": "Testul compară numai numărul rândurilor, nu conținutul stocării înainte și după fiecare cerere invalidă.",
+      "impact": "Serverul poate modifica un telefon sau alt câmp existent, ori înlocui un rând, păstrând același număr de rânduri și trecând controlul.",
+      "evidence": "Liniile 195–202 citesc COUNT(*); P211, P220 și P229 compară exclusiv acest rezultat.",
+      "reproduction": "O implementare care răspunde cu 400 și errors.phone, dar modifică un rând existent la fiecare refuz, satisface toate aceste aserțiuni."
+    },
+    {
+      "severity": "high",
+      "file": "test/hub/telefonul-ramane-obligatoriu-si-e75c25.test.mjs",
+      "area": "AC-1 și AC-2: telefoanele căutate în corp",
+      "observation": "Lista values exclude telefoanele care nu sunt șiruri sau au mai puțin de trei caractere după trim. Pentru rândurile inițiale nu există o aserțiune care să garanteze că toate telefoanele relevante intră în values.",
+      "impact": "O valoare exclusă poate fi transmisă sub altă cheie fără să fie detectată. Criteriile cer verificarea tuturor telefoanelor nevide relevante.",
+      "evidence": "Liniile 126–128 și 160–162 filtrează r.phone; P140 și P175 folosesc numai lista astfel obținută.",
+      "reproduction": "Un telefon nevid de două caractere din stocare, transmis ca valoare sub o cheie diferită de phone, nu este căutat. Testul trebuie să valideze datele relevante, fără să le elimine silențios."
+    },
+    {
+      "severity": "medium",
+      "file": "test/hub/telefonul-ramane-obligatoriu-si-e75c25.test.mjs",
+      "area": "AC-1 și AC-2: identitatea după repornire",
+      "observation": "Răspunsul primei creări nu este citit pentru id, iar înregistrarea este identificată după repornire numai prin telefon.",
+      "impact": "Testul poate accepta înlocuirea programării cu un rând nou având același telefon, fără să dovedească păstrarea programării create înainte de repornire.",
+      "evidence": "Liniile 85–94 verifică doar statusul înainte de repornire; P120 și P154 confirmă existența unui rând găsit după telefon.",
+      "reproduction": "La repornire, înlocuirea rândului PHONE1 cu un alt id, aceeași zi și același telefon poate trece verificările ulterioare."
+    },
+    {
+      "severity": "medium",
+      "file": "test/hub/telefonul-ramane-obligatoriu-si-e75c25.test.mjs",
+      "area": "Pregătire: inițializare și intervale libere",
+      "observation": "Citirea SQLite este o citire internă reală, dar sursele inițializării nu sunt furnizate. Intervalele 09:00 și 09:30 sunt fixate direct, fără dovadă din contractul grilei sau al intervalelor libere.",
+      "impact": "Rulările confirmă că aceste cereri sunt acceptate azi, însă nu confirmă independent inițializarea completă și alegerea intervalelor conform contractului aplicației.",
+      "evidence": "Liniile 84–104 folosesc aceeași bază de date și citesc bookings; liniile 87 și 97 fixează intervalele. P114 și P148 impun minimum cinci rânduri.",
+      "reproduction": "Pentru verificare independentă sunt necesare sursele inițializării și contractul intervalelor; nu au fost rulate comenzi."
+    }
+  ],
+  "previous": {},
+  "missingContext": [
+    "Sursele inițializării normale și ale stocării, pentru confirmarea înregistrărilor inițiale și a telefoanelor lor.",
+    "Contractul grilei sau al intervalelor libere, pentru confirmarea alegerii orelor 09:00 și 09:30."
+  ],
+  "valid": true,
+  "problems": [],
+  "cause": null,
+  "criteria": [
+    {
+      "id": "AC-1",
+      "covered": false,
+      "failsForRightReason": true,
+      "canEverPass": true,
+      "contradictsOwner": false,
+      "trivialPassRisk": "medium",
+      "plain": "Verifică lista integrală și id-urile din stocare, dar poate omite telefoane și nu confirmă id-ul păstrat după repornire."
+    },
+    {
+      "id": "AC-2",
+      "covered": false,
+      "failsForRightReason": true,
+      "canEverPass": true,
+      "contradictsOwner": false,
+      "trivialPassRisk": "medium",
+      "plain": "Verifică toți cei cinci parametri anonimi, cu aceleași lacune privind telefoanele și programarea păstrată."
+    },
+    {
+      "id": "AC-3",
+      "covered": false,
+      "failsForRightReason": true,
+      "canEverPass": true,
+      "contradictsOwner": false,
+      "trivialPassRisk": "high",
+      "plain": "Verifică cele trei refuzuri și erorile pentru telefon, dar numărarea rândurilor nu detectează modificarea lor."
+    },
+    {
+      "id": "AC-4",
+      "covered": true,
+      "failsForRightReason": true,
+      "canEverPass": true,
+      "contradictsOwner": false,
+      "trivialPassRisk": "low",
+      "plain": "Citește direct baza de date și confirmă telefonul exact pentru id-ul programării acceptate, fără rută publică de recitire."
+    },
+    {
+      "id": "AC-5",
+      "covered": true,
+      "failsForRightReason": true,
+      "canEverPass": true,
+      "contradictsOwner": false,
+      "trivialPassRisk": "medium",
+      "plain": "Confirmă acceptarea unei cereri valide prin status și id; dovada salvării efective este completată de AC-4."
+    }
+  ],
+  "gate": [
+    {
+      "id": "AC-1",
+      "why": [
+        "nu e acoperit"
+      ]
+    },
+    {
+      "id": "AC-2",
+      "why": [
+        "nu e acoperit"
+      ]
+    },
+    {
+      "id": "AC-3",
+      "why": [
+        "nu e acoperit",
+        "poate fi trecut de o implementare trivială"
+      ]
+    }
+  ],
+  "checks": [
+    {
+      "id": "P211",
+      "nature": "insufficient",
+      "why": "Numărul rândurilor nu dovedește că refuzul fără phone nu a modificat sau înlocuit date existente."
+    },
+    {
+      "id": "P220",
+      "nature": "insufficient",
+      "why": "Numărul rândurilor nu dovedește că refuzul telefonului gol a păstrat întregul conținut al stocării."
+    },
+    {
+      "id": "P229",
+      "nature": "insufficient",
+      "why": "Numărul rândurilor nu dovedește că refuzul telefonului cu spații nu a modificat date existente."
+    },
+    {
+      "id": "P140",
+      "nature": "insufficient",
+      "why": "Verifică corect corpul integral, dar values poate exclude telefoane relevante prin filtrarea de la liniile 126–128."
+    },
+    {
+      "id": "P175",
+      "nature": "insufficient",
+      "why": "Verifică fiecare parametru, dar values poate exclude telefoane relevante prin filtrarea de la liniile 160–162."
+    },
+    {
+      "id": "P120",
+      "nature": "insufficient",
+      "why": "Găsirea telefonului după repornire nu confirmă păstrarea id-ului programării create în prima sesiune."
+    },
+    {
+      "id": "P154",
+      "nature": "insufficient",
+      "why": "Găsirea telefonului după repornire nu leagă rândul verificat de id-ul returnat înainte de repornire."
+    }
+  ],
+  "notes": [],
+  "previousChecks": {}
+}

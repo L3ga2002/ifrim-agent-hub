@@ -425,6 +425,21 @@ export function buildConcatList(frames, endMs) {
   return { text: `${lines.join("\n")}\n`, totalUs, kept: kept.length };
 }
 
+/** One capture clock. A verified end hold ends the recording; screencast-stop latency is not footage. */
+export function captureTimeline(frames, { firstArrival, firstTs, stopArrival, fps, holds = [] }) {
+  let last = 0;
+  const timeline = frames.map((f) => {
+    const rel = f.ts !== null && firstTs !== null ? (f.ts - firstTs) * 1000 : f.arrival - firstArrival;
+    last = Math.max(last, rel);
+    return { file: f.file, atMs: last };
+  });
+  // holds contains only the recorder's measured evidence; never stretch a hold to cover shutdown latency.
+  const endHold = holds.findLast((h) => h.reason === "end_hold" && h.result === "VERIFIED");
+  const endMs = endHold ? endHold.endMs : Math.max(stopArrival - firstArrival, last + 1000 / fps);
+  // Use the concat list's microsecond boundaries too: a rounded end-boundary frame has no encoded duration.
+  return { frames: endHold ? timeline.filter((f) => Math.round(f.atMs * 1000) < Math.round(endMs * 1000)) : timeline, endMs };
+}
+
 // ---------------------------------------------------------------------------------------------------------------------------
 // The capture service
 // ---------------------------------------------------------------------------------------------------------------------------
@@ -1028,14 +1043,8 @@ export function createCapture({ db, bus, clock = () => new Date(), settings, con
       if (!frames.length) throw new HubError("tool", "Browserul nu a trimis niciun cadru.", { code: "SCREENCAST_NO_FRAMES" });
 
       // Frame times on one clock: the compositor timestamps (seconds) relative to the first frame, anchored at its arrival.
-      let last = 0;
-      const timeline = frames.map((f) => {
-        const rel = f.ts !== null && firstTs !== null ? (f.ts - firstTs) * 1000 : f.arrival - firstArrival;
-        last = Math.max(last, rel);
-        return { file: f.file, atMs: last };
-      });
-      const endMs = Math.max(stopArrival - firstArrival, last + 1000 / fps);
-      const list = buildConcatList(timeline, endMs);
+      const timeline = captureTimeline(frames, { firstArrival, firstTs, stopArrival, fps, holds });
+      const list = buildConcatList(timeline.frames, timeline.endMs);
       fs.writeFileSync(path.join(dir, "frames.ffconcat"), list.text);
       const totalSec = (list.totalUs / 1e6).toFixed(6);
       // JPEG frames are full-range BT.601 (yuvj420p): converted to limited-range BT.709 yuv420p, tagged, the usual delivery format.
@@ -1082,7 +1091,7 @@ export function createCapture({ db, bus, clock = () => new Date(), settings, con
       running.delete(sessionId);
       if (failure) {
         const cancelled = failure.code === "CANCELLED";
-        setStatus(sessionId, cancelled ? "CANCELLED" : "FAILED", { error: cancelled ? null : String(failure.message).slice(0, 500), markers_json: json([...parse(selSession.get(sessionId).markers_json, []), ...markers]) },
+        if (failure.code !== "HUB_SHUTDOWN") setStatus(sessionId, cancelled ? "CANCELLED" : "FAILED", { error: cancelled ? null : String(failure.message).slice(0, 500), markers_json: json([...parse(selSession.get(sessionId).markers_json, []), ...markers]) },
           { type: cancelled ? "media.capture.cancelled" : "media.capture.failed", source: who, payload: { sessionId, kind: "browser_demo", code: failure.code, steps: stepResults.length } });
         // Frames are screens of a test Hub: they never outlive a failed capture. A journal names what happened.
         try {

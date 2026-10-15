@@ -294,7 +294,7 @@ test("M09-QA-04: real technical QA finds 1 s of black, a frozen segment and sile
     assert.equal(j.FROZEN_SEGMENT.justified, true); assert.match(j.FROZEN_SEGMENT.justification, /c4/);
     assert.equal(j.SILENCE.justified, true); assert.match(j.SILENCE.justification, /niciun clip audio/);
     assert.equal(r2.status, "WARN", "only the loudness warning remains");
-  } finally { s.env.cleanup(); }
+  } finally { await s.env.cleanup(); }
 });
 
 test("M09-QA-05: justification is per shot only (a hold on another clip or a range spilling out of the shot is not justified); tools missing → NOT_RUN", async () => {
@@ -319,7 +319,7 @@ test("M09-QA-05: justification is per shot only (a hold on another clip or a ran
     const r = await qa.technical({ assetVersionId: version.id, ir: null });
     assert.equal(r.status, "NOT_RUN");
     assert.deepEqual(codes(r.findings), ["TOOL_MISSING"]);
-  } finally { s.env.cleanup(); }
+  } finally { await s.env.cleanup(); }
 });
 
 // ---------------------------------------------------------------- factual
@@ -590,7 +590,7 @@ test("M09-QA-13: applyOps is pure and ripples correctly; diffIR reports the dura
 
 // ---------------------------------------------------------------- createReviews
 
-test("M09-QA-14: reviews — propose applies nothing; apply creates a new validated version (original untouched); stale/invalid refused; decisions", () => {
+test("M09-QA-14: reviews — propose applies nothing; apply creates a new validated version (original untouched); stale/invalid refused; decisions", async () => {
   const s = setup();
   try {
     const { env } = s;
@@ -640,7 +640,7 @@ test("M09-QA-14: reviews — propose applies nothing; apply creates a new valida
     assert.equal(div.review.resultVersionId, div.version.id);
     assert.equal(events(env.db, "media.review.applied").length, 1);
     assert.equal(events(env.db, "media.review.divergence_recorded").length, 1);
-  } finally { s.env.cleanup(); }
+  } finally { await s.env.cleanup(); }
 });
 
 // ---------------------------------------------------------------- run / persistence / variant service
@@ -706,10 +706,10 @@ test("M09-QA-15: qa.run persists one row per kind; FAIL from factual and rights;
     assert.ok(editorialCheck({ ir: reviewIr(), brief: { durationTargetS: 60 } }).findings.every((f) => f.severity === "warning"));
     assert.ok(editorialCheck({ ir: reviewIr(), brief: { durationTargetS: 60 } }).findings.some((f) => f.code === "DURATION_VS_BRIEF"));
     assert.equal(QA_THRESHOLDS.blackMinS, 0.25);
-  } finally { s.env.cleanup(); }
+  } finally { await s.env.cleanup(); }
 });
 
-test("M09-QA-16 (review R20): a correction applied on a platform variant moves the variant to the corrected version (DRAFT again)", () => {
+test("M09-QA-16 (review R20): a correction applied on a platform variant moves the variant to the corrected version (DRAFT again)", async () => {
   const s = setup();
   try {
     const { env } = s;
@@ -733,7 +733,7 @@ test("M09-QA-16 (review R20): a correction applied on a platform variant moves t
     reviews.apply({ reviewId: pm.id, actor: "owner" });
     assert.equal(env.db.prepare("SELECT variant_version_id FROM media_variants WHERE id = ?").get(d.variant.id).variant_version_id, a.version.id);
     assert.equal(events(env.db, "media.variant.corrected").length, 1);
-  } finally { s.env.cleanup(); }
+  } finally { await s.env.cleanup(); }
 });
 
 test("M09-QA-17 (review R23): an honest label is a whole word — „SIMULATOR” or „NE-SIMULAT” is not a SIMULATION label; „SIMULARE · …” is", () => {

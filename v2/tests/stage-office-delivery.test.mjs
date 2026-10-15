@@ -136,7 +136,11 @@ test("OFF-06 (combined task) ONE sentence → ONE card → software check, captu
     assert.equal(card.plan.summary.confirmations, 1);
     await dispatch(t.hub, "ops.plan.confirm", { planId: card.plan.id, nonce: card.plan.nonce, displayedHash: card.plan.hash }, { channel: "owner", ownerSession: owner.session });
     const d0 = t.hub.deliveries.list({ projectId: project.id })[0];
-    const ready = await waitFor(() => (["READY", "FAILED", "NEEDS_OWNER", "EXPIRED", "CANCELLED"].includes(t.hub.deliveries.get(d0.id).status) ? t.hub.deliveries.get(d0.id) : null), 400000, 250);
+    const where = () => { const dd = t.hub.deliveries.get(d0.id), plan = t.hub.opsPlans.view(card.plan.id), fv = t.hub.factory.view(mission.id).factory;
+      return JSON.stringify({ stage: fv.stage, reason: fv.stageReason, delivery: dd.status, why: dd.statusReason,
+        steps: plan?.steps.map((s) => [s.seq, s.kind, s.status, s.error]), renderJobs: t.hub.db.prepare("SELECT id, status, progress_json FROM media_render_jobs").all() }); };
+    const ready = await waitFor(() => (["READY", "FAILED", "NEEDS_OWNER", "EXPIRED", "CANCELLED"].includes(t.hub.deliveries.get(d0.id).status) ? t.hub.deliveries.get(d0.id) : null), 400000, 250)
+      .catch((error) => { throw new Error(`${error.message} · ${where()}`, { cause: error }); });
     const pv = t.hub.opsPlans.view(card.plan.id);
     assert.equal(ready.status, "READY", `${ready.statusReason} · ${JSON.stringify(pv.steps.map((s) => [s.seq, s.kind, s.status, s.error]))}`);
     assert.equal(t.hub.db.prepare("SELECT COUNT(*) AS n FROM agent_runs").get().n, runsAtReady, "no model after DELIVERY_READY");

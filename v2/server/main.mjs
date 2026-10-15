@@ -5,6 +5,7 @@ import { createHub } from "./hub.mjs";
 import { createHttpServer } from "./http/server.mjs";
 import { simulationOverrides, assertDemoProject, createSimulation } from "./sim/simulation.mjs";
 import { stopForShutdown, closeProposalsFromBeforeStop } from "./owner/stop-scope.mjs";
+import { finishShutdown } from "./runtime/production-shutdown.mjs";
 
 // HUB_V2_SIMULATION=1: separate simulator process (own DB in .ifrim/tmp, demo project, fixture providers only).
 const simulation = process.env.HUB_V2_SIMULATION === "1";
@@ -33,10 +34,7 @@ async function shutdown(signal) {
   // 2.12.1: also with a start still being admitted (AS-01: it never reaches its model); the operation plans left running are recorded
   // as interrupted by this stop (D22); and the reactions the stop queued (the closure of plans waiting for a confirmation, D15 / SM-05)
   // run before the services close.
-  try { await stopForShutdown(hub, signal); } catch { /* recorded by run manager */ }
-  await hub.close();
-  try { const current = JSON.parse(fs.readFileSync(pidFile, "utf8")); if (current.pid === process.pid) fs.rmSync(pidFile); } catch { /* ignore */ }
-  process.exit(0);
+  await finishShutdown({ hub, prepare: () => stopForShutdown(hub, signal), pidFile });
 }
 
 // Graceful shutdown endpoint for the stop script: refuses while runs are active unless forced.
