@@ -22,7 +22,7 @@ const line = "Autorul testului (pasul 0): 45 min de la trimiterea turei, reînce
 function temp(t) { const dir = fs.mkdtempSync(path.join(os.tmpdir(), "r-turn-")); t.after(() => fs.rmSync(dir, { recursive: true, force: true, maxRetries: 5 })); return dir; }
 function booking(dir) { fs.cpSync(path.join(FIXTURES, "r-priv-booking"), dir, { recursive: true, filter: (s) => path.basename(s) !== "SOURCE.md" }); fs.writeFileSync(path.join(dir, ".ifrim-hub-test.json"), JSON.stringify(marker)); }
 
-async function fixture(t, { old = false, demo = false, scenario = null, scale = 1, clock, turnTimers, owner = false, prepare = true } = {}) {
+async function fixture(t, { old = false, demo = false, scenario = null, scale = 1, clock, turnTimers, owner = false, prepare = true, timeoutMs = 60000, waitUntil = Date.now() + timeoutMs - 5000 } = {}) {
   const binaries = scenario ? {
     claude: { executable: process.execPath, prefixArgs: [path.join(FIXTURES, "fake-turn.mjs"), `--turn-scenario=${scenario}`] },
     codex: { executable: process.execPath, prefixArgs: [path.join(FIXTURES, "fake-codex.mjs")] },
@@ -42,14 +42,14 @@ async function fixture(t, { old = false, demo = false, scenario = null, scale = 
   const view = () => h.hub.factory.view(mission.id);
   const start = async () => { const r = await dispatch("factory.start", view().scope); await dispatch("approval.decide", { approvalId: r.approval.id, decision: "approved", displayedHash: r.approval.payloadHash }); await h.hub.commands.executeApproved(r.command.id, "user"); };
   const where = () => JSON.stringify({ stage: view().factory.stage, reason: view().factory.stageReason, dispatches: view().dispatches, runs: h.hub.runs.activeRuns() });
-  const wait = (fn) => waitFor(fn, 20000, 50, { signal: t.signal }).catch((error) => {
+  const wait = (fn) => waitFor(fn, Math.max(1, waitUntil - Date.now()), 50, { signal: t.signal }).catch((error) => {
     if (t.signal.aborted) throw error;
     throw new Error(`${error.message} · ${where()}`, { cause: error });
   });
   const settled = async () => { await wait(() => END.includes(view().factory.stage)); await wait(async () => { await h.hub.factory.idle(mission.id); return true; }); return view(); };
   const running = () => wait(() => h.hub.runs.activeRuns().map((r) => h.hub.runs.getRun(r.runId)).find((r) => r.provider === "claude" && r.timeline.turn_sent));
   const session = owner ? await enrolOwner(h) : null;
-  return { ...h, dir, project, built, mission, view, start, settled, running, dispatch, owner: session };
+  return { ...h, dir, project, built, mission, view, start, settled, running, wait, dispatch, owner: session };
 }
 
 test("T-TURN-01 strict 45-only schema, stable old shapes/hashes, dataset-scoped planner provenance", (t) => {
@@ -90,8 +90,9 @@ test("T-TURN-01 strict 45-only schema, stable old shapes/hashes, dataset-scoped 
 });
 
 test("T-TURN-01 Factory dispatch/runtime scale: author only; role limits and old spec unchanged", { timeout: 180000 }, async (t) => {
+  const waitUntil = Date.now() + 175000;
   for (const old of [false, true]) await t.test(old ? "old shape" : "approved §25", async (t) => {
-    const scale = 0.01, h = await fixture(t, { old, scale });
+    const scale = 0.01, h = await fixture(t, { old, scale, waitUntil });
     h.queue("claude", "author:dataset-reference", "review:pass"); h.queue("codex", "test-review:pass", "factory-write:privacy-harness");
     assert.equal(h.view().turnLimits.author, undefined, "unapproved draft grants no override");
     const calls = [], start = h.hub.runs.start;
@@ -124,22 +125,22 @@ test("T-TURN-01 Factory dispatch/runtime scale: author only; role limits and old
 });
 
 test("T-TURN-02 retries/deltas never extend the one turn arm; 45-min timeout kills a real fake child", { timeout: 60000 }, async (t) => {
-  // Only the run deadline uses this clock; fixture processes, admission and cleanup keep real time.
-  // Admission may take arbitrarily long under load without accidentally spending the model's deadline.
+  // Hub timestamps and deadline timers advance together; fixture processes and cleanup use real time.
+  // Separate admission, turn_sent and retries so resets and an old admission timer are observable.
   let elapsedMs = 0;
   let base = null;
   const timers = new Set();
   const turnTimers = { now: () => elapsedMs,
-    setTimeout: (fn, ms) => { const timer = { fn, at: elapsedMs + ms }; timers.add(timer); return timer; },
+    setTimeout: (fn, ms) => { const timer = { fn, at: elapsedMs + ms }; timers.add(timer); if (elapsedMs === 0) elapsedMs = 400; return timer; },
     clearTimeout: (timer) => timers.delete(timer) };
   const advance = (ms) => { elapsedMs += ms; for (const timer of [...timers]) if (timer.at <= elapsedMs) { timers.delete(timer); timer.fn(); } };
   const ms = 1800, h = await fixture(t, { scenario: "hang", scale: ms / (45 * 60000), turnTimers, clock: () => new Date((base ?? Date.now()) + elapsedMs) });
   base = Date.now();
   await h.start(); const run = await h.running();
   const first = h.hub.runs.activeRuns().find((r) => r.runId === run.id).turnDeadline;
-  await waitFor(() => h.hub.db.prepare("SELECT COUNT(*) AS n FROM events WHERE run_id = ? AND type = 'run.notice'").get(run.id).n >= 3,
-    10000, 50, { signal: t.signal });
-  advance(ms - 1);
+  advance(600);
+  await h.wait(() => h.hub.db.prepare("SELECT COUNT(*) AS n FROM events WHERE run_id = ? AND type = 'run.notice'").get(run.id).n >= 3);
+  advance(ms - 601);
   assert.deepEqual(h.hub.runs.activeRuns().find((r) => r.runId === run.id).turnDeadline, first);
   assert.equal(timers.size, 1, "admission arm replaced once; retries added no timers");
   advance(1);
@@ -149,6 +150,8 @@ test("T-TURN-02 retries/deltas never extend the one turn arm; 45-min timeout kil
   assert.ok(d.apiRetriesAfterTurnSent >= 3); assert.equal(d.noticesAfterTurnSent, d.apiRetriesAfterTurnSent);
   assert.equal(d.deadlineAt, first.at); assert.equal(Date.parse(d.deadlineAt) - Date.parse(d.turnArmedAt), ms);
   assert.equal(Date.parse(d.admissionDeadlineAt) - Date.parse(d.admissionArmedAt), ms);
+  assert.equal(Date.parse(d.turnArmedAt) - Date.parse(d.admissionArmedAt), 400);
+  assert.notEqual(d.deadlineAt, d.admissionDeadlineAt);
   const elapsed = Date.parse(d.firedAt) - Date.parse(d.turnArmedAt);
   assert.ok(elapsed >= ms - 20 && elapsed < ms + 1000, `deadline fired after ${elapsed} ms`);
   assert.equal(d.fired, true); assert.equal(d.clearedBy, null); assert.equal(final.evidence.turnTimeout.deadlineAt, d.deadlineAt);
@@ -182,8 +185,8 @@ for (const reason of ["Stop", "revocation", "expiry"]) test(`T-TURN-03 ${reason}
   if (reason === "Stop") await h.dispatch("factory.stop", { missionId: h.mission.id });
   else if (reason === "revocation") h.hub.envelopes.revoke(envelope.id, { reason: "T-TURN revocation" });
   else { offset = (h.view().factory.limits.maxDurationMin + 1) * 60000; await h.hub.factory.tick(); }
-  await waitFor(() => h.hub.runs.activeRuns().length === 0, 15000, 50, { signal: t.signal });
-  await waitFor(async () => { await h.hub.factory.idle(h.mission.id); return true; }, 15000, 50, { signal: t.signal });
+  await h.wait(() => h.hub.runs.activeRuns().length === 0);
+  await h.wait(async () => { await h.hub.factory.idle(h.mission.id); return true; });
   const done = h.view(), final = h.hub.runs.getRun(run.id);
   assert.throws(() => process.kill(run.pid, 0)); assert.equal(final.status, "interrupted"); assert.equal(final.evidence.turnDeadline.fired, false);
   assert.ok(final.evidence.turnDeadline.clearedBy); assert.equal(final.evidence.turnTimeout, undefined);
@@ -208,7 +211,7 @@ for (const category of ["transport", "authentication", "output_token_limit"]) te
 });
 
 test("T-TURN-05 card text and hash: old text exact, changed authorLimits supersede; approved spec immutable", { timeout: 120000 }, async (t) => {
-  const h = await fixture(t, { scenario: "hang", owner: true });
+  const h = await fixture(t, { scenario: "hang", owner: true, timeoutMs: 120000 });
   const propose = async () => (await h.dispatch("envelope.propose", { projectId: h.project.id, missionIds: [h.mission.id] })).result;
   const confirm = (e) => h.dispatch("envelope.confirm", { envelopeId: e.id, nonce: e.nonce, displayedHash: e.envelopeHash }, { ownerSession: h.owner.session });
   const first = await propose();

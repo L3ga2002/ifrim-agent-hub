@@ -33,7 +33,7 @@ import { createCodexRealtime } from "./providers/codex-realtime.mjs";
 import { createLega } from "./runtime/lega.mjs";
 import { createLeases } from "./runtime/leases.mjs";
 import { createSupervisor } from "./runtime/supervisor.mjs";
-import { drainWithin } from "./runtime/shutdown.mjs";
+import { drainWithin, HUB_DRAIN_MS, HUB_SETTLE_MS } from "./runtime/shutdown.mjs";
 import { createRunManager } from "./runtime/runs.mjs";
 import { createHandoffs } from "./runtime/handoff.mjs";
 import { createCheckpoints } from "./runtime/checkpoints.mjs";
@@ -598,22 +598,25 @@ export function createHub(config, { providerOverrides = {}, homeDir, browserLaun
     sync("media.beginClose", () => media.beginClose());
     closePromise = (async () => {
       const step = async (name, fn, ms = 15000) => {
-        try { return await drainWithin(Promise.resolve().then(fn), ms, name); }
+        try { return await drainWithin(fn(), ms, name); }
         catch (cause) { errors.push(new Error(`${name}: ${cause.message}`, { cause })); return null; }
       };
-      await step("factory.close", () => factory.close());
-      await step("runs.drain", () => runs.drain());
-      await step("lega.stopAll", () => lega.stopAll("shutdown"));
-      await step("deliveries.close", () => deliveries.close_());
-      // Start cancellation of media before awaiting plans that may be waiting on that media.
-      const mediaClosing = step("media.close", () => media.close(), 16000);
-      await step("opsPlans.close", () => opsPlans.close(15000), 16000);
-      await mediaClosing;
-      await step("desktop.close", () => desktop.close());
-      const stopped = await step("supervisor.close", () => supervisor.close(), 20000);
+      // Independent drains run together. The supervisor stops owned processes, without turning
+      // media work into owner cancellations; closing plan steps are left for D22 boot recovery.
+      const drains = [
+        step("factory.close", () => factory.close()),
+        step("runs.drain", () => runs.drain()),
+        step("lega.stopAll", () => lega.stopAll("shutdown")),
+        step("deliveries.close", () => deliveries.close_()),
+        step("media.close", () => media.close(), 16000),
+        step("opsPlans.close", () => opsPlans.close(15000), 16000),
+        step("desktop.close", () => desktop.close()),
+      ];
+      const stopped = await step("supervisor.close", () => supervisor.close(), HUB_DRAIN_MS);
+      await Promise.all(drains);
       const survivors = stopped?.survivors || supervisor.list();
       for (const r of survivors) errors.push(new Error(`supervisor survivor ${r.key}: pid=${r.pid}, startedAt=${r.startedAt}, CreationDate=${r.creationDate || "unavailable"}${r.descendants?.length ? `, descendants=${JSON.stringify(r.descendants)}` : ""}${r.snapshotError ? `, snapshot=${r.snapshotError}` : ""}`));
-      if (!survivors.length) await step("runs.settle", () => runs.settle());
+      if (!survivors.length) await step("runs.settle", () => runs.settle(), HUB_SETTLE_MS);
       sync("supervisor.detachSurvivors", () => supervisor.detachSurvivors());
       sync("runs.detach", () => runs.detach());
       sync("opsPlans.detach", () => opsPlans.detach());

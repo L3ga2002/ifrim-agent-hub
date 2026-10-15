@@ -458,10 +458,9 @@ export function createCapture({ db, bus, clock = () => new Date(), settings, con
   let closing = false, detached = false;
   function beginClose() {
     closing = true;
-    for (const job of running.values()) job.controller?.abort();
   }
   function captureBrowserDemo(input = {}) {
-    if (closing) return Promise.reject(new HubError("policy", "Hub shutdown: capture closed", { code: "HUB_SHUTDOWN" }));
+    if (closing) return Promise.reject(new HubError("policy", "Hub-ul se oprește; nicio operație nouă nu pornește", { code: "HUB_SHUTDOWN" }));
     const pending = runBrowserDemo(input);
     pendingCaptures.add(pending);
     pending.then(() => pendingCaptures.delete(pending), () => pendingCaptures.delete(pending));
@@ -797,7 +796,7 @@ export function createCapture({ db, bus, clock = () => new Date(), settings, con
     if (liveHub && (policy().liveCapture !== true || !liveRow || !scopeApproved(liveRow))) throw refuse(input.sessionId || null, who, "LIVE_HUB_CAPTURE_REFUSED", "Hub-ul live (portul 8011 sau serverul de dezvoltare care îl folosește) nu se înregistrează în Public Demo Mode: captura rulează pe un Hub de test cu date sintetice. Captura live cere decizia proprietarului (liveCapture) și scopul aprobat al sesiunii.");
     let allowed = false;
     try { allowed = (await input.allowOrigin(origin)) === true; } catch { allowed = false; }
-    if (closing) throw new HubError("policy", "Hub shutdown: capture admission closed", { code: "HUB_SHUTDOWN" });
+    if (closing) throw new HubError("policy", "Hub-ul se oprește; nicio operație nouă nu pornește", { code: "HUB_SHUTDOWN" });
     if (!allowed) throw refuse(input.sessionId || null, who, "DEMO_ORIGIN_NOT_ALLOWED", `Originea ${origin} nu este permisă pentru captura demo (doar Hub-ul de test al harness-ului).`);
     const steps = validateDemoSteps(input.steps);
     const givenLabel = input.captureLabel === undefined || input.captureLabel === null || input.captureLabel === "" ? null : oneOf(input.captureLabel, SESSION_CAPTURE_LABELS, "eticheta de captură");
@@ -888,6 +887,7 @@ export function createCapture({ db, bus, clock = () => new Date(), settings, con
     const onAbort = () => { closeBrowser(); Promise.resolve().then(() => tools.cancel?.(`media:capture:${sessionId}`)).catch(() => {}); };
     controller.signal.addEventListener("abort", onAbort, { once: true });
     const checkAbort = () => {
+      if (detached) throw new HubError("policy", "Hub-ul s-a oprit; captura rămâne pentru recuperare.", { code: "HUB_SHUTDOWN" });
       if (controller.signal.aborted) throw controller.signal.reason instanceof HubError ? controller.signal.reason : new HubError("task", "Captura a fost anulată.", { code: "CANCELLED" });
     };
     const clockMs = () => performance.now();
@@ -1084,6 +1084,7 @@ export function createCapture({ db, bus, clock = () => new Date(), settings, con
       checkAbort();
       const ingested = await assets.ingestFile({ sourcePath: out, allowedRoots: [dir], title, category: "screen_recording", origin: "OWNED", captureLabel,
         contentProjectId: row.content_project_id, tags: ["browser_demo", "public_demo_mode"], description: `Captură Public Demo Mode din ${origin} (${steps.length} pași, ${fps} fps).`, actor: who });
+      checkAbort();
       const finalMarkers = [...parse(selSession.get(sessionId).markers_json, []), ...markers.map((m) => ({ ...m, atMs: Math.min(m.atMs, expectedMs) }))].sort((a, b) => a.atMs - b.atMs);
       // A hold is bound to the stored file: its asset version, this session and the steps sha; it ends inside the recording.
       const boundHolds = holds.filter((h) => h.startMs < expectedMs).map((h) => ({ ...h, endMs: Math.min(h.endMs, expectedMs), sessionId, assetVersionId: ingested.version.id, stepsSha }));
@@ -1105,7 +1106,7 @@ export function createCapture({ db, bus, clock = () => new Date(), settings, con
       controller.signal.removeEventListener("abort", onAbort);
       await closeBrowser();
       running.delete(sessionId);
-      if (failure && !detached) {
+      if (failure && !closing && !detached) {
         const cancelled = failure.code === "CANCELLED";
         setStatus(sessionId, cancelled ? "CANCELLED" : "FAILED", { error: cancelled ? null : String(failure.message).slice(0, 500), markers_json: json([...parse(selSession.get(sessionId).markers_json, []), ...markers]) },
           { type: cancelled ? "media.capture.cancelled" : "media.capture.failed", source: who, payload: { sessionId, kind: "browser_demo", code: failure.code, steps: stepResults.length } });

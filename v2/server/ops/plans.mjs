@@ -43,7 +43,6 @@ export function createOpsPlans({ db, bus, clock, settings, trust, voice = null, 
   let closing = false, detached = false;
   function beginClose() {
     closing = true;
-    for (const run of runs.values()) { run.abort.aborted = true; run.abort.reason = "Hub shutdown"; }
   }
   async function close(ms = 10000) {
     beginClose();
@@ -288,11 +287,11 @@ export function createOpsPlans({ db, bus, clock, settings, trust, voice = null, 
     parents.set(String(kind), { verify, allowedOps: new Set(allowedOps) });
   }
   async function adoptDerived({ kind, title, steps, limits = {}, parent, expectedBodySha, sessionId, credential = "", onCreated = null }) {
-    if (closing) throw new HubError("policy", "Hub shutdown", { code: "HUB_SHUTDOWN" });
+    if (closing) throw new HubError("policy", "Hub-ul se oprește; nicio operație nouă nu pornește", { code: "HUB_SHUTDOWN" });
     const reg = parents.get(String(parent?.kind || ""));
     if (!reg) throw new HubError("policy", "Planul derivat nu are un părinte cunoscut.", { code: "PLAN_DERIVED_PARENT" });
     const body = await buildBody({ kind, title, steps, limits });
-    if (closing) throw new HubError("policy", "Hub shutdown", { code: "HUB_SHUTDOWN" });
+    if (closing) throw new HubError("policy", "Hub-ul se oprește; nicio operație nouă nu pornește", { code: "HUB_SHUTDOWN" });
     const bodySha = hashCanonical(body);
     if (bodySha !== expectedBodySha) throw new HubError("conflict", "Pașii livrării s-au schimbat față de planul confirmat.", { code: "PLAN_DERIVED_CHANGED", data: { expected: String(expectedBodySha || "").slice(0, 16), actual: bodySha.slice(0, 16) } });
     if (body.decisions.length) throw new HubError("policy", "Un plan derivat nu poate conține decizii (aplicație sau folder nou).", { code: "PLAN_DERIVED_DECISION" });
@@ -301,7 +300,7 @@ export function createOpsPlans({ db, bus, clock, settings, trust, voice = null, 
     const outside = [...new Set(body.steps.flatMap((st) => st.ops.map((o) => o.op)).filter((op) => !reg.allowedOps.has(op)))];
     if (outside.length) throw new HubError("policy", "Operații în afara livrării: " + outside.join(", "), { code: "PLAN_DERIVED_OP" });
     const check = await reg.verify(parent);
-    if (closing) throw new HubError("policy", "Hub shutdown", { code: "HUB_SHUTDOWN" });
+    if (closing) throw new HubError("policy", "Hub-ul se oprește; nicio operație nouă nu pornește", { code: "HUB_SHUTDOWN" });
     if (!check?.ok) throw new HubError("policy", "Confirmarea de la care derivă planul nu mai e valabilă: " + (check?.reason || "necunoscut"), { code: "PLAN_DERIVED_PARENT" });
     // Stage before M12: the derived plan (the delivery after DELIVERY_READY) rides on the confirmation's authority, which outlives a
     // closed browser; only a revocation refuses it.
@@ -332,7 +331,7 @@ export function createOpsPlans({ db, bus, clock, settings, trust, voice = null, 
 
   // ---------------------------------------------------------------- authority (checked at EVERY operation)
   function authorize(planId, stepId, action = {}) {
-    if (closing) throw new HubError("policy", "Hub shutdown: no new operation", { code: "STOPPED" });
+    if (closing) throw new HubError("policy", "Hub-ul se oprește; nicio operație nouă nu pornește", { code: "STOPPED" });
     const r = row(planId);
     if (!r) throw new HubError("not_found", "Plan necunoscut", { code: "PLAN_GONE" });
     const a = parse(r.authority_json, null);
@@ -365,13 +364,14 @@ export function createOpsPlans({ db, bus, clock, settings, trust, voice = null, 
 
   // ---------------------------------------------------------------- run
   function start(planId) {
-    if (closing) throw new HubError("policy", "Hub shutdown: no new operation plan", { code: "HUB_SHUTDOWN" });
+    if (closing) throw new HubError("policy", "Hub-ul se oprește; nicio operație nouă nu pornește", { code: "HUB_SHUTDOWN" });
     if (runs.has(planId)) return runs.get(planId).promise;
     const abort = { aborted: false, reason: "" };
     const promise = (async () => {
       bus.transaction(() => setStatus(planId, "RUNNING", "Rulează", {}, ["CONFIRMED", "PAUSED", "NEEDS_OWNER"]));
       for (const st of stepsOf(planId)) {
         if (st.status === "DONE" || st.status === "SKIPPED") continue;
+        if (closing || detached) return;
         if (abort.aborted) break;
         if (row(planId).status !== "RUNNING") break;
         const ex = executors[st.kind];
@@ -380,13 +380,13 @@ export function createOpsPlans({ db, bus, clock, settings, trust, voice = null, 
         try {
           const params = resolveRefs(st.params, stepsOf(planId));
           const result = await ex.run({ planId, stepId: st.id, params, authorize: (action) => authorize(planId, st.id, action), abort, plan: view(planId), secrets: secrets.get(planId) || {} });
-          if (detached) return;
+          if (closing || detached) return; // D22: boot reconciles the in-flight step as uncertain.
           bus.transaction(() => {
             db.prepare("UPDATE ops_plan_steps SET status = 'DONE', result_json = ?, evidence_json = ?, finished_at = ?, updated_at = ? WHERE id = ?").run(json(result?.result ?? result ?? {}), json(result?.evidence || []), now(), now(), st.id);
             bus.append({ type: "ops.step.done", scopeType: "ops_plan", scopeId: planId, source: "ops", payload: { seq: st.seq, kind: st.kind } });
           });
         } catch (error) {
-          if (detached) return;
+          if (closing || detached) return;
           const code = error.code || "FAILED";
           const uncertain = ["OPERATOR_TIMEOUT", "OPERATOR_EXITED", "OUTCOME_UNKNOWN"].includes(code);
           const owner = ["USER_INPUT", "SECURE_DESKTOP", "STOPPED", "PAUSED", "NOT_FOREGROUND", "IDENTITY_CHANGED", "DESKTOP_PAUSED", "PLAN_NOT_RUNNING", "SESSION_CLOSED", "PLAN_EXPIRED", "PLAN_BUDGET", "NEEDS_DECISION", "OCCLUDED"].includes(code);
@@ -399,6 +399,7 @@ export function createOpsPlans({ db, bus, clock, settings, trust, voice = null, 
           break;
         }
       }
+      if (closing || detached) return;
       if (row(planId).status === "RUNNING") {
         const left = stepsOf(planId).filter((x) => !["DONE", "SKIPPED"].includes(x.status));
         if (!left.length) bus.transaction(() => setStatus(planId, "DONE", "Toți pașii au rezultat verificat", {}, ["RUNNING"]));

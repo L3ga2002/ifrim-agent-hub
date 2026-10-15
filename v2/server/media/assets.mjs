@@ -105,6 +105,8 @@ function unlinkQuiet(file) { try { makeWritable(file); fs.unlinkSync(file); } ca
  * `createMediaAssets({ db, bus, clock, paths, tools, settings, maxBytes })`.
  */
 export function createMediaAssets({ db, bus, clock = () => new Date(), paths, tools, settings = null, maxBytes = DEFAULT_MAX_BYTES }) {
+  let detached = false;
+  const assertAttached = () => { if (detached) throw new HubError("policy", "Hub-ul s-a oprit; importul media rămâne pentru recuperare.", { code: "HUB_SHUTDOWN" }); };
   if (!db || !bus || !paths) throw new Error("createMediaAssets requires db, bus and paths");
   const now = () => clock().toISOString();
   const policy = () => ({ libraryQuotaGb: 40, diskReserveGb: 15, ...(settings?.get("mediaPolicy") || {}) });
@@ -346,6 +348,7 @@ export function createMediaAssets({ db, bus, clock = () => new Date(), paths, to
 
     assertSpace(src.size);
     const copy = await copyWithHash(src.real, cap);
+    assertAttached();
     if (copy.bytes !== src.size) { unlinkQuiet(copy.temp); throw new HubError("conflict", "Fișierul s-a modificat în timpul importului; încearcă din nou după ce s-a terminat scrierea lui.", { code: "MEDIA_SOURCE_CHANGED" }); }
 
     const existing = selBySha.all(copy.sha256).find((row) => { try { return fs.existsSync(paths.resolveRel(row.rel_path)); } catch { return false; } });
@@ -360,10 +363,11 @@ export function createMediaAssets({ db, bus, clock = () => new Date(), paths, to
       try { ({ status, probe } = await probeOrQuarantine(abs, sniff.kind)); }
       catch (error) {
         // No tool: nothing is recorded, and a file this import created (and nobody references) is removed again.
-        if (created && !selByRel.get(relPath)) { unlinkQuiet(abs); try { fs.rmdirSync(path.dirname(abs)); } catch { /* not empty */ } }
+        if (!detached && created && !selByRel.get(relPath)) { unlinkQuiet(abs); try { fs.rmdirSync(path.dirname(abs)); } catch { /* not empty */ } }
         throw error;
       }
     }
+    assertAttached();
     const kind = refineKind(sniff.kind, probe);
     const assetId = newId("mas");
     const versionId = newId("mav");
@@ -422,6 +426,7 @@ export function createMediaAssets({ db, bus, clock = () => new Date(), paths, to
       const copy = await copyWithHash(file.real, maxBytes);
       sha256 = copy.sha256;
       ({ abs } = await placeContentAddressed(copy.temp, sha256, paths.derivativePath(category, sha256, ext)));
+      assertAttached();
       if (selByRel.get(paths.relOf(abs))) throw new HubError("conflict", "Un derivat identic este deja înregistrat.", { code: "DERIVATIVE_DUPLICATE", data: { versionId: selByRel.get(paths.relOf(abs)).id } });
     } else {
       throw new HubError("policy", "Derivatele se înregistrează doar din biblioteca media sau din dosarul ei de lucru.", { code: "MEDIA_PATH_OUTSIDE" });
@@ -431,6 +436,7 @@ export function createMediaAssets({ db, bus, clock = () => new Date(), paths, to
     const sniff = sniffMagic(readHead(abs));
     const mime = sniff && !sniff.refused ? sniff.mime : "application/octet-stream";
     const { status, probe } = await probeOrQuarantine(abs, kind);
+    assertAttached();
     const origin = ORIGIN_RANK.find((o) => inputs.some((v) => v.origin === o)) || "UNKNOWN";
     const captureLabel = LABEL_RANK.find((l) => inputs.some((v) => v.captureLabel === l)) || "NOT_APPLICABLE";
     const derivedFrom = inputs.map((v) => ({ versionId: v.id, assetId: v.assetId, sha256: v.sha256, op, params }));
@@ -629,5 +635,5 @@ export function createMediaAssets({ db, bus, clock = () => new Date(), paths, to
     return { dryRun: false, olderThanDays: days, removed, skipped, totalBytes: removed.reduce((s, c) => s + (c.bytes || 0), 0) };
   }
 
-  return { ingestFile, registerDerivative, get, getVersion, versionPath, updateMetadata, list, search, quota, cleanupDerivatives, sniffMagic };
+  return { boot: () => { detached = false; }, detach: () => { detached = true; }, ingestFile, registerDerivative, get, getVersion, versionPath, updateMetadata, list, search, quota, cleanupDerivatives, sniffMagic };
 }

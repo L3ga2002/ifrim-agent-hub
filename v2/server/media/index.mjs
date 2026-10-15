@@ -120,6 +120,8 @@ export function createMedia({ db, bus, live = null, clock = () => new Date(), co
     closing = false;
     closePromise = null;
     tools.boot();
+    qa.boot();
+    assets.boot();
     paths.ensure();
     const presets = seedPresets(db, clock, { bus, actor: "system:seed" });
     const report = {
@@ -150,10 +152,11 @@ export function createMedia({ db, bus, live = null, clock = () => new Date(), co
     render.beginClose();
     capture.beginClose();
     tools.beginClose();
+    qa.beginClose();
   }
   function close(ms = 15000) {
     beginClose();
-    if (!closePromise) closePromise = drainWithin(Promise.allSettled([tools.close(), render.close(), capture.close(), transcriber.stopAll("hub:close")])
+    if (!closePromise) closePromise = drainWithin(Promise.allSettled([tools.close(), render.close(), capture.close(), qa.close(), transcriber.stopAll("hub:close")])
       .then((results) => { const errors = results.filter((r) => r.status === "rejected").map((r) => r.reason); if (errors.length) throw new AggregateError(errors, "Media shutdown failed"); }), ms, "media jobs");
     return closePromise;
   }
@@ -177,7 +180,7 @@ export function createMedia({ db, bus, live = null, clock = () => new Date(), co
 
   return {
     paths, tools, assets, rights, edits, render, editors, qa, variants, reviews, content, distribution, analytics, campaigns, capture, transcriber,
-    importRoots, importAccess, bundles, exportsDir, exportLocal, boot, tick, beginClose, close, detach: () => { render.detach(); capture.detach(); }, status, PLATFORM_REGISTRY, PLATFORM_PROFILES,
+    importRoots, importAccess, bundles, exportsDir, exportLocal, boot, tick, beginClose, close, detach: () => { render.detach(); capture.detach(); qa.detach(); assets.detach(); }, status, PLATFORM_REGISTRY, PLATFORM_PROFILES,
     presets: { list: () => listPresets(db), get: (id, version) => getPreset(db, id, version), fonts: (preset) => resolveFonts(preset) },
   };
 }

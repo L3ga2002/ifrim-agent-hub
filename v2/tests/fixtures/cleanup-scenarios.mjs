@@ -5,6 +5,7 @@ import fs from "node:fs";
 import path from "node:path";
 import * as helpers from "../helpers.mjs";
 import { buildEngineeringSpec } from "../../server/owner/planners/engineering.mjs";
+import { windowsProcesses } from "../../server/runtime/supervisor.mjs";
 
 const { makeTestHub, enableLive, waitFor, FIXTURES } = helpers;
 assert.equal(typeof helpers.registerCleanupGuard, "function", "shutdown API missing: registerCleanupGuard");
@@ -16,14 +17,22 @@ const problems = [];
 const uncaught = (e) => problems.push(String(e?.message || e));
 process.on("uncaughtExceptionMonitor", uncaught);
 process.on("unhandledRejection", uncaught);
+let hubSnapshots = [];
 const h = await makeTestHub({ configOverrides: { providerBinaries: {
-  claude: { executable: process.execPath, prefixArgs: [path.join(FIXTURES, "cleanup-bounded.mjs"), "--life=18000"] },
+  // Outlives the restored 8s exit wait plus both bounded identity observations, including under load.
+  claude: { executable: process.execPath, prefixArgs: [path.join(FIXTURES, "cleanup-bounded.mjs"), "--life=30000"] },
   codex: { executable: process.execPath, prefixArgs: [path.join(FIXTURES, "fake-codex.mjs")] },
 } }, hubOptions: mode === "RT-3b" ? { supervisorOptions: {
   treeKill: async () => { throw Object.assign(new Error("injected taskkill failure"), { code: "TEST_KILL" }); },
   killHandle: () => false,
+  snapshot: async () => { const rows = await windowsProcesses(); hubSnapshots.push(rows); return rows; },
 } } : {} });
 const hub = h.hub;
+let modelStarts = 0;
+for (const provider of Object.values(hub.providers)) {
+  const startTurn = provider.startTurn;
+  if (startTurn) provider.startTurn = (...args) => { modelStarts++; return startTurn(...args); };
+}
 assert.equal(typeof hub.runs.close, "function", "shutdown API missing: runs.close");
 assert.equal(typeof hub.supervisor.close, "function", "shutdown API missing: supervisor.close");
 const dispatch = (type, payload) => hub.commands.dispatch({ type, payload, channel: "test", actor: "test" });
@@ -46,7 +55,7 @@ const originalFactoryClose = hub.factory.close;
 hub.factory.close = () => { release.resolve(); return originalFactoryClose(); };
 const originalDbClose = hub.db.close.bind(hub.db);
 hub.db.close = () => {
-  proof = { runs: hub.runs.listRuns(), leases: hub.db.prepare("SELECT status FROM leases").all(), grant: hub.grants.get(grant.id), gate: hub.settings.get("executionGate"), live: hub.supervisor.list() };
+  proof = { runs: hub.runs.listRuns(), leases: hub.db.prepare("SELECT status, release_reason FROM leases").all(), grant: hub.grants.get(grant.id), gate: hub.settings.get("executionGate"), live: hub.supervisor.list() };
   return originalDbClose();
 };
 async function start() {
@@ -77,7 +86,7 @@ if (mode === "RT-4") {
       if (process.platform === "win32") {
         try {
           const snapshot = await windowsProcesses();
-          identity = ownedProcessTree([child], snapshot).find((r) => r.pid === child.pid);
+          identity = ownedProcessTree([{ ...child }], snapshot).find((r) => r.pid === child.pid);
           assert.ok(identity, "owned process start identity captured");
         } catch (error) { identityError = error; }
       }
@@ -96,13 +105,22 @@ test(`${mode} observer`, { timeout: 30000 }, async () => {
     assert.ok(error instanceof AggregateError);
     assert.match(error.message, new RegExp(`pid=${child.pid}`));
     assert.ok(error.message.includes(child.startedAt));
-    if (identity) assert.ok(error.message.includes(identity.creationDate));
+    if (identity) {
+      assert.equal(hubSnapshots.length, 1, "Hub takes exactly one failure-path snapshot");
+      assert.ok(hubSnapshots[0].some((r) => r.pid === child.pid && r.creationDate === identity.creationDate));
+      assert.ok(error.message.includes(identity.creationDate));
+    }
     assert.equal(child.child.stdout.listenerCount("data"), 0, "survivor's DB consumers detached");
     await child.exit; // bounded fixture self-exits; never hide a survivor with unref or a force exit
   } else {
     const run = proof.runs.find((r) => r.provider === "claude");
     assert.equal(run?.status, "blocked"); assert.equal(run.preInference, true);
-    assert.match(run.errorMessage, /shutdown/i); assert.equal(run.pid, null);
+    assert.match(run.errorMessage, /Hub-ul se oprește/); assert.equal(run.pid, null);
+    assert.equal(modelStarts, 0, "refused at pre-model recheck, before adapter.startTurn");
+    assert.equal(run.evidence.recheck, true);
+    assert.equal(run.evidence.shutdown, true);
+    assert.equal(run.evidence.stopAll, false);
+    assert.ok(proof.leases.some((r) => r.release_reason === "Hub-ul se oprește înainte de pornire"));
     assert.ok(proof.leases.every((r) => r.status === "released"));
     assert.equal(proof.grant.attemptsUsed, 0, "pre-inference attempt refunded");
     assert.equal(proof.grant.status, "active", "close did not persist Stop All revocation");

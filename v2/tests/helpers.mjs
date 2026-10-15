@@ -12,13 +12,17 @@ import { R2_ACCEPT_TEXT } from "../server/policy/isolation.mjs";
 import { after } from "node:test";
 
 export const cleanupFailures = [];
-/** Register at module top level: node:test drops after-hook errors on already failed/cancelled tests. */
+let cleanupGuardRegistered = false;
+/** One file-level report, including suites whose finally blocks call cleanup. */
 export function registerCleanupGuard() {
+  if (cleanupGuardRegistered) return;
+  cleanupGuardRegistered = true;
   after(() => {
     if (cleanupFailures.length) throw new AggregateError(cleanupFailures.map((f) => f.error),
       `Cleanup failures: ${cleanupFailures.map((f) => `${f.dataDir}: ${f.error.message}`).join("; ")}`);
   });
 }
+registerCleanupGuard();
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 export const FIXTURES = path.join(here, "fixtures");
@@ -89,7 +93,7 @@ export async function makeTestHub({ codex = "ok", claude = "ok", port = 0, clock
     let failure;
     try { await hub.close(); } catch (error) { failure = error; }
     try { fs.rmSync(dataDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 }); } catch { /* Windows may hold a file briefly; left in .ifrim/tmp */ }
-    if (failure) { cleanupFailures.push({ dataDir, error: failure }); throw failure; }
+    if (failure) cleanupFailures.push({ dataDir, error: failure });
   };
   const queue = (provider, ...lines) => fs.appendFileSync(queueFiles[provider], `${lines.join("\n")}\n`);
   const wslState = (value) => fs.writeFileSync(wslFiles.state, JSON.stringify(value));

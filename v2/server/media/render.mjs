@@ -151,7 +151,7 @@ export function createRenderQueue({ db, bus, live = null, clock = () => new Date
 
   /** Queues a render. Duplicate idempotency keys return the existing job (`duplicate: true`). */
   function request({ editVersionId, profile, actor, idempotencyKey = null } = {}) {
-    if (closing) throw new HubError("policy", "Hub shutdown: render queue closed", { code: "HUB_SHUTDOWN" });
+    if (closing) throw new HubError("policy", "Hub-ul se oprește; nicio operație nouă nu pornește", { code: "HUB_SHUTDOWN" });
     const who = requireActor(actor);
     if (typeof editVersionId !== "string" || !ID_RE.test(editVersionId)) throw new HubError("validation", "Versiunea de editare este invalidă.", { code: "FIELD_INVALID" });
     if (!RENDER_PROFILES[profile]) throw new HubError("validation", "Profilul de randare trebuie să fie „draft” sau „final”.", { code: "PROFILE_INVALID" });
@@ -307,7 +307,7 @@ export function createRenderQueue({ db, bus, live = null, clock = () => new Date
   // ------------------------------------------------------------------ the run
 
   function checkCancel(jobId, rec) {
-    if (detached) throw new HubError("policy", "Hub shutdown", { code: "HUB_SHUTDOWN" });
+    if (detached) throw new HubError("policy", "Hub-ul se oprește; nicio operație nouă nu pornește", { code: "HUB_SHUTDOWN" });
     if (rec.cancelRequested) throw renderError("CANCELLED");
     const row = selJob.get(jobId);
     if (row?.status === "CANCEL_REQUESTED") { rec.cancelRequested = true; throw renderError("CANCELLED"); }
@@ -574,7 +574,7 @@ export function createRenderQueue({ db, bus, live = null, clock = () => new Date
       rmQuiet(path.join(jobDir, plan.final.output));
     } catch (error) {
       const failure = rec.cancelRequested ? { code: "CANCELLED", message: FAILURE_TEXT.CANCELLED } : classifyRenderError(error);
-      if (detached) return;
+      if (closing || detached) return;
       journal.status = failure.code === "CANCELLED" ? "CANCELLED" : "FAILED";
       journal.error = failure;
       try { step("failed", { code: failure.code }); } catch { /* ignore */ }
@@ -615,12 +615,10 @@ export function createRenderQueue({ db, bus, live = null, clock = () => new Date
 
   function beginClose() {
     closing = true;
-    for (const rec of active.values()) { rec.cancelRequested = true; rec.cancelledBy = "hub:close"; }
   }
   async function close() {
     beginClose();
     await Promise.all([...active.values()].map(async (rec) => {
-      if (rec.procKey) await tools.cancel(rec.procKey);
       await rec.done;
     }));
   }

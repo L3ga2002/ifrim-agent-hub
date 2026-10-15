@@ -68,11 +68,12 @@ export function createOperatorClient({ config, supervisor, clock = () => new Dat
     ready = { promise, resolve: resolveHello, reject: rejectHello };
     record = supervisor.start({ key: "desktop-operator", executable, args, label: "desktop-operator", onStdoutLine: handleLine,
       onStderrLine: (l) => { lastError = l.slice(0, 300); } });
-    record.exit.then(({ code }) => {
+      const launched = record;
+      launched.exit.then(({ code }) => {
       for (const [id, p] of pending) { clearTimeout(p.timer); p.reject(new HubError("tool", `Helperul s-a oprit (cod ${code}); operația nu are rezultat confirmat.`, { code: "OPERATOR_EXITED" })); pending.delete(id); }
       helloInfo = null;
       ready?.reject?.(new HubError("tool", `Helperul s-a oprit înainte de handshake (cod ${code}): ${lastError || ""}`, { code: "OPERATOR_EXITED" }));
-      onEvent({ type: "desktop.operator.exited", code });
+        if (!launched.detached) onEvent({ type: "desktop.operator.exited", code });
     });
     record.child.stdin.write(`${JSON.stringify({ hello: { key: key.toString("hex"), session: String(session).slice(0, 80) } })}\n`);
     const timer = setTimeout(() => ready.reject(new HubError("tool", "Helperul nu a răspuns la handshake în 10 s.", { code: "OPERATOR_TIMEOUT" })), 10000);

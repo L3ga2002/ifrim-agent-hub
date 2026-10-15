@@ -70,4 +70,72 @@ test("cleanup observers: process snapshot ignores reused PID and descendants of 
   const row = (pid, parentPid, sec) => ({ pid, parentPid, creationDate: `2026-01-01T00:00:0${sec}.000Z`, name: "node.exe" });
   assert.deepEqual(ownedProcessTree(records, [row(10, 1, 2), row(11, 10, 3)]), []);
   assert.deepEqual(ownedProcessTree(records, [row(10, 1, 0), row(11, 10, 1)]).map((p) => p.pid), [10, 11]);
+  assert.equal(records[0].creationDate, undefined, "identity observation never mutates a live supervisor record");
+});
+
+test("cleanup fixed-key restart preserves both owned handles without introducing a conflict", { timeout: 10000 }, async (t) => {
+  const supervisor = createSupervisor({ config, treeKill: async (record) => { record.child.kill("SIGKILL"); } });
+  t.after(() => supervisor.close());
+  const first = launch(supervisor, "worker"), second = launch(supervisor, "worker");
+  assert.notEqual(first.pid, second.pid);
+  assert.equal(supervisor.get("worker"), second);
+  assert.equal(supervisor.list().length, 2, "restarting never loses the previous live handle");
+  const closed = await supervisor.close();
+  assert.deepEqual(closed.survivors, []); assert.equal(closed.results.length, 2);
+  assert.ok(first.exited && second.exited);
+});
+
+test("cleanup: automatic guard keeps finally's original error and separately reports cleanup", { timeout: 30000 }, async () => {
+  const env = { ...process.env }; delete env.NODE_TEST_CONTEXT;
+  let output = "";
+  try { await exec(process.execPath, ["--test", "--test-reporter=tap", path.join(FIXTURES, "cleanup-finally.mjs")], { env, windowsHide: true, timeout: 25000 }); }
+  catch (error) { assert.equal(error.code, 1); output = error.stdout + error.stderr; }
+  assert.match(output, /ORIGINAL_FINALLY_ERROR/);
+  assert.match(output, /CLEANUP_SENTINEL/);
+  assert.match(output, /failureType: 'hookFailed'/);
+  assert.match(output, /# fail 2/);
+  assert.doesNotMatch(output, /asynchronous activity|unhandledRejection/);
+});
+
+for (const diagnosticFailure of [false, true]) test(`cleanup native tree: owned root and grandchild gone; snapshot failure=${diagnosticFailure}`, { timeout: 45000 }, async (t) => {
+  let snapshots = 0, killed = false, leaf;
+  const supervisor = createSupervisor({ config,
+    ...(diagnosticFailure ? {
+      treeKill: async (record) => { const result = await supervisorModule.killOwnedTree(record); killed = true; throw new Error(`diagnostic failure after native kill ${result.exitCode}`); },
+      snapshot: async () => { snapshots++; throw new Error("snapshot unavailable sentinel"); },
+    } : {}),
+  });
+  const root = supervisor.start({ key: "native-tree", executable: process.execPath,
+    args: [path.join(FIXTURES, "cleanup-tree.mjs")], cwd: FIXTURES,
+    onStdoutLine: (line) => { leaf = JSON.parse(line).grandchild; } });
+  t.after(async () => { await supervisor.close(); await root.exit; });
+  await waitFor(() => leaf, 5000, 10, { signal: t.signal });
+  const before = await supervisorModule.windowsProcesses();
+  const identities = ownedProcessTree([{ ...root }], before);
+  assert.deepEqual(identities.map((r) => r.pid).sort(), [root.pid, leaf].sort(), "both start identities captured before stop");
+  const stopped = await supervisor.stop(root.key, { graceMs: 0 });
+  assert.equal(stopped.stopped, true);
+  if (!diagnosticFailure) { assert.equal(stopped.method, "taskkill"); assert.equal(stopped.taskkill.ok, true); }
+  const closed = await supervisor.close();
+  if (diagnosticFailure) {
+    assert.equal(killed, true, "native tree kill did not depend on snapshot availability");
+    assert.equal(snapshots, 1);
+    assert.ok(closed.survivors.some((r) => r.unverified && /snapshot unavailable sentinel/.test(r.snapshotError)));
+  } else assert.deepEqual(closed.survivors, []);
+  const after = await supervisorModule.windowsProcesses();
+  for (const identity of identities) assert.equal(after.some((r) => r.pid === identity.pid && r.creationDate === identity.creationDate), false);
+});
+
+test("cleanup native tree: root-only fallback reports surviving grandchild from Hub snapshot", { timeout: 45000 }, async (t) => {
+  let leaf;
+  const supervisor = createSupervisor({ config, treeKill: async () => { throw new Error("tree kill failure sentinel"); } });
+  const root = supervisor.start({ key: "fallback-tree", executable: process.execPath, args: [path.join(FIXTURES, "cleanup-tree.mjs")], cwd: FIXTURES,
+    onStdoutLine: (line) => { leaf = JSON.parse(line).grandchild; } });
+  t.after(async () => { await supervisor.close(); await root.exit; });
+  await waitFor(() => leaf, 5000, 10, { signal: t.signal });
+  const identities = ownedProcessTree([{ ...root }], await supervisorModule.windowsProcesses());
+  const childIdentity = identities.find((r) => r.pid === leaf); assert.ok(childIdentity);
+  const closed = await supervisor.close();
+  assert.ok(closed.survivors.some((r) => r.key === `fallback-tree:descendant:${leaf}` && r.creationDate === childIdentity.creationDate));
+  await waitFor(async () => !(await supervisorModule.windowsProcesses()).some((r) => r.pid === leaf && r.creationDate === childIdentity.creationDate), 25000, 1000, { signal: t.signal });
 });

@@ -24,7 +24,7 @@ export function createExecutors({ desktop = null, media = null, settings, live =
     while (Date.now() < end) {
       const job = media.render.get(jobId);
       if (["DONE", "FAILED", "CANCELLED", "INTERRUPTED"].includes(job?.status)) return job;
-      if (abort?.aborted) { await media.render.cancel(jobId, "plan:stop"); throw new HubError("conflict", `Oprit: ${abort.reason}`, { code: "STOPPED" }); }
+      if (abort?.aborted) { media.render.cancel(jobId, "plan:stop").catch(() => {}); throw new HubError("conflict", `Oprit: ${abort.reason}`, { code: "STOPPED" }); }
       try { const r = media.render.tick(); r?.done?.catch?.(() => {}); } catch { /* the job row records it */ }
       await sleep(250);
     }

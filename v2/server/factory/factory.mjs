@@ -242,8 +242,9 @@ export function createFactory(deps) {
    * not an active one (a Pause, the deadline's NEEDS_OWNER_DECISION, BLOCKED, a final stage) leaves the mission where it is.
    * The result of an interrupted step is never interpreted: no finding, no repair, no next stage, no model run.
    */
-  const isHalted = (missionId) => { const s = fm(missionId); return !s || Boolean(s.cancelRequestedAt) || !ACTIVE_STAGES.has(s.stage); };
+  const isHalted = (missionId) => { if (closed) return true; const s = fm(missionId); return !s || Boolean(s.cancelRequestedAt) || !ACTIVE_STAGES.has(s.stage); };
   function halted(missionId) {
+    if (closed) return { halted: true, shutdown: true };
     const s = fm(missionId);
     if (s?.cancelRequestedAt) return confirmCancel(missionId);
     if (!s || !ACTIVE_STAGES.has(s.stage)) return view(missionId);
@@ -254,6 +255,7 @@ export function createFactory(deps) {
    * started; a browser E2E). While one is in flight a Stop stays CANCEL_REQUESTED; the step itself confirms it afterwards.
    */
   function haltStep(missionId, taskId) {
+    if (closed) return halted(missionId);
     if (fm(missionId)?.stage === "PAUSED" && taskId && missions.task(taskId)?.status === "RUNNING") {
       try { transitionTask(db, bus, clock, { taskId, to: "PAUSED", reason: "Factory: pauză în timpul pasului", actor: "factory" }); } catch { /* left as is */ }
     }
@@ -892,7 +894,7 @@ export function createFactory(deps) {
     let lease;
     try { lease = bus.transaction(() => leases.acquire({ resource, holder: `factory-runner:${missionId}`, taskId: null, runId: null, ttlSeconds: 1800 })); }
     catch (error) { return { blocked: `Workspace-ul e ocupat (${error.message}); aștept eliberarea` }; }
-    try { return await fn(); } finally { bus.transaction(() => leases.release(lease.id, "factory runner finished")); }
+    try { return await fn(); } finally { if (!closed) bus.transaction(() => leases.release(lease.id, "factory runner finished")); }
   }
 
   async function runCommands(missionId, stage, commands, changeSetId) {
@@ -911,6 +913,7 @@ export function createFactory(deps) {
         // Tracked (M05 §20): a Stop during a runner command stays CANCEL_REQUESTED until the command is gone and its evidence
         // is written, so CANCELLED is never confirmed while a test process still runs.
         const result = await tracked(missionId, () => runner.run({ key: `factory-run-${missionId}-${stage}-${i}`, ws: project.path, command, project, shouldStop: () => isHalted(missionId) }));
+        if (closed) return { results, shutdown: true }; // Partial stages carry no verdict; boot owns recovery.
         // A command killed by Stop / Pause says nothing about the code: kept as INTERRUPTED and stale (never counted).
         const interrupted = isHalted(missionId);
         const status = interrupted ? "INTERRUPTED" : result.status;
@@ -1066,6 +1069,7 @@ export function createFactory(deps) {
         ...(request.maxOutputTokens === 64000 ? { maxOutputTokens: 64000 } : {}) })));
     } catch (error) {
       // A Stop / Pause that arrived while the start was in flight: the refusal is its consequence, not a new blocker.
+      if (closed) return null;
       if (isHalted(missionId)) {
         db.prepare("UPDATE factory_dispatches SET status = 'CANCELLED', error = ?, updated_at = ? WHERE id = ?").run(String(error.message).slice(0, 2000), now(), id);
         return halted(missionId);
@@ -1082,6 +1086,7 @@ export function createFactory(deps) {
     }
     // Stop / Pause during the start: the run became visible only now and is interrupted before it can work. Its result is
     // then archived (onRunFinished), the dispatch ends INTERRUPTED (not an attempt) and a resume repeats this step.
+    if (closed) return null;
     if (isHalted(missionId)) {
       db.prepare("UPDATE factory_dispatches SET status = 'INTERRUPTED', run_id = ?, updated_at = ? WHERE id = ?").run(run.id, now(), id);
       await runs.interrupt(run.id, fm(missionId)?.cancelRequestedAt ? "factory-stop" : "factory-pause").catch(() => {});

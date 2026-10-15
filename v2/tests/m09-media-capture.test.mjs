@@ -43,7 +43,7 @@ function setup({ real = false, launch = null, obsFactory = undefined } = {}) {
     ...(launch ? { launch } : {}), ...(obsFactory ? { obsFactory } : {}) });
   return { env, paths, tools, assets, capture };
 }
-test.afterEach(() => { for (const env of made.splice(0)) { env.cleanup(); try { fs.rmSync(env.dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 }); } catch { /* a file still open on Windows */ } } });
+test.afterEach(async () => { for (const env of made.splice(0)) { await env.cleanup(); try { fs.rmSync(env.dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 }); } catch { /* a file still open on Windows */ } } });
 
 const events = (db, type) => db.prepare("SELECT * FROM events WHERE type = ? ORDER BY seq").all(type);
 const count = (db, table) => db.prepare(`SELECT COUNT(*) AS n FROM ${table}`).get().n;

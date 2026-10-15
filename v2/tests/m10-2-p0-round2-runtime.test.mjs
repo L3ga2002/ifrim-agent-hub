@@ -16,6 +16,7 @@ import { materializeFixture, demoSpec } from "../server/factory/fixtures.mjs";
 import { HubError } from "../server/core/errors.mjs";
 import { ENV_POLICY_TEXT } from "../server/policy/isolation.mjs";
 import { API_CONTRACT } from "../server/config.mjs";
+import { createHub } from "../server/hub.mjs";
 import { createHttpServer } from "../server/http/server.mjs";
 import { SECURITY_EVENT_TYPES, classifySuspension } from "../server/policy/gate-state.mjs";
 import { createStopScope, stopForShutdown, closeProposalsFromBeforeStop, stopScopeRecord, STOP_HOLD_CLASSES } from "../server/owner/stop-scope.mjs";
@@ -117,7 +118,7 @@ function holdAutomation(hub) {
 function testExecutors(t) {
   t.hub.executors["test.wait"] = {
     describe: () => ({ title: "Așteaptă", params: {}, ops: [{ op: "media.render" }], observed: [], transmitted: [], outputs: [] }),
-    run: async ({ authorize, abort }) => { authorize({ op: "media.render" }); while (!abort.aborted) await sleep(15); return { result: { waited: true } }; },
+    run: async ({ authorize, abort }) => { authorize({ op: "media.render" }); while (!abort.aborted && !t.finishWaitingStep) await sleep(15); return { result: { waited: true } }; },
   };
   t.hub.executors["test.intervene"] = {
     describe: () => ({ title: "Intervenție", params: {}, ops: [{ op: "media.render" }], observed: [], transmitted: [], outputs: [] }),
@@ -347,7 +348,7 @@ test("R1-05 (SM-02) a pass that started with the gate open, during which the gat
 // ------------------------------------------------------------------------------------------------------------------------------ SM-05
 test("R1-06 (SM-05) the shutdown with work in flight: the stop's closure of plans waiting for a confirmation runs before the services close; the operation plans left running are recorded as interrupted and wait for the rearm after the boot", async () => {
   const t = await ownerHub({ second: true });
-  let op = null;
+  let op = null, rebooted = null, closed = false;
   try {
     const env1 = await propose(t, t.project.id, t.mission.id);
     t.queue("codex", "hang");
@@ -371,15 +372,24 @@ test("R1-06 (SM-05) the shutdown with work in flight: the stop's closure of plan
     assert.equal(t.hub.opsPlans.view(op.id).status, "RUNNING", "never paused at exit: the boot reconciles its running step");
     const stopScope = createStopScope(t.hub);
     assert.equal(stopScope.heldByStop({ kind: "ops", id: op.id }).held, false, "not stopped yet");
-    t.hub.opsPlans.recover(); // what the next boot does: the uncertain step → NEEDS_OWNER
-    assert.equal(t.hub.opsPlans.view(op.id).status, "NEEDS_OWNER");
-    const h = stopScope.heldByStop({ kind: "ops", id: op.id });
+    let atClose;
+    const closeDb = t.hub.db.close.bind(t.hub.db);
+    t.hub.db.close = () => { atClose = t.hub.opsPlans.view(op.id); closeDb(); };
+    const closing = t.hub.close(); closed = true;
+    t.finishWaitingStep = true; // let the held fixture finish; close must not rewrite its interrupted step.
+    await closing;
+    assert.equal(atClose.status, "RUNNING"); assert.equal(atClose.steps[0].status, "RUNNING");
+    rebooted = createHub(t.config, { homeDir: t.homeDir }); await rebooted.boot();
+    assert.equal(rebooted.opsPlans.view(op.id).status, "NEEDS_OWNER");
+    assert.equal(rebooted.opsPlans.view(op.id).steps[0].status, "UNCERTAIN");
+    const h = createStopScope(rebooted).heldByStop({ kind: "ops", id: op.id });
     assert.deepEqual([h.held, h.cls, h.code], [true, "shutdown", "GATE_REARM_REQUIRED"]);
     assert.match(h.reason, /„Plan Gama” a fost oprit la oprirea Hub-ului/);
   } finally {
     // The plan's step is still waiting in this process (a real exit would have ended it): end it and let its loop finish before closing.
-    if (op) { try { t.hub.opsPlans.cancel(op.id, { reason: "test", actor: "test" }); await t.hub.opsPlans.idle(op.id); } catch { /* already settled */ } }
-    await noRuns(t).catch(() => {});
+    if (rebooted) await rebooted.close();
+    if (!closed && op) { try { t.hub.opsPlans.cancel(op.id, { reason: "test", actor: "test" }); await t.hub.opsPlans.idle(op.id); } catch { /* already settled */ } }
+    if (!closed) await noRuns(t).catch(() => {});
     await t.cleanup();
   }
 });

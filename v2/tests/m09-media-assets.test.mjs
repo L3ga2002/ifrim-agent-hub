@@ -60,7 +60,21 @@ function junction(target, link, t) {
 
 // ---------------------------------------------------------------- paths
 
-test("M09-AS-01: paths are content-addressed or id-based and resolvers refuse traversal, absolute paths and NUL", () => {
+test("review B assets: a probe completing after detach cannot read or write the closed DB", async () => {
+  const s = setup(); let release, entered;
+  const held = new Promise((r) => { release = r; });
+  const ready = new Promise((r) => { entered = r; });
+  s.tools.probe = async () => { entered(); await held; return normalizeProbe(VIDEO_PROBE); };
+  const work = s.assets.ingestFile({ sourcePath: s.put("late.mp4", fakeMp4()), allowedRoots: [s.inbox], actor: "test" });
+  const refused = assert.rejects(work, (e) => e.code === "HUB_SHUTDOWN");
+  await ready;
+  s.assets.detach(); await s.env.cleanup(); release();
+  await refused;
+  fs.rmSync(s.env.dir, { recursive: true, force: true });
+  assert.equal(fs.existsSync(s.env.dir), false, "cleanup settled before directory removal");
+});
+
+test("M09-AS-01: paths are content-addressed or id-based and resolvers refuse traversal, absolute paths and NUL", async () => {
   const { env, paths } = setup();
   try {
     for (const f of ["originals", "derivatives", "renders", "cache", "exports", "packs", "transcripts", "thumbnails", "capture"]) assert.ok(fs.statSync(path.join(paths.root, f)).isDirectory(), f);
@@ -84,10 +98,10 @@ test("M09-AS-01: paths are content-addressed or id-based and resolvers refuse tr
     assert.equal(st.root, paths.root);
     assert.equal(typeof st.synced, "boolean");
     assert.ok(st.freeBytes === null || st.freeBytes > 0);
-  } finally { env.cleanup(); }
+  } finally { await env.cleanup(); }
 });
 
-test("M09-AS-02: a junction inside the library is refused by the resolvers and by assertRegularFile", (t) => {
+test("M09-AS-02: a junction inside the library is refused by the resolvers and by assertRegularFile", async (t) => {
   const { env, paths } = setup();
   try {
     const outside = path.join(env.dir, "outside");
@@ -99,7 +113,7 @@ test("M09-AS-02: a junction inside the library is refused by the resolvers and b
     throwsCode(() => assertRegularFile(path.join(paths.root, "cache", "j", "secret.mp4")), "MEDIA_LINK_REFUSED");
     throwsCode(() => assertRegularFile(path.join(env.dir, "nope.mp4")), "MEDIA_FILE_MISSING");
     throwsCode(() => assertRegularFile(outside), "MEDIA_NOT_A_FILE");
-  } finally { env.cleanup(); }
+  } finally { await env.cleanup(); }
 });
 
 // ---------------------------------------------------------------- tools: argv safety
@@ -162,13 +176,13 @@ test("M09-AS-04: run() spawns through the supervisor with the whitelist in the l
     }
     assert.ok(entries[0].args.includes("-progress") && entries[0].args.includes("pipe:1"));
     await rejectsCode(tools.run({ tool: "ffmpeg", args: ["-i", "in.mp4", "out.mp4"], cwd: path.join(env.dir, "nope") }), "MEDIA_CWD_MISSING");
-  } finally { env.cleanup(); }
+  } finally { await env.cleanup(); }
   const c = setup({ fake: { FAKE_FFMPEG_MODE: "diskfull" } });
   try {
     const r = await c.tools.run({ tool: "ffmpeg", args: ["-i", "in.mp4", "out.mp4"] });
     assert.equal(r.code, 1);
     assert.ok(r.stderrLines.some((l) => /No space left on device/.test(l)));
-  } finally { c.env.cleanup(); }
+  } finally { await c.env.cleanup(); }
 });
 
 test("M09-AS-05: timeout and cancel stop a hanging ffmpeg (process tree killed, flags reported)", async () => {
@@ -191,7 +205,7 @@ test("M09-AS-05: timeout and cancel stop a hanging ffmpeg (process tree killed, 
     assert.equal(tools.running().length, 0);
     assert.deepEqual(await tools.cancel("media:test:cancel"), { cancelled: false, found: false });
     assert.equal(env.supervisor.list().length, 0);
-  } finally { env.cleanup(); }
+  } finally { await env.cleanup(); }
 });
 
 test("M09-AS-06: a missing tool is TOOL_MISSING for run/probe, inspect() reports it (resolve() and pin() refuse) and an import records nothing", async () => {
@@ -216,7 +230,7 @@ test("M09-AS-06: a missing tool is TOOL_MISSING for run/probe, inspect() reports
     const cap = await assets.ingestFile({ sourcePath: put("sub.srt", "1\n00:00:01,000 --> 00:00:02,000\nSalut\n"), allowedRoots: [inbox], category: "caption", actor: "owner" });
     assert.equal(cap.version.status, "READY");
     assert.equal(cap.asset.kind, "caption");
-  } finally { env.cleanup(); }
+  } finally { await env.cleanup(); }
 });
 
 // ---------------------------------------------------------------- probe
@@ -265,11 +279,11 @@ test("M09-AS-08: probe() normalises the tool output and refuses streamless or fa
     assert.equal(p.video.width, 640);
     assert.deepEqual(p.video.fps, { num: 30, den: 1 });
     assert.equal(p.audio.sampleRate, 48000);
-  } finally { ok.env.cleanup(); }
+  } finally { await ok.env.cleanup(); }
   const empty = setup({ fake: { FAKE_FFPROBE_JSON: "{}" } });
-  try { await rejectsCode(empty.tools.probe(empty.put("a.mp4", fakeMp4("q"))), "UNDECODABLE"); } finally { empty.env.cleanup(); }
+  try { await rejectsCode(empty.tools.probe(empty.put("a.mp4", fakeMp4("q"))), "UNDECODABLE"); } finally { await empty.env.cleanup(); }
   const hang = setup({ fake: { FAKE_FFMPEG_MODE: "hang" } });
-  try { await rejectsCode(hang.tools.probe(hang.put("a.mp4", fakeMp4("r")), { timeoutMs: 500 }), "TIMEOUT"); } finally { hang.env.cleanup(); }
+  try { await rejectsCode(hang.tools.probe(hang.put("a.mp4", fakeMp4("r")), { timeoutMs: 500 }), "TIMEOUT"); } finally { await hang.env.cleanup(); }
 });
 
 // ---------------------------------------------------------------- assets: import refusals (T05)
@@ -321,7 +335,7 @@ test("M09-AS-09: import refuses paths outside the allowed roots, junction escape
     await rejectsCode(assets.ingestFile({ sourcePath: path.join(inbox, "link", "o.mp4"), allowedRoots: [inbox, outsideDir], actor: "owner" }), "MEDIA_LINK_REFUSED");
     assert.equal(count(env.db, "media_assets"), 0);
     assert.equal(fs.readdirSync(path.join(paths.root, ".incoming")).length, 0, "no temp file left behind");
-  } finally { env.cleanup(); }
+  } finally { await env.cleanup(); }
 });
 
 test("M09-AS-10: hostile file names never reach an argv; storage is content-addressed, read-only, and the import is evented", async () => {
@@ -357,7 +371,7 @@ test("M09-AS-10: hostile file names never reach an argv; storage is content-addr
     assert.equal(payload.sha256, sha(content));
     assert.ok(!JSON.stringify(payload).includes(inbox), "no absolute source path in events");
     assert.equal(assets.versionPath(first.version.id), abs);
-  } finally { env.cleanup(); }
+  } finally { await env.cleanup(); }
 });
 
 test("M09-AS-11: an undecodable file is stored QUARANTINED (never READY) and versionPath refuses it", async () => {
@@ -372,7 +386,7 @@ test("M09-AS-11: an undecodable file is stored QUARANTINED (never READY) and ver
     const ev = rights.evaluate({ assetId: r.asset.id, platform: "youtube" });
     assert.equal(ev.allowed, false);
     assert.equal(ev.status, "QUARANTINED");
-  } finally { env.cleanup(); }
+  } finally { await env.cleanup(); }
 });
 
 test("M09-AS-12: the same bytes imported twice reuse the file with a NEW asset row and duplicateOf", async () => {
@@ -389,7 +403,7 @@ test("M09-AS-12: the same bytes imported twice reuse the file with a NEW asset r
     const q = assets.quota();
     assert.equal(q.usedBytes, content.length, "a shared file counts once");
     assert.equal(assets.get(a.asset.id).versions.length, 1);
-  } finally { env.cleanup(); }
+  } finally { await env.cleanup(); }
 });
 
 test("M09-AS-13: derivatives record their inputs; search covers metadata, transcript segments and capture markers with intervals", async () => {
@@ -442,7 +456,7 @@ test("M09-AS-13: derivatives record their inputs; search covers metadata, transc
     throwsCode(() => assets.search({ q: "a" }), "SEARCH_QUERY_INVALID");
     assert.equal(assets.list({ q: "demonstratie" }).length, 1);
     assert.equal(assets.list({ category: "render" }).length, 2);
-  } finally { env.cleanup(); }
+  } finally { await env.cleanup(); }
 });
 
 test("M09-AS-14: quota refuses an import over the library quota; cleanup is a dry run by default and never touches originals or referenced versions", async () => {
@@ -482,7 +496,7 @@ test("M09-AS-14: quota refuses an import over the library quota; cleanup is a dr
     setPolicy(env, { libraryQuotaGb: 40, diskReserveGb: 1e9 });
     await rejectsCode(assets.ingestFile({ sourcePath: put("n2.mp4", fakeMp4("new2")), allowedRoots: [inbox], actor: "owner" }), "DISK_RESERVE");
     assert.equal(count(env.db, "media_assets"), 4);
-  } finally { env.cleanup(); }
+  } finally { await env.cleanup(); }
 });
 
 test("M09-AS-15: a missing library file is marked MISSING with an event and refused", async () => {
@@ -495,7 +509,7 @@ test("M09-AS-15: a missing library file is marked MISSING with an event and refu
     throwsCode(() => assets.versionPath(r.version.id), "MEDIA_FILE_MISSING");
     assert.equal(assets.getVersion(r.version.id).status, "MISSING");
     assert.equal(events(env.db, "media.asset.missing").length, 1);
-  } finally { env.cleanup(); }
+  } finally { await env.cleanup(); }
 });
 
 test("M09-AS-16: sniffMagic identifies media by content, never by name", () => {
@@ -548,7 +562,7 @@ test("M09-AS-17: UNKNOWN origin is never allowed for a public export, even with 
     assert.equal(r.status, "MISSING");
     assert.equal(rights.evaluate({ assetId: "mas_nope", platform: "x" }).allowed, false);
     throwsCode(() => rights.evaluate({ assetId: none.asset.id, platform: "myspace" }), "FIELD_INVALID");
-  } finally { env.cleanup(); }
+  } finally { await env.cleanup(); }
 });
 
 test("M09-AS-18: platform, use and time window scope a cleared right; RESTRICTED denies; LICENSED needs a licence reference", async () => {
@@ -574,7 +588,7 @@ test("M09-AS-18: platform, use and time window scope a cleared right; RESTRICTED
     assert.equal(rights.evaluate({ assetId: b.asset.id, platform: "tiktok" }).status, "RESTRICTED");
     assert.equal(rights.evaluate({ assetId: b.asset.id, platform: "youtube" }).allowed, true);
     assert.equal(rights.current(b.asset.id).active.length, 2);
-  } finally { env.cleanup(); }
+  } finally { await env.cleanup(); }
 });
 
 test("M09-AS-19: revoked and expired rights propagate through derivatives of derivatives", async () => {
@@ -608,7 +622,7 @@ test("M09-AS-19: revoked and expired rights propagate through derivatives of der
     assert.deepEqual(agg.blocking.map((b) => b.versionId), [owned.version.id]);
     assert.equal(events(env.db, "media.rights.revoked").length, 1);
     assert.ok(musicRight.id);
-  } finally { env.cleanup(); }
+  } finally { await env.cleanup(); }
 });
 
 test("M09-AS-20: client material and case studies need marketing consent (with evidence); AI_GENERATED requires disclosure", async () => {
@@ -637,7 +651,7 @@ test("M09-AS-20: client material and case studies need marketing consent (with e
     const mixed = await derive([owned, ai]);
     assert.equal(rights.evaluate({ assetId: mixed.asset.id, platform: "youtube" }).requiresDisclosure, true, "disclosure is inherited");
     assert.equal(rights.evaluate({ assetId: owned.asset.id, platform: "youtube" }).requiresDisclosure, false);
-  } finally { env.cleanup(); }
+  } finally { await env.cleanup(); }
 });
 
 test("M09-AS-21: revocationImpact inventories derivatives, edits, variants, renders, manifests and release attempts — and deletes nothing", async () => {
@@ -681,7 +695,7 @@ test("M09-AS-21: revocationImpact inventories derivatives, edits, variants, rend
     assert.equal(db.prepare("SELECT status FROM content_manifests WHERE id = 'cmf_1'").get().status, "APPROVED");
     assert.ok(fs.existsSync(paths.resolveRel(render.version.relPath)));
     assert.equal(rights.revocationImpact(other.asset.id).counts.editVersions, 1); // mev_2 only
-  } finally { env.cleanup(); }
+  } finally { await env.cleanup(); }
 });
 
 // ---------------------------------------------------------------- real tools (SKIPPED_ENV when absent)
@@ -730,7 +744,7 @@ test("M09-AS-R1: inspect() reads the real version without writing; pin() pins ve
     await rejectsCode(tools.resolve(), "TOOL_CHANGED");
     assert.equal((await tools.acknowledgeChange("ffmpeg", "owner")).acknowledged, true);
     assert.deepEqual((await tools.resolve()).problems, []);
-  } finally { env.cleanup(); }
+  } finally { await env.cleanup(); }
 });
 
 test("M09-AS-R2: production mode finds the tools on PATH (where.exe), never a .cmd shim, and pins them", async (t) => {
@@ -746,7 +760,7 @@ test("M09-AS-R2: production mode finds the tools on PATH (where.exe), never a .c
     assert.equal(r.ffmpeg.path.toLowerCase(), realTool("ffmpeg").toLowerCase());
     assert.ok(!/\.(cmd|bat)$/i.test(r.ffmpeg.path));
     assert.match(env.settings.get("mediaToolPins").ffprobe.sha256, /^[0-9a-f]{64}$/);
-  } finally { env.cleanup(); }
+  } finally { await env.cleanup(); }
 });
 
 test("M09-AS-R3: real ingest of synthetic video, audio and image: READY with normalised probe", async (t) => {
@@ -776,7 +790,7 @@ test("M09-AS-R3: real ingest of synthetic video, audio and image: READY with nor
     assert.equal(i.asset.kind, "image");
     assert.equal(i.version.probe.isImage, true);
     assert.equal(i.version.probe.video.width, 64);
-  } finally { env.cleanup(); }
+  } finally { await env.cleanup(); }
 });
 
 test("M09-AS-R4: real ffprobe quarantines a corrupt MP4 and the protocol whitelist blocks a playlist pointing at http", async (t) => {
@@ -795,5 +809,5 @@ test("M09-AS-R4: real ffprobe quarantines a corrupt MP4 and the protocol whiteli
     const err = await tools.probe(playlist).catch((e) => e);
     assert.equal(err.code, "UNDECODABLE");
     assert.match(err.message, /not on whitelist|Invalid data/i);
-  } finally { env.cleanup(); }
+  } finally { await env.cleanup(); }
 });

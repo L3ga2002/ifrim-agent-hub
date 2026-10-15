@@ -259,7 +259,7 @@ test("RM-09 real QA (ffmpeg): the planned freeze is justified by its hold, the a
     const stretched = { ...holds[0], provenance: { ...holds[0].provenance, endMs: 2240 }, srcTo: clipHoldOf({ ...measured[0], endMs: 2240 }, FPS).srcTo };
     const re = await s.qa.technical({ assetVersionId: version.id, ir: { ...ir, tracks: [{ ...ir.tracks[0], clips: [{ ...ir.tracks[0].clips[0], holds: [stretched, holds[1], holds[2]] }] }] } });
     assert.deepEqual(re.measurements.holds, { kept: 2, unverified: 1 });
-  } finally { s.env.cleanup(); }
+  } finally { await s.env.cleanup(); }
 });
 
 const STATIC_PAGE = `<!doctype html><html lang="ro"><head><meta charset="utf-8"><title>Hold demo</title><link rel="stylesheet" href="/s.css"></head>
@@ -328,7 +328,7 @@ test("RM-10 real capture (Chromium + ffmpeg): planned steps produce verified hol
     const planned = frozen.filter((f) => f !== accidental[0]);
     assert.ok(planned.length >= 1, "the planned pauses freeze the picture too");
     assert.ok(planned.every((f) => f.justified && f.justificationBasis === "capture_holds"), JSON.stringify(planned.map((f) => [f.range.label, f.justified])));
-  } finally { await site.close(); s.env.cleanup(); }
+  } finally { await site.close(); await s.env.cleanup(); }
 });
 
 test("RM-11 review F6: a planned wait on a blank page (same origin) is not a pause; old point markers never justify anything", { timeout: 180000 }, async (t) => {
@@ -354,5 +354,5 @@ test("RM-11 review F6: a planned wait on a blank page (same origin) is not a pau
     const built = buildMaster({ captures: captures({}, { desktop: { markers: [{ kind: "highlight", atMs: 500, note: "#go" }, { kind: "proof", atMs: 900, note: "gata" }] } }), texts: TEXTS, passed: ["AC-1"], claimIdsByCriterion: { "AC-1": "ccl_1" }, getVersion: stubVersions(9000) });
     assert.ok(built.ir.tracks[0].clips.every((c) => c.holds === undefined));
     assert.equal(justificationFor(built.ir, "freeze", 10, 40), null);
-  } finally { await blank.close(); s.env.cleanup(); }
+  } finally { await blank.close(); await s.env.cleanup(); }
 });

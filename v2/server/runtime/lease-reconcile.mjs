@@ -190,7 +190,7 @@ export function createLeaseReconciler(hub, { subscribe = true, probe = null } = 
     if (proc.state === "alive") return { ...base, label, verdict: "process_alive", tie: proc.tie, pid: proc.pid, key: proc.key || null, reason: `procesul pornit de Hub (PID ${proc.pid}) încă rulează`, evidence };
     // Review R1-F2: a Windows provider this Hub process never supervised (another boot) — its own end proves nothing about the commands
     // it started. Unknown: the owner's acknowledgement on the card, never a release by itself (no PID to stop: tie null).
-    if (proc.state === "gone" && env === "windows" && proc.why !== "supervisor_exited") {
+      if (proc.state === "gone" && env === "windows" && (proc.why !== "supervisor_exited" || record?.treeUnverified)) {
       evidence.process.tree = "unknown";
       return { ...base, label, verdict: "unknown", tie: null, pid: null, treeUnknown: true,
         reason: proc.why === "pid_reused"
@@ -402,11 +402,18 @@ export function createLeaseReconciler(hub, { subscribe = true, probe = null } = 
       }
       let terminated = false;
       let killedPid = null;
+      let treeStopped = false, stopResult = null;
       if (!a.releasable && a.tie === "supervisor" && a.key) {
         // The Hub's own child: the supervisor ends the whole tree (taskkill /T on Windows) and waits for its exit.
         stats.kills += 1; work();
-        await hub.supervisor.stop(a.key, { graceMs: 0 });
-        terminated = true; killedPid = a.pid || null;
+        stopResult = await hub.supervisor.stop(a.key, { graceMs: 0 });
+        terminated = stopResult?.stopped === true;
+        treeStopped = terminated && stopResult.method === "taskkill" && stopResult.taskkill?.ok === true;
+        killedPid = terminated ? a.pid || null : null;
+        if (!terminated || (stopResult.method === "handle" && stopResult.taskkill?.ok !== true)) {
+          throw new HubError("conflict", "Oprirea arborelui de procese nu este confirmată; spațiul de lucru rămâne rezervat.",
+            { data: { code: "LEASE_STATE_CHANGED", leaseId, stopResult } });
+        }
       } else if (!a.releasable && a.tie === "pid" && a.pid) {
         // A recorded PID (another boot): its start evidence is read again right before the kill — a PID reused since is never killed.
         const run = runOf(a.runId);
@@ -418,18 +425,19 @@ export function createLeaseReconciler(hub, { subscribe = true, probe = null } = 
           await processProbe.kill(a.pid);
           terminated = true; killedPid = a.pid;
           await waitGone(a.pid);
+          treeStopped = true;
         }
       }
       const now = leases.get(leaseId);
       if (!now || now.status === "released") return done({ runId: a.runId, terminated, pid: killedPid });
       const after = assess(now);
-      const evidence = { terminated, ...(killedPid ? { killedPid } : {}), by };
+      const evidence = { terminated, ...(killedPid ? { killedPid } : {}), ...(stopResult ? { stopResult } : {}), by };
       if (after.releasable) {
         releaseNow(now, after, `${terminated ? "process stopped, " : ""}reconciled by the owner's rearm (${by}): ${after.reason}`.slice(0, 300), { evidence });
         return done({ runId: a.runId, terminated, pid: killedPid });
       }
       // R1-F2: the tree-kill just ran on the live, Hub-tied provider (taskkill /T while it was alive): what it had started went with it.
-      if (terminated && after.treeUnknown) {
+      if (treeStopped && after.treeUnknown) {
         releaseNow(now, after, `process tree stopped by the owner's rearm (${by}, tree-kill while it was alive)`.slice(0, 300), { evidence: { ...evidence, tree: "tree-kill" } });
         return done({ runId: a.runId, terminated, pid: killedPid });
       }

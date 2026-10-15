@@ -145,14 +145,18 @@ let userCliPath;
 export function parseCodexCliRegQuery(stdout) {
   return /^[\t ]*CODEX_CLI_PATH[\t ]+REG_(?:EXPAND_)?SZ[\t ]+([^\r\n]+)/mi.exec(String(stdout))?.[1]?.trim() || null;
 }
-export function selectedCodexCli({ env = process.env, platform = process.platform, readUserEnv = null } = {}) {
+export function selectedCodexCli({ env = process.env, platform = process.platform, readUserEnv = null, regQuery = null } = {}) {
   const fromEnv = env.CODEX_CLI_PATH;
   if (fromEnv) return fs.existsSync(fromEnv) ? fromEnv : null;
   if (platform !== "win32") return null;
   if (readUserEnv) { const v = readUserEnv("CODEX_CLI_PATH"); return v && fs.existsSync(v) ? v : null; }
+  const query = () => (regQuery || execFileSync)("reg", ["query", "HKCU\\Environment", "/v", "CODEX_CLI_PATH"], { encoding: "utf8", windowsHide: true, timeout: 5000 });
+  if (regQuery) {
+    try { const v = parseCodexCliRegQuery(query()); return v && fs.existsSync(v) ? v : null; } catch { return null; }
+  }
   if (userCliPath === undefined) {
     try {
-      const out = execFileSync("reg", ["query", "HKCU\\Environment", "/v", "CODEX_CLI_PATH"], { encoding: "utf8", windowsHide: true, timeout: 5000 });
+      const out = query();
       userCliPath = parseCodexCliRegQuery(out);
     } catch { userCliPath = null; }
   }
@@ -453,7 +457,7 @@ export function createCodexAdapter({ config, supervisor, homeDir = os.homedir(),
       if (!turnRequested) {
         const stopped = await supervisor.stop(key, { graceMs: 0 });
         finish({ status: "interrupted", output, usage, threadId: currentThread, turnId: "", errorCategory: null, error: `interrupted (${reason})`, preInference: true });
-        return { interrupted: stopped.stopped, graceful: false, reason };
+        return { interrupted: true, graceful: false, reason, stop: stopped };
       }
       // If turn/start is in flight, wait briefly for its id so the turn can be interrupted properly.
       for (let waited = 0; !turnId && !finished && waited < 3000; waited += 50) await new Promise((r) => setTimeout(r, 50));
@@ -464,7 +468,7 @@ export function createCodexAdapter({ config, supervisor, homeDir = os.homedir(),
       }
       const stopped = await supervisor.stop(key, { graceMs: 500 });
       finish({ status: "interrupted", output, usage, threadId: currentThread, turnId, errorCategory: null, error: `interrupted (${reason})`, preInference: !turnId });
-      return { interrupted: stopped.stopped, graceful: false, reason };
+      return { interrupted: true, graceful: false, reason, stop: stopped };
     }
 
     const done = (async () => {

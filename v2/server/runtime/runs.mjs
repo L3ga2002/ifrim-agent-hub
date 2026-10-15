@@ -73,7 +73,7 @@ export function createRunManager(deps) {
   let closed = false, detached = false;
   const admissions = new Set(), completions = new Map();
   const turnTimers = deps.turnTimers || { setTimeout, clearTimeout, now: () => performance.now() };
-  const shutdownError = () => new HubError("policy", "Hub shutdown: run admission is closed", { code: "HUB_SHUTDOWN" });
+  const shutdownError = () => new HubError("policy", "Hub-ul se oprește; nicio operație nouă nu pornește", { code: "HUB_SHUTDOWN" });
   function close() {
     if (closed) return;
     closed = true; stopEpoch += 1;
@@ -286,9 +286,9 @@ export function createRunManager(deps) {
       const heldGrant = grant ? grants.get(grant.id) : null;
       const grantRevoked = Boolean(grant) && (!heldGrant || heldGrant.status === "revoked");
       if (stoppedSince || (gateNow && !gateNow.ok) || grantRevoked) {
-        const failed = stoppedSince ? { id: "execution_gate", ok: false, detail: closed ? "Hub shutdown în timpul admiterii: execuția nu ajunge la model" : "Stop All în timpul admiterii: execuția nu ajunge la model" }
+        const failed = stoppedSince ? { id: "execution_gate", ok: false, detail: closed ? "Hub-ul se oprește în timpul admiterii: execuția nu ajunge la model" : "Stop All în timpul admiterii: execuția nu ajunge la model" }
           : gateNow && !gateNow.ok ? gateNow : { id: "live_grant", ok: false, detail: `Grantul ${grant.id} a fost revocat în timpul admiterii` };
-        bus.transaction(() => leases.release(lease.id, stoppedSince ? "Stop All before start" : "gate closed before start"));
+        bus.transaction(() => leases.release(lease.id, closed ? "Hub-ul se oprește înainte de pornire" : stoppedSince ? "Stop All before start" : "gate closed before start"));
         if (grant) {
           refundPreInference(grant.id, `${failed.id} closed before ${runId} started`);
           const after = grants.get(grant.id);
@@ -296,8 +296,8 @@ export function createRunManager(deps) {
         }
         const run = recordBlockedRun({ conversation, provider, access, taskId, stage, roleId, inputMessageId: lastUser.id, category: "gate",
           message: `${failed.id}: ${failed.detail}`, evidence: { gate: { checks: [failed] }, recheck: true, stopAll: !closed && stoppedSince, shutdown: closed }, timeline, plan, environment });
-        throw new HubError("gate", closed ? "Hub shutdown during admission; the model was not started" : stoppedSince ? "Stop All landed while the run was being admitted; the model was not started" : "The execution gate closed before the run started; the model was not started",
-          { data: { runId: run.id, checks: [failed], stopAll: stoppedSince } });
+        throw new HubError("gate", closed ? "Hub-ul se oprește în timpul admiterii; modelul nu a pornit" : stoppedSince ? "Stop All landed while the run was being admitted; the model was not started" : "The execution gate closed before the run started; the model was not started",
+          { data: { runId: run.id, checks: [failed], stopAll: !closed && stoppedSince, shutdown: closed } });
       }
       const billingNow = recheck.checks.find((c) => c.id === "billing_route");
       if (billingNow && !billingNow.ok) {
@@ -374,8 +374,8 @@ export function createRunManager(deps) {
       if (plan.turnTimeoutMs) armTurnDeadline(runId, timeline.has("turn_sent") ? "turn" : "admission");
       if (handle.pid) markPhase(runId, "process_spawned");
       db.prepare("UPDATE agent_runs SET pid = ?, pid_started_at = ? WHERE id = ?").run(handle.pid || null, clock().toISOString(), runId);
-      const completion = handle.done.then((result) => finalize(runId, result, () => content),
-        (error) => finalize(runId, { status: "failed", errorCategory: "internal", error: error.message, output: content }, () => content));
+      const completion = handle.done.then((result) => finalize(runId, result, () => content))
+        .catch((error) => finalize(runId, { status: "failed", errorCategory: "internal", error: error.message, output: content }, () => content));
       completions.set(completion, Boolean(deps.supervisorRecord?.(handle.key)?.child) || environment !== "windows");
       completion.then(() => completions.delete(completion), () => { completions.set(completion, true); }); // retain finalization errors for shutdown
       return { run: getRun(runId), gate: decision };
@@ -712,20 +712,18 @@ export function createRunManager(deps) {
   function finalize(runId, result, getContent) {
     if (detached) return;
     const entry = active.get(runId);
-    active.delete(runId);
-    stoppedRuns.delete(runId); // from here on the run is no longer active: a late callback is refused by that (waitForApproval)
     // 2.12.2 (P0-R3): the turn's deadline ends with the run; one that fired makes the outcome a timeout (turnTimeoutOutcome).
     const firedDeadline = settleTurnDeadline(entry);
     const turnDeadline = turnDeadlineEvidence(entry);
     if (firedDeadline) result = turnTimeoutOutcome(result, firedDeadline, entry);
     const run = getRun(runId);
-    if (!run || !["running", "waiting_approval", "starting"].includes(run.status)) return;
+    if (!run || !["running", "waiting_approval", "starting"].includes(run.status)) { active.delete(runId); stoppedRuns.delete(runId); return; }
     const content = result.output || getContent() || "";
     const pre = Boolean(result.preInference) || PRE_INFERENCE_CATEGORIES.has(result.errorCategory);
     const status = result.status === "completed" ? "completed" : result.status === "interrupted" ? "interrupted" : pre ? "blocked" : "failed";
     const record = entry ? deps.supervisorRecord?.(entry.handle.key) : null;
     // An environment run also needs its in-distro processes confirmed gone (reap); otherwise the lease is retained.
-    const processGone = (!record || record.exited) && result.environment?.reap?.ok !== false;
+    const processGone = (!record || (record.exited && !record.treeUnverified)) && result.environment?.reap?.ok !== false;
     if (entry?.timeline) entry.timeline.mark("finished");
     const turnSent = Boolean(entry?.timeline?.has("turn_sent"));
     bus.transaction(() => {
@@ -763,6 +761,10 @@ export function createRunManager(deps) {
       bus.append({ type: status === "completed" ? "run.completed" : status === "interrupted" ? "run.interrupted" : "run.failed", scopeType: "conversation",
         scopeId: run.conversationId, source: "hub", runId, payload: { provider: run.provider, status, errorCategory: result.errorCategory || null, preInference: pre } });
     });
+    // Keep the entry through the transaction: a rolled-back finalize retries with the same
+    // conversation, lease and deadline evidence, rather than abandoning an unfinished message.
+    active.delete(runId);
+    stoppedRuns.delete(runId);
     breakers.record(run.provider, status === "completed" ? null : result.errorCategory || null);
     // A start that stopped before any turn reached the model (policy/MCP/model/effort checks, auth, quota) gives its grant
     // attempt back; the evidence is the timeline (no turn_sent) plus the pre-inference flag. An uncertain outcome never does.
@@ -853,6 +855,7 @@ export function createRunManager(deps) {
     for (const [approvalId, resolve] of approvalWaiters) { approvalWaiters.delete(approvalId); resolve("decline"); }
     const voiceSession = voicePromise ? await voicePromise : null;
     const factoryMissions = factoryPromise ? await factoryPromise : [];
+    if (detached) return { interrupted, voiceSession, factoryMissions, shutdown: true };
     // What lives outside the run manager (desktop operator, operation plans): stopped by the caller's hook, its ids recorded below.
     let others = null;
     if (typeof alsoStop === "function") {

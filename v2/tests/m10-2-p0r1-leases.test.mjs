@@ -54,7 +54,7 @@ function fakeProvider(t) {
     state.stops.push(key);
     if (record.stopDelayMs) await sleep(record.stopDelayMs);
     if (record.stoppable !== false) record.exited = true;
-    return { stopped: record.exited };
+    return record.stopResult || { stopped: record.exited, method: "taskkill", taskkill: { ok: true } };
   };
   adapter.startTurn = (opts) => {
     state.starts += 1;
@@ -375,6 +375,25 @@ test("LR-05 two concurrent rearms (two tabs) → exactly one stop of the orphan,
     assert.equal(events(t.hub, "lease.reconciled").filter((e) => e.leaseId === z).length, 1, "two sweeps, one release");
     assert.equal(leaseRow(t.hub, y).status, "retained", "y's process still runs");
     restore();
+  } finally { t.fake.restore(); await t.cleanup(); }
+});
+
+for (const stopResult of [{ stopped: false, method: "handle", taskkill: { ok: false } }, { stopped: true, method: "handle", taskkill: { ok: false } }])
+test(`review B lease: stop outcome ${stopResult.stopped} with root-only fallback cannot release workspace`, async () => {
+  const t = await runHub();
+  try {
+    const { run, handle } = await startRun(t);
+    const lease = leaseOfRun(t.hub, run.id);
+    await ownerStop(t);
+    await waitFor(() => leaseRow(t.hub, lease.id).status === "retained");
+    handle.record.stopResult = stopResult;
+    handle.record.stoppable = false;
+    const c = await card(t);
+    await assert.rejects(rearm(t, c), (e) => e.details?.code === "CARD_CHANGED" && /arborelui de procese/.test(e.message));
+    await assert.rejects(t.hub.leaseReconciler.terminateOrphan(lease.id, { ownerSession: t.owner.session }),
+      (e) => e.details?.code === "LEASE_STATE_CHANGED" && e.details.stopResult === stopResult);
+    assert.equal(leaseRow(t.hub, lease.id).status, "retained");
+    assert.equal(events(t.hub, "lease.reconciled").some((e) => e.leaseId === lease.id), false);
   } finally { t.fake.restore(); await t.cleanup(); }
 });
 

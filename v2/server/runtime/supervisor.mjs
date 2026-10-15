@@ -34,8 +34,7 @@ export function createSupervisor({ config, onEvent = () => {}, treeKill = killOw
    * callers must resolve the real .exe or run `node script.js`.
    */
   function start({ key, executable, args = [], cwd, env = {}, label = "process", onStdoutLine = () => {}, onStderrLine = () => {} }) {
-    if (closing) throw new HubError("policy", "Hub shutdown: no new process may start", { code: "HUB_SHUTDOWN" });
-    if (children.has(key) && !children.get(key).exited) throw new HubError("conflict", `Process key already active: ${key}`);
+    if (closing) throw new HubError("policy", "Hub-ul se oprește; nicio operație nouă nu pornește", { code: "HUB_SHUTDOWN" });
     if (/\.(cmd|bat)$/i.test(executable)) throw new Error("Refusing to spawn a .cmd/.bat shim; resolve the executable");
     assertSpawnAllowed(executable);
     if (config.testMode && args[0] && /\.(mjs|js)$/.test(args[0])) assertSpawnAllowed(args[0]);
@@ -46,6 +45,12 @@ export function createSupervisor({ config, onEvent = () => {}, treeKill = killOw
     const record = { key, label, pid: child.pid, startRequestedAt, startedAt: new Date().toISOString(), child, stderrTail: [], exited: false, exitCode: null };
     // A write racing the child's death emits 'error' on the pipe; unhandled, it would crash the whole Hub.
     for (const stream of [child.stdin, child.stdout, child.stderr]) stream?.on("error", (error) => { record.pipeError = error.code || error.message; });
+    // Preserve fixed-key restart behaviour while retaining every previous live handle for cleanup.
+    if (children.has(key) && !children.get(key).exited) {
+      const previous = children.get(key);
+      previous.key = `${key}:previous:${previous.pid}`;
+      children.set(previous.key, previous);
+    }
     children.set(key, record);
     const detachOut = splitLines(child.stdout, onStdoutLine);
     const detachErr = splitLines(child.stderr, (line) => {
@@ -90,13 +95,14 @@ export function createSupervisor({ config, onEvent = () => {}, treeKill = killOw
       } catch (cause) {
         error = { name: cause.name, code: cause.code ?? null, message: cause.message, timedOut: Boolean(cause.killed) || /exceeded|timed out/i.test(cause.message) };
         record.taskkill = { ok: false, elapsedMs: Date.now() - at, ...error };
+        record.treeUnverified = true;
       }
-      if (!record.exited && (error || !(await exitedWithin(record, 500)))) {
+      if (!record.exited && (error || !(await exitedWithin(record, 8000)))) {
         method = "handle";
         try { if (!killHandle(record)) throw new Error("Owned process handle refused termination"); }
         catch (cause) { error = { ...error, handle: cause.message }; }
       }
-      const stopped = await exitedWithin(record, 1000);
+      const stopped = await exitedWithin(record, error ? 8000 : 1000);
       if (error || !stopped) failedStops.set(record.key, record);
       return { ...identity, stopped, forced: true, method, taskkill: record.taskkill, ...(error ? { error } : {}) };
     })().finally(() => { record.stopping = null; });
@@ -129,13 +135,15 @@ export function createSupervisor({ config, onEvent = () => {}, treeKill = killOw
           const rows = await drainWithin(snapshot(), 5000, "process snapshot");
           const records = [...new Map([...failedStops, ...survivors.map((r) => [r.key, children.get(r.key)])]).values()];
           const found = ownedProcessTree(records, rows);
-          survivors = survivors.map((r) => ({ ...r, creationDate: children.get(r.key).creationDate || null,
+          survivors = survivors.map((r) => ({ ...r, creationDate: found.find((p) => p.rootKey === r.key && p.pid === r.pid)?.creationDate || null,
             descendants: found.filter((p) => p.rootKey === r.key && p.pid !== r.pid) }));
           // The root's handle may be gone while its children remain after the tree kill failed.
           for (const row of found) if (!survivors.some((r) => r.key === row.rootKey) && row.pid !== records.find((r) => r.key === row.rootKey)?.pid)
             survivors.push({ key: `${row.rootKey}:descendant:${row.pid}`, label: row.name, pid: row.pid, startedAt: row.creationDate, creationDate: row.creationDate, parentPid: row.parentPid });
         } catch (error) {
           survivors = survivors.map((r) => ({ ...r, snapshotError: error.message }));
+          for (const record of failedStops.values()) if (!survivors.some((r) => r.key === record.key))
+            survivors.push({ key: record.key, pid: record.pid, startedAt: record.startedAt, unverified: true, snapshotError: error.message });
           for (const result of results) if (result.error) result.snapshotError = error.message;
         }
       }
@@ -177,15 +185,12 @@ async function exitedWithin(record, ms) {
   finally { clearTimeout(timer); }
 }
 
-// PID-targeted termination first verifies the start identity. Never kill a replacement PID or an image name.
-async function killOwnedTree(record) {
+// The un-exited ChildProcess handle pins this PID. WMI diagnostics must never gate a tree kill.
+export async function killOwnedTree(record) {
   if (record.exited || record.child.exitCode !== null || record.child.signalCode !== null) return { alreadyExited: true };
   if (process.platform !== "win32") { record.child.kill("SIGTERM"); return { method: "handle" }; }
-  const script = `$ErrorActionPreference = 'Stop'; $p = Get-CimInstance Win32_Process -Filter 'ProcessId=${Number(record.pid)}'; if (!$p) { exit 0 }; `
-    + `$d = $p.CreationDate.ToUniversalTime(); $from = ([datetimeoffset]::Parse('${record.startRequestedAt}')).UtcDateTime; $until = ([datetimeoffset]::Parse('${record.startedAt}')).UtcDateTime.AddMilliseconds(1); if ($d -lt $from -or $d -ge $until) { throw 'Process start identity mismatch' }; `
-    + `& taskkill /PID ${Number(record.pid)} /T /F; if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }`;
-  await execFileAsync("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", script], { windowsHide: true, timeout: 9500 });
-  return { exitCode: 0 };
+  const { stderr } = await execFileAsync("taskkill", ["/PID", String(record.pid), "/T", "/F"], { windowsHide: true, timeout: 9500 });
+  return { exitCode: 0, stderr: stderr || "" };
 }
 
 export async function windowsProcesses() {
@@ -200,7 +205,7 @@ export function ownedProcessTree(records, snapshot) {
   for (const record of records) {
     const row = snapshot.find((p) => p.pid === record.pid && (record.creationDate ? p.creationDate === record.creationDate
       : Date.parse(p.creationDate) >= Date.parse(record.startRequestedAt) && Date.parse(p.creationDate) <= Date.parse(record.startedAt)));
-    if (row) { record.creationDate = row.creationDate; found.push({ ...row, rootKey: record.key }); }
+    if (row) found.push({ ...row, rootKey: record.key });
   }
   for (const parent of parents) {
     const replacement = snapshot.find((p) => p.pid === parent.pid && (parent.creationDate ? p.creationDate !== parent.creationDate : Date.parse(p.creationDate) > Date.parse(parent.startedAt)));
