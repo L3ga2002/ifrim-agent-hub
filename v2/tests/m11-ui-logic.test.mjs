@@ -50,6 +50,23 @@ const source = (rel) => fs.readFileSync(path.join(V2, rel), "utf8");
 const FIXTURE = JSON.parse(fs.readFileSync(path.join(here, "fixtures", "m11-delivery-view.json"), "utf8"));
 const ready = () => structuredClone(FIXTURE.variants.READY);
 const stale = () => structuredClone(FIXTURE.variants.STALE);
+
+test("M11-UI-19 replacement links require a current descendant status in every UI path", () => {
+  const view = stale(); view.delivery.childId = ready().delivery.id;
+  for (const status of [null, "PLANNED", "STALE", "CLOSED", "CANCELLED", "EXPIRED", "FAILED"]) {
+    view.delivery.childStatus = status;
+    assert.equal(staleBanner(view).replacement, null);
+    assert.ok(!lineageLinks(view).some(l => l.key === "child"));
+    view.delivery.status = "CLOSED"; assert.equal(statusNotice(view).link, null); view.delivery.status = "STALE";
+  }
+  for (const status of ["READY", "ARMED", "ACTIVE", "NEEDS_OWNER"]) {
+    view.delivery.childStatus = status;
+    const label = status === "READY" ? "Deschide livrarea care o înlocuiește" : "Deschide livrarea nouă (în lucru)";
+    assert.equal(staleBanner(view).replacement.label, label);
+    assert.equal(lineageLinks(view).find(l => l.key === "child").label, label);
+    view.delivery.status = "CLOSED"; assert.equal(statusNotice(view).link.label, label); view.delivery.status = "STALE";
+  }
+});
 /** A changed copy of a variant. */
 const variant = (base, change) => { const v = base(); change(v); return v; };
 const rowOf = (view, key, ctx) => decisionRows(view, ctx).find((r) => r.key === key);
@@ -62,7 +79,7 @@ test("M11-UI-01 the fixture holds exactly the documented view contract; routes a
   for (const name of ["READY", "STALE"]) {
     const v = FIXTURE.variants[name];
     assert.deepEqual(keys(v), ["clip", "decisions", "delivery", "history", "observations", "plans", "preview", "revisions", "software", "summary"], `${name}: top-level keys`);
-    assert.deepEqual(keys(v.delivery), ["childId", "generation", "id", "labels", "parentId", "projectId", "projectName", "status", "statusReason", "title", "verified"]);
+    assert.deepEqual(keys(v.delivery), ["childId", "childStatus", "generation", "id", "labels", "parentId", "projectId", "projectName", "status", "statusReason", "title", "verified"]);
     assert.deepEqual(keys(v.delivery.verified), ["at", "changedFiles", "equal"]);
     assert.deepEqual(keys(v.software), ["bundle", "changeSet", "criteria", "diff", "review", "spec", "tests"]);
     assert.deepEqual(keys(v.software.bundle), ["id", "shaPrefix", "status"]);
@@ -188,7 +205,7 @@ test("M11-UI-04 the STALE banner: reason, changed files, what it means and a lin
   assert.match(b.consequence, /bnd_mv3k1p0z_0d9e8f7a6b/);
   assert.match(b.consequence, /nu sunt dovezi pentru codul de acum/);
   assert.equal(b.replacement, null, "no child delivery → no invented link");
-  const replaced = staleBanner(variant(stale, (v) => { v.delivery.childId = "dlv_mv4a1b2c_9d8e7f6a5b"; }));
+  const replaced = staleBanner(variant(stale, (v) => { v.delivery.childId = "dlv_mv4a1b2c_9d8e7f6a5b"; v.delivery.childStatus = "READY"; }));
   assert.deepEqual(replaced.replacement, { id: "dlv_mv4a1b2c_9d8e7f6a5b", href: "#/livrare/dlv_mv4a1b2c_9d8e7f6a5b", label: "Deschide livrarea care o înlocuiește" });
   assert.equal(staleBanner(variant(stale, (v) => { v.delivery.childId = "javascript:alert(1)"; })).replacement, null);
   // Drift seen by verify while the status still says READY (a missed write): the banner is there anyway.
@@ -204,7 +221,7 @@ test("M11-UI-04 the STALE banner: reason, changed files, what it means and a lin
 
   assert.equal(statusNotice(ready()), null);
   assert.equal(statusNotice(variant(ready, (v) => { v.delivery.status = "NEEDS_OWNER"; v.delivery.statusReason = "planul s-a oprit: sesiunea s-a închis"; })).text, "planul s-a oprit: sesiunea s-a închis");
-  const closed = statusNotice(variant(ready, (v) => { v.delivery.status = "CLOSED"; v.delivery.childId = "dlv_mv4a1b2c_9d8e7f6a5b"; }));
+  const closed = statusNotice(variant(ready, (v) => { v.delivery.status = "CLOSED"; v.delivery.childId = "dlv_mv4a1b2c_9d8e7f6a5b"; v.delivery.childStatus = "READY"; }));
   assert.equal(closed.link.href, "#/livrare/dlv_mv4a1b2c_9d8e7f6a5b");
   assert.deepEqual(lineageLinks(ready()), []);
   assert.deepEqual(lineageLinks(variant(ready, (v) => { v.delivery.parentId = "dlv_parent01"; })).map((l) => l.href), ["#/livrare/dlv_parent01"]);

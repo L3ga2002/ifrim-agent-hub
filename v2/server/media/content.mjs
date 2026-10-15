@@ -1,3 +1,4 @@
+import { criterionFingerprint, parseCriterionRef } from "./claims.mjs";
 import { HubError } from "../core/errors.mjs";
 import { newId, nowIso } from "../core/ids.mjs";
 import { hashCanonical, sha256 } from "../core/canonical.mjs";
@@ -45,7 +46,7 @@ export const IDEA_SOURCE_KINDS = Object.freeze(["event", "owner", "twin", "manua
 export const AUDIENCES = Object.freeze(["technical", "business", "both"]);
 export const AUTHOR_KINDS = Object.freeze(["owner", "agent", "dev_session", "template"]);
 export const CLAIM_STATUSES = Object.freeze(["SUPPORTED", "UNCERTAIN", "BLOCKED"]);
-export const EVIDENCE_KINDS = Object.freeze(["run", "test", "snapshot", "document", "bundle", "commit"]);
+export const EVIDENCE_KINDS = Object.freeze(["run", "test", "snapshot", "document", "bundle", "commit", "criterion", "display", "e2e", "preview", "review"]);
 const IDEA_EVIDENCE_KINDS = Object.freeze([...EVIDENCE_KINDS, "mission", "event"]);
 export const CONTENT_PLATFORMS = Object.freeze(["instagram", "tiktok", "youtube", "x", "linkedin"]);
 export const SCRIPT_LANGUAGES = Object.freeze(["ro", "en"]);
@@ -555,6 +556,17 @@ export function createContent({ db, bus, clock = () => new Date(), settings = nu
   /** Evidence that points into the Hub must exist (run, bundle); a commit is a hex id; other kinds are references the owner gave. */
   function verifyEvidence(evidence) {
     for (const e of evidence) {
+      if (e.kind === "display" && !/^[a-f0-9]{64}$/.test(e.sha256 || "")) throw bad("Amprenta textului afișat lipsește.", "EVIDENCE_NOT_FOUND");
+      if (e.kind === "criterion") {
+        const ref = parseCriterionRef(e.ref);
+        const row = ref && db.prepare("SELECT * FROM factory_specs WHERE sha256 = ? AND status = 'APPROVED'").get(ref.specSha);
+        const spec = row ? parse(row.spec_json, {}) : null;
+        const matches = (spec?.acceptance || []).filter(c => c.id === ref?.id);
+        if (!row || matches.length !== 1) throw bad("Criteriul aprobat nu există.", "EVIDENCE_NOT_FOUND");
+        if (hashCanonical(spec) !== row.sha256 || criterionFingerprint(matches[0], { previewCommand: spec.verification?.preview?.command ?? null }) !== e.sha256) throw bad("Conținutul criteriului s-a schimbat.", "CRITERION_CHANGED");
+      }
+      if (["e2e", "preview"].includes(e.kind) && !db.prepare("SELECT 1 FROM factory_evidence WHERE id = ? AND stage = ?").get(e.ref, e.kind.toUpperCase())) throw bad("Dovada etapei nu există.", "EVIDENCE_NOT_FOUND");
+      if (e.kind === "review" && !db.prepare("SELECT 1 FROM factory_reviews WHERE id = ?").get(e.ref)) throw bad("Review-ul nu există.", "EVIDENCE_NOT_FOUND");
       if (e.kind === "run" && !db.prepare("SELECT 1 FROM agent_runs WHERE id = ?").get(e.ref)) throw bad(`Dovada run „${e.ref}” nu există în Hub`, "EVIDENCE_NOT_FOUND");
       if (e.kind === "bundle" && !db.prepare("SELECT 1 FROM factory_bundles WHERE id = ?").get(e.ref)) throw bad(`Dovada bundle „${e.ref}” nu există în Hub`, "EVIDENCE_NOT_FOUND");
       if (e.kind === "commit" && !/^[0-9a-f]{7,40}$/i.test(e.ref)) throw bad(`Dovada commit „${e.ref}” nu e un identificator de commit valid`);

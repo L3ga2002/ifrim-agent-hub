@@ -34,6 +34,22 @@ const codes = (findings) => findings.map((f) => f.code);
 const unjustified = (findings) => findings.filter((f) => !f.justified);
 const near = (a, b, tol, msg) => assert.ok(Math.abs(a - b) <= tol, `${msg}: ${a} vs ${b} (±${tol})`);
 
+test("M09-QA-19 factual text claims are checked per occurrence across text tracks; labels are excluded", () => {
+  const ir = reviewIr(); ir.evidenceRegions = [];
+  ir.tracks = ir.tracks.filter(t => t.kind !== "text");
+  ir.tracks.push({ id: "facts", kind: "text", items: [
+    { id: "fact1", start: 0, end: 30, text: "AC-1: PASS", style: "body" },
+    { id: "label1", start: 30, end: 60, text: "Testat", style: "label" },
+  ] }, { id: "more", kind: "text", items: [{ id: "fact2", start: 60, end: 90, text: "E2E verificat", claimIds: ["ccl_missing"], style: "body" }] });
+  const report = factualCheck({ ir, claims: [], getVersion: stubVersions(), presets: PRESETS });
+  assert.ok(!report.findings.some(f => f.code === "IR_INVALID"), JSON.stringify(report.findings));
+  assert.ok(report.findings.some(f => f.code === "TEXT_CLAIM_MISSING" && f.itemId === "fact1" && f.range.timecode));
+  assert.ok(report.findings.some(f => f.code === "CLAIM_UNKNOWN" && f.itemId === "fact2" && f.claimId === "ccl_missing" && f.range.timecode));
+  assert.ok(!report.findings.some(f => f.itemId === "label1"));
+  assert.equal(report.measurements.textItemsClaimed, 1);
+  assert.equal(report.measurements.textItemsUnclaimed, 1);
+});
+
 /** A getVersion stub: READY video+audio source of `durationMs`, `w`×`h`. */
 const stubVersions = ({ durationMs = 20000, w = 1920, h = 1080, captureLabel = "NOT_APPLICABLE", origin = "OWNED", overrides = {} } = {}) => (id) => ({
   id, status: "READY", origin, capture_label: overrides[id]?.captureLabel ?? captureLabel, kind: "video",

@@ -1,3 +1,4 @@
+import { presentationForTemplate, provePresentation, storyFromPresentation } from "./presentation.mjs";
 // M11 „Ifrim Delivery” — the delivery service: the only writer of deliveries, delivery_items, delivery_documents and
 // delivery_revisions (migration 12).
 //
@@ -21,9 +22,9 @@ import { json, parse } from "../storage/db.mjs";
 import { TEST_PROJECT_MARKER } from "../domain/projects.mjs";
 import { FACTORY_DEMOS } from "../factory/fixtures.mjs";
 import { browserStatus } from "../tools/browser.mjs";
-import { buildTemplate, templateSha, sectionOf, packageSteps, eligibility, PACKAGE_KIND, REVISE_KIND, DELIVERY_LIMITS, normalizeDeliveryBlock } from "./template.mjs";
+import { buildTemplate, templateSha, sectionOf, packageSteps, eligibility, PACKAGE_KIND, REVISE_KIND, DELIVERY_LIMITS } from "./template.mjs";
 import { itemOf, applyRule, currentView, slotsComplete, previousOf, documentOf, canTransition } from "./stale.mjs";
-import { renderSummary, editSummary, regenerateSummary, toMarkdown, toHtml } from "./summary.mjs";
+import { renderSummary, summaryFactCheck, editSummary, regenerateSummary, toMarkdown, toHtml } from "./summary.mjs";
 import { writeNew } from "./files.mjs";
 
 /** The operations a derived delivery plan may contain (and nothing else: no model, no app, no decision). */
@@ -434,17 +435,27 @@ export function createDeliveries({ db, bus, clock, config, settings, projects, m
   function ownerProfile() { try { return sales?.ownerProfile?.() || settings.get("ownerProfile") || {}; } catch { return {}; } }
 
   /** A new document version: v1 from the facts, or a regeneration of `changed` ("software" | "media" | "services") keeping owner sections. */
+  function effectiveTemplate(d, { planId } = {}) { void planId; return d.template; }
+  function replaceClaimItems(deliveryId, roles, produce) {
+    return bus.transaction(() => {
+      for (const item of itemsOfDelivery(deliveryId)) if (item.kind === "claim" && item.status === "CURRENT" && !roles.includes(item.role)) db.prepare("UPDATE delivery_items SET status = 'SUPERSEDED' WHERE id = ?").run(item.id);
+      return produce();
+    });
+  }
   function renderDocument(deliveryId, { changed = null, actor = "delivery" } = {}) {
     const d = need(deliveryId);
-    const binding = d.missionId ? factory.deliveryBinding(d.missionId) : null;
-    if (!binding) throw new HubError("conflict", "Livrarea nu are un pachet verificat; rezumatul se scrie după el.", { code: "SUMMARY_NO_BUNDLE" });
-    const marker = markerOf(projects.get(d.projectId)) || {};
-    const block = normalizeDeliveryBlock(FACTORY_DEMOS[marker.fixture]?.delivery).block;
+    const template = effectiveTemplate(d);
+    const facts = factory.claimFacts(d.missionId, { bundleId: d.bundleId });
+    const presentation = presentationForTemplate(template, facts), proofs = provePresentation(presentation, facts);
     const mediaList = mediaFacts(deliveryId);
-    const fresh = renderSummary({ projectName: d.template.project?.name || d.title, synthetic: true, simulation: d.labels.includes("SIMULATION"), manifest: binding.manifest, bundleId: binding.bundleId,
-      bundleSha: binding.bundleSha, issue: d.template.issueTitle, block, media: mediaList, services: servicesOf(d), owner: ownerProfile(), generatedAt: now() });
+    const fresh = renderSummary({ projectName: template.project?.name || d.title, synthetic: true, simulation: d.labels.includes("SIMULATION"), manifest: facts.manifest, bundleId: facts.bundle.id,
+      bundleSha: facts.bundle.sha256, issue: template.issueTitle, presentation, proofs, media: mediaList, services: servicesOf(d), owner: ownerProfile(), generatedAt: now() });
     const prev = currentDoc(deliveryId);
-    const doc = prev && changed && prev.status !== "STALE" ? regenerateSummary({ ...prev, sections: prev.sections, title: prev.sections ? fresh.title : fresh.title }, fresh, changed) : fresh;
+    const doc = prev ? regenerateSummary({ ...prev, title: fresh.title }, fresh, changed || ["software", "claims", "media", "services", "template"]) : fresh;
+    const factual = summaryFactCheck({ doc, presentation, proofs, spec: facts.spec });
+    if (factual.status === "FAIL") throw new HubError("conflict", "Rezumatul conține citări fără dovadă.", { code: "SUMMARY_FACT_CHECK", data: factual });
+    doc.basis.factual = factual;
+    doc.basisSha = hashCanonical(doc.basis);
     return saveDocument(d, prev, doc, { mediaList, authorKind: doc.authorKind, actor });
   }
   function saveDocument(d, prev, doc, { mediaList = null, authorKind = "template", actor = "delivery", approval = null }) {
@@ -475,10 +486,11 @@ export function createDeliveries({ db, bus, clock, config, settings, projects, m
     bus.transaction(() => db.prepare("UPDATE delivery_documents SET export_json = ? WHERE id = ?").run(json(exports), documentId));
     return exports;
   }
-  function editDocument(deliveryId, { sections, session }) {
+  function editDocument(deliveryId, { sections, displayedSha, session }) {
     trust.requireSession(session, "editarea rezumatului");
     const d = need(deliveryId);
     const prev = currentDoc(deliveryId);
+    if (prev && displayedSha !== undefined && displayedSha !== prev.contentSha) throw new HubError("conflict", "Rezumatul afișat s-a schimbat; reîncarcă versiunea curentă.", { code: "SUMMARY_DISPLAYED_STALE" });
     if (!prev) throw new HubError("conflict", "Rezumatul nu există încă.");
     if (prev.status === "STALE") throw new HubError("conflict", "Rezumatul e învechit; îl regenerez după noua versiune software.", { code: "SUMMARY_STALE" });
     const next = editSummary({ title: prev.text.split("\n")[0], sections: prev.sections, claimsToVerify: prev.claimsToVerify, warnings: prev.warnings, basis: prev.basis }, sections);
@@ -616,10 +628,10 @@ export function createDeliveries({ db, bus, clock, config, settings, projects, m
     for (const c of binding?.criteria || []) if (!String(c.status).startsWith("PASS")) observations.push({ kind: "criterion", severity: "warn", text: `${c.id} ${c.text}: ${c.status}`, ref: c.id });
     for (const x of doc?.claimsToVerify || []) observations.push({ kind: "summary", severity: "info", text: x, ref: doc.id });
     for (const f of fv?.findings || []) if (f.status === "OPEN") observations.push({ kind: "finding", severity: f.severity, text: f.observation, ref: f.id });
-    const child = db.prepare("SELECT id FROM deliveries WHERE parent_id = ? ORDER BY created_at DESC LIMIT 1").get(id);
+    const child = db.prepare("WITH RECURSIVE descendants(id, depth) AS (SELECT id, 1 FROM deliveries WHERE parent_id = ? UNION ALL SELECT d.id, p.depth + 1 FROM deliveries d JOIN descendants p ON d.parent_id = p.id WHERE p.depth < 8) SELECT d.id, d.status FROM deliveries d JOIN descendants x ON x.id = d.id WHERE d.status IN ('READY','ARMED','ACTIVE','NEEDS_OWNER') ORDER BY d.created_at DESC, d.rowid DESC LIMIT 1").get(id);
     return {
       delivery: { id: d.id, title: d.title, status: d.status, statusReason: d.statusReason, projectId: d.projectId, projectName: project?.name || null, labels: d.labels, generation: d.generation,
-        parentId: d.parentId, childId: child?.id || null, verified: d.verified, missionId: d.missionId, issueTitle: d.template.issueTitle },
+        parentId: d.parentId, childId: child?.id || null, childStatus: child?.status || null, verified: d.verified, missionId: d.missionId, issueTitle: d.template.issueTitle },
       software: binding ? { bundle: { id: binding.bundleId, shaPrefix: String(binding.bundleSha).slice(0, 12), status: binding.bundleStatus, sha: binding.bundleSha },
         spec: { version: binding.specVersion, shaPrefix: String(binding.specSha || "").slice(0, 12) }, changeSet: { shaPrefix: String(binding.changeSetSha || "").slice(0, 12), files: binding.manifest?.changeSet?.files || [] },
         review: (binding.manifest?.reviews || []).filter((r) => r.status === "VALID").at(-1) || null, tests: (binding.manifest?.evidence || []).filter((e) => e.stage === "QA" || e.stage === "CHECKS"),
@@ -735,7 +747,21 @@ export function createDeliveries({ db, bus, clock, config, settings, projects, m
     }
   }
 
-  return { createPlanned, sectionFor, sectionForMission, arm, activate, startDirect, bindItem, bindSoftware, currentItem, items: itemsOfDelivery, trigger, verify, reconcileStale, renderDocument, exportDocument, editDocument, approveDocument,
+  // Old plans keep their stored parameters and hashes. Only their generated legacy story changes
+  // the execution-time override; Studio operations and curated deliveries retain the supplied values.
+  function variantOverridesFor({ masterVersionId, planId, overrides }) {
+    const row = db.prepare("SELECT ir_json FROM media_edit_versions WHERE id = ?").get(masterVersionId);
+    const author = parse(row?.ir_json, {}).meta?.author;
+    if (!author?.startsWith("delivery:")) return overrides;
+    const d = get(author.slice(9));
+    if (!d || (d.opsPlanId !== planId && !revisionOfPlan(d.id, planId))) return overrides;
+    const template = effectiveTemplate(d, { planId });
+    if (template.presentation) return overrides;
+    const facts = factory.claimFacts(d.missionId, { bundleId: d.bundleId });
+    return storyFromPresentation(presentationForTemplate(template, facts)).overrides;
+  }
+
+  return { effectiveTemplate, variantOverridesFor, replaceClaimItems, createPlanned, sectionFor, sectionForMission, arm, activate, startDirect, bindItem, bindSoftware, currentItem, items: itemsOfDelivery, trigger, verify, reconcileStale, renderDocument, exportDocument, editDocument, approveDocument,
     currentDoc, recordRevision, getRevision, updateRevision, revisionOfPlan, view, get, need, list, latestForProject, close, cancel, setStatus, readiness, boot, tick, onEvent, attachEnvelopes, patch, bindService, startPreview,
     close_: () => { closing = true; if (detach) detach(); detach = null; }, mediaFacts, markerOf };
 }

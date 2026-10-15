@@ -11,7 +11,7 @@ import { parseInstruction } from "../media/review.mjs";
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const isRef = (v) => typeof v === "string" && /^\$pas:\d+\./.test(v);
 
-export function createExecutors({ desktop = null, media = null, settings, live = null }) {
+export function createExecutors({ desktop = null, media = null, settings, live = null, variantOverridesFor = null }) {
   // ---------------------------------------------------------------- helpers
   const planCtx = ({ planId, stepId, authorize, plan }) => ({ kind: "plan", planId, stepId, actor: `plan:${planId}`, folders: plan?.authority?.folders || [], authorize });
   const runOn = (ctx) => (action) => desktop.perform(ctx, action);
@@ -194,7 +194,8 @@ export function createExecutors({ desktop = null, media = null, settings, live =
       run: async ({ params, planId, abort, authorize }) => {
         const actor = `plan:${planId}`;
         authorize({ op: "media.variant" });
-        const d = media.variants.derive({ masterVersionId: params.masterVersionId, platformKey: params.platformKey, ...(params.overrides ? { overrides: params.overrides } : {}), actor });
+        const overrides = variantOverridesFor ? variantOverridesFor({ masterVersionId: params.masterVersionId, planId, overrides: params.overrides }) : params.overrides;
+        const d = media.variants.derive({ masterVersionId: params.masterVersionId, platformKey: params.platformKey, ...(overrides ? { overrides } : {}), actor });
         checkAbort(abort);
         authorize({ op: "media.render" });
         const job = await renderVerified(d.version.id, "final", { actor, abort });

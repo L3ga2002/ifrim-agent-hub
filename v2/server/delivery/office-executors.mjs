@@ -24,12 +24,13 @@ const day = (iso) => { try { return new Date(iso).toLocaleDateString("ro-RO", { 
  * The live Hub uses "com"; config.testMode defaults to "skip" unless HUB_V2_OFFICE_COM=1.
  */
 export function createOfficeExecutors({ deliveries, factory, opsPlans, config, appCheck = (config.testMode && process.env.HUB_V2_OFFICE_COM !== "1") ? "skip" : "com" }) {
+  const describedDelivery = id => { const d = deliveries.get(id); return d ? { ...d, template: deliveries.effectiveTemplate(d) } : null; };
   function bound(params, planId) {
     let d = deliveries.need(params.deliveryId);
     if (d.status === "PLANNED" && d.opsPlanId === planId) d = deliveries.startDirect(d.id, planId);
     if (d.opsPlanId !== planId) throw refuse("CAPTURE_NOT_BOUND", "Pasul nu aparține planului acestei livrări.");
     if (!["ACTIVE", "READY", "NEEDS_OWNER"].includes(d.status)) throw refuse("DELIVERY_NOT_ACTIVE", `Livrarea e ${d.status}; pașii ei nu rulează.`);
-    return d;
+    return { ...d, template: deliveries.effectiveTemplate(d, { planId }) };
   }
   const folderOf = (d) => path.join(d.template.exports.dir, d.template.exports.folder);
   const workDir = () => path.join(config.workDir || path.join(config.dataDir, "work"), "office");
@@ -81,7 +82,7 @@ export function createOfficeExecutors({ deliveries, factory, opsPlans, config, a
   return {
     "delivery.office.document": {
       describe: ({ deliveryId }) => {
-        const d = deliveries.get(deliveryId);
+        const d = describedDelivery(deliveryId);
         const dest = d ? path.join(folderOf(d), "Prezentare demo.docx") : undefined;
         return { title: "Scrie documentul Word al prezentării (titluri, tabele, date demonstrative) și verifică-l în Word", params: { deliveryId },
           ops: [{ op: "export.local", destination: dest }, { op: "office.verify" }], folders: d ? [folderOf(d)] : [], observed: ["criteriile verificate și clipurile exportate ale livrării"], transmitted: [],
@@ -108,7 +109,7 @@ export function createOfficeExecutors({ deliveries, factory, opsPlans, config, a
 
     "delivery.office.workbook": {
       describe: ({ deliveryId }) => {
-        const d = deliveries.get(deliveryId);
+        const d = describedDelivery(deliveryId);
         const dest = d ? path.join(folderOf(d), "Programari demo.xlsx") : undefined;
         return { title: "Construiește registrul Excel cu programări demonstrative (formule, filtre, formatare) și recalculează-l în Excel", params: { deliveryId },
           ops: [{ op: "export.local", destination: dest }, { op: "office.verify" }], folders: d ? [folderOf(d)] : [], observed: [], transmitted: [], outputs: ["Programari demo.xlsx + PDF (formule verificate de Excel)"] };
@@ -132,7 +133,7 @@ export function createOfficeExecutors({ deliveries, factory, opsPlans, config, a
 
     "delivery.campaign": {
       describe: ({ deliveryId }) => {
-        const d = deliveries.get(deliveryId);
+        const d = describedDelivery(deliveryId);
         const dir = d ? path.join(folderOf(d), "Campanie") : undefined;
         return { title: "Pregătește local pachetul de campanie (obiectiv, public, mesaj, calendar, texte și variante pe canale), fără publicare", params: { deliveryId },
           ops: [{ op: "export.local", destination: dir ? path.join(dir, "campanie.md") : undefined }, { op: "office.verify" }], folders: d ? [folderOf(d)] : [], observed: ["clipurile exportate ale livrării"], transmitted: [],
@@ -164,7 +165,7 @@ export function createOfficeExecutors({ deliveries, factory, opsPlans, config, a
 
     "delivery.package.index": {
       describe: ({ deliveryId }) => {
-        const d = deliveries.get(deliveryId);
+        const d = describedDelivery(deliveryId);
         return { title: "Scrie cuprinsul dosarului (README + manifest cu sha256 pentru fiecare fișier)", params: { deliveryId },
           ops: [{ op: "export.local", destination: d ? path.join(folderOf(d), "README.md") : undefined }], folders: d ? [folderOf(d)] : [], observed: [], transmitted: [], outputs: ["README.md + manifest.json în dosar"] };
       },

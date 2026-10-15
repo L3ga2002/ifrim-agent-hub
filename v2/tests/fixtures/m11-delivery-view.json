@@ -15,6 +15,7 @@
         "generation": 1,
         "parentId": null,
         "childId": null,
+        "childStatus": null,
         "verified": { "at": "2026-10-06T09:41:12.000Z", "equal": true, "changedFiles": [] }
       },
       "software": {
@@ -233,6 +234,7 @@
         "generation": 1,
         "parentId": null,
         "childId": null,
+        "childStatus": null,
         "verified": { "at": "2026-10-06T11:15:40.000Z", "equal": false, "changedFiles": ["public/js/app.mjs", "public/styles.css"] }
       },
       "software": {

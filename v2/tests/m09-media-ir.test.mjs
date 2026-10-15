@@ -63,6 +63,23 @@ function baseIR() {
   };
 }
 const codes = (result) => result.errors.map((e) => e.code);
+
+test("M09-IR-27 optional text claimIds preserve legacy normalization and validate the id list", () => {
+  const ir = baseIR(), before = irHash(ir);
+  const baseline = JSON.parse(fs.readFileSync(new URL("fixtures/claims-baseline.json", import.meta.url)));
+  assert.equal(before, baseline.legacyIrSha, "hash computed with pristine bedda1d IR normalizer");
+  const text = ir.tracks.find(t => t.kind === "text").items[0];
+  assert.equal(Object.hasOwn(normalizeIR(ir).tracks.find(t => t.kind === "text").items[0], "claimIds"), false);
+  text.claimIds = ["ccl_text"];
+  assert.deepEqual(validateIR(ir, opts()).errors, []);
+  assert.notEqual(irHash(ir), before);
+  for (const invalid of [["not an id"], Array(21).fill("ccl_text"), "ccl_text"]) {
+    text.claimIds = invalid;
+    assert.ok(validateIR(ir, opts()).errors.some(e => e.path.includes("claimIds")));
+  }
+  delete text.claimIds;
+  assert.equal(irHash(ir), before);
+});
 const hasError = (result, code, pathPart = "") => result.errors.some((e) => e.code === code && e.path.includes(pathPart));
 const video = (ir) => ir.tracks[0];
 

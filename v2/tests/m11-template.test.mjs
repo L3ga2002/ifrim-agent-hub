@@ -1,3 +1,5 @@
+import { presentationFromBlock } from "./fixtures/claim-presentations.mjs";
+import { resolvePresentation, storyFromPresentation } from "../server/delivery/presentation.mjs";
 // Milestone 11 — the delivery template (v2/server/delivery/template.mjs), pure: capture scripts derived from the approved E2E
 // steps, eligibility blockers, the frozen template, the hashed envelope section and the deterministic package steps. Inline
 // fixture objects in the shape of FACTORY_DEMOS['booking-demo'] (spec + delivery block); no Hub, no files, no model.
@@ -55,6 +57,7 @@ const DELIVERY_BLOCK = {
   },
   variant: { platformKey: "shorts_9x16", overrides: { hookText: "Programări online — demo", ctaText: "Hai să vorbim" } },
 };
+DELIVERY_BLOCK.presentations = [presentationFromBlock(SPEC, DELIVERY_BLOCK)];
 const DEMO = { name: "Demo Livrare — Detailing (programări)", stack: "Node.js", workType: "BUGFIX", title: SPEC_INPUT.title, spec: SPEC_INPUT, delivery: DELIVERY_BLOCK };
 const ROOT = path.resolve(HUB_ROOT, "..", "m11-template-projects-root"); // never created
 // A TEST Hub's configuration: its port (45123) and a dev origin on another port (45124) — two independent sources of Hub ports.
@@ -93,8 +96,8 @@ test("M11-TP-00 the inline fixture is a valid spec (two E2E criteria: 390 px and
   const { block, problems } = normalizeDeliveryBlock(DELIVERY_BLOCK);
   assert.deepEqual(problems, []);
   assert.equal(block.noun, "programare");
-  assert.deepEqual(block.texts.mobile.criteria, ["AC-1", "AC-6"]);
-  assert.deepEqual(block.variant, { platformKey: "shorts_9x16", overrides: { hookText: "Programări online — demo", ctaText: "Hai să vorbim" } });
+  assert.deepEqual(block.presentations[0].clip.mobile.needs, ["AC-1", "AC-6"]);
+  assert.deepEqual(block.variant, { platformKey: "shorts_9x16" });
 });
 
 test("M11-TP-01 captureScriptFrom maps the approved E2E steps: fill→type, click→highlight+click, expectSelector→waitFor+highlight, expectText→waitFor(proof)+marker, overflow dropped", () => {
@@ -272,7 +275,7 @@ test("M11-TP-06 buildTemplate is frozen and deterministic: the same inputs give 
     { ...BASE, chromium: { version: "1.62.0" } },
     { ...BASE, exportsDir: path.join(EXPORTS, "alt") },
     { ...BASE, day: "2026-10-06" },
-    { ...BASE, demo: { ...DEMO, delivery: { ...DELIVERY_BLOCK, texts: { ...DELIVERY_BLOCK.texts, cta: { criteria: [], business: "Sună-ne", technical: "Pachet local" } } } } },
+    { ...BASE, demo: { ...DEMO, delivery: { ...DELIVERY_BLOCK, presentations: [{ ...DELIVERY_BLOCK.presentations[0], clip: { ...DELIVERY_BLOCK.presentations[0].clip, cta: { needs: [], business: "Sună-ne", technical: "Pachet local" } } }] } } },
     { ...BASE, missionView: { ...MISSION_VIEW, spec: { ...MISSION_VIEW.spec, sha256: "b".repeat(64) } } },
     { ...BASE, missionView: { ...MISSION_VIEW, spec: { ...MISSION_VIEW.spec, spec: { ...SPEC, verification: { ...SPEC.verification, preview: { command: "node server.js", url: "http://127.0.0.1:4621/" } } } } } },
   ];
@@ -324,7 +327,8 @@ test("M11-TP-08 sectionOf is the hashed envelope block: the documented shape, bo
   assert.deepEqual(section.decisionsLeft, [...DELIVERY_DECISIONS_LEFT]);
   for (const word of ["publicare", "acceptarea software-ului", "aprobarea creativă", "niciun model după DELIVERY_READY"]) assert.ok(section.never.includes(word), word);
   assert.equal(section.decisionsLeft.length, 5);
-  assert.equal(section.outputs.length, 4);
+  assert.equal(section.outputs.length, 5);
+  assert.equal(section.outputs.filter(s => s.startsWith("afirmații verificate:")).length, 1);
   // Stable hash; any change of the template, of the ops body or of the delivery shows in it.
   const sha = hashCanonical(section);
   assert.equal(hashCanonical(sectionOf(buildTemplate(BASE), { deliveryId: DELIVERY_ID, ops })), sha);
@@ -374,7 +378,7 @@ test("M11-TP-09 packageSteps: the 10 steps of the plan, only ids, roles, templat
   // No step of an owner decision, a model, a desktop app or a publication exists in the template.
   assert.ok(steps.every((s) => /^(delivery\.(prepare|preview\.ensure|capture|edit\.build|export|summary\.render|finish)|media\.(render|variant\.render))$/.test(s.kind)));
   // Without variant overrides the param is not emitted at all (existing plan bodies keep their hash).
-  const plain = buildTemplate({ ...BASE, demo: { ...DEMO, delivery: { ...DELIVERY_BLOCK, variant: {} } } });
+  const plain = buildTemplate({ ...BASE, demo: { ...DEMO, delivery: { ...DELIVERY_BLOCK, presentations: [{ ...DELIVERY_BLOCK.presentations[0], variant: {} }] } } });
   assert.deepEqual(packageSteps(plain, DELIVERY_ID)[6].params, { masterVersionId: "$pas:5.editVersionId", platformKey: "shorts_9x16", qaUse: "internal" });
   throwsCode(() => packageSteps(template, "mis_nu_e_livrare"), "DELIVERY_ID_INVALID");
   throwsCode(() => packageSteps(null, DELIVERY_ID), "DELIVERY_TEMPLATE_INVALID");
@@ -422,12 +426,12 @@ test("M11-TP-12 normalizeDeliveryBlock lists what a fixture's delivery block is 
   assert.deepEqual(normalizeDeliveryBlock(null).problems.length, 1);
   const bad = normalizeDeliveryBlock({ noun: "", proofSelector: "<x>", bannerSelector: "", texts: { hook: { criteria: ["X-1"], business: "", technical: "a\nb" }, desktop: DELIVERY_BLOCK.texts.desktop },
     variant: { platformKey: "tiktok_live", overrides: { hookText: "ok", extra: "x" } }, exportPrefix: "Demo Mare", redactSelectors: ["a{b}"] });
-  for (const needle of ["noun", "proofSelector", "bannerSelector", "texts.hook.criteria", "texts.hook.business", "texts.hook.technical", "texts.mobile", "texts.cta", "variant.platformKey", "variant.overrides.extra", "exportPrefix", "redactSelectors"]) {
+  for (const needle of ["noun", "proofSelector", "bannerSelector", "presentations", "variant.platformKey", "exportPrefix", "redactSelectors"]) {
     assert.ok(bad.problems.some((p) => p.startsWith(needle)), `${needle} — ${bad.problems.join(" | ")}`);
   }
   // A template text is never a place for a secret, a path of this machine or a real address.
-  const leak = normalizeDeliveryBlock({ ...DELIVERY_BLOCK, texts: { ...DELIVERY_BLOCK.texts, cta: { criteria: [], business: "Scrie la ion@gmail.com", technical: "ok" } } });
-  assert.ok(leak.problems.some((p) => p.startsWith("texts.cta.business")));
+  const leak = normalizeDeliveryBlock({ ...DELIVERY_BLOCK, presentations: [{ ...DELIVERY_BLOCK.presentations[0], clip: { ...DELIVERY_BLOCK.presentations[0].clip, cta: { needs: [], business: "Scrie la ion@gmail.com", technical: "ok" } } }] });
+  assert.ok(leak.problems.some((p) => p.includes("clip.cta.business")));
 });
 
 test("M11-TP-13 the real booking fixture definition (when it is in this tree) is what this module expects: eligible, a frozen template, 10 steps", async (t) => {
@@ -519,50 +523,18 @@ test("M11-TP-14 evidenceSelectors are the selectors of the EMITTED highlight ste
   assert.ok(raw.notes.some((n) => /evidențiere de dovadă cunoscută/.test(n)));
 });
 
-test("M11-TP-15 a tone text names only criteria it is gated on: every criterion id cited inside a text is in that text's criteria list (the inline block, the real BOOKING_DEMO, and a refusal for a block that breaks it)", async () => {
-  assert.deepEqual(citedCriteria("Fix verificat: intervalele ocupate pe telefon (AC-1, ac-6)"), ["AC-1", "AC-6"]);
-  assert.deepEqual(citedCriteria("AC-1 + AC-6: interval ocupat → indisponibil (390 px); AC-1 din nou"), ["AC-1", "AC-6"]);
-  assert.deepEqual([citedCriteria("E2E desktop 1280×800: PASS"), citedCriteria("MAC-12 și AC-1234 și XAC-3"), citedCriteria(null)], [[], [], []]);
-  const { BOOKING_DEMO } = await import("../server/factory/booking-demo-def.mjs");
-  for (const [name, block] of [["inline", DELIVERY_BLOCK], ["BOOKING_DEMO", BOOKING_DEMO.delivery]]) {
-    assert.deepEqual(normalizeDeliveryBlock(block).problems, [], name);
-    for (const [slot, entry] of Object.entries(block.texts)) {
-      for (const tone of ["business", "technical"]) {
-        const ungated = citedCriteria(entry[tone]).filter((id) => !entry.criteria.includes(id));
-        assert.deepEqual(ungated, [], `${name}: texts.${slot}.${tone} „${entry[tone]}” cites a criterion it is not gated on`);
-      }
-    }
-    // A variant override replaces its slot's text, so it is held to the same list.
-    assert.deepEqual(citedCriteria(block.variant.overrides.hookText).filter((id) => !block.texts.hook.criteria.includes(id)), [], name);
-    assert.deepEqual(citedCriteria(block.variant.overrides.ctaText).filter((id) => !block.texts.cta.criteria.includes(id)), [], name);
-  }
-  // The hook is gated on AC-1 alone and says so; the phone-width text is gated on both criteria it names.
-  assert.deepEqual([BOOKING_DEMO.delivery.texts.hook.criteria, BOOKING_DEMO.delivery.texts.hook.technical], [["AC-1"], "Fix verificat: intervalele ocupate pe telefon (AC-1)"]);
-  assert.deepEqual(citedCriteria(BOOKING_DEMO.delivery.texts.mobile.technical), ["AC-1", "AC-6"]);
-  assert.deepEqual(DELIVERY_BLOCK.texts, JSON.parse(JSON.stringify(BOOKING_DEMO.delivery.texts)), "the inline block of this file is the real one");
-
-  // A block that breaks the rule is not a valid delivery template: listed as a problem, an eligibility blocker, never frozen.
-  const wrongHook = { ...DELIVERY_BLOCK, texts: { ...DELIVERY_BLOCK.texts, hook: { criteria: ["AC-1"], business: DELIVERY_BLOCK.texts.hook.business, technical: "Fix verificat: intervalele ocupate pe telefon (AC-1, AC-6)" } } };
-  assert.deepEqual(normalizeDeliveryBlock(wrongHook).problems, ["texts.hook.technical: textul numește AC-6, dar nu este condiționat de el (criteria); ar rămâne pe ecran și când acel criteriu nu a trecut"]);
-  assert.deepEqual(blockerCodes({ ...ELIGIBLE, demo: { ...DEMO, delivery: wrongHook } }), ["DELIVERY_TEMPLATE_INVALID"]);
-  throwsCode(() => buildTemplate({ ...BASE, demo: { ...DEMO, delivery: wrongHook } }), "DELIVERY_TEMPLATE_INVALID");
-  const wrongCta = normalizeDeliveryBlock({ ...DELIVERY_BLOCK, texts: { ...DELIVERY_BLOCK.texts, cta: { criteria: [], business: "Hai să discutăm (AC-1 și AC-7)", technical: "Pachet local, gata de verificare" } } });
-  assert.deepEqual(wrongCta.problems, ["texts.cta.business: textul numește AC-1, AC-7, dar nu este condiționat de ele (criteria); ar rămâne pe ecran și când acele criterii nu au trecut"]);
-  const wrongOverride = normalizeDeliveryBlock({ ...DELIVERY_BLOCK, variant: { platformKey: "shorts_9x16", overrides: { hookText: "Programări online (AC-1, AC-7)", ctaText: "Hai să vorbim" } } });
-  assert.deepEqual(wrongOverride.problems, ["variant.overrides.hookText: textul numește AC-7, dar textul pe care îl înlocuiește (texts.hook) nu este condiționat de el"]);
-  assert.deepEqual(wrongOverride.block.variant.overrides, { ctaText: "Hai să vorbim" }, "the refused override is not kept");
-  // Gating the hook on both criteria is the other honest way to name both.
-  const gatedOnBoth = { ...wrongHook, texts: { ...wrongHook.texts, hook: { ...wrongHook.texts.hook, criteria: ["AC-1", "AC-6"] } } };
-  assert.deepEqual(normalizeDeliveryBlock(gatedOnBoth).problems, []);
-
-  // What it protects, on screen (the cross-check scenario: technical tone, everything passed but AC-6): the phone-width text is left
-  // out, and no text that IS shown names AC-6.
-  const captures = buildTemplate(BASE).captures;
-  const shown = (texts) => buildMaster({ captures: captures.map((cap) => recorded(cap, SIZES[cap.role])), texts, tone: "technical", passed: ["AC-1", "AC-2", "AC-3", "AC-4", "AC-5", "AC-7"], noun: "programare" });
-  const honest = shown(BOOKING_DEMO.delivery.texts);
-  assert.deepEqual(honest.omitted, [{ id: "t-mobile", reason: "CRITERIA_NOT_PASS", criteria: ["AC-6"] }]);
-  const onScreen = (built) => built.ir.tracks.filter((t) => t.kind === "text").flatMap((t) => t.items).map((i) => i.text);
-  assert.ok(onScreen(honest).includes("Fix verificat: intervalele ocupate pe telefon (AC-1)"));
-  assert.deepEqual(onScreen(honest).flatMap(citedCriteria), ["AC-1"]);
-  assert.ok(onScreen(shown(wrongHook.texts)).flatMap(citedCriteria).includes("AC-6"), "the old hook text would have named a criterion that did not pass");
+test("M11-TP-15 curated text uses only citation tokens and resolved needs, including overrides", () => {
+  assert.deepEqual(citedCriteria("Fix AC-1 + ac-6; AC-1"), ["AC-1", "AC-6"]);
+  assert.deepEqual(citedCriteria("MAC-12 și AC-1234 și XAC-3"), []);
+  const p = structuredClone(DELIVERY_BLOCK.presentations[0]);
+  p.clip.hook.technical = "Fix verificat AC-6";
+  const bad = { ...DELIVERY_BLOCK, presentations: [p] };
+  assert.match(normalizeDeliveryBlock(bad).problems.join(" "), /criteriu literal/);
+  assert.deepEqual(blockerCodes({ ...ELIGIBLE, demo: { ...DEMO, delivery: bad } }), ["DELIVERY_TEMPLATE_INVALID"]);
+  throwsCode(() => buildTemplate({ ...BASE, demo: { ...DEMO, delivery: bad } }), "DELIVERY_TEMPLATE_INVALID");
+  p.clip.hook.technical = "Fix verificat {cite}"; p.variant.hookText = "AC-7";
+  assert.match(normalizeDeliveryBlock({ ...bad, presentations: [p] }).problems.join(" "), /criteriu literal/);
+  const t = buildTemplate(BASE);
+  assert.equal(t.story.texts.hook.technical, "Fix verificat: intervalele ocupate pe telefon (AC-1)");
+  assert.deepEqual(citedCriteria(t.story.texts.mobile.technical), ["AC-1", "AC-6"]);
 });

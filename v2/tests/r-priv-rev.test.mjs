@@ -14,7 +14,7 @@ import crypto from "node:crypto";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { createRequire } from "node:module";
 import { DatabaseSync } from "node:sqlite";
-import { requestShape, deriveCriteria, conflictingHubTests } from "../server/owner/planners/criteria.mjs";
+import { requestShape, deriveCriteria, conflictingHubTests, withField, withoutField } from "../server/owner/planners/criteria.mjs";
 import { classify } from "../server/delivery/revision.mjs";
 import { checkSpec, specHash } from "../server/factory/spec.mjs";
 import { retireSuperseded, restoreRetired } from "../server/factory/factory.mjs";
@@ -36,6 +36,22 @@ const tmp = (label) => fs.mkdtempSync(path.join(os.tmpdir(), `r-priv-${label}-`)
 
 const FLOW = { id: "AC-5", text: "Programare pe desktop", verify: "e2e", steps: [{ viewport: { width: 1280, height: 800 } }, { goto: "/" }, { click: "[data-slot]" },
   { fill: { selector: "[name='name']", value: "Client {run}" } }, { fill: { selector: "[name='vehicle']", value: "Autoturism test" } }, { click: "button[type=submit]" }, { expectText: "Programare confirmată" }] };
+
+test("RP-11 two revision generations add the phone only once and the refusal flow removes it", () => {
+  const field = { key: "phone", label: "Telefon", value: "0700 123 456" };
+  const first = deriveCriteria({ words: "Telefonul devine obligatoriu la programare", flows: [FLOW] });
+  const second = deriveCriteria({ words: AUTHORIZED, flows: first.flows });
+  assert.deepEqual(second.flows[0].steps, first.flows[0].steps);
+  assert.equal(second.flows[0].text, first.flows[0].text);
+  for (const selector of ["input[name='phone']", 'input[name="phone"]']) {
+    const steps = [...FLOW.steps.slice(0, -2), { fill: { selector, value: field.value } }, ...FLOW.steps.slice(-2)];
+    const augmented = withField(steps, field);
+    assert.equal(augmented.filter(s => s.fill?.selector === selector).length, 1);
+    assert.equal(augmented.filter(s => s.expectLabel?.selector === selector).length, 1);
+    assert.deepEqual(withField(augmented, field), augmented);
+    assert.ok(!withoutField(augmented, field).some(s => s.fill?.selector === selector));
+  }
+});
 
 test("RP-01 the authorized sentence is a hide_public request: two NEW checks (public list, anonymous parameters) and three „păstrare” checks, distinct, defined before any code", () => {
   const s = requestShape(AUTHORIZED);

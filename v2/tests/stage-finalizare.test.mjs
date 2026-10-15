@@ -19,6 +19,16 @@ const FLOW = (width) => [{ viewport: { width, height: width < 500 ? 844 : 800 } 
 const FLOWS = [{ id: "AC-3", text: "Fluxul pe telefon", verify: "e2e", steps: FLOW(390) }, { id: "AC-4", text: "Fluxul pe desktop", verify: "e2e", steps: FLOW(1280) }];
 const PHONE = "Butonul de programare trebuie să ceară și numărul de telefon";
 
+test("FZ-12 capture collapses repeated typing but preserves a fill after a mutation", () => {
+  const fill = { fill: { selector: "[name='phone']", value: "0700 123 456" } };
+  const label = { expectLabel: { selector: "[name='phone']", text: "Telefon" } };
+  const steps = [{ viewport: { width: 1280, height: 800 } }, { goto: "/" }, fill, label, label, fill, { click: "button" }, fill, { expectText: "Gata" }];
+  const result = captureScriptFrom(steps, { role: "desktop", proofSelector: "#success" });
+  assert.equal(result.ok, true);
+  assert.deepEqual(result.collapsed.map(c => [c.step, c.kind]), [[5, "expectLabel"], [6, "fill"]]);
+  assert.equal(result.steps.filter(s => s.type).length, 2);
+});
+
 test("FZ-01 the §25 sentence derives the six checks the owner listed, with provenance and no invented rule", () => {
   const d = deriveCriteria({ words: PHONE, flows: FLOWS });
   assert.equal(d.shape, "required_field");

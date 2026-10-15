@@ -128,8 +128,8 @@ export function registerDeliveryPlanner(hub, intake) {
     const v = deliveries.view(d.id);
     const editVersionId = v.clip.master?.editVersionId || null;
     const irOf = (id) => { try { return JSON.parse(hub.db.prepare("SELECT ir_json FROM media_edit_versions WHERE id = ?").get(id).ir_json); } catch { return null; } };
-    const out = classify(String(text || step?.args?.request || ""), { master: editVersionId ? { versionId: editVersionId, ir: irOf(editVersionId) } : null, texts: d.template.story.texts,
-      tone: deliveries.currentItem(d.id, "brief")?.meta?.prefs?.tone || d.template.story.tone, summary: v.summary ? { documentId: v.summary.documentId, version: v.summary.version, sections: v.summary.sections } : null,
+    const out = classify(String(text || step?.args?.request || ""), { master: editVersionId ? { versionId: editVersionId, ir: irOf(editVersionId) } : null, texts: deliveries.effectiveTemplate(d).story.texts,
+      tone: deliveries.currentItem(d.id, "brief")?.meta?.prefs?.tone || deliveries.effectiveTemplate(d).story.tone, summary: v.summary ? { documentId: v.summary.documentId, version: v.summary.version, sections: v.summary.sections } : null,
       // The Room's own context (a selected text, a moment in a player, the answer to ONE question): no question when it already says.
       ...(room?.selection ? { selection: room.selection } : {}), ...(Number.isFinite(room?.timecodeMs) ? { timecodeMs: room.timecodeMs } : {}), ...(room?.player ? { player: room.player } : {}), ...(room?.choice ? { choice: room.choice } : {}) });
     const status = REVISION_RECORD_STATUS[out.status] || "NOTED";
@@ -149,7 +149,7 @@ export function registerDeliveryPlanner(hub, intake) {
       const rev = deliveries.recordRevision(d.id, { ...base, status: "PROPOSED", reviewId: review.id, delta: { prefs: out.media.prefs || (out.media.brief ? { tone: out.media.brief.audience } : null) } });
       // Pilot 2026-10-08: a proposal has no effect, so it needs no owner session (Lega by voice was refused here and could not say where
       // to open one); the card's confirmation is what asks for the owner session, exactly like every other plan card.
-      const plan = await opsPlans.propose({ kind: REVISE_KIND, title: `Revizuire clip: ${d.title}`, steps: revisionSteps(d.template, d.id, rev.id),
+      const plan = await opsPlans.propose({ kind: REVISE_KIND, title: `Revizuire clip: ${d.title}`, steps: revisionSteps(deliveries.effectiveTemplate(d), d.id, rev.id),
         limits: { maxDurationMin: DELIVERY_LIMITS.revisionMinutes, maxActions: 60 }, actor: "intake", via: "intake" });
       deliveries.updateRevision(rev.id, { opsPlanId: plan.id, status: "PROPOSED" });
       return { kind: "ops", plan, projectId: d.projectId,

@@ -207,12 +207,17 @@ export function oldClipLabel(view) {
 }
 
 /** The red banner: why the delivery is stale, the changed files (≤ 20), what it means, and the real link to its replacement. */
+export function replacementOf(view) {
+  const d = obj(view?.delivery), id = deliveryRoute(d.childId).deliveryId, status = up(d.childStatus);
+  if (!id || !["READY", "ARMED", "ACTIVE", "NEEDS_OWNER"].includes(status)) return null;
+  return { id, href: `#${deliveryHref(id)}`, label: status === "READY" ? "Deschide livrarea care o înlocuiește" : "Deschide livrarea nouă (în lucru)" };
+}
 export function staleBanner(view) {
   const d = obj(view?.delivery);
   const check = verifyState(view);
   const stale = up(d.status) === "STALE";
   if (!stale && check.equal !== false) return null;
-  const child = deliveryRoute(d.childId).deliveryId;
+  const replacement = replacementOf(view);
   const bundleId = str(view?.software?.bundle?.id);
   return {
     tone: "error",
@@ -220,7 +225,7 @@ export function staleBanner(view) {
     reason: str(d.statusReason).trim() || (check.equal === false ? "workspace-ul diferă de versiunea testată" : "baza livrării s-a schimbat"),
     files: check.files, more: check.more,
     consequence: `Clipurile, capturile și rezumatul arată versiunea veche${bundleId ? ` (${bundleId})` : ""}: nu sunt dovezi pentru codul de acum. Nimic nu a fost șters.`,
-    replacement: child ? { id: child, href: `#${deliveryHref(child)}`, label: "Deschide livrarea care o înlocuiește" } : null,
+    replacement,
   };
 }
 /** A quieter line for the other non-working states (waiting for you, closed, failed, cancelled), with real links only. */
@@ -228,8 +233,8 @@ export function statusNotice(view) {
   const d = obj(view?.delivery);
   const status = up(d.status);
   const reason = str(d.statusReason).trim();
-  const child = deliveryRoute(d.childId).deliveryId;
-  const link = child ? { href: `#${deliveryHref(child)}`, label: "Deschide livrarea nouă" } : null;
+  const link = replacementOf(view);
+  const child = link?.id;
   if (status === "NEEDS_OWNER") return { tone: "warn", title: "Așteaptă decizia ta", text: reason || "Planul de livrare s-a oprit; îl continui sau îl anulezi de pe cardul lui.", link: null };
   if (status === "FAILED") return { tone: "error", title: "Livrarea nu a putut porni", text: reason || "Verificările de activare nu au trecut.", link: null };
   if (status === "CLOSED") return { tone: "info", title: "Livrare închisă", text: reason || (child ? "A fost înlocuită de o livrare nouă." : "Ai închis această livrare."), link };
@@ -242,9 +247,9 @@ export function lineageLinks(view) {
   const d = obj(view?.delivery);
   const out = [];
   const parent = deliveryRoute(d.parentId).deliveryId;
-  const child = deliveryRoute(d.childId).deliveryId;
+  const child = replacementOf(view);
   if (parent) out.push({ key: "parent", href: `#${deliveryHref(parent)}`, label: `Înlocuiește livrarea ${parent}` });
-  if (child) out.push({ key: "child", href: `#${deliveryHref(child)}`, label: `Înlocuită de ${child}` });
+  if (child) out.push({ key: "child", href: child.href, label: child.label });
   return out;
 }
 

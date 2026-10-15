@@ -1,3 +1,4 @@
+import fs from "node:fs";
 // M11 U3 — the commercial summary (PASS_LOCAL: pure module, inline facts shaped as the factory bundle manifest).
 // Covers T07 (a business finding stays visible next to a technical PASS), T10 (a claim without evidence is not stated), T13 (a copy-only
 // change regenerates no engineering section), and the owner's §21 rule: no invented price, ROI, lead count, revenue or deadline.
@@ -8,8 +9,8 @@ import { SUMMARY_SECTIONS } from "../server/delivery/revision.mjs";
 import { BOOKING_DEMO } from "../server/factory/booking-demo-def.mjs";
 import { normalizeDeliveryBlock } from "../server/delivery/template.mjs";
 
-const block = normalizeDeliveryBlock(BOOKING_DEMO.delivery).block;
-const crit = (status = {}) => BOOKING_DEMO.spec.acceptance.map((a) => ({ ...a, status: status[a.id] || "PASS_EVIDENCE", evidence: [`ev_${a.id}`] }));
+const block = JSON.parse(fs.readFileSync(new URL("fixtures/claims-baseline.json", import.meta.url))).delivery;
+const crit = (status = {}) => BOOKING_DEMO.spec.acceptance.map((a) => ({ ...a, status: status[a.id] || (a.verify === "review" ? "PASS_REVIEW" : "PASS_EVIDENCE"), evidence: [`ev_${a.id}`] }));
 const manifest = (status) => ({ mission: { title: BOOKING_DEMO.title }, spec: { version: 2, criteria: crit(status) },
   changeSet: { sha256: "c".repeat(64), snapshot: "s".repeat(64), files: [{ path: "public/js/slots-view.mjs" }] } });
 const MEDIA = [{ id: "dli_m", role: "master", file: "demo-master.mp4", durationMs: 24000, label: "ORIGINAL", qa: "PASS" }, { id: "dli_v", role: "vertical", file: "demo-vertical.mp4", durationMs: 18000, label: "ORIGINAL", qa: "PASS" }];

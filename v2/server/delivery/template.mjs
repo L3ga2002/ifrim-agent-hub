@@ -29,7 +29,8 @@ import { PLATFORM_KEYS } from "../media/variants.mjs";
 import { TEST_PROJECT_MARKER, slugify } from "../domain/projects.mjs";
 import { insideAny } from "../policy/action-policy.mjs";
 import { assertCaptureOrigin, syntheticProjectProblems, textViolations, SYNTHETIC_BANNER } from "./capture-guard.mjs";
-import { normalizeSummaryBlock } from "./summary.mjs";
+import { normalizePresentation, resolvePresentation, storyFromPresentation } from "./presentation.mjs";
+export { citedCriteria } from "../media/claims.mjs";
 
 export const TEMPLATE_SCHEMA = 1;
 export const STORY_TEMPLATE = "delivery-presentation-v1";
@@ -54,8 +55,6 @@ export const ROLE_WORD = Object.freeze({ desktop: "desktop", mobile: "mobil" });
 export const STORY = Object.freeze({ tone: "both", canvas: Object.freeze({ width: 1920, height: 1080 }), fps: Object.freeze({ num: 30, den: 1 }), preset: Object.freeze({ id: "ifrim-business", version: 2 }), platformKey: "shorts_9x16" });
 
 const UNSAFE_SELECTOR = /[{}<>;\\\r\n\u0000]|\/\*|\*\//;
-const CONTROL = /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/;
-const CRITERION_RE = /^AC-\d{1,3}$/;
 const DELIVERY_ID_RE = /^dlv_[A-Za-z0-9_-]{4,60}$/;
 const REVISION_ID_RE = /^drv_[A-Za-z0-9_-]{4,60}$/;
 const EXPORT_PREFIX_RE = /^[a-z0-9][a-z0-9-]{1,30}$/;
@@ -71,21 +70,12 @@ const invalid = (message, problems) => new HubError("validation", message, { cod
 // The fixture's delivery block (Hub-side; not part of the spec, so it never changes the spec hash)
 // ---------------------------------------------------------------------------------------------------------------------------
 
-/** The criterion ids a text names („Fix verificat … (AC-1)” → ["AC-1"]), upper-cased, each once, in the order written. */
-export function citedCriteria(text) {
-  return [...new Set((String(text ?? "").match(/(?<![A-Za-z0-9])AC-\d{1,3}(?!\d)/gi) || []).map((id) => id.toUpperCase()))];
-}
-/** The slot whose text a variant override replaces (media/variants.mjs deriveVariant: hookText → the hook, ctaText → the CTA). */
-const OVERRIDE_SLOT = Object.freeze({ hookText: "hook", ctaText: "cta" });
-
 /**
  * Normalizes FACTORY_DEMOS[*].delivery → { block, problems[] }. Shape:
  *   { noun, issue?, proofSelector, bannerSelector, evidenceNote?, exportPrefix?, redactSelectors?,
- *     texts: { hook|desktop|mobile|cta: { criteria: ["AC-1", …], business, technical } },
- *     variant: { platformKey?: "shorts_9x16", overrides?: { hookText?, ctaText? } } }
- * A text is shown only when ALL its criteria are PASS, so `criteria` is what the text claims (cta claims nothing). A text may
- * therefore name only criteria it is gated on: one that cites another criterion would stay on screen when that criterion did not
- * pass (a problem here, never a frame). The same holds for a variant override, which replaces its slot's text.
+ *     presentations: [{ reference, anchors, clip, variant, summary, … }], variant: { platformKey?: "shorts_9x16" } }
+ * Presentations bind curated prose to exact criterion fingerprints. Validation problems block eligibility;
+ * resolution and evidence proofs determine which texts can be shown for the approved delivery spec.
  */
 export function normalizeDeliveryBlock(input) {
   const problems = [];
@@ -93,49 +83,20 @@ export function normalizeDeliveryBlock(input) {
   const noun = clean(input.noun, 40).toLocaleLowerCase("ro-RO");
   if (noun.length < 2 || !/^[\p{L}][\p{L} -]*$/u.test(noun)) problems.push("noun: substantivul demonstrației (de exemplu „programare”) lipsește sau nu este un cuvânt");
   for (const key of ["proofSelector", "bannerSelector"]) if (!safeSelector(input[key])) problems.push(`${key}: selector CSS lipsă sau invalid`);
-  const texts = {};
-  for (const slot of TEXT_SLOTS) {
-    const raw = input.texts?.[slot];
-    if (!isObject(raw)) { problems.push(`texts.${slot}: lipsește`); continue; }
-    const criteria = Array.isArray(raw.criteria) ? raw.criteria.map((c) => String(c).toUpperCase()) : [];
-    if (criteria.length > 6 || criteria.some((c) => !CRITERION_RE.test(c)) || new Set(criteria).size !== criteria.length) problems.push(`texts.${slot}.criteria: cel mult 6 criterii distincte de forma AC-n`);
-    const entry = { criteria };
-    for (const tone of ["business", "technical"]) {
-      const text = normalizeRo(String(raw[tone] ?? ""));
-      if (!text || text.length > 120 || text.includes("\n") || CONTROL.test(text)) problems.push(`texts.${slot}.${tone}: text de 1–120 de caractere, pe un rând`);
-      else if (textViolations(text).length) problems.push(`texts.${slot}.${tone}: textul nu poate conține secrete, căi de pe calculator sau adrese reale`);
-      const ungated = citedCriteria(text).filter((id) => !criteria.includes(id));
-      if (ungated.length) problems.push(`texts.${slot}.${tone}: textul numește ${ungated.join(", ")}, dar nu este condiționat de ${ungated.length === 1 ? "el" : "ele"} (criteria); ar rămâne pe ecran și când ${ungated.length === 1 ? "acel criteriu nu a trecut" : "acele criterii nu au trecut"}`);
-      entry[tone] = text;
-    }
-    texts[slot] = entry;
-  }
-  const platformKey = input.variant?.platformKey === undefined ? STORY.platformKey : String(input.variant.platformKey);
-  if (!PLATFORM_KEYS.includes(platformKey)) problems.push(`variant.platformKey: profil necunoscut „${platformKey.slice(0, 40)}”`);
-  const overrides = {};
-  const rawOverrides = input.variant?.overrides ?? input.variantOverrides ?? {};
-  if (!isObject(rawOverrides)) problems.push("variant.overrides: trebuie să fie un obiect { hookText, ctaText }");
-  else {
-    for (const key of Object.keys(rawOverrides)) {
-      if (!["hookText", "ctaText"].includes(key)) { problems.push(`variant.overrides.${key.slice(0, 30)}: doar hookText și ctaText se pot schimba în varianta verticală`); continue; }
-      const text = normalizeRo(String(rawOverrides[key] ?? ""));
-      const ungated = citedCriteria(text).filter((id) => !(texts[OVERRIDE_SLOT[key]]?.criteria || []).includes(id));
-      if (!text || text.length > 120 || text.includes("\n") || textViolations(text).length) problems.push(`variant.overrides.${key}: text de 1–120 de caractere, pe un rând`);
-      else if (ungated.length) problems.push(`variant.overrides.${key}: textul numește ${ungated.join(", ")}, dar textul pe care îl înlocuiește (texts.${OVERRIDE_SLOT[key]}) nu este condiționat de ${ungated.length === 1 ? "el" : "ele"}`);
-      else overrides[key] = text;
-    }
-  }
+  const presentations = [];
+  if (!Array.isArray(input.presentations) || !input.presentations.length) problems.push("presentations: lipsește");
+  for (const p of Array.isArray(input.presentations) ? input.presentations : []) { const n = normalizePresentation(p); problems.push(...n.problems); if (n.presentation) presentations.push(n.presentation); }
+  const platformKey = input.variant?.platformKey ?? STORY.platformKey;
+  if (!PLATFORM_KEYS.includes(platformKey)) problems.push("variant.platformKey: profil necunoscut „" + platformKey + "”");
   const evidenceNote = input.evidenceNote === undefined || input.evidenceNote === null ? null : clean(input.evidenceNote, 80);
   const exportPrefix = input.exportPrefix === undefined || input.exportPrefix === null ? null : String(input.exportPrefix);
   if (exportPrefix !== null && !EXPORT_PREFIX_RE.test(exportPrefix)) problems.push("exportPrefix: litere mici, cifre și cratime (2–31 de caractere)");
   const redactSelectors = Array.isArray(input.redactSelectors) ? input.redactSelectors : [];
   if (redactSelectors.length > 20 || redactSelectors.some((s) => !safeSelector(s))) problems.push("redactSelectors: cel mult 20 de selectori CSS valizi");
   // M11: the commercial summary's template text (problem, flow, benefits gated on criteria, questions), fact-guarded at definition time.
-  const summaryPart = normalizeSummaryBlock(input.summary);
-  problems.push(...summaryPart.problems);
+
   const block = { noun, issue: input.issue ? clean(input.issue, 160) : null, proofSelector: String(input.proofSelector || "").trim(), bannerSelector: String(input.bannerSelector || "").trim(),
-    evidenceNote: evidenceNote || null, exportPrefix, redactSelectors: redactSelectors.map((s) => String(s).trim()), texts, variant: { platformKey, overrides },
-    ...(summaryPart.summary ? { summary: summaryPart.summary } : {}) };
+    evidenceNote: evidenceNote || null, exportPrefix, redactSelectors: redactSelectors.map((s) => String(s).trim()), presentations, variant: { platformKey } };
   return { block, problems };
 }
 
@@ -188,13 +149,15 @@ export function captureScriptFrom(e2eSteps, { noun, role, proofSelector, pacing 
   const typeDelayMs = boundedInt(pacing?.typeDelayMs, CAPTURE_PACING.typeDelayMs, 0, 300);
   const blockers = [];
   const base = { role, viewport: { ...preset.viewport }, deviceScaleFactor: preset.dsf, proofSelector: safeSelector(proofSelector) ? proofSelector.trim() : null, demoNote: `${word} ${ROLE_WORD[role]}` };
-  const fail = () => ({ ok: false, ...base, steps: [], blockers, sourceViewport: null, evidenceSelectors: [], proofTexts: [], estimatedMs: 0 });
+  const fail = () => ({ ok: false, ...base, steps: [], blockers, sourceViewport: null, evidenceSelectors: [], proofTexts: [], estimatedMs: 0, collapsed: [] });
   const e2eProblems = validateE2ESteps(e2eSteps);
   if (e2eProblems.length) {
     blockers.push(blocker("DELIVERY_E2E_INVALID", "Pașii E2E ai criteriului nu sunt valizi", e2eProblems.join("; ")));
     return fail();
   }
   const steps = [];
+  const collapsed = [], fills = new Map(), labels = new Set();
+  const nonMutating = new Set(["expectLabel", "expectSelector", "expectText", "noHorizontalOverflow", "expectNoText", "expectInvalid"]);
   const evidenceSteps = []; // the highlight steps of expectSelector: their selectors are read back AFTER normalization (below)
   const proofTexts = [];
   let sourceViewport = null;
@@ -205,6 +168,11 @@ export function captureScriptFrom(e2eSteps, { noun, role, proofSelector, pacing 
     const [kind] = Object.keys(step);
     const value = step[kind];
     const n = index + 1;
+    if (kind === "fill" && fills.get(value.selector) === value.value) { collapsed.push({ step: n, kind, reason: "REPEATED_FILL" }); continue; }
+    if (kind === "expectLabel" && labels.has(value.selector)) { collapsed.push({ step: n, kind, reason: "REPEATED_LABEL" }); continue; }
+    if (!nonMutating.has(kind)) { fills.clear(); labels.clear(); }
+    if (kind === "fill") fills.set(value.selector, value.value);
+    if (kind === "expectLabel") labels.add(value.selector);
     if (kind === "viewport") {
       if (pageStarted) blockers.push(blocker("DELIVERY_STEP_UNSUPPORTED", "Schimbare de fereastră în mijlocul pașilor", `Pasul ${n} schimbă dimensiunea ferestrei după ce pagina a pornit; o captură are o singură dimensiune (${preset.label}).`));
       else sourceViewport = { width: value.width, height: value.height };
@@ -253,7 +221,7 @@ export function captureScriptFrom(e2eSteps, { noun, role, proofSelector, pacing 
   // selector; the approved E2E step may carry spaces around it). The capture records a highlight under its step's selector and
   // clip-ir.mjs matches by exact string, so a raw selector here would lose the evidence marker and its regions.
   const evidenceSelectors = [...new Set(evidenceSteps.map((step) => normalized[steps.indexOf(step)].highlight.selector))];
-  return { ok: true, ...base, steps: normalized, blockers, sourceViewport, evidenceSelectors, proofTexts, estimatedMs };
+  return { ok: true, ...base, steps: normalized, blockers, sourceViewport, evidenceSelectors, proofTexts, estimatedMs, collapsed };
 }
 
 // ---------------------------------------------------------------------------------------------------------------------------
@@ -445,10 +413,11 @@ export function buildTemplate({ project, marker, missionView, demo, tools = null
     const preset = CAPTURE_PRESETS[role];
     return { role, label: preset.label, criterion: criterion.id, viewport: { ...preset.viewport }, dsf: preset.dsf, fps: preset.fps, maxDurationMs: preset.maxDurationMs,
       steps: script.steps, stepsSha: hashCanonical(script.steps), evidenceSelectors: script.evidenceSelectors, proofSelector: script.proofSelector, demoNote: script.demoNote,
-      redactSelectors, captureLabel };
+      redactSelectors, captureLabel, collapsed: script.collapsed };
   });
   const slug = project.slug ? String(project.slug) : slugify(String(project.name));
-  const overrides = block.variant.overrides;
+  const presentation = resolvePresentation({ presentations: block.presentations, spec, specSha: specSha || hashCanonical(spec), noun: block.noun, captures });
+  const { texts, overrides } = storyFromPresentation(presentation);
   const template = {
     schema: TEMPLATE_SCHEMA, template: STORY_TEMPLATE, mode, parentDeliveryId: mode === "refresh" ? String(parentDeliveryId) : null,
     project: { id: String(project.id), name: clean(project.name, 120), slug },
@@ -458,9 +427,9 @@ export function buildTemplate({ project, marker, missionView, demo, tools = null
     route: "windows",
     preview: { origin: pv.origin, command: String(pv.preview.command), url: String(pv.preview.url) },
     simulation: Boolean(simulation), captureLabel,
-    captures,
+    captures, presentation,
     story: { template: STORY_TEMPLATE, tone: STORY.tone, canvas: { ...STORY.canvas }, fps: { ...STORY.fps }, preset: { ...STORY.preset }, noun: block.noun,
-      evidenceNote: block.evidenceNote, texts: block.texts, variant: { platformKey: block.variant.platformKey, overrides, overridesSha: hashCanonical(overrides) } },
+      evidenceNote: block.evidenceNote, texts, variant: { platformKey: block.variant.platformKey, overrides, overridesSha: hashCanonical(overrides) } },
     summary: { template: SUMMARY_TEMPLATE, serviceRefs: [] },
     tools: { ffmpeg: t.identity.ffmpeg, ffprobe: t.identity.ffprobe, chromium: { version: chromiumVersion } },
     exports: { dir: exportsDir, folder: exportFolderName({ prefix: block.exportPrefix, noun: block.noun, slug, day: d }) },
@@ -505,6 +474,7 @@ export const DELIVERY_DECISIONS_LEFT = Object.freeze(["Accept local (software)",
 const EXTRA_OUTPUTS = Object.freeze({ document: "document Word (verificat în Word, cu PDF)", workbook: "registru Excel cu date demonstrative (formule recalculate de Excel)", campaign: "pachet de campanie pregătit local (nepublicat)" });
 const outputsOf = (t) => ["clip 16:9 cu QA automat", "variantă verticală 9:16 cu QA automat", "rezumat comercial v1 (Markdown + HTML)", ...(t.extras || []).map((x) => EXTRA_OUTPUTS[x]),
   ...(t.reused || []).map((r) => `${EXTRA_OUTPUTS[r.kind] || r.kind}: refolosit din livrarea anterioară (sha256 ${r.sha256.slice(0, 12)}…, aceleași intrări)`),
+  ...(t.presentation ? [`afirmații verificate: ${t.presentation.key || "generate din criterii"} (${t.presentation.claims.filter(c => c.status === "BOUND").length} legate de criteriile aprobate${t.presentation.claims.some(c => c.status === "UNBOUND") ? `, ${t.presentation.claims.filter(c => c.status === "UNBOUND").length} omise` : ""})`] : []),
   `folder local: ${t.exports.folder} (în folderul de exporturi aprobat)`];
 
 /**
