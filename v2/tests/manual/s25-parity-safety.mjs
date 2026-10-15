@@ -8,6 +8,9 @@ export const STOP = "REHEARSAL_INTENTIONAL_STOP_BEFORE_WRITER";
 export const MAIN_HUB = String.raw`C:\Users\mihai\OneDrive\Desktop\Ifrim Digital Proiecte\Ifrim Agent Hub`;
 export const LIVE_DATA = String.raw`C:\Users\mihai\IfrimHub\hub-data`;
 export const LIVE_FINGERPRINT = "0b85ddbd40f8b446";
+export const HOME_ACL_APPROVAL = "2026-10-15T10:52:29Z";
+export const HOME_ACL_APPROVAL_MESSAGE = "cmsg_01K9QSg2gnYKPNAzVSK811dNRJodqXTBP6rk51mLQTH4vg";
+export const COMMIT_REPOSITORY = String.raw`C:\Users\mihai\hub-rc`;
 export const CONSENT_PROVENANCE = Object.freeze({ kind: "AGENT_RECORDED_FROM_OWNER_TEXT",
   liveConsent: "0b85ddbd40f8b446 2026-10-03T18:29:02Z (home entries)",
   stagePrompt: "2026-10-15 §6: isolation only on experiment-dedicated paths" });
@@ -71,8 +74,7 @@ export function physicalPath(target) {
   return path.join(physicalPath(ancestor), path.basename(target));
 }
 
-// Coordinator supplies a digest of this canonical manifest from the exact archive of --commit.
-// No git command and no traversal of node_modules. A self-computed digest alone NEVER admits real mode.
+// Export bytes and committed blobs use the same canonical manifest; no node_modules traversal.
 export function exportManifest(root, commit) {
   if (!/^[a-f0-9]{40}$/i.test(commit || "")) throw new Error("--commit requires a full commit SHA");
   const files = [];
@@ -93,8 +95,33 @@ export function exportManifest(root, commit) {
 }
 export function verifyManifest(manifest, expected) {
   if (!/^[a-f0-9]{64}$/i.test(expected || "") || manifest.sha256 !== expected.toLowerCase())
-    throw new Error(`Export manifest mismatch: computed ${manifest.sha256}; coordinator --manifest-sha256 required`);
-  return { ...manifest, expected, verified: true, source: "coordinator commit-bound archive manifest (not a Git tree assertion)" };
+    throw new Error(`Export manifest mismatch: computed ${manifest.sha256}; expected ${expected || "missing"}`);
+  return { ...manifest, expected, verified: true };
+}
+
+export function committedManifest(commit, { execute = execFileSync } = {}) {
+  if (!/^[a-f0-9]{40}$/.test(commit || "")) throw new Error("--commit requires a full lowercase commit SHA");
+  const git = (args) => execute("git", ["-C", COMMIT_REPOSITORY, ...args],
+    { windowsHide: true, timeout: 30000, maxBuffer: 64 * 1024 * 1024 });
+  const object = String(git(["cat-file", "-p", commit]));
+  const tree = object.match(/^tree ([a-f0-9]{40})\r?\n/)?.[1];
+  if (!tree) throw new Error("P1 supplied object is not a commit");
+  const files = String(git(["ls-tree", "-r", "-z", "--full-tree", tree])).split("\0").filter(Boolean).map((entry) => {
+    const match = entry.match(/^(100644|100755) blob ([a-f0-9]{40})\t([\s\S]+)$/);
+    if (!match) throw new Error("P1 unsupported committed entry (only regular blobs allowed)");
+    const [, , oid, ref] = match;
+    return { path: ref, sha256: digest(git(["cat-file", "blob", oid])) };
+  }).sort((a, b) => a.path < b.path ? -1 : a.path > b.path ? 1 : 0);
+  return { commit, tree, repository: COMMIT_REPOSITORY, files, sha256: digest(JSON.stringify({ commit, files })) };
+}
+
+export function verifyCommitExport(root, commit, suppliedDigest, options) {
+  const expected = committedManifest(commit, options);
+  const actual = exportManifest(root, commit);
+  const verified = verifyManifest(actual, expected.sha256);
+  if (suppliedDigest !== undefined) verifyManifest(actual, suppliedDigest);
+  return { ...verified, tree: expected.tree, repository: expected.repository,
+    suppliedDigest: suppliedDigest || null, source: "independent git ls-tree / cat-file commit objects" };
 }
 
 // Exact ACE sets are compared, including deletions and missing targets. Home approvals are exact targets, not ancestors.
@@ -112,7 +139,7 @@ export function aclDiff(before, after, { allowed = [] } = {}) {
 
 export function predictHomeAclChanges(rows, { parent }) {
   return rows.filter((row) => !within(parent, row.path)).flatMap((row) => {
-    if (row.glob) return [];
+    if (row.glob || row.notInspected) return [];
     const aces = row.aces || [], group = aces.filter((a) => /(?:\\|^)CodexSandboxUsers:/i.test(a));
     const changes = [];
     if (row.error || row.exists === null) changes.push("ACL state unreadable; change cannot be bounded");
@@ -128,7 +155,7 @@ export function predictHomeAclChanges(rows, { parent }) {
 }
 export const validIso = (s) => typeof s === "string" && /^\d{4}-\d\d-\d\dT/.test(s) && Number.isFinite(Date.parse(s)) && Date.parse(s) <= Date.now();
 export function requireHomeApproval(predictions, approval) {
-  if (!validIso(approval)) throw new Error("Before P7: explicit --home-acl-change-approved <owner approval ISO time> is required");
+  if (approval !== HOME_ACL_APPROVAL) throw new Error(`Before P7: explicit --home-acl-change-approved must equal ${HOME_ACL_APPROVAL}`);
 }
 
 export function parseAclOutput(raw, target) {
@@ -156,11 +183,14 @@ export function parseAclSnapshot(raw, target) {
 
 // Enumerate names only, never file contents; called only by explicit real mode (or fictive tests).
 export function expandAclGlob(target) {
+  if (credentialFolder(target)) throw new Error("home-consented glob, not expanded (credential folder)");
   const api = pathApi(target), directory = api.dirname(target);
   if (/[*?]/.test(directory)) throw new Error("ACL glob directories must be literal");
   try { return fs.readdirSync(directory).map((name) => api.join(directory, name)).filter((p) => exactOrGlob(target, p)); }
   catch (error) { if (error.code === "ENOENT") return []; throw error; }
 }
+
+const credentialFolder = (target) => pathKey(target).match(/^(.*\/\.(?:codex|claude))(?:\/|$)/)?.[1];
 
 export function snapshotAcls(targets, { execute = execFileSync, expand = expandAclGlob } = {}) {
   const snapshot = (target) => {
@@ -180,6 +210,11 @@ export function snapshotAcls(targets, { execute = execFileSync, expand = expandA
     }
   };
   return [...new Set(targets)].flatMap((target) => {
+    const credential = credentialFolder(target);
+    if (credential && /[*?]/.test(target)) return [{ path: target, glob: true,
+      status: "home-consented glob, not expanded (credential folder)", aces: [] }];
+    if (credential && pathKey(target) !== credential) return [{ path: target,
+      status: "credential-folder child, not inspected; directory ACL only", notInspected: true, aces: [] }];
     if (!/[*?]/.test(target)) return snapshot(target);
     try {
       const matches = expand(target);

@@ -1,17 +1,17 @@
-// Offline identity preparation for the coordinator's fresh commit export. No provider/process/ACL operations.
+// Offline identity preparation for a fresh export. Only read-only Git object subprocesses; no providers or ACLs.
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { checkLayout, physicalPath, exportManifest } from "./s25-parity-safety.mjs";
+import { checkLayout, physicalPath, verifyCommitExport } from "./s25-parity-safety.mjs";
 import { codexDeniedEntries, denyListFingerprint } from "../../server/policy/isolation.mjs";
 
 export function exportIdentity({ parent, dedicatedRoot, commit }) {
   const hubRoot = path.join(parent, "hub"), homeDir = os.homedir();
   checkLayout({ parent, dedicatedRoot, hubRoot, projectDir: path.join(parent, "booking"), out: path.join(parent, "evidence"), homeDir, realpath: physicalPath });
-  const manifest = exportManifest(hubRoot, commit);
+  const manifest = verifyCommitExport(hubRoot, commit);
   return { commit, dedicatedRoot, manifestSha256: manifest.sha256, files: manifest.files.length,
     fingerprint: denyListFingerprint(codexDeniedEntries({ hubRoot, homeDir })),
-    provenance: "Offline digest only: coordinator must obtain this from the trusted commit archive before the rehearsal. Not independent Git tree verification." };
+    tree: manifest.tree, repository: manifest.repository, provenance: manifest.source };
 }
 
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {

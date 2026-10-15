@@ -55,7 +55,14 @@ export function sandboxProcessLimitations(baseline, snapshot, records) {
   const owned = new Set(records.map(identity)), before = new Set(baseline.map(identity));
   return { status: "RECORDED_LIMITATION", action: "report only; never kill or abort",
     unknownUserCount: snapshot.filter((r) => !(r.user || r.owner) || (r.user || r.owner) === "unknown").length,
-    userVisibility: snapshot.some((r) => /CodexSandbox/i.test(r.user || r.owner || "")) ? "available for listed rows" : "unknown: snapshot exposes no sandbox user identity; no GetOwner queries",
+    userVisibility: "user not resolvable without elevation; unknown users are not verified",
+    cleanupScope: "recorded process identities only; unidentified sandbox-user processes are unverified",
+    possibleOrphans: snapshot.filter((r) => !before.has(identity(r)) && !owned.has(identity(r)))
+      .map((r) => ({ ...r, attribution: "unverified; new identity since baseline, report only",
+        recordedParent: records.filter((p) => p.pid === r.parentPid && p.creationDate
+          && Date.parse(r.creationDate) >= Date.parse(p.creationDate)
+          && (!p.exitedAt || Date.parse(r.creationDate) < Date.parse(p.exitedAt)))
+          .map((p) => ({ pid: p.pid, creationDate: p.creationDate, exitedAt: p.exitedAt || null })) })),
     outsideRunTrees: snapshot.filter((r) => /CodexSandbox/i.test(r.user || r.owner || "") && !owned.has(identity(r)))
       .map((r) => ({ ...r, presentAtBaseline: before.has(identity(r)) })) };
 }
@@ -72,12 +79,14 @@ export function canaryProcessEvidence(records, snapshot, canaryPid) {
     if (parent && Date.parse(parent.creationDate) > Date.parse(row.creationDate)) break;
     row = parent;
   }
-  return { verified, canaryPid, parentChain: chain,
+  return { verified, observed: chain.length > 0, canaryPid, parentChain: chain, lastObservedAncestor: chain.at(-1) || null,
+    status: !chain.length ? "not observed: exited before the scan" : verified ? "parent chain observed" : "canary observed; parent chain not demonstrated",
+    role: "EVIDENCE_ONLY; never a gate",
     observedOwnedProcesses: recordedSurvivors(records, snapshot).map((r) => ({ ...r, user: r.user || r.owner || "unknown" })),
     limitation: "Windows libuv non-detached children use a kill-on-close job; fake Node trees do not prove native Codex sandbox ancestry. This evidence covers only the observed P7 canary." };
 }
 
-const processSnapshotCommand = "$ErrorActionPreference = 'Stop'; $s25Users = @{}; try { Get-Process -IncludeUserName -ErrorAction Stop | ForEach-Object { try { $s25Users[$_.Id] = @{ user = $_.UserName; started = $_.StartTime.ToUniversalTime() } } catch {} } } catch {}; @(Get-CimInstance Win32_Process | Where-Object { $_.CreationDate } | ForEach-Object { $s25User = $s25Users[[int]$_.ProcessId]; $s25Name = 'unknown'; if ($s25User -and $s25User.started -eq $_.CreationDate.ToUniversalTime()) { $s25Name = $s25User.user }; [pscustomobject]@{ pid = $_.ProcessId; parentPid = $_.ParentProcessId; creationDate = $_.CreationDate.ToUniversalTime().ToString('o'); name = $_.Name; user = $s25Name } }) | ConvertTo-Json -Compress";
+const processSnapshotCommand = "$ErrorActionPreference = 'Stop'; @(Get-CimInstance Win32_Process | Where-Object { $_.CreationDate } | ForEach-Object { [pscustomobject]@{ pid = $_.ProcessId; parentPid = $_.ParentProcessId; creationDate = $_.CreationDate.ToUniversalTime().ToString('o'); name = $_.Name; user = 'unknown'; userLimitation = 'user not resolvable without elevation' } }) | ConvertTo-Json -Compress";
 const normalizeSnapshot = (stdout) => (String(stdout).trim() ? [].concat(JSON.parse(stdout)) : [])
   .map((row) => ({ ...row, creationDate: new Date(row.creationDate).toISOString() }));
 export async function windowsProcesses({ execute = exec } = {}) {

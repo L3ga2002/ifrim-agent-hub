@@ -5,13 +5,14 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
-import { classifyDenyEntries, aclDiff, checkLayout, exportManifest, verifyManifest, predictHomeAclChanges, requireHomeApproval, codexHeadroom, parseAclSnapshot, snapshotAcls, ancestorPaths, expandAclGlob, LIVE_DATA, STOP } from "./manual/s25-parity-safety.mjs";
-import { recipes, runnerPreflightSource, layoutIsolation, runnerPreflight, assertLivePrivateProtection, assertHeadroom, consentedLivePaths, liveClaudeDenyRules } from "./manual/s25-real-preflight.mjs";
+import { classifyDenyEntries, aclDiff, checkLayout, exportManifest, verifyManifest, predictHomeAclChanges, requireHomeApproval, codexHeadroom, parseAclSnapshot, snapshotAcls, ancestorPaths, expandAclGlob, verifyCommitExport, committedManifest, HOME_ACL_APPROVAL, HOME_ACL_APPROVAL_MESSAGE, LIVE_DATA, STOP } from "./manual/s25-parity-safety.mjs";
+import { recipes, runnerPreflightSource, layoutIsolation, runnerPreflight, assertLivePrivateProtection, assertHeadroom, consentedLivePaths, liveClaudeDenyRules, assertAclDiff, recordAncestorChanges } from "./manual/s25-real-preflight.mjs";
 import { trackSupervisedProcess, recordedProcessTree, windowsProcesses, recordedSurvivors, sandboxProcessLimitations, canaryProcessEvidence } from "./manual/s25-isolated-rehearsal.mjs";
 import { parseTapCases } from "../server/factory/test-first.mjs";
 import { runRehearsal, classifyRehearsal, observeAdapter, calibrationGate, rehearsalGate, rehearsalAuthority, assertRealPreloadAbsent, wireRehearsalRuntime, reviewResumeEvidence } from "./manual/s25-rehearsal-core.mjs";
 import { registerCleanupGuard } from "./helpers.mjs";
 import { rehearsalInputs } from "./manual/s25-rehearsal-inputs.mjs";
+import { cleanupSteps } from "./manual/s25-rehearsal-cleanup.mjs";
 registerCleanupGuard();
 const roots = [];
 const testBase = path.resolve(".ifrim/tmp/r-parity-round2");
@@ -41,6 +42,95 @@ test("P1 manifest is commit-bound, content-sensitive, excludes only node_modules
   fs.writeFileSync(path.join(dir, "one.txt"), "two");
   assert.throws(() => verifyManifest(exportManifest(dir, "a".repeat(40)), a.sha256), /mismatch/);
   assert.notEqual(exportManifest(dir, "b".repeat(40)).sha256, a.sha256);
+});
+
+test("R4 P1 trusts commit objects, never the export's own digest; changed, missing and added bytes refuse", () => {
+  const dir = root(), commit = "a".repeat(40), tree = "b".repeat(40), oid = "c".repeat(40), calls = [];
+  const execute = (file, args) => {
+    assert.equal(file, "git"); assert.deepEqual(args.slice(0, 2), ["-C", String.raw`C:\Users\mihai\hub-rc`]);
+    calls.push(args.slice(2));
+    if (args[2] === "ls-tree") return Buffer.from(`100644 blob ${oid}\tone.txt\0`);
+    assert.equal(args[2], "cat-file");
+    return args[3] === "-p" ? Buffer.from(`tree ${tree}\nauthor synthetic\n`) : Buffer.from("committed bytes\r\n");
+  };
+  fs.writeFileSync(path.join(dir, "one.txt"), "committed bytes\r\n");
+  const identity = verifyCommitExport(dir, commit, undefined, { execute });
+  assert.equal(identity.verified, true); assert.equal(identity.tree, tree);
+  assert.match(identity.source, /independent/);
+  assert.deepEqual(calls, [["cat-file", "-p", commit], ["ls-tree", "-r", "-z", "--full-tree", tree], ["cat-file", "blob", oid]]);
+  fs.writeFileSync(path.join(dir, "one.txt"), "tampered");
+  assert.throws(() => verifyCommitExport(dir, commit, exportManifest(dir, commit).sha256, { execute }), /mismatch/);
+  fs.unlinkSync(path.join(dir, "one.txt"));
+  assert.throws(() => verifyCommitExport(dir, commit, undefined, { execute }), /mismatch/);
+  fs.writeFileSync(path.join(dir, "one.txt"), "committed bytes\r\n"); fs.writeFileSync(path.join(dir, "extra.txt"), "extra");
+  assert.throws(() => verifyCommitExport(dir, commit, undefined, { execute }), /mismatch/);
+  assert.throws(() => committedManifest("bad", { execute }), /full lowercase commit/);
+});
+
+test("R4 approval is exact, records the supplied value/message, and refuses before runner", async () => {
+  for (const approval of [undefined, "2020-01-01T00:00:00Z", "2026-10-15T10:52:29.000Z"]) {
+    assert.throws(() => requireHomeApproval([], approval), /must equal/);
+    const evidence = { aclPrediction: [] };
+    await assert.rejects(runnerPreflight({ h: { homeDir: "C:/Users/mihai" }, evidence, homeAclChangeApproved: approval }), /must equal/);
+    assert.equal(evidence.homeAclChangeApproved.at, approval ?? null);
+    assert.equal(evidence.homeAclChangeApproved.message, HOME_ACL_APPROVAL_MESSAGE);
+  }
+  assert.doesNotThrow(() => requireHomeApproval([], HOME_ACL_APPROVAL));
+});
+
+test("R4 credential-folder globs never expand or invoke icacls on children", () => {
+  for (const folder of [".codex", ".claude"]) {
+    const base = `C:/Users/mihai/${folder}`, targets = [`${base}/config.toml.*`, `${base}/nested/*`, `${base}/config.toml`, base], calls = [];
+    const rows = snapshotAcls(targets, { expand: () => assert.fail("credential enumeration forbidden"),
+      execute: (file, [target]) => { calls.push(target); return `${target} OWNER:(F)`; } });
+    assert.equal(rows[0].status, "home-consented glob, not expanded (credential folder)");
+    assert.equal(rows[1].status, rows[0].status); assert.equal(calls.length, 1);
+    assert.equal(calls[0].replaceAll("\\", "/"), base);
+    assert.throws(() => expandAclGlob(targets[0]), /not expanded/);
+    assert.equal(predictHomeAclChanges(rows.slice(0, 3), { parent: "C:/dedicated" }).length, 0);
+  }
+});
+
+test("R4 ancestor changes are explicit DEFECT evidence in P7 and after the run", () => {
+  const before = [{ path: "C:/Users", exists: true, aces: ["OWNER:(F)"] }];
+  const after = [{ ...before[0], aces: ["OWNER:(F)", "CodexSandboxUsers:(OI)(CI)(RX)"] }];
+  const e = { P7: {}, aclAncestors: { outsideDedicatedRoot: ["C:/Users"] } };
+  assert.throws(() => assertAclDiff(before, after, { allowed: [] }, e), /P8/);
+  assert.equal(e.aclDefect.status, "DEFECT"); assert.deepEqual(e.P7.ancestorChanges.paths, ["C:/Users"]);
+  recordAncestorChanges(aclDiff(before, after), e, "post-run");
+  assert.equal(e.aclDefect.phase, "post-run"); assert.deepEqual(e.aclDefect.paths, ["C:/Users"]);
+});
+
+test("R4 unknown-user and exited-parent orphans are report-only and never adopted", () => {
+  const records = [{ pid: 10, root: true, creationDate: "2026-10-15T00:00:00Z", exitedAt: "2026-10-15T00:00:03Z" }];
+  const rows = [{ pid: 11, parentPid: 10, creationDate: "2026-10-15T00:00:02Z", name: "node.exe", user: "unknown" }];
+  const result = sandboxProcessLimitations([], rows, records);
+  assert.match(result.userVisibility, /user not resolvable without elevation/);
+  assert.equal(result.possibleOrphans.length, 1); assert.equal(result.possibleOrphans[0].recordedParent[0].pid, 10);
+  assert.deepEqual(recordedProcessTree(records, rows), []); assert.equal(records.length, 1);
+  assert.equal(canaryProcessEvidence(records, [], 11).status, "not observed: exited before the scan");
+});
+
+test("R4 bounded cleanup runs every later step after rejection and timeout", async () => {
+  const e = {}, order = [], cleanup = cleanupSteps(e);
+  await cleanup("scan rejected", () => Promise.reject(new Error("scan failure")), 20);
+  await cleanup("scan stalled", () => new Promise(() => {}), 20);
+  for (const step of ["hub.close", "process cleanup", "ACL diff", "evidence.json"]) await cleanup(step, () => order.push(step));
+  assert.deepEqual(order, ["hub.close", "process cleanup", "ACL diff", "evidence.json"]);
+  assert.equal(e.cleanupErrors.length, 2); assert.match(e.cleanupErrors[1].message, /timed out/);
+});
+
+test("R4 pending snapshot rejection still closes fake Hub and writes evidence", { timeout: 60000 }, async () => {
+  let calls = 0;
+  await assert.rejects(runRehearsal({ parent: root(), scenario: "deny-other", calibrate: false,
+    fakeSeams: { processSnapshot: () => { calls++; return new Promise((_, reject) => setTimeout(() => reject(new Error("injected snapshot failure")), 2500)); } } }),
+  (error) => {
+    const e = error.evidence;
+    assert.ok(calls > 0); assert.equal(e.hubClosed, true);
+    assert.ok(e.cleanupErrors.some((r) => r.step === "pending process scan"));
+    const saved = JSON.parse(fs.readFileSync(path.join(e.out, "evidence.json"), "utf8"));
+    assert.equal(saved.hubClosed, true); assert.ok(saved.cleanupErrors.length); return true;
+  });
 });
 test("P8 ACL diff catches additions, deletions, missing targets and exact home scope", () => {
   const before = [{ path: "C:/outside", exists: true, aces: ["A:(R)"] }, { path: "C:/run/hub", exists: true, aces: [] }];
@@ -106,9 +196,15 @@ for (const scenario of ["success", "amend", "exhausted", "hang", "rate-overage",
   test(`R-PARITY fake ${scenario}`, { timeout: 180000 }, async () => {
     const parent = root();
     let e;
-    try { e = await runRehearsal({ mode: "fake", parent, scenario: scenario === "preflight-only" ? "success" : scenario, preflightOnly: scenario === "preflight-only", calibrate: false, fakeSeams: ["hang", "rate-overage"].includes(scenario) ? { supervisor: { treeKill: killSingleAuthorFixture } } : {} }); }
+    try { e = await runRehearsal({ mode: "fake", parent, scenario: scenario === "preflight-only" ? "success" : scenario, preflightOnly: scenario === "preflight-only", calibrate: false, fakeSeams: ["hang", "rate-overage"].includes(scenario) ? { supervisor: { treeKill: killSingleAuthorFixture } } : scenario === "success" ? { processSnapshot: async () => [] } : {} }); }
     catch (error) { if (!["deny-other", "acl-outside"].includes(scenario)) throw error; e = error.evidence; }
     assert.equal(e.hubClosed, true);
+    if (scenario === "success") {
+      const scanned = new Set(e.processScans.flatMap((r) => r.activeAtStart.map((p) => p.key)));
+      for (const profile of ["roProfile", "rwProfile"]) assert.ok(e.launchAssertions.some((r) => r.assertions[profile] && scanned.has(r.key)), profile);
+      assert.equal(e.realProcessCleanup.verified, false);
+      assert.match(e.realProcessCleanup.unidentifiedProcesses, /UNVERIFIED/);
+    }
     assert.equal(fs.existsSync(e.isolation.dataDir), false);
     assert.equal(e.wiring.supervisorTestMode, false);
     assert.equal(e.wiring.sharedSupervisor, true);
@@ -469,7 +565,7 @@ test("R3 review resume evidence distinguishes actual native thread reuse from re
   }
 });
 
-test("R3 P7 native canary records actual chain and user or unknown, rejecting detached/unobserved ancestry", () => {
+test("R3 P7 native canary records actual chain and user or unknown, reporting detached/unobserved ancestry", () => {
   const creationDate = "2026-10-15T00:00:00Z", records = [{ pid: 10, creationDate, root: true, key: "s25-preflight" }];
   const rows = [{ pid: 10, parentPid: 1, creationDate, name: "codex.exe" },
     { pid: 11, parentPid: 10, creationDate, name: "runner.exe", user: "CodexSandboxUser1" },
@@ -499,8 +595,8 @@ test("R3 preparation prints separate fresh-layout commands with explicit dedicat
   assert.notEqual(commands[0].parent, commands[1].parent);
 });
 
-test("R3 P7 wrapper refuses missing ancestry before a model and keeps R7 evidence", async () => {
-  for (const verified of [false, true]) {
+test("R4 P7 delayed, missing or rejected observation never stops a passing runner", async () => {
+  for (const verified of [false, true, "reject"]) {
     const parent = root(), project = { path: path.join(parent, "booking") }, evidence = { aclPrediction: [], aclBefore: [] };
     const cleanup = { ok: true, count: 0, detail: "" };
     const result = { status: "PASS", counts: { tests: 1, pass: 1, fail: 0 }, fileCleanup: cleanup, fileCleanupReports: 1,
@@ -508,9 +604,13 @@ test("R3 P7 wrapper refuses missing ancestry before a model and keeps R7 evidenc
     const h = { homeDir: "C:/Users/mihai", hub: { factoryRunner: { run: async () => result } } };
     const promise = runnerPreflight({ h, parent, project, evidence, acl: { targets: [], allowed: [] },
       homeAclChangeApproved: "2026-10-15T10:52:29Z", snapshot: () => [],
-      processEvidence: async () => ({ verified, parentChain: [], source: "PASS_SIMULATED test snapshot" }) });
-    if (verified) await promise;
-    else await assert.rejects(promise, /P7 R7.*before any model/);
-    assert.equal(evidence.P7.R7.verified, verified); assert.equal(evidence.P7.gate, null);
+      processEvidence: async () => {
+        if (verified === "reject") throw new Error("snapshot refused");
+        if (!verified) await new Promise((resolve) => setTimeout(resolve, 2500));
+        return { verified, parentChain: [], source: "PASS_SIMULATED test snapshot" };
+      } });
+    await promise;
+    assert.equal(evidence.P7.R7.verified, verified === true); assert.equal(evidence.P7.gate, null);
+    assert.match(evidence.P7.R7.role, /EVIDENCE_ONLY/);
   }
 });

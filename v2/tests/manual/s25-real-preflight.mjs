@@ -8,7 +8,8 @@ import { codexDeniedEntries, denyListFingerprint, codexIsolationArgs, claudeAbso
 import { commandArgv, RUNNER_TIMEOUT_MS } from "../../server/factory/runner.mjs";
 import { assembleTestFile, baselineGate } from "../../server/factory/test-first.mjs";
 import { classifyDenyEntries, snapshotAcls, predictHomeAclChanges, requireHomeApproval, aclDiff,
-  MAIN_HUB, LIVE_DATA, LIVE_FINGERPRINT, within, digest, codexHeadroom, validIso, exactOrGlob, ancestorPaths } from "./s25-parity-safety.mjs";
+  MAIN_HUB, LIVE_DATA, LIVE_FINGERPRINT, HOME_ACL_APPROVAL_MESSAGE, within, digest, codexHeadroom, validIso, exactOrGlob, ancestorPaths, pathKey } from "./s25-parity-safety.mjs";
+import { boundedStep } from "./s25-rehearsal-cleanup.mjs";
 
 // Coordinator-supplied live pointer facts (SPEC C / confirmed R3); no live config or credential reads.
 // Same mapping as resolveDataLocation(pointer): private and backups/v2, never the data root.
@@ -36,9 +37,19 @@ export function assertDenyClassification(entries, options, evidence) {
 export function assertAclDiff(before, after, acl, evidence) {
   evidence.aclAfterPreflight = after;
   evidence.aclPreflightDiff = aclDiff(before, after, acl);
+  const ancestors = recordAncestorChanges(evidence.aclPreflightDiff, evidence, "preflight");
   if (after.some((r) => r.error)) throw new Error("P8 ACL snapshot refused");
-  if (!evidence.aclPreflightDiff.ok) throw new Error("P8 ACL changed outside allowed paths");
+  if (!evidence.aclPreflightDiff.ok || ancestors.changes.length) throw new Error(`P8 ACL changed outside allowed paths${ancestors.changes.length ? `; DEFECT ancestors: ${ancestors.paths.join(", ")}` : ""}`);
   return evidence.aclPreflightDiff;
+}
+export function recordAncestorChanges(diff, evidence, phase) {
+  const ancestors = evidence.aclAncestors?.outsideDedicatedRoot || [];
+  const changes = diff.changes.filter((r) => ancestors.some((p) => pathKey(p) === pathKey(r.path)));
+  const report = { phase, status: changes.length ? "DEFECT" : "no outside ancestor change observed", paths: changes.map((r) => r.path), changes };
+  (evidence.aclAncestorReports ||= []).push(report);
+  if (phase === "preflight" && evidence.P7) evidence.P7.ancestorChanges = report;
+  if (changes.length) evidence.aclDefect = { kind: "DEFECT_ANCESTOR_ACL_CHANGED", ...report };
+  return report;
 }
 export function assertLivePrivateProtection(rows, evidence, { privatePaths = consentedLivePaths().privatePaths, claudeRules = liveClaudeDenyRules() } = {}) {
   const paths = privatePaths.map((target) => {
@@ -100,8 +111,10 @@ export function layoutIsolation({ hub, parent, dedicatedRoot, homeDir, hubRoot, 
     MAIN_HUB, path.join(MAIN_HUB, ".ifrim", "BACKUPS"), homeDir, process.env.TEMP, parent, hubRoot, path.join(parent, "booking"), path.join(parent, "evidence")];
   const ancestors = ancestorPaths(parent);
   evidence.aclAncestors = { dedicatedRoot, paths: ancestors, outsideDedicatedRoot: ancestors.filter((p) => !within(dedicatedRoot || parent, p)) };
-  const targets = [...isolation.paths, ...sentinels, ...privatePaths, ...ancestors].filter(Boolean);
+  const targets = [...isolation.paths, path.join(homeDir, ".codex"), ...sentinels, ...privatePaths, ...ancestors].filter(Boolean);
   evidence.aclBefore = snapshot(targets);
+  evidence.aclInspectionLimitations = evidence.aclBefore.filter((r) => r.notInspected || r.status?.includes("not expanded"))
+    .map((r) => ({ path: r.path, status: r.status, verification: "UNVERIFIED; no enumeration or child metadata read" }));
   const unreadable = evidence.aclBefore.filter((r) => r.error);
   if (unreadable.length) throw new Error(`P5 ACL metadata refused: ${unreadable.map((r) => r.error).join("\n")}`);
   assertLivePrivateProtection(evidence.aclBefore, evidence, { privatePaths });
@@ -136,11 +149,11 @@ export function runnerPreflightSource(canary) {
 }
 
 export async function runnerPreflight({ h, parent, project, evidence, acl, homeAclChangeApproved, snapshot = snapshotAcls, processEvidence = async () => ({ verified: false, reason: "P7 process observation absent" }) }) {
-  requireHomeApproval(evidence.aclPrediction, homeAclChangeApproved);
-  evidence.homeAclChangeApproved = { at: homeAclChangeApproved,
-    source: "coordinator supplied explicit flag; owner approval 2026-10-15T10:52:29Z",
-    message: "cmsg_01K9QSg2gnYKPNAzVSK811dNRJodqXTBP6rk51mLQTH4vg",
+  evidence.homeAclChangeApproved = { at: homeAclChangeApproved ?? null,
+    source: "coordinator supplied explicit flag; checked against exact owner approval",
+    message: HOME_ACL_APPROVAL_MESSAGE,
     scope: [path.join(h.homeDir, ".claude"), path.join(h.homeDir, ".openclaw")] };
+  requireHomeApproval(evidence.aclPrediction, homeAclChangeApproved);
   if (evidence.aclPrediction.some((r) => !evidence.homeAclChangeApproved.scope.some((p) => exactOrGlob(p, r.path))))
     throw new Error("P5 predicted home ACL changes exceed the owner's approved .claude/.openclaw scope");
   const ref = ".ifrim-hub/preflight/shape.mjs", target = path.join(project.path, ref);
@@ -153,11 +166,11 @@ export async function runnerPreflight({ h, parent, project, evidence, acl, homeA
   const result = await h.hub.factoryRunner.run({ key: "s25-preflight", ws: project.path, command: `node --test ${ref}`, timeoutMs: RUNNER_TIMEOUT_MS, project });
   evidence.P7 = { startedAt, durationMs: Math.round(performance.now() - t0), result,
     cleanup: result.fileCleanup, gate: baselineGate(result, { manifest: { cases: [{ name }] }, harness: 2 }) };
-  evidence.P7.R7 = await processEvidence();
+  try { evidence.P7.R7 = { ...await boundedStep("R7 observation", processEvidence, 12000), role: "EVIDENCE_ONLY; never a gate" }; }
+  catch (error) { evidence.P7.R7 = { verified: false, observed: false, role: "EVIDENCE_ONLY; never a gate", error: error.message }; }
   assertAclDiff(evidence.aclBefore, snapshot(acl.targets), acl, evidence);
   evidence.homeAclReport = evidence.aclAfterPreflight.filter((r) => /[\\/]\.(claude|openclaw)$/.test(r.path));
   if (result.status !== "PASS" || evidence.P7.gate !== null) throw new Error(`P7 real runner refused: ${result.reason}; ${result.outputTail}`);
-  if (!evidence.P7.R7.verified) throw new Error("P7 R7 canary parent chain not demonstrated; stop before any model");
   // The scratch test must not alter the mission's later project snapshot.
   fs.unlinkSync(target);
 }

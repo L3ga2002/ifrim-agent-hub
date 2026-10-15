@@ -1,11 +1,12 @@
-// Read-only preparation for a NEW coordinator-exported layout. No provider, ACL or process calls.
+// Read-only preparation for a NEW export. Uses Git object reads, never providers or ACL operations.
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { validIso } from "./s25-parity-safety.mjs";
+import { validIso, requireHomeApproval } from "./s25-parity-safety.mjs";
 import { exportIdentity } from "./s25-export-identity.mjs";
 
 export function rehearsalInputs({ parent, dedicatedRoot, commit, homeAclChangeApproved, claudeHeadroomChecked }, { identity = exportIdentity } = {}) {
-  if (!validIso(homeAclChangeApproved) || !validIso(claudeHeadroomChecked)) throw new Error("Supply the actual owner ACL approval time and fresh manual Claude headroom check time");
+  requireHomeApproval([], homeAclChangeApproved);
+  if (!validIso(claudeHeadroomChecked)) throw new Error("Supply the fresh manual Claude headroom check time");
   const hubRoot = path.join(parent, "hub");
   const { manifestSha256, fingerprint } = identity({ parent, dedicatedRoot, commit });
   const args = [path.join(hubRoot, "v2/tests/manual/s25-isolated-rehearsal.mjs"), "--real", "--parent", parent, "--dedicated-root", dedicatedRoot,
