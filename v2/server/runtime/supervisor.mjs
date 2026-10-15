@@ -9,6 +9,9 @@ import { drainWithin } from "./shutdown.mjs";
 
 const execFileAsync = promisify(execFile);
 
+// Windows kernel creation stamps can differ from Node's clock by two timer ticks.
+export const PROCESS_LAUNCH_TOLERANCE_MS = 32;
+
 /**
  * Owns every child process the Hub starts. Guarantees: controlled environment (allowlist), hidden
  * windows, stdout reserved for the provider protocol, stderr kept in a redacted ring buffer, whole
@@ -231,15 +234,18 @@ export function ownedProcessTree(records, snapshot) {
   const found = [], parents = records.map((r) => ({ ...r, rootKey: r.key }));
   for (const record of records) {
     const row = snapshot.find((p) => p.pid === record.pid && (record.creationDate ? p.creationDate === record.creationDate
-      : Date.parse(p.creationDate) >= Date.parse(record.startRequestedAt) && Date.parse(p.creationDate) <= Date.parse(record.startedAt)));
+      : Date.parse(p.creationDate) >= Date.parse(record.startRequestedAt) - PROCESS_LAUNCH_TOLERANCE_MS
+        && Date.parse(p.creationDate) <= Date.parse(record.startedAt) + PROCESS_LAUNCH_TOLERANCE_MS));
     if (row) found.push({ ...row, rootKey: record.key });
   }
   for (const parent of parents) {
-    const replacement = snapshot.find((p) => p.pid === parent.pid && (parent.creationDate ? p.creationDate !== parent.creationDate : Date.parse(p.creationDate) > Date.parse(parent.startedAt)));
+    const replacement = snapshot.find((p) => p.pid === parent.pid && (parent.creationDate ? p.creationDate !== parent.creationDate
+      : Date.parse(p.creationDate) > Date.parse(parent.startedAt) + PROCESS_LAUNCH_TOLERANCE_MS));
     const end = parent.exitedAt || replacement?.creationDate;
     for (const row of snapshot) {
       if (row.parentPid !== parent.pid || found.some((p) => p.pid === row.pid)
-        || Date.parse(row.creationDate) < Date.parse(parent.creationDate || parent.startRequestedAt)
+        || Date.parse(row.creationDate) < (parent.creationDate ? Date.parse(parent.creationDate)
+          : Date.parse(parent.startRequestedAt) - PROCESS_LAUNCH_TOLERANCE_MS)
         || (end && Date.parse(row.creationDate) >= Date.parse(end))) continue;
       const child = { ...row, startRequestedAt: row.creationDate, startedAt: row.creationDate, rootKey: parent.rootKey };
       found.push(child); parents.push(child);

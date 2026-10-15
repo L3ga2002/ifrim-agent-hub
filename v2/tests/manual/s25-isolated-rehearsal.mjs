@@ -3,6 +3,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { execFile, execFileSync } from "node:child_process";
 import { promisify } from "node:util";
+import { PROCESS_LAUNCH_TOLERANCE_MS } from "../../server/runtime/supervisor.mjs";
 import { runRehearsal } from "./s25-rehearsal-core.mjs";
 export { runRehearsal, createRehearsalCodex, probeRehearsalProviders } from "./s25-rehearsal-core.mjs";
 export { S25_WORDS } from "./s25-context.mjs";
@@ -21,13 +22,15 @@ export function recordedProcessTree(records, snapshot, observedAt = new Date().t
   for (const record of records) {
     const row = snapshot.find((p) => p.pid === record.pid && (record.creationDate
       ? p.creationDate === record.creationDate
-      : record.root && Date.parse(p.creationDate) >= Date.parse(record.startRequestedAt) && Date.parse(p.creationDate) <= Date.parse(record.startedAt)));
+      : record.root && Date.parse(p.creationDate) >= Date.parse(record.startRequestedAt) - PROCESS_LAUNCH_TOLERANCE_MS
+        && Date.parse(p.creationDate) <= Date.parse(record.startedAt) + PROCESS_LAUNCH_TOLERANCE_MS));
     if (row && !record.absentAt) {
       record.creationDate = row.creationDate;
       if (record.supervisorRecord) record.supervisorRecord.creationDate = row.creationDate;
       found.push(row);
       parents.push(record);
-    } else if (Date.parse(record.startedAt || record.creationDate || record.startRequestedAt) <= Date.parse(observedAt)) {
+    } else if (Date.parse(record.startedAt || record.creationDate || record.startRequestedAt)
+      + (record.creationDate ? 0 : PROCESS_LAUNCH_TOLERANCE_MS) <= Date.parse(observedAt)) {
       record.absentAt ||= observedAt;
       record.exitBound ||= { at: observedAt, source: "snapshot: identity absent or replaced" };
     }
