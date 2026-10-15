@@ -76,13 +76,15 @@ export function createSupervisor({ config, onEvent = () => {}, treeKill = killOw
         if (settled) return;
         settled = true;
         record.exited = true;
-        record.exitedAt = new Date().toISOString();
+        record.exitedAt ||= new Date().toISOString();
         record.exitCode = code;
         if (!record.detached) onEvent({ type: "process.exited", key, pid: child.pid, code, error: error ? error.message : null });
         resolve({ code, error: error ? error.message : null });
       };
-      child.once("error", (error) => done(-1, error));
-      child.once("close", (code) => done(code, null));
+      let spawnError = null;
+      child.once("error", (error) => { spawnError = error; });
+      child.once("exit", () => { record.exitedAt = new Date().toISOString(); });
+      child.once("close", (code) => done(spawnError ? -1 : code, spawnError));
     });
     onEvent({ type: "process.started", key, pid: child.pid, label });
     return record;
@@ -112,7 +114,7 @@ export function createSupervisor({ config, onEvent = () => {}, treeKill = killOw
         failedStops.set(record.key, record);
         await captureFailedTree(record);
       }
-      if (!rootExited(record) && fallback) {
+      if (!rootExited(record) && record.child.exitCode === null && record.child.signalCode === null && fallback) {
         method = "handle";
         try { if (!killHandle(record) && !rootExited(record)) throw new Error("Owned process handle refused termination"); }
         catch (cause) { error = { ...error, handle: cause.message }; }
@@ -156,19 +158,17 @@ export function createSupervisor({ config, onEvent = () => {}, treeKill = killOw
         const alive = fresh ? verifiedFailureTree(record.failureTree || [], fresh) : [];
         const root = survivors.find((r) => r.key === record.key);
         // Failure-tree identities are never replaced by a PID-only liveness probe.
-        survivors = survivors.filter((r) => r !== root);
         const rootIdentity = alive.find((r) => r.pid === record.pid);
         if (root && rootIdentity) {
           root.creationDate = rootIdentity.creationDate;
           root.descendants = alive.filter((r) => r.pid !== record.pid);
-          survivors.push(root);
         }
         for (const row of alive) if (row.pid !== record.pid)
           survivors.push({ key: `${record.key}:descendant:${row.pid}`, label: row.name, pid: row.pid,
             startedAt: row.creationDate, creationDate: row.creationDate, parentPid: row.parentPid });
         const unavailable = snapshotError || record.snapshotError;
         if (unavailable) unverified.push({ key: record.key, pid: record.pid, startedAt: record.startedAt, snapshotError: unavailable });
-        else if (!alive.length) failedStops.delete(record.key);
+        else if (!root && !alive.length) failedStops.delete(record.key);
       }
       return { results, survivors, unverified };
     })();
@@ -201,7 +201,8 @@ function splitLines(stream, onLine) {
   return () => { buffer = ""; stream.off("data", data); stream.off("end", end); stream.resume(); };
 }
 
-const rootExited = (record) => record.exited || record.child.exitCode !== null || record.child.signalCode !== null;
+// 'exit' can precede stdio closure while an owned descendant still holds a pipe.
+const rootExited = (record) => record.exited;
 
 async function exitedWithin(record, ms) {
   if (rootExited(record)) return true;

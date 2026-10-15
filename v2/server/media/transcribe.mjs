@@ -493,7 +493,11 @@ export function createMediaTranscriber({ db, bus, clock = () => new Date(), conf
       { type: "media.transcript.final", actor, payload: { wordCount: parsed.wordCount, durationMs: durationMs ?? null, language: lang, gpu: decision.gpu, gpuReason: decision.reason, truncated: parsed.truncated, wordsDropped: parsed.wordsDropped } });
       written = [];
     } catch (error) {
-      if (error?.code === "HUB_SHUTDOWN") throw error; // Interrupted work is recovered at boot, never a transcription verdict.
+      if (error?.code === "HUB_SHUTDOWN") {
+        // Commands intentionally keep only .transcript, so background completion must resolve.
+        // Leave the row for boot recovery; shutdown is never a content verdict.
+        try { return view(getRow(id)); } catch { return null; }
+      }
       const code = error?.jobCode || (error instanceof HubError ? error.code : "INTERNAL");
       const status = code === "CANCELLED" ? "cancelled" : code === "TIMEOUT" ? "timeout" : "failed";
       const message = String(error?.message || error).slice(0, 400);

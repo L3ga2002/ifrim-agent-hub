@@ -26,7 +26,7 @@ const h = await makeTestHub({ configOverrides: { providerBinaries: {
   treeKill: async () => { throw Object.assign(new Error("injected taskkill failure"), { code: "TEST_KILL" }); },
   killHandle: () => false,
   // Native PID/CreationDate verification is exercised separately by the native-tree tests.
-  snapshot: async () => { const rows = child.exited ? [] : [{ pid: child.pid, parentPid: process.pid, creationDate: child.startedAt, name: "node.exe" }]; hubSnapshots.push(rows); return rows; },
+  snapshot: async () => { const rows = child.exited ? [] : [{ pid: child.pid, parentPid: process.pid, creationDate: identity.creationDate, name: "node.exe" }]; hubSnapshots.push(rows); return rows; },
 } } : {} });
 const hub = h.hub;
 let modelStarts = 0;
@@ -83,7 +83,10 @@ if (mode === "RT-4") {
     await start();
     if (mode === "RT-3b") {
       await waitFor(() => child && hub.runs.activeRuns().some((r) => r.timeline.turn_sent), 15000, 20, { signal: t.signal });
-      identity = { pid: child.pid, creationDate: child.startedAt }; // synthetic identity for the injected snapshot
+      // Widen only this synthetic observation window by 1 ms, even on a same-ms spawn.
+      child.startRequestedAt = new Date(Date.parse(child.startRequestedAt) - 1).toISOString();
+      identity = { pid: child.pid, creationDate: child.startRequestedAt };
+      assert.notEqual(identity.creationDate, child.startedAt);
     }
     throw new Error("ORIGINAL_BODY_ERROR");
   });
@@ -103,7 +106,7 @@ test(`${mode} observer`, { timeout: mode === "RT-3b" ? 75000 : 45000 }, async (t
     if (identity) {
       assert.equal(hubSnapshots.length, 2, "one failure-tree snapshot and one fresh close verification");
       assert.ok(hubSnapshots[0].some((r) => r.pid === child.pid && r.creationDate === identity.creationDate));
-      assert.ok(error.message.includes(identity.creationDate));
+      assert.ok(error.message.includes(`CreationDate=${identity.creationDate}`));
     }
     assert.equal(child.child.stdout.listenerCount("data"), 0, "survivor's DB consumers detached");
     await child.exit; // bounded fixture self-exits; never hide a survivor with unref or a force exit

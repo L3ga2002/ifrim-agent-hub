@@ -45,33 +45,33 @@ test("round4 descendant exit bound survives later PID reuse and absence", () => 
   assert.deepEqual(verifiedFailureTree(tree, [row]), [], "an exited identity cannot be resurrected");
 });
 
-for (const fail of [false, true]) test(`round4 root exited before late close: taskkill failure=${fail}`, async (t) => {
+for (const observed of [false, true]) test(`round5 exited root retains inherited stdout: descendant observed=${observed}`, { timeout: 25000 }, async (t) => {
   let fallback = 0, snapshots = 0;
+  const ready = deferred();
+  let descendant;
   const supervisor = createSupervisor({ config,
-    treeKill: async (record) => {
-      // Hold the close notification while the process handle already has an exit code.
-      const listeners = record.child.listeners("close");
-      record.child.removeAllListeners("close");
-      const exited = new Promise((resolve) => record.child.once("exit", resolve));
-      record.child.kill("SIGKILL"); await exited;
-      t.after(() => { for (const listener of listeners) listener(record.child.exitCode); });
-      if (fail) throw new Error("late taskkill failure");
-      return { exitCode: 0 };
-    },
-    snapshot: async () => { snapshots++; return []; },
+    // Never target the exited root's PID; the real descendant exits on its own timer.
+    snapshot: async () => { snapshots++; return observed ? [descendant] : []; },
     killHandle: () => { fallback++; return false; },
   });
-  const record = launch(supervisor);
-  t.after(() => supervisor.close());
-  const started = performance.now();
-  const result = await supervisor.stop(record.key, { graceMs: 0 });
-  assert.equal(result.stopped, true);
+  const record = supervisor.start({ key: "pipe-root", executable: process.execPath,
+    args: [path.join(FIXTURES, "cleanup-pipe-holder.mjs")], cwd: FIXTURES,
+    onStdoutLine: (line) => { descendant = JSON.parse(line); ready.resolve(); } });
+  const rootExit = new Promise((resolve) => record.child.once("exit", resolve));
+  t.after(async () => { await record.exit; await supervisor.close(); });
+  await ready.promise; await rootExit;
+  assert.equal(record.child.exitCode, 0);
+  assert.equal(record.exited, false, "exit is not close while the descendant holds stdout");
+  assert.equal(supervisor.list().length, 1);
+  const closed = await supervisor.close();
+  assert.equal(record.exited, false, "the fixture pipe is still held when cleanup reports");
+  assert.equal(closed.results[0].stopped, false);
   assert.equal(fallback, 0);
-  assert.equal(result.error?.handle, undefined);
-  assert.ok(performance.now() - started < 4000, "no extra 8 s exit wait");
-  assert.equal(Boolean(record.treeUnverified), fail);
-  assert.deepEqual((await supervisor.close()).survivors, []);
-  assert.equal(snapshots, fail ? 2 : 0);
+  assert.equal(snapshots, 2, "failure snapshot and fresh identity verification");
+  assert.ok(closed.survivors.some((r) => r.key === record.key), "an absent root snapshot cannot erase an open owned handle");
+  assert.equal(closed.survivors.some((r) => r.pid === descendant.pid && r.creationDate === descendant.creationDate), observed);
+  await record.exit;
+  assert.deepEqual(supervisor.list(), []);
 });
 
 test("round4 shutdown waits for preparation beyond the former 25 s bound", async (t) => {

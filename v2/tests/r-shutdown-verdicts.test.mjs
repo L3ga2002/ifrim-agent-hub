@@ -54,7 +54,7 @@ for (const kind of ["pin", "ingest", "qa", "render", "capture", "transcribe-extr
         voiceEngine: { verifyIntegrity: async () => ({ ok: true, fixture: true }), activity: () => ({ running: false, pending: 0 }),
           paths: { stt: path.join(h.dataDir, "synthetic-model-placeholder") } } });
       const work = await transcriber.start({ absPath: file, allowedRoots: [sourceDir], actor: "test", channel: "test" });
-      await assert.rejects(work.done, (error) => error.code === "HUB_SHUTDOWN");
+      assert.equal((await work.done).status, "running");
       assert.equal(transcriber.get(work.transcript.id).status, "running", "boot owns interrupted transcription");
       assert.equal(db.prepare("SELECT COUNT(*) AS n FROM events WHERE type = 'media.transcript.failed'").get().n, 0);
     } else if (kind === "render") {
