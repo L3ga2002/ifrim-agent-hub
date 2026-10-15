@@ -401,3 +401,45 @@ Noile defecte: id-ul returnat greșit este prins prin `ids` (AC-4 neschimbat rap
 R-CODES folosește aceleași coduri T-001/T-002 în constatări, completări și review, prin `codedReviewFindings`; candidații istorici fără cod păstrează F1/F2. Fluxul simulat trece prin două cicluri de autor, reviewer independent, protejare, baseline, implementare, verificări și QA până la DELIVERY_READY; niciun furnizor real nu este apelat.
 
 Verificare finală: secțiunea contractului are 6134 octeți pentru autor și 6144 pentru reviewer (limită testată 6 KB, inclusiv extrase). Cele 11 suite cerute: 307 teste trecute, 0 eșuate, 0 sărite la ultimele rulări; INT-05 a fost rerulat după înlocuirea tuturor aparițiilor versiunii în acel caz. Nicio suită blocată de sandbox. Cele 58 de fișiere existente din cele două directoare de dovezi au fost comparate cu HEAD: identice, cu excepția README, al cărui prefix original este identic și căruia i s-a adăugat numai această secțiune.
+
+## 2.14.16-m11 — part A: R-BRIEF + R-CONTENT
+
+Dataset-only examples now live outside EXPERIMENT_DATASETS. `datasetSkeleton` renders the frozen declaration's clock, day, initial rows, columns and historical insertion; its default output is byte-identical to the coordinator's 163-line, 11,553-byte skeleton. `datasetFragments` extracts F1–F5 from those same bytes (5/8/8/7/3 lines). The author receives the full skeleton; the reviewer receives F1–F3 and the three boundaries (13:00 free only before insertion; no three-seed whole-table equality after other rows exist; expectations from the contract and POST responses). Rewrites must add next to kept checks, never replace the previous candidate with this example.
+
+The dataset contract is 5,630 bytes for the author / 5,640 for the reviewer (cap 6,144); the new patterns sections are 12,104 / 2,850 bytes (caps 13 KiB / 4 KiB). Briefs without a dataset remain byte-identical to dataset-before.json. Dataset identity `76c76ccd28ff67c356afff9f4dd56dde8b40f3f8716ed2840419622aed673ae0` and h2 spec identity `6b6101adb4e2182657d099c20c9a77643210217be27a4a3de61e5baa67224ba1` are unchanged.
+
+Before TEST_AUTHORING dispatch, Factory extracts the js block from this mission's final rendered brief and calls normalizeNeeds + lintTestBody with its spec, criteria, facts and the skeleton's own manifest. `authoring.briefValidation` and `factory.test_brief_validated` retain its sha256, manifest and lint result. A violation holds step 0 with kind `brief`, before dispatchRun. The test-only renderer seam is instance-local and unavailable outside test mode. No lint rule, normalization, header v2, json-exposure v1, amendment/inventory policy or reauthorMax was changed.
+
+`correction-probes.mjs` keeps the coordinator's exact mutations separate from the historical 29 + 8 + 4 variants:
+
+- T-001: initial data phone lost at restart (`628755deb196`).
+- T-002: historical row changed by debug, restored by next request (`749d6bc72246`); depends on the declared parameter order.
+- T-003: 13:00 not free before historical insertion (`7e409a8b111f`), a PRECONDITION_STOP, never a defect rejection or a pass.
+
+`h2d-ebecb7bf6241.test.mjs.txt` and `.manifest.json`: derived by the coordinator from 87a6755f by adding ONLY the T-001..T-003 completions (dataset-reference patterns); not a model output; h2-c1 unchanged. Full assembled sha256: `ebecb7bf624132fa99075b7722caa0fdf7aae9c1d4f7eb0822011d2ee1ec39c4`. Static checks retain all 39 h2-c1 assertions. Its runtime calibration JSON is for the coordinator to produce under a new identity.
+
+Tracked calibration (no Hub, model, git or credentials):
+
+```text
+node v2/tests/manual/s25-calibrate.mjs --candidate <assembled test file> --out <new json>
+```
+
+The exported `calibrateS25` runs sequentially: correct, original twice + classifyProof, exactly 41 defective variants, then the separate correctionProbes block. It uses the existing variants, TAP parser, test-status classifier and proof classifier. Each child has the existing 20-second bound. Node's single-file `--test-isolation=none` avoids an unowned test-worker descendant; the header and candidate bytes are unchanged. An observational preload records each child's PID and Node process start time (`performance.timeOrigin`), followed by an OS liveness check after child termination. An unverified/reused/live PID is a technical stop, never a successful calibration. No force-exit flag is used. JSON includes full TAP, errors/classes, cleanup, timings and process receipts; output refuses to overwrite an existing file. Technical failures stop the sequence and remain distinct from behavioural rejection.
+
+`r-brief.test.mjs` pins real-spec cycle 0/1 examples, exact h2-c0 reasons, h2-c1/reference lint, M1/M2 rejections, section budgets, fragment boundaries, immutable identities, the replacement/amendment trap, runtime calibration and Factory dispatch/hold with fake providers. Runtime verified in isolation: skeleton correct 6/6, original twice PROVEN on exposure assertions, 41/41 assertion rejections, 2/2 correction defects rejected, T-003 stopped on its precondition; h2-c1 passes both correction defects while dataset-reference rejects them and passes the correct app 6/6. HUB_CLEANUP and child-process disappearance were verified on these runs.
+
+The Factory fake-provider integration case is supplied for the coordinator's regression: it uses makeTestHub, whose existing fixture setup runs git init/add/commit. It was not run under this implementation's no-git-state-command guardrail. This is not evidence of live Hub/provider readiness.
+
+### Part A follow-up — helper eligibility and mission criteria
+
+The patterns section and pre-dispatch lint now require both `spec.dataset` and `spec.hubHelpers` containing `json-exposure`. Legacy/replay dataset missions without that helper retain only the dataset contract and dispatch without a brief gate or validation event. Non-dataset briefs remain unchanged.
+
+The skeleton and its manifest are generated from the mission's `verify: "test"` criteria: `public_omits` supplies the base-list and historical cases, `anon_params` the parameter case, and `required_refusal`, `internal_persistence`, `valid_accepted` their respective controls. Names use each criterion's own id; its guard flag selects control/pass versus check/fail. Absent optional kinds contribute no case. A missing/unsupported test kind, or missing `public_omits`/`anon_params`, omits the patterns section and records a plain `briefValidation.skipped` reason in the existing validation event without blocking author dispatch. Non-test criteria do not affect eligibility.
+
+The full S25 spec still renders exactly the coordinator's 11,553 bytes (body sha256 `ea139eacbf7a95e65b0f78eb2da714aa56bb40cde3ac851f57a05e8ab55d946e`); the earlier statement about default output now refers to explicitly supplying that spec's criteria. The four-test-criterion planner spec without `required_refusal` renders five cases, omits the refusal body, preserves F1–F5 and lints clean, including with different criterion ids. The runtime matrix was rerun: correct 6/6, original twice PROVEN, 41/41 defective variants rejected, 2/2 correction defects rejected, T-003 PRECONDITION_STOP, cleanup/process disappearance checked.
+
+`r-amend.test.mjs` was restored byte-for-byte from b111d1c (sha256 `942bcff55138af887ef55989a1ca1fd31cda77d09a208f7e47bf283873280cd5`), retaining its historical dataset while omitting the helper. T-BRIEF-10 supplies a valid project name and now covers clean dispatch, forced failure with zero runs, no-helper dispatch and unknown-kind skipped evidence/dispatch. T-BRIEF-12/13 cover four test criteria, renumbering and eligibility boundaries.
+
+Final local follow-up selections: 221 passed, 0 failed, 0 cancelled, 0 skipped. Counts by suite: r-brief 12; r-dataset 8; r-harness 11; r-existing 8; r-json 63; r-amend 11; r-output 5; r-stage0-repair 12; m11-l5-test-first 50; m11-l5-factory-stage0 1; m11-l5-ui 6; m11-l5-wave-a-support 21; m11-l5-wave-b 3; stage-finalizare 10. These are selected local cases, not full integration-suite results. The first new-test run had 8 passes/2 failures because the tests included the planner's extra review criterion in their test-criterion selection; corrected selections then passed 10/10. T-BRIEF-08/09 separately passed 2/2.
+
+The coordinator must rerun T-BRIEF-10, T-GATE-01 and the remaining Factory integrations (including the reported S0R-09/17/23/32 regressions): their existing helpers run git state commands in temporary repositories. FZ-07 was not run because it launches bundled Chromium, contrary to the Brave-only preference; the other stage-finalizare cases passed without a browser. No new source-level test skips or timeout increases were introduced. The 60 historical fixture hashes, helpers.mjs, frozen dataset/spec identities and original README prefix were rechecked unchanged; config still differs only by HUB_VERSION.

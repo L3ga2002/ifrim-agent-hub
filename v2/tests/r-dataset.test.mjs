@@ -146,7 +146,7 @@ test("T-DATASET-04", (t) => {
     const section = datasetBrief(dataset, { review }), brief = review ? buildTestReviewBrief({ spec, harness: 2 }) : buildAuthorBrief({ spec, harness: 2 });
     assert.equal(brief.split("## Contractul experimentului (date martor fixate de Hub)").length, 2); assert.ok(brief.includes(section));
     assert.ok(brief.indexOf(section) > brief.indexOf("## Verificări puse de Hub"));
-    for (const text of [dataset.clock, dataset.day, JSON.stringify(dataset.initial), JSON.stringify(dataset.historical), JSON.stringify(dataset.types), dataset.scope, "R-DATASET", "R-VALUES", "R-IDS", "CONTROL ISTORIC", "WHERE id = ?", "booking.id", "new Set", "await srv.close()", "assert.deepEqual(rows, EXPECTED"]) assert.ok(section.includes(text), text);
+    for (const text of [dataset.clock, dataset.day, JSON.stringify(dataset.initial), JSON.stringify(dataset.historical), JSON.stringify(dataset.types), dataset.scope, "R-DATASET", "R-VALUES", "R-IDS", "CONTROL ISTORIC", "booking.id", "Snapshot SELECT *", "rândurile filtrate la id-urile inițiale = EXPECTED", "13:00 free", "Schelet validat de Hub"]) assert.ok(section.includes(text), text);
     for (const source of dataset.sources) for (const text of [source.path, source.sha256.slice(0, 12), source.what, ...source.excerpt.split("\n")]) assert.ok(section.includes(text), text);
     if (review) assert.ok(section.includes("covered:false"));
     assert.ok(section.includes("în cazul istoric, values = telefoanele inițiale declarate"));

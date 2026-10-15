@@ -20,7 +20,7 @@ import { renderChanges } from "./diff.mjs";
 import { integrityFindings, isTestFirstBlocking } from "./integrity.mjs";
 import { contractDrift, publicReadRoutes, readPublicClient } from "./supersede.mjs";
 import { buildReviewBrief, parseReview, BLOCKING_SEVERITIES } from "./review.mjs";
-import { buildAuthorBrief, parseAuthorOutput, lintTestBody, normalizeNeeds, TEST_HARNESS_VERSION, baselineGate, assembleTestFile, classifyProof, proofSignature, buildTestReviewBrief, parseTestReview, ownerSummary, ownerOutcome,
+import { buildAuthorBrief, lintDatasetBrief, parseAuthorOutput, lintTestBody, normalizeNeeds, TEST_HARNESS_VERSION, baselineGate, assembleTestFile, classifyProof, proofSignature, buildTestReviewBrief, parseTestReview, ownerSummary, ownerOutcome,
   assertionInventory, compareInventory, amendmentViolations, completionSignals, exportNamesOf, testSlotOf, testFirstScope, T_STAGE, T_ALREADY_PASSES, T_NOT_HERMETIC, T_PROJECT_CHANGED, T_REVIEW_INCONCLUSIVE, T_STOP_STAGE0, REVIEW_CAUSES, PROOF_CAUSES, TEST_FIRST_LIMITS, HUB_TEST_DIR } from "./test-first.mjs";
 import { runE2E, browserStatus } from "../tools/browser.mjs";
 import { resolveRoleBindings, resolveBinding, normalizeBindingRequest, bindingLabel } from "../policy/model-binding.mjs";
@@ -97,6 +97,7 @@ export function createFactory(deps) {
   // 2.12.2 (P0-R3): test mode only (setTurnTimeScaleForTests) — shrinks the per-turn limits sent to the run manager so a timeout can be
   // exercised in seconds; the minutes recorded, shown and hashed stay the plan's own. Always 1 outside test mode.
   let turnTimeScale = 1;
+  let authorBriefRenderer = buildAuthorBrief;
   // Closure R-ROLL-02, test mode only (setStartFaultForTests): called at the interruption points of a start (the moves, the snapshot,
   // the start record) so a test can fail the start there. Always null outside test mode.
   let startFault = null;
@@ -1760,8 +1761,16 @@ export function createFactory(deps) {
     const previous = [...(a.rejected || []).filter((r) => r.cycle === a.cycle - 1).flatMap((r) => r.reasons || []), ...(a.retryProblems || [])].slice(0, 20);
     const previousCandidate = previousCandidateOf(missionId, a);
     if (a.cycle > 0 && !previousCandidate) return holdPreviousMissing(missionId, a);
-    const brief = buildAuthorBrief({ harness: TEST_HARNESS_VERSION, mission: { id: missionId, title: mission.title }, spec: spec.spec, specVersion: spec.version, specSha: spec.sha256, authoring: { testRef: a.testRef },
-      cycle: a.cycle, previousProblems: previous, previousCandidate, facts: authoringFacts(missionId, a, projects.get(mission.projectId)) });
+    const facts = authoringFacts(missionId, a, projects.get(mission.projectId));
+    const brief = authorBriefRenderer({ harness: TEST_HARNESS_VERSION, mission: { id: missionId, title: mission.title }, spec: spec.spec, specVersion: spec.version, specSha: spec.sha256, authoring: { testRef: a.testRef },
+      cycle: a.cycle, previousProblems: previous, previousCandidate, facts });
+    if (spec.spec.dataset && spec.spec.hubHelpers?.includes("json-exposure")) {
+      const evidence = lintDatasetBrief(brief, { spec: spec.spec, facts, testRef: a.testRef, stagingRef: a.stagingRef, workType: f.workType });
+      updateAuthoring(missionId, { briefValidation: { ...evidence, cycle: a.cycle, at: now() } });
+      bus.emit({ type: "factory.test_brief_validated", scopeType: "mission", scopeId: missionId, source: "factory", payload: { cycle: a.cycle, ...evidence } });
+      if (!evidence.skipped && !evidence.lint.ok) return holdStageZero(missionId, { kind: "brief", text: "Exemplul de test pregătit de Hub nu trece verificarea proprie. Pasul 0 se oprește înainte de apelul autorului.",
+        details: evidence.lint.violations.map((v) => v.plain + " (" + v.detail + ")"), taskId: a.authorTaskId });
+    }
     const reason = authorStageReason(a, spec);
     if (f.stage !== "TEST_AUTHORING" || f.stageReason !== reason) bus.transaction(() => setStage(missionId, "TEST_AUTHORING", { waitReason: "provider", reason }));
     return dispatchRun(missionId, { stage: "TEST_AUTHORING", taskId: a.authorTaskId, role: ROLE_OF_STAGE.TEST_AUTHORING, access: "read-only", conversationId: a.authorConversationId,
@@ -2927,6 +2936,11 @@ export function createFactory(deps) {
       if (!(Number.isFinite(n) && n > 0 && n <= 1)) throw new HubError("validation", "Scala limitelor pe tură e între 0 și 1");
       turnTimeScale = n;
       return n;
+    },
+    /** R-BRIEF fault injection is instance-local and refused outside test mode. */
+    setAuthorBriefRendererForTests: (fn) => {
+      if (!config.testMode) throw new HubError("policy", "Rendererul de brief poate fi înlocuit doar în modul de test");
+      authorBriefRenderer = typeof fn === "function" ? fn : buildAuthorBrief;
     },
     /** Closure R-ROLL-02, test mode only: fn(point, item) is called at copy / verify / rename / remove / record / snapshot / start_record. */
     setStartFaultForTests: (fn) => {

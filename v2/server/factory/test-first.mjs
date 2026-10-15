@@ -1,4 +1,4 @@
-import { datasetBrief } from "./dataset.mjs";
+import { datasetBrief, datasetPatternsBrief, extractDatasetSkeleton, datasetSkeletonPlan } from "./dataset.mjs";
 export { datasetBrief } from "./dataset.mjs";
 import path from "node:path";
 import vm from "node:vm";
@@ -848,6 +848,7 @@ export function buildAuthorBrief({ mission = {}, spec = {}, specVersion = 1, spe
   ];
   if (spec.hubHelpers?.includes("json-exposure")) lines.push(...exposureBrief());
   if (spec.dataset) lines.push(datasetBrief(spec.dataset));
+  if (!datasetSkeletonPlan(spec).skipped) lines.push(datasetPatternsBrief(spec.dataset, { criteria: spec.acceptance, loadPath: `${depthUp}src/server-app.js` }));
   if (files.length) {
     lines.push("## Fișierele sursă ale proiectului (azi)", ...files.map((f) => `- ${f}${Array.isArray(exportsOf[f]) && exportsOf[f].length ? ` — exportă: ${exportsOf[f].slice(0, 30).join(", ")}` : ""}`), "");
   }
@@ -873,6 +874,18 @@ export function buildAuthorBrief({ mission = {}, spec = {}, specVersion = 1, spe
     ]), ...(cycle > 0 ? { completes: [{ ref: completionItems(previousCandidate)[0]?.ref || "F1", by: "numele cazului: ce verifică noua verificare" }] } : {}) }, null, 2),
     "```");
   return redactText(lines.join("\n"));
+}
+
+/** Dataset-only preflight: lint the final brief bytes using the candidate path and the example's own manifest. */
+export function lintDatasetBrief(brief, { spec, facts = {}, testRef, stagingRef, workType = spec.workType } = {}) {
+  const plan = datasetSkeletonPlan(spec);
+  if (plan.skipped) return plan;
+  const body = extractDatasetSkeleton(brief);
+  if (body === null) return { sha256: null, manifest: plan.manifest, lint: { ok: false, violations: [{ rule: "brief_skeleton_missing", plain: "Exemplul Hub lipsește sau este ambiguu", detail: "schelet", line: null }], signals: [], facts: {} } };
+  const needs = normalizeNeeds(body, plan.manifest.needs);
+  const manifest = { ...plan.manifest, needs: needs.effective, needsDeclared: needs.declared, needsCompleted: needs.completed };
+  const lint = lintTestBody(body, { manifest, criteria: spec.acceptance, workType, testRef, stagingRef, projectFiles: facts.files, moduleExports: facts.exports, spec });
+  return { sha256: sha256(body), manifest, lint };
 }
 
 /** Normalizes a body: BOM and CR removed, trailing whitespace trimmed, one final newline. */
@@ -2244,6 +2257,7 @@ export function buildTestReviewBrief({ mission = {}, spec = {}, specVersion = 1,
   ];
   if (spec.hubHelpers?.includes("json-exposure")) lines.push(...exposureBrief(true));
   if (spec.dataset) lines.push(datasetBrief(spec.dataset, { review: true }));
+  if (!datasetSkeletonPlan(spec).skipped) lines.push(datasetPatternsBrief(spec.dataset, { review: true, criteria: spec.acceptance, loadPath: `${"../".repeat(Math.max(0, testRef.split("/").length - 1))}src/server-app.js` }));
   lines.push("## Inventarul variantei curente", AMEND_RULE,
     "Când o constatare critică o verificare existentă, clasifică-o în checks: [{ id, nature: insufficient | wrong, why }]. insufficient = corectă, dar nu acoperă tot ce se cere: va fi completată, niciodată eliminată. wrong = verifică ceva necerut de proprietar, ar respinge o implementare corectă sau nu poate trece niciodată: poate fi corectată ori înlocuită. O critică nu este permisiune de ștergere. why: 10–200 caractere.",
     "```json", fenceSafe(JSON.stringify(inventory.map(({ id, test, criterion, statement }) => ({ id, test, criterion, statement })), null, 2)), "```");
