@@ -109,10 +109,12 @@ export function datasetProblem(dataset, projectRoot) {
 }
 
 /** Frozen facts and obligations; executable patterns have their own bounded section. */
-export function datasetBrief(dataset, { review = false } = {}) {
+export function datasetBrief(dataset, { review = false, criteria = [], plan = {} } = {}) {
   const safe = (s) => String(s).replace(/```/g, "'''");
   const { clock, day, initial, historical, types, scope } = dataset;
   const provenance = Object.groupBy(dataset.sources, (s) => s.path);
+  const ids = (kind) => criteria.filter((c) => c.verify === "test" && c.kind === kind).map((c) => c.id).join("/");
+  const refusal = ids("required_refusal"), controls = [ids("internal_persistence"), ids("valid_accepted")].filter(Boolean).join("/");
   return [
     "## Contractul experimentului (date martor fixate de Hub)",
     `now local ${clock}; zi ${day}.`,
@@ -124,10 +126,10 @@ export function datasetBrief(dataset, { review = false } = {}) {
     "R-DATASET: pornire normală, now declarat, stocare temporară. Ziua întreagă = EXPECTED înainte de POST1, pe coloanele declarate, ordonate; după repornire, rândurile filtrate la id-urile inițiale = EXPECTED și prima programare recitită după id. EXPECTED copiat de aici, nu din răspunsuri/cod modificabil. Nu completa phone; nu opri/șterge inițializarea. DATE MARTOR: = regresie de inițializare / precondiție invalidă, nu expunere.",
     "R-VALUES: DUPĂ validare, deduplică telefoanele inițiale declarate + cele exacte trimise în ambele POST-uri. Fără filter/typeof/limite de lungime ce elimină valori. Exclude istoricul fără telefon; fără reguli noi de format/lungime în aplicație.",
     "R-IDS: booking.id din AMBELE POST-uri (înainte/după repornire), recitire/comparare după ACEL id. Fiecare id inițial/creat în tabloul listei la bază/FIECARE parametru anonim. Nu doar identificare prin telefon. Mesaje ID API:.",
-    "CONTROL ISTORIC: AC-1 separat: inserare declarată/repornire. Snapshot SELECT * imediat după inserare; deepEqual rând întreg imediat după cererea de bază și FIECARE parametru, în buclă; id listat, phone ''. exposes(corp brut)=[]; în cazul istoric, values = telefoanele inițiale declarate. Mesaje CONTROL ISTORIC:/EXPUNERE:.",
-    "Păstrează AC-3: stocarea ÎNTREAGĂ înainte/după FIECARE refuz; AC-4/AC-5, slots din API, exposes după eliberarea resurselor, cleanup prin setup().",
+    `CONTROL ISTORIC: ${ids("public_omits") || "caz"} separat: inserare declarată/repornire. Snapshot SELECT * imediat după inserare; deepEqual rând întreg imediat după cererea de bază și FIECARE parametru, în buclă; id listat, phone ''. exposes(corp brut)=[]; în cazul istoric, values = telefoanele inițiale declarate. Mesaje CONTROL ISTORIC:/EXPUNERE:.`,
+    `Păstrează ${refusal ? `${refusal}: stocarea ÎNTREAGĂ înainte/după FIECARE refuz; ` : ""}${controls ? `${controls}, ` : ""}slots din API, exposes după eliberarea resurselor, cleanup prin setup().`,
     "Înainte de închiderea sesiunii și inserarea istoricului: GET slots pentru ziua fixată și spalare-exterior, status 200, 13:00 free.",
-    "Tiparele executabile sunt în secțiunea Schelet validat de Hub (date martor).", "",
+    plan.manifest ? "Tiparele executabile sunt în secțiunea Schelet validat de Hub (date martor)." : "Scrie testele conform criteriilor și contractului de mai sus.", "",
   ].join("\n");
 }
 
@@ -171,6 +173,7 @@ export function datasetSkeletonManifest(criteria) {
 /** Rendering and pre-dispatch validation use the same eligibility decision. */
 export function datasetSkeletonPlan(spec) {
   if (!spec.dataset) return { skipped: "Specificația nu declară date martor." };
+  if (String(spec.workType).toUpperCase() !== "FEATURE") return { skipped: "Scheletul Hub este disponibil doar pentru lucrări de tip FEATURE." };
   if (!spec.hubHelpers?.includes("json-exposure")) return { skipped: "Specificația nu include ajutorul Hub json-exposure, necesar scheletului." };
   const skipped = datasetCriteriaProblem(spec.acceptance);
   return skipped ? { skipped } : { manifest: datasetSkeletonManifest(spec.acceptance) };
@@ -380,9 +383,17 @@ export function datasetPatternsBrief(dataset, { review = false, criteria = [], l
 
 /** Extract only the example actually shown in this section of the final, redacted brief. */
 export function extractDatasetSkeleton(brief) {
-  const sections = String(brief).split(DATASET_PATTERNS_HEADING + "\n");
-  if (sections.length !== 2) return null;
-  const section = sections[1].split(/\n## /)[0];
+  const lines = String(brief).split("\n"), sections = [];
+  let fenced = false, start = null;
+  for (let i = 0; i < lines.length; i++) {
+    if (/^```/.test(lines[i])) { fenced = !fenced; continue; }
+    if (fenced) continue;
+    if (/^## /.test(lines[i]) && start !== null) { sections.push(lines.slice(start, i).join("\n")); start = null; }
+    if (lines[i] === DATASET_PATTERNS_HEADING) start = i + 1;
+  }
+  if (start !== null) sections.push(lines.slice(start).join("\n"));
+  if (sections.length !== 1) return null;
+  const section = sections[0];
   const blocks = [...section.matchAll(/^```js\n([\s\S]*?)^```\s*$/gm)];
   return blocks.length === 1 ? blocks[0][1] : null;
 }

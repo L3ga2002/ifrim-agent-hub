@@ -805,6 +805,7 @@ export function buildAuthorBrief({ mission = {}, spec = {}, specVersion = 1, spe
   const exportsOf = facts.exports && typeof facts.exports === "object" ? facts.exports : {};
   const slot = testSlotOf({ specSha, cycle });
   const depthUp = "../".repeat(Math.max(0, testRef.split("/").length - 1));
+  const datasetPlan = datasetSkeletonPlan(spec);
   const lines = [
     `# Test de acceptanță — ${String(mission.title || spec.title || "").slice(0, 160)}`,
     `testSlot ${slot} (specificația v${Number(specVersion) || 1}, ciclul de autor ${Number(cycle) || 0})`,
@@ -847,8 +848,8 @@ export function buildAuthorBrief({ mission = {}, spec = {}, specVersion = 1, spe
     "",
   ];
   if (spec.hubHelpers?.includes("json-exposure")) lines.push(...exposureBrief());
-  if (spec.dataset) lines.push(datasetBrief(spec.dataset));
-  if (!datasetSkeletonPlan(spec).skipped) lines.push(datasetPatternsBrief(spec.dataset, { criteria: spec.acceptance, loadPath: `${depthUp}src/server-app.js` }));
+  if (spec.dataset) lines.push(datasetBrief(spec.dataset, { criteria: spec.acceptance, plan: datasetPlan }));
+  if (!datasetPlan.skipped) lines.push(datasetPatternsBrief(spec.dataset, { criteria: spec.acceptance, loadPath: `${depthUp}src/server-app.js` }));
   if (files.length) {
     lines.push("## Fișierele sursă ale proiectului (azi)", ...files.map((f) => `- ${f}${Array.isArray(exportsOf[f]) && exportsOf[f].length ? ` — exportă: ${exportsOf[f].slice(0, 30).join(", ")}` : ""}`), "");
   }
@@ -868,7 +869,7 @@ export function buildAuthorBrief({ mission = {}, spec = {}, specVersion = 1, spe
   lines.push("## Răspuns obligatoriu",
     "Un bloc ```js cu DOAR corpul testului, apoi un singur bloc ```json, exact cu această structură:",
     "```json",
-    JSON.stringify({ testSlot: slot, needs: [], newApi: [], ...(cycle > 0 && previousCandidate ? { amends: previousCandidate.sha, removed: [{ id: "P1", basis: "wrong", why: "justificarea verificării greșite", by: "verificarea înlocuitoare" }] } : { removed: [] }), api: workType === "FEATURE" ? "o propoziție: forma API aleasă" : "", cases: criteria.flatMap((c) => c.guard ? [{ name: `${c.id} control: …`, criterion: c.id, kind: "control", today: "pass" }] : [
+    JSON.stringify({ testSlot: slot, needs: [], newApi: [], ...(cycle > 0 && previousCandidate ? { amends: previousCandidate.sha, removed: [{ id: "P1", basis: "wrong", why: "justificarea verificării greșite", by: "verificarea înlocuitoare" }] } : { removed: [] }), api: workType === "FEATURE" ? "o propoziție: forma API aleasă" : "", cases: datasetPlan.manifest?.cases ?? criteria.flatMap((c) => c.guard ? [{ name: `${c.id} control: …`, criterion: c.id, kind: "control", today: "pass" }] : [
       { name: `${c.id}: …`, criterion: c.id, kind: "check", today: "fail" },
       ...(workType === "BUGFIX" ? [{ name: `${c.id} control: …`, criterion: c.id, kind: "control", today: "pass" }] : []),
     ]), ...(cycle > 0 ? { completes: [{ ref: completionItems(previousCandidate)[0]?.ref || "F1", by: "numele cazului: ce verifică noua verificare" }] } : {}) }, null, 2),
@@ -2256,8 +2257,9 @@ export function buildTestReviewBrief({ mission = {}, spec = {}, specVersion = 1,
     "",
   ];
   if (spec.hubHelpers?.includes("json-exposure")) lines.push(...exposureBrief(true));
-  if (spec.dataset) lines.push(datasetBrief(spec.dataset, { review: true }));
-  if (!datasetSkeletonPlan(spec).skipped) lines.push(datasetPatternsBrief(spec.dataset, { review: true, criteria: spec.acceptance, loadPath: `${"../".repeat(Math.max(0, testRef.split("/").length - 1))}src/server-app.js` }));
+  const datasetPlan = datasetSkeletonPlan(spec);
+  if (spec.dataset) lines.push(datasetBrief(spec.dataset, { review: true, criteria: spec.acceptance, plan: datasetPlan }));
+  if (!datasetPlan.skipped) lines.push(datasetPatternsBrief(spec.dataset, { review: true, criteria: spec.acceptance, loadPath: `${"../".repeat(Math.max(0, testRef.split("/").length - 1))}src/server-app.js` }));
   lines.push("## Inventarul variantei curente", AMEND_RULE,
     "Când o constatare critică o verificare existentă, clasifică-o în checks: [{ id, nature: insufficient | wrong, why }]. insufficient = corectă, dar nu acoperă tot ce se cere: va fi completată, niciodată eliminată. wrong = verifică ceva necerut de proprietar, ar respinge o implementare corectă sau nu poate trece niciodată: poate fi corectată ori înlocuită. O critică nu este permisiune de ștergere. why: 10–200 caractere.",
     "```json", fenceSafe(JSON.stringify(inventory.map(({ id, test, criterion, statement }) => ({ id, test, criterion, statement })), null, 2)), "```");

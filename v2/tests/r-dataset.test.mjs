@@ -6,7 +6,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawnSync } from "node:child_process";
 import { DatabaseSync } from "node:sqlite";
-import { EXPERIMENT_DATASETS, datasetIdentity, experimentDataset, datasetProblem, datasetBrief, normalizeDataset } from "../server/factory/dataset.mjs";
+import { EXPERIMENT_DATASETS, datasetIdentity, experimentDataset, datasetProblem, datasetBrief, normalizeDataset, datasetSkeletonPlan } from "../server/factory/dataset.mjs";
 import { assembleTestFile, parseTapCases, classifyProof, lintTestBody, exportNamesOf, buildAuthorBrief, buildTestReviewBrief, parseAuthorOutput, parseTestReview, completionItems, completionSignals, normalizeNeeds } from "../server/factory/test-first.mjs";
 import { findingCode, codedReviewFindings } from "../server/factory/review.mjs";
 import { sha256 } from "../server/core/canonical.mjs";
@@ -143,7 +143,7 @@ test("T-DATASET-04", (t) => {
   const { dataset } = declared(t), spec = { ...baseSpec, dataset };
   assert.equal(buildAuthorBrief({ spec: baseSpec, harness: 2 }), before.author); assert.equal(buildTestReviewBrief({ spec: baseSpec, harness: 2 }), before.reviewer);
   for (const review of [false, true]) {
-    const section = datasetBrief(dataset, { review }), brief = review ? buildTestReviewBrief({ spec, harness: 2 }) : buildAuthorBrief({ spec, harness: 2 });
+    const section = datasetBrief(dataset, { review, criteria: spec.acceptance, plan: datasetSkeletonPlan(spec) }), brief = review ? buildTestReviewBrief({ spec, harness: 2 }) : buildAuthorBrief({ spec, harness: 2 });
     assert.equal(brief.split("## Contractul experimentului (date martor fixate de Hub)").length, 2); assert.ok(brief.includes(section));
     assert.ok(brief.indexOf(section) > brief.indexOf("## Verificări puse de Hub"));
     for (const text of [dataset.clock, dataset.day, JSON.stringify(dataset.initial), JSON.stringify(dataset.historical), JSON.stringify(dataset.types), dataset.scope, "R-DATASET", "R-VALUES", "R-IDS", "CONTROL ISTORIC", "booking.id", "Snapshot SELECT *", "rândurile filtrate la id-urile inițiale = EXPECTED", "13:00 free", "Schelet validat de Hub"]) assert.ok(section.includes(text), text);

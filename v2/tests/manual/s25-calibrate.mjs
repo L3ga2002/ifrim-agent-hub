@@ -11,6 +11,7 @@ import { buildVariants } from "../fixtures/stage0-s25/variants.mjs";
 import { buildDatasetVariants } from "../fixtures/stage0-s25/dataset-variants.mjs";
 import { buildCorrectionProbes } from "../fixtures/stage0-s25/correction-probes.mjs";
 import { s25Context, S25_APP, readS25, bodyOf, manifestOf } from "./s25-context.mjs";
+import { windowsProcessSnapshot, compareProcessIdentity } from "./s25-process-identity.mjs";
 
 export const CALIBRATION_TIMEOUT_MS = 20000; // Same bound as r-dataset.execute().
 export const CALIBRATION_REF = ".ifrim-hub/staging/privacy.mjs";
@@ -33,10 +34,11 @@ export function executeCalibration(dir, text, { name = "candidate", precondition
   const ms = Math.round(performance.now() - t0), output = String(run.stdout || ""), lines = output.split(/\r?\n/);
   const counts = parseTestOutput(lines).counts, tap = parseTapCases(lines), hung = run.error?.code === "ETIMEDOUT";
   const records = fs.readFileSync(receipt, "utf8").trim().split("\n").filter(Boolean).map((line) => JSON.parse(line));
-  const processes = records.filter((r) => r.event === "start").map((r) => {
-    let gone = false, verificationError = null;
-    try { process.kill(r.pid, 0); } catch (e) { if (e.code === "ESRCH") gone = true; else verificationError = e.code || e.message; }
-    return { pid: r.pid, startTime: r.startTime, startTimeSource: r.startTimeSource, exited: records.some((e) => e.event === "exit" && e.pid === r.pid && e.startTime === r.startTime), gone, verificationError };
+  const starts = records.filter((r) => r.event === "start");
+  const snapshot = windowsProcessSnapshot(starts.map((r) => r.pid));
+  const processes = starts.map((r) => {
+    return { pid: r.pid, creationDate: r.creationDate, startTime: r.startTime, startTimeSource: r.startTimeSource,
+      exited: records.some((e) => e.event === "exit" && e.pid === r.pid && e.creationDate === r.creationDate), ...compareProcessIdentity(r, snapshot) };
   });
   const processesGone = processes.length === 1 && processes[0].pid === run.pid && processes.every((p) => p.gone);
   const failed = tap.cases.filter((c) => !c.ok);
@@ -70,33 +72,38 @@ export async function calibrateS25({ candidate, text = candidate && fs.readFileS
     const variants = { ...DEFECTIVE, ...extra, ...ds }, probes = buildCorrectionProbes(correct);
     if (Object.keys(DEFECTIVE).length !== 29 || Object.keys(extra).length !== 8 || Object.keys(ds).length !== 4 || Object.keys(variants).length !== 41) throw new Error("Historical variant inventory changed");
     const result = { schema: "s25-calibration-2.14.16/v1", candidateSha: sha256(text), specSha: ctx.sha, node: process.execPath, nodeVersion: process.version,
-      timeoutMs: CALIBRATION_TIMEOUT_MS, isolation: "none (one file, one owned child)", lint, manifest, matrix: [], originalRuns: [], proof: null, correctionProbes: { defects: [], preconditions: [] } };
+      timeoutMs: CALIBRATION_TIMEOUT_MS, isolation: "none (one file, one owned child)", lint, manifest, ok: false, matrix: [], originalRuns: [], proof: null, correctionProbes: { defects: [], preconditions: [] } };
     if (!lint.ok) { result.stop = "Candidate lint failed"; return result; }
     const execute = (name, code, precondition = false) => {
       fs.writeFileSync(path.join(ctx.dir, "src/server-app.js"), code);
       const run = executeCalibration(ctx.dir, text, { name, precondition }); onRun(run); return run;
     };
-    result.matrix.push(execute("CORRECT", correct));
-    if (result.matrix[0].verdict !== "PASS") { result.stop = "Correct app did not pass cleanly"; return result; }
-    for (let i = 0; i < 2; i++) {
-      const run = execute("original", source); result.originalRuns.push(run);
-      if (run.verdict === "TECHNICAL_STOP") { result.stop = "Original run stopped technically"; return result; }
-    }
-    result.proof = classifyProof({ runs: result.originalRuns, manifest, criteria: ctx.spec.acceptance, workType: ctx.spec.workType,
-      testRef: CALIBRATION_REF, spec: ctx.spec, test: { text, headerLines: text.split("\n").indexOf("// ---- corpul testului ----") + 1, refs: ["privacy.mjs"], harness: 2 } });
-    for (const [name, code] of Object.entries(variants)) {
-      const run = execute(name, code); result.matrix.push(run);
-      if (run.verdict === "TECHNICAL_STOP") { result.stop = "Variant stopped technically"; return result; }
-    }
-    for (const [group, entries] of Object.entries(probes)) for (const [name, code] of Object.entries(entries)) {
-      const run = execute(name, code, group === "preconditions"); result.correctionProbes[group].push(run);
-      if (run.verdict === "TECHNICAL_STOP") { result.stop = "Correction probe stopped technically"; return result; }
-    }
-    result.ok = result.proof.verdict === "PROVEN" && result.matrix.every((r) => r.asExpected)
-      && result.correctionProbes.defects.every((r) => r.verdict === "ASSERTION_REJECTION")
-      && result.correctionProbes.preconditions.every((r) => r.verdict === "PRECONDITION_STOP");
-    return result;
+    return runCalibrationMatrix({ result, execute, correct, source, variants, probes, prove: (runs) =>
+      classifyProof({ runs, manifest, criteria: ctx.spec.acceptance, workType: ctx.spec.workType,
+        testRef: CALIBRATION_REF, spec: ctx.spec, test: { text, headerLines: text.split("\n").indexOf("// ---- corpul testului ----") + 1, refs: ["privacy.mjs"], harness: 2 } }) });
   } finally { fs.rmSync(root, { recursive: true, force: true, maxRetries: 5 }); }
+}
+
+/** Deterministic orchestration, also exercised without spawning any candidate processes. */
+export function runCalibrationMatrix({ result, execute, correct, source, variants, probes, prove }) {
+  result.ok = false;
+  result.matrix.push(execute("CORRECT", correct));
+  if (result.matrix[0].verdict !== "PASS") { result.stop = "Correct app did not pass cleanly"; return result; }
+  for (let i = 0; i < 2; i++) {
+    const run = execute("original", source); result.originalRuns.push(run);
+    if (run.verdict === "TECHNICAL_STOP") { result.stop = "Original run stopped technically"; return result; }
+  }
+  result.proof = prove(result.originalRuns);
+  for (const [name, code] of Object.entries(variants)) {
+    const run = execute(name, code); result.matrix.push(run);
+  }
+  for (const [group, entries] of Object.entries(probes)) for (const [name, code] of Object.entries(entries)) {
+    const run = execute(name, code, group === "preconditions"); result.correctionProbes[group].push(run);
+  }
+  result.ok = result.proof.verdict === "PROVEN" && result.originalRuns.every((r) => r.asExpected) && result.matrix.every((r) => r.asExpected)
+    && result.correctionProbes.defects.every((r) => r.verdict === "ASSERTION_REJECTION")
+    && result.correctionProbes.preconditions.every((r) => r.verdict === "PRECONDITION_STOP");
+  return result;
 }
 
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
