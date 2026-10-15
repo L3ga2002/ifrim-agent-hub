@@ -87,8 +87,9 @@ test("cleanup fixed-key restart preserves both owned handles without introducing
   assert.ok(first.exited && second.exited);
 });
 
-test("cleanup: explicit guard keeps finally's original error and separately reports cleanup", { timeout: 30000 }, async () => {
+for (const explicit of [false, true]) test(`cleanup: automatic guard preserves original and cleanup errors; explicit=${explicit}`, { timeout: 30000 }, async () => {
   const env = { ...process.env }; delete env.NODE_TEST_CONTEXT;
+  if (explicit) env.HUB_CLEANUP_EXPLICIT = "1"; else delete env.HUB_CLEANUP_EXPLICIT;
   let output = "";
   try { await exec(process.execPath, ["--test", "--test-reporter=tap", path.join(FIXTURES, "cleanup-finally.mjs")], { env, windowsHide: true, timeout: 25000 }); }
   catch (error) { assert.equal(error.code, 1); output = error.stdout + error.stderr; }
@@ -108,7 +109,7 @@ for (const diagnosticFailure of [false, true]) test(`cleanup native tree: owned 
     } : {}),
   });
   const root = supervisor.start({ key: "native-tree", executable: process.execPath,
-    args: [path.join(FIXTURES, "cleanup-tree.mjs")], cwd: FIXTURES,
+    args: [path.join(FIXTURES, "cleanup-tree.mjs"), "--detached-leaf"], cwd: FIXTURES,
     onStdoutLine: (line) => { leaf = JSON.parse(line).grandchild; } });
   t.after(async () => { await supervisor.close(); await root.exit; });
   await waitFor(() => leaf, 5000, 10, { signal: t.signal });
@@ -121,8 +122,9 @@ for (const diagnosticFailure of [false, true]) test(`cleanup native tree: owned 
   const closed = await supervisor.close();
   if (diagnosticFailure) {
     assert.equal(killed, true, "native tree kill did not depend on snapshot availability");
-    assert.equal(snapshots, 1);
-    assert.ok(closed.survivors.some((r) => r.unverified && /snapshot unavailable sentinel/.test(r.snapshotError)));
+    assert.equal(snapshots, 2);
+    assert.deepEqual(closed.survivors, []);
+    assert.ok(closed.unverified.some((r) => /snapshot unavailable sentinel/.test(r.snapshotError)));
   } else assert.deepEqual(closed.survivors, []);
   const after = await supervisorModule.windowsProcesses();
   for (const identity of identities) assert.equal(after.some((r) => r.pid === identity.pid && r.creationDate === identity.creationDate), false);
@@ -160,8 +162,8 @@ test("cleanup failure snapshot precedes handle fallback; normal tree kill never 
     const supervisor = createSupervisor({ config,
       treeKill: async (owned) => { order.push("tree"); if (fail) throw new Error("injected failure"); owned.child.kill("SIGKILL"); },
       snapshot: async () => {
-        order.push("snapshot"); assert.equal(record.exited, false);
-        return [{ pid: record.pid, parentPid: process.pid, creationDate: record.startedAt, name: "node.exe" }];
+        order.push("snapshot");
+        return record.exited ? [] : [{ pid: record.pid, parentPid: process.pid, creationDate: record.startedAt, name: "node.exe" }];
       },
       killHandle: (owned) => { order.push("handle"); return owned.child.kill("SIGKILL"); },
     });

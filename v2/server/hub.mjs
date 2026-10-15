@@ -611,7 +611,8 @@ export function createHub(config, { providerOverrides = {}, homeDir, browserLaun
       catch (cause) { errors.push(new Error(`supervisor.close: ${cause.message}`, { cause })); }
       const survivors = stopped?.survivors || supervisor.list();
       for (const r of survivors) errors.push(new Error(`supervisor survivor ${r.key}: pid=${r.pid}, startedAt=${r.startedAt}, CreationDate=${r.creationDate || "unavailable"}${r.descendants?.length ? `, descendants=${JSON.stringify(r.descendants)}` : ""}${r.snapshotError ? `, snapshot=${r.snapshotError}` : ""}`));
-      if (!survivors.length) await step("runs.settle", () => runs.settle());
+      for (const r of stopped?.unverified || []) errors.push(new Error(`supervisor tree unverified ${r.key}: pid=${r.pid}, startedAt=${r.startedAt}, snapshot=${r.snapshotError}`));
+      await step("runs.settle", () => runs.settle());
       sync("supervisor.detachSurvivors", () => supervisor.detachSurvivors());
       sync("runs.detach", () => runs.detach());
       sync("db.close", () => db.close());

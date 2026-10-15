@@ -4,7 +4,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import path from "node:path";
-import { makeTestHub, enableLive, enrolOwner, waitFor, tempDir } from "./helpers.mjs";
+import { makeTestHub, enableLive, enrolOwner, waitFor, tempDir, FIXTURES } from "./helpers.mjs";
 import { materializeFixture, demoSpec } from "../server/factory/fixtures.mjs";
 import { createHub } from "../server/hub.mjs";
 import { fakeLaunchers } from "./media-helpers.mjs";
@@ -13,7 +13,7 @@ import { finishShutdown } from "../server/runtime/production-shutdown.mjs";
 const deferred = () => { let resolve; const promise = new Promise((r) => { resolve = r; }); return { promise, resolve }; };
 const dispatch = (h, type, payload) => h.hub.commands.dispatch({ type, payload, channel: "test", actor: "test" });
 
-for (const target of ["TEST_PROVING", "CHECKING", "QA"]) test(`review B: shutdown during ${target} cannot evaluate a partial stage`, { timeout: 60000 }, async (t) => {
+for (const phase of ["returned", "running"]) for (const target of ["TEST_PROVING", "CHECKING", "QA"]) test(`review B: shutdown during ${target}, runner ${phase}, cannot evaluate a partial stage`, { timeout: 60000 }, async (t) => {
   const h = await makeTestHub({ queues: true }); t.after(() => h.cleanup());
   await enableLive(h.hub, { access: "workspace-write" });
   const name = target === "TEST_PROVING" ? "bug-demo-test-first" : "bug-demo";
@@ -27,12 +27,26 @@ for (const target of ["TEST_PROVING", "CHECKING", "QA"]) test(`review B: shutdow
   if (target === "TEST_PROVING") { h.queue("claude", "author:bug-ok"); h.queue("codex", "test-review:pass", "factory-write:bug-fix"); }
   else { h.queue("claude", "review:pass"); h.queue("codex", "factory-write:bug-fix"); }
   const entered = deferred(), release = deferred(); t.after(() => release.resolve());
-  const runner = h.hub.factoryRunner.run; let commands = 0, before, after;
+  const runner = h.hub.factoryRunner.run; let commands = 0, before, after, liveRunner;
+  const spawn = h.hub.supervisor.start;
+  h.hub.supervisor.start = (input) => {
+    if (phase === "running" && input.key.includes(`-${target}-`)) {
+      // Keep the real factory runner promise pending on an owned, bounded fixture process.
+      const record = spawn({ ...input, executable: process.execPath,
+        args: [path.join(FIXTURES, "cleanup-bounded.mjs"), "--blocker", "--life=30000"] });
+      liveRunner = record;
+      before = h.hub.factory.view(mission.id);
+      return record;
+    }
+    return spawn(input);
+  };
   h.hub.factoryRunner.run = async (input) => {
-    const result = await runner(input);
     if (input.key.includes(`-${target}-`)) {
       commands++;
-      if (commands === 1) { before = h.hub.factory.view(mission.id); entered.resolve(); await release.promise; }
+    }
+    const result = await runner(input);
+    if (phase === "returned" && input.key.includes(`-${target}-`) && commands === 1) {
+      before = h.hub.factory.view(mission.id); entered.resolve(); await release.promise;
     }
     return result;
   };
@@ -40,11 +54,22 @@ for (const target of ["TEST_PROVING", "CHECKING", "QA"]) test(`review B: shutdow
   await dispatch(h, "approval.decide", { approvalId: requested.approval.id, decision: "approved", displayedHash: requested.approval.payloadHash });
   await h.hub.commands.executeApproved(requested.command.id, "user");
   await waitFor(() => before, 45000, 20, { signal: t.signal });
+  const evidence = h.hub.db.prepare("SELECT * FROM factory_evidence WHERE mission_id = ? ORDER BY id").all(mission.id);
+  if (phase === "running") {
+    assert.equal(liveRunner.exited, false);
+    assert.equal(liveRunner.child.exitCode, null);
+    assert.equal(h.hub.db.prepare("SELECT COUNT(*) AS n FROM leases WHERE holder = ? AND status != 'released'").get(`factory-runner:${mission.id}`).n, 1);
+  }
   const closeDb = h.hub.db.close.bind(h.hub.db);
-  h.hub.db.close = () => { after = h.hub.factory.view(mission.id); closeDb(); };
+  h.hub.db.close = () => {
+    after = h.hub.factory.view(mission.id);
+    assert.deepEqual(h.hub.db.prepare("SELECT * FROM factory_evidence WHERE mission_id = ? ORDER BY id").all(mission.id), evidence, "shutdown:true adds no verdict");
+    closeDb();
+  };
   const closing = h.hub.close();
   await Promise.resolve(); // factory.close raises its fence before the held command returns.
   release.resolve(); await closing;
+  if (phase === "running") assert.equal(liveRunner.exited, true);
   if (target === "TEST_PROVING") assert.ok(before.authoring?.candidate, "held a real candidate before classification");
   assert.equal(commands, 1, "second command never ran");
   assert.equal(after.factory.stage, target, "boot owns recovery; no BLOCKED or partial PASS");
@@ -91,6 +116,55 @@ test("review B D22: real media pin interrupted at close recovers plan and ACTIVE
     assert.equal(next.opsPlans.view(plan.id).steps[0].status, "UNCERTAIN");
     await waitFor(() => next.deliveries.get("shutdown-delivery").status === "NEEDS_OWNER", 1000);
     assert.match(next.opsPlans.view(plan.id).steps[0].error, /Hub repornit/);
+  } finally { await next.close(); }
+});
+
+test("review B: a run visible when close releases admission is INTERRUPTED and consumes no factory attempt", { timeout: 45000 }, async (t) => {
+  const h = await makeTestHub({ queues: true }); t.after(() => h.cleanup());
+  await enableLive(h.hub, { access: "workspace-write" });
+  const dir = path.join(h.dataDir, "visible-project"); materializeFixture("bug-demo-test-first", dir);
+  const project = (await dispatch(h, "project.register_test", { path: dir })).result;
+  h.hub.bus.transaction(() => h.hub.grants.create({ provider: "claude", projectId: project.id, access: "read-only", maxAttempts: 3, maxDurationS: 600, ttlMinutes: 30 }, "test"));
+  const mission = (await dispatch(h, "factory.prepare", { projectId: project.id, ...demoSpec("bug-demo-test-first"),
+    limits: { writerModel: "gpt-fake-sol", reviewerModel: "sonnet", maxAttemptsPerStage: 1 } })).result.mission;
+  h.queue("claude", "author:bug-ok");
+  const held = deferred(), release = deferred();
+  const start = h.hub.runs.start;
+  let visible;
+  h.hub.runs.start = async (input) => {
+    const result = await start(input);
+    visible = result.run; held.resolve();
+    await release.promise;
+    return result;
+  };
+  const factoryClose = h.hub.factory.close;
+  h.hub.factory.close = () => { const closing = factoryClose(); release.resolve(); return closing; };
+  t.after(() => release.resolve());
+  const requested = await dispatch(h, "factory.start", h.hub.factory.view(mission.id).scope);
+  await dispatch(h, "approval.decide", { approvalId: requested.approval.id, decision: "approved", displayedHash: requested.approval.payloadHash });
+  await h.hub.commands.executeApproved(requested.command.id, "user");
+  await held.promise;
+  // The dispatch still awaits runs.start; even a completed provider result cannot become a content verdict at close.
+  await waitFor(() => h.hub.runs.activeCount() === 0, 15000, 20, { signal: t.signal });
+  const before = h.hub.factory.view(mission.id);
+  assert.equal(before.dispatches[0].status, "CLAIMED");
+  await h.hub.close();
+  const next = createHub(h.config, { homeDir: h.homeDir });
+  try {
+    await next.boot();
+    const recovered = next.factory.view(mission.id);
+    assert.equal(recovered.dispatches[0].status, "INTERRUPTED");
+    assert.equal(recovered.dispatches[0].runId, visible.id);
+    assert.deepEqual(recovered.authoring, before.authoring, "no author verdict persisted at close");
+    await enableLive(next, { access: "workspace-write" });
+    let retry = 0;
+    next.runs.start = async () => { retry++; throw new Error("synthetic retry admission observed"); };
+    await next.factory.resume(mission.id);
+    await waitFor(() => retry === 1, 10000, 20, { signal: t.signal });
+    await next.factory.idle(mission.id);
+    const resumed = next.factory.view(mission.id);
+    assert.equal(resumed.dispatches.length, 2, "the sole attempt remains available after interruption");
+    assert.equal(resumed.dispatches[1].request.counted, 1);
   } finally { await next.close(); }
 });
 

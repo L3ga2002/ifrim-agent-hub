@@ -26,6 +26,7 @@ export function createSupervisor({ config, onEvent = () => {}, treeKill = killOw
       if (!snapshotInFlight) snapshotInFlight = drainWithin(Promise.resolve().then(snapshot), 15000, "process snapshot")
         .finally(() => { snapshotInFlight = null; });
       record.failureTree = ownedProcessTree([record], await snapshotInFlight);
+      record.snapshotError = null;
     } catch (error) { record.snapshotError = error.message; }
   }
 
@@ -90,7 +91,7 @@ export function createSupervisor({ config, onEvent = () => {}, treeKill = killOw
   /** Terminates the whole process tree. Windows has no POSIX signals for children: taskkill /T is used. */
   function stop(key, { graceMs = 3000 } = {}) {
     const record = children.get(key);
-    if (!record || record.exited) return Promise.resolve({ stopped: true, alreadyExited: true, method: "exited", pid: record?.pid ?? null, startedAt: record?.startedAt ?? null });
+    if (!record || rootExited(record)) return Promise.resolve({ stopped: true, alreadyExited: true, method: "exited", pid: record?.pid ?? null, startedAt: record?.startedAt ?? null });
     if (record.stopping) return record.stopping;
     record.stopping = (async () => {
       const identity = { pid: record.pid, startedAt: record.startedAt };
@@ -106,18 +107,18 @@ export function createSupervisor({ config, onEvent = () => {}, treeKill = killOw
         record.taskkill = { ok: false, elapsedMs: Date.now() - at, ...error };
         record.treeUnverified = true;
       }
-      const fallback = Boolean(error) || (!record.exited && !(await exitedWithin(record, 8000)));
-      if (fallback) {
-        record.treeUnverified = true;
+      const fallback = Boolean(error) || !(await exitedWithin(record, 8000));
+      if (error) {
         failedStops.set(record.key, record);
         await captureFailedTree(record);
       }
-      if (!record.exited && fallback) {
+      if (!rootExited(record) && fallback) {
         method = "handle";
-        try { if (!killHandle(record)) throw new Error("Owned process handle refused termination"); }
+        try { if (!killHandle(record) && !rootExited(record)) throw new Error("Owned process handle refused termination"); }
         catch (cause) { error = { ...error, handle: cause.message }; }
       }
       const stopped = await exitedWithin(record, error ? 8000 : 1000);
+      if (!stopped && record.taskkill.ok) await captureFailedTree(record);
       if (error || !stopped) failedStops.set(record.key, record);
       return { ...identity, stopped, forced: true, method, taskkill: record.taskkill, ...(error ? { error } : {}) };
     })().finally(() => { record.stopping = null; });
@@ -144,31 +145,37 @@ export function createSupervisor({ config, onEvent = () => {}, treeKill = killOw
     closePromise = (async () => {
       const results = await stopAll();
       let survivors = list();
+      const unverified = [];
+      let fresh, snapshotError;
+      if (failedStops.size) {
+        try { fresh = await drainWithin(Promise.resolve().then(snapshot), 15000, "process snapshot"); }
+        catch (error) { snapshotError = error.message; }
+      }
       // Failure evidence was captured while the root could still identify its descendants.
       for (const record of failedStops.values()) {
-        const alive = (record.failureTree || []).filter((row) => {
-          try { process.kill(row.pid, 0); return true; } catch (error) { return error.code === "EPERM"; }
-        });
+        const alive = fresh ? verifiedFailureTree(record.failureTree || [], fresh) : [];
         const root = survivors.find((r) => r.key === record.key);
-        if (root) {
-          root.creationDate = alive.find((r) => r.pid === record.pid)?.creationDate || null;
+        // Failure-tree identities are never replaced by a PID-only liveness probe.
+        survivors = survivors.filter((r) => r !== root);
+        const rootIdentity = alive.find((r) => r.pid === record.pid);
+        if (root && rootIdentity) {
+          root.creationDate = rootIdentity.creationDate;
           root.descendants = alive.filter((r) => r.pid !== record.pid);
+          survivors.push(root);
         }
         for (const row of alive) if (row.pid !== record.pid)
           survivors.push({ key: `${record.key}:descendant:${row.pid}`, label: row.name, pid: row.pid,
             startedAt: row.creationDate, creationDate: row.creationDate, parentPid: row.parentPid });
-        if (record.snapshotError) {
-          if (root) root.snapshotError = record.snapshotError;
-          else survivors.push({ key: record.key, pid: record.pid, startedAt: record.startedAt, unverified: true, snapshotError: record.snapshotError });
-          for (const result of results) if (result.key === record.key) result.snapshotError = record.snapshotError;
-        }
+        const unavailable = snapshotError || record.snapshotError;
+        if (unavailable) unverified.push({ key: record.key, pid: record.pid, startedAt: record.startedAt, snapshotError: unavailable });
+        else if (!alive.length) failedStops.delete(record.key);
       }
-      return { results, survivors };
+      return { results, survivors, unverified };
     })();
     return closePromise;
   }
 
-  const list = () => [...children.values()].filter((r) => !r.exited).map(({ key, label, pid, startedAt }) => ({ key, label, pid, startedAt }));
+  const list = () => [...children.values()].filter((r) => !rootExited(r)).map(({ key, label, pid, startedAt }) => ({ key, label, pid, startedAt }));
   const get = (key) => children.get(key) || null;
   const forget = (key) => { const r = children.get(key); if (r?.exited) children.delete(key); };
   const detachSurvivors = () => { for (const record of children.values()) if (!record.exited) record.detachOutput(); };
@@ -194,8 +201,10 @@ function splitLines(stream, onLine) {
   return () => { buffer = ""; stream.off("data", data); stream.off("end", end); stream.resume(); };
 }
 
+const rootExited = (record) => record.exited || record.child.exitCode !== null || record.child.signalCode !== null;
+
 async function exitedWithin(record, ms) {
-  if (record.exited) return true;
+  if (rootExited(record)) return true;
   let timer;
   try { return await Promise.race([record.exit.then(() => true), new Promise((r) => { timer = setTimeout(() => r(false), ms); })]); }
   finally { clearTimeout(timer); }
@@ -236,6 +245,16 @@ export function ownedProcessTree(records, snapshot) {
     }
   }
   return found;
+}
+
+/** A missing or replaced descendant is gone; its exit bound prevents later PID reuse attribution. */
+export function verifiedFailureTree(tree, snapshot, at = new Date().toISOString()) {
+  return tree.filter((row) => {
+    if (row.exitedAt) return false;
+    if (snapshot.some((p) => p.pid === row.pid && p.creationDate === row.creationDate)) return true;
+    row.exitedAt = at;
+    return false;
+  });
 }
 
 /** Checks whether a PID from a previous boot is still alive (used by recovery; never kills). */

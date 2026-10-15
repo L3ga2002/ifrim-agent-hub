@@ -22,6 +22,7 @@ export function registerCleanupGuard() {
       `Cleanup failures: ${cleanupFailures.map((f) => `${f.dataDir}: ${f.error.message}`).join("; ")}`);
   });
 }
+if (process.env.NODE_TEST_CONTEXT) registerCleanupGuard();
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 export const FIXTURES = path.join(here, "fixtures");

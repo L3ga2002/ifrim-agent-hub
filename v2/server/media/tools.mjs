@@ -278,6 +278,7 @@ export function createMediaTools({ config, supervisor, settings = null, bus = nu
         version = await readVersion(tool, launcher);
         versionCache.set(tool, { identityFile: launcher.identityFile, sig, libsSha256: libs, at, version });
       } catch (error) {
+        if (error?.code === "HUB_SHUTDOWN") throw error;
         if (error?.code === "TOOL_MISSING") { versionCache.delete(tool); return null; }
         version = null; // e.g. a busy key: unreadable this time, not cached
       }

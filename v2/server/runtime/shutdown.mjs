@@ -7,5 +7,3 @@ export async function drainWithin(work, ms, label) {
     })]);
   } finally { clearTimeout(timer); }
 }
-// Bound the existing production preparation step; managed stop callers retain baseline budgets.
-export const SHUTDOWN_PREPARE_MS = 25000;

@@ -1091,7 +1091,7 @@ export function createCapture({ db, bus, clock = () => new Date(), settings, con
       running.delete(sessionId);
       if (failure) {
         const cancelled = failure.code === "CANCELLED";
-        setStatus(sessionId, cancelled ? "CANCELLED" : "FAILED", { error: cancelled ? null : String(failure.message).slice(0, 500), markers_json: json([...parse(selSession.get(sessionId).markers_json, []), ...markers]) },
+        if (failure.code !== "HUB_SHUTDOWN") setStatus(sessionId, cancelled ? "CANCELLED" : "FAILED", { error: cancelled ? null : String(failure.message).slice(0, 500), markers_json: json([...parse(selSession.get(sessionId).markers_json, []), ...markers]) },
           { type: cancelled ? "media.capture.cancelled" : "media.capture.failed", source: who, payload: { sessionId, kind: "browser_demo", code: failure.code, steps: stepResults.length } });
         // Frames are screens of a test Hub: they never outlive a failed capture. A journal names what happened.
         try {

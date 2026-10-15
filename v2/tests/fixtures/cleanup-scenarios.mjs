@@ -6,7 +6,6 @@ import path from "node:path";
 import * as helpers from "../helpers.mjs";
 import { buildEngineeringSpec } from "../../server/owner/planners/engineering.mjs";
 import { createHub } from "../../server/hub.mjs";
-import { windowsProcesses } from "../../server/runtime/supervisor.mjs";
 
 const { makeTestHub, enableLive, waitFor, FIXTURES } = helpers;
 assert.equal(typeof helpers.registerCleanupGuard, "function", "shutdown API missing: registerCleanupGuard");
@@ -20,13 +19,14 @@ process.on("uncaughtExceptionMonitor", uncaught);
 process.on("unhandledRejection", uncaught);
 let hubSnapshots = [];
 const h = await makeTestHub({ configOverrides: { providerBinaries: {
-  // RT-3b outlives two 15s identity queries, factory close and the 8s exit wait.
-  claude: { executable: process.execPath, prefixArgs: [path.join(FIXTURES, "cleanup-bounded.mjs"), `--life=${mode === "RT-3b" ? 60000 : 30000}`] },
+  // RT-3b uses deterministic snapshot seams, within the fixture's actual 30 s lifetime.
+  claude: { executable: process.execPath, prefixArgs: [path.join(FIXTURES, "cleanup-bounded.mjs"), "--life=30000"] },
   codex: { executable: process.execPath, prefixArgs: [path.join(FIXTURES, "fake-codex.mjs")] },
 } }, hubOptions: mode === "RT-3b" ? { supervisorOptions: {
   treeKill: async () => { throw Object.assign(new Error("injected taskkill failure"), { code: "TEST_KILL" }); },
   killHandle: () => false,
-  snapshot: async () => { const rows = await windowsProcesses(); hubSnapshots.push(rows); return rows; },
+  // Native PID/CreationDate verification is exercised separately by the native-tree tests.
+  snapshot: async () => { const rows = child.exited ? [] : [{ pid: child.pid, parentPid: process.pid, creationDate: child.startedAt, name: "node.exe" }]; hubSnapshots.push(rows); return rows; },
 } } : {} });
 const hub = h.hub;
 let modelStarts = 0;
@@ -49,7 +49,7 @@ const mission = (await dispatch("factory.prepare", { projectId: project.id, ...b
 const held = deferred(), release = deferred();
 const backup = hub.backups.run;
 hub.backups.run = async (...args) => { const result = await backup(...args); held.resolve(); if (mode !== "RT-3b") await release.promise; return result; };
-let closing = false, lateStarts = 0, proof = null, child = null, identity = null, identityError = null;
+let closing = false, lateStarts = 0, proof = null, child = null, identity = null;
 const originalStart = hub.supervisor.start;
 hub.supervisor.start = (input) => { const record = originalStart(input); if (closing) lateStarts++; if (input.key.startsWith("run-")) child = record; return record; };
 const originalFactoryClose = hub.factory.close;
@@ -83,14 +83,7 @@ if (mode === "RT-4") {
     await start();
     if (mode === "RT-3b") {
       await waitFor(() => child && hub.runs.activeRuns().some((r) => r.timeline.turn_sent), 15000, 20, { signal: t.signal });
-      const { windowsProcesses, ownedProcessTree } = await import("../../server/runtime/supervisor.mjs");
-      if (process.platform === "win32") {
-        try {
-          const snapshot = await windowsProcesses();
-          identity = ownedProcessTree([{ ...child }], snapshot).find((r) => r.pid === child.pid);
-          assert.ok(identity, "owned process start identity captured");
-        } catch (error) { identityError = error; }
-      }
+      identity = { pid: child.pid, creationDate: child.startedAt }; // synthetic identity for the injected snapshot
     }
     throw new Error("ORIGINAL_BODY_ERROR");
   });
@@ -108,7 +101,7 @@ test(`${mode} observer`, { timeout: mode === "RT-3b" ? 75000 : 45000 }, async (t
     assert.match(error.message, new RegExp(`pid=${child.pid}`));
     assert.ok(error.message.includes(child.startedAt));
     if (identity) {
-      assert.equal(hubSnapshots.length, 1, "Hub takes exactly one failure-path snapshot");
+      assert.equal(hubSnapshots.length, 2, "one failure-tree snapshot and one fresh close verification");
       assert.ok(hubSnapshots[0].some((r) => r.pid === child.pid && r.creationDate === identity.creationDate));
       assert.ok(error.message.includes(identity.creationDate));
     }
@@ -134,10 +127,7 @@ test(`${mode} observer`, { timeout: mode === "RT-3b" ? 75000 : 45000 }, async (t
     assert.equal(child, null, "no process was launched for the blocked author");
   }
   assert.deepEqual(hub.supervisor.list(), []);
-  if (child && identity && process.platform === "win32") {
-    const { windowsProcesses } = await import("../../server/runtime/supervisor.mjs");
-    assert.equal((await windowsProcesses()).some((r) => r.pid === child.pid && r.creationDate === identity?.creationDate), false);
-  }
+  if (child) assert.equal(child.exited, true, "owned fixture exit observed");
   if (mode === "RT-1") {
     const next = createHub(h.config, { homeDir: h.homeDir });
     try {
@@ -156,6 +146,5 @@ test(`${mode} observer`, { timeout: mode === "RT-3b" ? 75000 : 45000 }, async (t
   }
   await sleep(1000);
   assert.deepEqual(problems, []);
-  if (identityError) throw new Error(`Native CreationDate verification unavailable: ${identityError.message}`, { cause: identityError });
   console.log(`CLEANUP_OBSERVER_OK ${mode}`);
 });

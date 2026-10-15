@@ -306,7 +306,7 @@ export function createMediaAssets({ db, bus, clock = () => new Date(), paths, to
       const probe = await tools.probe(abs);
       return { status: "READY", probe };
     } catch (error) {
-      if (error?.code === "TOOL_MISSING") throw error;
+      if (error?.code === "TOOL_MISSING" || error?.code === "HUB_SHUTDOWN") throw error;
       return { status: "QUARANTINED", probe: { error: error?.code || "UNDECODABLE", message: String(error?.message || "").slice(0, 600) } };
     }
   }

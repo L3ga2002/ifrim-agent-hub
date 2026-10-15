@@ -580,7 +580,7 @@ export function createMediaQa({ db, bus, clock = () => new Date(), tools = null,
         // (A plate's opacity is not judged from one frame — anti-aliased glyph edges dominate a tight region. It is guaranteed by
         // construction instead: compile.mjs draws an item's plate at ≥ 0.9 opacity; test M10-ST-13.)
         if (!plated && sd > 38) add({ code: "BUSY_BACKGROUND", severity: "warning", criterion: "Fundal calm sub text fără plăcuță", message: `Sub textul „${String(item.text).slice(0, 40)}” fundalul variază puternic (σ ${m.backgroundSd}) la ${fmtS(at * 1000)}: se citește greu.`, evidence: m, at: { fromFrame: range.from, toFrame: range.to }, proposedFix: "Activează plăcuța (plate: true) sau mută textul." });
-      } catch { /* one unreadable frame does not fail QA; it is simply not measured */ }
+      } catch (error) { if (error?.code === "HUB_SHUTDOWN") throw error; /* one unreadable frame is not measured */ }
       finally { fs.rmSync(out, { force: true }); }
     }
     if (!measured.length) return notRun(items.length ? "niciun cadru măsurabil" : "niciun text de conținut");
@@ -642,6 +642,7 @@ export function createMediaQa({ db, bus, clock = () => new Date(), tools = null,
     let probe;
     try { probe = await tools.probe(abs, { timeoutMs: 60000 }); }
     catch (error) {
+      if (error?.code === "HUB_SHUTDOWN") throw error;
       if (error?.code === "TOOL_MISSING" || error?.code === "TIMEOUT" || error?.code === "CANCELLED") {
         add({ code: error.code === "TOOL_MISSING" ? "TOOL_MISSING" : "ANALYSIS_INTERRUPTED", severity: "info", criterion: "QA tehnic rulat", message: `QA tehnic nu a rulat: ${error.message}`, evidence: { code: error.code }, proposedFix: error.code === "TOOL_MISSING" ? "Instalează ffmpeg/ffprobe (pachetul MEDIA_A)." : "Reia QA." });
         return done("NOT_RUN");
@@ -818,7 +819,10 @@ export function createMediaQa({ db, bus, clock = () => new Date(), tools = null,
       const fac = factual({ ir, claims: claimList });
       const rig = rightsCheck({ ir, platform: rightsPlatform, use, at });
       // M10: legibility measured on the rendered file (part of the editorial row; NOT_RUN without a usable render).
-      const leg = target && tech.status !== "FAIL" ? await legibility({ assetVersionId: target, ir }).catch(() => ({ kind: "legibility", status: "NOT_RUN", findings: [], measurements: { reason: "eroare la măsurare" } }))
+      const leg = target && tech.status !== "FAIL" ? await legibility({ assetVersionId: target, ir }).catch((error) => {
+        if (error?.code === "HUB_SHUTDOWN") throw error;
+        return { kind: "legibility", status: "NOT_RUN", findings: [], measurements: { reason: "eroare la măsurare" } };
+      })
         : { kind: "legibility", status: "NOT_RUN", findings: [], measurements: { reason: target ? "randarea nu a trecut QA tehnic" : "fără randare" } };
       const editorialRow = { status: worstStatus([lay.status, edi.status === "NOT_RUN" ? null : edi.status, leg.status === "NOT_RUN" ? null : leg.status]), findings: [...lay.findings, ...edi.findings, ...leg.findings],
         measurements: { qaVersion: QA_VERSION, layout: lay.measurements, editorial: edi.measurements, legibility: leg.measurements, statuses: { layout: lay.status, editorial: edi.status, legibility: leg.status } } };
