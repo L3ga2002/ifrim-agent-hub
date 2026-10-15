@@ -10,7 +10,7 @@ import { buildEngineeringSpec } from "../server/owner/planners/engineering.mjs";
 import { materializeFixture, demoSpec } from "../server/factory/fixtures.mjs";
 import { defaultModelLimits, TURN_TIMEOUT_BOUNDS } from "../server/factory/plan.mjs";
 import { hashCanonical } from "../server/core/canonical.mjs";
-import { runRehearsal, S25_WORDS, codexReviewArgs, createRehearsalCodex, probeRehearsalProviders, recordedProcessTree,
+import { runRehearsal, S25_WORDS, createRehearsalCodex, probeRehearsalProviders, recordedProcessTree,
   recordedSurvivors, emergencyKillRecorded, cleanupRecordedProcesses, createRehearsalStop } from "./manual/s25-isolated-rehearsal.mjs";
 
 const OLD = { maxOutputTokens: 64000, provenance: "decizia proprietarului 2026-10-13 21:32 UTC: limită de ieșire 64000 doar pentru autorul testului de la pasul 0" };
@@ -289,61 +289,40 @@ test("T-TURN driver credential guard rejects credentials and home-directory fs r
   assertNoCredentialReads('inspectCodexConfig(os.homedir()); fs.readFileSync(output, "utf8");');
 });
 
-test("T-TURN driver CLI recipe is read-only; a writer is refused without resolving any real binary", async () => {
+test("T-TURN driver real Codex route is the production adapter; non-read-only is refused before constructing it", async () => {
+  let turns = 0;
+  const adapter = createRehearsalCodex({ codexAdapterFactory() { turns++; assert.fail("must not resolve a writer"); } });
+  for (const access of ["workspace-write", "full-access", undefined]) {
+    const result = await adapter.startTurn({ runId: "refused", access }).done;
+    assert.equal(result.preInference, true); assert.equal(result.errorCategory, "policy"); assert.match(result.error, /DEFECT_WRITER_REACHED/);
+  }
+  assert.equal(turns, 0);
   const source = fs.readFileSync(new URL("./manual/s25-isolated-rehearsal.mjs", import.meta.url), "utf8");
   assertNoCredentialReads(source);
-  assert.match(source, /process\.on\("exit", emergencyKill\)/);
-  for (const signal of ["SIGINT", "SIGTERM", "SIGBREAK", "SIGHUP"]) {
-    assert.ok(source.includes(`process.on("${signal}", stop)`));
-    assert.ok(!source.includes(`process.once("${signal}"`));
-  }
-  const args = codexReviewArgs({ model: "gpt-6.1-sol", effort: "medium", output: "review.txt" });
-  assert.equal(args[0], "exec"); assert.equal(args[args.indexOf("-s") + 1], "read-only");
-  assert.ok(!args.some((a) => /app-server|permissions\.|default_permissions|sandbox$/.test(a)));
-  for (const key of ["fast_mode", "image_generation", "skill_mcp_dependency_install", "apps", "computer_use", "browser_use", "browser_use_external", "browser_use_full_cdp_access", "in_app_browser", "memories", "multi_agent", "plugins", "remote_plugin"]) assert.ok(args.includes(`features.${key}=false`));
-  const adapter = createRehearsalCodex({ supervisor: { start() { assert.fail("must not start"); } } });
-  const result = await adapter.startTurn({ runId: "refused", access: "workspace-write" }).done;
-  assert.equal(result.preInference, true); assert.equal(result.errorCategory, "policy"); assert.match(result.error, /înaintea writer/);
+  for (const signal of ["SIGINT", "SIGTERM", "SIGBREAK", "SIGHUP"]) assert.ok(source.includes(`process.on("${signal}", stop)`));
 });
 
-test("T-TURN real-style Codex wiring preserves Hub probe facts and installation; only exec handles review", async (t) => {
-  const dir = temp(t), evidence = { probes: {} }, providerState = new Map(), calls = [], starts = [], prompts = [];
-  const config = { testMode: false, hubRoot: dir, dataDir: dir, backupDir: path.join(dir, "backups"),
-    providerBinaries: { codex: { executable: process.execPath, prefixArgs: ["fake-review-only.mjs"] } } };
-  const supervisor = { start(options) {
-    starts.push(options);
-    return { pid: 123, child: { stdin: { end: (prompt) => prompts.push(prompt) } }, stderrTail: [], exit: Promise.resolve({ code: 0 }) };
-  } };
-  const result = { provider: "codex", ok: true, probedAt: new Date().toISOString(),
-    auth: { accountType: "chatgpt", planType: "pro", requiresOpenaiAuth: false, accountIdentity: { hash: "fake-account", plan: "pro" } },
-    models: [{ id: "probe-model", model: "probe-model", efforts: ["low", "high"] }],
-    usage: { primary: { usedPercent: 12 } }, sandbox: { readiness: "ready", profiles: [{ id: "reported-profile", allowed: true }] } };
-  const installation = { provider: "codex", installed: true, binary: "reported-binary", version: "reported-version" };
-  const codex = createRehearsalCodex({ config, supervisor, dataDir: dir, homeDir: dir, identitySalt: "fake-salt",
-    codexAdapterFactory(options) {
-      calls.push("factory");
-      assert.strictEqual(options.config, config); assert.equal(options.config.testMode, false);
-      assert.strictEqual(options.supervisor, supervisor); assert.equal(options.homeDir, dir); assert.equal(options.identitySalt(), "fake-salt");
-      return { probe: async (args) => { calls.push("probe"); assert.deepEqual(args, { withModels: true }); return result; },
-        inspectInstallation: async () => { calls.push("installation"); return installation; },
-        startTurn() { assert.fail("Hub app-server turns must never be used"); } };
-    }, onProbe: (record) => { evidence.probes.codex = record; } });
-  const claude = { probe: async () => ({ ok: true, auth: { loggedIn: true, authMethod: "claude.ai", apiProvider: "firstParty", subscriptionType: "pro" } }),
-    inspectInstallation: async () => ({ installed: true }) };
+test("T-TURN real-style Codex wiring preserves production probe, installation, session and startTurn", async () => {
+  const calls = [], evidence = { probes: {} }, providerState = new Map();
+  const probe = { ok: true, auth: { accountType: "chatgpt", planType: "prolite" },
+    usage: { windows: [{ usedPercent: 2 }] },
+    models: [{ id: "gpt-6.1-sol", model: "gpt-6.1-sol", efforts: ["medium"] }],
+    sandbox: { readiness: "ready", profiles: ["ifrim_hub_ro", "ifrim_hub_rw"].map((id) => ({ id, allowed: true })) },
+    config: { realtime: { riskyKeys: [], mcpServers: 0, mcpServerNames: [] } } };
+  const installation = { installed: true, version: "fake" };
+  const codex = createRehearsalCodex({ codexAdapterFactory: () => ({
+    probe: async (args) => { calls.push("probe"); assert.deepEqual(args, { withModels: true }); return probe; },
+    inspectInstallation: async () => installation,
+    startTurn(options) { calls.push("turn"); assert.equal(options.access, "read-only"); assert.equal(options.threadId, "cycle-0");
+      options.onEvent({ type: "session", nativeSessionId: "cycle-0", model: "gpt-6.1-sol", reasoningEffort: "medium", sandbox: { type: "readOnly" } });
+      return { key: "run-review", done: Promise.resolve({ status: "completed" }) }; },
+  }), onProbe: (record) => { evidence.probes.codex = record; } });
+  const claude = { probe: async () => ({ ok: true, auth: { loggedIn: true, authMethod: "claude.ai", apiProvider: "firstParty", subscriptionType: "pro" } }), inspectInstallation: async () => installation };
   await probeRehearsalProviders({ providers: { claude, codex }, providerState, mode: "real", evidence });
-  assert.deepEqual(calls, ["factory", "probe", "installation"]); assert.equal(starts.length, 0);
-  assert.strictEqual(evidence.probes.codex.probe, result); assert.strictEqual(evidence.probes.codex.installation, installation);
-  for (const key of ["auth", "usage", "models", "sandbox"]) assert.strictEqual(providerState.get("codex")[key], result[key]);
-  assert.equal(providerState.get("codex").auth.planType, "pro");
-  assert.match(evidence.probes.codex.source, /Hub real Codex probe: codex app-server; no thread, no turn, no command/);
-  assert.ok(Date.parse(evidence.probes.codex.startedAt) <= Date.parse(evidence.probes.codex.finishedAt));
-  const turn = codex.startTurn({ runId: "review", cwd: dir, prompt: "Review only", access: "read-only", model: "probe-model", effort: "high", onEvent() {} });
-  assert.equal((await turn.done).status, "completed"); assert.deepEqual(prompts, ["Review only"]);
-  assert.equal(starts.length, 1); assert.equal(starts[0].executable, process.execPath);
-  assert.deepEqual(starts[0].args, ["fake-review-only.mjs", ...codexReviewArgs({ model: "probe-model", effort: "high", output: path.join(dir, "review.review.txt") })]);
-  assert.ok(!starts[0].args.some((a) => /app-server|permissions\.|default_permissions|sandbox$/.test(a)));
-  for (const access of ["workspace-write", "full-access", undefined]) assert.equal((await codex.startTurn({ runId: "refused", access }).done).preInference, true);
-  assert.equal(starts.length, 1); assert.deepEqual(calls, ["factory", "probe", "installation"]);
+  assert.strictEqual(providerState.get("codex").sandbox, probe.sandbox);
+  const events = [];
+  assert.equal((await codex.startTurn({ access: "read-only", runId: "review", threadId: "cycle-0", onEvent: (e) => events.push(e) }).done).status, "completed");
+  assert.deepEqual(calls, ["probe", "turn"]); assert.equal(events[0].nativeSessionId, "cycle-0");
 });
 
 test("T-TURN Hub probe missing a ChatGPT plan stops preflight before any dispatch", async () => {
@@ -448,39 +427,28 @@ test("T-TURN pre-aborted rehearsal stops before filesystem setup", async () => {
   await assert.rejects(runRehearsal({ mode: "fake", signal: controller.signal }), /pre-launch stop/);
 });
 
-for (const scenario of ["success", "hang"]) test(`T-TURN driver --fake ${scenario}: exported real Factory wiring and evidence`, { timeout: 150000 }, async (t) => {
-  const out = temp(t), e = await runRehearsal({ mode: "fake", out, scenario });
+for (const scenario of ["success", "hang", "amend"]) test(`T-TURN driver --fake ${scenario}: envelope grants and writer boundary`, { timeout: 180000 }, async (t) => {
+  const out = temp(t), e = await runRehearsal({ mode: "fake", out, scenario, calibrate: false });
   assert.equal(e.hubClosed, true); assert.ok(e.pidChecks.length > 0 && e.pidChecks.every((p) => p.gone));
-  assert.equal(e.isolation.listener, false); assert.equal(e.billingDeclaration.source, "test:fixture");
-  const gates = e.isolation.gateFixtures;
-  for (const key of ["mode", "executionGate", "isolationConsent", "billingDeclaration"]) assert.equal(gates[key].source, "test:fixture");
-  assert.equal(gates.mode.value, "LIVE_VALIDATION"); assert.equal(gates.executionGate.status, "open"); assert.ok(gates.isolationConsent.fingerprint);
-  assert.ok(e.spec.dataset.identity); assert.equal(e.spec.authorLimits.turnTimeoutMin, 45);
-  const author = e.dispatches.filter((d) => d.stage === "TEST_AUTHORING"); assert.equal(author.length, 1);
-  assert.equal(JSON.parse(author[0].request_json).turnTimeoutSource, "authorLimits");
-  const run = e.runs.find((r) => r.id === author[0].run_id); assert.ok(JSON.parse(run.evidence_json).turnDeadline);
-  if (scenario === "success") {
+  assert.equal(e.admin.mode, "BUILD_SAFE"); assert.equal(e.admin.label, "throwaway admin path");
+  assert.equal(e.billingDeclaration.source, "test:fixture"); assert.match(e.ownerSession, /PASS_SIMULATED/);
+  assert.equal(e.configuration.maxDurationMin, 180); assert.equal(e.spec.authorLimits.turnTimeoutMin, 45);
+  assert.deepEqual(e.grants.map((g) => [g.provider, g.access, g.maxAttempts, g.maxDurationS]).sort(), [["claude", "read-only", 5, 7200], ["codex", "workspace-write", 5, 7200]]);
+  for (const g of e.grants) assert.ok(g.binding.bindingHash && g.binding.missionId && g.binding.model);
+  assert.equal(e.dispatches.filter((r) => ["IMPLEMENTING", "REPAIRING"].includes(r.stage)).length, 0);
+  assert.equal(e.runs.filter((r) => r.access === "workspace-write").length, 0); assert.equal(e.writerStarted, false);
+  const authors = e.dispatches.filter((d) => d.stage === "TEST_AUTHORING");
+  assert.equal(authors.length, scenario === "amend" ? 2 : 1);
+  for (const d of authors) { assert.equal(JSON.parse(d.request_json).turnTimeoutSource, "authorLimits"); assert.equal(JSON.parse(d.request_json).turnTimeoutMin, 45); }
+  if (scenario === "hang") {
+    assert.equal(e.classification, "TECHNICAL_STOP"); assert.equal(e.runs[0].error_category, "turn_timeout"); assert.equal(e.boundaryHits.length, 0);
+  } else {
+    assert.equal(e.classification, "INTENTIONAL_STOP_BEFORE_WRITER"); assert.equal(e.boundaryHits.length, 1);
+    assert.equal(e.outcome.stageReason, "REHEARSAL_INTENTIONAL_STOP_BEFORE_WRITER");
     assert.equal(e.authoring.status, "PROTECTED"); assert.equal(e.baselineGate.length, 1); assert.equal(e.baselineGate[0].result, null);
-    assert.equal(e.authoring.proof.verdict, "PROVEN"); assert.equal(e.testReviews.at(-1).parsed.verdict, "PASS");
-    assert.equal(e.outcome.limits.writerModel, "gpt-6.1-sol");
-    assert.match(e.outcome.stageReason, /IMPLEMENTING: live_grant/);
-    assert.ok(e.runs.filter((r) => r.access === "workspace-write").every((r) => r.status === "blocked" && !r.pid));
-    const blocked = e.runs.find((r) => r.access === "workspace-write");
-    assert.equal(JSON.parse(blocked.evidence_json).turnDeadline.clearedBy, "blocked");
-    for (const file of ["candidate.test.mjs", "manifest.json", "lint.json", "proof.json", "review.json"]) assert.ok(fs.existsSync(path.join(out, file)), file);
-  } else { assert.equal(run.error_category, "turn_timeout"); assert.equal(e.outcome.stage, "NEEDS_OWNER_DECISION"); }
+    assert.equal(e.baselineGate[0].status, "FAIL"); assert.equal(e.baselineGate[0].signature, e.authoring.proof.signature);
+    assert.deepEqual(e.testReviews.map((r) => r.verdict), scenario === "amend" ? ["CHANGES_REQUESTED", "PASS"] : ["PASS"]);
+    for (const c of e.candidates) assert.ok(fs.existsSync(path.join(out, c.file)));
+  }
   assert.deepEqual(JSON.parse(fs.readFileSync(path.join(out, "evidence.json"), "utf8")), e);
-});
-
-test("T-TURN driver --fake amend: step-0 grants admit cycle 0, the single R-AMEND rewrite and both Codex reviews, nothing more", { timeout: 180000 }, async (t) => {
-  const out = temp(t), e = await runRehearsal({ mode: "fake", out, scenario: "amend" });
-  assert.equal(e.hubClosed, true); assert.ok(e.pidChecks.length > 0 && e.pidChecks.every((p) => p.gone));
-  assert.deepEqual([e.grants.claude, e.grants.codex], [2, 2]);
-  const step0 = e.dispatches.filter((d) => ["TEST_AUTHORING", "TEST_REVIEW"].includes(d.stage)).map((d) => [d.stage, JSON.parse(d.request_json).cycle, d.status]);
-  assert.deepEqual(step0, [["TEST_AUTHORING", 0, "DONE"], ["TEST_REVIEW", 0, "DONE"], ["TEST_AUTHORING", 1, "DONE"], ["TEST_REVIEW", 1, "DONE"]]);
-  for (const d of e.dispatches.filter((x) => x.stage === "TEST_AUTHORING")) assert.equal(JSON.parse(d.request_json).turnTimeoutMin, 45);
-  assert.deepEqual(e.testReviews.map((r) => r.parsed.verdict), ["CHANGES_REQUESTED", "PASS"]);
-  assert.equal(e.authoring.status, "PROTECTED"); assert.equal(e.outcome.limits.maxAttemptsPerStage, 1);
-  assert.match(e.outcome.stageReason, /IMPLEMENTING: live_grant/);
-  assert.ok(e.runs.filter((r) => r.access === "workspace-write").every((r) => r.status === "blocked" && !r.pid));
 });

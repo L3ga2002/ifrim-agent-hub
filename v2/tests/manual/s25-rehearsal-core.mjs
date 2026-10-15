@@ -1,0 +1,442 @@
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import crypto from "node:crypto";
+import { HUB_ROOT, declareBillingFixture, enrolOwner, waitFor } from "../helpers.mjs";
+import { createClaudeAdapter } from "../../server/providers/claude.mjs";
+import { createCodexAdapter } from "../../server/providers/codex.mjs";
+import { createSupervisor } from "../../server/runtime/supervisor.mjs";
+import { createFactoryRunner } from "../../server/factory/runner.mjs";
+import { baselineGate, proofSignature, buildAuthorBrief, lintDatasetBrief, compareInventory, assertionInventory, amendmentViolations } from "../../server/factory/test-first.mjs";
+import { resolveRunPlan } from "../../server/policy/run-plan.mjs";
+import { compareAtDispatch } from "../../server/policy/model-binding.mjs";
+import { codexDeniedEntries, denyListFingerprint, CODEX_ACL_CONSENT_TEXT } from "../../server/policy/isolation.mjs";
+import { s25Context } from "./s25-context.mjs";
+import { makeRehearsalHub } from "./s25-rehearsal-hub.mjs";
+import { calibrateS25 } from "./s25-calibrate.mjs";
+import { STOP, CONSENT_PROVENANCE, checkLayout, physicalPath, exportManifest, verifyManifest, within, classifyDenyEntries, aclDiff, snapshotAcls, digest } from "./s25-parity-safety.mjs";
+import { windowsProcessSnapshot, compareProcessIdentity } from "./s25-process-identity.mjs";
+import { binaryIdentity, recipes, layoutIsolation, assertHeadroom, runnerPreflight } from "./s25-real-preflight.mjs";
+import { recordedProcessTree, windowsProcesses, recordedSurvivors, cleanupRecordedProcesses, emergencyKillRecorded } from "./s25-isolated-rehearsal.mjs";
+
+const stamp = () => new Date().toISOString();
+const jsonFile = (file, value) => fs.writeFileSync(file, JSON.stringify(value, null, 2) + "\n", { flag: "wx" });
+const copy = (value) => JSON.parse(JSON.stringify(value));
+export const technicalResult = (result) => result?.status === "BLOCKED" || /timeout|transport|rate.?limit|overage|quota|credit|billing|permission|EACCES|EPERM|access.denied|spawn/i.test(`${result?.errorCategory || ""} ${result?.error || ""} ${result?.reason || ""}`);
+
+// The only adapter intervention is observation and a fail-closed read-only boundary BEFORE inference.
+export function observeAdapter(getAdapter, { provider, evidence, ready = () => true, forceWrite = false, onProbe = () => {}, beforeTurn = () => {} }) {
+  return {
+    inspectInstallation: (...args) => getAdapter().inspectInstallation(...args),
+    async probe(options = { withModels: true }) {
+      const record = { source: `Hub ${provider} probe; no thread, no turn, no command`, startedAt: stamp() };
+      try { record.probe = await getAdapter().probe(options); return record.probe; }
+      finally { record.finishedAt = stamp(); onProbe(record); }
+    },
+    startTurn(options) {
+      const access = forceWrite ? "workspace-write" : options.access;
+      const refuse = (error, category = "policy") => ({ key: `run-${options.runId}`, pid: null, interrupt: async () => ({}),
+        done: Promise.resolve({ status: "failed", preInference: true, errorCategory: category, error, output: "" }) });
+      if (access !== "read-only") {
+        evidence.writerGuardHits.push({ at: stamp(), runId: options.runId, provider, access });
+        return refuse("DEFECT_WRITER_REACHED: oprit înaintea writer-ului");
+      }
+      if (!ready()) return refuse("No-model preflight has not passed");
+      beforeTurn(options);
+      const record = { at: stamp(), provider, runId: options.runId, access, model: options.model, effort: options.effort,
+        requestedThreadId: options.threadId || null, maxOutputTokens: options.maxOutputTokens || null, events: [], result: null };
+      evidence.adapterTurns.push(record);
+      const handle = getAdapter().startTurn({ ...options, onEvent(event) {
+        record.events.push({ at: stamp(), ...event }); options.onEvent?.(event);
+      }, requestApproval: async (...args) => {
+        const decision = await options.requestApproval(...args);
+        evidence.declinedApprovals.push({ runId: options.runId, at: stamp(), decision, source: "production envelope approval path" });
+        return decision;
+      } });
+      return { ...handle, done: handle.done.then((result) => {
+        record.result = result;
+        if (technicalResult(result)) evidence.terminalTechnical = { at: stamp(), provider, runId: options.runId, result };
+        return result;
+      }) };
+    },
+  };
+}
+
+export function createRehearsalCodex({ config, supervisor, homeDir, identitySalt, codexAdapterFactory = createCodexAdapter,
+  evidence = { writerGuardHits: [], adapterTurns: [], declinedApprovals: [] }, onProbe = () => {} } = {}) {
+  let adapter;
+  return observeAdapter(() => adapter ||= codexAdapterFactory({ config, supervisor, homeDir, identitySalt: () => identitySalt }),
+    { provider: "codex", evidence, onProbe });
+}
+
+export async function probeRehearsalProviders({ providers, providerState, mode, evidence, signal }) {
+  for (const provider of ["claude", "codex"]) {
+    signal?.throwIfAborted();
+    evidence.probes[provider] = { startedAt: stamp() };
+    const probe = await providers[provider].probe(provider === "codex" ? { withModels: true } : undefined);
+    evidence.probes[provider] = { ...evidence.probes[provider], probe };
+    const auth = probe.auth;
+    if (mode === "real" && provider === "claude" && !(probe.ok && auth?.loggedIn && auth.authMethod === "claude.ai" && auth.apiProvider === "firstParty" && ["pro", "max", "team", "enterprise"].includes(auth.subscriptionType))) throw new Error("Claude subscription precondition failed");
+    if (mode === "real" && provider === "codex" && !(auth?.accountType === "chatgpt" && typeof auth.planType === "string" && auth.planType.trim())) throw new Error("Codex subscription precondition failed: Hub account/read must report ChatGPT and planType; stopped before any model or dispatch");
+    const installation = await providers[provider].inspectInstallation();
+    evidence.probes[provider].installation = installation;
+    evidence.probes[provider].finishedAt = stamp();
+    providerState.set(provider, { ...probe, installation });
+    signal?.throwIfAborted();
+    if (!probe.ok || !installation.installed) throw new Error(`${provider} probe/installation refused`);
+    if (mode === "real" && provider === "codex") {
+      if (probe.sandbox?.readiness !== "ready" || !["ifrim_hub_ro", "ifrim_hub_rw"].every((id) => probe.sandbox?.profiles?.some((p) => p.id === id && p.allowed))) throw new Error("P3 real sandbox profiles are not ready/allowed");
+      if (!Array.isArray(probe.models) || !probe.models.some((m) => (m.model || m.id) === "gpt-6.1-sol" && m.efforts.includes("medium"))) throw new Error("P3 approved Codex model/effort unavailable");
+      const rt = probe.config?.realtime;
+      if (!rt || rt.riskyKeys?.length || rt.mcpServers !== rt.mcpServerNames?.length) throw new Error("P3 MCP/config inspection incomplete or unsafe");
+    }
+  }
+}
+
+export function classifyRehearsal(e) {
+  if (e.writerGuardHits?.length || e.writerStarted || e.dispatches?.some((r) => ["IMPLEMENTING", "REPAIRING"].includes(r.stage)) || e.runs?.some((r) => r.access === "workspace-write")) return "DEFECT_WRITER_REACHED";
+  const technical = e.error || e.terminalTechnical || e.cleanupErrors?.length || e.runs?.some((r) => ["turn_timeout", "transport", "rate_limit", "quota", "overage", "billing", "gate"].includes(r.error_category))
+    || e.adapterTurns?.some((t) => /rate.?limit|overage|quota|credit|transport/i.test(`${t.result?.errorCategory || ""} ${t.result?.error || ""}`))
+    || e.runnerResults?.some((r) => r.result.status === "BLOCKED" || r.result.reason === "timeout")
+    || ["BLOCKED", "PAUSED"].includes(e.outcome?.stage) || /Limita de timp|deadline/i.test(e.outcome?.stageReason || "");
+  if (technical) return "TECHNICAL_STOP";
+  if (e.preflightOnly && e.preflight?.passedAt && !e.adapterTurns?.length && !e.dispatches?.length) return "PREFLIGHT_ONLY_PASSED";
+  const a = e.authoring;
+  if (a?.status !== "PROTECTED") return "STEP0_STOPPED";
+  const validReview = e.testReviews?.some((r) => r.verdict === "PASS" && r.status === "VALID" && r.change_set_sha === a.candidate?.sha);
+  if (e.outcome?.stage === "NEEDS_OWNER_DECISION" && e.outcome.stageReason === STOP && e.boundaryHits?.length === 1 && validReview
+      && a.proof?.verdict === "PROVEN" && e.baselineGate?.length > 0 && e.baselineGate.every((r) => r.result === null && r.status === "FAIL" && r.signature === a.proof.signature && r.current)
+      && e.writerStarted === false) return "INTENTIONAL_STOP_BEFORE_WRITER";
+  return "BASELINE_REFUSED";
+}
+
+export async function runRehearsal({ mode = "fake", out, parent, scenario = "success", fakeTurnMs = 8000, commit, manifestSha256,
+  isolationConsent, homeAclChangeApproved, claudeHeadroomChecked, signal, realProcesses = [], calibrate = true, preflightOnly = false } = {}) {
+  signal?.throwIfAborted();
+  if (!["fake", "real"].includes(mode)) throw new Error("mode must be fake or real");
+  if (mode === "real" && (scenario !== "success" || calibrate !== true)) throw new Error("Real mode forbids scenario overrides or skipped calibration");
+  if (!parent && mode === "fake") parent = fs.mkdtempSync(path.join(os.tmpdir(), "s25-parity-"));
+  if (!parent) throw new Error("--parent is required");
+  parent = path.resolve(parent); out = path.resolve(out || path.join(parent, "evidence"));
+  const projectDir = path.join(parent, "booking");
+  if (mode === "real") checkLayout({ parent, hubRoot: HUB_ROOT, projectDir, out, homeDir: os.homedir(), realpath: physicalPath });
+  if (fs.existsSync(out) && fs.readdirSync(out).length) throw new Error("Evidence directory must be empty");
+  if (fs.existsSync(projectDir)) throw new Error("Project copy already exists; no relaunch or reuse");
+  fs.mkdirSync(out, { recursive: true });
+  const e = { schema: "s25-isolated-rehearsal/v2", mode, scenario, preflightOnly, parent, out, projectDir, startedAt: stamp(), commit: commit || "PASS_SIMULATED: no commit claim",
+    runtime: { node: process.version, executable: process.execPath, platform: process.platform },
+    gitAvailability: globalThis[Symbol.for("s25.fake.gitGuard")] ? "PASS_SIMULATED: test preload returns ENOENT for git; no git command executes" : "not overridden",
+    runner: mode === "real" ? "production codex sandbox, ifrim_hub_rw, 180 s" : "PASS_SIMULATED: fake-codex executes host Node, no OS isolation",
+    codexRoute: "production createCodexAdapter app-server / ifrim_hub_ro" + (mode === "fake" ? "; PASS_SIMULATED fake binary" : ""),
+    billingDeclaration: { source: "test:fixture", boundTo: "probe account identities" }, ownerSession: "PASS_SIMULATED: enrolOwner software authenticator",
+    probes: {}, processes: [], pidChecks: [], boundaryHits: [], writerGuardHits: [], adapterTurns: [], declinedApprovals: [], runnerResults: [], candidates: [],
+    stream: [], preflight: {}, configuration: { author: { model: "sonnet", effort: "medium", access: "read-only", maxOutputTokens: 64000, turnTimeoutMin: 45 },
+      reviewer: { model: "gpt-6.1-sol", effort: "medium", access: "read-only" }, maxAttemptsPerStage: 1, reauthorMax: 1, maxDurationMin: 180,
+      deadlineSource: "coordinator decision: live test-first plan 180 min", runnerTimeoutMs: 180000, waitLimitMin: 185 } };
+  let h, missionId, timer, failure, realConfig, acl, baselineProcesses = [], processTimer, scanPending, pendingTick, preflightPassed = false;
+  e.realProcessCleanup = { records: realProcesses, survivors: [], verified: false };
+  const scan = async () => {
+    if (scanPending) return scanPending;
+    scanPending = (async () => {
+      const rows = await windowsProcesses();
+      recordedProcessTree(realProcesses, rows);
+      for (const row of rows.filter((r) => /^CodexSandbox/i.test(r.owner || ""))) {
+        if (!baselineProcesses.some((p) => p.pid === row.pid && p.creationDate === row.creationDate)
+            && !realProcesses.some((p) => p.pid === row.pid && p.creationDate === row.creationDate)) {
+          (e.unattributedSandboxProcesses ||= []).push(row);
+          throw new Error(`Unattributed new sandbox-user process ${row.pid}; cannot safely claim ownership or kill it`);
+        }
+      }
+      return rows;
+    })().finally(() => { scanPending = null; });
+    return scanPending;
+  };
+  const emergencyKill = () => emergencyKillRecorded(realProcesses);
+  if (mode === "real") process.on("exit", emergencyKill);
+  function authoring() {
+    if (!missionId) return null;
+    const row = h?.hub.db.prepare("SELECT protected_json FROM factory_specs WHERE mission_id = ? ORDER BY version DESC LIMIT 1").get(missionId);
+    return row ? JSON.parse(row.protected_json).authoring : null;
+  }
+  function captureCandidate() {
+    const a = authoring();
+    for (const c of [...(a?.rejected || []).map((r) => r.candidate), a?.candidate].filter(Boolean)) {
+    if (e.candidates.some((x) => x.cycle === c.cycle && x.sha === c.sha)) continue;
+    if (!/^[a-f0-9]{64}$/.test(c.sha)) throw new Error("Invalid candidate blob identity");
+    // Read only this throwaway mission's content-addressed evidence, including lint-rejected candidates.
+    const blob = path.join(h.config.workDir, "factory", missionId, "blobs", c.sha.slice(0, 2), c.sha);
+    const text = fs.readFileSync(blob, "utf8"), file = `candidate-c${c.cycle}-${c.sha.slice(0, 12)}.test.mjs`;
+    if (digest(text) !== c.sha) throw new Error("Candidate bytes changed before evidence capture");
+    fs.writeFileSync(path.join(out, file), text, { flag: "wx" });
+    const previous = e.candidates.at(-1);
+    const inventory = assertionInventory(text, c.manifest, { sha: c.sha, headerLines: c.headerLines });
+    const comparison = previous ? compareInventory(previous.inventory, { text, manifest: c.manifest, headerLines: c.headerLines, sha: c.sha }) : { removed: [], matched: [], initial: true };
+    const checks = previous ? h.hub.db.prepare("SELECT validation_json FROM factory_reviews WHERE mission_id = ? AND change_set_sha = ? AND status = 'VALID' ORDER BY created_at DESC LIMIT 1").get(missionId, previous.sha) : null;
+    const violations = previous ? amendmentViolations(comparison.removed, c.removedDeclared || [], checks ? JSON.parse(checks.validation_json).checks : []) : [];
+    e.candidates.push({ ...copy(c), file, inventory, comparison, inventoryViolations: violations, noValidCheckLost: violations.length === 0 });
+    }
+  }
+  function captureOutcome() {
+    if (!missionId) return;
+    const v = h.hub.factory.view(missionId);
+    e.outcome = v.factory; e.authoring = copy(authoring()); e.proofs = v.evidence; e.writerStarted = h.hub.factory.writerStarted(missionId);
+    e.dispatches = h.hub.db.prepare("SELECT * FROM factory_dispatches WHERE mission_id = ? ORDER BY created_at").all(missionId);
+    e.runs = h.hub.db.prepare("SELECT r.* FROM agent_runs r JOIN tasks t ON r.task_id = t.id WHERE t.mission_id = ? ORDER BY r.created_at").all(missionId);
+    e.testReviews = h.hub.db.prepare("SELECT * FROM factory_reviews WHERE mission_id = ? AND json_extract(validation_json, '$.kind') = 'acceptance_test' ORDER BY created_at").all(missionId)
+      .map((r) => ({ ...r, parsed: { verdict: r.verdict, ...JSON.parse(r.validation_json) } }));
+    e.events = h.hub.db.prepare("SELECT * FROM events ORDER BY seq").all().filter((r) => r.scope_id === missionId || r.mission_id === missionId || e.runs.some((run) => run.id === r.run_id));
+    const baselines = e.runnerResults.filter((r) => r.key.includes("-BASELINE-"));
+    e.baselineGate = v.evidence.filter((row) => row.stage === "BASELINE").map((row, index) => {
+      const result = baselines[index]?.result || {};
+      return { evidenceId: row.id, status: row.status, signature: proofSignature(result),
+        result: baselineGate(result, { manifest: e.authoring?.candidate?.manifest, harness: e.authoring?.candidate?.harness || 2 }),
+        current: !row.stale && row.changeSetId === "base" && row.command === baselines[index]?.command && row.status === result.status
+          && JSON.stringify(row.counts) === JSON.stringify(result.counts) && baselines.length === v.evidence.filter((r) => r.stage === "BASELINE").length };
+    });
+    e.grantsAfter = e.envelope ? copy(h.hub.grants.ofEnvelope(e.envelope.id)) : [];
+    captureCandidate();
+    e.deadlines = e.runs.map((r) => ({ runId: r.id, turnDeadline: JSON.parse(r.evidence_json).turnDeadline }));
+    const reviews = e.adapterTurns.filter((r) => r.provider === "codex");
+    e.reviewThreadReuse = reviews.length < 2 ? "not applicable" : reviews[1].requestedThreadId === reviews[0].events.find((v) => v.type === "session")?.nativeSessionId;
+    e.classification = classifyRehearsal(e);
+  }
+  try {
+    if (mode === "real") {
+      e.codeIdentity = verifyManifest(exportManifest(HUB_ROOT, commit), manifestSha256);
+      if (process.platform !== "win32") throw new Error("Real rehearsal requires Windows");
+    }
+    const ctx = s25Context(parent);
+    if (mode === "real") checkLayout({ parent, hubRoot: HUB_ROOT, projectDir, out, homeDir: os.homedir(), realpath: fs.realpathSync });
+    h = await makeRehearsalHub({ parent, mode, scenario });
+    e.isolation = { dataDir: h.dataDir, listener: false, scheduler: "off; explicit scheduler.tick every 15 seconds", turnTimeScale: 1 };
+    const recordProcess = (event) => { e.processes.push({ ...event, at: stamp() }); };
+    h.hub.live.subscribe((event) => { if (event.type?.startsWith("supervisor.")) recordProcess(event.data); });
+    if (mode === "real") {
+      // P10 begins before probes/P7, so short-lived and sandbox-account roots are covered too.
+      baselineProcesses = await windowsProcesses(); e.processBaseline = baselineProcesses;
+      e.processOwnerCoverage = { queried: baselineProcesses.length, unavailable: baselineProcesses.filter((r) => r.ownerQueryCode !== 0).map((r) => ({ pid: r.pid, code: r.ownerQueryCode })) };
+      // PID 0 (Idle) and PID 4 (System) cannot be sandbox-account processes. All other unknown owners fail closed.
+      if (e.processOwnerCoverage.unavailable.some((r) => ![0, 4].includes(r.pid))) throw new Error(`P10 process owner metadata refused: ${JSON.stringify(e.processOwnerCoverage.unavailable)}`);
+      const shared = createSupervisor({ config: { testMode: false }, onEvent: recordProcess });
+      Object.assign(h.hub.supervisor, shared);
+      realConfig = { ...h.config, testMode: false, providerBinaries: {}, hubRoot: HUB_ROOT };
+      const salt = crypto.randomBytes(32).toString("hex");
+      Object.assign(h.hub.providers.claude, createClaudeAdapter({ config: realConfig, supervisor: h.hub.supervisor, homeDir: os.homedir(), identitySalt: () => salt }));
+      Object.assign(h.hub.providers.codex, createCodexAdapter({ config: realConfig, supervisor: h.hub.supervisor, homeDir: os.homedir(), identitySalt: () => salt }));
+      const runner = createFactoryRunner({ config: realConfig, supervisor: h.hub.supervisor, settings: h.hub.settings, providerState: h.hub.providerState, codexIsolation: h.hub.codexIsolation, homeDir: os.homedir() });
+      h.hub.factoryRunner.run = runner.run;
+      h.hub.factoryRunner.readiness = (project) => ({ ...runner.readiness(project), route: "windows" });
+      h.hub.factoryRunner.stop = runner.stop;
+      e.binaryBefore = binaryIdentity(realConfig);
+      processTimer = setInterval(() => scan().catch((error) => { failure ||= error; e.error = { message: error.message }; }), 1000);
+    }
+    const start = h.hub.supervisor.start;
+    h.hub.supervisor.start = (options) => {
+      const args = options.args || [], value = (key) => args[args.indexOf(key) + 1];
+      const assertions = args.includes("app-server") ? { roProfile: args.includes('default_permissions="ifrim_hub_ro"') }
+        : args.includes("sandbox") ? { rwProfile: args.includes('default_permissions="ifrim_hub_rw"'), dedicatedWorkspace: within(parent, options.cwd) }
+        : options.label === "claude -p" ? { tools: value("--tools") === "Read,Glob,Grep", permissionMode: value("--permission-mode") === "dontAsk",
+          output64000: options.env?.CLAUDE_CODE_MAX_OUTPUT_TOKENS === "64000" } : {};
+      (e.launchAssertions ||= []).push({ at: stamp(), key: options.key, executable: options.executable, cwd: options.cwd, assertions });
+      if (Object.values(assertions).some((ok) => !ok)) throw new Error("Effective provider launch differs from preflight recipe");
+      const startRequestedAt = stamp(), stdout = options.onStdoutLine;
+      const record = start({ ...options, onStdoutLine(line) {
+        // Observe only protocol metadata, never save prompts, auth responses or complete raw streams.
+        try {
+          const m = JSON.parse(line), msg = m.message || m.event?.message;
+          if (["assistant", "result", "system"].includes(m.type) || m.event?.type === "message_start" || m.event?.type === "message_delta")
+            e.stream.push({ key: options.key, at: stamp(), type: m.type, subtype: m.subtype || null, attempt: m.attempt || null, retryDelayMs: m.retry_delay_ms || null,
+              stop_reason: msg?.stop_reason ?? m.event?.delta?.stop_reason ?? m.stop_reason ?? "nedemonstrat", usage: msg?.usage ?? m.event?.usage ?? m.usage ?? "nedemonstrat" });
+          if (m.result?.thread) e.stream.push({ key: options.key, at: stamp(), thread: { id: m.result.thread.id, model: m.result.thread.model,
+            reasoningEffort: m.result.thread.reasoningEffort, sandbox: m.result.thread.sandbox, approvalsReviewer: m.result.thread.approvalsReviewer ?? "nedemonstrat" } });
+        } catch { /* non-JSON CLI line */ }
+        stdout?.(line);
+      } });
+      if (record.pid) {
+        const row = { pid: record.pid, key: record.key, root: true, startRequestedAt, startedAt: stamp(), exitedAt: null };
+        realProcesses.push(row);
+        record.exit.then(() => { row.exitedAt = stamp(); });
+        if (mode === "real") {
+          const snapshot = windowsProcessSnapshot([row.pid]), identity = snapshot.rows.find((p) => p.pid === row.pid);
+          if (identity) { row.creationDate = identity.creationDate; row.startTimeSource = "Win32_Process.CreationDate"; }
+          else { row.identityError = snapshot.error || "Process exited before OS identity capture"; failure ||= new Error(row.identityError); }
+        }
+      }
+      return record;
+    };
+    for (const provider of ["claude", "codex"]) {
+      const original = { ...h.hub.providers[provider] };
+      Object.assign(h.hub.providers[provider], observeAdapter(() => original, { provider, evidence: e, ready: () => preflightPassed && !e.terminalTechnical && !failure,
+        forceWrite: mode === "fake" && scenario === "review-write" && provider === "codex", beforeTurn: captureCandidate }));
+    }
+    const runProof = h.hub.factoryRunner.run;
+    h.hub.factoryRunner.run = async (options) => {
+      captureCandidate();
+      const result = failure || e.terminalTechnical
+        ? { status: "BLOCKED", reason: "REHEARSAL_TECHNICAL_STOP: no subsequent runner launch", counts: {}, outputTail: "", exitCode: null }
+        : await runProof(options);
+      e.runnerResults.push({ at: stamp(), key: options.key, command: options.command, result });
+      if (technicalResult(result)) e.terminalTechnical = { at: stamp(), key: options.key, result };
+      return result;
+    };
+    if (mode === "fake" && scenario === "hang") { h.hub.factory.setTurnTimeScaleForTests(fakeTurnMs / (45 * 60000)); e.isolation.turnTimeScale = fakeTurnMs / (45 * 60000); }
+    await probeRehearsalProviders({ providers: h.hub.providers, providerState: h.hub.providerState, mode, evidence: e, signal });
+    if (mode === "real") {
+      e.recipes = recipes({ config: realConfig, homeDir: h.homeDir, projectDir, mcpServerNames: e.probes.codex.probe.config.realtime.mcpServerNames });
+      e.headroom = assertHeadroom(e.probes, claudeHeadroomChecked);
+      const applied = codexDeniedEntries({ homeDir: h.homeDir, extra: [h.config.dataDir, h.config.backupDir] });
+      if (denyListFingerprint(applied) !== h.hub.codexIsolation().fingerprint) throw new Error("Applied/gate fingerprint mismatch");
+      acl = layoutIsolation({ hub: h.hub, parent, homeDir: h.homeDir, hubRoot: HUB_ROOT, evidence: e });
+    } else {
+      e.denyList = { ...h.hub.codexIsolation(), label: "PASS_SIMULATED: fake home; no ACL operation" };
+      if (scenario === "deny-other") {
+        e.denyList.classification = classifyDenyEntries([path.join(parent, "..", "other-project")], { parent });
+        throw new Error("P4 deny entry outside dedicated/consented paths");
+      }
+      if (scenario === "acl-outside") {
+        e.aclPreflightDiff = aclDiff([{ path: "C:/outside", exists: true, aces: [] }], [{ path: "C:/outside", exists: true, aces: ["CodexSandboxUsers:(DENY)(R)"] }], { allowed: [{ path: parent, recursive: true }] });
+        throw new Error("P8 ACL changed outside allowed paths (PASS_SIMULATED injection)");
+      }
+    }
+    console.log(`S25 deny-list fingerprint: ${e.denyList.fingerprint}`);
+    if (mode === "real" && isolationConsent !== e.denyList.fingerprint) throw new Error("P6 --isolation-consent must equal this layout's fingerprint");
+    const dispatch = (type, payload, extra = {}) => h.hub.commands.dispatch({ type, payload, channel: "test", actor: "test", ...extra });
+    await dispatch("isolation.consent", { provider: "codex", confirmText: CODEX_ACL_CONSENT_TEXT, fingerprint: e.denyList.fingerprint });
+    e.consent = { ...h.hub.settings.get("isolationConsent").codex, provenance: mode === "real" ? CONSENT_PROVENANCE : { kind: "PASS_SIMULATED" }, ownerClick: false };
+    h.hub.bus.transaction(() => {
+      h.hub.settings.set("mode", "BUILD_SAFE", "test");
+      h.hub.settings.set("executionGate", { status: "open", reason: "throwaway admin path", changedAt: stamp(), changedBy: "test" }, "test");
+    });
+    e.admin = { label: "throwaway admin path", channel: "test", mode: "BUILD_SAFE", executionGate: h.hub.settings.get("executionGate") };
+    declareBillingFixture(h.hub);
+    const project = (await dispatch("project.register_test", { path: projectDir, name: "Repetiție izolată §25" })).result;
+    if (mode === "real") await runnerPreflight({ h, parent, project, evidence: e, acl, homeAclChangeApproved });
+    signal?.throwIfAborted();
+    const limits = { writerModel: "gpt-6.1-sol", writerEffort: "medium", reviewerModel: "sonnet", reviewerEffort: "medium", maxAttemptsPerStage: 1, maxDurationMin: 180 };
+    const prepared = (await dispatch("factory.prepare", { projectId: project.id, ...ctx.built.input, limits })).result;
+    missionId = prepared.mission.id;
+    const view = () => h.hub.factory.view(missionId), spec = view().spec;
+    e.spec = { sha256: spec.sha256, dataset: ctx.spec.dataset, authorLimits: ctx.spec.authoring.authorLimits };
+    const brief = buildAuthorBrief({ mission: { id: missionId, title: prepared.mission.title }, spec: spec.spec, specVersion: spec.version, specSha: spec.sha256,
+      authoring: { testRef: spec.spec.authoring.testRef }, facts: ctx.facts, harness: 2 });
+    e.preflight.P11 = lintDatasetBrief(brief, { spec: spec.spec, facts: ctx.facts, ...spec.spec.authoring });
+    fs.writeFileSync(path.join(out, "author-brief.txt"), brief, { flag: "wx" });
+    if (!e.preflight.P11.lint?.ok) throw new Error("P11 shown skeleton lint failed before author dispatch");
+    if (mode === "fake") {
+      h.queue("claude", scenario === "rate-overage" ? "rate-overage" : "author:dataset-reference", "author:dataset-reference");
+      h.queue("codex", ...(["amend", "exhausted"].includes(scenario) ? ["test-review:dataset-two", scenario === "exhausted" ? "test-review:changes-again" : "test-review:pass"] : ["test-review:pass"]));
+    }
+    const owner = await enrolOwner(h);
+    const proposed = await h.hub.envelopes.propose({ projectId: project.id, missionIds: [missionId] });
+    if (!proposed.envelope) throw new Error(`Envelope refused: ${JSON.stringify(proposed.readiness)}`);
+    const env = proposed.envelope;
+    function gateBeforeDispatch() {
+      if (preflightPassed) return;
+      if (failure) throw failure;
+      const confirmed = h.hub.envelopes.get(env.id);
+      e.envelope = copy(confirmed); e.grants = copy(h.hub.grants.ofEnvelope(env.id));
+      e.budget = h.hub.envelopes.budgetOf(confirmed.id, missionId);
+      e.deadline_at = view().factory.deadlineAt; e.expiresAt = confirmed.expiresAt;
+      e.grantExpiryParity = { exact: e.grants.every((g) => g.expiresAt === confirmed.expiresAt),
+        rows: e.grants.map((g) => ({ id: g.id, expiresAt: g.expiresAt, planExpiresAt: confirmed.expiresAt, deltaMs: Date.parse(confirmed.expiresAt) - Date.parse(g.expiresAt) })),
+        explanation: "Production deriveGrants floors remaining TTL to whole minutes; actual expiry is capped by plan expiry and can be up to 60s earlier. No grants rewritten." };
+      for (const role of ["reviewer", "writer"]) {
+        const binding = view().factory.bindings[role], state = h.hub.providerState.get(binding.provider);
+        const fresh = resolveRunPlan({ provider: binding.provider, model: binding.resolvedAlias, effort: binding.effort, profile: binding.profile, providerState: state });
+        const change = compareAtDispatch(binding, fresh, state, { environment: "windows" });
+        const plan = { ...fresh, bindingHash: binding.bindingHash, missionId, problem: change ? change.reasons.join("; ") : fresh.problem };
+        e.preflight[binding.provider] = h.hub.gate.evaluate({ provider: binding.provider, projectId: project.id, access: "read-only", plan });
+      }
+      // Deliberately UNBOUND workspace-write request: the real plan grant must never admit a manual writer.
+      e.preflight.negativeWorkspaceWrite = h.hub.gate.evaluate({ provider: "codex", projectId: project.id, access: "workspace-write" });
+      e.preflight.negativeWorkspaceWrite.scope = "unbound request; bound writer is stopped by factory authority";
+      if (![e.preflight.claude, e.preflight.codex].every((r) => r.allowed && r.checks.some((c) => c.id === "run_plan" && c.ok)) || e.preflight.negativeWorkspaceWrite.allowed) throw new Error("P9 bound gate or negative writer check failed");
+      if (e.grants.length !== 2) throw new Error("P9 expected exactly two production envelope grants");
+      for (const [provider, access] of [["claude", "read-only"], ["codex", "workspace-write"]]) {
+        const grant = e.grants.find((g) => g.provider === provider);
+        if (!grant || grant.access !== access || grant.maxAttempts !== 5 || grant.maxDurationS !== 7200 || grant.binding?.missionId !== missionId || !grant.binding?.bindingHash
+          || !grant.binding?.model || Date.parse(grant.expiresAt) > Date.parse(confirmed.expiresAt) || Date.parse(confirmed.expiresAt) - Date.parse(grant.expiresAt) > 60000)
+          throw new Error("P9 production envelope grant bounds differ from the required plan");
+      }
+      preflightPassed = true; e.preflight.passedAt = stamp();
+    }
+    const authority = (mid, step) => {
+      if (mid === missionId && (failure || e.terminalTechnical)) return { reason: `REHEARSAL_TECHNICAL_STOP: ${failure?.message || e.terminalTechnical.result?.error || e.terminalTechnical.result?.reason}` };
+      if (mid === missionId && ["IMPLEMENTING", "REPAIRING"].includes(step.stage)) { e.boundaryHits.push({ at: stamp(), ...step }); return { reason: STOP }; }
+      if (mid === missionId && step.stage === "TEST_AUTHORING" && !preflightPassed) gateBeforeDispatch();
+      if (mid === missionId && preflightOnly && ["TEST_AUTHORING", "TEST_REVIEW"].includes(step.stage)) return { reason: "REHEARSAL_PREFLIGHT_ONLY_COMPLETE" };
+      return h.hub.envelopes.authorityFor(mid, step);
+    };
+    // confirm starts background work synchronously; install BEFORE confirm, repeat immediately after for the requested boundary.
+    h.hub.factory.attachAuthority(authority);
+    await dispatch("envelope.confirm", { envelopeId: env.id, nonce: env.nonce, displayedHash: env.envelopeHash }, { ownerSession: owner.session });
+    h.hub.factory.attachAuthority(authority);
+    e.confirmationOrdering = "authority/P9 installed before confirm (factory.start schedules immediately), reattached after confirm, before first tick";
+    const tick = () => {
+      if (pendingTick) return;
+      pendingTick = Promise.resolve().then(() => h.hub.scheduler.tick()).catch((error) => { failure ||= error; e.error = { message: error.message }; }).finally(() => { pendingTick = null; });
+    };
+    tick(); timer = setInterval(tick, 15000);
+    await waitFor(() => { signal?.throwIfAborted(); if (failure) throw failure; return ["BLOCKED", "NEEDS_OWNER_DECISION", "PAUSED", "CANCELLED"].includes(view().factory.stage); }, mode === "fake" ? 120000 : 185 * 60000, 100, { signal });
+    await h.hub.factory.idle(missionId); captureOutcome();
+    clearInterval(timer); await pendingTick;
+  } catch (error) {
+    failure = error; e.error = { message: error.message, stack: error.stack };
+    if (h && missionId) { try { captureOutcome(); } catch (captureError) { e.captureError = captureError.message; } }
+  } finally {
+    clearInterval(timer); clearInterval(processTimer); await pendingTick;
+    const cleanup = async (step, fn) => { try { return await fn(); } catch (error) { failure ||= error; (e.cleanupErrors ||= []).push({ step, message: error.message }); } };
+    if (mode === "real" && h) await cleanup("process scan", scan);
+    if (h) {
+      if (missionId) await cleanup("factory.stop", () => h.hub.factory.stop(missionId, { actor: "test", reason: "End of isolated rehearsal; no relaunch" }));
+      await cleanup("hub.close", async () => { await h.hub.close(); e.hubClosed = true; });
+      for (const row of realProcesses) {
+        let pidCurrentlyAbsent = false;
+        try { process.kill(row.pid, 0); } catch (error) { pidCurrentlyAbsent = error.code === "ESRCH"; }
+        // start().exit identifies the original child. An unrelated child may already reuse its numeric PID.
+        e.pidChecks.push({ pid: row.pid, gone: Boolean(row.exitedAt) || pidCurrentlyAbsent, originalExited: Boolean(row.exitedAt), pidCurrentlyAbsent,
+          checkedAt: stamp(), evidence: "public supervisor start().exit for original child + PID liveness; real mode additionally requires CreationDate" });
+      }
+    }
+    if (mode === "real" && h) {
+      await cleanup("CreationDate cleanup", async () => {
+        await scan(); e.realProcessCleanup.taskkill = await cleanupRecordedProcesses(realProcesses, { snapshot: scan });
+        e.realProcessCleanup.survivors = recordedSurvivors(realProcesses, await scan());
+        if (e.realProcessCleanup.survivors.length) throw new Error("Recorded processes survived (including sandbox-account processes)");
+        const snapshot = windowsProcessSnapshot(realProcesses.map((r) => r.pid));
+        e.realProcessCleanup.identities = realProcesses.map((r) => ({ pid: r.pid, ...compareProcessIdentity({ ...r, startTimeSource: r.creationDate ? "Win32_Process.CreationDate" : null }, snapshot) }));
+        if (e.realProcessCleanup.identities.some((r) => !r.gone)) throw new Error("OS process identity/exit could not be verified");
+        e.realProcessCleanup.verified = true;
+      });
+      if (acl) await cleanup("final ACL diff", async () => {
+        e.aclAfter = snapshotAcls(acl.targets); e.aclFinalDiff = aclDiff(e.aclBefore, e.aclAfter, acl);
+        e.homeAclReport = e.aclAfter.filter((r) => /[\\/]\.(claude|openclaw)$/.test(r.path));
+        if (e.aclAfter.some((r) => r.error) || !e.aclFinalDiff.ok) throw new Error("Post-run ACL metadata refused or changed outside allowed paths");
+      });
+      if (e.binaryBefore) await cleanup("binary unchanged", async () => {
+        e.binaryAfter = binaryIdentity(realConfig); e.binaryUnchanged = JSON.stringify(e.binaryBefore) === JSON.stringify(e.binaryAfter);
+        if (!e.binaryUnchanged) throw new Error("Codex binary changed during rehearsal; stop, never relaunch");
+      });
+    }
+    if (mode === "real" && e.realProcessCleanup.verified) process.removeListener("exit", emergencyKill);
+    // After Hub shutdown, independently calibrate every materialized candidate, including rejected ones.
+    // Temporary environment redirection keeps the unmodified part-A calibrator's scratch inside evidence.
+    for (const c of e.candidates) {
+      if (!calibrate) { c.calibration = "NOT_RUN: explicit fake test option"; continue; }
+      await cleanup(`calibration ${c.file}`, async () => {
+        const prior = { TEMP: process.env.TEMP, TMP: process.env.TMP };
+        try {
+          process.env.TEMP = out; process.env.TMP = out;
+          c.calibration = await calibrateS25({ candidate: path.join(out, c.file), manifest: c.manifest });
+          jsonFile(path.join(out, `${c.file}.calibration.json`), c.calibration);
+        } finally { for (const [key, value] of Object.entries(prior)) { if (value === undefined) delete process.env[key]; else process.env[key] = value; } }
+      });
+    }
+    if (!e.stream.length) e.stopReasonEvidence = "nedemonstrat: no per-message stop_reason/usage exposed";
+    e.finishedAt = stamp(); e.classification = classifyRehearsal(e);
+    e.rehearsalGate = e.classification === "INTENTIONAL_STOP_BEFORE_WRITER" && e.candidates.length > 0 && e.candidates.every((c) => c.calibration?.ok && c.noValidCheckLost);
+    jsonFile(path.join(out, "evidence.json"), e);
+  }
+  if (failure) throw Object.assign(failure, { evidence: e });
+  return copy(e);
+}
