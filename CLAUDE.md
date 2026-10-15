@@ -1,6 +1,10 @@
 # IfrimDigital Ifrim Agent Hub - Claude Code Context
 
-## Current state - 2026-10-14 evening (read first)
+## Current state - 2026-10-15 evening (read first)
+
+Read `.ifrim/STAGE_2026-10-15_CORECTII_S25.md` first; it takes precedence over everything below. Code `2.14.16-m11` (contract 13, schema 12, no migration; validated criteria-driven skeleton + pre-dispatch lint gate for the §25 step-0 author, minimal R-CLEANUP, Codex CLI registry fix, real-route rehearsal driver) is merged into `v2-milestone-01` = `abc5a8d` (branch `claude/project-thread-tjpzls` = `cc15765`). Final gate on `f454909`: test:v2 2132/2133 (0 FAIL, 0 cancelled, T25 skip), V1 551/552 (symlink skip). The single real-route rehearsal ended INTENTIONAL_STOP_BEFORE_WRITER with every step-0 gate (Codex PASS, 41/41); the candidate is the Hub skeleton without comments. The managed upgrade (`[Production Deploy]`) and the push were refused to the agent: the owner runs them; until then live stays `2.14.10-m11` and a reboot would autostart 2.14.16 unmanaged. Verified backup `bkp_mv9xo51k_96494a32dd`. The §25 card is prepared after the upgrade. Opus + ultracode for every stage. `.ifrim/M12_PROMPT.md` stays DRAFT.
+
+## State - 2026-10-14 evening (history)
 
 Read `.ifrim/STAGE_2026-10-13_DATE_MARTOR.md` (§9) and the first section of `.ifrim/OPEN_ISSUES.md` first; they take precedence over everything below. Code `2.14.15-m11` (contract 13, schema 12, no migration; adds the 45-min turn limit for the §25 step-0 author and R-PARITY deadline evidence on top of 2.14.13/2.14.14) is on `claude/project-thread-5c9bak` = `b111d1c`, NOT merged into `v2-milestone-01`. The real isolated rehearsal (driver `v2/tests/manual/s25-isolated-rehearsal.mjs`, Factory dispatch + runtime in a throwaway test Hub) produced a PROVEN rewrite calibrated 41/41, but the Codex test review stayed CHANGES_REQUESTED and the single rewrite is exhausted, so no release and no §25 card; next step is the owner's decision. The final full regression hung in r-turn under load (test-cleanup defect). Live Hub `2.14.10-m11`. Clone `C:Usersmihaihub-rc`; long jobs detached via WMI. `.ifrim/M12_PROMPT.md` stays DRAFT.
 
