@@ -9,6 +9,16 @@ import { createHub } from "../server/hub.mjs";
 import { ATTESTATION_TEXT } from "../server/policy/billing.mjs";
 import { buildDeclaration, applyDeclaration } from "../server/policy/billing-evidence.mjs";
 import { R2_ACCEPT_TEXT } from "../server/policy/isolation.mjs";
+import { after } from "node:test";
+
+export const cleanupFailures = [];
+/** Register at module top level: node:test drops after-hook errors on already failed/cancelled tests. */
+export function registerCleanupGuard() {
+  after(() => {
+    if (cleanupFailures.length) throw new AggregateError(cleanupFailures.map((f) => f.error),
+      `Cleanup failures: ${cleanupFailures.map((f) => `${f.dataDir}: ${f.error.message}`).join("; ")}`);
+  });
+}
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 export const FIXTURES = path.join(here, "fixtures");
@@ -76,8 +86,10 @@ export async function makeTestHub({ codex = "ok", claude = "ok", port = 0, clock
   await hub.boot();
   const readLog = (name) => (fs.existsSync(logs[name]) ? fs.readFileSync(logs[name], "utf8").split("\n").filter(Boolean).map((l) => JSON.parse(l)) : []);
   const cleanup = async () => {
-    await hub.close();
+    let failure;
+    try { await hub.close(); } catch (error) { failure = error; }
     try { fs.rmSync(dataDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 }); } catch { /* Windows may hold a file briefly; left in .ifrim/tmp */ }
+    if (failure) { cleanupFailures.push({ dataDir, error: failure }); throw failure; }
   };
   const queue = (provider, ...lines) => fs.appendFileSync(queueFiles[provider], `${lines.join("\n")}\n`);
   const wslState = (value) => fs.writeFileSync(wslFiles.state, JSON.stringify(value));
@@ -105,14 +117,25 @@ export async function enableLive(hub, { provider = "codex", access = "read-only"
   return { project, grant };
 }
 
-export const waitFor = async (predicate, timeoutMs = 15000, stepMs = 50) => {
+export const waitFor = async (predicate, timeoutMs = 15000, stepMs = 50, { signal } = {}) => {
   const started = Date.now();
+  let abort, deadlineTimer;
+  const aborted = signal && new Promise((_, reject) => {
+    abort = () => reject(signal.reason || new Error("waitFor aborted"));
+    signal.addEventListener("abort", abort, { once: true });
+  });
+  const deadline = signal && new Promise((_, reject) => { deadlineTimer = setTimeout(() => reject(new Error("waitFor timed out")), timeoutMs); });
+  const race = (work) => aborted ? Promise.race([work, aborted, deadline]) : work;
+  try {
   while (Date.now() - started < timeoutMs) {
-    const value = await predicate();
+    signal?.throwIfAborted();
+    const value = await (signal ? race(Promise.resolve().then(predicate)) : predicate());
     if (value) return value;
-    await new Promise((r) => setTimeout(r, stepMs));
+    let timer;
+    try { await race(new Promise((r) => { timer = setTimeout(r, stepMs); })); } finally { clearTimeout(timer); }
   }
   throw new Error("waitFor timed out");
+  } finally { clearTimeout(deadlineTimer); if (abort) signal.removeEventListener("abort", abort); }
 };
 
 /**

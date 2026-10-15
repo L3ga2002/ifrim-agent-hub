@@ -425,6 +425,21 @@ export function buildConcatList(frames, endMs) {
   return { text: `${lines.join("\n")}\n`, totalUs, kept: kept.length };
 }
 
+/** One capture clock. A verified end hold ends the recording; screencast-stop latency is not footage. */
+export function captureTimeline(frames, { firstArrival, firstTs, stopArrival, fps, holds = [] }) {
+  let last = 0;
+  const timeline = frames.map((f) => {
+    const rel = f.ts !== null && firstTs !== null ? (f.ts - firstTs) * 1000 : f.arrival - firstArrival;
+    last = Math.max(last, rel);
+    return { file: f.file, atMs: last };
+  });
+  // holds contains only the recorder's measured evidence; never stretch a hold to cover shutdown latency.
+  const endHold = holds.findLast((h) => h.reason === "end_hold" && h.result === "VERIFIED");
+  const endMs = endHold ? endHold.endMs : Math.max(stopArrival - firstArrival, last + 1000 / fps);
+  // Use the concat list's microsecond boundaries too: a rounded end-boundary frame has no encoded duration.
+  return { frames: endHold ? timeline.filter((f) => Math.round(f.atMs * 1000) < Math.round(endMs * 1000)) : timeline, endMs };
+}
+
 // ---------------------------------------------------------------------------------------------------------------------------
 // The capture service
 // ---------------------------------------------------------------------------------------------------------------------------
@@ -439,6 +454,20 @@ export function createCapture({ db, bus, clock = () => new Date(), settings, con
   const now = () => clock().toISOString();
   const policy = () => ({ liveCapture: false, ...(settings.get("mediaPolicy") || {}) });
   const running = new Map(); // sessionId → { controller, kind }
+  const pendingCaptures = new Set();
+  let closing = false, detached = false;
+  function beginClose() {
+    closing = true;
+    for (const job of running.values()) job.controller?.abort();
+  }
+  function captureBrowserDemo(input = {}) {
+    if (closing) return Promise.reject(new HubError("policy", "Hub shutdown: capture closed", { code: "HUB_SHUTDOWN" }));
+    const pending = runBrowserDemo(input);
+    pendingCaptures.add(pending);
+    pending.then(() => pendingCaptures.delete(pending), () => pendingCaptures.delete(pending));
+    return pending;
+  }
+  async function close() { beginClose(); await Promise.allSettled([...pendingCaptures]); }
 
   const selSession = db.prepare("SELECT * FROM media_capture_sessions WHERE id = ?");
   const insSession = db.prepare(`INSERT INTO media_capture_sessions (id, content_project_id, kind, status, scope_json, markers_json, capture_label, consent_json,
@@ -728,6 +757,7 @@ export function createCapture({ db, bus, clock = () => new Date(), settings, con
 
   /** At boot: a browser demo left RECORDING by a stopped process cannot continue (its browser is gone). */
   function recover() {
+    closing = false; detached = false;
     const rows = db.prepare("SELECT id FROM media_capture_sessions WHERE status = 'RECORDING' AND kind = 'browser_demo'").all();
     for (const r of rows) {
       if (running.has(r.id)) continue;
@@ -758,7 +788,7 @@ export function createCapture({ db, bus, clock = () => new Date(), settings, con
    * markers, steps }`. Refuses before launching anything: a non-loopback origin, the live Hub (unless liveCapture), an origin
    * the caller's allowOrigin does not accept, invalid steps/options.
    */
-  async function captureBrowserDemo(input = {}) {
+  async function runBrowserDemo(input = {}) {
     const who = requireActor(input.actor);
     if (typeof input.allowOrigin !== "function") throw new HubError("policy", "Captura demo are nevoie de o listă de origini permise (allowOrigin) dată de apelant.", { code: "DEMO_ALLOW_ORIGIN_REQUIRED" });
     const { origin, liveHub } = checkDemoOrigin(input.origin, { config });
@@ -767,6 +797,7 @@ export function createCapture({ db, bus, clock = () => new Date(), settings, con
     if (liveHub && (policy().liveCapture !== true || !liveRow || !scopeApproved(liveRow))) throw refuse(input.sessionId || null, who, "LIVE_HUB_CAPTURE_REFUSED", "Hub-ul live (portul 8011 sau serverul de dezvoltare care îl folosește) nu se înregistrează în Public Demo Mode: captura rulează pe un Hub de test cu date sintetice. Captura live cere decizia proprietarului (liveCapture) și scopul aprobat al sesiunii.");
     let allowed = false;
     try { allowed = (await input.allowOrigin(origin)) === true; } catch { allowed = false; }
+    if (closing) throw new HubError("policy", "Hub shutdown: capture admission closed", { code: "HUB_SHUTDOWN" });
     if (!allowed) throw refuse(input.sessionId || null, who, "DEMO_ORIGIN_NOT_ALLOWED", `Originea ${origin} nu este permisă pentru captura demo (doar Hub-ul de test al harness-ului).`);
     const steps = validateDemoSteps(input.steps);
     const givenLabel = input.captureLabel === undefined || input.captureLabel === null || input.captureLabel === "" ? null : oneOf(input.captureLabel, SESSION_CAPTURE_LABELS, "eticheta de captură");
@@ -1028,14 +1059,8 @@ export function createCapture({ db, bus, clock = () => new Date(), settings, con
       if (!frames.length) throw new HubError("tool", "Browserul nu a trimis niciun cadru.", { code: "SCREENCAST_NO_FRAMES" });
 
       // Frame times on one clock: the compositor timestamps (seconds) relative to the first frame, anchored at its arrival.
-      let last = 0;
-      const timeline = frames.map((f) => {
-        const rel = f.ts !== null && firstTs !== null ? (f.ts - firstTs) * 1000 : f.arrival - firstArrival;
-        last = Math.max(last, rel);
-        return { file: f.file, atMs: last };
-      });
-      const endMs = Math.max(stopArrival - firstArrival, last + 1000 / fps);
-      const list = buildConcatList(timeline, endMs);
+      const timeline = captureTimeline(frames, { firstArrival, firstTs, stopArrival, fps, holds });
+      const list = buildConcatList(timeline.frames, timeline.endMs);
       fs.writeFileSync(path.join(dir, "frames.ffconcat"), list.text);
       const totalSec = (list.totalUs / 1e6).toFixed(6);
       // JPEG frames are full-range BT.601 (yuvj420p): converted to limited-range BT.709 yuv420p, tagged, the usual delivery format.
@@ -1080,7 +1105,7 @@ export function createCapture({ db, bus, clock = () => new Date(), settings, con
       controller.signal.removeEventListener("abort", onAbort);
       await closeBrowser();
       running.delete(sessionId);
-      if (failure) {
+      if (failure && !detached) {
         const cancelled = failure.code === "CANCELLED";
         setStatus(sessionId, cancelled ? "CANCELLED" : "FAILED", { error: cancelled ? null : String(failure.message).slice(0, 500), markers_json: json([...parse(selSession.get(sessionId).markers_json, []), ...markers]) },
           { type: cancelled ? "media.capture.cancelled" : "media.capture.failed", source: who, payload: { sessionId, kind: "browser_demo", code: failure.code, steps: stepResults.length } });
@@ -1095,7 +1120,7 @@ export function createCapture({ db, bus, clock = () => new Date(), settings, con
     }
   }
 
-  return { planSession, addMarker, get, list, cancel, recover, startObsRecording, stopObsRecording, captureBrowserDemo, approveScope, scopeShaOf: (scope) => scopeSha(cleanScope(scope)), scopeApproved: (id) => { const r = selSession.get(String(id || "")); return r ? scopeApproved(r) : false; } };
+  return { beginClose, close, detach: () => { detached = true; }, planSession, addMarker, get, list, cancel, recover, startObsRecording, stopObsRecording, captureBrowserDemo, approveScope, scopeShaOf: (scope) => scopeSha(cleanScope(scope)), scopeApproved: (id) => { const r = selSession.get(String(id || "")); return r ? scopeApproved(r) : false; } };
 }
 
 /** An abortable sleep. */

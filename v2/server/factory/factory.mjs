@@ -907,7 +907,7 @@ export function createFactory(deps) {
     const outcome = await withRunnerLease(missionId, project, async () => {
       db.prepare("UPDATE factory_evidence SET stale = 1 WHERE mission_id = ? AND change_set_id = ? AND stage = ? AND stale = 0").run(missionId, changeSetId || "base", stage);
       for (const [i, command] of commands.entries()) {
-        if (isHalted(missionId)) break;
+        if (closed || isHalted(missionId)) break;
         // Tracked (M05 §20): a Stop during a runner command stays CANCEL_REQUESTED until the command is gone and its evidence
         // is written, so CANCELLED is never confirmed while a test process still runs.
         const result = await tracked(missionId, () => runner.run({ key: `factory-run-${missionId}-${stage}-${i}`, ws: project.path, command, project, shouldStop: () => isHalted(missionId) }));

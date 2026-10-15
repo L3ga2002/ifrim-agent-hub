@@ -304,7 +304,8 @@ export function createClaudeAdapter({ config, supervisor, homeDir = os.homedir()
     let lastAssistantStop = null;
     let largestMessageOutput = 0;
     const observeUsage = (tokens) => { if (Number.isSafeInteger(tokens) && tokens > largestMessageOutput) largestMessageOutput = tokens; };
-    const record = supervisor.start({ key, label: host.label || "claude -p", executable: spec.executable, args: spec.args, cwd: spec.cwd,
+    let record;
+    try { record = supervisor.start({ key, label: host.label || "claude -p", executable: spec.executable, args: spec.args, cwd: spec.cwd,
       env: spec.env,
       onStdoutLine: (line) => {
         let event;
@@ -399,6 +400,7 @@ export function createClaudeAdapter({ config, supervisor, homeDir = os.homedir()
           onEvent({ type: "usage", usage });
         }
       } });
+    } catch (error) { return fail("policy", String(error.message || error).slice(0, 300)); }
     try {
       record.child.stdin.write(prompt);
       record.child.stdin.end();

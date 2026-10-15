@@ -33,6 +33,7 @@ import { createCodexRealtime } from "./providers/codex-realtime.mjs";
 import { createLega } from "./runtime/lega.mjs";
 import { createLeases } from "./runtime/leases.mjs";
 import { createSupervisor } from "./runtime/supervisor.mjs";
+import { drainWithin } from "./runtime/shutdown.mjs";
 import { createRunManager } from "./runtime/runs.mjs";
 import { createHandoffs } from "./runtime/handoff.mjs";
 import { createCheckpoints } from "./runtime/checkpoints.mjs";
@@ -108,7 +109,7 @@ function createLiveChannel() {
  * provider call and no run is started here. `boot()` runs recovery (safe mode), seeds the company,
  * surfaces, integrations, computer environments and skills, and starts housekeeping.
  */
-export function createHub(config, { providerOverrides = {}, homeDir, browserLaunch = null } = {}) {
+export function createHub(config, { providerOverrides = {}, homeDir, browserLaunch = null, supervisorOptions = {}, turnTimers = null } = {}) {
   const clock = config.now;
   fs.mkdirSync(config.dataDir, { recursive: true });
   // M10: a pending migration on an existing database is preceded by a verified copy (refused, Hub not started, if it fails).
@@ -141,7 +142,7 @@ export function createHub(config, { providerOverrides = {}, homeDir, browserLaun
   const skills = createSkills({ db, bus, clock, config, roleConfig });
   const artifacts = createArtifacts({ db, bus, clock, projects });
   const breakers = createBreakers(clock);
-  const supervisor = createSupervisor({ config, onEvent: (event) => live.publish({ type: `supervisor.${event.type}`, data: event }) });
+  const supervisor = createSupervisor({ ...(config.testMode ? supervisorOptions : {}), config, onEvent: (event) => live.publish({ type: `supervisor.${event.type}`, data: event }) });
   const backups = createBackupService({ db, bus, config, clock, projects });
   const nativeSessions = createNativeSessionMirror({ db, bus, clock, config, projects });
   // M09-A2: the random salt of the pseudonymous account identity, created once (at first use or at boot) and kept in settings.
@@ -192,7 +193,7 @@ export function createHub(config, { providerOverrides = {}, homeDir, browserLaun
   const codexIsolation = () => { const paths = codexDeniedEntries({ homeDir: homeDir || os.homedir(), extra: [config.dataDir, config.backupDir] }); return { paths, fingerprint: denyListFingerprint(paths) }; };
   const gate = createGate({ db, settings, projects, backups, leases, grants, breakers, providerState, clock, activeRunCount: () => runs.activeCount() + (lega?.active() ? 1 : 0), codexIsolation, environments });
   runs = createRunManager({ db, bus, clock, settings, projects, conversations, missions, gate, leases, grants, backups, approvals, providers, breakers, usage, live, policy, skills, providerState, environments,
-    supervisorRecord: (key) => supervisor.get(key) });
+    supervisorRecord: (key) => supervisor.get(key), turnTimers: config.testMode ? turnTimers : null });
   const checkpoints = createCheckpoints({ db, bus, clock, projects, conversations, missions, approvals, leases, backups });
   const handoffs = createHandoffs({ db, bus, clock, conversations, missions, projects, leases, approvals, supervisor, runs, checkpoints });
   const tools = createTools({ db, bus, clock, projects, approvals, supervisor, config });
@@ -582,16 +583,45 @@ export function createHub(config, { providerOverrides = {}, homeDir, browserLaun
     return bootReport;
   }
 
-  async function close() {
-    scheduler.stop();
-    envelopes.close();
-    await factory.close();
-    await lega.stopAll("shutdown").catch(() => {});
-    try { deliveries.close_(); } catch { /* closing */ }
-    await media.close();
-    await desktop.close().catch(() => {});
-    await supervisor.stopAll();
-    db.close();
+  let closePromise = null;
+  function close() {
+    if (closePromise) return closePromise;
+    const errors = [];
+    const sync = (name, fn) => { try { fn(); } catch (cause) { errors.push(new Error(`${name}: ${cause.message}`, { cause })); } };
+    // No await before all launch/admission fences are raised. No persisted gate suspension.
+    sync("runs.close", () => runs.close());
+    sync("supervisor.beginClose", () => supervisor.beginClose());
+    sync("scheduler.stop", () => scheduler.stop());
+    sync("envelopes.close", () => envelopes.close());
+    sync("deliveries.beginClose", () => deliveries.beginClose());
+    sync("opsPlans.beginClose", () => opsPlans.beginClose());
+    sync("media.beginClose", () => media.beginClose());
+    closePromise = (async () => {
+      const step = async (name, fn, ms = 15000) => {
+        try { return await drainWithin(Promise.resolve().then(fn), ms, name); }
+        catch (cause) { errors.push(new Error(`${name}: ${cause.message}`, { cause })); return null; }
+      };
+      await step("factory.close", () => factory.close());
+      await step("runs.drain", () => runs.drain());
+      await step("lega.stopAll", () => lega.stopAll("shutdown"));
+      await step("deliveries.close", () => deliveries.close_());
+      // Start cancellation of media before awaiting plans that may be waiting on that media.
+      const mediaClosing = step("media.close", () => media.close(), 16000);
+      await step("opsPlans.close", () => opsPlans.close(15000), 16000);
+      await mediaClosing;
+      await step("desktop.close", () => desktop.close());
+      const stopped = await step("supervisor.close", () => supervisor.close(), 20000);
+      const survivors = stopped?.survivors || supervisor.list();
+      for (const r of survivors) errors.push(new Error(`supervisor survivor ${r.key}: pid=${r.pid}, startedAt=${r.startedAt}, CreationDate=${r.creationDate || "unavailable"}${r.descendants?.length ? `, descendants=${JSON.stringify(r.descendants)}` : ""}${r.snapshotError ? `, snapshot=${r.snapshotError}` : ""}`));
+      if (!survivors.length) await step("runs.settle", () => runs.settle());
+      sync("supervisor.detachSurvivors", () => supervisor.detachSurvivors());
+      sync("runs.detach", () => runs.detach());
+      sync("opsPlans.detach", () => opsPlans.detach());
+      sync("media.detach", () => media.detach());
+      sync("db.close", () => db.close());
+      if (errors.length) throw new AggregateError(errors, `Hub close failed: ${errors.map((e) => e.message).join("; ")}`);
+    })();
+    return closePromise;
   }
 
   return Object.assign(hub, { boot, close, bootId, getBootReport: () => bootReport, convertLegacyBilling });

@@ -215,11 +215,13 @@ export async function probeNotHub(origin, { fetch: fetchImpl = globalThis.fetch,
   for (const probePath of PROBE_PATHS) {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), wait);
+    const started = performance.now();
     let res;
     try {
       res = await fetchImpl(`${target.origin}${probePath}`, { method: "GET", redirect: "manual", cache: "no-store", credentials: "omit", headers: { accept: "*/*" }, signal: controller.signal });
-    } catch {
-      throw refuse("tool", "CAPTURE_TARGET_UNREACHABLE", `Preview-ul de pe ${target.origin} nu a răspuns la verificarea „nu este un Hub” (${probePath}); captura nu pornește fără această verificare.`);
+    } catch (error) {
+      throw refuse("tool", "CAPTURE_TARGET_UNREACHABLE", `Preview-ul de pe ${target.origin} nu a răspuns la verificarea „nu este un Hub” (${probePath}); captura nu pornește fără această verificare.`,
+        { errorName: error?.name || null, causeCode: error?.cause?.code || null, elapsedMs: Math.round(performance.now() - started) });
     } finally { clearTimeout(timer); }
     const hubHeader = HUB_HEADERS.find((name) => { const v = headerOf(res, name); return v !== null && v !== undefined; });
     const status = Number(res?.status) || 0;

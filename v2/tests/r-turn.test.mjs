@@ -4,7 +4,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
-import { makeTestHub, enableLive, enrolOwner, waitFor, FIXTURES } from "./helpers.mjs";
+import { makeTestHub, enableLive, enrolOwner, waitFor, FIXTURES, registerCleanupGuard } from "./helpers.mjs";
 import { checkSpec, specHash, specSummary, AUTHOR_TURN_TIMEOUT_MIN } from "../server/factory/spec.mjs";
 import { buildEngineeringSpec } from "../server/owner/planners/engineering.mjs";
 import { materializeFixture, demoSpec } from "../server/factory/fixtures.mjs";
@@ -14,6 +14,7 @@ import { runRehearsal, S25_WORDS, codexReviewArgs, createRehearsalCodex, probeRe
   recordedSurvivors, emergencyKillRecorded, cleanupRecordedProcesses, createRehearsalStop } from "./manual/s25-isolated-rehearsal.mjs";
 
 const OLD = { maxOutputTokens: 64000, provenance: "decizia proprietarului 2026-10-13 21:32 UTC: limită de ieșire 64000 doar pentru autorul testului de la pasul 0" };
+registerCleanupGuard();
 const marker = { createdBy: "ifrim-agent-hub", purpose: "live-validation", fixture: "booking-demo", data: "synthetic", name: "Programări §25" };
 const MODELS = { writerModel: "gpt-fake-sol", writerEffort: "medium", reviewerModel: "sonnet", reviewerEffort: "medium" };
 const END = ["DELIVERY_READY", "NEEDS_OWNER_DECISION", "BLOCKED", "PAUSED", "CANCELLED"];
@@ -21,12 +22,12 @@ const line = "Autorul testului (pasul 0): 45 min de la trimiterea turei, reînce
 function temp(t) { const dir = fs.mkdtempSync(path.join(os.tmpdir(), "r-turn-")); t.after(() => fs.rmSync(dir, { recursive: true, force: true, maxRetries: 5 })); return dir; }
 function booking(dir) { fs.cpSync(path.join(FIXTURES, "r-priv-booking"), dir, { recursive: true, filter: (s) => path.basename(s) !== "SOURCE.md" }); fs.writeFileSync(path.join(dir, ".ifrim-hub-test.json"), JSON.stringify(marker)); }
 
-async function fixture(t, { old = false, demo = false, scenario = null, scale = 1, clock, owner = false, prepare = true } = {}) {
+async function fixture(t, { old = false, demo = false, scenario = null, scale = 1, clock, turnTimers, owner = false, prepare = true } = {}) {
   const binaries = scenario ? {
     claude: { executable: process.execPath, prefixArgs: [path.join(FIXTURES, "fake-turn.mjs"), `--turn-scenario=${scenario}`] },
     codex: { executable: process.execPath, prefixArgs: [path.join(FIXTURES, "fake-codex.mjs")] },
   } : null;
-  const h = await makeTestHub({ queues: true, ...(clock ? { clock } : {}), ...(binaries ? { configOverrides: { providerBinaries: binaries } } : {}) });
+  const h = await makeTestHub({ queues: true, hubOptions: { turnTimers }, ...(clock ? { clock } : {}), ...(binaries ? { configOverrides: { providerBinaries: binaries } } : {}) });
   t.after(() => h.cleanup());
   const dispatch = (type, payload, extra = {}) => h.hub.commands.dispatch({ type, payload, channel: "test", actor: "test", ...extra });
   await enableLive(h.hub, { access: "workspace-write" });
@@ -40,8 +41,13 @@ async function fixture(t, { old = false, demo = false, scenario = null, scale = 
   const mission = prepare ? (await dispatch("factory.prepare", { projectId: project.id, ...built.input, limits: { ...MODELS, maxAttemptsPerStage: 1 } })).result.mission : null;
   const view = () => h.hub.factory.view(mission.id);
   const start = async () => { const r = await dispatch("factory.start", view().scope); await dispatch("approval.decide", { approvalId: r.approval.id, decision: "approved", displayedHash: r.approval.payloadHash }); await h.hub.commands.executeApproved(r.command.id, "user"); };
-  const settled = async () => { await waitFor(() => END.includes(view().factory.stage), 100000); await h.hub.factory.idle(mission.id); return view(); };
-  const running = () => waitFor(() => h.hub.runs.activeRuns().map((r) => h.hub.runs.getRun(r.runId)).find((r) => r.provider === "claude" && r.timeline.turn_sent), 60000);
+  const where = () => JSON.stringify({ stage: view().factory.stage, reason: view().factory.stageReason, dispatches: view().dispatches, runs: h.hub.runs.activeRuns() });
+  const wait = (fn) => waitFor(fn, 20000, 50, { signal: t.signal }).catch((error) => {
+    if (t.signal.aborted) throw error;
+    throw new Error(`${error.message} · ${where()}`, { cause: error });
+  });
+  const settled = async () => { await wait(() => END.includes(view().factory.stage)); await wait(async () => { await h.hub.factory.idle(mission.id); return true; }); return view(); };
+  const running = () => wait(() => h.hub.runs.activeRuns().map((r) => h.hub.runs.getRun(r.runId)).find((r) => r.provider === "claude" && r.timeline.turn_sent));
   const session = owner ? await enrolOwner(h) : null;
   return { ...h, dir, project, built, mission, view, start, settled, running, dispatch, owner: session };
 }
@@ -118,9 +124,25 @@ test("T-TURN-01 Factory dispatch/runtime scale: author only; role limits and old
 });
 
 test("T-TURN-02 retries/deltas never extend the one turn arm; 45-min timeout kills a real fake child", { timeout: 60000 }, async (t) => {
-  const ms = 1800, h = await fixture(t, { scenario: "hang", scale: ms / (45 * 60000) });
+  // Only the run deadline uses this clock; fixture processes, admission and cleanup keep real time.
+  // Admission may take arbitrarily long under load without accidentally spending the model's deadline.
+  let elapsedMs = 0;
+  let base = null;
+  const timers = new Set();
+  const turnTimers = { now: () => elapsedMs,
+    setTimeout: (fn, ms) => { const timer = { fn, at: elapsedMs + ms }; timers.add(timer); return timer; },
+    clearTimeout: (timer) => timers.delete(timer) };
+  const advance = (ms) => { elapsedMs += ms; for (const timer of [...timers]) if (timer.at <= elapsedMs) { timers.delete(timer); timer.fn(); } };
+  const ms = 1800, h = await fixture(t, { scenario: "hang", scale: ms / (45 * 60000), turnTimers, clock: () => new Date((base ?? Date.now()) + elapsedMs) });
+  base = Date.now();
   await h.start(); const run = await h.running();
   const first = h.hub.runs.activeRuns().find((r) => r.runId === run.id).turnDeadline;
+  await waitFor(() => h.hub.db.prepare("SELECT COUNT(*) AS n FROM events WHERE run_id = ? AND type = 'run.notice'").get(run.id).n >= 3,
+    10000, 50, { signal: t.signal });
+  advance(ms - 1);
+  assert.deepEqual(h.hub.runs.activeRuns().find((r) => r.runId === run.id).turnDeadline, first);
+  assert.equal(timers.size, 1, "admission arm replaced once; retries added no timers");
+  advance(1);
   const done = await h.settled(), final = h.hub.runs.getRun(run.id), d = final.evidence.turnDeadline;
   assert.equal(final.errorCategory, "turn_timeout"); assert.equal(final.status, "failed");
   assert.equal(d.limitMs, ms); assert.equal(d.admissionArms, 1); assert.equal(d.turnArms, 1);
@@ -160,7 +182,8 @@ for (const reason of ["Stop", "revocation", "expiry"]) test(`T-TURN-03 ${reason}
   if (reason === "Stop") await h.dispatch("factory.stop", { missionId: h.mission.id });
   else if (reason === "revocation") h.hub.envelopes.revoke(envelope.id, { reason: "T-TURN revocation" });
   else { offset = (h.view().factory.limits.maxDurationMin + 1) * 60000; await h.hub.factory.tick(); }
-  await waitFor(() => h.hub.runs.activeRuns().length === 0); await h.hub.factory.idle(h.mission.id);
+  await waitFor(() => h.hub.runs.activeRuns().length === 0, 15000, 50, { signal: t.signal });
+  await waitFor(async () => { await h.hub.factory.idle(h.mission.id); return true; }, 15000, 50, { signal: t.signal });
   const done = h.view(), final = h.hub.runs.getRun(run.id);
   assert.throws(() => process.kill(run.pid, 0)); assert.equal(final.status, "interrupted"); assert.equal(final.evidence.turnDeadline.fired, false);
   assert.ok(final.evidence.turnDeadline.clearedBy); assert.equal(final.evidence.turnTimeout, undefined);

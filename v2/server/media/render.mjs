@@ -90,6 +90,7 @@ export function createRenderQueue({ db, bus, live = null, clock = () => new Date
   if (!db || !bus || !paths || !tools || !assets) throw new Error("createRenderQueue requires db, bus, paths, tools and assets");
   const now = () => clock().toISOString();
   const active = new Map(); // jobId → { token, procKey, cancelRequested, done }
+  let closing = false, detached = false;
   const lastPublish = new Map();
 
   const policy = () => ({ renderConcurrency: 1, diskReserveGb: 15, interactivePriority: true, ...(settings?.get("mediaPolicy") || {}) });
@@ -150,6 +151,7 @@ export function createRenderQueue({ db, bus, live = null, clock = () => new Date
 
   /** Queues a render. Duplicate idempotency keys return the existing job (`duplicate: true`). */
   function request({ editVersionId, profile, actor, idempotencyKey = null } = {}) {
+    if (closing) throw new HubError("policy", "Hub shutdown: render queue closed", { code: "HUB_SHUTDOWN" });
     const who = requireActor(actor);
     if (typeof editVersionId !== "string" || !ID_RE.test(editVersionId)) throw new HubError("validation", "Versiunea de editare este invalidă.", { code: "FIELD_INVALID" });
     if (!RENDER_PROFILES[profile]) throw new HubError("validation", "Profilul de randare trebuie să fie „draft” sau „final”.", { code: "PROFILE_INVALID" });
@@ -214,6 +216,7 @@ export function createRenderQueue({ db, bus, live = null, clock = () => new Date
    * Claims and starts at most one job. → { claimed: jobId, done: Promise<job view> } | { deferred: true, reason } | { idle: true }.
    */
   function tick() {
+    if (closing) return { idle: true, reason: "shutdown" };
     const p = policy();
     if (p.interactivePriority !== false) {
       let busy = false;
@@ -236,7 +239,7 @@ export function createRenderQueue({ db, bus, live = null, clock = () => new Date
     if (!claimed) return { idle: true };
     const record = { token, procKey: null, cancelRequested: false, done: null };
     active.set(claimed, record);
-    record.done = runJob(claimed, token, record).finally(() => { active.delete(claimed); lastPublish.delete(claimed); }).then(() => get(claimed));
+    record.done = runJob(claimed, token, record).finally(() => { active.delete(claimed); lastPublish.delete(claimed); }).then(() => detached ? null : get(claimed));
     return { claimed, done: record.done };
   }
 
@@ -281,6 +284,7 @@ export function createRenderQueue({ db, bus, live = null, clock = () => new Date
 
   /** Boot recovery: active jobs of a previous process become INTERRUPTED (or CANCELLED when a cancel was pending). Never resumed. */
   function recover() {
+    closing = false; detached = false;
     const out = { interrupted: [], cancelled: [] };
     const rows = db.prepare(`SELECT * FROM media_render_jobs WHERE status IN (${ACTIVE_RENDER_STATUSES.map(() => "?").join(",")})`).all(...ACTIVE_RENDER_STATUSES);
     for (const row of rows) {
@@ -303,6 +307,7 @@ export function createRenderQueue({ db, bus, live = null, clock = () => new Date
   // ------------------------------------------------------------------ the run
 
   function checkCancel(jobId, rec) {
+    if (detached) throw new HubError("policy", "Hub shutdown", { code: "HUB_SHUTDOWN" });
     if (rec.cancelRequested) throw renderError("CANCELLED");
     const row = selJob.get(jobId);
     if (row?.status === "CANCEL_REQUESTED") { rec.cancelRequested = true; throw renderError("CANCELLED"); }
@@ -569,6 +574,7 @@ export function createRenderQueue({ db, bus, live = null, clock = () => new Date
       rmQuiet(path.join(jobDir, plan.final.output));
     } catch (error) {
       const failure = rec.cancelRequested ? { code: "CANCELLED", message: FAILURE_TEXT.CANCELLED } : classifyRenderError(error);
+      if (detached) return;
       journal.status = failure.code === "CANCELLED" ? "CANCELLED" : "FAILED";
       journal.error = failure;
       try { step("failed", { code: failure.code }); } catch { /* ignore */ }
@@ -607,5 +613,16 @@ export function createRenderQueue({ db, bus, live = null, clock = () => new Date
   /** Waits for every job running in this process (tests and orderly shutdown). */
   const idle = () => Promise.all([...active.values()].map((r) => r.done?.catch(() => {})));
 
-  return { request, retry, cancel, tick, recover, get, list, pruneCache, idle, activeJobs: () => [...active.keys()] };
+  function beginClose() {
+    closing = true;
+    for (const rec of active.values()) { rec.cancelRequested = true; rec.cancelledBy = "hub:close"; }
+  }
+  async function close() {
+    beginClose();
+    await Promise.all([...active.values()].map(async (rec) => {
+      if (rec.procKey) await tools.cancel(rec.procKey);
+      await rec.done;
+    }));
+  }
+  return { beginClose, close, detach: () => { detached = true; }, request, retry, cancel, tick, recover, get, list, pruneCache, idle, activeJobs: () => [...active.keys()] };
 }

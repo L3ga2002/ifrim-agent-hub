@@ -313,7 +313,7 @@ test("RM-10 real capture (Chromium + ffmpeg): planned steps produce verified hol
     t.diagnostic(`holds: ${out.holds.map((h) => `${h.reason}@${h.startMs}-${h.endMs}`).join(" ")}; tail gaps ms: ${gaps.join(", ")}`);
     // QA on the capture with its own holds (a one-clip IR, as clip-ir builds each clip).
     const holds = out.holds.map((h) => clipHoldOf(h, FPS)).filter(Boolean);
-    const frames = Math.floor((out.durationMs * 30) / 1000);
+    const frames = Math.floor((out.version.probe.durationMs * 30) / 1000);
     const ir = { irVersion: 1, fps: FPS, canvas: { width: 640, height: 400, background: "#0B0D10" }, preset: { id: "ifrim-devlog", version: 1 }, language: "ro",
       tracks: [{ id: "v1", kind: "video", clips: [{ id: "c1", assetVersionId: out.version.id, sourceIn: 0, sourceOut: frames, start: 0, label: "SIMULATION", holds }] }] };
     const v = validateIR(ir, { getVersion: s.assets.getVersion, presets: PRESETS });

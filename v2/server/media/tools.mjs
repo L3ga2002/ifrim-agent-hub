@@ -180,6 +180,14 @@ export function createProgressParser() {
 export function createMediaTools({ config, supervisor, settings = null, bus = null, clock = () => new Date(), finder = null }) {
   if (!config || !supervisor) throw new Error("createMediaTools requires config and supervisor");
   const running = new Map(); // key → { cancelled, timedOut }
+  let closing = false;
+  const boot = () => { closing = false; };
+  const beginClose = () => { closing = true; };
+  const close = async () => {
+    beginClose();
+    const results = await Promise.all([...running.keys()].map((key) => cancel(key)));
+    if (results.some((r) => !r.stopped)) throw new Error("Media tool process survived shutdown");
+  };
   const identityCache = new Map(); // file → { sig, sha256 }
   const lookupCache = new Map(); // tool → absolute path found on PATH (production)
   const versionCache = new Map(); // tool → { identityFile, sig, at, version } (a `-version` read, valid INSPECT_TTL_MS)
@@ -542,6 +550,7 @@ export function createMediaTools({ config, supervisor, settings = null, bus = nu
   }
 
   function spawnTool({ tool, launcher, argv, cwd, timeoutMs, key, onProgress = null, collectStderr = true, onStderrLine = null, maxStdoutLines = 50000 }) {
+    if (closing) throw new HubError("policy", "Hub shutdown: media tools closed", { code: "HUB_SHUTDOWN" });
     if (supervisor.get(key) && !supervisor.get(key).exited) throw new HubError("conflict", "Există deja un proces media cu această cheie.", { code: "MEDIA_KEY_BUSY" });
     const state = { cancelled: false, timedOut: false };
     running.set(key, state);
@@ -589,6 +598,7 @@ export function createMediaTools({ config, supervisor, settings = null, bus = nu
    * result, not an exception); throws TOOL_MISSING when the binary is absent and policy/validation errors for refused argv.
    */
   async function run({ tool, args, cwd = null, key = null, timeoutMs = null, onProgress = null, collectStderr = true, onStderrLine = null, maxStdoutLines = 50000 }) {
+    if (closing) throw new HubError("policy", "Hub shutdown: media tools closed", { code: "HUB_SHUTDOWN" });
     const dir = cwd ? path.resolve(cwd) : workCwd();
     if (!fs.existsSync(dir) || !fs.statSync(dir).isDirectory()) throw new HubError("validation", "Dosarul de lucru pentru unealta media nu există.", { code: "MEDIA_CWD_MISSING" });
     const argv = prepareArgs(tool, args, { cwd: dir, progress: Boolean(onProgress) });
@@ -624,5 +634,5 @@ export function createMediaTools({ config, supervisor, settings = null, bus = nu
     return normalized;
   }
 
-  return { inspect, pin, resolve, requirePinned, acknowledgeChange, run, cancel, probe, inputArgs, outputArg, prepareArgs, running: () => [...running.keys()], lastResolved: () => resolved };
+  return { boot, beginClose, close, inspect, pin, resolve, requirePinned, acknowledgeChange, run, cancel, probe, inputArgs, outputArg, prepareArgs, running: () => [...running.keys()], lastResolved: () => resolved };
 }

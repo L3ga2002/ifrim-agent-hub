@@ -142,6 +142,9 @@ const ACTIVITY_ITEMS = new Set(["commandExecution", "fileChange", "mcpToolCall",
  * desktop itself ran the repaired alpha.20 named by CODEX_CLI_PATH; the Hub picked the bundle by mtime and could not run any command.
  */
 let userCliPath;
+export function parseCodexCliRegQuery(stdout) {
+  return /^[\t ]*CODEX_CLI_PATH[\t ]+REG_(?:EXPAND_)?SZ[\t ]+([^\r\n]+)/mi.exec(String(stdout))?.[1]?.trim() || null;
+}
 export function selectedCodexCli({ env = process.env, platform = process.platform, readUserEnv = null } = {}) {
   const fromEnv = env.CODEX_CLI_PATH;
   if (fromEnv) return fs.existsSync(fromEnv) ? fromEnv : null;
@@ -149,8 +152,8 @@ export function selectedCodexCli({ env = process.env, platform = process.platfor
   if (readUserEnv) { const v = readUserEnv("CODEX_CLI_PATH"); return v && fs.existsSync(v) ? v : null; }
   if (userCliPath === undefined) {
     try {
-      const out = execFileSync("reg", ["query", "HKCU\Environment", "/v", "CODEX_CLI_PATH"], { encoding: "utf8", windowsHide: true, timeout: 5000 });
-      userCliPath = /CODEX_CLI_PATHs+REG_(?:EXPAND_)?SZs+(.+)/.exec(out)?.[1]?.trim() || null;
+      const out = execFileSync("reg", ["query", "HKCU\\Environment", "/v", "CODEX_CLI_PATH"], { encoding: "utf8", windowsHide: true, timeout: 5000 });
+      userCliPath = parseCodexCliRegQuery(out);
     } catch { userCliPath = null; }
   }
   return userCliPath && fs.existsSync(userCliPath) ? userCliPath : null;
@@ -433,10 +436,15 @@ export function createCodexAdapter({ config, supervisor, homeDir = os.homedir(),
     }
     const phase = (name) => { try { onEvent({ type: "phase", phase: name }); } catch { /* timeline never breaks a run */ } };
     // The owner's config MCP servers are disabled by name for this process (key names only are read from config.toml).
-    const session = openSession({ cwd, key, access, extraArgs, onNotification, onServerRequest, launchVars,
+    let session;
+    try { session = openSession({ cwd, key, access, extraArgs, onNotification, onServerRequest, launchVars,
       onExit: (exit) => finish(interruptReason
         ? { status: "interrupted", output, usage, threadId: currentThread, turnId, errorCategory: null, error: `interrupted (${interruptReason})`, preInference: !turnId }
         : { status: "failed", output, usage, threadId: currentThread, turnId, errorCategory: "transport", error: `app-server exited (${exit.code})`, preInference: !turnId }) });
+    } catch (error) {
+      return { key, pid: null, interrupt: async () => ({ interrupted: false, graceful: true, reason: "not started" }),
+        done: Promise.resolve({ status: "failed", errorCategory: "policy", preInference: true, error: String(error.message || error).slice(0, 300), output: "", usage: {}, threadId }) };
+    }
 
     async function interrupt(reason = "user") {
       interruptReason = reason;
