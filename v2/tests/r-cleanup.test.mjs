@@ -131,7 +131,7 @@ for (const diagnosticFailure of [false, true]) test(`cleanup native tree: owned 
 test("cleanup native tree: root-only fallback reports surviving grandchild from Hub snapshot", { timeout: 90000 }, async (t) => {
   let leaf;
   const supervisor = createSupervisor({ config, treeKill: async () => { throw new Error("tree kill failure sentinel"); } });
-  const root = supervisor.start({ key: "fallback-tree", executable: process.execPath, args: [path.join(FIXTURES, "cleanup-tree.mjs"), "--life=45000"], cwd: FIXTURES,
+  const root = supervisor.start({ key: "fallback-tree", executable: process.execPath, args: [path.join(FIXTURES, "cleanup-tree.mjs"), "--life=45000", "--detached-leaf"], cwd: FIXTURES,
     onStdoutLine: (line) => { leaf = JSON.parse(line).grandchild; } });
   t.after(async () => { await supervisor.close(); await root.exit; });
   await waitFor(() => leaf, 5000, 10, { signal: t.signal });
