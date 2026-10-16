@@ -8,6 +8,7 @@ import { hashCanonical } from "../server/core/canonical.mjs";
 import { captureRunning, decisionRows } from "../web/src/lib/deliveryLogic.js";
 import { decisionsInbox } from "../server/delivery/inbox.mjs";
 import { machineIdentity } from "../server/owner/dev-profile.mjs";
+import { captureBlockers } from "../server/delivery/capture-blockers.mjs";
 
 async function fixture(testContext, options) {
   const t = await acceptanceHub(options);
@@ -94,6 +95,7 @@ test("ACCEPT stale id, full wrong sha, prefix, another delivery binding and late
 function replaceBundle(t, b) {
   t.hub.db.prepare(`INSERT INTO factory_bundles (id, mission_id, change_set_id, change_set_sha, spec_version, manifest_json, sha256, status, created_at)
     SELECT 'bnd_replacement', mission_id, change_set_id, change_set_sha, spec_version, manifest_json, sha256, status, created_at FROM factory_bundles WHERE id = ?`).run(b.bundleId);
+  assert.equal(t.hub.db.prepare("SELECT id FROM factory_bundles WHERE mission_id = ? ORDER BY created_at DESC, rowid DESC LIMIT 1").get(b.missionId).id, "bnd_replacement");
 }
 
 for (const fault of ["replacement", "revoked", "delivery-stale", "capture", "software"]) test(`ACCEPT re-check after await: ${fault}`, async c => {
@@ -116,11 +118,13 @@ function capture(t, b, kind = "plan") {
   const db = t.hub.db, at = t.config.now().toISOString();
   if (kind === "recording") {
     db.prepare("INSERT INTO media_capture_sessions (id, kind, status, scope_json, created_by, created_at, updated_at) VALUES ('cap_accept','browser_demo','RECORDING',?,'test',?,?)").run(JSON.stringify({ projectId: t.project.id }), at, at);
+    assert.equal(captureBlockers(db, { missionId: b.missionId, projectId: t.project.id }).sessionId, "cap_accept");
     return;
   }
   db.prepare("INSERT INTO ops_plans (id, kind, title, body_json, plan_hash, nonce, status, proposed_by, proposed_via, confirm_by, expires_at, created_at, updated_at) VALUES ('op_accept','delivery.package','capture','{}',?,'test','RUNNING','test','test',?,?,?,?)").run("a".repeat(64), at, at, at, at);
   db.prepare("INSERT INTO ops_plan_steps (id, plan_id, seq, kind, status, updated_at) VALUES ('step_accept','op_accept',1,'delivery.capture','RUNNING',?)").run(at);
   db.prepare("UPDATE deliveries SET ops_plan_id = 'op_accept' WHERE id = ?").run(b.deliveryId);
+  assert.equal(captureBlockers(db, { missionId: b.missionId, projectId: t.project.id }).planId, "op_accept");
 }
 
 for (const kind of ["plan", "recording"]) test(`ACCEPT active ${kind} refuses both routes`, async c => {

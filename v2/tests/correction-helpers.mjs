@@ -98,7 +98,8 @@ export async function correctionEnv({ launchers = fakeLaunchers(), previewUrl = 
     bundleIntegrity() {
       const snap = this.snapshotCheck(), drift = this.driftProvenance(project.id, snap.changedFiles || []);
       const expected = snap.expected ?? (snap.equal ? snapshot : null);
-      const decision = { ok: expected === snapshot && !drift.software.length, expectedSha: expected, actualSha: snap.actual ?? expected,
+        const decision = { ok: expected === snapshot && !drift.software.length, expectedSha: expected, actualSha: snap.actual ?? expected,
+          identityProblems: [], protectedProblems: [], historicProblems: [], hubOnlyScope: drift.software.every(path => path.startsWith('.ifrim-hub/')),
         changed: (snap.changedFiles || []).map(path => ({ path, status: 'modified' })), accepted: drift.hub, unproven: drift.software.map(path => ({ path, reason: 'test drift' })) };
       return { ...decision, decisionSha: hashCanonical(decision) };
     },

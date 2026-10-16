@@ -314,9 +314,9 @@ export function createDeliveries({ db, bus, clock, config, settings, projects, m
     const d = need(id);
     const { equal, snap, drift, reason, decision } = snapshotComparison(d);
     if (!snap) return { equal, reason };
-    const verified = { ...d.verified, hubOnly: drift.hub, accepted: decision.accepted, unproven: decision.unproven, decisionSha: decision.decisionSha, at: now(), by, expected: decision.expectedSha, actual: snap.actual, equal, changedFiles: snap.changedFiles };
+    const verified = { ...d.verified, hubOnly: drift.hub, accepted: decision.accepted, unproven: decision.unproven, identityProblems: decision.identityProblems, protectedProblems: decision.protectedProblems, historicProblems: decision.historicProblems, decisionSha: decision.decisionSha, at: now(), by, expected: decision.expectedSha, actual: snap.actual, equal, changedFiles: snap.changedFiles };
     bus.transaction(() => db.prepare("UPDATE deliveries SET verified_json = ?, updated_at = ? WHERE id = ?").run(json(verified), now(), id));
-    if (!equal && ["READY", "NEEDS_OWNER"].includes(d.status)) trigger(id, "software_changed", { changedFiles: drift.software, cause: `fișiere schimbate: ${drift.software.slice(0, 5).join(", ") || "snapshot diferit"}` }, by);
+    if (drift.software.length && ["READY", "NEEDS_OWNER", "ACTIVE"].includes(d.status)) trigger(id, "software_changed", { changedFiles: drift.software, cause: `fișiere schimbate: ${drift.software.slice(0, 5).join(", ")}` }, by);
     return verified;
   }
 

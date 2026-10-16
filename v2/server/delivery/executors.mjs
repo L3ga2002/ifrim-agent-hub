@@ -38,6 +38,7 @@ export function createDeliveryExecutors({ deliveries, factory, media, projects, 
   };
   const snapshotEqual = (d) => {
     const verified = deliveries.verify(d.id, { by: "delivery" });
+    if (!verified || typeof verified.equal !== "boolean") throw refuse("SNAPSHOT_DRIFT", "Verificarea versiunii nu a întors un rezultat valid; nimic nu se filmează.");
     if (!verified.equal) throw refuse("SNAPSHOT_DRIFT", `Proiectul nu mai e versiunea verificată (${verified.unproven?.map(c => c.path).slice(0, 5).join(", ") || "snapshot diferit"}); nimic nu se filmează.`);
     return verified;
   };

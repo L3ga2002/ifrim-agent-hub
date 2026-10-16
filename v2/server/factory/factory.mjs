@@ -3341,15 +3341,44 @@ function restoredHistoricTest(db, project, r) {
   return folder && fileShaAt(folder, path.posix.basename(r.from)) === r.sha256;
 }
 
-export function historicViolations(db, project, protectedRecord) {
+// One journal/approved-plan/DB-record check for integrity facts and historic readers.
+export function retirementEvidence(row, project) {
+  const p = parse(row.protected_json, {}), s = parse(row.spec_json, {}), journal = readRetireJournal(project, row.mission_id);
+  const plan = retirementPlan(row.mission_id, s);
+  const matches = (x, r) => x.from === r.from && x.to === r.to && x.sha256 === r.sha256;
+  const samePlan = items => Array.isArray(items) && items.length === plan.length && plan.every(r => items.some(x => matches(x, r)));
+  const recorded = (records, r) => (records || []).some(x => matches(x, r) && (x.cycle || 1) === (journal?.cycle || 1));
+  const valid = journal && row.status === "APPROVED" && samePlan(journal.items) && (!p.pendingRetire || samePlan(p.pendingRetire))
+    && (journal.status === "MOVED" ? plan.every(r => recorded(p.retired, r) && !recorded(p.restored, r)) : journal.status === "RESTORED" && plan.every(r => recorded(p.restored, r)));
+  return { journal, valid };
+}
+
+export function historicViolations(db, project, protectedRecord, provenance) {
   const h = protectedRecord?.historic || { active: [], retired: [] };
+  if (!h.active?.length && !h.retired?.length) return [];
   const restoredTest = (project, r) => restoredHistoricTest(db, project, r);
   const shaOf = (rel) => { const folder = safeFolder(project.path, path.posix.dirname(rel), { create: false }); return folder ? fileShaAt(folder, path.posix.basename(rel)) : null; };
   const out = [];
   try {
     const suite = safeFolder(project.path, HUB_TEST_DIR, { create: false });
     if (suite) fs.readdirSync(suite);
-    for (const a of h.active || []) { const now2 = shaOf(a.ref); if (now2 !== a.sha256) out.push(`testul Hub anterior ${a.ref} (misiunea ${a.missionId}) a fost ${now2 === null ? "șters" : "modificat"}`); }
+    for (const a of h.active || []) {
+      const now2 = shaOf(a.ref);
+      if (now2 === a.sha256) continue;
+      if (now2 === null) {
+        const proof = provenance?.[a.ref];
+        if (proof?.valid && proof.provenance === "retired_by_hub" && proof.record.sha256 === a.sha256) continue;
+        // buildBundle also uses this reader, before a bundle exists to gather its facts.
+        if (!provenance) {
+          const rows = db.prepare("SELECT fs.* FROM factory_specs fs JOIN missions m ON m.id = fs.mission_id WHERE m.project_id = ?").all(project.id);
+          if (rows.some(row => {
+            const { journal, valid } = retirementEvidence(row, project);
+            return valid && journal.status === "MOVED" && journal.items.some(x => x.from === a.ref && x.sha256 === a.sha256 && shaOf(x.to) === a.sha256);
+          })) continue;
+        }
+      }
+      out.push(`testul Hub anterior ${a.ref} (misiunea ${a.missionId}) a fost ${now2 === null ? "șters" : "modificat"}`);
+    }
     for (const r of h.retired || []) {
       if (restoredTest(project, r)) continue;
       if (shaOf(r.to) !== r.sha256) out.push(`copia retrasă ${r.to} a fost ${shaOf(r.to) === null ? "ștearsă" : "modificată"}`);

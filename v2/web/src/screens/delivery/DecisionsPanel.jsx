@@ -78,7 +78,7 @@ function DecisionRow({ room, row, titled }) {
  * record and sends only its own command; nothing is approved by opening or reading this page.
  */
 export function DecisionsPanel({ room }) {
-  const groups = decisionGroups(room.view, { session: room.session, busy: Boolean(room.busy), summaryDirty: room.summaryDirty });
+  const groups = decisionGroups(room.view, { session: room.session, owner: room.owner, busy: Boolean(room.busy), summaryDirty: room.summaryDirty });
   return (
     <Panel title="6 · Deciziile tale (cinci, separate)" icon={Scale} id="livrare-decizii-panel">
       <div className="stack">
@@ -106,5 +106,5 @@ export function DecisionsPanel({ room }) {
 
 /** The row of one decision for another panel (same data, same lock): used by the summary editor. */
 export function decisionRowFor(room, key) {
-  return decisionRows(room.view, { session: room.session, busy: Boolean(room.busy), summaryDirty: room.summaryDirty }).find((r) => r.key === key) || null;
+  return decisionRows(room.view, { session: room.session, owner: room.owner, busy: Boolean(room.busy), summaryDirty: room.summaryDirty }).find((r) => r.key === key) || null;
 }

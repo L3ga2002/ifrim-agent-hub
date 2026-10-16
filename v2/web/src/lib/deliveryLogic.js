@@ -272,7 +272,7 @@ export function safePreviewUrl(url, { hubOrigin = "" } = {}) {
   return u.href;
 }
 /** What the „Demo local” panel offers: open (running), start (verified snapshot only) or stop, each with its honest reason. */
-export function previewState(view, { hubOrigin = "", session = "open", busy = false } = {}) {
+export function previewState(view, { hubOrigin = "", session = "open", owner, busy = false } = {}) {
   const p = obj(view?.preview);
   const url = safePreviewUrl(p.url, { hubOrigin });
   const running = p.running === true;
@@ -287,7 +287,7 @@ export function previewState(view, { hubOrigin = "", session = "open", busy = fa
     running, url, rawUrl: str(p.url), urlRefused: Boolean(str(p.url)) && !url,
     startCommand: str(p.startCommand), key: str(p.key),
     open: { enabled: running && Boolean(url) },
-    start: { ...start, enabled: start.enabled && !busy, label: sessionLabel("Pornește preview-ul versiunii verificate", session) },
+    start: { ...start, enabled: start.enabled && !busy, label: sessionLabel("Pornește preview-ul versiunii verificate", session, owner) },
     stop: { enabled: running && !busy, label: "Oprește preview-ul" },
     note: "Cod generat, rulează local pe date sintetice. Se deschide într-o filă nouă, niciodată în pagina Hub-ului.",
   };
@@ -580,14 +580,14 @@ export function ownerSessionState(owner, { onLocalhost = true } = {}) {
   if (owner?.bootstrapNeeded) return "unconfigured";
   return owner?.session ? "open" : "closed";
 }
-export const SESSION_HINT = "deschide sesiunea (Windows Hello)";
+export const SESSION_HINT = confirmationHint({ openingSession: true, enabled: true });
 export function sessionGate(session) {
   if (session === "unavailable") return { blocked: true, reason: "Sesiunea de proprietar se deschide doar pe http://localhost (aceeași pagină, aceeași adresă de port)." };
   if (session === "unconfigured") return { blocked: true, reason: "Sesiunea de proprietar nu e configurată încă; cockpitul Lega te ghidează o singură dată." };
   return { blocked: false, reason: "" };
 }
 /** A session-bound button names the ceremony while the session is closed: „… — deschide sesiunea (Windows Hello)”. */
-export const sessionLabel = (label, session) => (session === "open" ? label : `${label} — ${SESSION_HINT}`);
+export const sessionLabel = (label, session, owner) => (session === "open" ? label : `${label} — ${confirmationHint({ openingSession: true, enabled: true }, owner)}`);
 
 // ---------------------------------------------------------------- 6 · the five separate owner decisions
 
@@ -640,10 +640,10 @@ export function rightsHref(view) {
 const pendingChip = Object.freeze({ tone: "approval", text: "în așteptarea ta" });
 /** The summary block's word for one decision (`decisions.<key>`: a string or `{ state }`) — a fallback only where the record itself is not in the view. */
 const claimedState = (view, key) => { const c = view?.decisions?.[key]; return up(c && typeof c === "object" ? c.state ?? c.status : c); };
-function gated(action, { session = "open", busy = false } = {}) {
+function gated(action, { session = "open", owner, busy = false } = {}) {
   if (!action || action.kind !== "command") return action;
   const gate = action.needsSession ? sessionGate(session) : { blocked: false, reason: "" };
-  const label = action.needsSession ? sessionLabel(action.label, session) : action.label;
+  const label = action.needsSession ? sessionLabel(action.label, session, owner) : action.label;
   if (!action.enabled) return { ...action, label };
   if (gate.blocked) return { ...action, label, enabled: false, reason: gate.reason };
   return { ...action, label, enabled: !busy };
@@ -701,7 +701,7 @@ function creativeRow(view, slotKey, slot, ctx) {
   const chip = state === "DONE" ? { tone: slot.mode === "current" ? "ok" : "neutral", text: slot.mode === "current" ? `creație aprobată (${v})` : `creație aprobată · pentru versiunea veche` }
     : state === "REJECTED" ? { tone: "error", text: "respinsă" } : state === "CHANGES" ? { tone: "warn", text: "modificări cerute" } : !slot.present ? { tone: "neutral", text: "încă nu există" } : pendingChip;
   return { key, group: "creative", title: `Aprobare creativă — ${slot.title}`, target: slot.editVersionId ? `${v} · ${slot.editVersionId}` : "", state, chip,
-    does: "Spune că ACEASTĂ versiune de clip arată cum vrei. Cere Windows Hello de fiecare dată.",
+    does: `Spune că ACEASTĂ versiune de clip arată cum vrei.${confirmationHint(action, ctx.owner) ? ` ${confirmationHint(action, ctx.owner)}.` : ""}`,
     doesNot: "Nu acceptă software-ul, nu acordă drepturi de folosire publică și nu publică. O versiune nouă pornește neaprobată.",
     action: gated(action, ctx) };
 }
@@ -1019,12 +1019,12 @@ export function planRows(view) {
   });
 }
 /** „Pregătește un plan nou de împachetare”: offered when the delivery stopped and no plan of it is still open. */
-export function repackageState(view, { session = "open", busy = false } = {}) {
+export function repackageState(view, { session = "open", owner, busy = false } = {}) {
   const status = up(view?.delivery?.status);
   const open = planRows(view).some((p) => p.open);
   const offered = ["FAILED", "STALE", "NEEDS_OWNER"].includes(status) && !open;
   const gate = sessionGate(session);
-  return { offered, enabled: offered && !gate.blocked && !busy, reason: offered && gate.blocked ? gate.reason : "", label: sessionLabel("Pregătește un plan nou de împachetare", session),
+  return { offered, enabled: offered && !gate.blocked && !busy, reason: offered && gate.blocked ? gate.reason : "", label: sessionLabel("Pregătește un plan nou de împachetare", session, owner),
     note: "Primești un singur card cu pașii (captură, clip, rezumat); nimic nu pornește fără confirmarea ta." };
 }
 
@@ -1114,6 +1114,8 @@ export function cockpitDeliveryCard(view) {
 
 /** Freshness is a five-minute window; the local development profile never asks for Hello. */
 export function confirmationHint(action, owner) {
-  if (!action?.fresh || !action.enabled) return "";
-  return owner?.devProfile?.enabled ? "profil local de dezvoltare" : "cere o confirmare recentă (Windows Hello)";
+  if (!action?.enabled) return "";
+  const authority = owner?.devProfile?.enabled ? "profil local de dezvoltare" : "Windows Hello";
+  if (action.fresh) return owner?.devProfile?.enabled ? authority : `cere o confirmare recentă (${authority})`;
+  return action.openingSession ? `deschide sesiunea (${authority})` : "";
 }

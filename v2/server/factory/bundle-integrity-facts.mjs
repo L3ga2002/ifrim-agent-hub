@@ -4,18 +4,23 @@ import { hashCanonical, sha256 } from "../core/canonical.mjs";
 import { parse } from "../storage/db.mjs";
 import { isSecretLikeName } from "../security/paths.mjs";
 import { takeSnapshot, diffManifests, gitEntryHash } from "./snapshot.mjs";
-import { readRetireJournal, retirementPlan, historicViolations } from "./factory.mjs";
+import { retirementEvidence, historicViolations } from "./factory.mjs";
 
 // No service construction, writes or blob store: also used by the pre-upgrade preflight.
 function shaAt(root, ref) {
   try {
-    if (isSecretLikeName(path.basename(ref))) return null;
+    if (isSecretLikeName(path.basename(ref))) return undefined;
     const file = path.resolve(root, ref), rel = path.relative(root, file);
-    if (rel.startsWith("..") || path.isAbsolute(rel)) return null;
+    if (rel.startsWith("..") || path.isAbsolute(rel)) return undefined;
     let cursor = root;
-    for (const part of rel.split(path.sep)) { cursor = path.join(cursor, part); if (fs.lstatSync(cursor).isSymbolicLink()) return null; }
-    return fs.statSync(file).isFile() ? sha256(fs.readFileSync(file)) : null;
-  } catch { return null; }
+    for (const part of rel.split(path.sep)) {
+      cursor = path.join(cursor, part);
+      let stat;
+      try { stat = fs.lstatSync(cursor); } catch (error) { if (error.code === "ENOENT") return null; throw error; }
+      if (stat.isSymbolicLink()) return undefined;
+    }
+    return fs.statSync(file).isFile() ? sha256(fs.readFileSync(file)) : undefined;
+  } catch { return undefined; }
 }
 
 export function gatherBundleIntegrityFacts(db, missionId, { bundleId, bundleSha } = {}) {
@@ -40,13 +45,8 @@ export function gatherBundleIntegrityFacts(db, missionId, { bundleId, bundleSha 
   for (const row of rows) { const w = parse(row.protected_json, {}).authoring?.lastHubWrite; if (w?.path && /^[0-9a-f]{64}$/.test(w.sha || "")) writes.set(w.path, { ...w, ref: row.id }); }
   for (const [ref, w] of writes) if (/^\.ifrim-hub\/staging\/[^/]+$/.test(ref) && digest(ref) === w.sha) proof(ref, "hub_staging_write", "factory_specs", w.ref, w.sha);
   for (const row of rows) {
-    const p = parse(row.protected_json, {}), s = parse(row.spec_json, {}), j = readRetireJournal(project, row.mission_id);
-    const plan = retirementPlan(row.mission_id, s), ref = `.ifrim-hub/retired/${row.mission_id}/journal.json`;
-    const matches = (x, r) => x.from === r.from && x.to === r.to && x.sha256 === r.sha256;
-    const samePlan = items => Array.isArray(items) && items.length === plan.length && plan.every(r => items.some(x => matches(x, r)));
-    const recorded = (records, r) => (records || []).some(x => matches(x, r) && (x.cycle || 1) === (j?.cycle || 1));
-    const valid = j && row.status === "APPROVED" && samePlan(j.items) && (!p.pendingRetire || samePlan(p.pendingRetire))
-      && (j.status === "MOVED" ? plan.every(r => recorded(p.retired, r) && !recorded(p.restored, r)) : j.status === "RESTORED" && plan.every(r => recorded(p.restored, r)));
+    const p = parse(row.protected_json, {}), s = parse(row.spec_json, {}), { journal: j, valid } = retirementEvidence(row, project);
+    const ref = `.ifrim-hub/retired/${row.mission_id}/journal.json`;
     if (changes.some(c => c.path === ref)) {
       provenance[ref] = { valid: false, reason: "jurnal fără conținut valid legat de planul aprobat" };
       if (valid) {
@@ -74,5 +74,5 @@ export function gatherBundleIntegrityFacts(db, missionId, { bundleId, bundleSha 
   for (const [ref, sha] of Object.entries(protectedRecord.files || {})) if (digest(ref) !== sha && !(provenance[ref]?.valid && provenance[ref].provenance === "retired_by_hub" && provenance[ref].record.sha256 === sha)) protectedProblems.push(`testul protejat ${ref} nu mai are octeții verificați`);
   return { target: { missionId, bundleId: bundleId || bundle?.id, bundleSha: bundleSha || bundle?.sha256 }, bundle, manifest, changeSet, approvedSpecVersion: f?.approved_spec_version,
     changeSetSha: hashCanonical({ snapshot: snapshot?.sha256, changes: parse(changeSet?.changes_json, []).map(c => [c.path, c.status, c.after?.sha256 || null]) }),
-    spec, specBody, snapshot, originalManifest, current, changes, provenance, protectedProblems, historicProblems: historicViolations(db, project, protectedRecord) };
+    spec, specBody, snapshot, originalManifest, current, changes, provenance, protectedProblems, historicProblems: historicViolations(db, project, protectedRecord, provenance) };
 }

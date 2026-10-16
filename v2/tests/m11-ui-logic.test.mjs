@@ -1101,6 +1101,9 @@ test("M11-UI-16 the Room renders the six deliverables and five decisions from th
   // A closed owner session: the buttons say what they need.
   const closedText = textOf(render(ready(), { session: null, policy: { active: true } }));
   for (const phrase of ["Accept local — deschide sesiunea (Windows Hello)", "Gata de prezentare — deschide sesiunea (Windows Hello)", "Trimite — deschide sesiunea (Windows Hello)"]) assert.ok(closedText.includes(phrase), phrase);
+  const devText = textOf(render(ready(), { session: null, policy: { active: true }, devProfile: { enabled: true } }));
+  for (const phrase of ["Accept local — deschide sesiunea (profil local de dezvoltare)", "Aprobă creația 16:9 — deschide sesiunea (profil local de dezvoltare)", "Trimite — deschide sesiunea (profil local de dezvoltare)"]) assert.ok(devText.includes(phrase), phrase);
+  assert.doesNotMatch(devText, /Windows Hello|de fiecare dată/);
 
   // STALE.
   const old = render(stale());
@@ -1389,7 +1392,16 @@ test("M11-UI acceptance hints reflect recent confirmation and the local dev prof
     assert.match(confirmationHint(action, { devProfile: { enabled: false } }), /confirmare recentă/);
     assert.doesNotMatch(confirmationHint(action, { devProfile: { enabled: true } }), /Windows Hello/);
     assert.equal(confirmationHint({ ...action, enabled: false }, {}), "");
+    for (const enabled of [false, true]) {
+      const owner = { devProfile: { enabled } }, row = decisionRows(ready(), { owner, session: "closed" }).find(row => row.key === key);
+      assert.ok(row.action.enabled, "the decision is offered");
+      assert.doesNotMatch(row.does, /de fiecare dată/);
+      assert.match(row.action.label, enabled ? /profil local de dezvoltare/ : /Windows Hello/);
+      if (key !== "software") assert.match(row.does, enabled ? /profil local de dezvoltare/ : /confirmare recentă/);
+      if (enabled) assert.doesNotMatch(row.does + row.action.label, /Windows Hello/);
+    }
   }
+  assert.match(sessionLabel("Trimite", "closed", { devProfile: { enabled: true } }), /profil local de dezvoltare/);
 });
 
 test("M11-UI capture blocker rule covers plan lifecycle and recording sessions", () => {
