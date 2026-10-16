@@ -440,7 +440,15 @@ export function createDeliveries({ db, bus, clock, config, settings, projects, m
   function effectiveTemplate(d, { planId } = {}) {
     const revision = planId ? revisionOfPlan(d.id, planId) : null;
     const applied = revision?.delta?.correction ? revision : revisionView(db.prepare("SELECT * FROM delivery_revisions WHERE delivery_id = ? AND status = 'APPLIED' AND json_extract(delta_json, '$.correction.kind') = 'presentation-correction' ORDER BY rowid DESC LIMIT 1").get(d.id));
-    return overlayCorrection(d.template, applied?.delta?.correction);
+    const template = overlayCorrection(d.template, applied?.delta?.correction);
+    if (template.presentation) return template;
+    // Derive legacy prose before proposing steps, so the card hashes the overrides
+    // that execution will use. Never rewrite the confirmed template or package body.
+    const facts = factory.claimFacts(d.missionId, { bundleId: d.bundleId });
+    const presentation = presentationForTemplate(template, facts);
+    const { texts, overrides } = storyFromPresentation(presentation);
+    return { ...template, presentation, story: { ...template.story, texts,
+      variant: { ...template.story.variant, overrides, overridesSha: hashCanonical(overrides) } } };
   }
   function correctionFacts(deliveryId) {
     const d = need(deliveryId), template = effectiveTemplate(d);
@@ -899,21 +907,7 @@ export function createDeliveries({ db, bus, clock, config, settings, projects, m
     }
   }
 
-  // Old plans keep their stored parameters and hashes. Only their generated legacy story changes
-  // the execution-time override; Studio operations and curated deliveries retain the supplied values.
-  function variantOverridesFor({ masterVersionId, planId, overrides }) {
-    const row = db.prepare("SELECT ir_json FROM media_edit_versions WHERE id = ?").get(masterVersionId);
-    const author = parse(row?.ir_json, {}).meta?.author;
-    if (!author?.startsWith("delivery:")) return overrides;
-    const d = get(author.slice(9));
-    if (!d || (d.opsPlanId !== planId && !revisionOfPlan(d.id, planId))) return overrides;
-    const template = effectiveTemplate(d, { planId });
-    if (template.presentation) return overrides;
-    const facts = factory.claimFacts(d.missionId, { bundleId: d.bundleId });
-    return storyFromPresentation(presentationForTemplate(template, facts)).overrides;
-  }
-
-  return { correctionFacts, correctionDraft, checkCorrection, proposeCorrection, finishCorrection, officeSteps, effectiveTemplate, variantOverridesFor, replaceClaimItems, createPlanned, sectionFor, sectionForMission, arm, activate, startDirect, bindItem, bindSoftware, currentItem, items: itemsOfDelivery, trigger, verify, reconcileStale, renderDocument, exportDocument, editDocument, approveDocument,
+  return { correctionFacts, correctionDraft, checkCorrection, proposeCorrection, finishCorrection, officeSteps, effectiveTemplate, replaceClaimItems, createPlanned, sectionFor, sectionForMission, arm, activate, startDirect, bindItem, bindSoftware, currentItem, items: itemsOfDelivery, trigger, verify, reconcileStale, renderDocument, exportDocument, editDocument, approveDocument,
     currentDoc, recordRevision, getRevision, updateRevision, revisionOfPlan, view, get, need, list, latestForProject, close, cancel, setStatus, readiness, boot, tick, onEvent, attachEnvelopes, patch, bindService, startPreview,
     close_: () => { closing = true; if (detach) detach(); detach = null; }, mediaFacts, markerOf };
 }

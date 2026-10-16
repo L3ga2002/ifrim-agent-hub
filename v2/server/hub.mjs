@@ -303,7 +303,7 @@ export function createHub(config, { providerOverrides = {}, homeDir, browserLaun
   // partial hub — each falls back to its own read-only reader over the same database).
   let stopScopeRef = null;
   const desktop = createDesktopOperator({ db, bus, clock, config, supervisor, settings, trust, media, live, stopScope: () => stopScopeRef });
-  const executors = createExecutors({ desktop, media, settings, live, variantOverridesFor: args => deliveries.variantOverridesFor(args) });
+  const executors = createExecutors({ desktop, media, settings, live });
   const opsPlans = createOpsPlans({ db, bus, clock, settings, trust, voice, apps: desktop.apps, executors, live, desktop, armedWindows,
     folderContext: () => ({ allowed: desktop.allowedFolders(), forbidden: desktop.forbiddenFolders() }), stopScope: () => stopScopeRef });
   // M11 „Ifrim Delivery”: the delivery service (the four delivery tables), its plan steps merged into the executors map (opsPlans reads it

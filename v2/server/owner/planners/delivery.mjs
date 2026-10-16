@@ -79,7 +79,7 @@ export function registerDeliveryPlanner(hub, intake) {
       const r = await deliveries.readiness({ projectId: project.id, missionId: ready.missionId });
       if (!r.ok) return blocked(project, r.blockers);
       const d = await deliveries.createPlanned({ projectId: project.id, missionId: ready.missionId, actor: "intake", extras });
-      const plan = await opsPlans.propose({ kind: PACKAGE_KIND, title: d.title, steps: packageSteps(d.template, d.id), limits: { maxDurationMin: DELIVERY_LIMITS.phaseMinutes, maxActions: DELIVERY_LIMITS.maxActions }, actor: "intake", via: "intake" });
+      const plan = await opsPlans.propose({ kind: PACKAGE_KIND, title: d.title, steps: packageSteps(deliveries.effectiveTemplate(d), d.id), limits: { maxDurationMin: DELIVERY_LIMITS.phaseMinutes, maxActions: DELIVERY_LIMITS.maxActions }, actor: "intake", via: "intake" });
       // The confirmed card starts THIS delivery (startDirect at its first step); a newer card for the same delivery replaces the binding.
       if (plan?.id) deliveries.patch(d.id, { ops_plan_id: plan.id });
       return { kind: "ops", plan, projectId: project.id, note: `Software-ul e deja verificat (${ready.stage === "ACCEPTED" ? "acceptat de tine" : "gata de verificarea ta"}): planul verifică site-ul în browser și face captura, clipul 16:9 + vertical, rezumatul comercial${asked}, totul în același dosar. Fără model, fără publicare. O singură confirmare.` };

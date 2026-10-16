@@ -150,6 +150,24 @@ test("RC-08 factual findings have per-occurrence ranges, including variant overr
     const finding = factualCheck({ ir: edit, claims: cs, context }).findings.find(f => f.code === code && f.itemId === item.id);
     assert.ok(finding?.range?.timecode, code); assert.equal(finding.range.fromFrame, item.start);
   }
+  const overrides = storyFromPresentation(p).overrides;
+  const vertical = deriveVariant({ masterIr: ir, platformKey: "shorts_9x16", overrides }).ir;
+  const hook = vertical.tracks.flatMap(t => t.items || []).find(i => i.id === "t-hook");
+  assert.equal(hook.text, overrides.hookText);
+  assert.notEqual(hook.text, ir.tracks.flatMap(t => t.items || []).find(i => i.id === "t-hook").text);
+  const bound = copy(claims), hookClaim = bound.find(c => c.id === "cl_hook");
+  hookClaim.evidence.push({ kind: "display", ref: "t-hook:vertical", sha256: displaySha(overrides.hookText) });
+  assert.deepEqual(factualCheck({ ir: vertical, claims: bound, context }).findings.filter(f => f.itemId === hook.id), []);
+  for (const missingEvidence of [true, false]) {
+    const changed = copy(vertical), cs = copy(bound);
+    const item = changed.tracks.flatMap(t => t.items || []).find(i => i.id === hook.id);
+    if (missingEvidence) cs.find(c => c.id === "cl_hook").evidence.pop();
+    else item.text += " alterat";
+    const finding = factualCheck({ ir: changed, claims: cs, context }).findings.find(f => f.code === "CLAIM_TEXT_UNBOUND" && f.itemId === item.id);
+    assert.equal(finding?.claimId, "cl_hook");
+    assert.equal(finding?.range.fromFrame, item.start); assert.equal(finding?.range.toFrame, item.end);
+    assert.ok(finding?.range.timecode);
+  }
   const missing = copy(ir); missing.tracks.forEach(t => { if (t.items) t.items = t.items.filter(i => i.id !== "t-hook"); });
   const variant = deriveVariant({ masterIr: missing, platformKey: "shorts_9x16", overrides: { hookText: "Ungated" } });
   assert.ok(!variant.ir.tracks.flatMap(t => t.items || []).some(i => i.id.startsWith("vhook")));
@@ -226,7 +244,7 @@ test("RC-18 original booking prose and summary sections remain byte-identical wi
   assert.equal(summaryFactCheck({ doc: current, presentation: p, proofs: provePresentation(p, f), spec: f.spec }).status, "PASS");
 });
 
-test("RC-19 generated capture claims bind by construction; legacy overrides execute without changing plan parameters", async () => {
+test("RC-19 generated capture claims bind by construction; executor uses exactly the hashed overrides", async () => {
   const s = copy(spec); s.acceptance.push({ ...copy(s.acceptance.find(c => c.id === "AC-8")), id: "AC-99" });
   const p = resolve(s, []), claim = p.claims.find(c => c.key === "clip.desktop");
   assert.equal(claim.status, "BOUND"); assert.equal(claim.needs[0].id, p.captures.desktop.id);
@@ -234,10 +252,10 @@ test("RC-19 generated capture claims bind by construction; legacy overrides exec
   const media = { variants: { derive: args => { applied = args; return { version: { id: "mev_variant" } }; } },
     render: { request: () => ({ id: "render" }), get: () => ({ id: "render", status: "DONE", outputAssetVersionId: "mav_result" }) },
     qa: { run: async () => ({ status: "PASS", reports: {} }) }, reviews: { list: () => [] } };
-  const executor = createExecutors({ media, variantOverridesFor: () => ({ hookText: "Demo local", ctaText: "Hai să vorbim" }) })["media.variant.render"];
+  const executor = createExecutors({ media })["media.variant.render"];
   const params = { masterVersionId: "mev_master", platformKey: "shorts_9x16", overrides: { hookText: "Old words" } }, before = hashCanonical(params);
   await executor.run({ params, planId: "plan_legacy", authorize: () => {} });
-  assert.deepEqual(applied.overrides, { hookText: "Demo local", ctaText: "Hai să vorbim" });
+  assert.deepEqual(applied.overrides, params.overrides);
   assert.equal(hashCanonical(params), before);
 });
 
@@ -300,8 +318,10 @@ test("RC-17 database: own bundle/spec, frozen summary, stale displayed sha, atom
   const legacy = copy(template); delete legacy.presentation;
   db.prepare("UPDATE deliveries SET template_json = ?, ops_plan_id = 'plan_legacy' WHERE id = 'dlv_claims'").run(JSON.stringify(legacy));
   const legacyBefore = db.prepare("SELECT template_json, ops_body_sha FROM deliveries WHERE id = 'dlv_claims'").get();
-  assert.deepEqual(deliveries.variantOverridesFor({ masterVersionId: "mev_claims", planId: "plan_legacy", overrides: { hookText: "Old fixture words" } }), { hookText: "Demo local", ctaText: "Hai să vorbim" });
-  assert.deepEqual(deliveries.variantOverridesFor({ masterVersionId: "mev_claims", planId: "studio", overrides: { hookText: "Studio" } }), { hookText: "Studio" });
+  const effective = deliveries.effectiveTemplate(deliveries.get("dlv_claims"));
+  assert.equal(effective.presentation.origin, "legacy-generated");
+  assert.deepEqual(effective.story.variant.overrides, { hookText: "Demo local", ctaText: "Hai să vorbim" });
+  assert.equal(effective.story.variant.overridesSha, hashCanonical(effective.story.variant.overrides));
   assert.equal(deliveries.renderDocument("dlv_claims").basis.origin, "legacy-generated");
   assert.deepEqual(db.prepare("SELECT template_json, ops_body_sha FROM deliveries WHERE id = 'dlv_claims'").get(), legacyBefore);
   db.prepare("UPDATE deliveries SET template_json = ?, ops_plan_id = NULL WHERE id = 'dlv_claims'").run(JSON.stringify(template));

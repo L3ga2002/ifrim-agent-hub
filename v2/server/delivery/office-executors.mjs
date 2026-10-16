@@ -24,7 +24,8 @@ const day = (iso) => { try { return new Date(iso).toLocaleDateString("ro-RO", { 
  * The live Hub uses "com"; config.testMode defaults to "skip" unless HUB_V2_OFFICE_COM=1.
  */
 export function createOfficeExecutors({ deliveries, factory, opsPlans, config, appCheck = (config.testMode && process.env.HUB_V2_OFFICE_COM !== "1") ? "skip" : "com" }) {
-  const describedDelivery = id => { const d = deliveries.get(id); return d ? { ...d, template: deliveries.effectiveTemplate(d) } : null; };
+  // Export paths are frozen; describing a confirmed package must not resolve new presentation facts.
+  const describedDelivery = id => deliveries.get(id);
   function bound(params, planId) {
     let d = deliveries.need(params.deliveryId);
     if (d.status === "PLANNED" && d.opsPlanId === planId) d = deliveries.startDirect(d.id, planId);

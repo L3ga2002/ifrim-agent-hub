@@ -104,7 +104,7 @@ export async function correctionEnv({ launchers = fakeLaunchers(), previewUrl = 
   deliveries.boot();
   const supervisor = { get: key => key === 'delivery-preview-dlv_correct' ? { pid: process.pid, exited: false } : null, stop: async () => ({}) };
   const runner = { startPreview: async () => ({ status: 'PASS' }) };
-  Object.assign(executors, createExecutors({ media, settings, variantOverridesFor: args => deliveries.variantOverridesFor(args) }), createDeliveryExecutors({ deliveries, factory, media, projects, runner, supervisor, opsPlans, config }), createOfficeExecutors({ deliveries, factory, opsPlans, config, appCheck: 'skip' }));
+  Object.assign(executors, createExecutors({ media, settings }), createDeliveryExecutors({ deliveries, factory, media, projects, runner, supervisor, opsPlans, config }), createOfficeExecutors({ deliveries, factory, opsPlans, config, appCheck: 'skip' }));
   const bundleItem = deliveries.bindItem('dlv_correct', { kind: 'bundle', refTable: 'factory_bundles', refId: f.bundle.id, refSha: f.bundle.sha256 });
   deliveries.bindItem('dlv_correct', { kind: 'brief', refTable: 'content_briefs', refId: 'brief_correct', meta: { prefs: { tone: 'both' } } });
   for (const cap of template.captures) {

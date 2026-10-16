@@ -41,7 +41,7 @@ import { PLATFORM_PROFILES, DEFAULT_SAFE_AREA, TEXT_METRICS, safeRect, estimateT
  * `media.qa.reported` event. A FAIL blocks manifest approval (distribution reads the latest row per kind or `summary()`).
  */
 
-export const QA_VERSION = 1;
+export const QA_VERSION = 2;
 export const QA_THRESHOLDS = Object.freeze({
   blackMinS: 0.25, blackPixTh: 0.1, blackPicTh: 0.98,
   freezeMinS: 1, freezeNoiseDb: -60,
@@ -415,15 +415,16 @@ export function factualCheck({ ir, claims = [], getVersion = null, presets = PRE
   for (const r of nir.evidenceRegions) if (r.claimId) occurrences.push({ id: r.claimId, clipId: r.clipId, from: r.from, to: r.to });
   let textItemsClaimed = 0, textItemsUnclaimed = 0;
   for (const t of nir.tracks.filter(t => t.kind === "text")) for (const item of t.items) {
-    if (isDisclosureText(item)) continue;
+    const ids = citedCriteria(item.text);
+    // Disclosure labels are exempt from vocabulary heuristics, never from explicit citations.
+    if (isDisclosureText(item) && !ids.length) continue;
     if (item.claimIds?.length) {
       textItemsClaimed++;
       for (const id of item.claimIds) occurrences.push({ id, itemId: item.id, text: item.text, from: item.start, to: item.end });
     } else {
       textItemsUnclaimed++;
-      const ids = citedCriteria(item.text);
       // Citations are deterministic; the closed factual vocabulary is explicitly a heuristic.
-      if (ids.length || /(?<![\p{L}\p{N}_])(?:PASS|E2E|verificat|testat|revizuit)(?:ă|e|a|i)?(?![\p{L}\p{N}_])/iu.test(item.text)) add({ code: "TEXT_CLAIM_MISSING", severity: "error", criterion: "Textul factual are o afirmație legată", message: "Textul citează un criteriu sau folosește vocabular factual fără dovadă legată.", evidence: { heuristic: !ids.length, ids }, range: frameRange(item.start, item.end, fps), itemId: item.id, claimId: null });
+      if (ids.length || /(?<![\p{L}\p{N}_])(?:PASS|E2E|verificat|testat|revizuit)(?:ă|e|a|i)?(?![\p{L}\p{N}_])/iu.test(item.text)) add({ code: "TEXT_CLAIM_MISSING", severity: ids.length || String(nir.meta?.author || "").startsWith("delivery:") ? "error" : "warning", criterion: "Textul factual are o afirmație legată", message: "Textul citează un criteriu sau folosește vocabular factual fără dovadă legată.", evidence: { heuristic: !ids.length, ids }, range: frameRange(item.start, item.end, fps), itemId: item.id, claimId: null });
     }
   }
   for (const where of occurrences) {

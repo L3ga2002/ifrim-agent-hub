@@ -38,7 +38,7 @@ export function registerDeliveryCommands(reg, hub) {
     execute: async (input, ctx) => {
       needSession(ctx, "pașii de livrare");
       const d = deliveries.need(input.deliveryId);
-      return opsPlans.propose({ kind: PACKAGE_KIND, title: d.title, steps: packageSteps(d.template, d.id), limits: { maxDurationMin: DELIVERY_LIMITS.phaseMinutes, maxActions: DELIVERY_LIMITS.maxActions }, actor: ctx.actor, via: ctx.channel });
+      return opsPlans.propose({ kind: PACKAGE_KIND, title: d.title, steps: packageSteps(deliveries.effectiveTemplate(d), d.id), limits: { maxDurationMin: DELIVERY_LIMITS.phaseMinutes, maxActions: DELIVERY_LIMITS.maxActions }, actor: ctx.actor, via: ctx.channel });
     } });
   reg("delivery.revise", { describe: "Spune ce schimbi la livrare: o observație, rezumatul, clipul sau software-ul (un singur card sau o întrebare)", async: true, channels: OWNER,
     schema: { deliveryId: { required: true, max: 80 }, text: { required: true, max: 2000 }, selection: { type: "object" }, timecodeMs: { type: "number" }, player: { max: 20 }, choice: { type: "object" }, revisionId: { max: 80 } },

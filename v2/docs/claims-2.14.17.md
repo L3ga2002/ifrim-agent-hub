@@ -212,3 +212,73 @@ Not run:
 | `v2/docs/claims-2.14.17.md` | Preserve part A and append part B verification and decisions. |
 
 No changes to `v2/tests/helpers.mjs`, `DecisionInbox.jsx`, migrations or the node_modules junction. No state-changing git command, commit, model invocation or live-data access was used for part B. Temporary scripts/logs stay under the pre-existing `.tmp-s25-a/` workspace directory.
+
+## Round C — review fixes (2026-10-16)
+
+Implemented on parts A/B (`ca8b42e`, `bb8b6c6`) on `claude/project-thread-98qmet`, without committing. Hub version remains 2.14.17-m11, schema 12 and API contract 13. Stored template JSON/hashes, plan bodies, specs, bundles and edit IRs are not rewritten. **This round supersedes part A decision 4:** execution no longer substitutes legacy overrides after confirmation.
+
+| Spec C item | Change | Regression proof |
+| --- | --- | --- |
+| 1 — hashed execution authority | Removed `variantOverridesFor` and its executor/Hub wiring. `media.variant.render` passes the supplied hashed overrides unchanged. `effectiveTemplate` derives a legacy generated presentation from the delivery's own `claimFacts`, plus story texts, overrides and their SHA. Revision, correction and re-package proposal paths use the effective template; correction records retain precedence. Descriptions read frozen export paths without needing a bundle. Legacy ARMED activation still compares/adopts the stored package body. | `r-claims-review`: RCC-01 uses real command proposals and the real variant service to check card params and stored variant text; RCC-03 checks correction precedence; RCC-04 activates an ARMED legacy delivery without resolving presentation facts and checks the original body/overrides. `r-claims`: RC-17 checks own-bundle legacy derivation and unchanged stored JSON/body hash; RC-19 checks exact parameter execution. |
+| 2 — legacy tone classification | The existing revision planner's effective-template lookup now supplies generated legacy texts instead of old fixture prose. | `r-claims-review`: RCC-02 invokes the real registered planner, checks the proposed text operations against generated business texts, checks the card overrides and verifies unchanged stored hashes. |
+| 3 — factual QA compatibility | `TEXT_CLAIM_MISSING` remains an error for explicit `AC-n` citations and delivery-authored factual vocabulary. Vocabulary alone is a warning for other IRs. `QA_VERSION` is now 2. Explicit citations are checked even in disclosure-styled/prefixed text; ordinary disclosure labels retain their exemption. | `r-claims-review`: RCC-05 covers absent author, Studio author and delivery author; testat/verificat/PASS/E2E/revizuit; plain, label-styled and disclosure-prefixed citations; severity, report status/version, item ranges and unchanged IR hashes. |
+| 4 — actual vertical override coverage | Extended RC-08 with `deriveVariant` using the presentation's real hook/CTA overrides. | `r-claims`: RC-08 proves the hook text actually changed, accepts its vertical display SHA, then reports `CLAIM_TEXT_UNBOUND` with hook claim/item/time range when that evidence is removed or the override text changes. |
+| 5 — empty test-run failure | The claims runner returns failure for zero tests, any missing summary count (`-1`), nonzero child exit, failures or cancellations. CLI propagates the aggregate exit code; the new review suite is in its default selection. | `r-claims-review`: RCC-06 injects process results through the same runner used by the CLI, checking zero/absent/partial summaries, ordinary success/failure, saved missing counts and a bad file followed by a good file. |
+
+### Round C verification
+
+All files ran separately using `C:\Program Files\nodejs\node.exe --test --test-concurrency=1 --test-reporter=tap`, with `claims-offline-guard.mjs` preloaded. No loopback exception was used. The sequential command and exact per-file arguments/counts/TAP logs are saved in `.tmp-s25-a/round-c-run.mjs` and `.tmp-s25-a/round-c-results/`. The new suite also passed an initial standalone run (6/6). After extending explicit-citation coverage to disclosure text, the review, claims, clip-IR and media-QA files were rerun individually in sequence.
+
+Final results (name-filtered cases are excluded, not counted as Node skips):
+
+| File in `v2/tests/` | Tests | Pass | Fail | Skipped | Cancelled |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| r-claims-review.test.mjs | 6 | 6 | 0 | 0 | 0 |
+| r-claims.test.mjs | 19 | 19 | 0 | 0 | 0 |
+| m11-template.test.mjs | 16 | 16 | 0 | 0 | 0 |
+| m11-clip-ir.test.mjs | 14 | 14 | 0 | 0 | 0 |
+| m11-summary.test.mjs | 7 | 7 | 0 | 0 | 0 |
+| m09-media-ir.test.mjs | 27 | 27 | 0 | 0 | 0 |
+| m09-media-qa.test.mjs | 19 | 19 | 0 | 0 | 0 |
+| m09-content.test.mjs | 11 | 11 | 0 | 0 | 0 |
+| m11-revision-parse.test.mjs | 15 | 15 | 0 | 0 | 0 |
+| m10-studio.test.mjs | 3 | 3 | 0 | 0 | 0 |
+| r-correct.test.mjs | 10 | 10 | 0 | 0 | 0 |
+| r-closure.test.mjs | 15 | 15 | 0 | 0 | 0 |
+| stage-office-delivery.test.mjs | 5 | 5 | 0 | 0 | 0 |
+| Total | 167 | 167 | 0 | 0 | 0 |
+
+No test failure or timing failure occurred. The media-QA suite includes real local ffmpeg/ffprobe checks. The new authority test uses real SQLite services, ops-plan compilation and variant derivation, with render/QA responses stubbed; it does not claim end-to-end rendering or capture coverage. Existing planner and legacy IR hash pins passed. All 12 changed/new JavaScript files passed `node --check`; `git diff --check` passed.
+
+Not run:
+
+- `r-correct` RCO-04: starts a server and browser; round C prohibits network and does not authorize the earlier Chromium exception. All other RCO cases ran with the strict offline guard. RCO-08 rejects the forbidden live-root strings lexically before any filesystem access.
+- `m10-studio` except ST-04/05/13; `r-closure` except PACK, REV-01/02/03, ROLL and SUP; `stage-office-delivery` OFF-06: excluded Hub/git/server/model harnesses. Exact name filters are in the saved invocation JSON.
+- Whole repository suite, live Hub/port 8011, production data or execution, network, models, browser/Brave visual QA, Word/Excel COM and PDF application verification. No UI change required visual QA. Unrelated suites from earlier rounds were not repeated.
+
+### Round C implementation decisions
+
+1. Step descriptions read only the stored export destination, which corrections do not change. Runtime delivery/Office execution still uses `effectiveTemplate`. This keeps descriptions independent of claim facts before an ARMED delivery binds its bundle, and preserves confirmed package body hashes.
+2. “Citation anywhere” includes disclosure-styled/prefixed text containing an explicit `AC-n`. Disclosure text without citations keeps the previous exemption; the new warning behavior does not add defaults to old IRs or rewrite old reports.
+3. The runner also rejects an incomplete TAP summary and reported failures/cancellations even if a subprocess incorrectly returns zero. Its injectable process runner supports deterministic regression tests without launching fake servers or browsers.
+4. The existing re-package plan-binding issue recorded in part B remains outside this review: the re-package regression proves generated card parameters, not successful package execution. No new authority or binding behavior was added.
+
+### Round C changed files
+
+| File | Purpose |
+| --- | --- |
+| `v2/server/delivery/delivery.mjs` | Generate the derived legacy effective template; remove runtime override resolution. |
+| `v2/server/delivery/delivery-commands.mjs` | Build re-package steps from the effective template. |
+| `v2/server/owner/planners/delivery.mjs` | Build delivery-only package proposals from the effective template. |
+| `v2/server/ops/executors.mjs` | Execute the supplied variant overrides exactly. |
+| `v2/server/hub.mjs` | Remove the obsolete override callback wiring. |
+| `v2/server/delivery/executors.mjs` | Describe exports from frozen paths without resolving legacy facts. |
+| `v2/server/delivery/office-executors.mjs` | Preserve the same frozen-path description behavior for Office steps. |
+| `v2/server/media/qa.mjs` | Version 2 factual QA with author-sensitive vocabulary severity and universal explicit citations. |
+| `v2/tests/correction-helpers.mjs` | Remove the obsolete executor callback from the isolated harness. |
+| `v2/tests/r-claims.test.mjs` | Real vertical-override evidence tests and corrected legacy authority expectations. |
+| `v2/tests/r-claims-review.test.mjs` | Six round C regressions for all review findings and activation compatibility. |
+| `v2/tests/run-claims-offline.mjs` | Fail empty/incomplete runs; expose a testable sequential runner and select the review suite. |
+| `v2/docs/claims-2.14.17.md` | Record round C changes, evidence, limitations and decisions. |
+
+No edits to `v2/tests/helpers.mjs`, `DecisionInbox.jsx`, migrations, the node_modules junction or files outside the repository. No credential-folder read, model invocation, installation, live-data access or git state-changing command was used. No commit was created.

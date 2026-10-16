@@ -19,7 +19,8 @@ const refuse = (code, message) => new HubError("policy", message, { code });
 const checkAbort = (abort) => { if (abort?.aborted) throw new HubError("task", "Planul a fost oprit.", { code: "STOPPED" }); };
 
 export function createDeliveryExecutors({ deliveries, factory, media, projects, runner, supervisor, opsPlans, config, fetchImpl = globalThis.fetch }) {
-  const describedDelivery = id => { const d = deliveries.get(id); return d ? { ...d, template: deliveries.effectiveTemplate(d) } : null; };
+  // Descriptions need only frozen export paths, including before an ARMED delivery has a bundle.
+  const describedDelivery = id => deliveries.get(id);
   /** The delivery a running step belongs to: ACTIVE (or READY for a revision) and bound to THIS plan. */
   function bound(params, planId, { statuses = ["ACTIVE"] } = {}) {
     let d = deliveries.need(params.deliveryId);
