@@ -282,3 +282,68 @@ Not run:
 | `v2/docs/claims-2.14.17.md` | Record round C changes, evidence, limitations and decisions. |
 
 No edits to `v2/tests/helpers.mjs`, `DecisionInbox.jsx`, migrations, the node_modules junction or files outside the repository. No credential-folder read, model invocation, installation, live-data access or git state-changing command was used. No commit was created.
+
+## Round D — review-B fixes (2026-10-16)
+
+Implemented on `c190a88`, branch `claude/project-thread-98qmet`, without committing. Hub version remains 2.14.17-m11, schema 12, API contract 13 additive. Existing stored templates, plan bodies, specs, bundles and edit IRs are not rewritten. This round supersedes the part B decisions about counting orphan correction records and suppressing all expired/superseded re-offers.
+
+| Spec D item | Change | Regression proof |
+| --- | --- | --- |
+| 1 — recovery after summary | A started FAILED/CANCELLED correction keeps the Room recovery action available even with no audit defects. A new continuation freezes the current item/document references and runs prepare, Office rebuild-or-keep checks, index and finish. It restores READY. Pending continuations are idempotent; another late failure can also be retried. | `r-correct` RCO-04 injects a campaign failure after the real summary and Office document, checks zero defects and the recovery reason, confirms the new card, proves the completed document is kept by byte proof and reaches READY. `r-correct-review` RCD-01 proves tick offers the zero-defect continuation, pending idempotence, repeated late failure and successful confirmation. `m11-ui-logic` M11-UI-16 renders the reason and retry button with zero defects. |
+| 2 — cancellation before execution | An unstarted cancelled/declined card marks its revision CANCELLED while keeping READY. Started plans move to NEEDS_OWNER. Automatic proposals remain suppressed after owner cancellation; an explicit owner request can propose again. | RCD-02 covers PROPOSED and CONFIRMED cards whose steps were all PENDING, cancellation after a step started, tick after the throttle window, and the owner's retry. |
+| 3 — delivery scope and re-offer | `opsPlans.propose` scopes correction supersession by step `params.deliveryId`. The automatic re-offer guard reads actual plan status and permits one replacement after EXPIRED/SUPERSEDED on the current Hub version. | RCD-03 seeds two defective READY deliveries, runs tick, checks both cards remain PROPOSED, checks one replacement for each terminal state and no replacement loop, and checks direct same-delivery supersession preserves the other card. RCO-09 checks same-version expiry re-offer. |
+| 4 — preserve active plans | CONFIRMED/RUNNING/PAUSED corrections return their existing plan before auditing changed facts. The ops supersede helper also refuses to stop or supersede those plans. Only PROPOSED cards can be replaced. | RCD-04 checks CONFIRMED/PAUSED states and holds an actual running executor while changing current facts and proposing again. The running plan and revision remain unchanged. |
+| 5 — failed proposals | A proposal exception cancels the orphan revision; revisions without a plan are hidden from the Room correction history and excluded from the correction ordinal. | RCD-05 injects a propose failure, checks CANCELLED/no plan/no Room row, restores proposal and checks its version is 1. |
+| 6 — base guards during execution | Edit build, export and finish re-check the frozen master, vertical, summary and capture references. New references are accepted only when bound by this plan; capture file bytes are checked too. Refusal is `CORRECTION_BASE_CHANGED` before writes. | RCD-06 covers each of the three executors against changed master, vertical, summary and capture refs (12 refusal combinations), and accepts this plan's new binding while refusing a foreign plan. RCO-04 exercises the successful real execution with new capture/edit/variant/summary bindings. |
+| 7 — accumulated capture history | Effective templates fold every APPLIED correction in row order, then the current plan's record. New records also freeze effective capture scripts for reused roles, preserving a failed plan's successful recapture through recovery. | RCD-07 folds two APPLIED records and a third plan overlay, including a legacy reuse record without copied steps, and checks unchanged stored template JSON/hash. RCO-04 checks the first recapture's steps and stepsSha survive a later correction and its continuation. |
+| 8 — audit counts/order | Defects are deduplicated by code, location, item and text with the leading bullet removed. Clip/capture findings precede summary findings. The Room receives the complete deduplicated list and additive `defectCount`. | RCD-08 checks bullet/plain duplicates, distinct keys, ordering and equality between audit, correction record and Room counts. RCD-13 checks dry-run deduplication. |
+| 9 — proposal scan | Tick uses an in-memory per-delivery ten-minute throttle. Correction checks use the read-only snapshot comparison, never `verify()`. The old periodic verification write was removed from this path. | RCD-09 counts snapshot scans at 0, 599999 and 600000 ms and on a second delivery; `updated_at` and `verified_json` remain byte-identical. |
+| 10 — claim lineage | Same-role claims remain CURRENT until `bindItem` supersedes them, preserving `supersedes_id`. Only roles omitted from the replacement set are explicitly retired, with a reason and timestamp. | RCD-10 checks the replacement's lineage link and the absent role's SUPERSEDED status/reason. RC-17 retains atomic claim replacement coverage. |
+| 11 — capture typing | The recorder clears only a nonempty fillable input, textarea or contenteditable before animated typing. Empty and custom/non-fillable targets skip the clear. | `m09-media-capture` M09-CP-12 checks nonempty/empty inputs, textareas, contenteditable elements, a custom div and a button input. RCO-04 still checks exactly one phone value per real capture. |
+| 12 — RP-13 isolation | RP-13 uses `fs.mkdtempSync(path.join(os.tmpdir(), ...))` with registered cleanup. The verification runner points TEMP/TMP inside this workspace to respect the edit boundary. | `r-priv-rev` RP-13 asserts the temp parent, executes both inherited-flow cases and asserts removal after cleanup. |
+| 13 — readable cards and dry-run | Each changed slot has one line for the actual selected tone/vertical override, plus the other tone only when different. Unchanged CTA text is omitted. Summary changes are computed with the real renderer/regenerator in memory, retain owner text, and list only changed sections with reasons. Dry-run includes ordered `summaryPreview` sections and deduplicated defects. | RCD-13 checks both/business/technical tones in both formats, alternate-tone annotations, unchanged CTA omission, changed-section/output equality, all requested summary sections, video placeholder, no DB writes, and changed preview/omitted hook when current evidence becomes stale. RCO-08 retains read-only dry-run/file checks. |
+
+### Round D verification
+
+Each file ran separately with `C:\Program Files\nodejs\node.exe --test --test-concurrency=1 --test-reporter=tap`. Exact command arguments, filters, counts and TAP output are in `.tmp-s25-a/round-d-run.mjs` and `.tmp-s25-a/round-d-results/`. All tests except `r-correct` used the strict `claims-offline-guard.mjs`; `r-correct` used `correction-local-guard.mjs` for the explicitly requested RCO-04 loopback/Chromium exception. No external network, live Hub or port 8011 was contacted.
+
+Final selected results (name-filtered exclusions are not Node skips):
+
+| File in `v2/tests/` | Tests | Pass | Fail | Skipped | Cancelled |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| r-correct.test.mjs | 11 | 11 | 0 | 0 | 0 |
+| r-correct-review.test.mjs | 11 | 11 | 0 | 0 | 0 |
+| r-claims.test.mjs | 19 | 19 | 0 | 0 | 0 |
+| r-claims-review.test.mjs | 6 | 6 | 0 | 0 | 0 |
+| r-closure.test.mjs | 15 | 15 | 0 | 0 | 0 |
+| r-priv-rev.test.mjs | 11 | 11 | 0 | 0 | 0 |
+| m09-media-capture.test.mjs | 5 | 5 | 0 | 0 | 0 |
+| m11-stale-graph.test.mjs | 12 | 12 | 0 | 0 | 0 |
+| m11-ui-logic.test.mjs | 18 | 18 | 0 | 0 | 0 |
+| stage-office-delivery.test.mjs | 5 | 5 | 0 | 0 | 0 |
+| m11-template.test.mjs | 16 | 16 | 0 | 0 | 0 |
+| m11-clip-ir.test.mjs | 14 | 14 | 0 | 0 | 0 |
+| m11-summary.test.mjs | 7 | 7 | 0 | 0 | 0 |
+| Total | 150 | 150 | 0 | 0 | 0 |
+
+RCO-04 ran real installed Chromium and ffmpeg/ffprobe, with synthetic approved bundle facts, a temporary demo page and no Hub HTTP server/provider/model. It exercised recapture, reuse, rendering, exports, summary, Office generation, a late failure and recovery. Office checks were FILE_CHECKED, not Word/Excel COM verification. RCD-01 uses synthetic render/QA slots to test tick and repeat recovery separately; it does not claim real rendering. Existing planner/legacy hash pins pass. Thirteen changed/new JavaScript modules passed `node --check`; the UI suite compiled and rendered the JSX change. `git diff --check` passed.
+
+Initial verification found RC-07's delivery test double lacked `revisionOfPlan`, now consulted by the executor's correction guard; the double was updated and all 19 claims tests passed on rerun. CP-05 was attempted under the strict guard, which rejected its fake-OBS `listen()` before a server started. It was then excluded and the five permitted capture cases passed. Initial TAP failures are retained separately. No timing failure was classified as a product defect.
+
+Not run:
+
+- `m09-media-capture` CP-02–06/10–11: socket/server/browser harnesses outside RCO-04's exception. CP-05 was guard-blocked as described above; its body did not execute successfully.
+- `m11-ui-logic` UI-17 and `r-priv-rev` RP-07/08/10: server/browser integration harnesses outside that exception.
+- `r-closure` HIST-01, FAC-01–07, REV-05 and `stage-office-delivery` OFF-06: broader Hub/git/server/runner/model harnesses. The selected package, revision, rollback, supersession and Office cases ran.
+- `m10-ops-plans`: RCD-03/04 exercise the real ops-plan proposal/supersession service in the isolated correction harness instead, as allowed by the spec's alternative suite clause.
+- Full repository suite, live Hub/data, production-copy dry-run, external network, models, npm installation, Word/Excel COM/PDF application verification and Brave visual QA. Chromium was used only for the explicitly requested RCO-04; no Brave QA is claimed.
+
+### Round D implementation decisions
+
+1. A new continuation record is additive and freezes the current base. Office steps are rechecked even if already DONE in the failed plan, so only identical rebuilt bytes are kept. A pending continuation and a continuation that itself fails retain this mode. Existing records/hashes are unchanged.
+2. `opsPlans.cancel()` marks untouched steps CANCELLED as well as stopping running ones. Start detection therefore uses the existing attempt/start fields for CANCELLED steps; otherwise cancelling an untouched card would still look started. Cancelled correction history continues to suppress Hub proposals for that delivery; the owner can explicitly request another card.
+3. One automatic replacement is allowed after EXPIRED/SUPERSEDED per equivalent correction work and Hub version. The event's additive `reoffer` flag prevents repeated expiry loops; the comparison continues to ignore only correction ordinal/derived Office filenames. The ten-minute scan cache is process-local and resets on restart; explicit owner requests bypass it.
+4. `summaryPreview` is an ordered section array, including preserved owner sections. Prospective media is represented by `(după randare)` when rendering is planned; continuations retain current media text because they do not render it again. Comparison reuses the current summary's generation timestamp to avoid a clock-only provenance difference. Runtime generation still records its real time. Unchanged owner text is omitted from the card's change list; execution still adds its review notice where required.
+5. The requested real Chromium/ffmpeg RCO-04 is treated as the narrow loopback/browser exception to the offline rule. Other network/browser tests remain excluded. The UI change was checked through compilation and static rendering, without substituting Chromium for Brave visual QA.
+
+No edits to `v2/tests/helpers.mjs`, `DecisionInbox.jsx`, migrations, the node_modules junction or files outside the repository. No credential-folder read, model invocation, installation, live-data access or git state-changing command was used. No commit was created.

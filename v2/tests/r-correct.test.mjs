@@ -133,7 +133,7 @@ test('RCO-07 read-only view, vertical texts, approvals and Hub attribution', asy
   const e = await envFor(t), out = await e.deliveries.proposeCorrection('dlv_correct', { actor: 'hub' });
   const before = e.db.prepare('SELECT total_changes() n').get().n, v = e.deliveries.view('dlv_correct');
   assert.equal(e.db.prepare('SELECT total_changes() n').get().n, before);
-  assert.equal(v.correction.available, true); assert.equal(v.correction.plan.id, out.plan.id); assert.ok(v.correction.defects.length <= 20);
+  assert.equal(v.correction.available, true); assert.equal(v.correction.plan.id, out.plan.id); assert.equal(v.correction.defects.length, v.correction.defectCount);
   assert.ok(v.clip.vertical.textItems.length); assert.ok(v.summary.versions[0].approval);
   assert.equal(revisionRows(v)[0].sourceLabel, 'propusă de Hub');
   assert.equal(PLAN_KIND_LABELS['delivery.correct'], 'Corectură afirmații (clip + rezumat)'); assert.equal(REVISION_CLASS_LABELS.correction, 'corectură');
@@ -191,7 +191,25 @@ test('RCO-04 real Chromium captures and ffmpeg correction: recapture then byte-i
   const captureCount = e.db.prepare('SELECT count(*) n FROM media_capture_sessions').get().n, capturesBefore = captured.map(c => [c.refId, c.refSha]);
   const second = await e.deliveries.proposeCorrection('dlv_correct'); assert.ok(Object.values(second.revision.delta.correction.captures).every(c => c.action === 'reuse'));
   e.db.prepare("UPDATE deliveries SET status='NEEDS_OWNER' WHERE id='dlv_correct'").run();
-  const again = await e.confirm(second.plan); assert.equal(again.status, 'DONE', JSON.stringify(again.steps.map(s => [s.kind, s.error])));
+  const campaignRun = e.executors['delivery.campaign'].run;
+  e.executors['delivery.campaign'].run = async () => { throw Error('round D: fail after summary and document'); };
+  const stopped = await e.confirm(second.plan); assert.equal(stopped.status, 'FAILED');
+  await new Promise(r => setTimeout(r, 25));
+  assert.equal(e.deliveries.get('dlv_correct').status, 'NEEDS_OWNER');
+  const recoveryView = e.deliveries.view('dlv_correct');
+  assert.deepEqual(recoveryView.correction.defects, []);
+  assert.equal(recoveryView.correction.available, true);
+  assert.match(recoveryView.correction.reason, /Corectura anterioară nu s-a încheiat/);
+  e.executors['delivery.campaign'].run = campaignRun;
+  const recovery = await e.deliveries.proposeCorrection('dlv_correct');
+  assert.deepEqual(recovery.plan.steps.map(s => s.kind), ['delivery.correct.prepare', 'delivery.office.document', 'delivery.campaign', 'delivery.package.index', 'delivery.finish']);
+  assert.equal(recovery.revision.delta.correction.base.master.editVersionId, e.deliveries.currentItem('dlv_correct', 'edit', 'master').refId);
+  const again = await e.confirm(recovery.plan); assert.equal(again.status, 'DONE', JSON.stringify(again.steps.map(s => [s.kind, s.error])));
+  assert.equal(again.steps.find(s => s.kind === 'delivery.office.document').result.keptByProof.planId, second.plan.id);
+  for (const cap of e.deliveries.effectiveTemplate(e.deliveries.get('dlv_correct')).captures) {
+    assert.equal(cap.stepsSha, first.revision.delta.correction.captures[cap.role].stepsSha);
+    assert.deepEqual(cap.steps, first.revision.delta.correction.captures[cap.role].steps);
+  }
   assert.equal(e.deliveries.get('dlv_correct').status, 'READY');
   assert.equal(e.db.prepare('SELECT count(*) n FROM media_capture_sessions').get().n, captureCount);
   assert.deepEqual(e.deliveries.items('dlv_correct').filter(i => i.status === 'CURRENT' && i.kind === 'capture').map(c => [c.refId, c.refSha]), capturesBefore);
@@ -208,8 +226,6 @@ test('RCO-09 base changes refuse before any artifact; concurrent proposals share
   assert.equal(e.db.prepare('SELECT count(*) n FROM delivery_documents').get().n, 1);
   fs.writeFileSync(file, bytes);
   e.db.prepare("UPDATE ops_plans SET status='EXPIRED' WHERE id=?").run(a.plan.id);
-  await e.deliveries.tick(); assert.equal(e.db.prepare('SELECT count(*) n FROM delivery_revisions').get().n, 1);
-  e.db.prepare("UPDATE events SET payload_json=json_set(payload_json,'$.hubVersion','old-version') WHERE type='delivery.correction_proposed'").run();
   await e.deliveries.tick(); assert.equal(e.db.prepare('SELECT count(*) n FROM delivery_revisions').get().n, 2);
   assert.deepEqual(e.db.prepare("SELECT json_extract(delta_json,'$.correction.version') v FROM delivery_revisions ORDER BY rowid").all().map(r => r.v), [1, 2]);
   await e.deliveries.tick(); assert.equal(e.db.prepare('SELECT count(*) n FROM delivery_revisions').get().n, 2);

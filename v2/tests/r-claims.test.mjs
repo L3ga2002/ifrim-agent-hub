@@ -120,7 +120,7 @@ test("RC-07 template freezing survives a poisoned fixture and edit.build uses on
   const f = factsOf(), content = [], bound = [], d = { id: "dlv_test", status: "ACTIVE", opsPlanId: "opp_test", missionId: "mis_test", bundleId: f.bundle.id, template: t, contentProjectId: "cp_test", title: "Test" };
   let built;
   const deliveries = { need: () => d, effectiveTemplate: x => x.template, currentItem: (_, kind, role) => kind === "capture" ? { id: "it_" + role, refId: "mav_" + role, meta: { ...captures.find(c => c.role === role), label: "ORIGINAL_RECORDING" } } : null,
-    replaceClaimItems: (_, roles, fn) => fn(), bindItem: (_, item) => { bound.push(item); return { id: "item_" + bound.length }; }, patch() {}, markerOf() { throw Error("fixture read"); } };
+    revisionOfPlan: () => null, replaceClaimItems: (_, roles, fn) => fn(), bindItem: (_, item) => { bound.push(item); return { id: "item_" + bound.length }; }, patch() {}, markerOf() { throw Error("fixture read"); } };
   const media = { content: { saveClaim: (_, c) => { content.push(c); return { id: "cl_" + content.length }; } }, assets: { getVersion: () => ({ status: "READY", probe: { durationMs: 22000, hasVideo: true, video: { width: 1280, height: 844 } } }) }, edits: { create: ({ ir }) => { built = ir; return { project: { id: "ep_test" }, version: { id: "ev_test" } }; } } };
   const run = createDeliveryExecutors({ deliveries, factory: { claimFacts: () => f }, media })["delivery.edit.build"].run;
   await run({ params: { deliveryId: d.id }, planId: "opp_test", authorize() {} });

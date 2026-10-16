@@ -31,6 +31,16 @@ import { CAPTURE_LABELS } from "./assets.mjs";
 import { hashCanonical } from "../core/canonical.mjs";
 import { measureHold, HOLD_SCHEMA, HOLD_LIMITS } from "./holds.mjs";
 
+export async function clearTypingField(locator, timeout) {
+  const nonempty = await locator.evaluate(el => {
+    if (el.isContentEditable) return Boolean(el.textContent);
+    if (el.tagName === 'TEXTAREA') return Boolean(el.value);
+    if (el.tagName === 'INPUT' && ['text', 'email', 'number', 'password', 'search', 'tel', 'url'].includes(el.type)) return Boolean(el.value);
+    return false;
+  }, undefined, { timeout });
+  if (nonempty) await locator.fill('', { timeout });
+}
+
 export const CAPTURE_KINDS = Object.freeze(["obs", "browser_demo", "import", "interview"]);
 export const CAPTURE_STATUSES = Object.freeze(["PLANNED", "RECORDING", "STOPPED", "FAILED", "CANCELLED"]);
 /** Labels a capture may carry: NOT_APPLICABLE is for files that are not captures (fonts, music…). */
@@ -970,7 +980,7 @@ export function createCapture({ db, bus, clock = () => new Date(), settings, con
           else if (kind === "type") {
             const loc = page.locator(value.selector).first();
             const startMs = elapsed();
-            await loc.fill("", { timeout: stepTimeoutMs }); // E2E fill replaces; recording must never append to an old value.
+            await clearTypingField(loc, stepTimeoutMs);
             if (typeof loc.pressSequentially === "function") await loc.pressSequentially(value.text, { delay: value.delayMs, timeout: stepTimeoutMs + value.text.length * value.delayMs });
             else await page.type(value.selector, value.text, { delay: value.delayMs, timeout: stepTimeoutMs + value.text.length * value.delayMs });
             const endMs = elapsed();

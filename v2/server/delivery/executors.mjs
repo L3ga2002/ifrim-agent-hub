@@ -32,6 +32,10 @@ export function createDeliveryExecutors({ deliveries, factory, media, projects, 
     return { d: { ...d, template: deliveries.effectiveTemplate(d, { planId }) }, revision };
   }
   const planRevision = (deliveryId, planId) => deliveries.revisionOfPlan(deliveryId, planId);
+  const checkCorrectionBase = async (deliveryId, planId) => {
+    const record = planRevision(deliveryId, planId)?.delta?.correction;
+    if (record) await deliveries.checkCorrection(deliveryId, record, { planId });
+  };
   const snapshotEqual = (d) => {
     const s = factory.snapshotCheck(d.missionId);
     const drift = factory.driftProvenance(d.projectId, s.changedFiles);
@@ -157,6 +161,7 @@ export function createDeliveryExecutors({ deliveries, factory, media, projects, 
       describe: ({ deliveryId, revisionId }) => ({ title: "Construiește montajul 16:9 din cele două capturi (fără model)", params: { deliveryId, ...(revisionId ? { revisionId } : {}) }, ops: [{ op: "media.edit.apply" }, { op: "delivery.bind" }], observed: [], transmitted: [], outputs: ["montaj 16:9 (versiunea 1)"] }),
       run: async ({ params, planId, authorize }) => {
         const { d } = bound(params, planId);
+        await checkCorrectionBase(d.id, planId);
         authorize({ op: "media.edit.apply" });
         const facts = factory.claimFacts(d.missionId, { bundleId: d.bundleId });
         const presentation = presentationForTemplate(d.template, facts);
@@ -259,6 +264,7 @@ export function createDeliveryExecutors({ deliveries, factory, media, projects, 
       },
       run: async ({ params, planId, authorize }) => {
         const { d } = bound(params, planId, { statuses: ["ACTIVE", "READY", "NEEDS_OWNER"] });
+        await checkCorrectionBase(d.id, planId);
         const masterRender = doneResult(planId, "media.render");
         const variant = doneResult(planId, "media.variant.render");
         if (!masterRender || !variant) throw refuse("DELIVERY_RENDERS_MISSING", "Randările nu sunt gata.");
@@ -307,6 +313,7 @@ export function createDeliveryExecutors({ deliveries, factory, media, projects, 
         params: { deliveryId, render, variant, verticalEdit, ...(mode !== undefined ? { mode } : {}), ...(revisionId ? { revisionId } : {}) }, ops: [{ op: "delivery.bind" }, { op: "delivery.preview" }], observed: [], transmitted: [], outputs: ["livrare gata de verificarea ta"] }),
       run: async ({ params, planId, authorize }) => {
         const { d } = bound(params, planId, { statuses: ["ACTIVE", "READY", "NEEDS_OWNER"] });
+        await checkCorrectionBase(d.id, planId);
         authorize({ op: "delivery.bind" });
         const v = deliveries.verify(d.id, { by: `plan:${planId}` });
         if (!v.equal) throw refuse("SNAPSHOT_DRIFT", "Proiectul s-a schimbat față de versiunea verificată; livrarea nu e gata.");

@@ -17,10 +17,24 @@ import { createMediaAssets } from "../server/media/assets.mjs";
 import { browserLaunchOptions } from "../server/tools/browser-core.mjs";
 import {
   createCapture, obsClient, obsAuthString, validateObsUrl, validateDemoSteps, checkDemoOrigin, buildConcatList, redactionCss,
-  DEFAULT_REDACT_SELECTORS, SCREENCAST_JPEG_QUALITY,
+  DEFAULT_REDACT_SELECTORS, SCREENCAST_JPEG_QUALITY, clearTypingField,
 } from "../server/media/capture.mjs";
 
 const WS_GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
+
+test('M09-CP-12 typing clears only nonempty fillable controls, preserving empty/custom targets', async () => {
+  for (const el of [
+    { tagName: 'INPUT', type: 'tel', value: '0700' }, { tagName: 'INPUT', type: 'text', value: '' },
+    { tagName: 'TEXTAREA', value: 'old' }, { tagName: 'TEXTAREA', value: '' },
+    { tagName: 'DIV', isContentEditable: true, textContent: 'old' }, { tagName: 'DIV', isContentEditable: true, textContent: '' },
+    { tagName: 'DIV', textContent: 'custom keyboard target' }, { tagName: 'INPUT', type: 'button', value: 'Click' },
+  ]) {
+    let fills = 0;
+    const fillable = el.isContentEditable || el.tagName === 'TEXTAREA' || el.type === 'tel' || el.type === 'text';
+    await clearTypingField({ evaluate: fn => fn(el), fill: async value => { fills++; assert.equal(value, ''); assert.ok(fillable); } }, 100);
+    assert.equal(fills, Number(Boolean(fillable && (el.value || el.textContent))));
+  }
+});
 
 // ---------------------------------------------------------------------------------------------------------------------------
 // helpers

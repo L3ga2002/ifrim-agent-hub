@@ -161,7 +161,11 @@ export function createOpsPlans({ db, bus, clock, settings, trust, voice = null, 
     const t = clock();
     bus.transaction(() => {
       // Only the latest proposal can be confirmed (an older card of the same kind is superseded).
-      for (const old of db.prepare("SELECT id FROM ops_plans WHERE status = 'PROPOSED' AND kind = ?").all(kind)) setStatus(old.id, "SUPERSEDED", "Un plan mai nou a fost prezentat", {}, ["PROPOSED"]);
+      const deliveryIds = new Set(body.steps.map(s => s.params?.deliveryId).filter(Boolean));
+      for (const old of db.prepare("SELECT id FROM ops_plans WHERE status = 'PROPOSED' AND kind = ?").all(kind)) {
+        if (kind === 'delivery.correct' && !view(old.id).steps.some(s => deliveryIds.has(s.params?.deliveryId))) continue;
+        setStatus(old.id, "SUPERSEDED", "Un plan mai nou a fost prezentat", {}, ["PROPOSED"]);
+      }
       db.prepare(`INSERT INTO ops_plans (id, kind, title, status, body_json, summary_json, plan_hash, nonce, proposed_by, proposed_via, confirm_by, expires_at, created_at, updated_at)
         VALUES (?, ?, ?, 'PROPOSED', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(id, kind, body.title, json(body), json(summaryOf(body)), hash, nonce, String(actor).slice(0, 80), String(via).slice(0, 40),
         new Date(t.getTime() + proposalWindowMin({ settings, trust }) * 60000).toISOString(), new Date(t.getTime() + (body.limits.maxDurationMin + PLAN_LIMITS.slackMin) * 60000).toISOString(), now(), now());
@@ -584,9 +588,8 @@ export function createOpsPlans({ db, bus, clock, settings, trust, voice = null, 
   async function supersedeDeliveryCorrection(planId, deliveryId) {
     const p = view(planId);
     if (p?.kind !== 'delivery.correct' || !p.body.steps.some(s => s.params.deliveryId === deliveryId)) throw new HubError('conflict', 'Planul nu aparține corecturii acestei livrări.');
-    const run = runs.get(planId);
-    if (run) { run.abort.aborted = true; run.abort.reason = 'Corectură înlocuită de o propunere nouă'; await run.promise; }
-    bus.transaction(() => setStatus(planId, 'SUPERSEDED', 'O corectură nouă înlocuiește această propunere', {}, ['PROPOSED', 'CONFIRMED', 'RUNNING', 'PAUSED', 'NEEDS_OWNER', 'FAILED']));
+    if (p.status !== 'PROPOSED') return p;
+    bus.transaction(() => setStatus(planId, 'SUPERSEDED', 'O corectură nouă înlocuiește această propunere', {}, ['PROPOSED']));
     return view(planId);
   }
 

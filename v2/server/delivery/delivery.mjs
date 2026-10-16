@@ -299,12 +299,17 @@ export function createDeliveries({ db, bus, clock, config, settings, projects, m
   }
 
   /** Whether the project folder is still the bound version; a drift marks the software-bound items STALE. Fail-safe: it only ever marks. */
-  function verify(id, { by = "owner" } = {}) {
-    const d = need(id);
+  function snapshotComparison(d) {
     if (!d.missionId || !d.snapshotSha) return { equal: null, reason: "livrarea nu are încă o versiune legată" };
     const snap = factory.snapshotCheck(d.missionId);
     const drift = factory.driftProvenance(d.projectId, snap.changedFiles);
     const equal = Boolean(snap.expected) && snap.expected === d.snapshotSha && snap.bundleId === d.bundleId && (!d.changeSetId || snap.changeSetId === d.changeSetId) && drift.software.length === 0;
+    return { equal, snap, drift };
+  }
+  function verify(id, { by = "owner" } = {}) {
+    const d = need(id);
+    const { equal, snap, drift, reason } = snapshotComparison(d);
+    if (!snap) return { equal, reason };
     const verified = { ...d.verified, hubOnly: drift.hub, at: now(), by, expected: d.snapshotSha, actual: snap.actual, equal, changedFiles: snap.changedFiles };
     bus.transaction(() => db.prepare("UPDATE deliveries SET verified_json = ?, updated_at = ? WHERE id = ?").run(json(verified), now(), id));
     if (drift.software.length && ["READY", "NEEDS_OWNER", "ACTIVE"].includes(d.status)) trigger(id, "software_changed", { changedFiles: snap.changedFiles, cause: `fișiere schimbate: ${snap.changedFiles.slice(0, 5).join(", ") || "snapshot diferit"}` }, by);
@@ -439,8 +444,9 @@ export function createDeliveries({ db, bus, clock, config, settings, projects, m
   /** A new document version: v1 from the facts, or a regeneration of `changed` ("software" | "media" | "services") keeping owner sections. */
   function effectiveTemplate(d, { planId } = {}) {
     const revision = planId ? revisionOfPlan(d.id, planId) : null;
-    const applied = revision?.delta?.correction ? revision : revisionView(db.prepare("SELECT * FROM delivery_revisions WHERE delivery_id = ? AND status = 'APPLIED' AND json_extract(delta_json, '$.correction.kind') = 'presentation-correction' ORDER BY rowid DESC LIMIT 1").get(d.id));
-    const template = overlayCorrection(d.template, applied?.delta?.correction);
+    let template = d.template;
+    for (const r of correctionRevisions(d.id).reverse().filter(r => r.status === 'APPLIED')) template = overlayCorrection(template, r.delta.correction);
+    if (revision?.delta?.correction) template = overlayCorrection(template, revision.delta.correction);
     if (template.presentation) return template;
     // Derive legacy prose before proposing steps, so the card hashes the overrides
     // that execution will use. Never rewrite the confirmed template or package body.
@@ -450,8 +456,19 @@ export function createDeliveries({ db, bus, clock, config, settings, projects, m
     return { ...template, presentation, story: { ...template.story, texts,
       variant: { ...template.story.variant, overrides, overridesSha: hashCanonical(overrides) } } };
   }
+  const correctionRevisions = id => db.prepare("SELECT * FROM delivery_revisions WHERE delivery_id = ? AND json_extract(delta_json, '$.correction.kind') = 'presentation-correction' ORDER BY rowid DESC").all(id).map(revisionView);
+  // cancel() also labels untouched PENDING steps CANCELLED; their attempt/start fields distinguish them.
+  const started = p => p?.steps.some(s => s.status !== 'PENDING' && (s.status !== 'CANCELLED' || s.startedAt || s.attempts > 0));
+  const recoveryReason = 'Corectura anterioară nu s-a încheiat; o reiau de la ultimul pas reușit';
+  function unfinishedCorrection(d) {
+    const r = correctionRevisions(d.id).find(r => r.opsPlanId);
+    const p = r && opsPlans.view(r.opsPlanId);
+    return d.status === 'NEEDS_OWNER' && r?.status !== 'APPLIED'
+      && ((['FAILED', 'CANCELLED'].includes(p?.status) && started(p)) || (r?.delta.correction.continuation && LIVE_CORRECTION.includes(p?.status))) ? { revision: r, plan: p } : null;
+  }
   function correctionFacts(deliveryId) {
-    const d = need(deliveryId), template = effectiveTemplate(d);
+    const d = need(deliveryId), unfinished = unfinishedCorrection(d);
+    const template = effectiveTemplate(d, { planId: unfinished?.plan.id });
     const facts = factory.claimFacts(d.missionId, { bundleId: d.bundleId });
     const all = itemsOfDelivery(d.id), current = d.status === 'STALE' ? [...new Map(all.map(i => [i.kind + ':' + i.role, i])).values()] : all.filter(i => i.status === 'CURRENT');
     const masterItem = current.find(i => i.kind === 'edit' && i.role === 'master');
@@ -473,16 +490,24 @@ export function createDeliveries({ db, bus, clock, config, settings, projects, m
       exports: current.filter(i => i.kind === 'export').map(i => ({ itemId: i.id, role: i.role, file: i.meta.file, sha256: i.refSha })),
       office: officeSteps(d).filter(s => s.status === 'DONE').map(s => ({ kind: s.kind, planId: s.planId, seq: s.seq, file: s.result?.file || s.result?.dir || s.result?.folder || null, sha256: s.result?.sha256 || null })),
       exportCount: all.filter(i => i.kind === 'export' && i.role === 'master').length };
-    return { delivery: d, audit, base, master, vertical, captures, summary, facts, template };
+    const continuation = Boolean(unfinished && !audit.defects.length && (unfinished.revision.delta.correction.continuation || unfinished.plan.steps.some(s => s.kind === 'delivery.summary.render' && s.status === 'DONE')));
+    const fresh = renderSummary({ projectName: template.project?.name || d.title, synthetic: true, simulation: d.labels.includes('SIMULATION'), manifest: facts.manifest, bundleId: facts.bundle.id,
+      bundleSha: facts.bundle.sha256, issue: template.issueTitle, presentation: audit.presentation, proofs: provePresentation(audit.presentation, facts), media: mediaFacts(d.id), services: servicesOf(d), owner: ownerProfile(), generatedAt: summary?.createdAt || now() });
+    const summaryPreview = summary ? regenerateSummary({ ...summary, title: fresh.title }, fresh, ['claims', 'media']) : fresh;
+    if (!continuation) summaryPreview.sections.find(s => s.id === 'video').text = '(după randare)';
+    return { delivery: d, audit, base, master, vertical, captures, summary, facts, template, continuation, summaryPreview,
+      tone: currentItem(d.id, 'brief')?.meta?.prefs?.tone || template.story.tone || 'both' };
   }
   // Versioned filenames are consequences of a new record, not a new defect. Compare
   // the frozen facts separately when deciding whether tick already offered this work.
   const correctionWorkSha = c => hashCanonical({ ...c, version: 0, outputs: c.outputs.filter(x => !/Prezentare demo v|Campanie v|manifest-v/.test(x)) });
   function correctionDraft(deliveryId) {
     const input = correctionFacts(deliveryId);
-    const earlier = db.prepare("SELECT delta_json FROM delivery_revisions WHERE delivery_id = ? AND json_extract(delta_json, '$.correction.kind') = 'presentation-correction' ORDER BY rowid DESC").all(deliveryId).map(r => parse(r.delta_json, {}).correction);
+    const earlier = correctionRevisions(deliveryId).filter(r => r.opsPlanId);
     const version = earlier.length + 1;
     const correction = buildCorrectionRecord({ ...input, version });
+    if (input.continuation) { correction.continuation = true; correction.reason = recoveryReason; }
+    for (const cap of input.template.captures) Object.assign(correction.captures[cap.role], { steps: cap.steps, stepsSha: cap.stepsSha });
     for (const role of ['desktop', 'mobile']) if (correction.captures[role].action === 'recapture') {
       const cap = input.template.captures.find(c => c.role === role), criterion = input.facts.spec.acceptance.find(c => c.id === correction.captures[role].criterion);
       const script = captureScriptFrom(criterion?.steps, { role, noun: input.template.story.noun, proofSelector: cap.proofSelector });
@@ -495,10 +520,11 @@ export function createDeliveries({ db, bus, clock, config, settings, projects, m
     const record = previous || correction;
     return { ...input, correction: record, correctionSha: hashCanonical(record) };
   }
-  async function checkCorrection(deliveryId, record = null) {
+  async function checkCorrection(deliveryId, record = null, { planId = null } = {}) {
     const d = need(deliveryId);
     if (!['READY', 'NEEDS_OWNER'].includes(d.status)) throw new HubError('conflict', d.status === 'STALE' ? 'Livrarea este STALE; se reface printr-un pachet nou.' : `Livrarea este ${d.status}; corectura cere READY sau NEEDS_OWNER.`, { code: 'CORRECTION_STATUS' });
-    if (!verify(d.id, { by: 'correction' }).equal) throw new HubError('conflict', 'Versiunea software s-a schimbat.', { code: 'CORRECTION_BASE_CHANGED' });
+    const snapshot = snapshotComparison(d);
+    if (!snapshot.equal) throw new HubError('conflict', 'Versiunea software s-a schimbat.', { code: 'CORRECTION_BASE_CHANGED' });
     const facts = factory.claimFacts(d.missionId, { bundleId: d.bundleId });
     const tools = await toolsFacts();
     if (facts.bundle.id !== d.bundleId || facts.bundle.sha256 !== d.bundleSha || facts.specRow.sha256 !== d.specSha || !['READY_FOR_OWNER_ACCEPTANCE', 'OWNER_ACCEPTED'].includes(facts.bundle.status)) throw new HubError('conflict', 'Pachetul sau specificația s-au schimbat.', { code: 'CORRECTION_BASE_CHANGED' });
@@ -508,13 +534,18 @@ export function createDeliveries({ db, bus, clock, config, settings, projects, m
       const item = (kind, role) => currentItem(d.id, kind, role);
       const doc = currentDoc(d.id);
       const b = record.base;
-      let equal = ['templateSha', 'specSha', 'bundleId', 'bundleSha', 'changeSetSha', 'snapshotSha'].every(k => b[k] === d[k]) && item('edit', 'master')?.refId === b.master.editVersionId && item('edit', 'master')?.refSha === b.master.irSha && doc?.id === b.summary.documentId && doc?.contentSha === b.summary.contentSha && doc?.version === b.summary.version && item('variant', 'vertical')?.refId === b.vertical.variantId && item('variant', 'vertical')?.meta?.editVersionId === b.vertical.editVersionId;
+      const own = i => Boolean(planId && i && db.prepare('SELECT 1 FROM delivery_items WHERE id = ? AND created_by = ?').get(i.id, 'plan:' + planId));
+      const master = item('edit', 'master'), vertical = item('variant', 'vertical');
+      let equal = ['templateSha', 'specSha', 'bundleId', 'bundleSha', 'changeSetSha', 'snapshotSha'].every(k => b[k] === d[k])
+        && (own(master) || (master?.refId === b.master.editVersionId && master?.refSha === b.master.irSha))
+        && ((planId && doc?.createdBy === 'plan:' + planId) || (doc?.id === b.summary.documentId && doc?.contentSha === b.summary.contentSha && doc?.version === b.summary.version))
+        && (own(vertical) || (vertical?.refId === b.vertical.variantId && vertical?.meta?.editVersionId === b.vertical.editVersionId));
       for (const role of ['desktop', 'mobile']) {
         const c = item('capture', role), before = b.captures[role];
-        equal &&= c?.id === before.itemId && c?.refId === before.assetVersionId && c?.refSha === before.sha256 && c?.meta?.stepsSha === before.stepsSha;
+        equal &&= own(c) || (c?.id === before.itemId && c?.refId === before.assetVersionId && c?.refSha === before.sha256 && c?.meta?.stepsSha === before.stepsSha);
         let actual = null;
         try { actual = sha256(fs.readFileSync(path.join(config.mediaDir, media.assets.getVersion(c.refId).relPath))); } catch { /* still missing is an unchanged defective base */ }
-        equal &&= actual === (before.observedSha256 ?? (record.captures[role].action === 'reuse' ? before.sha256 : null));
+        equal &&= actual === (own(c) ? c.refSha : (before.observedSha256 ?? (record.captures[role].action === 'reuse' ? before.sha256 : null)));
       }
       if (!equal) throw new HubError('conflict', 'Baza corecturii s-a schimbat; pregătește o propunere nouă.', { code: 'CORRECTION_BASE_CHANGED' });
     }
@@ -528,26 +559,38 @@ export function createDeliveries({ db, bus, clock, config, settings, projects, m
     try { return await pending; } finally { proposingCorrections.delete(deliveryId); }
   }
   async function proposeCorrectionOnce(deliveryId, { actor = 'owner', via = 'owner' } = {}) {
-    await checkCorrection(deliveryId);
-    let draft = correctionDraft(deliveryId);
-    if (!draft.audit.defects.length) return { proposed: false, reason: 'Nimic de corectat: afirmațiile corespund criteriilor aprobate.' };
-    const rows = db.prepare("SELECT * FROM delivery_revisions WHERE delivery_id = ? AND json_extract(delta_json, '$.correction.kind') = 'presentation-correction' ORDER BY rowid DESC").all(deliveryId).map(revisionView);
+    const rows = correctionRevisions(deliveryId);
     for (const r of rows) {
       const p = r.opsPlanId && opsPlans.view(r.opsPlanId);
-      if (!p || !LIVE_CORRECTION.includes(p.status)) continue;
+      if (['CONFIRMED', 'RUNNING', 'PAUSED'].includes(p?.status)) return { proposed: true, plan: p, revision: r };
+    }
+    if (actor === 'hub' && rows.some(r => opsPlans.view(r.opsPlanId)?.status === 'CANCELLED')) return { proposed: false, reason: 'Corectura a fost anulată de proprietar.' };
+    await checkCorrection(deliveryId);
+    let draft = correctionDraft(deliveryId);
+    if (!draft.audit.defects.length && !unfinishedCorrection(draft.delivery)) return { proposed: false, reason: 'Nimic de corectat: afirmațiile corespund criteriilor aprobate.' };
+    for (const r of rows) {
+      const p = r.opsPlanId && opsPlans.view(r.opsPlanId);
+      if (p?.status !== 'PROPOSED') continue;
       if (r.delta.correctionSha === draft.correctionSha) return { proposed: true, plan: p, revision: r };
       await opsPlans.supersedeDeliveryCorrection(p.id, deliveryId);
-      draft = correctionDraft(deliveryId); // The stopped plan may have completed its in-flight step.
+      draft = correctionDraft(deliveryId);
     }
+    let reoffer = false;
     if (actor === 'hub') {
-      if (rows.some(r => opsPlans.view(r.opsPlanId)?.status === 'CANCELLED')) return { proposed: false, reason: 'Corectura a fost anulată de proprietar.' };
       const sameWork = [draft.correctionSha, ...rows.filter(r => correctionWorkSha(r.delta.correction) === correctionWorkSha(draft.correction)).map(r => r.delta.correctionSha)];
-      if (sameWork.some(sha => db.prepare("SELECT 1 FROM events WHERE type = 'delivery.correction_proposed' AND scope_id = ? AND json_extract(payload_json, '$.correctionSha') = ? AND json_extract(payload_json, '$.hubVersion') = ?").get(deliveryId, sha, HUB_VERSION))) return { proposed: false, reason: 'Corectura a fost deja oferită pe această versiune.' };
+      const offered = rows.filter(r => sameWork.includes(r.delta.correctionSha)).filter(r => db.prepare("SELECT 1 FROM events WHERE type = 'delivery.correction_proposed' AND scope_id = ? AND json_extract(payload_json, '$.planId') = ? AND json_extract(payload_json, '$.hubVersion') = ?").get(deliveryId, r.opsPlanId, HUB_VERSION));
+      if (offered.length) {
+        reoffer = ['SUPERSEDED', 'EXPIRED'].includes(opsPlans.view(offered[0].opsPlanId)?.status);
+        const alreadyReoffered = offered.some(r => db.prepare("SELECT 1 FROM events WHERE type = 'delivery.correction_proposed' AND json_extract(payload_json, '$.planId') = ? AND json_extract(payload_json, '$.hubVersion') = ? AND json_extract(payload_json, '$.reoffer') = 1").get(r.opsPlanId, HUB_VERSION));
+        if (!reoffer || alreadyReoffered) return { proposed: false, reason: 'Corectura a fost deja oferită pe această versiune.' };
+      }
     }
     const rev = recordRevision(deliveryId, { text: draft.correction.reason, classes: ['correction'], delta: { correction: draft.correction, correctionSha: draft.correctionSha }, status: 'PROPOSED', source: actor === 'hub' ? 'hub' : 'owner', channel: via });
-    const plan = await opsPlans.propose({ kind: CORRECTION_KIND, title: `Corectură afirmații: ${draft.template.project.name}`, steps: correctionSteps(draft.template, deliveryId, rev.id, draft.correction), limits: { maxDurationMin: 30, maxActions: 120 }, actor, via });
+    let plan;
+    try { plan = await opsPlans.propose({ kind: CORRECTION_KIND, title: `Corectură afirmații: ${draft.template.project.name}`, steps: correctionSteps(draft.template, deliveryId, rev.id, draft.correction), limits: { maxDurationMin: 30, maxActions: 120 }, actor, via }); }
+    catch (error) { updateRevision(rev.id, { status: 'CANCELLED' }); throw error; }
     updateRevision(rev.id, { opsPlanId: plan.id });
-    bus.emit({ type: 'delivery.correction_proposed', scopeType: 'delivery', scopeId: deliveryId, source: actor, payload: { deliveryId, revisionId: rev.id, planId: plan.id, version: draft.correction.version, correctionSha: draft.correctionSha, hubVersion: HUB_VERSION } });
+    bus.emit({ type: 'delivery.correction_proposed', scopeType: 'delivery', scopeId: deliveryId, source: actor, payload: { deliveryId, revisionId: rev.id, planId: plan.id, version: draft.correction.version, correctionSha: draft.correctionSha, hubVersion: HUB_VERSION, reoffer } });
     return { proposed: true, plan, revision: getRevision(rev.id) };
   }
   function finishCorrection(deliveryId, revisionId) {
@@ -562,7 +605,7 @@ export function createDeliveries({ db, bus, clock, config, settings, projects, m
   }
   function replaceClaimItems(deliveryId, roles, produce) {
     return bus.transaction(() => {
-      for (const item of itemsOfDelivery(deliveryId)) if (item.kind === "claim" && item.status === "CURRENT") db.prepare("UPDATE delivery_items SET status = 'SUPERSEDED' WHERE id = ?").run(item.id);
+      for (const item of itemsOfDelivery(deliveryId)) if (item.kind === "claim" && item.status === "CURRENT" && !roles.includes(item.role)) db.prepare("UPDATE delivery_items SET status = 'SUPERSEDED', status_reason = ?, updated_at = ? WHERE id = ?").run('Afirmația nu mai este inclusă în prezentarea corectată', now(), item.id);
       return produce();
     });
   }
@@ -772,7 +815,8 @@ export function createDeliveries({ db, bus, clock, config, settings, projects, m
     let defects = [];
     if (['READY', 'NEEDS_OWNER', 'STALE'].includes(d.status)) try { defects = correctionFacts(d.id).audit.defects; } catch { /* incomplete facts */ }
     const correctionPlan = plans.find(p => p.kind === CORRECTION_KIND && LIVE_CORRECTION.includes(p.status));
-    const correction = { available: ['READY', 'NEEDS_OWNER'].includes(d.status) && defects.length > 0, defects: defects.slice(0, 20), plan: correctionPlan ? { id: correctionPlan.id, status: correctionPlan.status } : null,
+    const recovery = unfinishedCorrection(d);
+    const correction = { available: ['READY', 'NEEDS_OWNER'].includes(d.status) && (defects.length > 0 || Boolean(recovery)), reason: recovery ? recoveryReason : null, defectCount: defects.length, defects, plan: correctionPlan ? { id: correctionPlan.id, status: correctionPlan.status } : null,
       applied: db.prepare("SELECT payload_json, created_at FROM events WHERE type = 'delivery.correction_applied' AND scope_id = ? ORDER BY seq").all(id).map(r => ({ version: parse(r.payload_json, {}).version, correctionSha: parse(r.payload_json, {}).correctionSha, appliedAt: r.created_at })) };
     for (const c of binding?.criteria || []) if (!String(c.status).startsWith("PASS")) observations.push({ kind: "criterion", severity: "warn", text: `${c.id} ${c.text}: ${c.status}`, ref: c.id });
     for (const x of doc?.claimsToVerify || []) observations.push({ kind: "summary", severity: "info", text: x, ref: doc.id });
@@ -799,7 +843,7 @@ export function createDeliveries({ db, bus, clock, config, settings, projects, m
       plans,
       // Stage before M12: the office part of the package (Word, Excel, campaign, folder index) with the verification level each reached.
       office: officeOf(d),
-      revisions: db.prepare("SELECT * FROM delivery_revisions WHERE delivery_id = ? ORDER BY created_at").all(id).map(revisionView).map((r) => ({ id: r.id, text: r.text, status: r.status, classes: r.classes, planId: r.opsPlanId, source: r.source })),
+      revisions: db.prepare("SELECT * FROM delivery_revisions WHERE delivery_id = ? ORDER BY created_at").all(id).map(revisionView).filter(r => !r.delta?.correction || r.opsPlanId).map((r) => ({ id: r.id, text: r.text, status: r.status, classes: r.classes, planId: r.opsPlanId, source: r.source })),
       history: items.map((i) => ({ kind: i.kind, role: i.role, id: i.id, status: i.status, staleReason: i.statusReason, supersedesId: i.supersedesId, createdAt: i.createdAt })),
     };
   }
@@ -849,6 +893,9 @@ export function createDeliveries({ db, bus, clock, config, settings, projects, m
         if (r) trigger(r.id, "plan_stopped", { reason: `planul de livrare: ${e.type.slice(9)}${p.reason ? ` (${p.reason})` : ""}` }, "ops");
         const correction = db.prepare("SELECT r.id, r.delivery_id FROM delivery_revisions r JOIN deliveries d ON d.id = r.delivery_id WHERE r.ops_plan_id = ? AND json_extract(r.delta_json, '$.correction.kind') = 'presentation-correction' AND d.status IN ('READY','NEEDS_OWNER')").get(e.scopeId);
         if (correction) {
+          const plan = opsPlans.view(e.scopeId);
+          if (plan?.status === 'CANCELLED') updateRevision(correction.id, { status: 'CANCELLED' });
+          if (!started(plan)) return;
           const reason = 'Corectura s-a oprit: ' + (p.reason || e.type.slice(9));
           setStatus(correction.delivery_id, 'NEEDS_OWNER', reason);
           bus.emit({ type: 'delivery.correction_failed', scopeType: 'delivery', scopeId: correction.delivery_id, source: 'ops', payload: { revisionId: correction.id, planId: e.scopeId, reason } });
@@ -878,11 +925,16 @@ export function createDeliveries({ db, bus, clock, config, settings, projects, m
     for (const e of restores) setTimeout(() => onEvent({ type: "factory.retire_restored", scopeId: e.scope_id, payload: parse(e.payload_json, {}) }), 0);
   }
 
-  /** Housekeeping: activation retry after a restart (within activate_by), and READY deliveries re-verified every 10 minutes. */
-  let lastVerify = 0;
+  /** Housekeeping: read-only proposal scans, at most once per delivery per ten minutes. */
+  const lastCorrectionScan = new Map();
   async function tick() {
     if (closing) return;
-    for (const r of db.prepare("SELECT id FROM deliveries d WHERE status = 'READY' AND NOT EXISTS (SELECT 1 FROM delivery_revisions r JOIN ops_plans p ON p.id = r.ops_plan_id WHERE r.delivery_id = d.id AND p.kind = 'delivery.correct' AND p.status IN ('PROPOSED','CONFIRMED','RUNNING','PAUSED'))").all()) {
+    for (const r of db.prepare("SELECT id FROM deliveries d WHERE status IN ('READY','NEEDS_OWNER') AND NOT EXISTS (SELECT 1 FROM delivery_revisions r JOIN ops_plans p ON p.id = r.ops_plan_id WHERE r.delivery_id = d.id AND p.kind = 'delivery.correct' AND p.status IN ('PROPOSED','CONFIRMED','RUNNING','PAUSED'))").all()) {
+      const time = clock().getTime();
+      if (lastCorrectionScan.has(r.id) && time - lastCorrectionScan.get(r.id) < 10 * 60000) continue;
+      lastCorrectionScan.set(r.id, time);
+      const d = get(r.id);
+      if (d.status === 'NEEDS_OWNER' && !unfinishedCorrection(d)) continue;
       try { await proposeCorrection(r.id, { actor: 'hub', via: 'correction' }); } catch { /* no authority on refusal */ }
     }
     // A derived delivery plan the Hub refused before any step did work — no ops plan (an operation the phase list lacked) or a plan that
@@ -900,10 +952,6 @@ export function createDeliveries({ db, bus, clock, config, settings, projects, m
     for (const r of db.prepare("SELECT id, mission_id FROM deliveries WHERE status = 'ARMED'").all()) {
       if (closing) return;
       try { const f = factory.view(r.mission_id)?.factory; if (f && ["DELIVERY_READY", "ACCEPTED"].includes(f.stage)) await activate(r.id); } catch { /* next tick */ }
-    }
-    if (!closing && clock().getTime() - lastVerify > 10 * 60000) {
-      lastVerify = clock().getTime();
-      for (const r of db.prepare("SELECT id FROM deliveries WHERE status = 'READY'").all()) { try { verify(r.id, { by: "hub" }); } catch { /* next tick */ } }
     }
   }
 

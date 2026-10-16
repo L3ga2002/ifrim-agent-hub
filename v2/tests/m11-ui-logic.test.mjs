@@ -1024,7 +1024,11 @@ test("M11-UI-16 the Room renders the six deliverables and five decisions from th
   correction.correction.plan = { id: 'opp_hub', status: 'PROPOSED' };
   assert.ok(!textOf(render(correction)).includes('Pregătește corectura'), 'a live card is not duplicated');
   correction.correction.plan = null; correction.delivery.status = 'NEEDS_OWNER';
+  correction.correction.defects = [];
+  correction.correction.reason = 'Corectura anterioară nu s-a încheiat; o reiau de la ultimul pas reușit';
   assert.ok(textOf(render(correction)).includes('Pregătește din nou corectura'));
+  assert.ok(textOf(render(correction)).includes(correction.correction.reason));
+  assert.ok(!textOf(render(correction)).includes('(0 probleme)'));
   correction.delivery.status = 'STALE'; correction.correction.available = false;
   correction.observations.push({ kind: 'correction', severity: 'warn', text: 'Conține citări de criterii greșite (păstrată ca istoric)', ref: 'dlv_current123' });
   assert.match(render(correction), /href="\/livrare\/dlv_current123">Deschide livrarea curentă/);

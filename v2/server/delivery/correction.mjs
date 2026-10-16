@@ -8,6 +8,14 @@ import { summaryFactCheck, renderSummary } from "./summary.mjs";
 export const CORRECTION_KIND = "delivery.correct";
 export const LIVE_CORRECTION = ["PROPOSED", "CONFIRMED", "RUNNING", "PAUSED"];
 const same = (a, b) => hashCanonical(a) === hashCanonical(b);
+export function dedupeDefects(defects) {
+  const seen = new Set();
+  return defects.filter(d => {
+    const key = JSON.stringify([d.code, d.where, d.itemId || null, d.text.replace(/^- /, '')]);
+    if (seen.has(key)) return false;
+    seen.add(key); return true;
+  }).sort((a, b) => Number(a.where.startsWith('summary.')) - Number(b.where.startsWith('summary.')));
+}
 export function irMetadata(ir) {
   const fps = (ir?.fps?.num || 30) / (ir?.fps?.den || 1);
   const textItems = (ir?.tracks || []).filter(t => t.kind === "text").flatMap(t => t.items).filter(i => /^t-/.test(i.id)).map(({ id, text, start, end }) => ({ id, text, start, end }));
@@ -52,19 +60,29 @@ export function presentationAudit({ delivery, effectiveTemplate, spec, specSha, 
     if (!item?.actualSha || item.actualSha !== item.refSha) defect("CAPTURE_PROVENANCE", "Fișierul capturii lipsește sau amprenta lui diferă.");
     recapture[role] = { needed: reasons.length > 0, reasons };
   }
-  return { defects, presentation, recapture };
+  return { defects: dedupeDefects(defects), presentation, recapture };
 }
 
-export function buildCorrectionRecord({ delivery: d, audit, base, version, summary, master, vertical }) {
+export function buildCorrectionRecord({ delivery: d, audit, base, version, summary, master, vertical, tone = 'both', summaryPreview, continuation = false, facts }) {
   const story = storyFromPresentation(audit.presentation), captures = {}, outputs = [];
+  const proofs = facts && provePresentation(audit.presentation, facts);
   for (const [role, edit, format] of [["master", master, "16:9"], ["vertical", vertical, "9:16"]]) {
     for (const [slot, texts] of Object.entries(story.texts)) {
       const old = irMetadata(edit?.ir).textItems.find(i => i.id === "t-" + slot)?.text || "omis";
       const override = role === "vertical" && story.overrides[slot === "hook" ? "hookText" : slot === "cta" ? "ctaText" : ""];
-      for (const text of new Set(override ? [override] : [texts.business, texts.technical])) if (old !== text) outputs.push(`${slot} (${format}): «${old}» → «${text}»`);
+      const chosen = tone === 'both' ? (['hook', 'cta'].includes(slot) ? 'business' : 'technical') : tone;
+      const claim = audit.presentation.claims.find(c => c.key === 'clip.' + slot);
+      const shown = !proofs || claimState(claim, proofs).shown;
+      const text = shown ? override || texts[chosen] : 'omis', other = shown ? override || texts[chosen === 'business' ? 'technical' : 'business'] : 'omis';
+      if (old !== text) outputs.push(`${slot} (${format}): «${old}» → «${text}»${other !== text ? ` (tonul celălalt: «${other}»)` : ''}`);
     }
   }
-  for (const section of summary?.sections || []) if (["problem", "demonstrated", "how", "benefits", "cannot_claim", "video", "provenance", "questions", "next_step"].includes(section.id)) outputs.push(`Rezumat, ${section.heading}: ${section.source === "owner" ? "textul tău păstrat, de revăzut" : "înlocuită (citări legate de criteriile aprobate)"}`);
+  if (!continuation) for (const section of summaryPreview?.sections || []) {
+    if (section.text === summary?.sections.find(s => s.id === section.id)?.text) continue;
+    const reason = section.id === 'video' ? 'clipuri noi' : section.id === 'provenance' ? 'trasabilitate'
+      : audit.defects.some(d => d.where === 'summary.' + section.id && /CIT|CRITERION/.test(d.code)) ? 'citări corectate' : 'narațiune pentru specificația aprobată';
+    outputs.push(`Rezumat, ${section.heading}: ${reason}`);
+  }
   for (const role of ["desktop", "mobile"]) {
     const old = d.template.captures.find(c => c.role === role), r = audit.recapture[role];
     const criterion = audit.presentation.captures[role]?.id || old.criterion;
@@ -73,7 +91,7 @@ export function buildCorrectionRecord({ delivery: d, audit, base, version, summa
   }
   if (Object.values(captures).every(c => c.action === "reuse")) outputs.push("Refolosesc capturile (aceleași fișiere, sha verificat)");
   const n = (d.generation || 1) + (base.exportCount || 0), sn = (summary?.version || 0) + 1;
-  outputs.push(`Fișiere noi: demo-16x9-v${n}.mp4, demo-9x16-v${n}.mp4, rezumat-v${sn}.md/.html`);
+  if (!continuation) outputs.push(`Fișiere noi: demo-16x9-v${n}.mp4, demo-9x16-v${n}.mp4, rezumat-v${sn}.md/.html`);
   const extras = d.template.extras || [], indexed = extras.length || d.template.reused?.length;
   const office = { document: extras.includes("document") ? "rebuild-or-keep" : "none", campaign: extras.includes("campaign") ? "rebuild-or-keep" : "none", workbook: extras.includes("workbook") || d.template.reused?.some(r => r.kind === "workbook") ? "keep-by-proof" : "none", index: indexed ? "write-new" : "none" };
   if (office.document !== "none") outputs.push(`Prezentare demo v${version + 1}.docx + PDF, sau fișierele identice păstrate prin dovadă`);
@@ -87,12 +105,17 @@ export function buildCorrectionRecord({ delivery: d, audit, base, version, summa
 export function overlayCorrection(template, record) {
   if (!record) return template;
   return { ...template, presentation: record.presentation, story: { ...template.story, texts: record.story.texts, variant: { ...template.story.variant, overrides: record.story.overrides, overridesSha: record.story.overridesSha } },
-    captures: template.captures.map(c => record.captures[c.role]?.action === "recapture" ? { ...c, ...record.captures[c.role] } : c) };
+    captures: template.captures.map(c => record.captures[c.role]?.action === "recapture" || record.captures[c.role]?.steps ? { ...c, ...record.captures[c.role] } : c) };
 }
 export function correctionSteps(template, deliveryId, revisionId, record) {
   const steps = [], add = (kind, title, params = {}) => { steps.push({ kind, title, params }); return steps.length; }, ref = (n, key) => `$pas:${n}.${key}`;
   const ids = { deliveryId, revisionId };
   add("delivery.correct.prepare", "Verifică baza corecturii confirmate", { ...ids, correctionSha: hashCanonical(record) });
+  if (record.continuation) {
+    for (const [key, kind] of [["document", "delivery.office.document"], ["campaign", "delivery.campaign"], ["index", "delivery.package.index"]]) if (record.office[key] !== "none") add(kind, `Actualizează ${key} fără suprascriere`, ids);
+    add('delivery.finish', 'Încheie corectura și păstrează istoricul', { ...ids, mode: 'correction' });
+    return freezePresentation(steps);
+  }
   if (Object.values(record.captures).some(c => c.action === "recapture")) add("delivery.preview.ensure", "Pornește preview-ul versiunii verificate", ids);
   for (const role of ["desktop", "mobile"]) if (record.captures[role].action === "recapture") add("delivery.capture", `Filmează din nou ${role}`, { ...ids, role });
   const edit = add("delivery.edit.build", "Corectează afirmațiile în același proiect de montaj", ids);

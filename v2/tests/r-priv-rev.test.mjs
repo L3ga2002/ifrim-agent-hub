@@ -41,10 +41,12 @@ test('RP-12 inherited adjacent duplicate label/fill pairs and clauses collapse w
   assert.equal(JSON.stringify(spec), before);
 });
 
-test('RP-13 every inherited preview/e2e criterion is kept; exceeding the normalized limit refuses without dropping flows', async () => {
+test('RP-13 every inherited preview/e2e criterion is kept; exceeding the normalized limit refuses without dropping flows', async t => {
   const { buildEngineeringSpec } = await import('../server/owner/planners/engineering.mjs');
   const spec = JSON.parse(fs.readFileSync(new URL('fixtures/s25-spec-a69b8e9f.json', import.meta.url)));
-  const dir = path.resolve('.tmp-s25-a/criteria-b'); fs.mkdirSync(dir, { recursive: true });
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'r-priv-criteria-'));
+  assert.equal(path.dirname(dir), os.tmpdir());
+  t.after(() => { fs.rmSync(dir, { recursive: true, force: true }); assert.equal(fs.existsSync(dir), false); });
   const project = { id: 'prj_criteria_b', path: dir, source: 'hub-test', name: 'Demo' };
   const inherited = spec.acceptance.filter(c => ['preview', 'e2e'].includes(c.verify));
   const build = criteria => buildEngineeringSpec({ text: AUTHORIZED, project, args: { inheritDemo: { criteria, preview: spec.verification.preview } } });

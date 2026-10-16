@@ -61,9 +61,9 @@ import { createOpsPlans } from '../server/ops/plans.mjs';
 import { createOfficeExecutors } from '../server/delivery/office-executors.mjs';
 import { sha256 } from '../server/core/canonical.mjs';
 import { TEST_PROJECT_MARKER } from '../server/domain/projects.mjs';
-export async function correctionEnv({ launchers = fakeLaunchers(), previewUrl = 'http://127.0.0.1:39991/', extras = [] } = {}) {
-  const env = makeMediaEnv({ launchers }), { db, bus, settings } = env;
-  const at = new Date().toISOString(), clock = () => new Date(), f = factsOf();
+export async function correctionEnv({ launchers = fakeLaunchers(), previewUrl = 'http://127.0.0.1:39991/', extras = [], testClock = () => new Date() } = {}) {
+  const env = makeMediaEnv({ launchers, clock: testClock }), { db, bus, settings } = env;
+  const at = testClock().toISOString(), clock = testClock, f = factsOf();
   const config = { ...env.config, hubRoot: path.join(env.dir, 'test-hub'), projectsRoot: path.join(env.dir, 'projects'), port: 39990, allowedOrigins: ['http://localhost:39990'] };
   const project = { id: 'prj_correct', name: 'Corectură', path: path.join(config.projectsRoot, 'demo'), source: 'hub-test' };
   fs.mkdirSync(project.path, { recursive: true });

@@ -274,7 +274,7 @@ export function DeliveryRoomView({ view, owner = null, client = defaultClient, r
       {notice && <Notice tone={notice.tone} title={notice.title}>{notice.text}{notice.link && <> <a href={notice.link.href}>{notice.link.label}</a></>}</Notice>}
       {answers.repackage && <AnswerCard outcome={answers.repackage} room={room} slot="repackage" />}
       {view.correction?.available && <Notice tone="warn" title="Corectură afirmații">
-        Afirmațiile din clip și din rezumat nu corespund criteriilor aprobate ({view.correction.defects.length} probleme). Corectura e pregătită ca plan; o confirmi tu.
+        {view.correction.reason || `Afirmațiile din clip și din rezumat nu corespund criteriilor aprobate (${view.correction.defects.length} probleme). Corectura e pregătită ca plan; o confirmi tu.`}
         <ul>{view.correction.defects.map((f, i) => <li key={i}>{f.plain}</li>)}</ul>
         {!view.correction.plan && <button className="btn" disabled={Boolean(room.busy) || session === 'unavailable'} onClick={() => room.run('correction', () => room.client.act(view.delivery.id, 'correctionPropose'), { owner: true, toast: 'Corectura este pregătită ca plan' })}>{view.delivery.status === 'NEEDS_OWNER' ? 'Pregătește din nou corectura' : 'Pregătește corectura'}</button>}
         <ErrorNotice error={room.errorOf('correction')} />

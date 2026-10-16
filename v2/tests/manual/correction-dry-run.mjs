@@ -57,7 +57,7 @@ export async function correctionDryRun({ dataRoot, deliveryId, out = null }) {
     const plans = createOpsPlans({ db, bus, clock, settings, trust: {}, executors, folderContext: () => ({ allowed: [draft.template.exports.dir], forbidden: [] }) });
     const steps = correctionSteps(draft.template, deliveryId, revisionId, draft.correction);
     const body = await plans.buildBody({ kind: 'delivery.correct', title: 'Corectură afirmații: ' + draft.template.project.name, steps, limits: { maxDurationMin: 30, maxActions: 120 } });
-    const result = { defects: draft.audit.defects, captures: draft.correction.captures, outputs: draft.correction.outputs, steps, correctionSha: draft.correctionSha, planBodySha: hashCanonical(body) };
+    const result = { defects: draft.audit.defects, summaryPreview: draft.summaryPreview.sections, captures: draft.correction.captures, outputs: draft.correction.outputs, steps, correctionSha: draft.correctionSha, planBodySha: hashCanonical(body) };
     if (out) fs.writeFileSync(out, JSON.stringify(result, null, 2) + '\n', { flag: 'wx' });
     return result;
   } finally { db.close(); }
