@@ -3,6 +3,8 @@
 // authorize() first). Steps act only for the delivery whose ops plan is running (CAPTURE_NOT_BOUND otherwise). No model is ever
 // started here; nothing is published, accepted or approved.
 import path from "node:path";
+import { hashCanonical } from "../core/canonical.mjs";
+import { irMetadata } from "./correction.mjs";
 import { HubError } from "../core/errors.mjs";
 import { criterionRef, displaySha } from "../media/claims.mjs";
 import { presentationForTemplate, provePresentation, claimState, storyFromPresentation } from "./presentation.mjs";
@@ -44,6 +46,20 @@ export function createDeliveryExecutors({ deliveries, factory, media, projects, 
   const doneResult = (planId, kind) => (opsPlans.view(planId)?.steps || []).filter((s) => s.kind === kind && s.status === "DONE").map((s) => s.result).at(-1) || null;
 
   return {
+    "delivery.correct.prepare": {
+      describe: ({ deliveryId, revisionId, correctionSha }) => {
+        const rev = deliveries.getRevision(revisionId);
+        if (rev?.deliveryId !== deliveryId || rev.delta?.correctionSha !== correctionSha || hashCanonical(rev.delta.correction) !== correctionSha) throw refuse('CORRECTION_RECORD', 'Corectura imuabilă nu corespunde.');
+        return { title: 'Verifică baza corecturii confirmate', params: { deliveryId, revisionId, correctionSha }, ops: [{ op: 'delivery.verify' }], observed: [], transmitted: [], outputs: rev.delta.correction.outputs };
+      },
+      run: async ({ params, planId, authorize }) => {
+        bound(params, planId); authorize({ op: 'delivery.verify' });
+        const rev = deliveries.revisionOfPlan(params.deliveryId, planId);
+        if (rev?.id !== params.revisionId || rev.delta?.correctionSha !== params.correctionSha || hashCanonical(rev.delta.correction) !== params.correctionSha) throw refuse('CORRECTION_RECORD', 'Corectura nu corespunde planului.');
+        await deliveries.checkCorrection(params.deliveryId, rev.delta.correction);
+        return { result: { correctionSha: params.correctionSha } };
+      },
+    },
     "delivery.prepare": {
       describe: ({ deliveryId }) => ({ title: "Verifică pachetul software și pregătește proiectul de conținut al livrării", params: { deliveryId },
         ops: [{ op: "delivery.verify" }, { op: "delivery.bind" }], observed: ["pachetul verificat și proiectul de test (date sintetice)"], transmitted: [], outputs: ["proiectul de conținut al livrării"] }),
@@ -90,7 +106,7 @@ export function createDeliveryExecutors({ deliveries, factory, media, projects, 
     },
 
     "delivery.capture": {
-      describe: ({ deliveryId, role }) => ({ title: role === "mobile" ? "Filmează demo-ul la lățimea unui telefon (390 px) în Chromium" : "Filmează demo-ul pe desktop", params: { deliveryId, role },
+      describe: ({ deliveryId, role, revisionId }) => ({ title: role === "mobile" ? "Filmează demo-ul la lățimea unui telefon (390 px) în Chromium" : "Filmează demo-ul pe desktop", params: { deliveryId, role, ...(revisionId ? { revisionId } : {}) },
         ops: [{ op: "capture.preview" }], observed: ["preview-ul local al proiectului de test (date sintetice), într-un browser izolat"], transmitted: [], outputs: [`captură ${role === "mobile" ? "telefon" : "desktop"} în biblioteca media`] }),
       run: async ({ params, planId, authorize, abort }) => {
         const { d } = bound(params, planId);
@@ -137,7 +153,7 @@ export function createDeliveryExecutors({ deliveries, factory, media, projects, 
     },
 
     "delivery.edit.build": {
-      describe: ({ deliveryId }) => ({ title: "Construiește montajul 16:9 din cele două capturi (fără model)", params: { deliveryId }, ops: [{ op: "media.edit.apply" }, { op: "delivery.bind" }], observed: [], transmitted: [], outputs: ["montaj 16:9 (versiunea 1)"] }),
+      describe: ({ deliveryId, revisionId }) => ({ title: "Construiește montajul 16:9 din cele două capturi (fără model)", params: { deliveryId, ...(revisionId ? { revisionId } : {}) }, ops: [{ op: "media.edit.apply" }, { op: "delivery.bind" }], observed: [], transmitted: [], outputs: ["montaj 16:9 (versiunea 1)"] }),
       run: async ({ params, planId, authorize }) => {
         const { d } = bound(params, planId);
         authorize({ op: "media.edit.apply" });
@@ -147,6 +163,7 @@ export function createDeliveryExecutors({ deliveries, factory, media, projects, 
         const block = { ...d.template.story, ...storyFromPresentation(presentation) };
         const passed = new Set(Object.values(proofs).filter(p => p.ok).map(p => p.id));
         const claimIdBySlot = {}, claimIdByRole = {}, claimItems = [], omitted = [];
+        const oldClaimIds = params.revisionId ? deliveries.items(d.id).filter(i => i.kind === 'claim' && i.status === 'CURRENT').map(i => i.id) : [];
         const shown = [];
         for (const c of presentation.claims.filter(c => c.key.startsWith("clip."))) {
           const state = claimState(c, proofs);
@@ -196,13 +213,16 @@ export function createDeliveryExecutors({ deliveries, factory, media, projects, 
         const prefs = brief?.meta?.prefs || {};
         const built = buildMaster({ captures, texts: block.texts, tone: prefs.tone || d.template.story.tone, claimIdBySlot, claimIdByRole, passed: [...passed], prefs, fps: d.template.story.fps, canvas: d.template.story.canvas,
           deliveryId: d.id, title: d.title, noun: block.noun, evidenceNote: block.evidenceNote, getVersion: (vid) => media.assets.getVersion(vid) });
-        const edit = media.edits.create({ contentProjectId: d.contentProjectId, title: `${d.template.project.name} — prezentare 16:9`, ir: built.ir, actor: `plan:${planId}` });
+        const rev = params.revisionId && deliveries.getRevision(params.revisionId);
+        const correction = rev?.delta?.correction;
+        const edit = correction ? media.edits.addVersion({ editProjectId: d.editProjectId, parentVersionId: correction.base.master.editVersionId, ir: built.ir, changeKind: 'patch', change: { kind: 'presentation-correction', revisionId: rev.id, correctionSha: rev.delta.correctionSha, version: correction.version }, actor: 'plan:' + planId }) : media.edits.create({ contentProjectId: d.contentProjectId, title: `${d.template.project.name} — prezentare 16:9`, ir: built.ir, actor: `plan:${planId}` });
         const textItems = built.ir.tracks.filter((t) => t.kind === "text").flatMap((t) => t.items).filter((i) => /^t-/.test(i.id)).map((i) => ({ id: i.id, text: i.text, start: i.start, end: i.end }));
         const fps = built.ir.fps.num / built.ir.fps.den;
         const markers = (built.ir.markers || []).map((m) => ({ kind: m.kind, note: m.note, ms: Math.round((m.frame / fps) * 1000) }));
         deliveries.patch(d.id, { edit_project_id: edit.project.id });
         deliveries.bindItem(d.id, { kind: "edit", role: "master", refTable: "media_edit_versions", refId: edit.version.id, refSha: edit.version.irSha256 || "",
-          upstream: [...captures.map((c) => c.itemId), ...(brief ? [brief.id] : []), ...claimItems.map((c) => c.id)], meta: { textItems, markers, tone: prefs.tone || d.template.story.tone, omitted: [...omitted, ...(built.omitted || []).filter(o => !omitted.some(x => x.id === o.id))], ...(presentation.origin ? { origin: presentation.origin } : {}), holds: built.holds || {}, holdsRejected: built.holdsRejected || [] } }, `plan:${planId}`);
+          upstream: [...captures.map((c) => c.itemId), ...(brief ? [brief.id] : []), ...claimItems.map((c) => c.id)], meta: { textItems, markers, tone: prefs.tone || d.template.story.tone, omitted: [...omitted, ...(built.omitted || []).filter(o => !omitted.some(x => x.id === o.id))], ...(presentation.origin ? { origin: presentation.origin } : {}), holds: built.holds || {}, holdsRejected: built.holdsRejected || [], ...(correction ? { notes: built.notes || [] } : {}) } }, `plan:${planId}`);
+        if (correction) deliveries.trigger(d.id, 'media_revision', { rootIds: oldClaimIds, keepIds: deliveries.items(d.id).filter(i => !oldClaimIds.includes(i.id)).map(i => i.id) }, `plan:${planId}`);
         return { result: { editVersionId: edit.version.id, editProjectId: edit.project.id } };
       },
     },
@@ -223,7 +243,7 @@ export function createDeliveryExecutors({ deliveries, factory, media, projects, 
         }
         // The new master supersedes the old one (and through the links its render, variant, QA and exports — stale.mjs media_revision).
         const edit = deliveries.bindItem(d.id, { kind: "edit", role: "master", refTable: "media_edit_versions", refId: applied.version.id, refSha: applied.version.irSha256 || "", upstream: prevEdit?.upstream || [],
-          meta: { ...(prevEdit?.meta || {}), revisionId: rev.id } }, `plan:${planId}`);
+          meta: { ...irMetadata(media.edits.getVersion(applied.version.id).ir), revisionId: rev.id } }, `plan:${planId}`);
         deliveries.trigger(d.id, "media_revision", { keepIds: [edit.id] }, `plan:${planId}`);
         deliveries.updateRevision(rev.id, { status: "APPLIED" });
         return { result: { editVersionId: applied.version.id } };
@@ -241,6 +261,7 @@ export function createDeliveryExecutors({ deliveries, factory, media, projects, 
         const masterRender = doneResult(planId, "media.render");
         const variant = doneResult(planId, "media.variant.render");
         if (!masterRender || !variant) throw refuse("DELIVERY_RENDERS_MISSING", "Randările nu sunt gata.");
+        if ([masterRender, variant].some(r => r.qa?.kinds?.factual === 'FAIL' || r.qa?.kinds?.factual?.status === 'FAIL')) throw refuse('DELIVERY_FACTUAL_QA_FAIL', 'Afirmațiile clipurilor nu au trecut verificarea factuală.');
         const n = (d.generation || 1) + deliveries.items(d.id).filter((i) => i.kind === "export" && i.role === "master").length;
         const exported = {};
         for (const [role, assetVersionId, name] of [["master", params.master, `demo-16x9-v${n}`], ["vertical", params.vertical, `demo-9x16-v${n}`]]) {
@@ -265,15 +286,15 @@ export function createDeliveryExecutors({ deliveries, factory, media, projects, 
     },
 
     "delivery.summary.render": {
-      describe: ({ deliveryId, only = undefined }) => {
+      describe: ({ deliveryId, only = undefined, revisionId }) => {
         const d = describedDelivery(deliveryId);
-        return { title: only === "video" ? "Actualizează doar secțiunea video a rezumatului" : "Scrie rezumatul comercial (Markdown + HTML, fără prețuri inventate)", params: { deliveryId, ...(only !== undefined ? { only } : {}) },
+        return { title: only === "video" ? "Actualizează doar secțiunea video a rezumatului" : "Scrie rezumatul comercial (Markdown + HTML, fără prețuri inventate)", params: { deliveryId, ...(only !== undefined ? { only } : {}), ...(revisionId ? { revisionId } : {}) },
           ops: [{ op: "delivery.summary" }, { op: "export.local", destination: d ? path.join(d.template.exports.dir, d.template.exports.folder, "rezumat.md") : undefined }], observed: [], transmitted: [], outputs: ["rezumat comercial (versiune nouă)"] };
       },
       run: async ({ params, planId, authorize }) => {
         const { d } = bound(params, planId, { statuses: ["ACTIVE", "READY", "NEEDS_OWNER"] });
         authorize({ op: "delivery.summary" });
-        const doc = deliveries.renderDocument(d.id, { changed: params.only === "video" ? "media" : null, actor: `plan:${planId}` });
+        const doc = deliveries.renderDocument(d.id, { changed: params.only === "correction" ? ["claims", "media"] : params.only === "video" ? "media" : null, planId, revisionId: params.revisionId, actor: `plan:${planId}` });
         authorize({ op: "export.local", destination: path.join(d.template.exports.dir, d.template.exports.folder, "rezumat.md") });
         const exported = deliveries.exportDocument(d.id, doc.id);
         return { result: { documentId: doc.id, version: doc.version, md: exported.md.file, html: exported.html.file } };
@@ -281,8 +302,8 @@ export function createDeliveryExecutors({ deliveries, factory, media, projects, 
     },
 
     "delivery.finish": {
-      describe: ({ deliveryId, render, variant, verticalEdit, mode = undefined }) => ({ title: mode === "revision" ? "Leagă versiunile noi și marchează-le pe cele vechi ca înlocuite" : "Leagă dovezile de versiunea verificată și încheie livrarea",
-        params: { deliveryId, render, variant, verticalEdit, ...(mode !== undefined ? { mode } : {}) }, ops: [{ op: "delivery.bind" }, { op: "delivery.preview" }], observed: [], transmitted: [], outputs: ["livrare gata de verificarea ta"] }),
+      describe: ({ deliveryId, render, variant, verticalEdit, mode = undefined, revisionId }) => ({ title: mode === "revision" ? "Leagă versiunile noi și marchează-le pe cele vechi ca înlocuite" : "Leagă dovezile de versiunea verificată și încheie livrarea",
+        params: { deliveryId, render, variant, verticalEdit, ...(mode !== undefined ? { mode } : {}), ...(revisionId ? { revisionId } : {}) }, ops: [{ op: "delivery.bind" }, { op: "delivery.preview" }], observed: [], transmitted: [], outputs: ["livrare gata de verificarea ta"] }),
       run: async ({ params, planId, authorize }) => {
         const { d } = bound(params, planId, { statuses: ["ACTIVE", "READY", "NEEDS_OWNER"] });
         authorize({ op: "delivery.bind" });
@@ -294,6 +315,10 @@ export function createDeliveryExecutors({ deliveries, factory, media, projects, 
         const fresh = deliveries.get(d.id);
         const complete = slotsComplete(deliveries.items(d.id), fresh);
         if (!complete.complete) throw refuse("DELIVERY_INCOMPLETE", `Lipsesc: ${complete.missing.join(", ")}`);
+        if (params.mode === 'correction') {
+          if (planRevision(d.id, planId)?.id !== params.revisionId) throw refuse('CORRECTION_RECORD', 'Corectura nu aparține planului.');
+          deliveries.finishCorrection(d.id, params.revisionId);
+        }
         if (fresh.status === "ACTIVE") deliveries.setStatus(d.id, "READY", "Gata de verificarea ta: software, clip, variantă verticală și rezumat legate de aceeași versiune", {}, { from: ["ACTIVE"] });
         return { result: { status: "READY" } };
       },

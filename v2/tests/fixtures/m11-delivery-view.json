@@ -4,6 +4,7 @@
   "apiContract": 13,
   "variants": {
     "READY": {
+      "correction": { "available": false, "defects": [], "plan": null, "applied": [] },
       "delivery": {
         "id": "dlv_mv3k9q2a_7f3a9c1e2b",
         "title": "Demo de prezentare: programări detailing",
@@ -123,6 +124,7 @@
         }
       },
       "summary": {
+        "versions": [{"version":2,"status":"CURRENT","contentShaPrefix":"7d0c3b5a9e1f","approval":null,"createdBy":"owner","correction":null}],
         "documentId": "ddoc_mv3m6t1g_f2f2f2f2f2",
         "version": 2,
         "sha": "7d0c3b5a9e1f42866b0a4d1c8e3f5a7b9c0d2e4f6a8b1c3d5e7f9a0b2c4d6e8f",
@@ -194,7 +196,7 @@
         }
       ],
       "revisions": [
-        { "id": "drv_mv3m0a2b_3030303030", "text": "Site-ul e bine. Clipul este prea tehnic; după secunda zece arată direct programarea.", "status": "APPLIED", "classes": ["feedback", "tone", "clip"], "planId": "opp_mv3m1c8d_2020202020" }
+        { "id": "drv_mv3m0a2b_3030303030", "source": "owner", "text": "Site-ul e bine. Clipul este prea tehnic; după secunda zece arată direct programarea.", "status": "APPLIED", "classes": ["feedback", "tone", "clip"], "planId": "opp_mv3m1c8d_2020202020" }
       ],
       "history": [
         { "kind": "bundle", "role": "", "id": "dli_mv3ka001_aa00000001", "status": "CURRENT", "staleReason": "", "supersedesId": null, "createdAt": "2026-10-06T08:58:00.000Z" },
@@ -223,6 +225,7 @@
       ]
     },
     "STALE": {
+      "correction": { "available": false, "defects": [], "plan": null, "applied": [] },
       "delivery": {
         "id": "dlv_mv3k9q2a_7f3a9c1e2b",
         "title": "Demo de prezentare: programări detailing",
@@ -317,6 +320,7 @@
         }
       },
       "summary": {
+        "versions": [{"version":2,"status":"STALE","contentShaPrefix":"7d0c3b5a9e1f","approval":{"kind":"PRESENTATION_READY","sha":"7d0c3b5a9e1f42866b0a4d1c8e3f5a7b9c0d2e4f6a8b1c3d5e7f9a0b2c4d6e8f","at":"2026-10-06T10:02:00.000Z"},"createdBy":"owner","correction":null}],
         "documentId": "ddoc_mv3m6t1g_f2f2f2f2f2",
         "version": 2,
         "sha": "7d0c3b5a9e1f42866b0a4d1c8e3f5a7b9c0d2e4f6a8b1c3d5e7f9a0b2c4d6e8f",

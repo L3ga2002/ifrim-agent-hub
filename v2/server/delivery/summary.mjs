@@ -28,6 +28,7 @@ export const SECTION_BASIS = Object.freeze({
 const PASS = (c) => PASS_BY_METHOD[c?.verify]?.includes(c.status) === true;
 export const SECTION_BASES = Object.freeze(Object.fromEntries(Object.entries(SECTION_BASIS).map(([k, v]) => [k, Object.freeze([v, ...(["software", "template"].includes(v) ? ["claims"] : [])])])));
 const bullets = (lines) => lines.map((l) => `- ${l}`).join("\n");
+const fallbackText = (value, max = 200) => { const s = String(value || '').trim(); if (s.length <= max) return s; const cut = s.slice(0, max + 1).lastIndexOf(' '); return s.slice(0, cut > 0 ? cut : max).trimEnd() + '…'; };
 
 // ---------- fact guard ----------
 const FACT_PATTERNS = Object.freeze([
@@ -145,7 +146,7 @@ export function renderSummary(input) {
   const problemLine = pc ? block.summary.problem : clean(block?.summary?.problem || issue || manifest.mission?.title, 240);
   tpl("problem", [problemLine, "Demo local pentru prezentare, cu date sintetice; nu este un sistem în producție."].filter(Boolean).map((l) => assertNoInventedFacts(l, "problema")).join("\n"));
 
-  const passLines = criteria.filter(passes).map((c) => `${presentation ? c.text : clean(c.text, 200)}: verificat ${verifiedHow(c)}.`);
+  const passLines = criteria.filter(passes).map((c) => `${presentation ? fallbackText(c.text) : clean(c.text, 200)}: verificat ${verifiedHow(c)}.`);
   const shown = (block?.summary?.demonstrates || []).filter((b) => allPass(b.criteria)).map((b) => `${assertNoInventedFacts(b.text, "ce demonstrăm")} (verificat: ${b.criteria.join(", ")})`);
   if (shown.length) tpl("demonstrated", `${bullets(shown)}\n\nVerificări tehnice trecute: ${passLines.length} din ${criteria.length} (lista e în „Trasabilitate”).`);
   else tpl("demonstrated", presentation?.status === "CURATED" ? "Nimic nu este încă verificat în această versiune." : passLines.length ? bullets(passLines) : "Nimic nu este încă verificat în această versiune.");
@@ -155,7 +156,7 @@ export function renderSummary(input) {
   else tpl("how", how?.lines?.length ? `Fluxul nu e verificat cap-coadă în această versiune (${how.criteria.filter((id) => !passed.has(id)).join(", ")} nu au trecut).` : "Fluxul se descrie după prezentare, pe baza demo-ului.");
 
   const benefits = (block?.summary?.benefits || []).filter((b) => allPass(b.criteria)).map((b) => `${assertNoInventedFacts(b.text, "beneficii")} (dovadă: ${b.criteria.join(", ")})`);
-  tpl("benefits", benefits.length ? bullets(benefits) : "Niciun beneficiu nu poate fi afirmat încă: criteriile lui nu au trecut.");
+  tpl("benefits", benefits.length ? bullets(benefits) : presentation && passed.size ? "Nicio afirmație curată nu se aplică acestei specificații; criteriile trecute sunt în „Ce demonstrăm” și „Trasabilitate”." : "Niciun beneficiu nu poate fi afirmat încă: criteriile lui nu au trecut.");
 
   const notPassed = criteria.filter((c) => !passes(c)).map((c) => `${c.id} ${clean(c.text, 160)}: ${c.status}${c.note ? ` (${clean(c.note, 120)})` : ""}`);
   for (const l of notPassed) claims.push(l);
@@ -185,7 +186,7 @@ export function renderSummary(input) {
   const files = (cs.files || []).map((f) => clean(f.path, 120)).filter(Boolean);
   sections.provenance = { id: "provenance", heading: SECTION.provenance.heading, source: "bundle", auto: true,
     text: bullets([`Pachet verificat ${clean(bundleId, 60)} (${String(bundleSha).slice(0, 12)})`, `Set de modificări ${String(cs.sha256 || "").slice(0, 12)}, snapshot ${String(cs.snapshot || "").slice(0, 12)}${files.length ? `; fișiere: ${files.join(", ")}` : ""}`,
-      `Specificația v${manifest.spec?.version ?? "?"}`, ...(shown.length ? criteria.map((c) => `${c.id} ${clean(c.text, 200)}: ${c.status}${PASS(c) ? ` (verificat ${verifiedHow(c)})` : ""}`) : []), `Generat ${generatedAt}`]) };
+      `Specificația v${manifest.spec?.version ?? "?"}`, ...((shown.length || presentation) ? criteria.map((c) => `${c.id} ${clean(c.text, 200)}: ${c.status}${PASS(c) ? ` (verificat ${verifiedHow(c)})` : ""}`) : []), `Generat ${generatedAt}`]) };
 
   const materials = materialLines(owner);
   for (const m of materials) claims.push(`Material de prezentare: ${m}`);
@@ -290,12 +291,17 @@ export function summaryFactCheck({ doc, presentation, proofs = {}, spec }) {
       if (presentation.key === "booking-mobile-fix" && ["problem", "how"].includes(section)) allowed.get(section).add(text);
     }
   }
-  if (presentation?.status === "GENERATED") for (const c of spec?.acceptance || []) if (proofs[c.id]?.ok) allowed.get("demonstrated").add(c.text + ": verificat " + verifiedHow(c) + ".");
+  if (presentation?.status === "GENERATED") for (const c of spec?.acceptance || []) if (proofs[c.id]?.ok) allowed.get("demonstrated").add(fallbackText(c.text) + ": verificat " + verifiedHow(c) + ".");
+  // Fixed template prose is allowed by exact line; arbitrary claimless prose is not evidence.
+  const criteria = spec?.acceptance || [];
+  const generated = presentation ? renderSummary({ presentation, proofs, manifest: { spec: { criteria: criteria.map(c => ({ ...c, status: proofs[c.id]?.status || 'UNKNOWN' })) } }, issue: spec?.title, generatedAt: 'fact-check' }) : null;
+  const fixed = new Map((generated?.sections || []).map(s => [s.id, new Set(s.text.split('\n').map(t => t.replace(/^- /, '').trim()).filter(Boolean))]));
   const findings = [];
   for (const section of doc.sections || []) {
     if (!allowed.has(section.id) || section.source === "owner") continue;
     for (const line of section.text.split("\n").map(t => t.replace(/^- /, "").trim()).filter(Boolean)) {
       if (citedCriteria(line).length && !allowed.get(section.id).has(line)) findings.push({ code: "SUMMARY_CITATION_UNBOUND", sectionId: section.id, text: line, ids: citedCriteria(line) });
+      if (presentation && !allowed.get(section.id).has(line) && !fixed.get(section.id)?.has(line)) findings.push({ code: section.id === 'problem' ? 'NARRATIVE_FROM_OTHER_SPEC' : 'SUMMARY_LINE_NOT_CURATED', sectionId: section.id, text: line, ids: citedCriteria(line) });
     }
   }
   return { status: findings.length ? "FAIL" : "PASS", findings };

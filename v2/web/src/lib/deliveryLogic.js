@@ -45,6 +45,7 @@ export const deliveryListPath = (projectId) => `/api/deliveries?projectId=${enco
  */
 export const DELIVERY_ACTIONS = Object.freeze({
   verify: Object.freeze({ command: "delivery.verify", action: "verify", session: false }),
+  correctionPropose: Object.freeze({ command: "delivery.correction.propose", action: "correction-propose", session: true }),
   packagePropose: Object.freeze({ command: "delivery.package.propose", action: "package-propose", session: true }),
   revise: Object.freeze({ command: "delivery.revise", action: "revise", session: true }),
   summaryEdit: Object.freeze({ command: "delivery.summary.edit", action: "summary-edit", session: true }),
@@ -836,7 +837,7 @@ export function summaryView(view) {
       // A generated section stays locked whatever the view says about it (`editable: true` on it is not believed).
       const auto = x.auto === true || AUTO_SECTION_IDS.includes(x.id);
       return { id: x.id, heading: str(x.heading) || x.id, text: str(x.text), source: str(x.source), sourceLabel: auto ? SOURCE_LABELS.auto : SOURCE_LABELS[str(x.source)] || str(x.source) || "—",
-        needsReview: x.needsReview === true, auto, autoNote: auto ? AUTO_SECTION_NOTES[x.id] || AUTO_SECTION_NOTE : "", editable: current && !auto && x.editable !== false,
+        needsReview: x.needsReview === true, reviewReason: str(x.reviewReason), auto, autoNote: auto ? AUTO_SECTION_NOTES[x.id] || AUTO_SECTION_NOTE : "", editable: current && !auto && x.editable !== false,
         notConfigured: str(x.text).includes(NOT_CONFIGURED_TEXT) };
     }),
     warnings: arr(s.warnings).map(str).filter(Boolean), claimsToVerify: arr(s.claimsToVerify).map(str).filter(Boolean),
@@ -909,7 +910,7 @@ export function bindableServices(list) {
 export const REVISION_LIMITS = Object.freeze({ min: 3, max: 1000, options: 3 });
 export const REVISION_STATUS = Object.freeze({ NOTED: ["info", "notat"], CLARIFY: ["warn", "aștept clarificarea ta"], PROPOSED: ["approval", "plan propus"], APPLIED: ["ok", "aplicat"],
   ROUTED_SOFTWARE: ["info", "schimbare de software (plan separat)"], REFUSED: ["error", "refuzat"], CANCELLED: ["neutral", "anulat"] });
-export const REVISION_CLASS_LABELS = Object.freeze({ feedback: "feedback", tone: "ton", clip: "clip", vertical: "varianta verticală", summary: "rezumat", software: "software", unknown: "neclar" });
+export const REVISION_CLASS_LABELS = Object.freeze({ correction: "corectură", feedback: "feedback", tone: "ton", clip: "clip", vertical: "varianta verticală", summary: "rezumat", software: "software", unknown: "neclar" });
 
 /** Whether the owner can send a revision sentence now, and why not (a delivery still being produced has nothing to revise). */
 export function revisionAvailability(view) {
@@ -996,13 +997,13 @@ export function revisionRows(view) {
   return arr(view?.revisions).filter((r) => str(r?.id)).map((r) => {
     const status = up(r.status);
     const [tone, text] = REVISION_STATUS[status] || ["neutral", str(r.status) || "necunoscut"];
-    return { id: r.id, text: str(r.text), status, tone, statusText: text, classes: arr(r.classes).map((c) => REVISION_CLASS_LABELS[str(c)] || str(c)).filter(Boolean), planId: safeId(r.planId) };
+    return { id: r.id, source: r.source || "owner", sourceLabel: r.source === "hub" ? "propusă de Hub" : "cerută de tine", text: str(r.text), status, tone, statusText: text, classes: arr(r.classes).map((c) => REVISION_CLASS_LABELS[str(c)] || str(c)).filter(Boolean), planId: safeId(r.planId) };
   });
 }
 
 // ---------------------------------------------------------------- plans (progress through the ordinary ops engine)
 
-export const PLAN_KIND_LABELS = Object.freeze({ "delivery.package": "Pachetul de livrare: captură, clip, rezumat", "delivery.revise": "Revizie de clip" });
+export const PLAN_KIND_LABELS = Object.freeze({ "delivery.correct": "Corectură afirmații (clip + rezumat)", "delivery.package": "Pachetul de livrare: captură, clip, rezumat", "delivery.revise": "Revizie de clip" });
 const PLAN_OPEN = new Set(["PROPOSED", "CONFIRMED", "RUNNING", "PAUSED", "NEEDS_OWNER"]);
 /** The delivery's plans with their steps; `open` ones (waiting, running, paused) get the full plan card with its controls. */
 export function planRows(view) {
@@ -1036,7 +1037,8 @@ export function observationRows(view) {
     const ms = ref.ms === null || ref.ms === undefined ? NaN : Number(ref.ms);
     const target = ref.kind === "clip" && Number.isFinite(ms) && ms >= 0 ? { kind: "clip", role: ref.role === "vertical" ? "vertical" : "master", ms: Math.round(ms), label: `mergi la ${fmtClock(ms)}` }
       : ref.kind === "summary" ? { kind: "summary", id: str(ref.id), label: "vezi în rezumat" } : ref.kind === "criterion" ? { kind: "software", id: str(ref.id), label: "vezi criteriul" } : null;
-    return { key: `${i}:${str(o.kind)}`, i, rank, tone, severityLabel: label, kind: str(o.kind), kindLabel: OBSERVATION_KIND_LABELS[str(o.kind)] || str(o.kind) || "observație", text: str(o.text).trim(), target };
+    const link = o.kind === 'correction' && deliveryHref(o.ref) ? { href: deliveryHref(o.ref), label: 'Deschide livrarea curentă' } : null;
+    return { key: `${i}:${str(o.kind)}`, i, rank, tone, severityLabel: label, kind: str(o.kind), kindLabel: OBSERVATION_KIND_LABELS[str(o.kind)] || str(o.kind) || "observație", text: str(o.text).trim(), target, ...(link ? { link } : {}) };
   }).sort((a, b) => a.rank - b.rank || a.i - b.i);
 }
 

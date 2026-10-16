@@ -135,9 +135,17 @@ export function withoutField(steps, field) {
 }
 
 function augmentFlow(flow, field, origin) {
-  const steps = withField(flow.steps, field);
+  const collapsed = [];
+  for (let i = 0; i < (flow.steps || []).length; i++) {
+    const pair = flow.steps.slice(i, i + 2);
+    if (pair[0]?.expectLabel && pair[1]?.fill && sameField(pair[1].fill.selector, field) && JSON.stringify(collapsed.slice(-2)) === JSON.stringify(pair)) { i++; continue; }
+    collapsed.push(flow.steps[i]);
+  }
+  const steps = withField(collapsed, field);
   const clause = "; câmpul „" + field.label + "” are etichetă și se completează";
-  const text = String(flow.text || "").replace(/\s+$/, "");
+  const raw = String(flow.text || "").replace(/\s+$/, "");
+  const [beforeClause, ...afterClauses] = raw.split(clause);
+  const text = afterClauses.length ? beforeClause + clause + afterClauses.join("") : raw;
   return steps ? { ...flow, text: text.includes(clause) ? text : text + clause, steps, origin } : { ...flow, origin: "fluxul existent al proiectului" };
 }
 

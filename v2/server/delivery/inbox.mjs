@@ -36,8 +36,12 @@ export function decisionsInbox(hub) {
         effects: changes ? ["modificări în proiect (vezi misiunea)"] : ["niciun fișier schimbat"], link: `/missions/${f.missionId}` });
     }
   }
-  for (const d of deliveries.list().filter((x) => x.status === "READY")) {
+  for (const d of deliveries.list().filter((x) => ["READY", "NEEDS_OWNER"].includes(x.status))) {
     const v = deliveries.view(d.id);
+    if (v.correction?.plan && v.revisions.some(r => r.planId === v.correction.plan.id && r.source === 'hub')) {
+      items.push({ kind: 'delivery_correction', id: v.correction.plan.id, projectId: d.projectId, projectName: v.delivery.projectName, real: false, title: 'Corectură afirmații (clip + rezumat)', waitingSince: d.updatedAt, what: 'Corectură propusă de Hub pentru afirmațiile livrării.', why: 'Așteaptă confirmarea ta.', ifAccept: 'Scrie versiuni noi; păstrează software-ul și istoricul.', ifReject: 'Nimic nu pornește.', effects: v.correction.defects.map(f => f.plain), link: '/livrare/' + d.id });
+      continue;
+    }
     const pending = [];
     if (v.decisions.creativeMaster !== "APPROVED") pending.push("aprobarea creativă a clipului 16:9");
     if (v.decisions.creativeVertical !== "APPROVED") pending.push("aprobarea creativă a variantei verticale");

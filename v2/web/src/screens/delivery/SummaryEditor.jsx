@@ -117,6 +117,9 @@ function SummaryBody({ room, sv }) {
   const busy = Boolean(room.busy);
   return (
     <div className="stack">
+      {room.view.summary?.basis?.correction && <Notice tone="info">v{sv.version} corectează citările criteriilor; v{sv.version - 1} rămâne în istoric.</Notice>}
+      {room.view.summary?.versions?.length > 0 && <details><summary>Versiunile rezumatului</summary><ul>{room.view.summary.versions.map(v => <li key={v.version}>v{v.version} · {v.approval ? 'aprobată de tine' : 'neaprobată'} · {v.status} · {v.createdBy}</li>)}</ul></details>}
+      {sv.sections.filter(s => s.needsReview && s.reviewReason).map(s => <Notice key={s.id} tone="warn">{s.heading}: {s.reviewReason}</Notice>)}
       <ul className="delivery-summary" aria-label="Secțiunile rezumatului">
         {sv.sections.map((s) => (
           <Section key={s.id} section={s} draft={typeof safeDrafts[s.id] === "string" ? safeDrafts[s.id] : null} editing={s.editable && open.includes(s.id)} disabled={busy}

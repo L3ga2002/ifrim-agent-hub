@@ -580,6 +580,15 @@ export function createOpsPlans({ db, bus, clock, settings, trust, voice = null, 
     return { waitingOwner: left.map((r) => r.id) };
   }
   async function idle(planId) { await runs.get(planId)?.promise; return view(planId); }
+  // A new delivery correction replaces only that delivery's correction, never an owner's media revision.
+  async function supersedeDeliveryCorrection(planId, deliveryId) {
+    const p = view(planId);
+    if (p?.kind !== 'delivery.correct' || !p.body.steps.some(s => s.params.deliveryId === deliveryId)) throw new HubError('conflict', 'Planul nu aparține corecturii acestei livrări.');
+    const run = runs.get(planId);
+    if (run) { run.abort.aborted = true; run.abort.reason = 'Corectură înlocuită de o propunere nouă'; await run.promise; }
+    bus.transaction(() => setStatus(planId, 'SUPERSEDED', 'O corectură nouă înlocuiește această propunere', {}, ['PROPOSED', 'CONFIRMED', 'RUNNING', 'PAUSED', 'NEEDS_OWNER', 'FAILED']));
+    return view(planId);
+  }
 
   // ---------------------------------------------------------------- D7 (2.12.3): a Studio correction and the plan it is bound to
   /** The plan states in which a correction plan still decides what happens to its review (expired PROPOSED rows are flagged, see below). */
@@ -610,5 +619,5 @@ export function createOpsPlans({ db, bus, clock, settings, trust, voice = null, 
   }
 
   return { close, propose, confirm, authorize, pause, cancel, resume, reconfirm, view, list, active, recover, idle, buildBody, armForLega, confirmFromArmed, armedFor, registerParent, adoptDerived,
-    disarm: (planId, reason) => armedWindows.disarm(planId, reason), correctionPlans, supersedeCorrections };
+    disarm: (planId, reason) => armedWindows.disarm(planId, reason), correctionPlans, supersedeCorrections, supersedeDeliveryCorrection };
 }

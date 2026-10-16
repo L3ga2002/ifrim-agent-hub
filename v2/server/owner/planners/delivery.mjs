@@ -201,11 +201,11 @@ export function registerDeliveryPlanner(hub, intake) {
   function summaryLine(v) {
     const crit = v.software?.criteria || [];
     const passed = crit.filter((c) => String(c.status).startsWith("PASS"));
-    const mobile = crit.find((c) => c.verify === "e2e" && /telefon/i.test(c.text));
+    const d = deliveries.get(v.delivery.id);
+    const hook = d && deliveries.effectiveTemplate(d).presentation?.claims?.find(c => c.key === 'clip.hook' && c.status === 'BOUND' && c.needs.every(n => passed.some(p => p.id === n.id)));
     const parts = [];
     if (v.delivery.status === "READY") {
-      if (mobile && String(mobile.status).startsWith("PASS")) parts.push("Programarea pe telefon funcționează și a trecut testul de acceptanță și verificarea în browser.");
-      else parts.push(`Software-ul a trecut ${passed.length} din ${crit.length} criterii.`);
+      parts.push(hook?.texts?.business || `Livrarea e gata: ${passed.length} din ${crit.length} verificări trecute.`);
       if (v.software?.review?.verdict === "PASS") parts.push("Reviewerul nu a găsit probleme blocante.");
       if (v.clip.master && v.clip.vertical) parts.push("Am pregătit clipul 16:9 și varianta verticală.");
       if (v.summary) parts.push(`Rezumatul comercial e la versiunea ${v.summary.version}.`);

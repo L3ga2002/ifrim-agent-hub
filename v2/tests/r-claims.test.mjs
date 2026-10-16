@@ -160,7 +160,8 @@ test("RC-09 every live defective summary citation fails; corrected privacy summa
   assert.equal(summaryFactCheck({ doc, presentation: p, proofs, spec }).status, "PASS");
   const old = baseline.delivery.summary;
   const defective = { sections: [{ id: "demonstrated", text: old.demonstrates.map(c => c.text + ` (verificat: ${c.criteria.join(", ")})`).join("\n") }, { id: "benefits", text: old.benefits.map(c => c.text + ` (dovadă: ${c.criteria.join(", ")})`).join("\n") }] };
-  const result = summaryFactCheck({ doc: defective, presentation: p, proofs, spec }); assert.equal(result.status, "FAIL"); assert.equal(result.findings.length, 7);
+  const result = summaryFactCheck({ doc: defective, presentation: p, proofs, spec }); assert.equal(result.status, "FAIL"); assert.equal(result.findings.filter(f => f.code === 'SUMMARY_CITATION_UNBOUND').length, 7);
+  assert.equal(result.findings.filter(f => f.code === 'SUMMARY_LINE_NOT_CURATED').length, 7);
 });
 test("RC-10 legacy presentation is generated from its own spec without rewriting the template", () => {
   const t = copy(templateOf()); delete t.presentation; const before = hashCanonical(t);

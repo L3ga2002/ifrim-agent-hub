@@ -78,7 +78,7 @@ test("M11-UI-01 the fixture holds exactly the documented view contract; routes a
   const keys = (o) => Object.keys(o).sort();
   for (const name of ["READY", "STALE"]) {
     const v = FIXTURE.variants[name];
-    assert.deepEqual(keys(v), ["clip", "decisions", "delivery", "history", "observations", "plans", "preview", "revisions", "software", "summary"], `${name}: top-level keys`);
+    assert.deepEqual(keys(v), ["clip", "correction", "decisions", "delivery", "history", "observations", "plans", "preview", "revisions", "software", "summary"], `${name}: top-level keys`);
     assert.deepEqual(keys(v.delivery), ["childId", "childStatus", "generation", "id", "labels", "parentId", "projectId", "projectName", "status", "statusReason", "title", "verified"]);
     assert.deepEqual(keys(v.delivery.verified), ["at", "changedFiles", "equal"]);
     assert.deepEqual(keys(v.software), ["bundle", "changeSet", "criteria", "diff", "review", "spec", "tests"]);
@@ -90,14 +90,14 @@ test("M11-UI-01 the fixture holds exactly the documented view contract; routes a
     assert.deepEqual(keys(v.clip), ["master", "rights", "vertical"]);
     for (const slot of ["master", "vertical"]) assert.deepEqual(keys(v.clip[slot]), ["assetVersionId", "creative", "durationMs", "editVersionId", "label", "markers", "qa", "src", "textItems"]);
     assert.deepEqual(keys(v.clip.master.qa), ["kinds", "status", "unjustified"]);
-    assert.deepEqual(keys(v.summary), ["approval", "basis", "claimsToVerify", "documentId", "exports", "sections", "sha", "status", "version", "warnings"]);
+    assert.deepEqual(keys(v.summary), ["approval", "basis", "claimsToVerify", "documentId", "exports", "sections", "sha", "status", "version", "versions", "warnings"]);
     assert.deepEqual(keys(v.summary.sections[0]), ["heading", "id", "needsReview", "source", "text"]);
     assert.deepEqual(keys(v.decisions), ["creativeMaster", "creativeVertical", "publishing", "rightsPublic", "software", "summaryReady"]);
     assert.equal(v.decisions.publishing, "OFF");
     assert.deepEqual(keys(v.plans[0]), ["id", "kind", "status", "steps"]);
     assert.deepEqual(keys(v.history[0]), ["createdAt", "id", "kind", "role", "staleReason", "status", "supersedesId"]);
   }
-  assert.deepEqual(keys(FIXTURE.variants.READY.revisions[0]), ["classes", "id", "planId", "status", "text"]);
+  assert.deepEqual(keys(FIXTURE.variants.READY.revisions[0]), ["classes", "id", "planId", "source", "status", "text"]);
 
   assert.deepEqual(deliveryRoute("dlv_mv3k9q2a_7f3a9c1e2b", {}), { deliveryId: "dlv_mv3k9q2a_7f3a9c1e2b", projectId: null, invalid: false });
   assert.deepEqual(deliveryRoute(null, { projectId: "prj_abc123" }), { deliveryId: null, projectId: "prj_abc123", invalid: false });
@@ -110,7 +110,7 @@ test("M11-UI-01 the fixture holds exactly the documented view contract; routes a
   assert.throws(() => deliveryActionPath("dlv_abc123", "publish"), /Acțiune necunoscută/);
   assert.equal(creativeDecisionPath("mev_1"), "/api/media/edit-versions/mev_1/decision");
   // One row per Hub command of the delivery service; nothing that publishes, uploads, releases or sends.
-  assert.deepEqual(Object.values(DELIVERY_ACTIONS).map((a) => a.command).sort(), ["delivery.package.propose", "delivery.preview.start", "delivery.preview.stop", "delivery.revise",
+  assert.deepEqual(Object.values(DELIVERY_ACTIONS).map((a) => a.command).sort(), ["delivery.correction.propose", "delivery.package.propose", "delivery.preview.start", "delivery.preview.stop", "delivery.revise",
     "delivery.software.accept", "delivery.summary.approve", "delivery.summary.edit", "delivery.summary.service", "delivery.verify"]);
   for (const a of Object.values(DELIVERY_ACTIONS)) { assert.match(a.action, /^[a-z]+(-[a-z]+)*$/); assert.doesNotMatch(`${a.command} ${a.action}`, /publi|upload|release|manifest|send|post\b/i); }
   assert.deepEqual(Object.entries(DELIVERY_ACTIONS).filter(([, a]) => !a.session).map(([k]) => k).sort(), ["previewStop", "verify"], "only the fail-safe actions work without the owner session");
@@ -752,7 +752,7 @@ test("M11-UI-13 the revision box: what is sent, and the Hub's answer reduced to 
   assert.equal(revisionOutcome({ opsPlan: { id: "not-a-plan-id" } }).kind, "empty", "an id that is not an operation plan is not presented as one");
   for (const answer of [q, ops, env, multi, noted]) assert.equal(["question", "ops", "envelope", "message", "empty"].filter((k) => k === answer.kind).length, 1);
 
-  assert.deepEqual(revisionRows(view), [{ id: "drv_mv3m0a2b_3030303030", text: sentence, status: "APPLIED", tone: "ok", statusText: "aplicat", classes: ["feedback", "ton", "clip"], planId: "opp_mv3m1c8d_2020202020" }]);
+  assert.deepEqual(revisionRows(view), [{ id: "drv_mv3m0a2b_3030303030", source: "owner", sourceLabel: "cerută de tine", text: sentence, status: "APPLIED", tone: "ok", statusText: "aplicat", classes: ["feedback", "ton", "clip"], planId: "opp_mv3m1c8d_2020202020" }]);
   assert.deepEqual(revisionRows(stale()), []);
 });
 
@@ -1009,6 +1009,25 @@ test("M11-UI-16 the Room renders the six deliverables and five decisions from th
   const { DeliveryRoom, DeliveryRoomView, renderToStaticMarkup, createElement } = bundle.mod;
   const render = (view, owner = OWNER_OPEN) => renderToStaticMarkup(createElement(DeliveryRoomView, { view, owner, client: fakeClient }));
   const headings = (html) => [...html.matchAll(/<h2 id="[^"]+-h">(?:<svg[\s\S]*?<\/svg>)?([^<]+)/g)].map((m) => m[1]);
+
+  const correction = variant(ready, v => {
+    v.correction = { available: true, defects: [{ plain: 'Citarea mobilă este greșită.' }], plan: null, applied: [] };
+    v.revisions = [{ id: 'drv_hub', text: 'Corectură automată propusă', status: 'PROPOSED', classes: ['correction'], source: 'hub' }];
+    v.summary.basis = { ...v.summary.basis, correction: { version: 1 } };
+    v.summary.versions = [{ version: 1, status: 'SUPERSEDED', approval: { kind: 'PRESENTATION_READY' }, createdBy: 'owner' }, { version: 2, status: 'CURRENT', approval: null, createdBy: 'delivery' }];
+    v.summary.sections[0].needsReview = true; v.summary.sections[0].reviewReason = 'corectura v1 a schimbat faptele';
+  });
+  const correctedHtml = render(correction), correctedText = textOf(correctedHtml);
+  for (const phrase of ['Pregătește corectura', 'Citarea mobilă este greșită.', 'propusă de Hub', 'Versiunile rezumatului', 'aprobată de tine', 'neaprobată', 'corectura v1 a schimbat faptele']) assert.ok(correctedText.includes(phrase), phrase);
+  assert.ok(!correctedText.includes('Ce ai cerut până acum'), 'Hub corrections are never attributed to the owner');
+  for (const label of ['Aprobă creația 16:9', 'Aprobă creația 9:16', 'Gata de prezentare']) assert.match(correctedHtml, new RegExp('<button[^>]*disabled=""[^>]*>' + label + '</button>'));
+  correction.correction.plan = { id: 'opp_hub', status: 'PROPOSED' };
+  assert.ok(!textOf(render(correction)).includes('Pregătește corectura'), 'a live card is not duplicated');
+  correction.correction.plan = null; correction.delivery.status = 'NEEDS_OWNER';
+  assert.ok(textOf(render(correction)).includes('Pregătește din nou corectura'));
+  correction.delivery.status = 'STALE'; correction.correction.available = false;
+  correction.observations.push({ kind: 'correction', severity: 'warn', text: 'Conține citări de criterii greșite (păstrată ca istoric)', ref: 'dlv_current123' });
+  assert.match(render(correction), /href="\/livrare\/dlv_current123">Deschide livrarea curentă/);
 
   // READY (owner session open).
   const html = render(ready());

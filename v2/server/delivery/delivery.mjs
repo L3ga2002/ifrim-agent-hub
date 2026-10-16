@@ -26,6 +26,8 @@ import { buildTemplate, templateSha, sectionOf, packageSteps, eligibility, PACKA
 import { itemOf, applyRule, currentView, slotsComplete, previousOf, documentOf, canTransition } from "./stale.mjs";
 import { renderSummary, summaryFactCheck, editSummary, regenerateSummary, toMarkdown, toHtml } from "./summary.mjs";
 import { writeNew } from "./files.mjs";
+import { presentationAudit, buildCorrectionRecord, overlayCorrection, correctionSteps, CORRECTION_KIND, LIVE_CORRECTION, irMetadata } from "./correction.mjs";
+import { captureScriptFrom } from "./template.mjs";
 
 /** The operations a derived delivery plan may contain (and nothing else: no model, no app, no decision). */
 // Stage closure 2026-10-09: office.verify (Word / Excel read back through COM, in the delivery folder) belongs to the delivery phase too:
@@ -58,7 +60,7 @@ export function createDeliveries({ db, bus, clock, config, settings, projects, m
   function setStatus(id, to, reason = "", extra = {}, { from = null, audit = {} } = {}) {
     const d = need(id);
     if (from && !from.includes(d.status)) return false;
-    if (d.status !== to && !canTransition(d.status, to)) throw new HubError("conflict", `Livrarea nu poate trece din ${d.status} în ${to}.`, { code: "DELIVERY_TRANSITION" });
+    if (d.status !== to && (!canTransition(d.status, to) || (d.status === 'NEEDS_OWNER' && to === 'READY' && !audit.correction))) throw new HubError("conflict", `Livrarea nu poate trece din ${d.status} în ${to}.`, { code: "DELIVERY_TRANSITION" });
     const sets = ["status = ?", "status_reason = ?", "updated_at = ?", "version = version + 1", ...Object.keys(extra).map((k) => `${k} = ?`)];
     const n = db.prepare(`UPDATE deliveries SET ${sets.join(", ")} WHERE id = ? AND status = ?`).run(to, String(reason).slice(0, 500), now(), ...Object.values(extra), id, d.status).changes;
     if (n) bus.append({ type: "delivery.status", scopeType: "delivery", scopeId: id, source: "delivery", payload: { deliveryId: id, from: d.status, to, reason: String(reason).slice(0, 200), projectId: d.projectId, missionId: d.missionId, ...audit } });
@@ -435,16 +437,130 @@ export function createDeliveries({ db, bus, clock, config, settings, projects, m
   function ownerProfile() { try { return sales?.ownerProfile?.() || settings.get("ownerProfile") || {}; } catch { return {}; } }
 
   /** A new document version: v1 from the facts, or a regeneration of `changed` ("software" | "media" | "services") keeping owner sections. */
-  function effectiveTemplate(d, { planId } = {}) { void planId; return d.template; }
+  function effectiveTemplate(d, { planId } = {}) {
+    const revision = planId ? revisionOfPlan(d.id, planId) : null;
+    const applied = revision?.delta?.correction ? revision : revisionView(db.prepare("SELECT * FROM delivery_revisions WHERE delivery_id = ? AND status = 'APPLIED' AND json_extract(delta_json, '$.correction.kind') = 'presentation-correction' ORDER BY rowid DESC LIMIT 1").get(d.id));
+    return overlayCorrection(d.template, applied?.delta?.correction);
+  }
+  function correctionFacts(deliveryId) {
+    const d = need(deliveryId), template = effectiveTemplate(d);
+    const facts = factory.claimFacts(d.missionId, { bundleId: d.bundleId });
+    const all = itemsOfDelivery(d.id), current = d.status === 'STALE' ? [...new Map(all.map(i => [i.kind + ':' + i.role, i])).values()] : all.filter(i => i.status === 'CURRENT');
+    const masterItem = current.find(i => i.kind === 'edit' && i.role === 'master');
+    const verticalItem = current.find(i => i.kind === 'variant' && i.role === 'vertical');
+    const master = { editVersionId: masterItem?.refId || null, ir: media.edits.getVersion(masterItem?.refId)?.ir || null };
+    const vertical = { variantId: verticalItem?.refId || null, editVersionId: verticalItem?.meta?.editVersionId || null, ir: media.edits.getVersion(verticalItem?.meta?.editVersionId)?.ir || null };
+    const captures = current.filter(i => i.kind === 'capture').map(i => {
+      let actualSha = null;
+      try { const v = media.assets.getVersion(i.refId); actualSha = sha256(fs.readFileSync(path.join(config.mediaDir, v.relPath))); } catch { /* missing is an audit defect */ }
+      return { ...i, actualSha };
+    });
+    const summary = currentDoc(d.id);
+    const demo = FACTORY_DEMOS[template.fixture];
+    const audit = presentationAudit({ delivery: d, effectiveTemplate: template, spec: facts.spec, specSha: facts.specRow.sha256, catalog: demo?.delivery?.presentations || [], master, vertical, summary, captures, claimFacts: facts });
+    const base = { templateSha: d.templateSha, specSha: d.specSha, bundleId: d.bundleId, bundleSha: d.bundleSha, changeSetSha: d.changeSetSha, snapshotSha: d.snapshotSha,
+      master: { editVersionId: master.editVersionId, irSha: masterItem?.refSha || null }, vertical: { variantId: vertical.variantId, editVersionId: vertical.editVersionId },
+      summary: { documentId: summary?.id || null, version: summary?.version || 0, contentSha: summary?.contentSha || null },
+      captures: Object.fromEntries(['desktop', 'mobile'].map(role => { const c = captures.find(i => i.role === role); return [role, { itemId: c?.id || null, assetVersionId: c?.refId || null, sha256: c?.refSha || null, observedSha256: c?.actualSha || null, stepsSha: c?.meta?.stepsSha || null }]; })),
+      exports: current.filter(i => i.kind === 'export').map(i => ({ itemId: i.id, role: i.role, file: i.meta.file, sha256: i.refSha })),
+      office: officeSteps(d).filter(s => s.status === 'DONE').map(s => ({ kind: s.kind, planId: s.planId, seq: s.seq, file: s.result?.file || s.result?.dir || s.result?.folder || null, sha256: s.result?.sha256 || null })),
+      exportCount: all.filter(i => i.kind === 'export' && i.role === 'master').length };
+    return { delivery: d, audit, base, master, vertical, captures, summary, facts, template };
+  }
+  // Versioned filenames are consequences of a new record, not a new defect. Compare
+  // the frozen facts separately when deciding whether tick already offered this work.
+  const correctionWorkSha = c => hashCanonical({ ...c, version: 0, outputs: c.outputs.filter(x => !/Prezentare demo v|Campanie v|manifest-v/.test(x)) });
+  function correctionDraft(deliveryId) {
+    const input = correctionFacts(deliveryId);
+    const earlier = db.prepare("SELECT delta_json FROM delivery_revisions WHERE delivery_id = ? AND json_extract(delta_json, '$.correction.kind') = 'presentation-correction' ORDER BY rowid DESC").all(deliveryId).map(r => parse(r.delta_json, {}).correction);
+    const version = earlier.length + 1;
+    const correction = buildCorrectionRecord({ ...input, version });
+    for (const role of ['desktop', 'mobile']) if (correction.captures[role].action === 'recapture') {
+      const cap = input.template.captures.find(c => c.role === role), criterion = input.facts.spec.acceptance.find(c => c.id === correction.captures[role].criterion);
+      const script = captureScriptFrom(criterion?.steps, { role, noun: input.template.story.noun, proofSelector: cap.proofSelector });
+      if (!script.ok) throw new HubError('conflict', 'Pașii aprobați nu pot fi filmați.', { code: 'CORRECTION_CAPTURE_INVALID' });
+      Object.assign(correction.captures[role], { steps: script.steps, stepsSha: hashCanonical(script.steps), collapsed: script.collapsed });
+    }
+    // A live card is idempotent; every new record (including a re-offer) gets the next version.
+    const eligible = db.prepare("SELECT delta_json, ops_plan_id FROM delivery_revisions WHERE delivery_id = ? ORDER BY rowid DESC").all(deliveryId).filter(r => LIVE_CORRECTION.includes(opsPlans.view(r.ops_plan_id)?.status)).map(r => parse(r.delta_json, {}).correction).filter(Boolean);
+    const previous = eligible.find(c => correctionWorkSha(c) === correctionWorkSha(correction));
+    const record = previous || correction;
+    return { ...input, correction: record, correctionSha: hashCanonical(record) };
+  }
+  async function checkCorrection(deliveryId, record = null) {
+    const d = need(deliveryId);
+    if (!['READY', 'NEEDS_OWNER'].includes(d.status)) throw new HubError('conflict', d.status === 'STALE' ? 'Livrarea este STALE; se reface printr-un pachet nou.' : `Livrarea este ${d.status}; corectura cere READY sau NEEDS_OWNER.`, { code: 'CORRECTION_STATUS' });
+    if (!verify(d.id, { by: 'correction' }).equal) throw new HubError('conflict', 'Versiunea software s-a schimbat.', { code: 'CORRECTION_BASE_CHANGED' });
+    const facts = factory.claimFacts(d.missionId, { bundleId: d.bundleId });
+    const tools = await toolsFacts();
+    if (facts.bundle.id !== d.bundleId || facts.bundle.sha256 !== d.bundleSha || facts.specRow.sha256 !== d.specSha || !['READY_FOR_OWNER_ACCEPTANCE', 'OWNER_ACCEPTED'].includes(facts.bundle.status)) throw new HubError('conflict', 'Pachetul sau specificația s-au schimbat.', { code: 'CORRECTION_BASE_CHANGED' });
+    if (tools.state !== 'PINNED' || hashCanonical(tools.identity) !== hashCanonical({ ffmpeg: d.template.tools.ffmpeg, ffprobe: d.template.tools.ffprobe })) throw new HubError('conflict', 'Corectura nu fixează și nu schimbă uneltele media.', { code: 'CORRECTION_TOOLS' });
+    if (record) {
+      // Compare references and bytes directly: preparation never consults the mutable catalog.
+      const item = (kind, role) => currentItem(d.id, kind, role);
+      const doc = currentDoc(d.id);
+      const b = record.base;
+      let equal = ['templateSha', 'specSha', 'bundleId', 'bundleSha', 'changeSetSha', 'snapshotSha'].every(k => b[k] === d[k]) && item('edit', 'master')?.refId === b.master.editVersionId && item('edit', 'master')?.refSha === b.master.irSha && doc?.id === b.summary.documentId && doc?.contentSha === b.summary.contentSha && doc?.version === b.summary.version && item('variant', 'vertical')?.refId === b.vertical.variantId && item('variant', 'vertical')?.meta?.editVersionId === b.vertical.editVersionId;
+      for (const role of ['desktop', 'mobile']) {
+        const c = item('capture', role), before = b.captures[role];
+        equal &&= c?.id === before.itemId && c?.refId === before.assetVersionId && c?.refSha === before.sha256 && c?.meta?.stepsSha === before.stepsSha;
+        let actual = null;
+        try { actual = sha256(fs.readFileSync(path.join(config.mediaDir, media.assets.getVersion(c.refId).relPath))); } catch { /* still missing is an unchanged defective base */ }
+        equal &&= actual === (before.observedSha256 ?? (record.captures[role].action === 'reuse' ? before.sha256 : null));
+      }
+      if (!equal) throw new HubError('conflict', 'Baza corecturii s-a schimbat; pregătește o propunere nouă.', { code: 'CORRECTION_BASE_CHANGED' });
+    }
+    return d;
+  }
+  const proposingCorrections = new Map();
+  async function proposeCorrection(deliveryId, options = {}) {
+    if (proposingCorrections.has(deliveryId)) return proposingCorrections.get(deliveryId);
+    const pending = proposeCorrectionOnce(deliveryId, options);
+    proposingCorrections.set(deliveryId, pending);
+    try { return await pending; } finally { proposingCorrections.delete(deliveryId); }
+  }
+  async function proposeCorrectionOnce(deliveryId, { actor = 'owner', via = 'owner' } = {}) {
+    await checkCorrection(deliveryId);
+    let draft = correctionDraft(deliveryId);
+    if (!draft.audit.defects.length) return { proposed: false, reason: 'Nimic de corectat: afirmațiile corespund criteriilor aprobate.' };
+    const rows = db.prepare("SELECT * FROM delivery_revisions WHERE delivery_id = ? AND json_extract(delta_json, '$.correction.kind') = 'presentation-correction' ORDER BY rowid DESC").all(deliveryId).map(revisionView);
+    for (const r of rows) {
+      const p = r.opsPlanId && opsPlans.view(r.opsPlanId);
+      if (!p || !LIVE_CORRECTION.includes(p.status)) continue;
+      if (r.delta.correctionSha === draft.correctionSha) return { proposed: true, plan: p, revision: r };
+      await opsPlans.supersedeDeliveryCorrection(p.id, deliveryId);
+      draft = correctionDraft(deliveryId); // The stopped plan may have completed its in-flight step.
+    }
+    if (actor === 'hub') {
+      if (rows.some(r => opsPlans.view(r.opsPlanId)?.status === 'CANCELLED')) return { proposed: false, reason: 'Corectura a fost anulată de proprietar.' };
+      const sameWork = [draft.correctionSha, ...rows.filter(r => correctionWorkSha(r.delta.correction) === correctionWorkSha(draft.correction)).map(r => r.delta.correctionSha)];
+      if (sameWork.some(sha => db.prepare("SELECT 1 FROM events WHERE type = 'delivery.correction_proposed' AND scope_id = ? AND json_extract(payload_json, '$.correctionSha') = ? AND json_extract(payload_json, '$.hubVersion') = ?").get(deliveryId, sha, HUB_VERSION))) return { proposed: false, reason: 'Corectura a fost deja oferită pe această versiune.' };
+    }
+    const rev = recordRevision(deliveryId, { text: draft.correction.reason, classes: ['correction'], delta: { correction: draft.correction, correctionSha: draft.correctionSha }, status: 'PROPOSED', source: actor === 'hub' ? 'hub' : 'owner', channel: via });
+    const plan = await opsPlans.propose({ kind: CORRECTION_KIND, title: `Corectură afirmații: ${draft.template.project.name}`, steps: correctionSteps(draft.template, deliveryId, rev.id, draft.correction), limits: { maxDurationMin: 30, maxActions: 120 }, actor, via });
+    updateRevision(rev.id, { opsPlanId: plan.id });
+    bus.emit({ type: 'delivery.correction_proposed', scopeType: 'delivery', scopeId: deliveryId, source: actor, payload: { deliveryId, revisionId: rev.id, planId: plan.id, version: draft.correction.version, correctionSha: draft.correctionSha, hubVersion: HUB_VERSION } });
+    return { proposed: true, plan, revision: getRevision(rev.id) };
+  }
+  function finishCorrection(deliveryId, revisionId) {
+    const rev = getRevision(revisionId), d = need(deliveryId);
+    if (!rev?.delta?.correction || rev.deliveryId !== deliveryId) throw new HubError('conflict', 'Corectura nu aparține livrării.');
+    bus.transaction(() => {
+      updateRevision(rev.id, { status: 'APPLIED', documentId: currentDoc(d.id)?.id });
+      // This is the only recovery from NEEDS_OWNER to READY: all correction slots were checked by finish.
+      if (d.status === 'NEEDS_OWNER') setStatus(d.id, 'READY', 'Corectura este gata de verificarea ta', {}, { audit: { correction: true } });
+      bus.append({ type: 'delivery.correction_applied', scopeType: 'delivery', scopeId: d.id, source: 'delivery', payload: { revisionId, version: rev.delta.correction.version, correctionSha: rev.delta.correctionSha, master: currentItem(d.id, 'edit', 'master')?.refId, vertical: currentItem(d.id, 'variant', 'vertical')?.refId, documentId: currentDoc(d.id)?.id } });
+    });
+  }
   function replaceClaimItems(deliveryId, roles, produce) {
     return bus.transaction(() => {
-      for (const item of itemsOfDelivery(deliveryId)) if (item.kind === "claim" && item.status === "CURRENT" && !roles.includes(item.role)) db.prepare("UPDATE delivery_items SET status = 'SUPERSEDED' WHERE id = ?").run(item.id);
+      for (const item of itemsOfDelivery(deliveryId)) if (item.kind === "claim" && item.status === "CURRENT") db.prepare("UPDATE delivery_items SET status = 'SUPERSEDED' WHERE id = ?").run(item.id);
       return produce();
     });
   }
-  function renderDocument(deliveryId, { changed = null, actor = "delivery" } = {}) {
+  function renderDocument(deliveryId, { changed = null, actor = "delivery", planId, revisionId } = {}) {
     const d = need(deliveryId);
-    const template = effectiveTemplate(d);
+    const template = effectiveTemplate(d, { planId });
     const facts = factory.claimFacts(d.missionId, { bundleId: d.bundleId });
     const presentation = presentationForTemplate(template, facts), proofs = provePresentation(presentation, facts);
     const mediaList = mediaFacts(deliveryId);
@@ -455,6 +571,11 @@ export function createDeliveries({ db, bus, clock, config, settings, projects, m
     const factual = summaryFactCheck({ doc, presentation, proofs, spec: facts.spec });
     if (factual.status === "FAIL") throw new HubError("conflict", "Rezumatul conține citări fără dovadă.", { code: "SUMMARY_FACT_CHECK", data: factual });
     doc.basis.factual = factual;
+    const correction = revisionId && getRevision(revisionId)?.delta;
+    if (correction?.correction) {
+      doc.basis.correction = { revisionId, version: correction.correction.version, correctionSha: correction.correctionSha };
+      for (const s of doc.sections) if (s.needsReview) s.reviewReason = `corectura v${correction.correction.version} a schimbat faptele`;
+    }
     doc.basisSha = hashCanonical(doc.basis);
     return saveDocument(d, prev, doc, { mediaList, authorKind: doc.authorKind, actor });
   }
@@ -503,6 +624,8 @@ export function createDeliveries({ db, bus, clock, config, settings, projects, m
     if (displayedSha !== prev.contentSha) throw new HubError("conflict", "Versiunea afișată nu mai e cea curentă; reîncarcă rezumatul.", { code: "SUMMARY_DISPLAYED_STALE" });
     const stale = currentView(itemsOfDelivery(deliveryId), need(deliveryId)).hidden.filter((h) => prev.basis?.videoItemIds?.includes(h.id) && h.why === "STALE");
     if (stale.length) throw new HubError("conflict", "Rezumatul citează materiale învechite; nu îl marchez gata.", { code: "SUMMARY_STALE" });
+    const audited = correctionFacts(deliveryId);
+    if (audited.audit.defects.some(f => f.where.startsWith('summary.'))) throw new HubError('conflict', 'Rezumatul conține afirmații nelegate de criteriile aprobate.', { code: 'SUMMARY_FACT_CHECK' });
     const approval = { kind: "PRESENTATION_READY", sha: prev.contentSha, sessionId: session.id, at: now() };
     bus.transaction(() => {
       db.prepare("UPDATE delivery_documents SET approval_json = ? WHERE id = ?").run(json(approval), prev.id);
@@ -550,7 +673,7 @@ export function createDeliveries({ db, bus, clock, config, settings, projects, m
     return revisionView(db.prepare("SELECT * FROM delivery_revisions WHERE id = ?").get(id));
   }
   const revisionView = (r) => r && ({ id: r.id, deliveryId: r.delivery_id, text: r.text_redacted, classes: parse(r.classes_json, []), target: parse(r.target_json, {}), delta: parse(r.delta_json, {}),
-    clarification: parse(r.clarification_json, null), status: r.status, opsPlanId: r.ops_plan_id, reviewId: r.review_id, documentId: r.document_id, childDeliveryId: r.child_delivery_id, createdAt: r.created_at });
+    clarification: parse(r.clarification_json, null), source: r.source, status: r.status, opsPlanId: r.ops_plan_id, reviewId: r.review_id, documentId: r.document_id, childDeliveryId: r.child_delivery_id, createdAt: r.created_at });
   /** The revision a running revision plan belongs to (its ops plan id), or null. */
   const revisionOfPlan = (deliveryId, planId) => revisionView(db.prepare("SELECT * FROM delivery_revisions WHERE delivery_id = ? AND ops_plan_id = ?").get(String(deliveryId || ""), String(planId || "")));
   const getRevision = (id) => revisionView(db.prepare("SELECT * FROM delivery_revisions WHERE id = ?").get(String(id || "")));
@@ -562,23 +685,34 @@ export function createDeliveries({ db, bus, clock, config, settings, projects, m
     return getRevision(id);
   }
 
-  const OFFICE_DEPENDS = Object.freeze({ "delivery.office.document": ["software", "criteria"], "delivery.office.workbook": ["fixture"], "delivery.campaign": ["software", "clips"], "delivery.package.index": ["software", "clips", "files"] });
+  const OFFICE_DEPENDS = Object.freeze({ "delivery.office.document": ["software", "criteria", "clips"], "delivery.office.workbook": ["fixture"], "delivery.campaign": ["software", "clips"], "delivery.package.index": ["software", "clips", "files"] });
   /** The office steps of the delivery's own package plan (DONE ones carry the file, its sha and the level reached). */
+  function officeSteps(d, { history = false } = {}) {
+    const ids = [d.opsPlanId, ...db.prepare("SELECT ops_plan_id FROM delivery_revisions WHERE delivery_id = ? ORDER BY rowid").all(d.id).map(r => r.ops_plan_id)].filter(Boolean);
+    const latest = new Map(), all = [];
+    for (const id of new Set(ids)) for (const s of opsPlans.view(id)?.steps || []) if (OFFICE_DEPENDS[s.kind]) {
+      const step = { ...s, planId: id };
+      all.push(step);
+      if (s.status === 'DONE' || !latest.has(s.kind)) latest.set(s.kind, step);
+    }
+    if (history) return all;
+    return [...latest.values()];
+  }
   function officeOf(d) {
     const extras = d.template?.extras || [];
     // R-REV: what this refresh kept from its parent by proof (same inputs, same bytes), with the hashes and the reason.
     // Closure R-PACK: once the folder index copied it, the file shown is the verified local copy in THIS delivery's folder.
-    const indexed = d.opsPlanId ? (opsPlans.view(d.opsPlanId)?.steps || []).find((s) => s.kind === "delivery.package.index" && s.status === "DONE")?.result?.reused || [] : [];
+    const indexed = officeSteps(d).find((s) => s.kind === "delivery.package.index" && s.status === "DONE")?.result?.reused || [];
     const localOf = (r) => indexed.find((x) => x.kind === r.kind && x.sha256 === r.sha256)?.file || null;
     const reusedItems = (d.template?.reused || []).map((r) => ({ kind: `delivery.office.${r.kind}`, label: r.kind === "workbook" ? "Registru Excel" : r.kind, status: "REUSED", file: localOf(r) || r.file, sourceFile: r.file, copied: Boolean(localOf(r)), sha256: r.sha256,
       inputsSha: r.inputsSha, level: r.level || null, sourceDeliveryId: r.sourceDeliveryId, dependsOn: OFFICE_DEPENDS[`delivery.office.${r.kind}`] || [], state: "CURRENT", stateReason: r.reason }));
-    if (!extras.length || !d.opsPlanId) return { requested: extras, folder: null, items: reusedItems, reused: reusedItems.length };
-    const p = opsPlans.view(d.opsPlanId);
+    if ((!extras.length && !d.template?.reused?.length) || !d.opsPlanId) return { requested: extras, folder: null, items: reusedItems, reused: reusedItems.length };
+    const p = { steps: officeSteps(d) };
     const label = { "delivery.office.document": "Document Word", "delivery.office.workbook": "Registru Excel", "delivery.campaign": "Pachet de campanie", "delivery.package.index": "Cuprinsul dosarului" };
     const items = (p?.steps || []).filter((s) => label[s.kind]).map((s) => ({ kind: s.kind, label: label[s.kind], status: s.status, file: s.result?.file || s.result?.dir || s.result?.folder || null,
       pdf: s.result?.pdf || null, level: s.result?.level || s.result?.calendarLevel || null, pages: s.result?.pages || null, formulasChecked: s.result?.formulasChecked ?? null,
       channels: s.result?.channels ?? null, posts: s.result?.posts ?? null, files: s.result?.files?.length ?? (typeof s.result?.files === "number" ? s.result.files : null),
-      sha256: s.result?.sha256 || null, ...officeState(d, s.kind) }));
+      sha256: s.result?.sha256 || null, ...officeState(d, s.kind, s.result) }));
     return { requested: extras, folder: path.join(d.template.exports.dir, d.template.exports.folder), softwareSpecSha: d.template?.specSha || null, items: [...items, ...reusedItems], reused: reusedItems.length };
   }
 
@@ -588,10 +722,12 @@ export function createDeliveries({ db, bus, clock, config, settings, projects, m
    * a software change makes them STALE. The Excel workbook holds the fixture's demonstration data, not the code: it stays CURRENT.
    * A file is never „current” only because it exists: the state comes from the delivery's own stale record.
    */
-  function officeState(d, kind) {
+  function officeState(d, kind, result = {}) {
     const dependsOn = OFFICE_DEPENDS[kind] || [];
     const softwareStale = d.status === "STALE" || ["CLOSED"].includes(d.status) && /software/i.test(String(d.statusReason || ""));
     const stale = softwareStale && dependsOn.includes("software");
+    const clips = itemsOfDelivery(d.id).filter(i => i.kind === 'export' && i.status === 'CURRENT').map(i => i.refSha).sort();
+    if (!stale && dependsOn.includes('clips') && result?.clipShas && hashCanonical([...result.clipShas].sort()) !== hashCanonical(clips)) return { dependsOn, state: 'REFERS_OLD_VERSION', stateReason: 'numește clipurile anterioare; se reface la corectură' };
     return { dependsOn, state: stale ? "STALE" : "CURRENT", stateReason: stale ? "descrie versiunea software anterioară; se refac în livrarea nouă" : dependsOn.includes("software") ? "legat de versiunea software verificată a acestei livrări" : "date demonstrative, independente de cod" };
   }
 
@@ -620,16 +756,23 @@ export function createDeliveries({ db, bus, clock, config, settings, projects, m
       if (!edit && !render) return null;
       return { editVersionId: role === "master" ? edit?.refId || null : edit?.meta?.editVersionId || null, assetVersionId: render?.refId || null, src: render?.refId ? `/api/media/files/${render.refId}` : null,
         durationMs: render?.meta?.durationMs || null, label: render?.meta?.label || null, qa: qa ? { status: qa.meta?.status || null, kinds: qa.meta?.kinds || {}, unjustified: qa.meta?.unjustified || 0 } : null,
-        creative: creativeOf(role === "master" ? edit?.refId : edit?.meta?.editVersionId, render?.meta?.creative), markers: edit?.meta?.markers || [], textItems: edit?.meta?.textItems || [] };
+        creative: creativeOf(role === "master" ? edit?.refId : edit?.meta?.editVersionId, render?.meta?.creative), ...(role === 'vertical' ? irMetadata(media.edits.getVersion(edit?.meta?.editVersionId)?.ir) : { markers: edit?.meta?.markers || [], textItems: edit?.meta?.textItems || [] }) };
     };
     const plans = db.prepare("SELECT id FROM ops_plans WHERE id = ? OR id IN (SELECT ops_plan_id FROM delivery_revisions WHERE delivery_id = ? AND ops_plan_id IS NOT NULL)").all(d.opsPlanId || "", id)
       .map((r) => opsPlans.view(r.id)).filter(Boolean).map((p) => ({ id: p.id, kind: p.kind, status: p.status, steps: p.steps.map((s) => ({ seq: s.seq, title: s.title, status: s.status, kind: s.kind })) }));
     const observations = [];
+    let defects = [];
+    if (['READY', 'NEEDS_OWNER', 'STALE'].includes(d.status)) try { defects = correctionFacts(d.id).audit.defects; } catch { /* incomplete facts */ }
+    const correctionPlan = plans.find(p => p.kind === CORRECTION_KIND && LIVE_CORRECTION.includes(p.status));
+    const correction = { available: ['READY', 'NEEDS_OWNER'].includes(d.status) && defects.length > 0, defects: defects.slice(0, 20), plan: correctionPlan ? { id: correctionPlan.id, status: correctionPlan.status } : null,
+      applied: db.prepare("SELECT payload_json, created_at FROM events WHERE type = 'delivery.correction_applied' AND scope_id = ? ORDER BY seq").all(id).map(r => ({ version: parse(r.payload_json, {}).version, correctionSha: parse(r.payload_json, {}).correctionSha, appliedAt: r.created_at })) };
     for (const c of binding?.criteria || []) if (!String(c.status).startsWith("PASS")) observations.push({ kind: "criterion", severity: "warn", text: `${c.id} ${c.text}: ${c.status}`, ref: c.id });
     for (const x of doc?.claimsToVerify || []) observations.push({ kind: "summary", severity: "info", text: x, ref: doc.id });
     for (const f of fv?.findings || []) if (f.status === "OPEN") observations.push({ kind: "finding", severity: f.severity, text: f.observation, ref: f.id });
     const child = db.prepare("WITH RECURSIVE descendants(id, depth) AS (SELECT id, 1 FROM deliveries WHERE parent_id = ? UNION ALL SELECT d.id, p.depth + 1 FROM deliveries d JOIN descendants p ON d.parent_id = p.id WHERE p.depth < 8) SELECT d.id, d.status FROM deliveries d JOIN descendants x ON x.id = d.id WHERE d.status IN ('READY','ARMED','ACTIVE','NEEDS_OWNER') ORDER BY d.created_at DESC, d.rowid DESC LIMIT 1").get(id);
+    if (d.status === 'STALE' && defects.length) observations.push({ kind: 'correction', severity: 'warn', text: 'Conține citări de criterii greșite (păstrată ca istoric); livrarea curentă e ' + (child?.id || 'indisponibilă'), ref: child?.id || null });
     return {
+      correction,
       delivery: { id: d.id, title: d.title, status: d.status, statusReason: d.statusReason, projectId: d.projectId, projectName: project?.name || null, labels: d.labels, generation: d.generation,
         parentId: d.parentId, childId: child?.id || null, childStatus: child?.status || null, verified: d.verified, missionId: d.missionId, issueTitle: d.template.issueTitle },
       software: binding ? { bundle: { id: binding.bundleId, shaPrefix: String(binding.bundleSha).slice(0, 12), status: binding.bundleStatus, sha: binding.bundleSha },
@@ -641,14 +784,14 @@ export function createDeliveries({ db, bus, clock, config, settings, projects, m
           src: e.screenshot ? `/api/deliveries/${id}/evidence/${e.evidenceId}/screenshot` : null })) },
       clip: { master: clip("master"), vertical: clip("vertical"), rights: { internal: "allowed", public: [] } },
       summary: doc ? { documentId: doc.id, version: doc.version, sha: doc.contentSha, status: doc.status, sections: doc.sections, warnings: doc.warnings, claimsToVerify: doc.claimsToVerify, basis: doc.basis,
-        approval: doc.approval, exports: doc.exports } : null,
+        approval: doc.approval, exports: doc.exports, versions: docsOf(id).map(docView).map(v => ({ version: v.version, status: v.status, contentShaPrefix: v.contentSha.slice(0, 12), approval: v.approval, createdBy: v.createdBy, correction: v.basis.correction || null })) } : null,
       observations,
       decisions: { software: binding?.bundleStatus === "OWNER_ACCEPTED" ? "ACCEPTED" : "PENDING", creativeMaster: clip("master")?.creative || "PENDING", creativeVertical: clip("vertical")?.creative || "PENDING",
         rightsPublic: "NOT_RECORDED", summaryReady: doc?.approval ? "READY" : "PENDING", publishing: "OFF" },
       plans,
       // Stage before M12: the office part of the package (Word, Excel, campaign, folder index) with the verification level each reached.
       office: officeOf(d),
-      revisions: db.prepare("SELECT * FROM delivery_revisions WHERE delivery_id = ? ORDER BY created_at").all(id).map(revisionView).map((r) => ({ id: r.id, text: r.text, status: r.status, classes: r.classes, planId: r.opsPlanId })),
+      revisions: db.prepare("SELECT * FROM delivery_revisions WHERE delivery_id = ? ORDER BY created_at").all(id).map(revisionView).map((r) => ({ id: r.id, text: r.text, status: r.status, classes: r.classes, planId: r.opsPlanId, source: r.source })),
       history: items.map((i) => ({ kind: i.kind, role: i.role, id: i.id, status: i.status, staleReason: i.statusReason, supersedesId: i.supersedesId, createdAt: i.createdAt })),
     };
   }
@@ -696,6 +839,12 @@ export function createDeliveries({ db, bus, clock, config, settings, projects, m
       } else if (e.type.startsWith("ops.plan.") && ["paused", "needs_owner", "failed", "cancelled"].includes(e.type.slice(9))) {
         const r = db.prepare("SELECT id FROM deliveries WHERE ops_plan_id = ? AND status = 'ACTIVE'").get(e.scopeId);
         if (r) trigger(r.id, "plan_stopped", { reason: `planul de livrare: ${e.type.slice(9)}${p.reason ? ` (${p.reason})` : ""}` }, "ops");
+        const correction = db.prepare("SELECT r.id, r.delivery_id FROM delivery_revisions r JOIN deliveries d ON d.id = r.delivery_id WHERE r.ops_plan_id = ? AND json_extract(r.delta_json, '$.correction.kind') = 'presentation-correction' AND d.status IN ('READY','NEEDS_OWNER')").get(e.scopeId);
+        if (correction) {
+          const reason = 'Corectura s-a oprit: ' + (p.reason || e.type.slice(9));
+          setStatus(correction.delivery_id, 'NEEDS_OWNER', reason);
+          bus.emit({ type: 'delivery.correction_failed', scopeType: 'delivery', scopeId: correction.delivery_id, source: 'ops', payload: { revisionId: correction.id, planId: e.scopeId, reason } });
+        }
       } else if (e.type === "envelope.status" || e.type.startsWith("envelope.")) {
         const envelopeId = e.scopeId || p.envelopeId;
         const status = p.to || p.status || e.type.slice(9).toUpperCase();
@@ -725,6 +874,9 @@ export function createDeliveries({ db, bus, clock, config, settings, projects, m
   let lastVerify = 0;
   async function tick() {
     if (closing) return;
+    for (const r of db.prepare("SELECT id FROM deliveries d WHERE status = 'READY' AND NOT EXISTS (SELECT 1 FROM delivery_revisions r JOIN ops_plans p ON p.id = r.ops_plan_id WHERE r.delivery_id = d.id AND p.kind = 'delivery.correct' AND p.status IN ('PROPOSED','CONFIRMED','RUNNING','PAUSED'))").all()) {
+      try { await proposeCorrection(r.id, { actor: 'hub', via: 'correction' }); } catch { /* no authority on refusal */ }
+    }
     // A derived delivery plan the Hub refused before any step did work — no ops plan (an operation the phase list lacked) or a plan that
     // FAILED with no step done (its step 1 ran before the plan id was bound) — goes back to ARMED once per Hub version, so the same
     // checks run again on the current code: the confirmation, the steps' hash, the snapshot and the tools are re-checked by activate().
@@ -761,7 +913,7 @@ export function createDeliveries({ db, bus, clock, config, settings, projects, m
     return storyFromPresentation(presentationForTemplate(template, facts)).overrides;
   }
 
-  return { effectiveTemplate, variantOverridesFor, replaceClaimItems, createPlanned, sectionFor, sectionForMission, arm, activate, startDirect, bindItem, bindSoftware, currentItem, items: itemsOfDelivery, trigger, verify, reconcileStale, renderDocument, exportDocument, editDocument, approveDocument,
+  return { correctionFacts, correctionDraft, checkCorrection, proposeCorrection, finishCorrection, officeSteps, effectiveTemplate, variantOverridesFor, replaceClaimItems, createPlanned, sectionFor, sectionForMission, arm, activate, startDirect, bindItem, bindSoftware, currentItem, items: itemsOfDelivery, trigger, verify, reconcileStale, renderDocument, exportDocument, editDocument, approveDocument,
     currentDoc, recordRevision, getRevision, updateRevision, revisionOfPlan, view, get, need, list, latestForProject, close, cancel, setStatus, readiness, boot, tick, onEvent, attachEnvelopes, patch, bindService, startPreview,
     close_: () => { closing = true; if (detach) detach(); detach = null; }, mediaFacts, markerOf };
 }

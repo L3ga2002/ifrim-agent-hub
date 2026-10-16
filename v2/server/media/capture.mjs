@@ -970,6 +970,7 @@ export function createCapture({ db, bus, clock = () => new Date(), settings, con
           else if (kind === "type") {
             const loc = page.locator(value.selector).first();
             const startMs = elapsed();
+            await loc.fill("", { timeout: stepTimeoutMs }); // E2E fill replaces; recording must never append to an old value.
             if (typeof loc.pressSequentially === "function") await loc.pressSequentially(value.text, { delay: value.delayMs, timeout: stepTimeoutMs + value.text.length * value.delayMs });
             else await page.type(value.selector, value.text, { delay: value.delayMs, timeout: stepTimeoutMs + value.text.length * value.delayMs });
             const endMs = elapsed();

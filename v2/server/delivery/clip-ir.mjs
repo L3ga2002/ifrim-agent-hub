@@ -372,7 +372,7 @@ export function buildMaster(input = {}) {
   const readFrames = (slot, baseMs, maxMs) => F(clamp(Math.ceil((longest(slot) / PACING.readCps) * 1000), baseMs, maxMs));
   const passes = (slot) => input.claimIdBySlot ? !input.texts[slot].unbound && (!texts[slot].criteria.length || Boolean(input.claimIdBySlot[slot])) : texts[slot].criteria.every((c) => passed.has(c));
   const shown = textsForTone(texts, tone);
-  for (const slot of TEXT_SLOTS) if (!passes(slot)) omitted.push({ id: TEXT_IDS[slot], reason: "CRITERIA_NOT_PASS", criteria: texts[slot].criteria.filter((c) => !passed.has(c)) });
+  for (const slot of TEXT_SLOTS) if (!passes(slot)) omitted.push({ id: TEXT_IDS[slot], reason: texts[slot].unbound ? "CLAIM_UNBOUND" : "CRITERIA_NOT_PASS", criteria: texts[slot].criteria.filter((c) => !passed.has(c)) });
   const desk = clipOf.desktop, mob = clipOf.mobile;
   const firstMarker = (role, kind) => clipOf[role].cap.markers.find((m) => m.kind === kind) || null;
   const demoFrame = { desktop: firstMarker("desktop", "demo") ? desk.frameAt(firstMarker("desktop", "demo").atMs) : desk.start, mobile: firstMarker("mobile", "demo") ? mob.frameAt(firstMarker("mobile", "demo").atMs) : mob.start };

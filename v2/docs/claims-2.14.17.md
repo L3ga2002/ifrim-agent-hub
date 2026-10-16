@@ -105,3 +105,110 @@ Excluded from the final offline run:
 | `v2/docs/claims-2.14.17.md` | Record the cause, decisions, changed files and verification limits. |
 
 The pre-existing `.tmp-s25-a` directory is preserved; this task's final verification artifacts are in its `part-a-results` subdirectory. No changes were made to `v2/tests/helpers.mjs`, `DecisionInbox.jsx`, migrations or the node_modules junction. No git state-changing command, installation or model invocation was used.
+
+## Part B — explicit presentation correction (2026-10-16)
+
+Implemented on part A `ca8b42e`, branch `claude/project-thread-98qmet`, without committing. Hub version remains 2.14.17-m11, schema 12 and API contract 13. Changes are additive; stored templates, specs, plan bodies, IR versions, claims, approvals and export bytes are not rewritten.
+
+The pure audit resolves the approved specification against the current presentation catalog and checks both IRs, generated summary lines, compiled capture scripts, typing postconditions and capture bytes. A correction is an immutable `delivery_revisions` record and a separate `delivery.correct` owner-confirmed plan. Preparation checks the frozen base again. Execution creates a master patch in the same edit project, renders both formats with factual QA gates, regenerates the summary while retaining owner sections, versions the Office artifacts/index and marks APPLIED only after the finish checks. The effective template supplies corrected text and overrides to subsequent revisions. Failure retains history and moves the delivery to NEEDS_OWNER.
+
+The critic's follow-ups are included: explicit supersession of claim items (content_claims history stays intact), fresh revision metadata from the saved IR, clear-before-type capture semantics, inherited-flow deduplication and overflow refusal, correct fallback reasons and word boundaries, every criterion in traceability, refusal of defective summary approval, Hub attribution/cockpit correction row, STALE history observation and current-delivery link, curated spoken delivery copy, and event-guarded re-offers. The unrelated package-plan binding defect is recorded in `.ifrim/OPEN_ISSUES.md`.
+
+### Part B verification
+
+Run from the repository using the system Node:
+
+```powershell
+& 'C:\Program Files\nodejs\node.exe' v2/tests/run-correction-offline.mjs
+```
+
+The runner invokes one file at a time with `--test --test-concurrency=1 --test-reporter=tap`. Each invocation, name filter, counts and TAP output are recorded in `.tmp-s25-a/part-b-results/`. All ordinary regression files use the offline preload. Only `r-correct` uses the loopback-only preload for the specification's explicit RCO-04 exception; port 8011 and external destinations are refused. Filters exclude prohibited harness/server/browser cases; excluded cases do not count as Node skips.
+
+| File in `v2/tests/` | Tests | Pass | Fail | Skipped | Cancelled |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| r-correct.test.mjs | 11 | 11 | 0 | 0 | 0 |
+| r-claims.test.mjs | 19 | 19 | 0 | 0 | 0 |
+| m11-template.test.mjs | 16 | 16 | 0 | 0 | 0 |
+| m11-clip-ir.test.mjs | 14 | 14 | 0 | 0 | 0 |
+| m11-summary.test.mjs | 7 | 7 | 0 | 0 | 0 |
+| m11-revision-parse.test.mjs | 15 | 15 | 0 | 0 | 0 |
+| m11-stale-graph.test.mjs | 12 | 12 | 0 | 0 | 0 |
+| m09-media-ir.test.mjs | 27 | 27 | 0 | 0 | 0 |
+| m09-media-qa.test.mjs | 19 | 19 | 0 | 0 | 0 |
+| m09-content.test.mjs | 11 | 11 | 0 | 0 | 0 |
+| m11-ui-logic.test.mjs | 18 | 18 | 0 | 0 | 0 |
+| stage-finalizare.test.mjs | 11 | 11 | 0 | 0 | 0 |
+| r-priv-rev.test.mjs | 11 | 11 | 0 | 0 | 0 |
+| r-media-holds.test.mjs | 9 | 9 | 0 | 0 | 0 |
+| m11-fixture.test.mjs | 6 | 6 | 0 | 0 | 0 |
+| stage-office-delivery.test.mjs | 5 | 5 | 0 | 0 | 0 |
+| r-closure.test.mjs | 15 | 15 | 0 | 0 | 0 |
+| m09-media-capture.test.mjs | 4 | 4 | 0 | 0 | 0 |
+| Total | 230 | 230 | 0 | 0 | 0 |
+
+RCO-04 actually ran with installed Chromium and real ffmpeg/ffprobe. Its temporary SQLite Hub services use synthetic approved facts and a temporary loopback demo page, with no HTTP Hub or providers. It confirms through the test owner session and exercises actual capture/render/export twice: first recapture, then byte-identical capture reuse without a new capture session. Assertions cover one phone value submitted per capture, same-project parent links, unchanged v1 bytes/approval/software hashes, factual PASS for both formats and summary, owner-section review reasons, NEEDS_OWNER recovery, versioned Office output, workbook byte proof, newest-manifest verification, and zero agent_runs/factory_dispatches. Office verification in this harness is FILE_CHECKED, not APP_VERIFIED.
+
+RCO-06 applies a real subsequent tone patch and verifies the Room metadata from its saved IR. RCO-10 tests factual export refusal for either format in package/revision/correction contexts. RCO-11 proves identical Office bytes cause no write authorization or COM call, exposes old clip references, and refuses a foreign bundle. RCO-08 runs the manual dry-run against synthetic data and checks that database rows/export bytes stay unchanged. UI verification includes static rendering of correction notices, button availability, disabled approvals, Hub attribution, summary history/review reasons and the historical-delivery link. Twenty-seven changed JS/MJS files passed `node --check`; JSX was compiled/rendered by the UI suite. `git diff --check` passed.
+
+Earlier runs exposed stale test expectations and one implementation defect: `media.reviews.apply()` returns version metadata without IR, so revision metadata must load the saved version through `media.edits.getVersion()`. These were fixed and the affected tests rerun. No timing failure was classified as a product defect.
+
+Not run:
+
+- `m11-ui-logic` UI-17; `stage-finalizare` FZ-07; `r-media-holds` RM-10–11; `r-priv-rev` RP-07/08/10; `m11-fixture` FX-02–05/08–12: server/browser cases outside the explicit RCO-04 exception.
+- `m09-media-capture` CP-02–06/10–11: socket/server/browser harness cases; CP-05 is also omitted by the conservative selection, although its early policy refusal needs no connection.
+- `stage-office-delivery` OFF-06 and `r-closure` HIST-01, FAC-01–07, REV-05: integration harnesses with forbidden git setup, runner/model simulation and/or server/browser activity. The pure/planner, rollback and package-index cases were selected instead.
+- Live Hub calls, live-data inspection or correction, copied production-data dry-run, external network, providers/models, npm installation, migration changes, full repository suite, Word/Excel COM/PDF application verification and Brave visual QA. Chromium was used only for the explicitly requested RCO-04 test. No Brave QA is claimed.
+
+### Part B implementation decisions
+
+1. New records always use `1 + earlier record count`; an unchanged live card reuses its record/hash. To reconcile that rule with the critic's expired/superseded re-offer rule, tick compares the same frozen work while ignoring only the correction ordinal and its derived Office/index filename lines, then consults proposal events for those records' actual hashes and HUB_VERSION. A re-offer on a new Hub version creates a new ordinal; cancellation suppresses automatic offers until the owner explicitly asks again.
+2. Capture bases additionally record `observedSha256`. A missing/corrupt capture can be corrected, but a change to those observed bytes after confirmation refuses preparation. Comparing only the expected recorded SHA would make provenance defects impossible to repair safely.
+3. Clip filenames retain the existing generation/export-count rule; summary filenames use their own document version; Office/index filenames use correction version + 1. Failed attempts may leave gaps. Identical existing bytes may be reused, and the existing no-overwrite writer chooses an alternate filename on a collision.
+4. The newest manifest lists all older indexes and the new README, but excludes itself because a file cannot contain its own full SHA256. Producers are linked by delivery item, document version, or plan/step. Superseded files retain bytes and link to the replacing correction plan/hash.
+5. Campaign per-file hashes are additive `fileProofs: [{path, sha256}]`; the previous `files` string array remains for contract-13 clients. Office result hashes/input hashes/clip hashes and manifest file/hash are additive too. Legacy results without per-file/PDF proof are rebuilt when an identical-byte proof cannot be established.
+6. While a correction is available, the Room conservatively disables both creative approvals and summary approval until the correction completes. The Studio creative-decision path remains unchanged, as specified. Owner-authored summary sections remain exempt from generated-prose checks and retain review notices.
+7. The no-network guardrail takes precedence over the dry-run specification's health probe: any recorded port is refused without connecting, including a stale port. The operator can remove the stale pid file from a stopped COPY. The tool refuses live pids and lexical/resolved live-root paths, opens SQLite read-only, constrains capture paths to the copy, and writes a new output only inside this workspace and outside the copied export destination.
+8. Dry-run plan hashes use the explicit placeholder revision ID `drv_dry_run`; the correctionSha and compilation are the real functions, but a later persisted plan has its real revision ID and therefore a different body hash. Dry-run is an audit/compiler, not runtime snapshot/tool verification or permission to execute.
+9. Integration testing seeds approved spec/evidence/bundle facts in a temporary Hub and stubs snapshot/preview supervision. It tests real correction/media/Office file execution without running a software factory, git setup, writer or model. Office COM/PDF checks remain unverified in this task.
+
+### Part B changed files
+
+| File | Purpose |
+| --- | --- |
+| `v2/server/delivery/correction.mjs` | Pure audit, frozen correction record, overlays, IR metadata and deterministic steps. |
+| `v2/server/delivery/delivery.mjs` | Proposal/base guards, tick/re-offers, lifecycle, effective templates, summary/history and Office views. |
+| `v2/server/delivery/executors.mjs` | Prepare/execute correction, same-project patch, fresh revision metadata and factual export gates. |
+| `v2/server/delivery/office-executors.mjs` | Own-bundle guards, byte-proven reuse, versioned Office/index files and latest-manifest verification. |
+| `v2/server/delivery/summary.mjs` | Exact generated-line checks, honest fallback copy and complete traceability. |
+| `v2/server/delivery/clip-ir.mjs` | Use CLAIM_UNBOUND for omitted unbound slots. |
+| `v2/server/delivery/stale.mjs` | Permit guarded correction recovery from NEEDS_OWNER. |
+| `v2/server/delivery/delivery-commands.mjs` | Owner-session correction proposal command. |
+| `v2/server/delivery/delivery-routes.mjs` | Add the correction-propose route mapping. |
+| `v2/server/delivery/inbox.mjs` | Show one Hub correction row in the cockpit. |
+| `v2/server/media/capture.mjs` | Clear the field before animated typing. |
+| `v2/server/media/edits.mjs` | Validate and insert a patch under the existing edit project/parent. |
+| `v2/server/media/qa.mjs` | Match factual vocabulary as whole words. |
+| `v2/server/ops/plans.mjs` | Supersede a delivery's obsolete correction without changing confirmation. |
+| `v2/server/owner/planners/criteria.mjs` | Collapse inherited duplicate field pairs and clauses. |
+| `v2/server/owner/planners/engineering.mjs` | Keep all inherited flows and refuse criterion overflow. |
+| `v2/server/owner/planners/delivery.mjs` | Use the proven effective hook in spoken/cockpit copy. |
+| `v2/web/src/lib/deliveryLogic.js` | Correction command/labels, source attribution, review reasons and historical link. |
+| `v2/web/src/screens/DeliveryRoom.jsx` | Correction notice, defects and owner proposal/retry button. |
+| `v2/web/src/screens/delivery/ClipPanel.jsx` | Separate Hub corrections from owner requests. |
+| `v2/web/src/screens/delivery/DecisionsPanel.jsx` | Disable defective-presentation approvals with a reason. |
+| `v2/web/src/screens/delivery/SummaryEditor.jsx` | Show correction provenance, review reasons and version approvals. |
+| `v2/web/src/screens/delivery/ObservationsPanel.jsx` | Link historical citation defects to the current delivery. |
+| `v2/tests/r-correct.test.mjs` | Eleven audit, authority, execution, recovery, provenance and Office regression cases. |
+| `v2/tests/correction-helpers.mjs` | Isolated synthetic Hub services with no provider or shared helper changes. |
+| `v2/tests/manual/correction-dry-run.mjs` | Read-only audit/plan compiler for a stopped data copy. |
+| `v2/tests/fixtures/correction-local-guard.mjs` | Restrict the permitted integration test to loopback, excluding the live port. |
+| `v2/tests/run-correction-offline.mjs` | Sequential system-Node verification with saved exact counts/filters. |
+| `v2/tests/m11-ui-logic.test.mjs` | Additive contract and static-render correction UI coverage. |
+| `v2/tests/fixtures/m11-delivery-view.json` | Add correction, revision source and summary-version fixture fields. |
+| `v2/tests/r-claims.test.mjs` | Expect separate citation and curation findings. |
+| `v2/tests/r-closure.test.mjs` | Supply the existing effective-template hook in the package stub. |
+| `v2/tests/r-priv-rev.test.mjs` | Cover doubled inherited flows and criterion overflow refusal. |
+| `.ifrim/OPEN_ISSUES.md` | Record the explicitly out-of-scope package-plan binding issue. |
+| `v2/docs/claims-2.14.17.md` | Preserve part A and append part B verification and decisions. |
+
+No changes to `v2/tests/helpers.mjs`, `DecisionInbox.jsx`, migrations or the node_modules junction. No state-changing git command, commit, model invocation or live-data access was used for part B. Temporary scripts/logs stay under the pre-existing `.tmp-s25-a/` workspace directory.

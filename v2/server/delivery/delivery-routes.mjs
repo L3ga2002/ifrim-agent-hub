@@ -8,7 +8,7 @@ import { deliveryShot } from "./delivery-commands.mjs";
 import { decisionsInbox } from "./inbox.mjs";
 
 const ACTIONS = Object.freeze({
-  verify: "delivery.verify", "summary-edit": "delivery.summary.edit", "summary-approve": "delivery.summary.approve", "software-accept": "delivery.software.accept",
+  "correction-propose": "delivery.correction.propose", verify: "delivery.verify", "summary-edit": "delivery.summary.edit", "summary-approve": "delivery.summary.approve", "software-accept": "delivery.software.accept",
   "package-propose": "delivery.package.propose", "preview-stop": "delivery.preview.stop", close: "delivery.close", cancel: "delivery.cancel", "revision-propose": "delivery.revision.propose",
   revise: "delivery.revise", "summary-service": "delivery.summary.service", "preview-start": "delivery.preview.start",
 });

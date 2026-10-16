@@ -50,6 +50,13 @@ export function createEdits({ db, bus, clock = () => new Date(), assets, fontsDi
     });
   }
 
+  function addVersion({ editProjectId, parentVersionId, ir, changeKind = 'patch', change, actor }) {
+    const parent = getVersion(parentVersionId);
+    if (!parent || parent.editProjectId !== editProjectId) throw new HubError('conflict', 'Versiunea părinte nu aparține montajului.', { code: 'EDIT_PARENT' });
+    const result = validate(ir);
+    if (!result.ok) throw new HubError('validation', 'Planul de montaj nu este valid.', { code: 'IR_INVALID', data: { errors: result.errors } });
+    return bus.transaction(() => ({ project: get(editProjectId), version: insertEditVersion(db, bus, clock, { editProjectId, parentVersionId, ir: result.ir || ir, changeKind, change, validation: { ok: true, warnings: result.warnings, durationFrames: result.durationFrames }, actor }) }));
+  }
   function mapProject(row) {
     return row ? { id: row.id, contentProjectId: row.content_project_id, title: row.title, currentVersion: row.current_version,
       createdBy: row.created_by, createdAt: row.created_at, updatedAt: row.updated_at } : null;
@@ -77,5 +84,5 @@ export function createEdits({ db, bus, clock = () => new Date(), assets, fontsDi
     return rows.map(mapProject);
   }
 
-  return { create, get, getVersion, list, validate, validationContext };
+  return { create, addVersion, get, getVersion, list, validate, validationContext };
 }

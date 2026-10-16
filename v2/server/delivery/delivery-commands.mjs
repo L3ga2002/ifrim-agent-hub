@@ -32,6 +32,8 @@ export function registerDeliveryCommands(reg, hub) {
       // ONLY the factory's own acceptance; no other effect.
       return (await commands.dispatch({ type: "factory.accept", payload: { missionId: d.missionId, note: input.note }, channel: ctx.channel, actor: ctx.actor, ownerSession: ctx.ownerSession })).result;
     } });
+  reg("delivery.correction.propose", { describe: "Pregătește corectura afirmațiilor, fără a o confirma", async: true, channels: OWNER, schema: { deliveryId: { required: true, max: 80 } },
+    execute: (input, ctx) => { needSession(ctx, "corectura afirmațiilor"); return deliveries.proposeCorrection(input.deliveryId, { actor: ctx.actor, via: ctx.channel }); } });
   reg("delivery.package.propose", { describe: "Cardul pașilor de livrare (o confirmare): captură, clip, rezumat pe versiunea verificată", async: true, channels: OWNER, schema: { deliveryId: { required: true, max: 80 } },
     execute: async (input, ctx) => {
       needSession(ctx, "pașii de livrare");

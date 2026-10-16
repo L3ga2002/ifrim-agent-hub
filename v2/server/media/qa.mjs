@@ -423,7 +423,7 @@ export function factualCheck({ ir, claims = [], getVersion = null, presets = PRE
       textItemsUnclaimed++;
       const ids = citedCriteria(item.text);
       // Citations are deterministic; the closed factual vocabulary is explicitly a heuristic.
-      if (ids.length || /\b(?:PASS|E2E|verificat|testat|revizuit)(?:ă|e|a|i)?\b/iu.test(item.text)) add({ code: "TEXT_CLAIM_MISSING", severity: "error", criterion: "Textul factual are o afirmație legată", message: "Textul citează un criteriu sau folosește vocabular factual fără dovadă legată.", evidence: { heuristic: !ids.length, ids }, range: frameRange(item.start, item.end, fps), itemId: item.id, claimId: null });
+      if (ids.length || /(?<![\p{L}\p{N}_])(?:PASS|E2E|verificat|testat|revizuit)(?:ă|e|a|i)?(?![\p{L}\p{N}_])/iu.test(item.text)) add({ code: "TEXT_CLAIM_MISSING", severity: "error", criterion: "Textul factual are o afirmație legată", message: "Textul citează un criteriu sau folosește vocabular factual fără dovadă legată.", evidence: { heuristic: !ids.length, ids }, range: frameRange(item.start, item.end, fps), itemId: item.id, claimId: null });
     }
   }
   for (const where of occurrences) {
