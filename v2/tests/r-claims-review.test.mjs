@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
+import os from 'node:os';
 import { correctionEnv, master, baseline } from './correction-helpers.mjs';
 import { hashCanonical } from '../server/core/canonical.mjs';
 import { createDeliveries } from '../server/delivery/delivery.mjs';
@@ -124,8 +125,9 @@ test('RCC-05 vocabulary-only unclaimed text warns in legacy/Studio IRs, errors i
 });
 
 test('RCC-06 offline runner rejects zero tests and missing/partial summaries even with exit status zero', t => {
-  const dir = fs.mkdtempSync(path.resolve('.tmp-s25-a/runner-review-'));
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'runner-review-'));
   t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  assert.equal(path.dirname(dir), path.resolve(os.tmpdir()));
   const summary = '# tests 1\n# pass 1\n# fail 0\n# skipped 0\n# cancelled 0\n';
   for (const [stdout, status, expected] of [[summary, 0, 0], [summary.replace('# tests 1', '# tests 0').replace('# pass 1', '# pass 0'), 0, 1],
     ['TAP version 13\n', 0, 1], [summary.replace('# cancelled 0\n', ''), 0, 1], [summary, 1, 1]]) {
@@ -140,4 +142,6 @@ test('RCC-06 offline runner rejects zero tests and missing/partial summaries eve
   let count = 0;
   assert.equal(runClaimsOffline(['r-claims', 'm11-template'], { dir, log() {}, run: () => ({ status: 0, stdout: count++ ? summary : '' }) }), 1);
   assert.equal(count, 2, 'a later passing file cannot hide an invalid earlier file');
+  fs.rmSync(dir, { recursive: true, force: true });
+  assert.equal(fs.existsSync(dir), false);
 });

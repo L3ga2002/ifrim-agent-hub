@@ -1,16 +1,21 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { correctionEnv } from './correction-helpers.mjs';
-import { dedupeDefects, groupDefects, buildCorrectionRecord } from '../server/delivery/correction.mjs';
+import fs from 'node:fs';
+import path from 'node:path';
+import { correctionEnv, factsOf, resolve, docOf, master } from './correction-helpers.mjs';
+import { BOOKING_DEMO } from '../server/factory/booking-demo-def.mjs';
+import { captureScriptFrom, pickCaptureCriteria } from '../server/delivery/template.mjs';
+import { presentationAudit, dedupeDefects, groupDefects, buildCorrectionRecord } from '../server/delivery/correction.mjs';
 import { decisionsInbox } from '../server/delivery/inbox.mjs';
 import { hashCanonical } from '../server/core/canonical.mjs';
+import { irHash } from '../server/media/ir.mjs';
 import { correctionDryRun } from './manual/correction-dry-run.mjs';
 const id = 'dlv_correct';
 const settle = () => new Promise(r => setTimeout(r, 30));
 async function env(t, options = {}) { const e = await correctionEnv(options); t.after(() => e.cleanup()); return e; }
 
-test('RCD-01 tick offers a zero-defect late-failure continuation, confirms it and restores READY without media work', async t => {
-  const e = await env(t), draft = e.deliveries.correctionDraft(id);
+async function lateFailure(e) {
+  const draft = e.deliveries.correctionDraft(id);
   for (const role of ['desktop', 'mobile']) {
     const c = e.deliveries.currentItem(id, 'capture', role);
     e.db.prepare('UPDATE delivery_items SET meta_json=? WHERE id=?').run(JSON.stringify({ ...c.meta, holdsRejected: [], stepsSha: draft.correction.captures[role].stepsSha }), c.id);
@@ -30,6 +35,11 @@ test('RCD-01 tick offers a zero-defect late-failure continuation, confirms it an
   e.db.prepare("UPDATE ops_plans SET status='FAILED' WHERE id=?").run(first.plan.id);
   e.deliveries.onEvent({ type: 'ops.plan.failed', scopeId: first.plan.id, payload: { reason: 'after summary' } });
   assert.deepEqual(e.deliveries.view(id).correction.defects, []);
+  return first;
+}
+
+test('RCD-01 tick offers a zero-defect late-failure continuation, confirms it and restores READY without media work', async t => {
+  const e = await env(t), first = await lateFailure(e);
   await e.deliveries.tick();
   const row = e.db.prepare('SELECT ops_plan_id FROM delivery_revisions ORDER BY rowid DESC LIMIT 1').get();
   const recovery = e.opsPlans.view(row.ops_plan_id);
@@ -45,6 +55,131 @@ test('RCD-01 tick offers a zero-defect late-failure continuation, confirms it an
   assert.deepEqual(retry.plan.steps.map(s => s.kind), ['delivery.correct.prepare', 'delivery.finish']);
   assert.equal((await e.confirm(retry.plan)).status, 'DONE');
   assert.equal(e.deliveries.get(id).status, 'READY');
+});
+
+for (const status of ['EXPIRED', 'SUPERSEDED', 'CANCELLED']) test(`RCF-01 ${status} unstarted continuation remains recoverable and confirms to READY`, async t => {
+  let time = Date.now();
+  const e = await env(t, { testClock: () => new Date(time) });
+  await lateFailure(e);
+  await e.deliveries.tick();
+  const card = e.deliveries.view(id).correction.plan;
+  assert.ok(e.deliveries.revisionOfPlan(id, card.id).delta.correction.continuation);
+  assert.ok(e.opsPlans.view(card.id).steps.every(s => s.status === 'PENDING'));
+  if (status === 'CANCELLED') { e.opsPlans.cancel(card.id); await settle(); }
+  else e.db.prepare('UPDATE ops_plans SET status=? WHERE id=?').run(status, card.id);
+  assert.equal(e.deliveries.get(id).status, 'NEEDS_OWNER');
+  assert.equal(e.deliveries.view(id).correction.available, true);
+  time += 600001; await e.deliveries.tick();
+  let replacement = e.deliveries.view(id).correction.plan;
+  if (status === 'CANCELLED') {
+    assert.equal(replacement, null, 'tick never reoffers a cancelled card');
+  } else {
+    assert.ok(replacement); assert.notEqual(replacement.id, card.id);
+    e.db.prepare("UPDATE ops_plans SET status='EXPIRED' WHERE id=?").run(replacement.id);
+    time += 600001; await e.deliveries.tick();
+    assert.equal(e.deliveries.view(id).correction.plan, null, 'automatic reoffer is once per version');
+  }
+  replacement = (await e.deliveries.proposeCorrection(id)).plan;
+  assert.deepEqual(replacement.steps.map(s => s.kind), ['delivery.correct.prepare', 'delivery.finish']);
+  assert.equal((await e.confirm(replacement)).status, 'DONE');
+  assert.equal(e.deliveries.get(id).status, 'READY');
+});
+
+test('RCF-02 background verification detects tracked file drift despite a live correction and respects ten minutes', async t => {
+  let time = Date.now(); const e = await env(t, { testClock: () => new Date(time) });
+  const file = path.join(e.project.path, 'tracked.txt'); fs.writeFileSync(file, 'approved');
+  const base = e.factory.snapshotCheck(); let checks = 0;
+  e.factory.snapshotCheck = () => { checks++; const changed = fs.readFileSync(file, 'utf8') !== 'approved'; return { ...base, actual: changed ? 'changed' : base.actual, changedFiles: changed ? ['tracked.txt'] : [] }; };
+  e.factory.driftProvenance = (project, files) => ({ software: files, hub: [] });
+  await e.deliveries.proposeCorrection(id);
+  await e.deliveries.tick(); const initial = checks;
+  fs.writeFileSync(file, 'changed outside Hub');
+  time += 599999; await e.deliveries.tick();
+  assert.equal(checks, initial); assert.equal(e.deliveries.get(id).status, 'READY');
+  time += 2; await e.deliveries.tick();
+  assert.equal(e.deliveries.get(id).status, 'STALE');
+  assert.equal(checks, initial + 1);
+  assert.deepEqual(e.deliveries.get(id).verified.changedFiles, ['tracked.txt']);
+  assert.equal(e.deliveries.get(id).verified.by, 'hub');
+});
+
+test('RCF-03 original-spec STALE history ignores pacing/marker differences; observations name only actual defect kinds', async t => {
+  const e = await env(t), spec = BOOKING_DEMO.spec, facts = factsOf(spec), presentation = resolve(spec);
+  e.factory.claimFacts = () => facts;
+  e.factory.deliveryBinding = () => ({ bundleId: facts.bundle.id, bundleSha: facts.bundle.sha256, criteria: facts.manifest.spec.criteria, manifest: facts.manifest });
+  const template = structuredClone(e.template);
+  template.captures = Object.entries(pickCaptureCriteria(spec)).map(([role, criterion]) => {
+    const cap = { role, criterion: criterion.id };
+    const script = captureScriptFrom(criterion.steps, { role, noun: template.story.noun, proofSelector: '[data-state="success"]', pacing: { typeDelayMs: 81 } });
+    assert.equal(script.collapsed.filter(c => c.kind === 'fill').length, 0);
+    const steps = [...script.steps, { marker: { kind: 'chapter', note: 'old compiler' } }];
+    return { ...cap, ...script, steps, stepsSha: hashCanonical(steps) };
+  });
+  e.db.prepare("UPDATE deliveries SET template_json=?, template_sha=?, status='STALE' WHERE id=?").run(JSON.stringify(template), hashCanonical(template), id);
+  for (const cap of template.captures) {
+    const item = e.deliveries.currentItem(id, 'capture', cap.role);
+    e.db.prepare('UPDATE delivery_items SET meta_json=? WHERE id=?').run(JSON.stringify({ ...item.meta, holdsRejected: [], stepsSha: cap.stepsSha }), item.id);
+  }
+  const ir = master(presentation), edit = e.deliveries.currentItem(id, 'edit', 'master');
+  e.db.prepare('UPDATE media_edit_versions SET ir_json=?, ir_sha256=? WHERE id=?').run(JSON.stringify(ir), irHash(ir), edit.refId);
+  const variant = e.media.variants.derive({ masterVersionId: edit.refId, platformKey: template.story.variant.platformKey, overrides: BOOKING_DEMO.delivery.presentations[0].variant, actor: 'test' });
+  e.deliveries.bindItem(id, { kind: 'variant', role: 'vertical', refTable: 'media_variants', refId: variant.variant.id, meta: { editVersionId: variant.version.id } });
+  const summary = docOf(presentation, facts);
+  e.db.prepare("UPDATE delivery_documents SET sections_json=? WHERE id='ddoc_old'").run(JSON.stringify(summary.sections));
+  const immutable = e.db.prepare('SELECT template_json, template_sha FROM deliveries WHERE id=?').get(id);
+  assert.deepEqual(e.deliveries.view(id).correction.defects, []);
+  assert.deepEqual(e.deliveries.view(id).observations.filter(o => o.kind === 'correction'), []);
+  const cap = e.deliveries.currentItem(id, 'capture', 'desktop');
+  e.db.prepare('UPDATE delivery_items SET meta_json=? WHERE id=?').run(JSON.stringify({ ...cap.meta, holdsRejected: [{ code: 'HOLD_POSTCONDITION_FAILED', reason: 'typing' }] }), cap.id);
+  let observation = e.deliveries.view(id).observations.find(o => o.kind === 'correction');
+  assert.match(observation.text, /capturile au tastat o valoare de două ori/);
+  assert.doesNotMatch(observation.text, /citări de criterii greșite/);
+  ir.tracks.flatMap(t => t.items || []).find(i => i.id === 't-desktop').text = 'AC-99: greșit';
+  e.db.prepare('UPDATE media_edit_versions SET ir_json=? WHERE id=?').run(JSON.stringify(ir), edit.refId);
+  observation = e.deliveries.view(id).observations.find(o => o.kind === 'correction');
+  assert.match(observation.text, /citări de criterii greșite/);
+  assert.match(observation.text, /capturile au tastat o valoare de două ori/);
+  assert.deepEqual(e.db.prepare('SELECT template_json, template_sha FROM deliveries WHERE id=?').get(id), immutable);
+});
+
+test('RCF-03b outdated steps require currently collapsed fill still typed in the frozen capture', async t => {
+  const e = await env(t), input = e.deliveries.correctionFacts(id);
+  const check = template => presentationAudit({ ...input, effectiveTemplate: template, spec: input.facts.spec, specSha: input.facts.specRow.sha256, catalog: BOOKING_DEMO.delivery.presentations, claimFacts: input.facts });
+  const old = structuredClone(e.template);
+  assert.ok(check(old).defects.some(d => d.code === 'CAPTURE_STEPS_OUTDATED'));
+  for (const cap of old.captures) {
+    const criterion = input.facts.spec.acceptance.find(c => c.id === cap.criterion);
+    const script = captureScriptFrom(criterion.steps, { role: cap.role, noun: old.story.noun, proofSelector: cap.proofSelector, pacing: { typeDelayMs: 87 } });
+    assert.ok(script.collapsed.some(c => c.kind === 'fill'));
+    cap.steps = [...script.steps, { marker: { kind: 'chapter', note: 'different compiler' } }];
+  }
+  const audit = check(old);
+  assert.ok(!audit.defects.some(d => d.code === 'CAPTURE_STEPS_OUTDATED'));
+  assert.ok(audit.defects.some(d => d.code === 'CAPTURE_POSTCONDITION_FAILED'));
+  // Only the value actually collapsed by this compiler is eligible, even on the same selector.
+  for (const cap of old.captures) {
+    const criterion = input.facts.spec.acceptance.find(c => c.id === cap.criterion);
+    const type = { selector: "[name='phone']", text: '0700 999 999', delayMs: 60 };
+    criterion.steps.push({ click: 'button' }, { fill: { selector: type.selector, value: type.text } });
+    cap.steps.push({ type }, { type });
+  }
+  assert.ok(!check(old).defects.some(d => d.code === 'CAPTURE_STEPS_OUTDATED'));
+  input.captures[0].actualSha = 'wrong';
+  assert.ok(check(old).defects.some(d => d.code === 'CAPTURE_PROVENANCE'));
+});
+
+test('RCF-04 Hub correction preserves normal decisions and describes proposed versus active plans', async t => {
+  const e = await env(t), out = await e.deliveries.proposeCorrection(id, { actor: 'hub' });
+  for (const status of ['PROPOSED', 'CONFIRMED', 'RUNNING', 'PAUSED']) {
+    e.db.prepare('UPDATE ops_plans SET status=? WHERE id=?').run(status, out.plan.id);
+    const before = e.db.prepare('SELECT total_changes() n').get().n;
+    const items = decisionsInbox({ db: e.db, deliveries: e.deliveries, factory: { list: () => [] }, projects: {} }).items;
+    assert.ok(items.some(i => i.kind === 'delivery' && i.id === id));
+    const card = items.find(i => i.kind === 'delivery_correction');
+    if (status === 'PROPOSED') { assert.match(card.why, /Așteaptă confirmarea ta/); assert.equal(card.ifReject, 'Nimic nu pornește.'); }
+    else { assert.match(card.why, /corectura rulează/i); assert.match(card.ifReject, /corectura rulează/i); assert.doesNotMatch(card.ifReject, /Nimic nu pornește/); }
+    assert.equal(e.db.prepare('SELECT total_changes() n').get().n, before);
+  }
 });
 
 test('RCD-02 untouched proposed/confirmed cancellation keeps READY; started cancellation requires owner; tick never reoffers', async t => {
@@ -104,7 +239,7 @@ test('RCD-03 two deliveries keep independent cards; tick reoffers expired/supers
 });
 
 test('RCD-04 live confirmed/running/paused corrections are returned unchanged even when current facts differ', async t => {
-  const e = await env(t), out = await e.deliveries.proposeCorrection(id);
+  const e = await env(t), out = await e.deliveries.proposeCorrection(id, { actor: 'hub' });
   for (const status of ['CONFIRMED', 'PAUSED']) {
     e.db.prepare('UPDATE ops_plans SET status=? WHERE id=?').run(status, out.plan.id);
     assert.equal((await e.deliveries.proposeCorrection(id)).plan.id, out.plan.id);
@@ -118,6 +253,10 @@ test('RCD-04 live confirmed/running/paused corrections are returned unchanged ev
   await e.opsPlans.confirm({ planId: out.plan.id, nonce: out.plan.nonce, displayedHash: out.plan.hash, session: e.session });
   await ready;
   try {
+    const inbox = decisionsInbox({ db: e.db, deliveries: e.deliveries, factory: { list: () => [] }, projects: {} });
+    // This executor is actually held RUNNING, rather than only setting its database status.
+    assert.ok(inbox.items.some(i => i.kind === 'delivery' && i.id === id));
+    assert.match(inbox.items.find(i => i.kind === 'delivery_correction').why, /corectura rulează/i);
     e.deliveries.bindItem(id, { kind: 'capture', role: 'desktop', refTable: 'media_asset_versions', refId: 'foreign' });
     assert.equal((await e.deliveries.proposeCorrection(id)).plan.id, out.plan.id);
     assert.equal((await e.opsPlans.supersedeDeliveryCorrection(out.plan.id, id)).status, 'RUNNING');
@@ -193,7 +332,8 @@ test('RCD-08 audit de-duplicates bullet/plain findings and orders clips/captures
 });
 
 test('RCD-09 proposal scan is throttled per delivery and leaves delivery verification/timestamps untouched', async t => {
-  let time = Date.now(); const e = await env(t, { testClock: () => new Date(time) });
+  // Keep the independent legacy verifier outside its >600000 ms window.
+  let time = 0; const e = await env(t, { testClock: () => new Date(time) });
   let scans = 0; const check = e.factory.snapshotCheck;
   e.factory.snapshotCheck = (...args) => { scans++; return check(...args); };
   e.opsPlans.propose = async () => { throw Error('no card'); };

@@ -396,3 +396,51 @@ Not run:
 Changed implementation files: `server/delivery/summary.mjs` (wording, matching, truncation), `server/delivery/correction.mjs` (owner-facing grouping), `server/delivery/delivery.mjs` (grouped Room projection), and `tests/manual/correction-dry-run.mjs` (preview timestamp). Regression changes are in `r-claims`, `r-correct-review`, `m11-summary` and `m11-ui-logic`.
 
 No edits to `v2/tests/helpers.mjs`, `DecisionInbox.jsx`, migrations, the node_modules junction or files outside the repository. No credential-folder read, model invocation, network request, installation, live-data access or git state-changing command was used. No commit was created.
+
+## Round F — final review fixes (2026-10-16)
+
+Implemented on `2d52350`, branch `claude/project-thread-98qmet`, without committing. Version remains 2.14.17-m11, schema 12 and API contract 13. Existing stored template/IR/spec/bundle/plan/correction hashes are not rewritten.
+
+| Spec F item | Change | Regression proof |
+| --- | --- | --- |
+| 1 — ended continuations | A NEEDS_OWNER delivery's latest non-APPLIED correction remains unfinished if its plan started or its revision is a continuation, regardless of the card's terminal state. Existing cancellation and once-per-version reoffer rules remain in force. | `r-correct-review` RCF-01 has three cases: EXPIRED and SUPERSEDED receive one automatic replacement; unstarted CANCELLED receives none. In all three the owner can request a new continuation, confirm it and reach READY. A second expiry does not loop automatically. |
+| 2 — periodic drift verification | Restored the separate `lastVerify` loop from 2.14.16: READY deliveries are verified by Hub when more than 600000 ms have elapsed. Correction scans retain their independent per-delivery throttle and read-only snapshot check. | RCF-02 changes a real file in the temporary project, with file-derived snapshot facts, while a live correction excludes proposal scanning. No check runs at 599999 ms; the tick at 600001 ms records the drift and makes the delivery STALE. RCD-09 isolates the proposal scan below the legacy verifier's boundary and still proves no timestamp/verification writes. |
+| 3 — capture audit and historical observations | Compiler hash differences alone no longer trigger CAPTURE_STEPS_OUTDATED. A current REPEATED_FILL collapse must correspond to extra typing of that selector/value in the frozen capture; current-script captures are accepted. Pacing/markers are ignored. Postcondition and file-provenance checks remain. STALE observations use the actual TEXT_/SUMMARY_, CAPTURE_ and narrative defect kinds. | RCF-03 constructs original-booking-spec STALE history with single typing and older pacing/markers: zero defects and no correction observation. It checks capture-only and mixed observations. RCF-03b covers real collapsed duplicate typing, already-deduplicated scripts, a different value on the same selector, postcondition failure and changed file provenance. |
+| 4 — inbox coexistence and status | A Hub correction is an additional row; the delivery's ordinary pending decisions remain visible. PROPOSED waits for confirmation; CONFIRMED/RUNNING/PAUSED say `Corectura rulează` in why/ifReject. | RCF-04 covers all four statuses and asserts the inbox read writes no rows. RCD-04 also holds a real Hub-source executor RUNNING and checks both rows and running wording. The visible chip label is pending the narrowly requested exception for the explicitly protected `DecisionInbox.jsx`; that file is untouched. |
+| 5 — portable RCC-06 | Temporary runner output uses `fs.mkdtempSync(path.join(os.tmpdir(), ...))`, with registered cleanup and explicit removal verification. No repository-relative parent is needed. | RCC-06 asserts its parent is os.tmpdir(), exercises the zero/missing/partial TAP guards, then asserts removal. The parent assertion fails with the old location. TEMP/TMP are redirected inside this workspace during verification. |
+| 6 — required-phone citation | Phone-privacy's problem now needs AC-1, AC-2 and AC-3, matching its already-present mandatory-phone requirement. | `r-claims` RCF-06 pins the exact `(criteriile: AC-1, AC-2, AC-3)` output and refuses the statement without AC-3 proof. RCE-01 retains resolved-id and renumbering coverage. |
+| 7 — bounded flow wording | Phone-privacy now says `Primește mesajul „Programare confirmată”.` and `Telefonul nu apare în pagină, nici în lista zilei.` | RCF-07 pins all four flow lines and the entire unchanged booking presentation. RC-18 retains the complete booking summary hash and byte comparison. |
+
+### Round F verification
+
+Tests run sequentially, one file at a time, using `C:\Program Files\nodejs\node.exe --test --test-concurrency=1 --test-reporter=tap`. Exact arguments, name filters and TAP logs are in `.tmp-s25-a/round-f-run.mjs` and `.tmp-s25-a/round-f-results/`. Offline selections preload `claims-offline-guard.mjs`. RCO-04 is selected separately at the end with `correction-local-guard.mjs`, under the user's explicit temporary-loopback/Chromium/ffmpeg exception. TEMP/TMP point inside the repository.
+
+| File in `v2/tests/` | Tests | Pass | Fail | Skipped | Cancelled | Todo |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| r-claims.test.mjs | 23 | 23 | 0 | 0 | 0 | 0 |
+| r-claims-review.test.mjs | 6 | 6 | 0 | 0 | 0 | 0 |
+| r-correct.test.mjs (10 offline + RCO-04 last) | 11 | 11 | 0 | 0 | 0 | 0 |
+| r-correct-review.test.mjs | 20 | 20 | 0 | 0 | 0 | 0 |
+| m11-summary.test.mjs | 8 | 8 | 0 | 0 | 0 | 0 |
+| m11-ui-logic.test.mjs | 18 | 18 | 0 | 0 | 0 | 0 |
+| m11-fixture.test.mjs | 6 | 6 | 0 | 0 | 0 | 0 |
+| m11-template.test.mjs | 16 | 16 | 0 | 0 | 0 | 0 |
+| r-closure.test.mjs | 15 | 15 | 0 | 0 | 0 | 0 |
+| stage-office-delivery.test.mjs | 5 | 5 | 0 | 0 | 0 | 0 |
+| m11-stale-graph.test.mjs | 12 | 12 | 0 | 0 | 0 | 0 |
+| Total selected | 140 | 140 | 0 | 0 | 0 | 0 |
+
+RCO-04 passed (1 test, 1 pass, 0 fail/skipped/cancelled/todo), and was the last test run. It used real installed Chromium, ffmpeg/ffprobe, a temporary services/database environment and a demo HTTP server on an OS-selected loopback port. It exercised recapture, byte-identical capture reuse, renders, exports, Office history, a late failure and a confirmed continuation to READY, with no agent run or factory dispatch. It does not start the live Hub or a Hub HTTP server; Office checks are FILE_CHECKED, not COM verification. Its separate TAP/count files are `r-correct-real.tap` and `r-correct-real.json`. The `delivery/inbox.mjs` coverage is in `r-correct-review` RCF-04/RCD-04/RCE-04. Name-filtered exclusions are not counted as Node skips.
+
+The seven changed JavaScript modules passed `node --check`; `git diff --check` passed. The entire booking presentation was compared with the definition read from `git show HEAD:v2/server/factory/booking-demo-def.mjs`: JSON bytes are identical, hash `49ee3ec3a4cb9dad2dbeef0cfe26dd9ccdd0e31da86020e0374d669e3626307b`. The existing booking summary pin `7c6d1b429b7959baadcdf37b349e62830f91035f89cf096d9b364147b3c781d0`, first-generation planner pins and legacy hash checks pass.
+
+The new behavioral regressions were run against the pre-fix implementation and failed on the reported conditions before passing with the fixes. Early test setup errors (wrong revisionOfPlan arguments, capture-role object treated as an array, missing updated test IR hash) were corrected before the corresponding pre-fix failures were established. A supplemental RCC-06 invocation from an empty working directory initially failed in Node's loader because its absolute Windows `--import` argument lacked a file URL; no test body executed in that invocation. No timing failure has occurred.
+
+Not run / remaining:
+
+- The F4 visible chip-label edit is blocked by the explicit prohibition on editing `v2/web/src/screens/delivery/DecisionInbox.jsx`. A one-entry exception was requested; no response has been received. No alternative UI or global-component workaround was introduced.
+- M11-UI-17 and M11-FX-02–05/08–12: browser or loopback-server harnesses outside the RCO-04 exception.
+- `r-closure` HIST-01, FAC-01–07, REV-05; `stage-office-delivery` OFF-06; legacy `m11-delivery-guards`: broader Hub/git/runner/server harnesses outside the guardrails. The permitted correction-review suite directly tests the changed inbox service.
+- Full repository suite, live Hub/port 8011, live hub-data, external network, models, npm installation, Word/Excel COM, PDF application verification and Brave visual QA. RCO-04's explicitly requested Chromium is not Brave QA.
+
+No migration, protected helpers, node_modules junction or credential-folder edits/reads; no edits outside the repository and no state-changing git command. No commit was created.

@@ -2,7 +2,8 @@
 import { hashCanonical } from "../core/canonical.mjs";
 import { citedCriteria } from "../media/claims.mjs";
 import { resolvePresentation, freezePresentation, storyFromPresentation, provePresentation, claimState } from "./presentation.mjs";
-import { captureScriptFrom } from "./template.mjs";
+import { captureScriptFrom, CAPTURE_PACING } from "./template.mjs";
+import { E2E_RUN_TOKEN } from "../tools/browser-core.mjs";
 import { summaryFactCheck, renderSummary } from "./summary.mjs";
 
 export const CORRECTION_KIND = "delivery.correct";
@@ -78,7 +79,15 @@ export function presentationAudit({ delivery, effectiveTemplate, spec, specSha, 
     const script = captureScriptFrom(criterion?.steps, { noun: t.story.noun, role, proofSelector: cap?.proofSelector });
     const reasons = [];
     const defect = (code, text) => { reasons.push(code); add(code, `capture.${role}`, text, { itemId: item?.id }); };
-    if (!script.ok || item?.meta?.stepsSha !== hashCanonical(script.steps)) defect("CAPTURE_STEPS_OUTDATED", "Pașii filmați diferă de pașii aprobați compilați acum.");
+    // Compiler pacing/markers can change without invalidating old footage. Only repeated fills that
+    // the current compiler collapses AND the frozen capture still typed require this correction.
+    const repeatedTyping = script.collapsed.filter(c => c.kind === 'fill').some(c => {
+      const fill = criterion.steps[c.step - 1].fill;
+      const text = String(fill.value).split(E2E_RUN_TOKEN).join(CAPTURE_PACING.runWord);
+      const count = steps => (steps || []).filter(s => s.type?.selector === fill.selector && s.type.text === text).length;
+      return count(cap?.steps) > count(script.steps);
+    });
+    if (repeatedTyping && item?.meta?.stepsSha !== hashCanonical(script.steps)) defect("CAPTURE_STEPS_OUTDATED", "Captura a tastat o valoare de două ori; compilatorul actual elimină repetarea.");
     if ((item?.meta?.holdsRejected || []).some(h => h.code === "HOLD_POSTCONDITION_FAILED" && (h.reason === "typing" || h.reason === "type" || cap?.steps?.[h.step - 1]?.type))) defect("CAPTURE_POSTCONDITION_FAILED", "Tastarea nu a produs valoarea cerută.");
     if (!item?.actualSha || item.actualSha !== item.refSha) defect("CAPTURE_PROVENANCE", "Fișierul capturii lipsește sau amprenta lui diferă.");
     recapture[role] = { needed: reasons.length > 0, reasons };

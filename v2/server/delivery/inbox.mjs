@@ -39,8 +39,8 @@ export function decisionsInbox(hub) {
   for (const d of deliveries.list().filter((x) => ["READY", "NEEDS_OWNER"].includes(x.status))) {
     const v = deliveries.view(d.id);
     if (v.correction?.plan && v.revisions.some(r => r.planId === v.correction.plan.id && r.source === 'hub')) {
-      items.push({ kind: 'delivery_correction', id: v.correction.plan.id, projectId: d.projectId, projectName: v.delivery.projectName, real: false, title: 'Corectură afirmații (clip + rezumat)', waitingSince: d.updatedAt, what: 'Corectură propusă de Hub pentru afirmațiile livrării.', why: 'Așteaptă confirmarea ta.', ifAccept: 'Scrie versiuni noi; păstrează software-ul și istoricul.', ifReject: 'Nimic nu pornește.', effects: v.correction.defects.map(f => f.plain), link: '/livrare/' + d.id });
-      continue;
+      const proposed = v.correction.plan.status === 'PROPOSED';
+      items.push({ kind: 'delivery_correction', id: v.correction.plan.id, projectId: d.projectId, projectName: v.delivery.projectName, real: false, title: 'Corectură afirmații (clip + rezumat)', waitingSince: d.updatedAt, what: 'Corectură propusă de Hub pentru afirmațiile livrării.', why: proposed ? 'Așteaptă confirmarea ta.' : 'Corectura rulează.', ifAccept: 'Scrie versiuni noi; păstrează software-ul și istoricul.', ifReject: proposed ? 'Nimic nu pornește.' : 'Corectura rulează; o poți opri din locul deciziei.', effects: v.correction.defects.map(f => f.plain), link: '/livrare/' + d.id });
     }
     const pending = [];
     if (v.decisions.creativeMaster !== "APPROVED") pending.push("aprobarea creativă a clipului 16:9");

@@ -464,7 +464,7 @@ export function createDeliveries({ db, bus, clock, config, settings, projects, m
     const r = correctionRevisions(d.id).find(r => r.opsPlanId);
     const p = r && opsPlans.view(r.opsPlanId);
     return d.status === 'NEEDS_OWNER' && r?.status !== 'APPLIED'
-      && ((['FAILED', 'CANCELLED'].includes(p?.status) && started(p)) || (r?.delta.correction.continuation && LIVE_CORRECTION.includes(p?.status))) ? { revision: r, plan: p } : null;
+      && (started(p) || r?.delta.correction.continuation) ? { revision: r, plan: p } : null;
   }
   function correctionFacts(deliveryId) {
     const d = need(deliveryId), unfinished = unfinishedCorrection(d);
@@ -822,7 +822,13 @@ export function createDeliveries({ db, bus, clock, config, settings, projects, m
     for (const x of doc?.claimsToVerify || []) observations.push({ kind: "summary", severity: "info", text: x, ref: doc.id });
     for (const f of fv?.findings || []) if (f.status === "OPEN") observations.push({ kind: "finding", severity: f.severity, text: f.observation, ref: f.id });
     const child = db.prepare("WITH RECURSIVE descendants(id, depth) AS (SELECT id, 1 FROM deliveries WHERE parent_id = ? UNION ALL SELECT d.id, p.depth + 1 FROM deliveries d JOIN descendants p ON d.parent_id = p.id WHERE p.depth < 8) SELECT d.id, d.status FROM deliveries d JOIN descendants x ON x.id = d.id WHERE d.status IN ('READY','ARMED','ACTIVE','NEEDS_OWNER') ORDER BY d.created_at DESC, d.rowid DESC LIMIT 1").get(id);
-    if (d.status === 'STALE' && defects.length) observations.push({ kind: 'correction', severity: 'warn', text: 'Conține citări de criterii greșite (păstrată ca istoric); livrarea curentă e ' + (child?.id || 'indisponibilă'), ref: child?.id || null });
+    if (d.status === 'STALE' && defects.length) {
+      const codes = defects.flatMap(d => d.reasons.map(r => r.code)), issues = [];
+      if (codes.some(c => /^(TEXT_|SUMMARY_)/.test(c))) issues.push('citări de criterii greșite');
+      if (codes.some(c => c.startsWith('CAPTURE_'))) issues.push('capturile au tastat o valoare de două ori');
+      if (codes.includes('NARRATIVE_FROM_OTHER_SPEC')) issues.push('problema descrie altă specificație');
+      if (issues.length) observations.push({ kind: 'correction', severity: 'warn', text: issues.join('; ') + ' (păstrată ca istoric); livrarea curentă e ' + (child?.id || 'indisponibilă'), ref: child?.id || null });
+    }
     return {
       correction,
       delivery: { id: d.id, title: d.title, status: d.status, statusReason: d.statusReason, projectId: d.projectId, projectName: project?.name || null, labels: d.labels, generation: d.generation,
@@ -925,8 +931,9 @@ export function createDeliveries({ db, bus, clock, config, settings, projects, m
     for (const e of restores) setTimeout(() => onEvent({ type: "factory.retire_restored", scopeId: e.scope_id, payload: parse(e.payload_json, {}) }), 0);
   }
 
-  /** Housekeeping: read-only proposal scans, at most once per delivery per ten minutes. */
+  /** Housekeeping: read-only proposal scans and independent READY verification every ten minutes. */
   const lastCorrectionScan = new Map();
+  let lastVerify = 0;
   async function tick() {
     if (closing) return;
     for (const r of db.prepare("SELECT id FROM deliveries d WHERE status IN ('READY','NEEDS_OWNER') AND NOT EXISTS (SELECT 1 FROM delivery_revisions r JOIN ops_plans p ON p.id = r.ops_plan_id WHERE r.delivery_id = d.id AND p.kind = 'delivery.correct' AND p.status IN ('PROPOSED','CONFIRMED','RUNNING','PAUSED'))").all()) {
@@ -952,6 +959,10 @@ export function createDeliveries({ db, bus, clock, config, settings, projects, m
     for (const r of db.prepare("SELECT id, mission_id FROM deliveries WHERE status = 'ARMED'").all()) {
       if (closing) return;
       try { const f = factory.view(r.mission_id)?.factory; if (f && ["DELIVERY_READY", "ACCEPTED"].includes(f.stage)) await activate(r.id); } catch { /* next tick */ }
+    }
+    if (!closing && clock().getTime() - lastVerify > 10 * 60000) {
+      lastVerify = clock().getTime();
+      for (const r of db.prepare("SELECT id FROM deliveries WHERE status = 'READY'").all()) { try { verify(r.id, { by: "hub" }); } catch { /* next tick */ } }
     }
   }
 

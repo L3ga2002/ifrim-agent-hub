@@ -187,6 +187,27 @@ test("RC-10 legacy presentation is generated from its own spec without rewriting
   assert.equal(docOf(p).basis.origin, "legacy-generated");
 });
 
+test('RCF-06 phone requirement cites privacy and mandatory-phone criteria', () => {
+  const p = resolve(), claim = p.claims.find(c => c.key === 'summary.problem');
+  assert.deepEqual(claim.needs.map(n => n.id), ['AC-1', 'AC-2', 'AC-3']);
+  assert.equal(docOf().sections.find(s => s.id === 'problem').text.split('\n')[0],
+    'Lista publică a zilei nu trebuie să afișeze sau să transmită telefonul clientului, iar telefonul rămâne obligatoriu la programare. (criteriile: AC-1, AC-2, AC-3)');
+  const proofs = provePresentation(p, factsOf()); proofs['AC-3'] = { ok: false };
+  assert.equal(summaryFactCheck({ doc: docOf(), presentation: p, proofs, spec }).status, 'FAIL');
+});
+
+test('RCF-07 phone flow claims only the confirmation message and absence of phone; booking stays pinned', () => {
+  assert.equal(hashCanonical(catalog[0]), '49ee3ec3a4cb9dad2dbeef0cfe26dd9ccdd0e31da86020e0374d669e3626307b', 'entire booking presentation from 2d52350');
+  const lines = resolve().claims.find(c => c.key === 'summary.how').texts.lines;
+  assert.deepEqual(lines, ['Clientul alege serviciul, ziua și o oră liberă.', 'Completează numele, mașina și telefonul.',
+    'Primește mesajul „Programare confirmată”.', 'Telefonul nu apare în pagină, nici în lista zilei.']);
+  const how = docOf().sections.find(s => s.id === 'how').text;
+  assert.ok(lines.every(line => how.includes(line)));
+  assert.doesNotMatch(how, /pe loc|Lista zilei arată programarea/);
+  const p = resolve(BOOKING_DEMO.spec), f = factsOf(BOOKING_DEMO.spec);
+  assert.equal(docOf(p, f).sections.find(s => s.id === 'how').text, baseline.delivery.summary.how.lines.map(t => '- ' + t).join('\n'));
+});
+
 test('RCE-01 problem cites requirements exactly, including resolved ids; verified/evidence/foreign citations fail', () => {
   for (const renumber of [false, true]) {
     const s = copy(spec); if (renumber) s.acceptance.forEach((c, i) => c.id = 'AC-' + (30 - i));

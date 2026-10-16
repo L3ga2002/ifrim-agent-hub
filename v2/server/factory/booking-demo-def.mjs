@@ -342,7 +342,8 @@ export const BOOKING_DEMO = freeze({
           "problem": {
             "needs": [
               "AC-1",
-              "AC-2"
+              "AC-2",
+              "AC-3"
             ],
             "text": "Lista publică a zilei nu trebuie să afișeze sau să transmită telefonul clientului, iar telefonul rămâne obligatoriu la programare."
           },
@@ -412,8 +413,8 @@ export const BOOKING_DEMO = freeze({
             "lines": [
               "Clientul alege serviciul, ziua și o oră liberă.",
               "Completează numele, mașina și telefonul.",
-              "Primește confirmarea programării pe loc.",
-              "Lista zilei arată programarea fără telefon."
+              "Primește mesajul „Programare confirmată”.",
+              "Telefonul nu apare în pagină, nici în lista zilei."
             ]
           },
           "benefits": [
