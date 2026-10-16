@@ -1,3 +1,4 @@
+import { captureBlockers } from "../delivery/capture-blockers.mjs";
 import { criterionFingerprint } from "../media/claims.mjs";
 import { findingCode, codedReviewFindings } from "./review.mjs";
 import { datasetProblem } from "./dataset.mjs";
@@ -19,6 +20,8 @@ import { buildPlan, normalizeLimits, turnTimeoutsOf, ROUTES } from "./plan.mjs";
 import { takeSnapshot, diffManifests, readGitEntry, gitEntryHash, readBlob, isTestPath, skippedTreeFingerprint, skippedTreeChanges } from "./snapshot.mjs";
 import { renderChanges } from "./diff.mjs";
 import { integrityFindings, isTestFirstBlocking } from "./integrity.mjs";
+import { integrityDecision } from "./bundle-integrity.mjs";
+import { gatherBundleIntegrityFacts } from "./bundle-integrity-facts.mjs";
 import { contractDrift, publicReadRoutes, readPublicClient } from "./supersede.mjs";
 import { buildReviewBrief, parseReview, BLOCKING_SEVERITIES } from "./review.mjs";
 import { buildAuthorBrief, lintDatasetBrief, parseAuthorOutput, lintTestBody, normalizeNeeds, TEST_HARNESS_VERSION, baselineGate, assembleTestFile, classifyProof, proofSignature, buildTestReviewBrief, parseTestReview, ownerSummary, ownerOutcome,
@@ -613,16 +616,7 @@ export function createFactory(deps) {
     }
   }
 
-  function restoredTest(project, r) {
-    const missionId = r.retiredBy || r.to?.split("/")[2];
-    const journal = readRetireJournal(project, missionId);
-    const rows = db.prepare("SELECT protected_json FROM factory_specs WHERE mission_id = ?").all(missionId);
-    const recorded = rows.some((row) => (parse(row.protected_json, {}).restored || []).some((x) => x.from === r.from && x.to === r.to && x.sha256 === r.sha256));
-    const item = journal?.items?.some((x) => x.from === r.from && x.to === r.to && x.sha256 === r.sha256);
-    if (!(recorded || journal?.status === "RESTORED" && item)) return false;
-    const folder = safeFolder(project.path, path.posix.dirname(r.from), { create: false });
-    return folder && fileShaAt(folder, path.posix.basename(r.from)) === r.sha256;
-  }
+  const restoredTest = (project, r) => restoredHistoricTest(db, project, r);
 
   function compensateRetirement(missionId, cause) {
     return bus.transaction(() => compensateRetirementNow(missionId, cause));
@@ -680,6 +674,8 @@ export function createFactory(deps) {
       restore.sha256 = fileShaAt(folder, "journal.json");
     }
     db.prepare("UPDATE factory_specs SET protected_json = ? WHERE id = ?").run(json({ ...fresh, restored: records, restoreBlocked: !restore.complete }), spec.id);
+    if (!restore.complete && restore.sha256) bus.append({ type: "factory.retire_restored", scopeType: "mission", scopeId: missionId, source: "factory",
+      payload: { missionId, projectId: project.id, complete: false, state: restore.state, sha256: restore.sha256, cause } });
     bus.append({ type: restore.complete ? "factory.retire_restored" : "factory.retire_restore_refused", scopeType: "mission", scopeId: missionId, source: "factory",
       payload: { missionId, projectId: project.id, complete: restore.complete, items: restore.items, cause, state: restore.state,
         ...(restore.sha256 ? { sha256: restore.sha256 } : {}), code: restore.complete ? null : "RETIRE_RESTORE_INCOMPLETE" } });
@@ -722,30 +718,7 @@ export function createFactory(deps) {
    * Closure R-HIST-02: the deterministic check the bundle and the acceptance make on disk: every historic active Hub test still holds
    * the bytes it had at the start, every retired copy still holds its bytes, and no retired test is back at its old path. → [problem]
    */
-  function historicViolations(missionId, project) {
-    const spec = approvedSpec(fm(missionId));
-    const h = historicOf(missionId, spec, project);
-    const shaOf = (rel) => { const folder = safeFolder(project.path, path.posix.dirname(rel), { create: false }); return folder ? fileShaAt(folder, path.posix.basename(rel)) : null; };
-    const out = [];
-    for (const a of h.active || []) { const now2 = shaOf(a.ref); if (now2 !== a.sha256) out.push(`testul Hub anterior ${a.ref} (misiunea ${a.missionId}) a fost ${now2 === null ? "șters" : "modificat"}`); }
-    for (const r of h.retired || []) {
-      if (restoredTest(project, r)) continue;
-      if (shaOf(r.to) !== r.sha256) out.push(`copia retrasă ${r.to} a fost ${shaOf(r.to) === null ? "ștearsă" : "modificată"}`);
-      if (shaOf(r.from) !== null) out.push(`testul retras ${r.from} a fost recreat`);
-    }
-    // Review #6: the retired bytes back in the active Hub suite under another name (on disk, whatever the snapshot identity).
-    const retiredShas = new Map((h.retired || []).filter((r) => !restoredTest(project, r)).map((r) => [r.sha256, r.from]));
-    if (retiredShas.size) {
-      const folder = safeFolder(project.path, HUB_TEST_DIR, { create: false });
-      for (const name of folder ? fs.readdirSync(folder).filter((n) => /\.(?:test|spec)\.[cm]?[jt]sx?$/i.test(n)).slice(0, 200) : []) {
-        let digest = null;
-        try { digest = fileShaAt(folder, name); } catch { digest = null; }
-        const from = digest ? retiredShas.get(digest) : null;
-        if (from && `${HUB_TEST_DIR}/${name}`.toLowerCase() !== from.toLowerCase()) out.push(`octeții testului retras ${from} au reapărut ca ${HUB_TEST_DIR}/${name}`);
-      }
-    }
-    return out;
-  }
+  const missionHistoricViolations = (missionId, project) => historicViolations(db, project, approvedSpec(fm(missionId))?.protected);
 
   /** Starts an approved scope: records it, protects the acceptance tests, snapshots the base and runs the baseline (or step 0 first). */
   async function startApproved(missionId, payload, { approvalId = null, actor = "user" } = {}) {
@@ -806,7 +779,7 @@ export function createFactory(deps) {
         const plan = retirementPlan(missionId, strict);
         if (plan.length && ["MOVING", "MOVED"].includes(readRetireJournal(project, missionId)?.status)) {
           const restore = restoreRetired(plan, project, { missionId });
-          try { bus.transaction(() => bus.append({ type: "factory.retire_restored", scopeType: "mission", scopeId: missionId, source: "factory", payload: { missionId, complete: restore.complete, items: restore.items, cause: String(error?.message || error).slice(0, 300) } })); }
+          try { bus.transaction(() => bus.append({ type: "factory.retire_restored", scopeType: "mission", scopeId: missionId, source: "factory", payload: { missionId, complete: restore.complete, items: restore.items, state: restore.state, ...(restore.sha256 ? { sha256: restore.sha256 } : {}), cause: String(error?.message || error).slice(0, 300) } })); }
           catch { /* the record failed; the restore's own result (journal + the error below) still says it */ }
           if (!restore.complete) {
             throw new HubError("conflict", `Pornirea a eșuat (${String(error?.message || error).slice(0, 200)}) și testele retrase NU au putut fi puse toate înapoi: ${restore.items.filter((i) => i.state === "incomplete").map((i) => `${i.from} — ${i.problem}`).join("; ")}. Misiunea nu continuă până nu se verifică fișierele`, { code: "RETIRE_RESTORE_INCOMPLETE", data: { restore } });
@@ -1713,6 +1686,8 @@ export function createFactory(deps) {
    * candidate's bytes. Returns { others: [paths changed besides it], staged: sha256 of the staging file | null }.
    */
   function verifiedRestorePaths(missionId, project, files) {
+    // Step zero has no verified bundle yet: this checks the pre-test base and retirement plan,
+    // so it retains driftProvenance rather than applying the final bundle identity decision.
     const spec = approvedSpec(fm(missionId)), plan = retirementPlan(missionId, spec?.spec);
     const ref = `.ifrim-hub/retired/${missionId}/journal.json`, journal = readRetireJournal(project, missionId);
     if (!plan.length || journal?.status !== "RESTORED" || driftProvenance(project.id, [ref]).software.length
@@ -2209,7 +2184,7 @@ export function createFactory(deps) {
     const mission = missions.get(missionId);
     const project = projects.get(mission.projectId);
     // Closure R-HIST-02: no bundle while an earlier Hub test, a retired copy or a retired path is not exactly as at the start.
-    const hist = historicViolations(missionId, project);
+    const hist = missionHistoricViolations(missionId, project);
     if (hist.length) return setStage(missionId, "NEEDS_OWNER_DECISION", { waitReason: "owner_decision", reason: `Integritatea testelor Hub anterioare: ${hist.join("; ")}; pachetul nu se construiește` });
     const spec = approvedSpec(f);
     const cs = currentCs(missionId);
@@ -2285,24 +2260,55 @@ export function createFactory(deps) {
     return view(missionId);
   }
 
-  async function accept(missionId, { note = "", actor = "user" } = {}) {
-    return serial(missionId, async () => {
-      const f = need(fm(missionId));
-      if (f.stage !== "DELIVERY_READY") throw new HubError("conflict", `Misiunea e în ${f.stage}, nu are un pachet gata`);
-      const bundle = db.prepare("SELECT * FROM factory_bundles WHERE mission_id = ? AND status = 'READY_FOR_OWNER_ACCEPTANCE' ORDER BY created_at DESC LIMIT 1").get(missionId);
-      const cs = currentCs(missionId);
-      const project = projects.get(missions.get(missionId).projectId);
-      const nowSha = takeSnapshot(project.path, { ignore: ignoreOf(missionId), mode: baseMode(missionId) }).sha256;
-      if (!bundle || bundle.change_set_id !== cs.id || nowSha !== snapshotRow(cs.snapshotId).sha256) {
-        bus.transaction(() => { if (bundle) { db.prepare("UPDATE factory_bundles SET status = 'STALE' WHERE id = ?").run(bundle.id); bundleStatusEvent(missionId, bundle.id, "STALE", "workspace-ul s-a schimbat după verificare"); } });
-        throw new HubError("conflict", "Workspace-ul nu mai corespunde versiunii testate: pachetul e STALE (refă verificările)");
+  async function accept(missionId, { bundleId, bundleSha, deliveryId = null, via = "factory_panel", note = "", actor = "user", channel = config.testMode ? "test" : null,
+    sessionCheck = null, commandId = null, correlationId = null } = {}) {
+    const refuse = (code, message, data) => { throw new HubError("conflict", message, { code, data }); };
+    if (!["owner", "test"].includes(channel) || channel === "owner" && !sessionCheck) throw new HubError("authentication", "Acceptarea cere sesiunea proprietarului", { data: { needSession: true } });
+    if (!/^bnd_[A-Za-z0-9_-]+$/.test(bundleId || "") || !/^[0-9a-f]{64}$/.test(bundleSha || "")) throw new HubError("validation", "Acceptarea cere ID-ul și SHA-ul complet al pachetului afișat");
+    const check = () => {
+      const session = sessionCheck?.() || null;
+      if (closed) refuse("FACTORY_CLOSED", "Fabrica se închide; acceptarea nu s-a aplicat");
+      const bundle = db.prepare("SELECT * FROM factory_bundles WHERE id = ?").get(bundleId);
+      if (!bundle || bundle.mission_id !== missionId || bundle.sha256 !== bundleSha) refuse("BUNDLE_TARGET_STALE", "Pachetul afișat nu mai corespunde; reîncarcă pagina");
+      if (bundle.status === "OWNER_ACCEPTED") return { duplicate: { duplicate: true, accepted: true, bundleId, bundleSha, missionId, deliveryId,
+        decidedAt: bundle.decided_at, note: bundle.decision_note, noteIgnored: note !== (bundle.decision_note || "") } };
+      if (deliveryId) {
+        const d = db.prepare("SELECT * FROM deliveries WHERE id = ?").get(deliveryId);
+        if (!d || d.mission_id !== missionId || d.bundle_id !== bundleId || d.bundle_sha !== bundleSha) refuse("DELIVERY_BUNDLE_DISPLAYED", "Legătura livrării cu pachetul afișat s-a schimbat");
+        if (!["PLANNED", "ARMED", "ACTIVE", "READY", "NEEDS_OWNER"].includes(d.status)) refuse("DELIVERY_ACCEPT_STATE", "Livrarea nu mai permite acceptarea");
       }
-      { const hist = historicViolations(missionId, project); if (hist.length) throw new HubError("conflict", `Integritatea testelor Hub anterioare: ${hist.join("; ")}; acceptarea nu se aplică`, { code: "HISTORIC_INTEGRITY" }); }
+      const latest = db.prepare("SELECT id FROM factory_bundles WHERE mission_id = ? ORDER BY created_at DESC, rowid DESC LIMIT 1").get(missionId);
+      if (latest?.id !== bundleId) refuse("BUNDLE_REPLACED", "Un alt pachet l-a înlocuit pe cel afișat");
+      const f = need(fm(missionId));
+      if (bundle.status !== "READY_FOR_OWNER_ACCEPTANCE" || bundle.decided_at || f.stage !== "DELIVERY_READY" || f.cancelRequestedAt) refuse("BUNDLE_TARGET_STALE", "Pachetul sau misiunea nu mai așteaptă acceptarea");
+      const projectId = missions.get(missionId).projectId;
+      const blockers = captureBlockers(db, { missionId, projectId });
+      if (blockers.planId || blockers.sessionId) refuse("DELIVERY_CAPTURE_RUNNING", "Aștept capturile sau oprește planul livrării înainte de acceptare", blockers);
+      const integrity = bundleIntegrity(missionId, { bundleId, bundleSha });
+      if (!integrity.ok) {
+        if (integrity.identityProblems.length) refuse("BUNDLE_IDENTITY", "Identitatea pachetului verificat nu mai corespunde", { integrity });
+        if (!integrity.hubOnlyScope) {
+          bus.transaction(() => { db.prepare("UPDATE factory_bundles SET status = 'STALE' WHERE id = ?").run(bundle.id); bundleStatusEvent(missionId, bundle.id, "STALE", "workspace-ul s-a schimbat după verificare"); });
+        }
+        if (integrity.historicProblems.length) refuse("HISTORIC_INTEGRITY", `Integritatea testelor Hub anterioare: ${integrity.historicProblems.join("; ")}`, { integrity });
+        if (integrity.protectedProblems.length) refuse("PROTECTED_INTEGRITY", "Testul protejat nu mai are octeții verificați", { integrity });
+        if (integrity.hubOnlyScope) refuse("HUB_RECORD_UNPROVEN", "Diferența din înregistrările Hub nu are proveniență verificată", { integrity });
+        refuse("SNAPSHOT_DRIFT", "Workspace-ul nu mai corespunde versiunii testate: pachetul e STALE (refă verificările)", { integrity });
+      }
+      return { bundle, session, integrity };
+    };
+    const result = await serial(missionId, async () => {
+      const first = check();
+      if (first.duplicate) return first.duplicate;
       await runner.stop(`factory-preview-${missionId}`).catch(() => {});
-      { const now2 = fm(missionId); if (now2.stage !== "DELIVERY_READY" || now2.cancelRequestedAt) throw new HubError("conflict", `Misiunea a trecut în ${now2.stage} între timp; acceptarea nu s-a aplicat`); }
+      const final = check();
+      if (final.duplicate) return final.duplicate;
+      const { bundle, session, integrity } = final, cs = currentCs(missionId), decidedAt = now();
       bus.transaction(() => {
-        db.prepare("UPDATE factory_bundles SET status = 'OWNER_ACCEPTED', decided_at = ?, decision_note = ? WHERE id = ?").run(now(), String(note).slice(0, 500), bundle.id);
-        bundleStatusEvent(missionId, bundle.id, "OWNER_ACCEPTED", "acceptat local de proprietar");
+        const changed = db.prepare("UPDATE factory_bundles SET status = 'OWNER_ACCEPTED', decided_at = ?, decision_note = ? WHERE id = ? AND status = 'READY_FOR_OWNER_ACCEPTANCE' AND sha256 = ? AND decided_at IS NULL").run(decidedAt, String(note).slice(0, 500), bundle.id, bundleSha);
+        if (changed.changes !== 1) refuse("BUNDLE_TARGET_STALE", "Pachetul s-a schimbat înainte de decizie");
+        bundleStatusEvent(missionId, bundle.id, "OWNER_ACCEPTED", "acceptat local de proprietar", { bundleSha, bundleShaDisplayed: bundleSha, missionId, deliveryId, via,
+          sessionId: session?.id || null, authority: session?.authority || "test", channel, commandId, correlationId, integrity }, actor);
         const runIds = db.prepare("SELECT run_id FROM factory_dispatches WHERE mission_id = ? AND status = 'DONE'").all(missionId).map((r) => r.run_id);
         const reviewRun = db.prepare("SELECT run_id FROM factory_reviews WHERE change_set_id = ? AND status = 'VALID' AND verdict = 'PASS' ORDER BY created_at DESC LIMIT 1").get(cs.id)?.run_id;
         const tests = db.prepare("SELECT id FROM factory_evidence WHERE change_set_id = ? AND stale = 0 AND status = 'PASS'").all(cs.id).map((r) => r.id);
@@ -2313,8 +2319,12 @@ export function createFactory(deps) {
         missions.refreshMissionStatus(missionId);
         setStage(missionId, "ACCEPTED", { reason: "Acceptat local de proprietar (OWNER_ACCEPTED). Commit/push/deploy rămân acțiuni separate", actor });
       });
-      return view(missionId);
+      const acceptedView = view(missionId);
+      return { accepted: true, bundleId, bundleSha, decidedAt, missionId, deliveryId, duplicate: false,
+        factory: acceptedView.factory, bundles: acceptedView.bundles, tasks: acceptedView.tasks };
     });
+    if (!result) refuse("FACTORY_CLOSED", "Fabrica se închide; acceptarea nu s-a aplicat");
+    return result;
   }
 
   async function reject(missionId, { note, actor = "user" } = {}) {
@@ -2336,10 +2346,12 @@ export function createFactory(deps) {
 
   // ---------- M11 delivery hooks (read-only: no status write, no process started) ----------
   /** The bundle status change other services follow (deliveries mark their items STALE); appended inside the caller's transaction. */
-  function bundleStatusEvent(missionId, bundleId, status, reason) {
-    bus.append({ type: "factory.bundle.status", scopeType: "mission", scopeId: missionId, source: "factory", payload: { missionId, bundleId, status, reason } });
+  function bundleStatusEvent(missionId, bundleId, status, reason, decision = {}, source = "factory") {
+    bus.append({ type: "factory.bundle.status", scopeType: "mission", scopeId: missionId, source, payload: { missionId, bundleId, status, reason, ...decision } });
   }
   const latestBundleRow = (missionId) => db.prepare("SELECT * FROM factory_bundles WHERE mission_id = ? AND status IN ('READY_FOR_OWNER_ACCEPTANCE','OWNER_ACCEPTED') ORDER BY created_at DESC LIMIT 1").get(missionId);
+  const integrityFacts = (missionId, target) => gatherBundleIntegrityFacts(db, missionId, target);
+  const bundleIntegrity = (missionId, target) => integrityDecision(integrityFacts(missionId, target));
   /**
    * Whether the project folder is still exactly the verified version: the same snapshot the accept step takes (same ignore list and
    * mode). Nothing is written; a drift is only reported (the delivery marks its items STALE from it).
@@ -2372,6 +2384,7 @@ export function createFactory(deps) {
     return { software: paths.filter((ref) => !owned.has(ref)), hub: paths.filter((ref) => owned.has(ref)).map((ref) => ({ path: ref, provenance: owned.get(ref) })) };
   }
 
+  // Legacy read adapter retained for callers/test doubles; delivery verdicts use bundleIntegrity.
   function snapshotCheck(missionId) {
     const f = need(fm(missionId));
     const bundle = latestBundleRow(missionId);
@@ -2382,9 +2395,7 @@ export function createFactory(deps) {
     const actual = takeSnapshot(project.path, { ignore: ignoreOf(missionId), mode: baseMode(missionId) });
     const expectedFiles = expectedRow?.files || {};
     const actualFiles = actual.files || {};
-    const changedFiles = [];
-    for (const [rel, meta] of Object.entries(actualFiles)) if (expectedFiles[rel]?.sha256 !== meta?.sha256) changedFiles.push(rel);
-    for (const rel of Object.keys(expectedFiles)) if (!(rel in actualFiles)) changedFiles.push(rel);
+    const changedFiles = diffManifests(expectedFiles, actualFiles, { resolve: sha => gitEntryHash(project.path, sha) }).map(c => c.path);
     return { missionId, stage: f.stage, bundleId: bundle?.id || null, bundleStatus: bundle?.status || null, changeSetId: cs?.id || null, expected, actual: actual.sha256,
       equal: Boolean(expected) && expected === actual.sha256 && Boolean(bundle) && bundle.change_set_id === cs?.id, changedFiles, snapshotAt: expectedRow?.createdAt || expectedRow?.created_at || null };
   }
@@ -2403,9 +2414,9 @@ export function createFactory(deps) {
     const reviewRows = [...reviewIds].map(id => db.prepare("SELECT * FROM factory_reviews WHERE id = ? AND mission_id = ?").get(id, missionId)).filter(Boolean);
     return { bundle, manifest, specRow: { ...specRow, spec }, spec, evidenceRows, reviewRows };
   }
-  function deliveryBinding(missionId) {
+  function deliveryBinding(missionId, { bundleId } = {}) {
     const f = need(fm(missionId));
-    const bundle = latestBundleRow(missionId);
+    const bundle = bundleId ? db.prepare("SELECT * FROM factory_bundles WHERE id = ? AND mission_id = ?").get(bundleId, missionId) : latestBundleRow(missionId);
     if (!bundle) return null;
     const manifest = parse(bundle.manifest_json, {});
     const spec = approvedSpec(f);
@@ -2973,7 +2984,7 @@ export function createFactory(deps) {
 
   return { initialize, reviseSpec, setLimits, scopeFor, assertStartable, startApproved, onRunFinished, stop, pause, resume, accept, reject, stopAll, recover, tick, idle, close,
     // M11 delivery hooks (read-only).
-    snapshotCheck, writerStarted, compensateRetirement, driftProvenance, deliveryBinding, claimFacts, previewStatus, e2eShotPath,
+    integrityFacts, bundleIntegrity, snapshotCheck, writerStarted, compensateRetirement, driftProvenance, deliveryBinding, claimFacts, previewStatus, e2eShotPath,
     continuationScope, rebindForPlan, raiseLimits, exhaustedStep: (missionId) => exhaustedStep(missionId),
     // M11 L5: step 0 of a test-first mission is open (no repair cycle there); the Hub's own files in its work area on a project.
     inStageZero, hubWrites, remainingAuthoring: (missionId) => remainingAuthoring(missionId),
@@ -2998,7 +3009,7 @@ export function createFactory(deps) {
       if (!config.testMode) throw new HubError("policy", "Punctele de eșec ale pornirii există doar în modul de test");
       startFault = typeof fn === "function" ? fn : null;
     },
-    historicViolations: (missionId) => historicViolations(missionId, projects.get(missions.get(missionId).projectId)),
+    historicViolations: (missionId) => missionHistoricViolations(missionId, projects.get(missions.get(missionId).projectId)),
     setFindingStatus, view, list, summary: (missionId) => { const v = view(missionId); return v && { stage: v.factory.stage, waitReason: v.factory.waitReason, reason: v.factory.stageReason, spec: specSummary(v.spec.spec) }; } };
 }
 
@@ -3153,11 +3164,12 @@ export function restoreRetired(retired, project, { missionId = null, laterRetire
     }
   }
   if (items.length) {
+    let writtenSha;
     if (missionId && journal) {
-      try { writeJournal(project, missionId, { status: "RESTORE_INCOMPLETE", items: retired.map((r) => explained.get(r.from) || { ...r, state: items.find((i) => i.from === r.from)?.state || "unchanged" }), problems: items.map((i) => i.problem) }); }
+      try { writeJournal(project, missionId, { status: "RESTORE_INCOMPLETE", items: retired.map((r) => explained.get(r.from) || { ...r, state: items.find((i) => i.from === r.from)?.state || "unchanged" }), problems: items.map((i) => i.problem) }); writtenSha = fileShaAt(safeFolder(project.path, `.ifrim-hub/retired/${missionId}`, { create: false }), "journal.json"); }
       catch (e) { items.push({ state: "incomplete", problem: `jurnalul restaurării: ${String(e.message)}` }); }
     }
-    return { complete: false, items: retired.map((r) => items.find((i) => i.from === r.from) || explained.get(r.from) || { ...r, state: "not_restored", problem: "restaurarea întregii liste a fost refuzată înainte de prima mutare" }), state: "refused" };
+    return { complete: false, items: retired.map((r) => items.find((i) => i.from === r.from) || explained.get(r.from) || { ...r, state: "not_restored", problem: "restaurarea întregii liste a fost refuzată înainte de prima mutare" }), state: writtenSha ? "restore_incomplete" : "refused", ...(writtenSha ? { sha256: writtenSha } : {}) };
   }
   const restoredItems = () => (retired || []).map((r) => explained.get(r.from) || { ...r, state: "already_restored" });
   if (journal?.status === "RESTORED") return { complete: true, items: restoredItems(), state: "already_restored" };
@@ -3201,11 +3213,12 @@ export function restoreRetired(retired, project, { missionId = null, laterRetire
     } catch (error) { items.push({ from: r.from, state: "incomplete", problem: String(error?.message || error).slice(0, 200) }); }
   }
   let complete = items.every((i) => i.state !== "incomplete");
+  let writtenSha;
   if (missionId && items.length) {
-    try { writeJournal(project, missionId, { status: complete ? "RESTORED" : "RESTORE_INCOMPLETE", items: items.map((i) => ({ ...retired.find((r) => r.from === i.from), state: i.state })), problems: items.filter((i) => i.problem).map((i) => `${i.from}: ${i.problem}`) }); }
+    try { writeJournal(project, missionId, { status: complete ? "RESTORED" : "RESTORE_INCOMPLETE", items: items.map((i) => ({ ...retired.find((r) => r.from === i.from), state: i.state })), problems: items.filter((i) => i.problem).map((i) => `${i.from}: ${i.problem}`) }); writtenSha = fileShaAt(safeFolder(project.path, `.ifrim-hub/retired/${missionId}`, { create: false }), "journal.json"); }
     catch (e) { complete = false; items.push({ state: "incomplete", problem: `jurnalul restaurării nu a putut fi scris: ${String(e.message)}` }); }
   }
-  return { complete, items };
+  return { complete, items, ...(writtenSha ? { state: complete ? "restored" : "restore_incomplete", sha256: writtenSha } : {}) };
 }
 
 // ---------- M11 L5: the files the Hub itself writes into a project (§5.1 S2) ----------
@@ -3315,4 +3328,72 @@ function bundleMarkdown(m, sha) {
     "## Migrare", m.migration, "",
     "## Revenire", ...m.rollback.files.map((f) => `- ${f}`), m.rollback.note, "",
   ].join("\n");
+}
+
+function restoredHistoricTest(db, project, r) {
+  const missionId = r.retiredBy || r.to?.split("/")[2];
+  const journal = readRetireJournal(project, missionId);
+  const rows = db.prepare("SELECT protected_json FROM factory_specs WHERE mission_id = ?").all(missionId);
+  const recorded = rows.some((row) => (parse(row.protected_json, {}).restored || []).some((x) => x.from === r.from && x.to === r.to && x.sha256 === r.sha256));
+  const item = journal?.items?.some((x) => x.from === r.from && x.to === r.to && x.sha256 === r.sha256);
+  if (!(recorded || journal?.status === "RESTORED" && item)) return false;
+  const folder = safeFolder(project.path, path.posix.dirname(r.from), { create: false });
+  return folder && fileShaAt(folder, path.posix.basename(r.from)) === r.sha256;
+}
+
+// One journal/approved-plan/DB-record check for integrity facts and historic readers.
+export function retirementEvidence(row, project) {
+  const p = parse(row.protected_json, {}), s = parse(row.spec_json, {}), journal = readRetireJournal(project, row.mission_id);
+  const plan = retirementPlan(row.mission_id, s);
+  const matches = (x, r) => x.from === r.from && x.to === r.to && x.sha256 === r.sha256;
+  const samePlan = items => Array.isArray(items) && items.length === plan.length && plan.every(r => items.some(x => matches(x, r)));
+  const recorded = (records, r) => (records || []).some(x => matches(x, r) && (x.cycle || 1) === (journal?.cycle || 1));
+  const valid = journal && row.status === "APPROVED" && samePlan(journal.items) && (!p.pendingRetire || samePlan(p.pendingRetire))
+    && (journal.status === "MOVED" ? plan.every(r => recorded(p.retired, r) && !recorded(p.restored, r)) : journal.status === "RESTORED" && plan.every(r => recorded(p.restored, r)));
+  return { journal, valid };
+}
+
+export function historicViolations(db, project, protectedRecord, provenance) {
+  const h = protectedRecord?.historic || { active: [], retired: [] };
+  if (!h.active?.length && !h.retired?.length) return [];
+  const restoredTest = (project, r) => restoredHistoricTest(db, project, r);
+  const shaOf = (rel) => { const folder = safeFolder(project.path, path.posix.dirname(rel), { create: false }); return folder ? fileShaAt(folder, path.posix.basename(rel)) : null; };
+  const out = [];
+  try {
+    const suite = safeFolder(project.path, HUB_TEST_DIR, { create: false });
+    if (suite) fs.readdirSync(suite);
+    for (const a of h.active || []) {
+      const now2 = shaOf(a.ref);
+      if (now2 === a.sha256) continue;
+      if (now2 === null) {
+        const proof = provenance?.[a.ref];
+        if (proof?.valid && proof.provenance === "retired_by_hub" && proof.record.sha256 === a.sha256) continue;
+        // buildBundle also uses this reader, before a bundle exists to gather its facts.
+        if (!provenance) {
+          const rows = db.prepare("SELECT fs.* FROM factory_specs fs JOIN missions m ON m.id = fs.mission_id WHERE m.project_id = ?").all(project.id);
+          if (rows.some(row => {
+            const { journal, valid } = retirementEvidence(row, project);
+            return valid && journal.status === "MOVED" && journal.items.some(x => x.from === a.ref && x.sha256 === a.sha256 && shaOf(x.to) === a.sha256);
+          })) continue;
+        }
+      }
+      out.push(`testul Hub anterior ${a.ref} (misiunea ${a.missionId}) a fost ${now2 === null ? "șters" : "modificat"}`);
+    }
+    for (const r of h.retired || []) {
+      if (restoredTest(project, r)) continue;
+      if (shaOf(r.to) !== r.sha256) out.push(`copia retrasă ${r.to} a fost ${shaOf(r.to) === null ? "ștearsă" : "modificată"}`);
+      if (shaOf(r.from) !== null) out.push(`testul retras ${r.from} a fost recreat`);
+    }
+    // Review #6: the retired bytes back in the active Hub suite under another name (on disk, whatever the snapshot identity).
+    const retiredShas = new Map((h.retired || []).filter((r) => !restoredTest(project, r)).map((r) => [r.sha256, r.from]));
+    if (retiredShas.size) {
+      const folder = safeFolder(project.path, HUB_TEST_DIR, { create: false });
+      for (const name of folder ? fs.readdirSync(folder).filter((n) => /\.(?:test|spec)\.[cm]?[jt]sx?$/i.test(n)).slice(0, 200) : []) {
+        const digest = fileShaAt(folder, name);
+        const from = digest ? retiredShas.get(digest) : null;
+        if (from && `${HUB_TEST_DIR}/${name}`.toLowerCase() !== from.toLowerCase()) out.push(`octeții testului retras ${from} au reapărut ca ${HUB_TEST_DIR}/${name}`);
+      }
+    }
+  } catch (error) { out.push(`test/hub nu poate fi verificat: ${error.message}`); }
+  return out;
 }

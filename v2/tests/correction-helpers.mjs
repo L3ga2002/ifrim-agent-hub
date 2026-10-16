@@ -95,6 +95,14 @@ export async function correctionEnv({ launchers = fakeLaunchers(), previewUrl = 
   db.prepare("INSERT INTO deliveries (id, project_id, title, status, mission_id, template_json, template_sha, ops_steps_json, ops_body_sha, bundle_id, bundle_sha, spec_sha, snapshot_sha, change_set_id, change_set_sha, content_project_id, created_by, created_at, updated_at) VALUES ('dlv_correct',?,'Corectură','READY','mis_correct',?,?,'[]',?,?,?,?,?,'cs_test',?,?,'test',?,?)").run(project.id, JSON.stringify(template), hashCanonical(template), '0'.repeat(64), f.bundle.id, f.bundle.sha256, hashCanonical(spec), snapshot, f.manifest.changeSet.sha256, cp.id, at, at);
   const realFactory = createFactory({ db, bus, config, clock });
   const factory = { ...realFactory, snapshotCheck: () => ({ expected: snapshot, actual: snapshot, bundleId: f.bundle.id, changeSetId: 'cs_test', changedFiles: [] }), driftProvenance: () => ({ software: [], hub: [] }),
+    bundleIntegrity() {
+      const snap = this.snapshotCheck(), drift = this.driftProvenance(project.id, snap.changedFiles || []);
+      const expected = snap.expected ?? (snap.equal ? snapshot : null);
+        const decision = { ok: expected === snapshot && !drift.software.length, expectedSha: expected, actualSha: snap.actual ?? expected,
+          identityProblems: [], protectedProblems: [], historicProblems: [], hubOnlyScope: drift.software.every(path => path.startsWith('.ifrim-hub/')),
+        changed: (snap.changedFiles || []).map(path => ({ path, status: 'modified' })), accepted: drift.hub, unproven: drift.software.map(path => ({ path, reason: 'test drift' })) };
+      return { ...decision, decisionSha: hashCanonical(decision) };
+    },
     deliveryBinding: () => ({ bundleId: f.bundle.id, bundleSha: f.bundle.sha256, bundleStatus: f.bundle.status, specSha: hashCanonical(spec), criteria: f.manifest.spec.criteria, manifest: f.manifest, startUrl: previewUrl }), view: () => null, previewStatus: () => ({ running: false }) };
   const session = { id: 'owner_correct', credentialId: 'cred_test' };
   const trust = { requireSession: s => { if (s?.id !== session.id) throw Error('owner session required'); return session; }, confirmedAuthority: () => ({ ok: true }), requireFresh: s => s };

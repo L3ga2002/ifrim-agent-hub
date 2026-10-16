@@ -239,9 +239,9 @@ test("INT-04 a deadline that fired on a turn whose answer never arrives (process
 });
 
 // ------------------------------------------------------------------------------------------------------------------------------ INT-05
-test("INT-05 the server reports 2.14.18-m11 with API contract 13 (M11 adds routes and fields; the stage before M12 only additive ones)", () => {
-  assert.equal(HUB_VERSION, "2.14.18-m11");
-  assert.equal(API_CONTRACT, 13);
+test("INT-05 the server reports 2.14.19-m11 with API contract 14 (displayed bundle identity required for acceptance)", () => {
+  assert.equal(HUB_VERSION, "2.14.19-m11");
+  assert.equal(API_CONTRACT, 14);
 });
 
 test("INT-05-HTTP the session route reports the pinned version and contract", async () => {
@@ -256,6 +256,6 @@ test("INT-05-HTTP the session route reports the pinned version and contract", as
       req.on("error", reject); req.end();
     });
     assert.equal(got.status, 200);
-    assert.deepEqual([got.json.version, got.json.apiContract, got.headers["x-hub-contract"]], ["2.14.18-m11", 13, "13"]);
+    assert.deepEqual([got.json.version, got.json.apiContract, got.headers["x-hub-contract"]], ["2.14.19-m11", 14, "14"]);
   } finally { await new Promise((r) => server.close(r)); await t.cleanup(); }
 });

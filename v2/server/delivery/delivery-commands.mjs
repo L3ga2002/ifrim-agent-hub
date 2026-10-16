@@ -21,16 +21,19 @@ export function registerDeliveryCommands(reg, hub) {
     execute: (input, ctx) => deliveries.editDocument(input.deliveryId, { sections: input.sections, displayedSha: input.displayedSha, session: needSession(ctx, "editarea rezumatului") }) });
   reg("delivery.summary.approve", { describe: "Marchează versiunea afișată a rezumatului „gata de prezentare”", channels: OWNER, schema: { deliveryId: { required: true, max: 80 }, displayedSha: { required: true, max: 64 } },
     execute: (input, ctx) => deliveries.approveDocument(input.deliveryId, { displayedSha: input.displayedSha, session: needSession(ctx, "rezumatul gata de prezentare") }) });
-  reg("delivery.software.accept", { describe: "Accept local software-ul afișat (pachetul exact)", async: true, channels: OWNER, schema: { deliveryId: { required: true, max: 80 }, displayedBundleSha: { required: true, max: 64 }, note: { max: 500, default: "" } },
+  reg("delivery.software.accept", { describe: "Accept local software-ul afișat (pachetul exact)", async: true, channels: OWNER, schema: { deliveryId: { required: true, max: 80 }, bundleId: { required: true, max: 80, pattern: /^bnd_[A-Za-z0-9_-]+$/ }, displayedBundleSha: { required: true, pattern: /^[0-9a-f]{64}$/, trim: false }, note: { max: 500, default: "" } },
     execute: async (input, ctx) => {
-      needSession(ctx, "acceptarea software-ului");
-      const d = deliveries.need(input.deliveryId);
-      const binding = factory.deliveryBinding(d.missionId);
-      if (!binding || binding.bundleSha !== input.displayedBundleSha || d.bundleSha !== input.displayedBundleSha) throw new HubError("conflict", "Pachetul afișat nu mai e cel curent; reîncarcă livrarea.", { code: "DELIVERY_BUNDLE_DISPLAYED" });
-      const plan = d.opsPlanId ? opsPlans.view(d.opsPlanId) : null;
-      if (plan && plan.steps.some((s) => s.kind === "delivery.capture" && s.status === "RUNNING")) throw new HubError("conflict", "Aștept capturile sau oprește planul livrării înainte de acceptare.", { code: "DELIVERY_CAPTURE_RUNNING" });
+      if (ctx.channel === "owner" || ctx.ownerSession) trust.requireFresh(session(ctx), "acceptarea software-ului");
+      const d = deliveries.get(input.deliveryId);
+      if (!d) throw new HubError("conflict", "Livrarea afișată nu mai există.", { code: "DELIVERY_MISSING" });
+
+      if (!d.missionId) throw new HubError("conflict", "Livrarea nu are o misiune software.", { code: "DELIVERY_MISSION_MISSING" });
+      if (d.bundleId !== input.bundleId || d.bundleSha !== input.displayedBundleSha) throw new HubError("conflict", "Pachetul afișat nu mai e cel legat de livrare; reîncarcă livrarea.", { code: "DELIVERY_BUNDLE_DISPLAYED" });
+      const accepted = hub.db.prepare("SELECT 1 FROM factory_bundles WHERE id = ? AND sha256 = ? AND mission_id = ? AND status = 'OWNER_ACCEPTED'").get(input.bundleId, input.displayedBundleSha, d.missionId);
+      if (!accepted && !["PLANNED", "ARMED", "ACTIVE", "READY", "NEEDS_OWNER"].includes(d.status)) throw new HubError("conflict", "Livrarea nu permite acceptarea în această stare.", { code: "DELIVERY_ACCEPT_STATE" });
       // ONLY the factory's own acceptance; no other effect.
-      return (await commands.dispatch({ type: "factory.accept", payload: { missionId: d.missionId, note: input.note }, channel: ctx.channel, actor: ctx.actor, ownerSession: ctx.ownerSession })).result;
+      return (await commands.dispatch({ type: "factory.accept", payload: { missionId: d.missionId, bundleId: input.bundleId, bundleSha: input.displayedBundleSha, deliveryId: d.id, via: "delivery_room", note: input.note },
+        channel: ctx.channel, actor: ctx.actor, ownerSession: ctx.ownerSession, correlationId: ctx.correlationId, intentText: "Accept local pachetul afișat în camera livrării" })).result;
     } });
   reg("delivery.correction.propose", { describe: "Pregătește corectura afirmațiilor, fără a o confirma", async: true, channels: OWNER, schema: { deliveryId: { required: true, max: 80 } },
     execute: (input, ctx) => { needSession(ctx, "corectura afirmațiilor"); return deliveries.proposeCorrection(input.deliveryId, { actor: ctx.actor, via: ctx.channel }); } });

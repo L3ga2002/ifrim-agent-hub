@@ -68,17 +68,19 @@ function fixture(t, { invalid = null, differentOriginal = false, two = false } =
   const snap = takeSnapshot(project.path, { mode: 'walk' });
   db.prepare("INSERT INTO factory_snapshots (id, mission_id, seq, kind, manifest_json, stats_json, sha256, created_at) VALUES ('snap_rl',?,1,'base',?,?,?,?)").run(M2, json(snap.files), json(snap.stats), snap.sha256, TS);
   db.prepare("UPDATE factory_missions SET base_snapshot_id='snap_rl' WHERE mission_id=?").run(M2);
-  db.prepare("INSERT INTO factory_change_sets (id, mission_id, seq, snapshot_id, changes_json, sha256, status, created_at) VALUES ('cs_rl',?,1,'snap_rl','[]',?,'CURRENT',?)").run(M2, hashCanonical([]), TS);
-  const bundle = Buffer.from('synthetic verified bundle'), bundleSha = sha256(bundle);
+  const csSha = hashCanonical({ snapshot: snap.sha256, changes: [] });
+  db.prepare("INSERT INTO factory_change_sets (id, mission_id, seq, snapshot_id, changes_json, sha256, status, created_at) VALUES ('cs_rl',?,1,'snap_rl','[]',?,'CURRENT',?)").run(M2, csSha, TS);
+  const manifest = { spec: { sha256: hashCanonical(spec) }, changeSet: { id: 'cs_rl', sha256: csSha, snapshot: snap.sha256 } };
+  const bundle = Buffer.from('synthetic verified bundle'), bundleSha = hashCanonical(manifest);
   fs.writeFileSync(path.join(dir, 'bundle.json'), bundle);
-  db.prepare("INSERT INTO factory_bundles (id, mission_id, change_set_id, change_set_sha, spec_version, manifest_json, sha256, status, file_path, created_at) VALUES ('bnd_rl',?,'cs_rl',?,1,'{}',?,'READY_FOR_OWNER_ACCEPTANCE','bundle.json',?)").run(M2, hashCanonical([]), bundleSha, TS);
+  db.prepare("INSERT INTO factory_bundles (id, mission_id, change_set_id, change_set_sha, spec_version, manifest_json, sha256, status, file_path, created_at) VALUES ('bnd_rl',?,'cs_rl',?,1,?,?,'READY_FOR_OWNER_ACCEPTANCE','bundle.json',?)").run(M2, csSha, json(manifest), bundleSha, TS);
   db.prepare("INSERT INTO deliveries (id, project_id, title, status, mission_id, template_json, template_sha, ops_steps_json, ops_body_sha, bundle_id, bundle_sha, snapshot_sha, change_set_id, created_by, created_at, updated_at) VALUES (?,?,'RL','READY',?,'{}',?,'[]',?,'bnd_rl',?,?,'cs_rl','test',?,?)").run(D, project.id, M2, hashCanonical({}), hashCanonical([]), bundleSha, snap.sha256, TS, TS);
   const projects = { get: id => db.prepare('SELECT * FROM projects WHERE id=?').get(id) };
   const missions = { get: id => { const r = db.prepare('SELECT * FROM missions WHERE id=?').get(id); return { id, projectId: r.project_id }; } };
   const config = { testMode: true, hubRoot: dir };
   const factory = createFactory({ db, bus, clock, config, projects, missions });
   const deliveries = createDeliveries({ db, bus, clock, config, projects, missions, factory });
-  deliveries.bindItem(D, { kind: 'bundle', refTable: 'factory_bundles', refId: 'bnd_rl', refSha: bundleSha, meta: { fileSha: bundleSha } });
+  deliveries.bindItem(D, { kind: 'bundle', refTable: 'factory_bundles', refId: 'bnd_rl', refSha: bundleSha, meta: { fileSha: sha256(bundle) } });
   t.after(async () => {
     deliveries.close_(); await settle(); db.close();
     assert.ok(path.resolve(dir).startsWith(root + path.sep));
@@ -164,7 +166,9 @@ test('RL-03 genuine problems and incomplete provenance remain refused and STALE'
       assert.equal(readRetireJournal(e.project, M1).status, 'RESTORE_INCOMPLETE');
       assert.equal(JSON.parse(e.protection()).restoreBlocked, true);
       assert.ok(e.events('factory.retire_restore_refused').length);
-      assert.deepEqual(e.events('factory.retire_restored'), []);
+      const writes = e.events('factory.retire_restored');
+      assert.ok(writes.length, 'the incomplete journal rewrite records its bytes');
+      assert.ok(writes.every(r => !r.complete && r.state === 'restore_incomplete' && r.sha256 === sha256(e.read(J1))), 'the write record is not a successful restore');
       await settle(); assert.equal(e.deliveries.get(D).status, 'STALE');
       assert.equal(e.deliveries.reconcileStale(D, { actor: 'test' }).ok, false);
       if (invalid === 'original-changed') assert.equal(e.read(REF).toString(), 'unexplained new bytes');
@@ -244,8 +248,8 @@ test('RL-06 boot completes a repair whose journal write survived but DB transact
     assert.deepEqual(e.read(J1), repaired);
     if (mode === 'boot replay') e.deliveries.boot();
     await settle();
-    assert.equal(e.deliveries.get(D).status, 'READY');
-    assert.deepEqual(e.deliveries.get(D).verified.reconciled.evidence.paths, [{ path: J1, provenance: 'hub_retire_journal' }]);
+    assert.equal(e.deliveries.get(D).status, 'STALE', 'an attestation cannot replace the rolled-back journal-write record');
+    assert.equal(e.deliveries.reconcileStale(D, { actor: 'test' }).ok, false);
     const changes = e.db.prepare('SELECT total_changes() n').get().n, settled = e.protection();
     e.factory.recover(); await settle();
     assert.equal(e.db.prepare('SELECT total_changes() n').get().n, changes);

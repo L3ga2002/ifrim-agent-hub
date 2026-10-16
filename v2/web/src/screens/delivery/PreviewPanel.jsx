@@ -8,7 +8,7 @@ import { previewState, shotRows, softwareView, sentence, PHONE_WORDING, PHONE_CA
  * synthetic data), start it (owner session; only from the verified snapshot) or stop it, plus the start command from the bundle.
  */
 export function PreviewPanel({ room }) {
-  const p = previewState(room.view, { hubOrigin: room.hubOrigin, session: room.session, busy: Boolean(room.busy) });
+  const p = previewState(room.view, { hubOrigin: room.hubOrigin, session: room.session, owner: room.owner, busy: Boolean(room.busy) });
   const sw = softwareView(room.view);
   const start = () => room.run("preview-start", () => room.client.act(room.id, "previewStart", {}), { owner: true, toast: "Preview pornit din versiunea verificată" });
   const stop = () => room.run("preview-stop", () => room.client.act(room.id, "previewStop", {}), { toast: "Preview oprit" });

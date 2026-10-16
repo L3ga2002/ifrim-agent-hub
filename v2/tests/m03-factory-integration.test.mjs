@@ -53,7 +53,7 @@ test("M03-FI-01 handoff after delivery carries the factory context (spec, criter
 
     // The workspace changes after QA: the bundle no longer describes it, acceptance is refused.
     fs.appendFileSync(path.join(t.dir, "src", "requests.js"), "\n// modificare după QA\n");
-    await assert.rejects(dispatch(t.hub, "factory.accept", { missionId: mission.id, note: "ok" }), /STALE/);
+    await assert.rejects(dispatch(t.hub, "factory.accept", { missionId: mission.id, bundleId: ready.bundles.at(-1).id, bundleSha: ready.bundles.at(-1).sha256, note: "ok" }), /STALE/);
     const after = t.hub.factory.view(mission.id);
     assert.equal(after.bundles.at(-1).status, "STALE");
     assert.equal(after.factory.stage, "DELIVERY_READY", "nothing is accepted on a changed workspace");

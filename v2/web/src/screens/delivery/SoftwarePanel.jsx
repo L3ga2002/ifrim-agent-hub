@@ -15,6 +15,7 @@ export function SoftwarePanel({ room }) {
     <Panel title="2 · Software verificat" icon={FileDiff} id="livrare-software-panel" actions={sw.present ? <Chip tone={sw.bundle.chip.tone}>{sw.bundle.chip.text}</Chip> : null}>
       {!sw.present ? <Empty title="Încă nu există un pachet de livrare">Pachetul apare când misiunea trece de verificări, review, QA, preview și E2E.</Empty> : (
         <div className="stack">
+          {room.view.software?.bundleMismatch && <Notice tone="error" title="Pachet diferit">Livrarea rămâne legată de pachetul afișat mai jos. Misiunea are alt pachet; acceptarea este oprită.</Notice>}
           {!sw.current && (
             <Notice tone="error" title="Dovezi pentru versiunea veche">
               {sw.why?.text ? `${sentence(sw.why.text)} ` : ""}Testele, review-ul și criteriile de mai jos descriu pachetul <code className="mono">{sw.bundle.id}</code>, nu codul de acum.
@@ -22,7 +23,7 @@ export function SoftwarePanel({ room }) {
           )}
           {simulation && <Notice tone="warn" title="SIMULARE">Rezultatele vin din provideri și sandbox de test; un PASS aici este cel mult PASS_SIMULATED.</Notice>}
           <dl className="kv small delivery-ids" aria-label="Ce versiune dovedesc rezultatele">
-            <dt>Pachet</dt><dd><code className="mono">{sw.bundle.id}</code>{sw.bundle.shaPrefix && <> · sha <code className="mono">{sw.bundle.shaPrefix}</code></>}</dd>
+            <dt>Pachet{room.view.software?.bound === false ? " (încă nelegat de livrare)" : ""}</dt><dd><code className="mono">{sw.bundle.id}</code>{sw.bundle.shaPrefix && <> · sha <code className="mono">{sw.bundle.shaPrefix}</code></>}</dd>
             <dt>Specificație</dt><dd>{sw.spec.version !== null ? `v${sw.spec.version}` : "—"}{sw.spec.shaPrefix && <> · sha <code className="mono">{sw.spec.shaPrefix}</code></>}</dd>
             <dt>Change set</dt><dd>{sw.changeSet.seq !== null ? `#${sw.changeSet.seq}` : "—"}{sw.changeSet.shaPrefix && <> · sha <code className="mono">{sw.changeSet.shaPrefix}</code></>}</dd>
             <dt>Snapshot verificat</dt><dd>{sw.snapshotPrefix ? <code className="mono">{sw.snapshotPrefix}</code> : <span className="faint">legat de change set-ul de mai sus</span>}</dd>

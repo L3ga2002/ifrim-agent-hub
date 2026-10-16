@@ -16,6 +16,7 @@ export function decisionsInbox(hub) {
       const bundle = db.prepare("SELECT * FROM factory_bundles WHERE mission_id = ? AND status = 'READY_FOR_OWNER_ACCEPTANCE' ORDER BY created_at DESC LIMIT 1").get(f.missionId);
       if (!bundle) continue;
       const manifest = parse(bundle.manifest_json, {});
+      const room = db.prepare("SELECT id FROM deliveries WHERE bundle_id = ? AND status IN ('PLANNED','ARMED','ACTIVE','READY','NEEDS_OWNER') ORDER BY created_at DESC LIMIT 1").get(bundle.id);
       const files = (manifest.changeSet?.files || []).map((x) => `${x.status === "added" ? "nou" : x.status === "deleted" ? "șters" : "modificat"}: ${x.path}`);
       const criteria = manifest.spec?.criteria || [];
       const passed = criteria.filter((c) => String(c.status).startsWith("PASS")).length;
@@ -24,7 +25,7 @@ export function decisionsInbox(hub) {
         why: "Așteaptă acceptarea ta locală. Nimic nu e comis, urcat sau publicat.",
         ifAccept: "Pachetul devine acceptat (OWNER_ACCEPTED), preview-ul se oprește; fișierele rămân cum sunt acum în folderul proiectului. Commit, push sau deploy rămân acțiuni separate, cu aprobarea ta.",
         ifReject: "Pachetul devine respins, misiunea se închide; modificările rămân în folder (revenirea la bază nu se face automat; snapshot-ul de bază e păstrat în Hub).",
-        effects: files.length ? files : ["fără fișiere modificate"], criteria: criteria.map(lineOf), link: `/missions/${f.missionId}` });
+        effects: files.length ? files : ["fără fișiere modificate"], criteria: criteria.map(lineOf), link: room ? `/livrare/${room.id}` : `/missions/${f.missionId}` });
     } else if (f.stage === "NEEDS_OWNER_DECISION") {
       const runs = db.prepare("SELECT COUNT(*) AS n FROM agent_runs WHERE task_id IN (SELECT id FROM tasks WHERE mission_id = ?)").get(f.missionId).n;
       const changes = db.prepare("SELECT COUNT(*) AS n FROM factory_change_sets WHERE mission_id = ?").get(f.missionId).n;

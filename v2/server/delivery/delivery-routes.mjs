@@ -50,8 +50,10 @@ export function registerDeliveryRoutes(router, hub) {
     const type = ACTIONS[params.action];
     if (!type) throw new HubError("not_found", "Acțiune necunoscută");
     const session = sessionOf(req);
+    if (params.action === "software-accept" && !session) throw new HubError("authentication", "Deschide sesiunea de proprietar pentru acceptarea software-ului", { data: { needSession: true } });
     const result = await commands.dispatch({ type, payload: { ...(body || {}), deliveryId: params.id }, actor: session ? `owner:${session.id}` : "user", channel: session ? "owner" : "ui", ownerSession: session,
-      idempotencyKey: req.headers["idempotency-key"] || null });
+      // Acceptance re-reads authority and returns the original bundle decision, including on a retry with the same HTTP key.
+      idempotencyKey: params.action === "software-accept" ? null : req.headers["idempotency-key"] || null });
     if (result.approvalRequired) return { __status: 202, body: { approvalRequired: true, approval: result.approval, commandId: result.command.id } };
     return result.result;
   });

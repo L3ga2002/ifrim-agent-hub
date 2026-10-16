@@ -1,6 +1,6 @@
 import { Scale, ExternalLink, Ban } from "lucide-react";
 import { Panel, Chip, Notice, ErrorNotice } from "../../components/ui.jsx";
-import { decisionGroups, decisionRows, PUBLISHING_ROW_TEXT } from "../../lib/deliveryLogic.js";
+import { confirmationHint, decisionGroups, decisionRows, PUBLISHING_ROW_TEXT } from "../../lib/deliveryLogic.js";
 
 const DONE_TOAST = {
   software: "Software acceptat local (doar acest pachet; nimic altceva nu a fost aprobat)",
@@ -8,7 +8,7 @@ const DONE_TOAST = {
   creativeVertical: "Aprobarea creativă a variantei 9:16 a fost înregistrată din sesiunea ta",
   summaryReady: "Rezumatul afișat e marcat „gata de prezentare”",
 };
-const PENDING_TEXT = { software: "Se verifică și se acceptă…", creativeMaster: "Aștept Windows Hello…", creativeVertical: "Aștept Windows Hello…", summaryReady: "Se înregistrează…" };
+const PENDING_TEXT = { software: "Se verifică și se acceptă…", creativeMaster: "Se confirmă…", creativeVertical: "Se confirmă…", summaryReady: "Se înregistrează…" };
 
 /**
  * The button (or Studio link) of ONE decision row. It sends exactly the request lib/deliveryLogic.js computed for that row — the
@@ -38,7 +38,7 @@ export function DecisionAction({ room, row, place = "" }) {
         <button type="button" className="btn approve" disabled={!a.enabled || !a.request} onClick={send} aria-describedby={a.reason || a.caution ? reasonId : undefined}>
           {room.busy === key ? PENDING_TEXT[row.key] || "Se trimite…" : a.label}
         </button>
-        {a.fresh && a.enabled && <span className="faint small">cere Windows Hello de fiecare dată</span>}
+        {confirmationHint(a, room.owner) && <span className="faint small">{confirmationHint(a, room.owner)}</span>}
       </div>
       {(a.reason || a.caution) && <p id={reasonId} className="small delivery-reason">{a.reason || a.caution}</p>}
       <ErrorNotice error={room.errorOf(key)} />
@@ -78,7 +78,7 @@ function DecisionRow({ room, row, titled }) {
  * record and sends only its own command; nothing is approved by opening or reading this page.
  */
 export function DecisionsPanel({ room }) {
-  const groups = decisionGroups(room.view, { session: room.session, busy: Boolean(room.busy), summaryDirty: room.summaryDirty });
+  const groups = decisionGroups(room.view, { session: room.session, owner: room.owner, busy: Boolean(room.busy), summaryDirty: room.summaryDirty });
   return (
     <Panel title="6 · Deciziile tale (cinci, separate)" icon={Scale} id="livrare-decizii-panel">
       <div className="stack">
@@ -106,5 +106,5 @@ export function DecisionsPanel({ room }) {
 
 /** The row of one decision for another panel (same data, same lock): used by the summary editor. */
 export function decisionRowFor(room, key) {
-  return decisionRows(room.view, { session: room.session, busy: Boolean(room.busy), summaryDirty: room.summaryDirty }).find((r) => r.key === key) || null;
+  return decisionRows(room.view, { session: room.session, owner: room.owner, busy: Boolean(room.busy), summaryDirty: room.summaryDirty }).find((r) => r.key === key) || null;
 }

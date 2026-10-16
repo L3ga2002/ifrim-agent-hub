@@ -80,7 +80,7 @@ function ServiceBinder({ room, disabled }) {
                 </select>
               </label>
               <div className="row wrap">
-                <button type="button" className="btn sm primary" disabled={disabled || !chosen || gate.blocked} onClick={bind}>{room.busy === "summary-service" ? "Se leagă…" : sessionLabel("Leagă serviciul (versiune nouă)", room.session)}</button>
+                <button type="button" className="btn sm primary" disabled={disabled || !chosen || gate.blocked} onClick={bind}>{room.busy === "summary-service" ? "Se leagă…" : sessionLabel("Leagă serviciul (versiune nouă)", room.session, room.owner)}</button>
                 {gate.blocked && <span className="small delivery-reason">{gate.reason}</span>}
               </div>
               <p className="faint small">Rezumatul preia doar câmpurile configurate ale serviciului (ce include, ce nu include, preț, termen). Nimic nu este trimis clientului.</p>
@@ -143,7 +143,7 @@ function SummaryBody({ room, sv }) {
             ))}
           </ul>
           <div className="row wrap">
-            <button type="button" className="btn primary" disabled={busy || !diff.valid || gate.blocked} onClick={save}><Save size={15} aria-hidden="true" />{room.busy === "summary-edit" ? "Se salvează…" : sessionLabel(`Salvează ca versiune nouă (v${Number(sv.version || 0) + 1})`, room.session)}</button>
+            <button type="button" className="btn primary" disabled={busy || !diff.valid || gate.blocked} onClick={save}><Save size={15} aria-hidden="true" />{room.busy === "summary-edit" ? "Se salvează…" : sessionLabel(`Salvează ca versiune nouă (v${Number(sv.version || 0) + 1})`, room.session, room.owner)}</button>
             <button type="button" className="btn ghost" disabled={busy} onClick={discardAll}><Undo2 size={15} aria-hidden="true" />Renunță la toate</button>
           </div>
           {gate.blocked && <p className="small delivery-reason">{gate.reason}</p>}

@@ -219,7 +219,7 @@ function RevisionBox({ room, moment }) {
         {moment && (
           <label className="check"><input type="checkbox" checked={atMoment} disabled={Boolean(disabledReason)} onChange={(e) => setAtMoment(e.target.checked)} />la momentul <span className="mono">{fmtClock(moment.ms)}</span> din {moment.title}</label>
         )}
-        <button type="submit" className="btn primary" disabled={!canSend}><Send size={15} aria-hidden="true" />{room.busy === "revise" ? "Se trimite…" : sessionLabel("Trimite", room.session)}</button>
+        <button type="submit" className="btn primary" disabled={!canSend}><Send size={15} aria-hidden="true" />{room.busy === "revise" ? "Se trimite…" : sessionLabel("Trimite", room.session, room.owner)}</button>
       </div>
       <p id="livrare-revise-help" className="faint small">
         {disabledReason || "Enter trimite, Shift+Enter face rând nou. Primești un singur card cu diferența sau o singură întrebare. „Site-ul e bine” e doar o notă: acceptarea rămâne decizia ta separată, iar un text nu devine niciodată cod."}

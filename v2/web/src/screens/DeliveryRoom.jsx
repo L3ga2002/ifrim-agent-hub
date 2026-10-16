@@ -146,7 +146,7 @@ function Spine({ tiles }) {
 
 /** The red banner of a stale delivery: the reason, the changed files, what it means, the real replacement link, and ONE way forward. */
 function StaleBanner({ banner, room, onAnswer }) {
-  const again = repackageState(room.view, { session: room.session, busy: Boolean(room.busy) });
+  const again = repackageState(room.view, { session: room.session, owner: room.owner, busy: Boolean(room.busy) });
   return (
     <div className="delivery-stale" role="alert">
       <AlertTriangle size={18} aria-hidden="true" />

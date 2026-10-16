@@ -180,6 +180,7 @@ export function notCurrentReason(view, node) {
   const d = obj(view?.delivery);
   const status = up(d.status);
   if (!node || typeof node !== "object") return { code: "MISSING", text: "nu există" };
+  if (node.mismatch === true) return { code: "BUNDLE_MISMATCH", text: "pachetul legat de livrare diferă de ultimul pachet al misiunii" };
   if (status === "STALE") return { code: "DELIVERY_STALE", text: str(d.statusReason).trim() || "baza livrării s-a schimbat" };
   if (NOT_CURRENT_DELIVERY.has(status)) return { code: `DELIVERY_${status}`, text: str(d.statusReason).trim() || `livrarea este ${(DELIVERY_STATUS[status] || [0, status.toLowerCase()])[1]}` };
   if (obj(d.verified).equal === false) return { code: "SNAPSHOT_DIFFERS", text: "workspace-ul diferă de versiunea testată" };
@@ -271,7 +272,7 @@ export function safePreviewUrl(url, { hubOrigin = "" } = {}) {
   return u.href;
 }
 /** What the „Demo local” panel offers: open (running), start (verified snapshot only) or stop, each with its honest reason. */
-export function previewState(view, { hubOrigin = "", session = "open", busy = false } = {}) {
+export function previewState(view, { hubOrigin = "", session = "open", owner, busy = false } = {}) {
   const p = obj(view?.preview);
   const url = safePreviewUrl(p.url, { hubOrigin });
   const running = p.running === true;
@@ -286,7 +287,7 @@ export function previewState(view, { hubOrigin = "", session = "open", busy = fa
     running, url, rawUrl: str(p.url), urlRefused: Boolean(str(p.url)) && !url,
     startCommand: str(p.startCommand), key: str(p.key),
     open: { enabled: running && Boolean(url) },
-    start: { ...start, enabled: start.enabled && !busy, label: sessionLabel("Pornește preview-ul versiunii verificate", session) },
+    start: { ...start, enabled: start.enabled && !busy, label: sessionLabel("Pornește preview-ul versiunii verificate", session, owner) },
     stop: { enabled: running && !busy, label: "Oprește preview-ul" },
     note: "Cod generat, rulează local pe date sintetice. Se deschide într-o filă nouă, niciodată în pagina Hub-ului.",
   };
@@ -579,14 +580,14 @@ export function ownerSessionState(owner, { onLocalhost = true } = {}) {
   if (owner?.bootstrapNeeded) return "unconfigured";
   return owner?.session ? "open" : "closed";
 }
-export const SESSION_HINT = "deschide sesiunea (Windows Hello)";
+export const SESSION_HINT = confirmationHint({ openingSession: true, enabled: true });
 export function sessionGate(session) {
   if (session === "unavailable") return { blocked: true, reason: "Sesiunea de proprietar se deschide doar pe http://localhost (aceeași pagină, aceeași adresă de port)." };
   if (session === "unconfigured") return { blocked: true, reason: "Sesiunea de proprietar nu e configurată încă; cockpitul Lega te ghidează o singură dată." };
   return { blocked: false, reason: "" };
 }
 /** A session-bound button names the ceremony while the session is closed: „… — deschide sesiunea (Windows Hello)”. */
-export const sessionLabel = (label, session) => (session === "open" ? label : `${label} — ${SESSION_HINT}`);
+export const sessionLabel = (label, session, owner) => (session === "open" ? label : `${label} — ${confirmationHint({ openingSession: true, enabled: true }, owner)}`);
 
 // ---------------------------------------------------------------- 6 · the five separate owner decisions
 
@@ -610,6 +611,7 @@ export function isCaptureStep(step) {
   return kind ? kind === CAPTURE_STEP_KIND : CAPTURE_TITLE.test(foldRo(step?.title));
 }
 export function captureRunning(view) {
+  if (view?.captureBlockers?.planId || view?.captureBlockers?.sessionId || arr(view?.captureSessions).some(s => up(s?.status) === "RECORDING")) return true;
   return arr(view?.plans).some((p) => ["RUNNING", "CONFIRMED"].includes(up(p?.status)) && arr(p.steps).some((s) => up(s?.status) === "RUNNING" && isCaptureStep(s)));
 }
 
@@ -638,10 +640,10 @@ export function rightsHref(view) {
 const pendingChip = Object.freeze({ tone: "approval", text: "în așteptarea ta" });
 /** The summary block's word for one decision (`decisions.<key>`: a string or `{ state }`) — a fallback only where the record itself is not in the view. */
 const claimedState = (view, key) => { const c = view?.decisions?.[key]; return up(c && typeof c === "object" ? c.state ?? c.status : c); };
-function gated(action, { session = "open", busy = false } = {}) {
+function gated(action, { session = "open", owner, busy = false } = {}) {
   if (!action || action.kind !== "command") return action;
   const gate = action.needsSession ? sessionGate(session) : { blocked: false, reason: "" };
-  const label = action.needsSession ? sessionLabel(action.label, session) : action.label;
+  const label = action.needsSession ? sessionLabel(action.label, session, owner) : action.label;
   if (!action.enabled) return { ...action, label };
   if (gate.blocked) return { ...action, label, enabled: false, reason: gate.reason };
   return { ...action, label, enabled: !busy };
@@ -657,15 +659,16 @@ function softwareRow(view, ctx) {
   // Only a bundle sent without a status falls back to the block's word.
   const record = status || (present ? claimedState(view, "software") : "");
   const state = ["OWNER_ACCEPTED", "ACCEPTED"].includes(record) ? "DONE" : record === "REJECTED" ? "REJECTED" : "PENDING";
-  const displayed = str(b.sha) || str(b.shaPrefix);
+  const displayed = str(b.sha);
   let action = null;
   if (state === "PENDING") {
-    const base = { kind: "command", command: DECISION_COMMANDS.software, label: "Accept local", needsSession: true, fresh: false, enabled: true, reason: "",
+    const base = { kind: "command", command: DECISION_COMMANDS.software, label: "Accept local", needsSession: true, fresh: true, enabled: true, reason: "",
       request: present ? { method: "POST", path: deliveryActionPath(str(view?.delivery?.id), "softwareAccept"), body: { bundleId: str(b.id), displayedBundleSha: displayed } } : null };
     if (!present) action = { ...base, enabled: false, reason: "Nu există încă un pachet de livrare." };
+    else if (view?.software?.bound === false) action = { ...base, enabled: false, reason: "Pachetul misiunii nu este încă legat de această livrare." };
     else if (why || status === "STALE") action = { ...base, enabled: false, reason: `Pachetul nu mai corespunde codului de acum: ${why?.text || "a fost înlocuit de unul mai nou"}.` };
     else if (status !== "READY_FOR_OWNER_ACCEPTANCE") action = { ...base, enabled: false, reason: `Pachetul nu așteaptă acceptarea (stare: ${status || "necunoscută"}).` };
-    else if (!displayed) action = { ...base, enabled: false, reason: "Lipsește amprenta pachetului afișat; reîncarcă pagina." };
+    else if (!/^[0-9a-f]{64}$/.test(displayed)) action = { ...base, enabled: false, reason: "Lipsește amprenta completă a pachetului afișat; reîncarcă pagina." };
     else if (captureRunning(view)) action = { ...base, enabled: false, reason: "Aștept capturile sau oprește planul: acceptarea ar opri preview-ul care se filmează." };
     else action = base;
   }
@@ -698,7 +701,7 @@ function creativeRow(view, slotKey, slot, ctx) {
   const chip = state === "DONE" ? { tone: slot.mode === "current" ? "ok" : "neutral", text: slot.mode === "current" ? `creație aprobată (${v})` : `creație aprobată · pentru versiunea veche` }
     : state === "REJECTED" ? { tone: "error", text: "respinsă" } : state === "CHANGES" ? { tone: "warn", text: "modificări cerute" } : !slot.present ? { tone: "neutral", text: "încă nu există" } : pendingChip;
   return { key, group: "creative", title: `Aprobare creativă — ${slot.title}`, target: slot.editVersionId ? `${v} · ${slot.editVersionId}` : "", state, chip,
-    does: "Spune că ACEASTĂ versiune de clip arată cum vrei. Cere Windows Hello de fiecare dată.",
+    does: `Spune că ACEASTĂ versiune de clip arată cum vrei.${confirmationHint(action, ctx.owner) ? ` ${confirmationHint(action, ctx.owner)}.` : ""}`,
     doesNot: "Nu acceptă software-ul, nu acordă drepturi de folosire publică și nu publică. O versiune nouă pornește neaprobată.",
     action: gated(action, ctx) };
 }
@@ -1016,12 +1019,12 @@ export function planRows(view) {
   });
 }
 /** „Pregătește un plan nou de împachetare”: offered when the delivery stopped and no plan of it is still open. */
-export function repackageState(view, { session = "open", busy = false } = {}) {
+export function repackageState(view, { session = "open", owner, busy = false } = {}) {
   const status = up(view?.delivery?.status);
   const open = planRows(view).some((p) => p.open);
   const offered = ["FAILED", "STALE", "NEEDS_OWNER"].includes(status) && !open;
   const gate = sessionGate(session);
-  return { offered, enabled: offered && !gate.blocked && !busy, reason: offered && gate.blocked ? gate.reason : "", label: sessionLabel("Pregătește un plan nou de împachetare", session),
+  return { offered, enabled: offered && !gate.blocked && !busy, reason: offered && gate.blocked ? gate.reason : "", label: sessionLabel("Pregătește un plan nou de împachetare", session, owner),
     note: "Primești un singur card cu pașii (captură, clip, rezumat); nimic nu pornește fără confirmarea ta." };
 }
 
@@ -1107,4 +1110,12 @@ export function cockpitDeliveryCard(view) {
   return { id, title: str(d.title) || "Livrare", href: id ? `#${deliveryHref(id)}` : null, chips: headerChips(view),
     line: banner ? `${banner.title}: ${banner.reason}` : up(d.status) === "READY" ? (open ? `${open} ${open === 1 ? "decizie separată te așteaptă" : "decizii separate te așteaptă"}` : "Nicio decizie deschisă") : statusNotice(view)?.text || "",
     pendingDecisions: banner ? 0 : open, stale: Boolean(banner) };
+}
+
+/** Freshness is a five-minute window; the local development profile never asks for Hello. */
+export function confirmationHint(action, owner) {
+  if (!action?.enabled) return "";
+  const authority = owner?.devProfile?.enabled ? "profil local de dezvoltare" : "Windows Hello";
+  if (action.fresh) return owner?.devProfile?.enabled ? authority : `cere o confirmare recentă (${authority})`;
+  return action.openingSession ? `deschide sesiunea (${authority})` : "";
 }
