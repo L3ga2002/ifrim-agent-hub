@@ -1,10 +1,30 @@
 # Open Issues - Ifrim Agent Hub
 
-## 2.14.17 part B — known issue outside correction scope
+## 2026-10-16 — 2.14.17 merged (`cfc58a7`), NOT yet live: claims bound to criteria, frozen presentation, correction card (live `2.14.16-m11`, contract 13, schema 12; detail: `.ifrim/STAGE_2026-10-16_AFIRMATII_DOVEZI_S25.md`)
 
-`delivery.package.propose` does not bind its proposed plan to the delivery. Confirming that re-package card can fail at its first
-step with `CAPTURE_NOT_BOUND`. This is not changed by R-CORRECT; the descendant-aware replacement link currently hides that offer
-for the reported lineage. Track and fix the package-proposal binding separately.
+This section takes precedence over every older one where they overlap. Closed in code (not yet live): items 1 and 4 of the 2026-10-15
+night section — clip and summary claims are bound to the approved spec's criteria by canonical fingerprint and proven per method on the
+delivery's own bundle; the presentation is frozen in the template; factual QA checks every displayed text; the replacement link shows only
+a valid descendant; the AC-7/AC-8 duplicate clause is fixed at its source (two revision generations, not a double merge). Item 3 (step-0
+author) is documented as a design for a separate stage: `.ifrim/DESIGN_2026-10-16_AUTOR_PAS0_HUB_TEMPLATE.md` (not implemented).
+
+Open:
+1. **Release (owner):** the managed upgrade and the push were refused to the agent (`[Production Deploy]`; git push denied). Run
+   `C:\Users\mihai\s25-claims\owner-release.cmd`. Until then the live Hub is 2.14.16 while the working tree is 2.14.17 (a reboot would
+   autostart 2.14.17 without the managed upgrade). Verified backup `bkp_mvacxszx_e1d7098238`; revert `git revert -m 1 cfc58a7` (verified).
+2. **Correction of `dlv_mva09x21_b0b0cbfb2a` (owner):** after the upgrade the Hub proposes the card „Corectură afirmații (clip + rezumat)”
+   (once per version). Confirm it in the Delivery Room. It re-captures both flows (the v1 footage shows the phone typed twice), builds
+   master v2 + vertical v2, `rezumat-v2`, Word/campaign v2 (or kept by proof), `manifest-v2`. Then: creative approvals, summary approval
+   and software acceptance stay the owner's. Do NOT approve the v1 summary/clips (the Room now blocks it).
+3. Curated claims exist only for the fixture's own spec and the exact §25 spec (pinned fingerprints, including the per-request test path);
+   any other refresh spec gets generated, criterion-bound texts (honest but plain). Follow-up: per-kind phrase table for Hub-derived
+   criteria.
+4. Word / campaign keep constant, uncurated phrases („fără suprapuneri”) and cut criteria at 160 chars; the campaign lists only the first 6
+   PASS criteria. Owner's decision whether these generators get the same claim binding.
+5. Low: `delivery.package.propose` never binds its plan to the delivery, so a confirmed re-package card would fail at step 1
+   (CAPTURE_NOT_BOUND); with the new replacement link no live delivery shows that offer. The Inbox chip for the correction row shows the raw
+   kind (`DecisionInbox.jsx` is the owner's locally modified file; untouched).
+6. Unchanged: sandbox-user processes not identifiable without elevation; M12 stays DRAFT.
 
 ## 2026-10-15 night — 2.14.16 live; §25 delivered READY and verified; summary/clip criterion citations wrong (live `2.14.16-m11`, contract 13, schema 12; detail: `.ifrim/STAGE_2026-10-15_CORECTII_S25.md` §8–§10)
 
