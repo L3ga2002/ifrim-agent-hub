@@ -102,14 +102,12 @@ function fixture(t, { invalid = null, differentOriginal = false, two = false } =
     if (invalid === 'other-project') db.prepare("UPDATE missions SET project_id='prj_other' WHERE id=?").run(M2);
     return damaged;
   };
-  return { db, project, factory, deliveries, read, write, protection, events, corrupt, retired, later };
+  return { db, bus, project, factory, deliveries, read, write, protection, events, corrupt, retired, later };
 }
 
 test('RL-01 boot leaves a restored journal and READY delivery unchanged after a legitimate later retirement', async t => {
   for (const differentOriginal of [false, true]) await t.test(differentOriginal ? 'original has newer bytes' : 'original missing', async t => {
     const e = fixture(t, { differentOriginal });
-    // Even an existing flag must not be silently cleared in the no-write branch.
-    e.db.prepare("UPDATE factory_specs SET protected_json=json_set(protected_json,'$.restoreBlocked',json('true')) WHERE mission_id=?").run(M1);
     const before = e.read(J1), prot = e.protection(), changes = e.db.prepare('SELECT total_changes() n').get().n;
     const result = e.factory.recover().find(r => r.missionId === M1);
     assert.equal(result.state, 'already_restored');
@@ -181,4 +179,78 @@ test('RL-04 only the repaired, consistent RESTORED journal has Hub drift provena
   e.factory.recover();
   assert.deepEqual(e.factory.snapshotCheck(M2).changedFiles, [J1], 'repair bytes differ from the delivery snapshot');
   assert.deepEqual(e.factory.driftProvenance(e.project.id, [J1]), { software: [], hub: [{ path: J1, provenance: 'hub_retire_journal' }] });
+});
+
+test('RL-05 RESTORED with originals present reconciles missing records for the journal cycle', async t => {
+  for (const scenario of ['absent', 'empty', 'partial', 'older cycle', 'unblocked']) await t.test(scenario, t => {
+    const e = fixture(t, { invalid: 'no-later', two: true });
+    for (const r of e.retired) e.write(r.from, TEXT);
+    const journal = readRetireJournal(e.project, M1);
+    journal.cycle = 2;
+    e.write(J1, json(journal));
+    const prot = JSON.parse(e.protection());
+    delete prot.restored;
+    if (scenario === 'empty') prot.restored = [];
+    if (scenario === 'partial') prot.restored = [{ ...e.retired[0], cycle: 2 }];
+    if (scenario === 'older cycle') prot.restored = e.retired.map(r => ({ ...r, cycle: 1 }));
+    prot.restoreBlocked = scenario !== 'unblocked';
+    e.db.prepare('UPDATE factory_specs SET protected_json=? WHERE mission_id=?').run(json(prot), M1);
+    const before = e.read(J1);
+    const report = e.factory.recover().find(r => r.missionId === M1);
+    assert.equal(report.state, 'already_restored'); assert.equal(report.retireRestored, true);
+    const after = JSON.parse(e.protection());
+    assert.equal(after.restoreBlocked, false);
+    for (const r of e.retired) assert.equal(after.restored.filter(x => x.from === r.from && x.to === r.to && x.sha256 === r.sha256 && x.cycle === 2).length, 1);
+    for (const r of prot.restored || []) assert.ok(after.restored.some(x => json(x) === json(r)), 'existing records are preserved');
+    const events = e.events('factory.retire_restored');
+    assert.equal(events.length, 1);
+    assert.equal(events[0].complete, true); assert.equal(events[0].state, 'already_restored');
+    assert.equal(events[0].sha256, sha256(before));
+    assert.deepEqual(e.read(J1), before);
+    assert.deepEqual(e.events('factory.retire_restore_refused'), []);
+    const changes = e.db.prepare('SELECT total_changes() n').get().n, settled = e.protection();
+    e.factory.recover();
+    assert.equal(e.db.prepare('SELECT total_changes() n').get().n, changes);
+    assert.equal(e.protection(), settled); assert.deepEqual(e.read(J1), before);
+    assert.equal(e.events('factory.retire_restored').length, 1);
+  });
+});
+
+test('RL-06 boot completes a repair whose journal write survived but DB transaction was lost', async t => {
+  for (const mode of ['live listener', 'boot replay']) await t.test(mode, async t => {
+    const e = fixture(t); e.corrupt();
+    const prot = e.protection();
+    // Run the actual repair in a transaction that rolls back after its filesystem write.
+    assert.throws(() => e.bus.transaction(() => {
+      assert.equal(e.factory.compensateRetirement(M1, 'crash simulation').state, 'repaired_after_later_retirement');
+      assert.equal(e.events('factory.retire_restored').length, 1);
+      throw new Error('lost DB step');
+    }), /lost DB step/);
+    assert.equal(readRetireJournal(e.project, M1).status, 'RESTORED');
+    assert.equal(e.protection(), prot); assert.equal(JSON.parse(prot).restoreBlocked, true);
+    assert.deepEqual(e.events('factory.retire_restored'), []);
+    assert.equal(e.deliveries.get(D).status, 'STALE');
+    const repaired = e.read(J1);
+    if (mode === 'live listener') e.deliveries.boot();
+    const report = e.factory.recover().find(r => r.missionId === M1);
+    assert.equal(report.state, 'already_restored'); assert.equal(report.retireRestored, true);
+    assert.equal(report.items[0].state, 'retired_later');
+    const after = JSON.parse(e.protection());
+    assert.equal(after.restoreBlocked, false);
+    assert.deepEqual(after.restored, JSON.parse(prot).restored, 'flag-only reconciliation does not duplicate records');
+    const events = e.events('factory.retire_restored');
+    assert.equal(events.length, 1); assert.equal(events[0].complete, true);
+    assert.equal(events[0].state, 'already_restored'); assert.equal(events[0].sha256, sha256(repaired));
+    assert.deepEqual(e.read(J1), repaired);
+    if (mode === 'boot replay') e.deliveries.boot();
+    await settle();
+    assert.equal(e.deliveries.get(D).status, 'READY');
+    assert.deepEqual(e.deliveries.get(D).verified.reconciled.evidence.paths, [{ path: J1, provenance: 'hub_retire_journal' }]);
+    const changes = e.db.prepare('SELECT total_changes() n').get().n, settled = e.protection();
+    e.factory.recover(); await settle();
+    assert.equal(e.db.prepare('SELECT total_changes() n').get().n, changes);
+    assert.equal(e.protection(), settled); assert.deepEqual(e.read(J1), repaired);
+    assert.equal(e.events('factory.retire_restored').length, 1);
+    assert.deepEqual(e.events('factory.retire_restore_refused'), []);
+  });
 });

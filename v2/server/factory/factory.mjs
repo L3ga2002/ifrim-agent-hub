@@ -670,10 +670,15 @@ export function createFactory(deps) {
       }
     }
     const restore = restoreRetired(plan, project, { missionId, laterRetirements, restored: spec.protected?.restored || [] });
-    if (restore.state === "already_restored") return restore;
     const fresh = (approvedSpec(fm(missionId)) || latestSpec(missionId)).protected || {};
     const records = [...(fresh.restored || [])];
     if (restore.complete) for (const r of plan) if (!records.some((x) => x.from === r.from && x.to === r.to && x.sha256 === r.sha256 && (x.cycle || 1) === (journal.cycle || 1))) records.push({ from: r.from, to: r.to, sha256: r.sha256, cycle: journal.cycle || 1, at: now(), cause });
+    if (restore.state === "already_restored") {
+      // The journal write can survive a rolled-back DB transaction; reconcile once before treating recovery as read-only.
+      if (records.length === (fresh.restored || []).length && !fresh.restoreBlocked) return restore;
+      const folder = safeFolder(project.path, `.ifrim-hub/retired/${missionId}`, { create: false });
+      restore.sha256 = fileShaAt(folder, "journal.json");
+    }
     db.prepare("UPDATE factory_specs SET protected_json = ? WHERE id = ?").run(json({ ...fresh, restored: records, restoreBlocked: !restore.complete }), spec.id);
     bus.append({ type: restore.complete ? "factory.retire_restored" : "factory.retire_restore_refused", scopeType: "mission", scopeId: missionId, source: "factory",
       payload: { missionId, projectId: project.id, complete: restore.complete, items: restore.items, cause, state: restore.state,
