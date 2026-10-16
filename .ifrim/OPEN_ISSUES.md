@@ -1,14 +1,18 @@
 # Open Issues - Ifrim Agent Hub
 
-## 2026-10-16 (live) — 2.14.18 live; §25 corrected: clips v2 + summary v2 READY for the owner (live `2.14.18-m11`, contract 13, schema 12; detail: `.ifrim/STAGE_2026-10-16_AFIRMATII_DOVEZI_S25.md` §10–§11)
+## 2026-10-16 (live) — 2.14.18 live; §25 corrected; clips v2 + summary v2 approved by the owner (11:19 UTC); software acceptance blocked by a Hub defect (live `2.14.18-m11`, contract 13, schema 12; detail: `.ifrim/STAGE_2026-10-16_AFIRMATII_DOVEZI_S25.md` §10–§12)
 
 This section takes precedence over every older one where they overlap. Closed: claims bound to the approved spec (2.14.17), the retire-journal
 STALE defect (2.14.18), the correction of `dlv_mva09x21_b0b0cbfb2a` (owner-confirmed card `opp_mvarvq2w_d8aaea73a9`, 13/13 DONE 09:48 UTC).
 
 Open:
-1. **Owner decisions** in the Delivery Room: creative approval of `demo-16x9-v2` and `demo-9x16-v2`, summary v2 „gata de prezentare”, local
-   acceptance of bundle `bnd_mva0hc23_b3d65a8da9`. QA WARN as listed in the stage doc §11 (unjustified freezes with timecodes; rights: platform
-   unspecified; 9:16 layout: 4-line desktop caption).
+1. **Software acceptance blocked by two Hub defects (stage doc §12).** The owner approved both v2 clips and summary v2 at 11:19 UTC, but
+   `delivery.software.accept` failed twice: it forwards `factory.accept` on the `owner` channel, which `factory.accept` (default `ui`/`test`)
+   refuses (since M11, `2a58e9d`; tests use `test`). The Factory-panel „Accept local” is NOT a safe workaround: `factory.accept`
+   compares snapshots strictly, and the Hub-repaired journal `.ifrim-hub/retired/mis_mv2ql0fp_ee35f8071e/journal.json` differs, so it would
+   mark `bnd_mva0hc23_b3d65a8da9` STALE. Fix (2.14.19, owner's decision): channel of the delivery acceptance + the same Hub-provenance
+   exception the delivery verification already applies, with `owner`-channel tests. Push of `79abea2` and later docs is the owner's.
+   QA WARN as listed in the stage doc §11 (unjustified freezes with timecodes; rights: platform unspecified; 9:16 layout: 4-line caption).
 2. **9:16 desktop segment** renders the desktop capture as a thin band (~15 % of the height, left edge cropped) and QA does not flag it;
    technical texts claiming „programare confirmată” appear before the confirmation frame; tone „both” shows AC ids on screen. Follow-up:
    variant framing for landscape captures, text placement on the proof shot, a QA check for content height in variants.

@@ -156,3 +156,20 @@ Runda E: formulări din proba pe datele live (problema citează cerințele, nu �
   (desktop 3,9–8,8 s vs 13,8 s; mobil 21,9–26,3 s vs ~33–36 s); tonul „both” arată ID-urile AC în video (se poate cere „clipul e prea
   tehnic”); campania și Word păstrează fraze nelegate („fără suprapuneri”, 5 servicii față de 3 în clip); README-v2 fără coloană de stare;
   `status_reason` al livrării rămâne „Invalidare exclusiv Hub anulată după verificare”.
+
+## 12. Deciziile proprietarului și acceptarea software-ului blocată (verificat 11:24–11:35 UTC, doar citire: SQL read-only, fișiere, `git ls-remote`)
+- 11:19 UTC, sesiunea de proprietar `osn_mv9zy3yk`: aprobare creativă `mrv_mvavl23t` pentru master `mev_mvas9f15` (IR `834d901e…`) și
+  `mrv_mvavlauo` pentru verticala `mev_mvas9wqu` (IR `30f042a2…`), ambele CREATIVE_APPROVED / RECORDED; rezumatul v2 `ddoc_mvasas01`
+  „gata de prezentare” (PRESENTATION_READY, sha `a41d3b59…` = `content_sha`). Drepturile de publicare nu au fost înregistrate (nu se cer aici).
+- **Acceptarea software-ului a eșuat de două ori** (11:19:42 și 11:19:51): „Command factory.accept cannot be issued through owner”. Cauza
+  (defect din M11, `2a58e9d`, 2026-10-07): `delivery.software.accept` (canale `owner`/`test`) trimite `factory.accept` pe canalul apelantului,
+  iar `factory.accept` are canalele implicite `ui`/`test` (`v2/server/runtime/commands.mjs` `register`); testele folosesc `test`, deci nu l-au
+  prins. Butonul din camera livrării n-a reușit niciodată; `factory.accept` pe `ui` (panoul Fabricii) a mers de 6 ori, ultima 2026-10-08.
+- **Al doilea defect, care face ocolirea periculoasă:** `factory.accept` compară strict snapshot-ul curent cu cel al pachetului
+  (`factory.mjs` `accept`), fără excepția „scris de Hub” pe care o are verificarea livrării. Singurul fișier diferit dintre cele 21 este
+  `.ifrim-hub/retired/mis_mv2ql0fp_ee35f8071e/journal.json` (`6b8026d9…` → `9629dc0f…`, reparat de 2.14.18; verificarea livrării îl
+  recunoaște: `hubOnly`, proveniență `hub_retire_journal`, `equal: true`, așteptat `696cb23e…`, actual `00d7e928…`). Butonul „Accept local”
+  din panoul Fabricii ar marca deci pachetul STALE și ar refuza. Proprietarul NU trebuie să-l apese.
+- Pachetul rămâne READY_FOR_OWNER_ACCEPTANCE, livrarea READY. Reparația (2.14.19: canalul acceptării din livrare + aceeași excepție
+  „scris de Hub” în `factory.accept`, cu teste pe canalul `owner`) e o etapă separată și așteaptă decizia proprietarului.
+- Commitul de documentație `79abea2` nu era pe `origin/v2-milestone-01` la 11:24 UTC (remote = `37e4222`); push-ul e al proprietarului.
