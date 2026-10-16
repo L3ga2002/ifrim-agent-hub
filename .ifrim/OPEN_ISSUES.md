@@ -1,5 +1,23 @@
 # Open Issues - Ifrim Agent Hub
 
+## 2026-10-16 (live) — 2.14.18 live; §25 corrected: clips v2 + summary v2 READY for the owner (live `2.14.18-m11`, contract 13, schema 12; detail: `.ifrim/STAGE_2026-10-16_AFIRMATII_DOVEZI_S25.md` §10–§11)
+
+This section takes precedence over every older one where they overlap. Closed: claims bound to the approved spec (2.14.17), the retire-journal
+STALE defect (2.14.18), the correction of `dlv_mva09x21_b0b0cbfb2a` (owner-confirmed card `opp_mvarvq2w_d8aaea73a9`, 13/13 DONE 09:48 UTC).
+
+Open:
+1. **Owner decisions** in the Delivery Room: creative approval of `demo-16x9-v2` and `demo-9x16-v2`, summary v2 „gata de prezentare”, local
+   acceptance of bundle `bnd_mva0hc23_b3d65a8da9`. QA WARN as listed in the stage doc §11 (unjustified freezes with timecodes; rights: platform
+   unspecified; 9:16 layout: 4-line desktop caption).
+2. **9:16 desktop segment** renders the desktop capture as a thin band (~15 % of the height, left edge cropped) and QA does not flag it;
+   technical texts claiming „programare confirmată” appear before the confirmation frame; tone „both” shows AC ids on screen. Follow-up:
+   variant framing for landscape captures, text placement on the proof shot, a QA check for content height in variants.
+3. Word / campaign keep uncurated phrases („fără suprapuneri”, five services vs three in the footage) and cut criteria at 160 chars.
+4. Low: README-v2 has no CURRENT/SUPERSEDED column; delivery `status_reason` not updated after a correction; new claim items have no
+   supersedes link; boot emits duplicate `delivery.stale_reconcile_refused` events; `delivery.package.propose` never binds its plan.
+5. Unchanged: step-0 author design (`.ifrim/DESIGN_2026-10-16_AUTOR_PAS0_HUB_TEMPLATE.md`, not implemented); sandbox-user processes not
+   identifiable without elevation; M12 stays DRAFT.
+
 ## 2026-10-16 — 2.14.17 live (owner, 06:38 UTC); 2.14.18 merged (`3e887c4`), NOT yet live: the §25 delivery went STALE through a retire-journal defect (detail: `.ifrim/STAGE_2026-10-16_AFIRMATII_DOVEZI_S25.md` §10)
 
 This section takes precedence over every older one where they overlap. Closed in code (not yet live): items 1 and 4 of the 2026-10-15

@@ -131,3 +131,28 @@ Runda E: formulări din proba pe datele live (problema citează cerințele, nu �
   porții. Backup verificat `bkp_mvaq511v_2b957e0eff` (08:47 UTC); îmbinare `3e887c4`.
 - Upgrade-ul și push-ul rămân ale proprietarului (refuzate agentului): `C:\Users\mihai\s25-claims\owner-release-2.cmd`. La pornirea 2.14.18,
   recuperarea repară jurnalul, reconcilierea readuce `dlv_mva09x21` la READY, iar Hub-ul propune cardul de corectură (o dată pe versiune).
+
+## 11. Release 2.14.18 și corectura live (09:35–09:55 UTC)
+- 09:35 UTC proprietarul a rulat `owner-release-2.cmd`: `upg_mvarv97r` DONE (2.14.17 → 2.14.18, `boot_mvarvdrq`), push confirmat
+  (`v2-milestone-01` = `37e4222`, ramura = `09f1364`). La pornire: `factory.retire_restored` (jurnalul `mis_mv2ql0fp` reparat, 09:35:38),
+  `delivery.stale_reconciled` pentru `dlv_mva09x21` (dovadă: calea jurnalului cu proveniența `hub_retire_journal`) → READY; apoi Hub-ul a
+  propus cardul `opp_mvarvq2w_d8aaea73a9` (`delivery.correct`, 13 pași, `correctionSha` 7cf60463… = cel din proba pe copia datelor live).
+- 09:43:59 UTC proprietarul a confirmat cardul (sesiunea de proprietar). 09:44–09:48 UTC: 13/13 pași DONE, revizia `drv_mvarvq2j_53ee1bd342`
+  APPLIED, livrarea READY. Fără model, writer, autor sau dispatch (0 rânduri noi în `agent_runs` / `factory_dispatches` după 09:35).
+- Versiuni noi (în același folder de export, v1 neatinse, sha verificate): `demo-16x9-v2.mp4` (`1bf20cd4…`, 37,4 s), `demo-9x16-v2.mp4`
+  (`2e87269d…`), `rezumat-v2.md/.html` (`43583fac…` / `822ac825…`, document v2 `ddoc_mvasas01_9f93f7dc42`, `basis.factual` PASS),
+  `Prezentare demo v2.docx` + PDF, `Campanie v2/`, `manifest-v2.json` (32 de fișiere, sha = disc), `README-v2.md`; registrul Excel păstrat
+  prin dovadă (`9ce060d8…`). Capturi noi `mav_mvas8wjt…` (desktop) și `mav_mvas9evu…` (telefon): telefonul tastat o singură dată (cadre
+  verificate). Pachetul `bnd_mva0hc23` (`43ad3531…`), specificația `a69b8e9f…` și snapshot-ul `696cb23e…` neschimbate.
+- Afirmații (6 SUPPORTED, `ccl_mvas9f0*`): hook AC-1/AC-2/AC-10 (`evd_mva0h3vg`, `evd_mva0hc1f`), desktop AC-8 (`evd_mva0h7ek`), mobil AC-7
+  (`evd_mva0h6ko`), CTA fără criteriu; amprentele recalculate independent = cele fixate. QA factual PASS pe master
+  (`mqr_mvas9wq0…`) și verticală, 4/4 texte legate, 0 nelegate; afișările ambelor tonuri și ale suprascrierilor 9:16 au sha-uri înregistrate.
+- QA media (praguri neschimbate): 16:9 WARN — 6 segmente înghețate nejustificate (0,30–3,50 s; 4,23–6,13; 6,43–8,07; 12,53–13,77;
+  28,47–32,50; 32,63–34,90) + drepturi (platformă nespecificată); 9:16 WARN — 7 segmente (0,30–3,43; 4,23–6,13; 6,13–8,43; 10,40–13,77;
+  28,47–29,57; 29,57–30,83; 33,87–34,90) + layout (textul desktop pe 4 rânduri, 3,93–8,80 s). v1: 16:9 7+1, 9:16 5. Două înghețări provin din
+  pauze respinse la limită (HOLD_LATENCY_EXCEEDED cu 13 ms / 40 ms).
+- Audit independent doar-citire (4 agenți) — de decis de proprietar / urmări: în 9:16 segmentul desktop apare ca o bandă îngustă (~15 %
+  din înălțime) cu marginea stângă tăiată (QA nu o prinde); textele tehnice „…programare confirmată” apar înaintea cadrului cu confirmarea
+  (desktop 3,9–8,8 s vs 13,8 s; mobil 21,9–26,3 s vs ~33–36 s); tonul „both” arată ID-urile AC în video (se poate cere „clipul e prea
+  tehnic”); campania și Word păstrează fraze nelegate („fără suprapuneri”, 5 servicii față de 3 în clip); README-v2 fără coloană de stare;
+  `status_reason` al livrării rămâne „Invalidare exclusiv Hub anulată după verificare”.
