@@ -1,6 +1,12 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { salesApprovalReadiness, salesAuthorityLabel, salesApprovalCardText, salesApprovalAction } from "../web/src/lib/salesAuthorityLogic.js";
+import fs from "node:fs";
+import { salesApprovalReadiness, salesAuthorityLabel, salesApprovalCardText, salesApprovalAction, salesDecisionApplies, salesApprovalStateText,
+  ownerSalesKind } from "../web/src/lib/salesAuthorityLogic.js";
+import { proposalApprovalReadiness } from "../web/src/lib/salesLogic.js";
+import { withReauth } from "../web/src/lib/ownerSession.js";
+
+const source = (rel) => fs.readFileSync(new URL(`../${rel}`, import.meta.url), "utf8");
 
 const p = { id: "spr_test_12", version: 1, status: "DRAFT", sha: "a".repeat(64), approvedSha: null };
 const opp = { id: "opp_test", status: "READY_FOR_OWNER_REVIEW" };
@@ -38,4 +44,96 @@ test("M12-UI-03 one reauth retry resumes the three-stage action without requesti
     for (const stage of [0, 1, 2]) assert.equal(calls.filter(c => c.stage === stage).length, stage === failedStage ? 2 : 1);
     assert.deepEqual(calls.find(c => c.stage === 0).options.body, { displayedSha: p.sha });
   }
+});
+test("M12-UI-04 (review C2) the decision block exists only for the latest DRAFT under review; every other version states itself once", () => {
+  const v2 = { ...p, id: "spr_test_13", version: 2, sha: "c".repeat(64) };
+  const approved = { ...p, status: "APPROVED_INTERNAL", approvedSha: p.sha };
+  // What the proposal view prints (its own state line) and what the decision block prints (only when it is rendered).
+  const lines = (o, proposal, proposals) => {
+    const view = proposalApprovalReadiness(o, proposal, proposals), block = salesApprovalReadiness(o, proposal, proposals);
+    const applies = salesDecisionApplies(o, proposal, proposals);
+    return { applies, printed: [!view.ok && !view.needsReview && view.reason, applies && !block.ok && block.reason].filter(Boolean) };
+  };
+  assert.deepEqual(lines(opp, p, [p]), { applies: true, printed: [] });
+  const superseded = lines(opp, p, [p, v2]);
+  assert.equal(superseded.applies, false); assert.equal(superseded.printed.length, 1); assert.match(superseded.printed[0], /mai nouă/);
+  assert.deepEqual(lines({ ...opp, status: "APPROVED_INTERNAL" }, approved, [approved]), { applies: false, printed: [] });
+  assert.deepEqual(lines({ ...opp, status: "PROPOSAL_DRAFT" }, p, [p]), { applies: false, printed: [] });
+  for (const status of ["INVALID", "SUPERSEDED"]) {
+    const other = lines(opp, { ...p, status }, [{ ...p, status }]);
+    assert.equal(other.applies, false); assert.equal(other.printed.length, 1); assert.match(other.printed[0], /Propunerea e/);
+  }
+  const won = lines({ ...opp, status: "WON" }, p, [p]);
+  assert.equal(won.applies, false); assert.equal(won.printed.length, 1); assert.match(won.printed[0], /starea/);
+  // The latest DRAFT under review with a broken identity keeps the block, disabled, with the reason printed once (in the block).
+  const broken = lines(opp, { ...p, sha: "a".repeat(12) }, [{ ...p, sha: "a".repeat(12) }]);
+  assert.equal(broken.applies, true); assert.equal(broken.printed.length, 1); assert.match(broken.printed[0], /SHA/);
+});
+
+test("M12-UI-05 (review F10) ApprovalCard: a reserved kind takes the owner path under one withReauth, never /decide", async () => {
+  const reserved = { id: "apr_card", scopeId: "cmd_card", scopeType: "command", actionKind: "sales.proposal_approve", payloadHash: "d".repeat(64) };
+  // The card's reserved branch is approveSales(options) = withReauth(salesApprovalAction(api, options)) (salesOwnerActions.js).
+  const rig = (failOnce = null) => {
+    const calls = []; let reauths = 0, prompts = 0, failed = false;
+    const call = async (path, options) => {
+      calls.push({ path, body: options?.body });
+      if (failOnce && path.endsWith(failOnce) && !failed) { failed = true; throw Object.assign(Error("Deschide sesiunea de proprietar"), { category: "authentication", details: { needSession: true } }); }
+      return { ok: true };
+    };
+    // The same retry rule as withReauth, counted: one wrapper per click, at most one prompt.
+    const reauth = async (fn) => { reauths++; try { return await fn(); } catch (error) { if (error.category !== "authentication") throw error; prompts++; return fn(); } };
+    const card = (options) => reauth(salesApprovalAction(call, options));
+    return { calls, card, counts: () => ({ reauths, prompts }) };
+  };
+  const paths = (r) => r.calls.map(c => c.path);
+  const runs = [];
+
+  // „Aprob intern” on a pending card: owner_decide on THIS approval, then execute ITS command (scopeId); no new request.
+  let r = rig(); runs.push(r);
+  await r.card({ approval: { ...reserved, status: "pending" }, decision: "approved", note: "" });
+  assert.deepEqual(paths(r), ["/api/approvals/apr_card/owner_decide", "/api/commands/cmd_card/execute"]);
+  assert.deepEqual(r.calls[0].body, { decision: "approved", displayedHash: reserved.payloadHash, note: "" });
+  assert.deepEqual(r.counts(), { reauths: 1, prompts: 0 });
+
+  // „Respinge”: owner_decide only, with the note; nothing executes.
+  r = rig(); runs.push(r);
+  assert.deepEqual(await r.card({ approval: { ...reserved, status: "pending" }, decision: "rejected", note: "Nu acum" }), { rejected: true });
+  assert.deepEqual(paths(r), ["/api/approvals/apr_card/owner_decide"]); assert.equal(r.calls[0].body.decision, "rejected"); assert.equal(r.calls[0].body.note, "Nu acum");
+
+  // „Pornește acum” on an approved card: only the execute of its command, never a second decision.
+  r = rig(); runs.push(r);
+  await r.card({ approval: { ...reserved, status: "approved" } });
+  assert.deepEqual(paths(r), ["/api/commands/cmd_card/execute"]);
+
+  // One unlock prompt when the executing session is missing; the decision already recorded is not sent again.
+  r = rig("/execute"); runs.push(r);
+  await r.card({ approval: { ...reserved, status: "pending" }, decision: "approved" });
+  assert.deepEqual(paths(r), ["/api/approvals/apr_card/owner_decide", "/api/commands/cmd_card/execute", "/api/commands/cmd_card/execute"]);
+  assert.deepEqual(r.counts(), { reauths: 1, prompts: 1 });
+
+  // approval.decide (ui/agent) is never asked to decide a reserved kind, and the request is never made again.
+  for (const run of runs) assert.equal(paths(run).some(path => /\/api\/approvals\/[^/]+\/decide$|\/approve$/.test(path)), false);
+
+  // The card routes exactly the reserved kind through that owner action, on both buttons, before any /decide.
+  assert.equal(ownerSalesKind(reserved), true);
+  for (const actionKind of ["sales.draft_content", "sales.suppression_lift", "factory.scope", "lega.run_request"]) assert.equal(ownerSalesKind({ ...reserved, actionKind }), false, actionKind);
+  assert.match(source("web/src/lib/salesOwnerActions.js"), /export const approveSales = \(options\) => withReauth\(salesApprovalAction\(api, options\)\);/);
+  const card = source("web/src/screens/Approvals.jsx");
+  assert.match(card, /const reserved = ownerSalesKind\(approval\);/);
+  assert.match(card, /if \(reserved\) \{ await approveSales\(\{ approval, decision, note \}\); onDone\(\); return; \}\s*await api\(`\/api\/approvals\/\$\{approval\.id\}\/decide`/);
+  assert.match(card, /await \(reserved \? approveSales\(\{ approval \}\) : startApproved\(approval\)\)/);
+});
+
+test("M12-UI-06 (review F8) a decision refused for good asks for no Windows Hello and the card says to request the approval again", async () => {
+  // The server's answer for a revoked decider / revoke-all boundary / another credential: a conflict, never authentication.
+  const refused = Object.assign(Error("Autoritatea aprobării a fost revocată; cere din nou aprobarea"), { category: "conflict", code: "OWNER_DECISION_REVOKED", status: 409 });
+  let attempts = 0;
+  // The real withReauth: it would run the WebAuthn unlock only for an authentication error; this one comes back untouched, once.
+  await assert.rejects(withReauth(async () => { attempts++; throw refused; }), (error) => error === refused);
+  assert.equal(attempts, 1);
+  const reserved = { actionKind: "sales.proposal_approve", status: "invalidated" };
+  assert.match(salesApprovalStateText(reserved), /Cere din nou aprobarea/);
+  assert.match(salesApprovalStateText({ ...reserved, status: "expired" }), /Cere din nou aprobarea/);
+  for (const status of ["pending", "approved", "consumed", "rejected"]) assert.equal(salesApprovalStateText({ ...reserved, status }), null, status);
+  assert.equal(salesApprovalStateText({ actionKind: "sales.draft_content", status: "invalidated" }), null);
 });

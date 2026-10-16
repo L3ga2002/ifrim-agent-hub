@@ -277,11 +277,16 @@ export function createTrust({ db, bus, clock, settings, config, devProfile = () 
     return { ended: changed === 1 };
   }
 
+  /**
+   * Ends every open session. The event is written even when none was open (count 0): revoke-all is also the security boundary
+   * for decisions confirmed earlier in a session that has since ended by logout or idle (M12 review P1-F1: a Sales decision
+   * made before it must not execute after it). Its listeners only re-check what they hold (Lega's derived voice session).
+   */
   function revokeAllSessions(reason, actor = "owner") {
     return bus.transaction(() => {
       const ids = db.prepare("SELECT id FROM owner_sessions WHERE status = 'active'").all().map((r) => r.id);
       db.prepare("UPDATE owner_sessions SET status = 'ended', revoked_at = ?, revoke_reason = ? WHERE status = 'active'").run(iso(), reason);
-      if (ids.length) bus.append({ type: "owner.sessions_revoked", scopeType: "owner", scopeId: "sessions", source: actor, payload: { count: ids.length, reason } });
+      bus.append({ type: "owner.sessions_revoked", scopeType: "owner", scopeId: "sessions", source: actor, payload: { count: ids.length, reason } });
       return ids.length;
     });
   }

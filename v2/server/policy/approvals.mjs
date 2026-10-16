@@ -140,6 +140,21 @@ export function createApprovals(db, bus, clock = () => new Date(), config = {}) 
     db.prepare("UPDATE approvals SET status = 'expired' WHERE id = ? AND status IN ('pending','approved')").run(id);
   }
 
+  /**
+   * M12 (review P1-F5/F8/F9): ends an approval whose action can never run any more, so no screen keeps offering it. Past its expiry
+   * it is simply expired; otherwise it is invalidated with the reason (and the refusal's code) on the event. Only a pending or
+   * approved row changes (a consumed, rejected or already ended one is left as it is). The caller owns the transaction.
+   */
+  function invalidate(id, { reason, code = null } = {}) {
+    const row = byId.get(id);
+    if (!row || !["pending", "approved"].includes(row.status)) return { changed: false, status: row?.status || null };
+    if (new Date(row.expires_at) <= clock()) { expire(id); return { changed: true, status: "expired" }; }
+    const changed = db.prepare("UPDATE approvals SET status = 'invalidated' WHERE id = ? AND status IN ('pending','approved')").run(id).changes === 1;
+    if (changed) bus.append({ type: "approval.invalidated", scopeType: row.scope_type, scopeId: row.scope_id, source: "hub",
+      payload: { approvalId: id, reason: String(reason || "invalidated").slice(0, 300), ...(code ? { code: String(code).slice(0, 60) } : {}) } });
+    return { changed, status: changed ? "invalidated" : row.status };
+  }
+
   function expireStale() {
     const now = clock().toISOString();
     return db.prepare("UPDATE approvals SET status = 'expired' WHERE status IN ('pending','approved') AND expires_at <= ?").run(now).changes;
@@ -149,7 +164,7 @@ export function createApprovals(db, bus, clock = () => new Date(), config = {}) 
     ? db.prepare("SELECT * FROM approvals WHERE status = ? ORDER BY created_at DESC LIMIT 200").all(status)
     : db.prepare("SELECT * FROM approvals ORDER BY created_at DESC LIMIT 200").all()).map(rowToApproval);
 
-  return { request, decide, decideByOwner, decideByEnvelope, consume, expireStale, list, get: (id) => { const r = byId.get(id); return r ? rowToApproval(r) : null; } };
+  return { request, decide, decideByOwner, decideByEnvelope, consume, invalidate, expireStale, list, get: (id) => { const r = byId.get(id); return r ? rowToApproval(r) : null; } };
 }
 
 export function rowToApproval(row) {

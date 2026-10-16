@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { machineIdentity } from "../server/owner/dev-profile.mjs";
 import { salesAcceptanceHub, seedSalesReview, salesCommand, salesFingerprint, salesUnchanged, salesDecisions,
   requestSalesApproval, decideSalesApproval, executeSalesApproval, approveSalesHttp } from "./sales-helpers.mjs";
+import { approvedNotStarted } from "../web/src/lib/uiLogic.js";
 
 async function fixture(c, options) {
   const t = await salesAcceptanceHub(c, options);
@@ -10,6 +11,18 @@ async function fixture(c, options) {
 }
 const sessionId = t => t.hub.db.prepare("SELECT id FROM owner_sessions WHERE status='active' ORDER BY rowid DESC LIMIT 1").get().id;
 const approvalState = (t, r) => t.hub.approvals.get(r.approval.id).status;
+const commandState = (t, r) => t.hub.commands.get(r.commandId).status;
+const endedReasons = (t, r) => t.hub.db.prepare("SELECT payload_json FROM events WHERE type='approval.invalidated' AND json_extract(payload_json, '$.approvalId')=?").all(r.approval.id).map(e => JSON.parse(e.payload_json));
+/** A decision refused for good (review F8/F9): no Windows Hello can fix it, it is retired and no longer offered as approved-not-started. */
+function assertRetired(t, r, response, code) {
+  assert.equal(response.json.error.category === "authentication", false, JSON.stringify(response.json));
+  assert.equal(Boolean(response.json.error.details?.needSession || response.json.error.details?.reauth), false);
+  if (code) assert.equal(response.json.error.code, code);
+  assert.equal(approvalState(t, r), "invalidated"); assert.equal(commandState(t, r), "failed");
+  assert.equal(endedReasons(t, r).length, 1);
+  assert.equal(approvedNotStarted(t.hub.approvals.list("approved")).some(a => a.id === r.approval.id), false);
+  assert.equal(t.hub.db.prepare("SELECT count(*) n FROM events WHERE type='approval.consumed' AND scope_id=?").get(r.commandId).n, 0);
+}
 
 test("SA-01 valid session + exact offer → exactly one approval", async c => {
   const { t, b } = await fixture(c); await t.authenticate();
@@ -60,10 +73,15 @@ test("SA-03 absent / empty / whitespace / prefix / uppercase / wrong SHA and sup
   }
   for (const alias of ["sha", "contentSha"]) await salesUnchanged(t, () => t.request(b.route, { body: { [alias]: b.sha } }), 400);
   let r = await requestSalesApproval(t, { ...b, body: { displayedSha: "0".repeat(64) } }); await decideSalesApproval(t, r);
-  await salesUnchanged(t, () => executeSalesApproval(t, r), 409);
+  // Review F9: a refused final check retires the decision; a retry answers the approval state, never a WebAuthn prompt.
+  assertRetired(t, r, await salesUnchanged(t, () => executeSalesApproval(t, r), 409));
+  assert.match(endedReasons(t, r)[0].reason, /final check refused: Conținutul s-a schimbat/);
+  const again = await salesUnchanged(t, () => executeSalesApproval(t, r), 409);
+  assert.equal(again.json.error.category, "gate"); assert.match(again.json.error.message, /invalidated/);
   r = await requestSalesApproval(t, b);
   await salesCommand(t, "sales.proposal.create", { opportunityId: b.oppId }); await decideSalesApproval(t, r);
-  await salesUnchanged(t, () => executeSalesApproval(t, r), 409);
+  assertRetired(t, r, await salesUnchanged(t, () => executeSalesApproval(t, r), 409));
+  assert.match(endedReasons(t, r)[0].reason, /versiune mai nouă/);
   assert.equal(t.hub.sales.getOpportunity(b.oppId).proposals[0].status, "DRAFT");
 });
 
@@ -71,9 +89,32 @@ test("SA-04 revoke-all between deciding and executing refuses without consuming 
   const { t, b } = await fixture(c); await t.authenticate();
   const r = await requestSalesApproval(t, b); await decideSalesApproval(t, r);
   const revoked = await t.request("/api/owner/sessions/revoke-all"); assert.equal(revoked.status, 200);
-  await salesUnchanged(t, () => executeSalesApproval(t, r), 401); assert.equal(approvalState(t, r), "approved");
+  const locked = await salesUnchanged(t, () => executeSalesApproval(t, r), 401); assert.equal(locked.json.error.details.needSession, true);
+  assert.equal(approvalState(t, r), "approved"); assert.equal(commandState(t, r), "pending_approval");
   await t.authenticate({ reauth: true });
-  await salesUnchanged(t, () => executeSalesApproval(t, r), 401); assert.equal(approvalState(t, r), "approved");
+  // Review F8: after unlocking, the revoked decision is refused for good: no second Windows Hello, the decision retired, not consumed.
+  const refused = await salesUnchanged(t, () => executeSalesApproval(t, r), 409);
+  assertRetired(t, r, refused, "OWNER_DECISION_REVOKED"); assert.match(refused.json.error.message, /cere din nou aprobarea/);
+  assert.equal((await salesUnchanged(t, () => executeSalesApproval(t, r), 409)).json.error.category, "gate");
+  assert.equal(t.hub.sales.getOpportunity(b.oppId).proposals[0].status, "DRAFT");
+  // „Cere din nou aprobarea”: a new request in the new session approves the same exact version once.
+  assert.equal((await approveSalesHttp(t, b)).status, 200); assert.equal(salesDecisions(t).length, 1);
+});
+
+test("SA-04b (review P1-F1) revoke-all with no session open still cancels a decision whose session ended by logout", async c => {
+  const { t, b } = await fixture(c); await t.authenticate();
+  const decider = sessionId(t), r = await requestSalesApproval(t, b); await decideSalesApproval(t, r);
+  assert.equal((await t.request("/api/owner/logout")).status, 200);
+  assert.equal(t.hub.db.prepare("SELECT revoke_reason FROM owner_sessions WHERE id=?").get(decider).revoke_reason, "logout");
+  assert.equal(t.hub.trust.confirmedAuthority(decider).ok, true, "a logout alone keeps a confirmed decision");
+  const revoked = await t.request("/api/owner/sessions/revoke-all", { sessionCookie: "" });
+  assert.equal(revoked.status, 200, JSON.stringify(revoked.json));
+  assert.equal(t.hub.db.prepare("SELECT count(*) n FROM owner_sessions WHERE status='active'").get().n, 0);
+  const boundary = t.hub.db.prepare("SELECT payload_json FROM events WHERE type='owner.sessions_revoked'").all().map(e => JSON.parse(e.payload_json));
+  assert.deepEqual(boundary.map(e => e.count), [0], "the boundary is recorded even with no session open");
+  await t.authenticate({ reauth: true });
+  assertRetired(t, r, await salesUnchanged(t, () => executeSalesApproval(t, r), 409), "OWNER_DECISION_REVOKED");
+  assert.equal(t.hub.sales.getOpportunity(b.oppId).proposals[0].status, "DRAFT"); assert.equal(salesDecisions(t).length, 0);
 });
 
 test("SA-05 agent / cli and forged test channel cannot reach owner decisions over HTTP", async c => {
@@ -186,6 +227,47 @@ test("M12-HTTP-13 revoke-all also invalidates an unexecuted decision whose decid
   await t.authenticate({ reauth: true }); assert.notEqual(sessionId(t), old);
   assert.equal((await t.request("/api/owner/sessions/revoke-all")).status, 200);
   await t.authenticate({ reauth: true });
-  await salesUnchanged(t, () => executeSalesApproval(t, r), 401);
-  assert.equal(approvalState(t, r), "approved");
+  assertRetired(t, r, await salesUnchanged(t, () => executeSalesApproval(t, r), 409), "OWNER_DECISION_REVOKED");
+});
+
+test("M12-HTTP-14 (review P1-F5) a request logged before the upgrade on ui is refused at execution and retired, never left approved", async c => {
+  const { t, b } = await fixture(c);
+  // 2.14.19 dispatched sales.proposal.approve on ui; the stored row is reproduced by relabelling a test-channel request.
+  const r0 = await salesCommand(t, "sales.proposal.approve", { proposalId: b.proposalId, displayedSha: b.sha }, { actor: "user" });
+  t.hub.db.prepare("UPDATE commands SET channel='ui', actor='user' WHERE id=?").run(r0.command.id);
+  const r = { commandId: r0.command.id, approval: r0.approval };
+  await t.authenticate();
+  const decided = await t.request(`/api/approvals/${r.approval.id}/decide`, { body: { decision: "approved", displayedHash: r.approval.payloadHash } });
+  assert.equal(decided.status, 200, JSON.stringify(decided.json));
+  const refused = await salesUnchanged(t, () => executeSalesApproval(t, r), 403);
+  assertRetired(t, r, refused, "OWNER_DECISION_CHANNEL"); assert.match(refused.json.error.message, /cere din nou aprobarea/);
+  assert.match(endedReasons(t, r)[0].reason, /channel ui/);
+  const events = t.hub.db.prepare("SELECT count(*) n FROM events").get().n;
+  await salesUnchanged(t, () => executeSalesApproval(t, r), 403);
+  assert.equal(t.hub.db.prepare("SELECT count(*) n FROM events").get().n, events, "a repeated refusal writes nothing");
+  assert.equal(t.hub.sales.getOpportunity(b.oppId).proposals[0].status, "DRAFT");
+});
+
+test("M12-HTTP-15 (review C1) executing before the owner decided answers that the approval is pending and changes nothing", async c => {
+  const { t, b } = await fixture(c); await t.authenticate();
+  const r = await requestSalesApproval(t, b);
+  const early = await salesUnchanged(t, () => executeSalesApproval(t, r), 409);
+  assert.equal(early.json.error.category, "gate"); assert.equal(early.json.error.message, "Approval is pending");
+  assert.equal(approvalState(t, r), "pending"); assert.equal(commandState(t, r), "pending_approval");
+  await decideSalesApproval(t, r);
+  assert.equal((await executeSalesApproval(t, r)).status, 200); assert.equal(salesDecisions(t).length, 1);
+});
+
+test("M12-HTTP-16 (review P1-F2) a repeated approval reports the real current states of the proposal and the opportunity", async c => {
+  const { t, b } = await fixture(c); await t.authenticate();
+  const first = await approveSalesHttp(t, b); assert.equal(first.status, 200);
+  assert.equal(first.json.result.status, "APPROVED_INTERNAL"); assert.equal(first.json.result.opportunity.status, "APPROVED_INTERNAL");
+  for (const to of ["ON_HOLD", "PROPOSAL_DRAFT", "READY_FOR_OWNER_REVIEW"]) await salesCommand(t, "sales.opportunity.transition", { opportunityId: b.oppId, to, reason: "Pauză sintetică" });
+  const before = salesFingerprint(t);
+  const again = await approveSalesHttp(t, b); assert.equal(again.status, 200);
+  assert.equal(again.json.result.duplicate, true); assert.equal(again.json.result.approvalId, first.json.result.approvalId);
+  assert.equal(again.json.result.status, "APPROVED_INTERNAL");
+  assert.equal(again.json.result.opportunity.status, "READY_FOR_OWNER_REVIEW", "never a claimed APPROVED_INTERNAL");
+  assert.equal(t.hub.sales.getOpportunity(b.oppId).opportunity.status, "READY_FOR_OWNER_REVIEW");
+  assert.equal(salesFingerprint(t), before); assert.equal(salesDecisions(t).length, 1);
 });

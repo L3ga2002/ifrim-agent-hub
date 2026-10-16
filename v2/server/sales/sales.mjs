@@ -1193,9 +1193,11 @@ export function createSales({ db, bus, clock, config, settings }) {
       if (latestProposal(p.opportunityId)?.id !== p.id || p.status === "SUPERSEDED") throw new HubError("conflict", "Există o versiune mai nouă a propunerii: aprobarea nu se aplică");
       const session = decisionSession(channel, sessionCheck, "aprobarea internă a ofertei");
       if (displayedSha !== p.contentSha || hashCanonical(p.content) !== p.contentSha) throw new HubError("conflict", "Conținutul s-a schimbat față de ce ai văzut");
-      const result = (duplicate, at, aid) => ({ duplicate, approved: true, proposalId, version: p.version, contentSha: p.contentSha, approvedAt: at, approvalId: aid,
-        opportunity: { id: p.opportunityId, status: "APPROVED_INTERNAL" } });
-      if (p.status === "APPROVED_INTERNAL" && p.approvedSha === displayedSha) return result(true, p.approvedAt, p.approvalId);
+      // The result states what is true now: a repeat returns the original decision (approval id, time) with the CURRENT states
+      // of the proposal and the opportunity (which may have moved on since, e.g. ON_HOLD and back to review), never a claimed one.
+      const result = (duplicate, at, aid, proposalStatus, oppStatus) => ({ duplicate, approved: true, proposalId, version: p.version, contentSha: p.contentSha,
+        status: proposalStatus, approvedAt: at, approvalId: aid, opportunity: { id: p.opportunityId, status: oppStatus } });
+      if (p.status === "APPROVED_INTERNAL" && p.approvedSha === displayedSha) return result(true, p.approvedAt, p.approvalId, p.status, needOpp(p.opportunityId).status);
       const opp = needOpp(p.opportunityId);
       if (p.status !== "DRAFT" || opp.status !== "READY_FOR_OWNER_REVIEW") throw new HubError("conflict", "Marchează întâi propunerea „gata de revizuire”");
       // C-02 on the M12 path: an offer bound to a preparation is approved only without invented figures (amounts, terms, ROI,
@@ -1221,7 +1223,7 @@ export function createSales({ db, bus, clock, config, settings }) {
       emit("sales.opportunity.transition", opp.id, { from: opp.status, to: "APPROVED_INTERNAL" }, actor);
       emit("sales.proposal.approved", opp.id, { proposalId, version: p.version, contentSha: displayedSha, opportunityId: opp.id, approvalId,
         decidedVia: approval.decided_via, authority: session?.authority || "test", sessionId: session?.id || null, credentialId: session?.credentialId || null, channel }, actor);
-      return result(false, at, approvalId);
+      return result(false, at, approvalId, "APPROVED_INTERNAL", "APPROVED_INTERNAL");
     });
   }
 

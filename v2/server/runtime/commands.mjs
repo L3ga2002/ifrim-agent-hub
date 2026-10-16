@@ -182,7 +182,11 @@ export function createCommandBus({ db, bus, clock, policy, approvals, config = {
     return execute(id, type, handler, input, ctx, decision);
   }
 
-  async function execute(id, type, handler, input, ctx, decision, beforeSync = null) {
+  /**
+   * `failure` (owner decisions only): `keep(error)` names a refusal that can still succeed later (nothing is written, the command
+   * keeps waiting); `failed(error)` runs inside the transaction that records the failed command.
+   */
+  async function execute(id, type, handler, input, ctx, decision, beforeSync = null, failure = null) {
     let route = null;
     try {
       if (handler.route) {
@@ -207,13 +211,31 @@ export function createCommandBus({ db, bus, clock, policy, approvals, config = {
       });
       return { command: get(id), result };
     } catch (error) {
+      if (failure?.keep?.(error)) throw error;
       bus.transaction(() => {
         finish(id, "failed", { error: String(error?.message || error).slice(0, 2000), errorCategory: error?.category || "internal" });
         bus.append({ type: "command.failed", scopeType: "command", scopeId: id, source: ctx.actor, correlationId: ctx.correlationId,
           payload: { category: error?.category || "internal", message: String(error?.message || error).slice(0, 500) } });
+        failure?.failed?.(error);
       });
       throw error;
     }
+  }
+
+  /**
+   * M12 (review P1-F5/F8/F9): a reserved owner decision refused for good (its request was logged on a channel the command no longer
+   * accepts, its deciding authority was revoked or belongs to another credential) can never run. It is retired in its own committing
+   * transaction: the approval ends (invalidated with the reason, or expired) and the waiting command fails, so no screen keeps
+   * offering a start that can only fail; the owner requests the approval again. A replay of an executed decision changes nothing.
+   */
+  function retireOwnerDecision(command, approval, error, reason) {
+    bus.transaction(() => {
+      if (approval) approvals.invalidate(approval.id, { reason, code: error?.code });
+      const failed = db.prepare("UPDATE commands SET status = 'failed', error = ?, error_category = ?, finished_at = ? WHERE id = ? AND status = 'pending_approval'")
+        .run(String(error?.message || error).slice(0, 2000), error?.category || "gate", clock().toISOString(), command.id).changes;
+      if (failed) bus.append({ type: "command.failed", scopeType: "command", scopeId: command.id, source: "hub", correlationId: command.correlationId,
+        payload: { category: error?.category || "gate", message: String(error?.message || error).slice(0, 500), stage: "owner_decision", reason } });
+    });
   }
 
   /**
@@ -227,7 +249,16 @@ export function createCommandBus({ db, bus, clock, policy, approvals, config = {
     return bus.withContext({ correlationId: command.correlationId }, async () => {
       const approval = command.approvalId ? approvals.get(command.approvalId) : null;
       const handler = handlers.get(command.type);
-      if (!handler || (command.channel === "agent" ? !AGENT_COMMANDS.has(command.type) : !handler.channels.includes(command.channel))) throw new HubError("policy", "Canalul comenzii nu mai este permis");
+      if (!handler || (command.channel === "agent" ? !AGENT_COMMANDS.has(command.type) : !handler.channels.includes(command.channel))) {
+        // A reserved owner decision requested on a channel the command no longer accepts (a `ui` request logged before the
+        // upgrade) can never run: it is retired, and the owner is told to request it again (P1-F5).
+        if (handler?.ownerDecision) {
+          const error = new HubError("policy", "Canalul comenzii nu mai este permis: cererea a fost înregistrată înainte de actualizare; cere din nou aprobarea", { code: "OWNER_DECISION_CHANNEL" });
+          retireOwnerDecision(command, approval, error, `channel ${command.channel} no longer accepted`);
+          throw error;
+        }
+        throw new HubError("policy", "Canalul comenzii nu mai este permis");
+      }
       if (command.channel === "test" && !config.testMode) throw new HubError("policy", "Canal de test în afara modului de test");
       const ctx = { actor, channel: command.channel, commandId, correlationId: command.correlationId, delegation,
         ownerSession: command.channel === "owner" || (command.channel === "test" && config.testMode) ? ownerSession : null };
@@ -235,7 +266,14 @@ export function createCommandBus({ db, bus, clock, policy, approvals, config = {
       // Only reserved owner decisions (handler.ownerDecision) need the executing session here; other owner-channel commands
       // (e.g. a mission started by an envelope confirmation) keep their own checks.
       if (handler.ownerDecision && command.channel !== "test" && !ownerSession?.id) throw new HubError("authentication", "Deschide sesiunea de proprietar", { data: { needSession: true } });
-      handler.authorizeApproved?.(approval?.payload, ctx, approval);
+      try {
+        handler.authorizeApproved?.(approval?.payload, ctx, approval);
+      } catch (error) {
+        // A session refusal (none, not fresh) can still succeed after unlocking: nothing is written and the approval is kept (A1).
+        // Any other refusal of an owner decision is final (revoked decider, revoke-all after the decision, another credential).
+        if (handler.ownerDecision && error?.category !== "authentication") retireOwnerDecision(command, approval, error, `authority refused: ${error?.code || error?.category || "refused"}`);
+        throw error;
+      }
       if (handler.ownerDecision && command.status === "executed") return { command, result: command.result, duplicate: true };
       if (command.status !== "pending_approval") {
         if (command.status === "failed" && approval && ["rejected", "invalidated", "expired"].includes(approval.status)) throw new HubError("gate", `Approval is ${approval.status}`);
@@ -272,7 +310,13 @@ export function createCommandBus({ db, bus, clock, policy, approvals, config = {
         // A refused final check rolls consumption back too; there is no await in this critical section.
         if (handler.async || handler.route) throw new HubError("policy", "Owner decisions must execute synchronously");
         const input = validate(payload ?? {}, handler.schema, command.type);
-        return execute(commandId, command.type, handler, input, ctx, command.policy, () => approvals.consume(command.approvalId, boundAction));
+        // A refused final check (superseded or changed version, wrong state, lost CAS, figures, expiry…) fails the command, so
+        // its approval can never be used again: it ends in the same failure transaction with the reason (P1-F9). Only a session
+        // refusal inside the transaction keeps both waiting, as the pre-checks above do.
+        return execute(commandId, command.type, handler, input, ctx, command.policy, () => approvals.consume(command.approvalId, boundAction), {
+          keep: (error) => error?.category === "authentication",
+          failed: (error) => approvals.invalidate(approval.id, { reason: `final check refused: ${String(error?.message || error).slice(0, 200)}`, code: error?.code }),
+        });
       }
       try {
         approvals.consume(command.approvalId, boundAction);

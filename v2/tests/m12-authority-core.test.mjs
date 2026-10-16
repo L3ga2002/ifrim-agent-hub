@@ -60,8 +60,12 @@ test("M12-CORE-03 execution rechecks session, credential and logged channel befo
   const { t, b } = await fixture(c);
   const { session } = await enrolOwner(t, { activatePolicy: false });
   const r = await pending(t, b, context(session)); await decide(t, r, context(session));
+  const r2 = await pending(t, b, context(session)); await decide(t, r2, context(session));
+  const r3 = await pending(t, b, context(session)); await decide(t, r3, context(session));
   const before = salesFingerprint(t);
+  // No executing session: it can still succeed after unlocking, so nothing changes (A1).
   await assert.rejects(t.hub.commands.executeApproved(r.command.id), /proprietar/);
+  assert.equal(t.hub.approvals.get(r.approval.id).status, "approved"); assert.equal(t.hub.commands.get(r.command.id).status, "pending_approval");
   // A second credential needs the current fresh owner session.
   const { createTestAuthenticator } = await import("../server/owner/webauthn.mjs");
   const origin = t.config.canonicalOrigin, auth = createTestAuthenticator({ origin });
@@ -70,13 +74,18 @@ test("M12-CORE-03 execution rechecks session, credential and logged channel befo
   const begin = t.hub.trust.beginAuthentication({ origin });
   const opened = t.hub.trust.finishAuthentication({ origin, challengeId: begin.challengeId, credential: auth.get({ challenge: begin.publicKey.challenge }) });
   const second = t.hub.trust.resolveSession(opened.token, { origin });
-  await assert.rejects(t.hub.commands.executeApproved(r.command.id, "owner", { ownerSession: second }), /credențiale/);
-  t.hub.db.prepare("UPDATE commands SET channel='ui' WHERE id=?").run(r.command.id);
-  await assert.rejects(t.hub.commands.executeApproved(r.command.id, "owner", { ownerSession: session }), /Canalul/);
-  t.hub.db.prepare("UPDATE commands SET channel='owner' WHERE id=?").run(r.command.id);
+  // Another credential can never execute this decision (review F8): a final conflict, the decision retired, never consumed.
+  await assert.rejects(t.hub.commands.executeApproved(r.command.id, "owner", { ownerSession: second }), (e) => e.code === "OWNER_CREDENTIAL_MISMATCH" && e.category === "conflict" && /credențiale/.test(e.message));
+  assert.equal(t.hub.approvals.get(r.approval.id).status, "invalidated"); assert.equal(t.hub.commands.get(r.command.id).status, "failed");
+  // A request logged on a channel the command no longer accepts (review F5): refused and retired.
+  t.hub.db.prepare("UPDATE commands SET channel='ui' WHERE id=?").run(r2.command.id);
+  await assert.rejects(t.hub.commands.executeApproved(r2.command.id, "owner", { ownerSession: session }), (e) => e.code === "OWNER_DECISION_CHANNEL" && /Canalul/.test(e.message));
+  assert.equal(t.hub.approvals.get(r2.approval.id).status, "invalidated"); assert.equal(t.hub.commands.get(r2.command.id).status, "failed");
+  // The executing session revoked: a session refusal, the approval is kept and not consumed (A1).
   t.hub.trust.revokeAllSessions("owner-revoke-all");
-  await assert.rejects(t.hub.commands.executeApproved(r.command.id, "owner", { ownerSession: session }), /proprietar/);
-  assert.equal(t.hub.approvals.get(r.approval.id).status, "approved");
+  await assert.rejects(t.hub.commands.executeApproved(r3.command.id, "owner", { ownerSession: session }), /proprietar/);
+  assert.equal(t.hub.approvals.get(r3.approval.id).status, "approved"); assert.equal(t.hub.commands.get(r3.command.id).status, "pending_approval");
+  assert.equal(t.hub.db.prepare("SELECT count(*) n FROM events WHERE type='approval.consumed'").get().n, 0);
   assert.equal(salesFingerprint(t), before);
 });
 
@@ -150,7 +159,7 @@ test("M12-CORE-07 final session refusal rolls consumption and proposal writes ba
   try { await assert.rejects(t.hub.commands.executeApproved(r.command.id, "owner", { ownerSession: session }), /proprietar/); }
   finally { t.hub.approvals.consume = consume; }
   assert.equal(reached, true); assert.equal(salesFingerprint(t), before);
-  assert.equal(t.hub.approvals.get(r.approval.id).status, "approved");
+  assert.equal(t.hub.approvals.get(r.approval.id).status, "approved"); assert.equal(t.hub.commands.get(r.command.id).status, "pending_approval");
   assert.equal(t.hub.db.prepare("SELECT count(*) n FROM events WHERE type='approval.consumed' AND scope_id=?").get(r.command.id).n, 0);
 });
 
@@ -161,7 +170,11 @@ test("M12-CORE-08 opportunity CAS refusal rolls back the proposal CAS and approv
   t.hub.db.exec("CREATE TEMP TRIGGER m12_lost_cas BEFORE UPDATE ON sales_opportunities WHEN NEW.status='APPROVED_INTERNAL' BEGIN SELECT RAISE(IGNORE); END");
   try { await assert.rejects(t.hub.commands.executeApproved(r.command.id), /Oportunitatea s-a schimbat/); }
   finally { t.hub.db.exec("DROP TRIGGER m12_lost_cas"); }
-  assert.equal(salesFingerprint(t), before); assert.equal(t.hub.approvals.get(r.approval.id).status, "approved");
+  assert.equal(salesFingerprint(t), before); assert.equal(t.hub.approvals.get(r.approval.id).status, "invalidated");
+  assert.equal(t.hub.commands.get(r.command.id).status, "failed");
+  const ended = t.hub.db.prepare("SELECT payload_json FROM events WHERE type='approval.invalidated' AND scope_id=?").all(r.command.id).map(e => JSON.parse(e.payload_json));
+  assert.equal(ended.length, 1); assert.match(ended[0].reason, /final check refused: Oportunitatea s-a schimbat/);
+  assert.equal(t.hub.db.prepare("SELECT count(*) n FROM events WHERE type='approval.consumed' AND scope_id=?").get(r.command.id).n, 0);
 });
 
 test("M12-CORE-09 concurrent owner decisions are single-use and preserve exact hash binding", async c => {
@@ -175,4 +188,37 @@ test("M12-CORE-09 concurrent owner decisions are single-use and preserve exact h
   const before = salesFingerprint(t);
   await assert.rejects(t.hub.commands.executeApproved(r.command.id, "owner", { ownerSession: session }), /logged command changed/);
   assert.equal(salesFingerprint(t), before); assert.equal(t.hub.approvals.get(r.approval.id).status, "invalidated");
+});
+
+test("M12-CORE-10 (review F7) the service approves only with a consumed approval of this kind, bound to this exact proposal and sha, decided in the owner session", async c => {
+  const { t, b } = await fixture(c);
+  const { session } = await enrolOwner(t, { activatePolicy: false });
+  const owner = { channel: "owner", sessionCheck: () => t.hub.trust.requireSession(session) };
+  // Real approval rows (requested through the bus on the test channel), then put in the state each case needs.
+  const row = async (target, { status = "consumed", via = "owner_session", kind = "sales.proposal_approve" } = {}) => {
+    const r = await pending(t, target);
+    t.hub.db.prepare("UPDATE approvals SET status=?, decided_via=?, decided_by=?, action_kind=? WHERE id=?").run(status, via, via === "test" ? "test" : `owner:${session.id}`, kind, r.approval.id);
+    return r.approval.id;
+  };
+  const untouched = await pending(t, b);
+  const cases = [
+    ["no approval", owner, undefined],
+    ["a pending approval", owner, untouched.approval.id],
+    ["decided but not consumed", owner, await row(b, { status: "approved" })],
+    ["decided through the test channel, used on the owner channel", owner, await row(b, { via: "test" })],
+    ["bound to another sha", owner, await row({ ...b, sha: "0".repeat(64) })],
+    ["bound to another proposal", owner, await row({ ...b, proposalId: "spr_another_offer" })],
+    ["of another kind", owner, await row(b, { kind: "sales.draft_content" })],
+    ["decided in the owner session, used on the test channel", { channel: "test", sessionCheck: () => null }, await row(b)],
+  ];
+  const before = salesFingerprint(t);
+  for (const [name, ctx, approvalId] of cases) {
+    assert.throws(() => t.hub.sales.approveProposal(b.proposalId, { displayedSha: b.sha }, "owner", { ...ctx, approvalId }), /Lipsește aprobarea legată de această ofertă/, name);
+    assert.equal(salesFingerprint(t), before, name);
+  }
+  // Control: the same call with the exact consumed owner approval is accepted, so every refusal above came from the binding alone.
+  const exact = await row(b);
+  const done = t.hub.sales.approveProposal(b.proposalId, { displayedSha: b.sha }, "owner", { ...owner, approvalId: exact });
+  assert.equal(done.duplicate, false); assert.equal(done.approvalId, exact);
+  assert.deepEqual(salesDecisions(t).map(d => [d.approvalId, d.decidedVia, d.sessionId]), [[exact, "owner_session", session.id]]);
 });

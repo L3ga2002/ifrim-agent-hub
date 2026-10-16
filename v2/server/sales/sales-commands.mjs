@@ -106,15 +106,22 @@ export function registerSalesCommands(register, hub, { createMission }) {
       return { actionKind: "sales.proposal_approve", target: `${input.proposalId}@${String(input.displayedSha).slice(0, 12)}`, projectId: "*" };
     },
     authorizeApproved: (_input, ctx, approval) => {
+      // A missing or stale EXECUTING session is the only refusal that can still succeed (401, the page unlocks and retries).
       const session = ownerCheck(ctx, "aprobarea internă a ofertei", true);
       if (ctx.channel === "test" && hub.config.testMode) return;
-      if (approval?.decidedVia !== "owner_session" || approval.credentialId !== session.credentialId) throw new HubError("conflict", "Aprobarea aparține altei credențiale", { code: "OWNER_CREDENTIAL_MISMATCH" });
-      if (!hub.trust.confirmedAuthority(approval.sessionId).ok) throw new HubError("authentication", "Autoritatea aprobării a fost revocată", { data: { needSession: true } });
+      // Only a decided approval has a decider to compare: a pending, rejected, expired or invalidated one gets the bus's own
+      // status answer ("Approval is pending", …), never a misleading credential mismatch (review C1).
+      if (!approval || !["approved", "consumed"].includes(approval.status)) return;
+      // The refusals below are final: no session can ever make this decision executable again, so they are not authentication
+      // errors (the page would ask for Windows Hello for nothing); the bus retires the decision and the owner requests it again.
+      if (approval.decidedVia !== "owner_session" || approval.credentialId !== session.credentialId) throw new HubError("conflict", "Aprobarea aparține altei credențiale; cere din nou aprobarea", { code: "OWNER_CREDENTIAL_MISMATCH" });
+      if (!hub.trust.confirmedAuthority(approval.sessionId).ok) throw new HubError("conflict", "Autoritatea aprobării a fost revocată; cere din nou aprobarea", { code: "OWNER_DECISION_REVOKED" });
       // Revoke-all ends active sessions. A decider already rotated/logged out must not carry an unexecuted decision
-      // across that security boundary either. Event order works even with a fixed clock or decisions in the same millisecond.
+      // across that security boundary either; the boundary is recorded even when no session was open at that moment
+      // (trust.revokeAllSessions). Event order works even with a fixed clock or decisions in the same millisecond.
       const revoked = hub.db.prepare(`SELECT 1 FROM events WHERE type='owner.sessions_revoked' AND seq >
         (SELECT MAX(seq) FROM events WHERE type='approval.approved' AND json_extract(payload_json, '$.approvalId')=?) LIMIT 1`).get(approval.id);
-      if (revoked) throw new HubError("authentication", "Autoritatea aprobării a fost revocată", { data: { needSession: true } });
+      if (revoked) throw new HubError("conflict", "Autoritatea aprobării a fost revocată; cere din nou aprobarea", { code: "OWNER_DECISION_REVOKED" });
     },
     execute: (input, ctx) => sales.approveProposal(input.proposalId, input, ctx.actor, {
       channel: ctx.channel, approvalId: hub.commands.get(ctx.commandId)?.approvalId,
