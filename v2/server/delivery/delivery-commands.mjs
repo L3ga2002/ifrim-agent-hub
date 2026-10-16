@@ -26,9 +26,11 @@ export function registerDeliveryCommands(reg, hub) {
       if (ctx.channel === "owner" || ctx.ownerSession) trust.requireFresh(session(ctx), "acceptarea software-ului");
       const d = deliveries.get(input.deliveryId);
       if (!d) throw new HubError("conflict", "Livrarea afișată nu mai există.", { code: "DELIVERY_MISSING" });
-      if (!["PLANNED", "ARMED", "ACTIVE", "READY", "NEEDS_OWNER"].includes(d.status)) throw new HubError("conflict", "Livrarea nu permite acceptarea în această stare.", { code: "DELIVERY_ACCEPT_STATE" });
+
       if (!d.missionId) throw new HubError("conflict", "Livrarea nu are o misiune software.", { code: "DELIVERY_MISSION_MISSING" });
       if (d.bundleId !== input.bundleId || d.bundleSha !== input.displayedBundleSha) throw new HubError("conflict", "Pachetul afișat nu mai e cel legat de livrare; reîncarcă livrarea.", { code: "DELIVERY_BUNDLE_DISPLAYED" });
+      const accepted = hub.db.prepare("SELECT 1 FROM factory_bundles WHERE id = ? AND sha256 = ? AND mission_id = ? AND status = 'OWNER_ACCEPTED'").get(input.bundleId, input.displayedBundleSha, d.missionId);
+      if (!accepted && !["PLANNED", "ARMED", "ACTIVE", "READY", "NEEDS_OWNER"].includes(d.status)) throw new HubError("conflict", "Livrarea nu permite acceptarea în această stare.", { code: "DELIVERY_ACCEPT_STATE" });
       // ONLY the factory's own acceptance; no other effect.
       return (await commands.dispatch({ type: "factory.accept", payload: { missionId: d.missionId, bundleId: input.bundleId, bundleSha: input.displayedBundleSha, deliveryId: d.id, via: "delivery_room", note: input.note },
         channel: ctx.channel, actor: ctx.actor, ownerSession: ctx.ownerSession, correlationId: ctx.correlationId, intentText: "Accept local pachetul afișat în camera livrării" })).result;

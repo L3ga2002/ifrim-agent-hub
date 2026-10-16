@@ -4,6 +4,9 @@ import fs from "node:fs";
 import fsp from "node:fs/promises";
 import path from "node:path";
 import { acceptanceHub, seedReady, fingerprint, settle } from "./accept-helpers.mjs";
+import { hashCanonical } from "../server/core/canonical.mjs";
+import { captureRunning, decisionRows } from "../web/src/lib/deliveryLogic.js";
+import { decisionsInbox } from "../server/delivery/inbox.mjs";
 import { machineIdentity } from "../server/owner/dev-profile.mjs";
 
 async function fixture(testContext, options) {
@@ -35,6 +38,7 @@ for (const route of ["room", "panel"]) test(`ACCEPT ${route}: real owner HTTP, e
   for (const [key, value] of Object.entries({ bundleId: b.bundleId, bundleSha: b.bundleSha, bundleShaDisplayed: b.bundleSha, missionId: b.missionId,
     deliveryId: route === "room" ? b.deliveryId : null, via: route === "room" ? "delivery_room" : "factory_panel", sessionId: owner.sessionId, authority: "webauthn", channel: "owner" })) assert.equal(e[key], value, key);
   assert.equal(e.integrity.ok, true); assert.match(e.integrity.decisionSha, /^[0-9a-f]{64}$/);
+  const { decisionSha, ...record } = e.integrity; assert.equal(decisionSha, hashCanonical(record));
   const commands = t.hub.db.prepare("SELECT * FROM commands WHERE type IN ('delivery.software.accept','factory.accept')").all();
   assert.equal(commands.length, route === "room" ? 2 : 1);
   for (const cmd of commands) { assert.equal(cmd.actor, `owner:${owner.sessionId}`); assert.equal(cmd.channel, "owner"); assert.equal(cmd.correlation_id, e.correlationId); }
@@ -121,7 +125,11 @@ function capture(t, b, kind = "plan") {
 
 for (const kind of ["plan", "recording"]) test(`ACCEPT active ${kind} refuses both routes`, async c => {
   const { t, target: b } = await fixture(c); await t.authenticate(); capture(t, b, kind);
-  for (const route of ["room", "panel"]) await unchanged(t, () => t.request(b[route], { body: b.body }), 409);
+  assert.equal(captureRunning(t.hub.deliveries.view(b.deliveryId)), true);
+  for (const route of ["room", "panel"]) {
+    const result = await unchanged(t, () => t.request(b[route], { body: b.body }), 409);
+    assert.equal(result.json.error.details[kind === "plan" ? "planId" : "sessionId"], kind === "plan" ? "op_accept" : "cap_accept");
+  }
 });
 
 for (const concurrent of [false, true]) for (const key of [false, true]) test(`ACCEPT repeated HTTP concurrent=${concurrent}, key=${key}: one original decision`, async c => {
@@ -146,4 +154,70 @@ test("ACCEPT local dev profile: truthful authority and profile-off refusal", asy
   profile = { ...profile, enabled: true }; await t.authenticate({ dev: true });
   const r = await t.request(b.room, { body: b.body });
   assert.equal(r.status, 200, JSON.stringify(r.json)); assert.equal(acceptedEvents(t)[0].authority, "local_dev_profile");
+});
+
+for (const status of ["CLOSED", "STALE"]) test(`ACCEPT repeat after delivery ${status} returns the original decision`, async c => {
+  const { t, target: b } = await fixture(c); await t.authenticate();
+  const first = await t.request(b.room, { body: b.body }); assert.equal(first.status, 200);
+  if (status === "CLOSED") t.hub.deliveries.close(b.deliveryId);
+  else t.hub.deliveries.trigger(b.deliveryId, "software_changed", { changedFiles: ["src/requests.js"] }, "test");
+  for (const route of ["room", "panel"]) {
+    const repeat = await unchanged(t, () => t.request(b[route], { body: b.body }), 200);
+    assert.equal(repeat.json.duplicate, true); assert.equal(repeat.json.decidedAt, first.json.decidedAt);
+    assert.equal(repeat.json.note, b.body.note); assert.equal(acceptedEvents(t).length, 1);
+  }
+});
+
+for (const status of ["PAUSED", "CANCELLED"]) test(`ACCEPT stuck capture in ${status} plan does not block`, async c => {
+  const { t, target: b } = await fixture(c); await t.authenticate(); capture(t, b);
+  t.hub.db.prepare("UPDATE ops_plans SET status = ? WHERE id = 'op_accept'").run(status);
+  assert.equal(captureRunning(t.hub.deliveries.view(b.deliveryId)), false);
+  assert.equal((await t.request(b.room, { body: b.body })).status, 200);
+});
+
+test("ACCEPT listener only changes bundle items referring to the accepted bundle; other owner decisions stay byte-identical", async c => {
+  const { t, target: b } = await fixture(c); const db = t.hub.db, at = t.config.now().toISOString();
+  // A second bundle and delivery of this mission precede the displayed target.
+  replaceBundle(t, b);
+  db.prepare("UPDATE factory_bundles SET created_at = '2020-01-01T00:00:00.000Z' WHERE id = 'bnd_replacement'").run();
+  db.prepare(`INSERT INTO deliveries (id, project_id, title, status, mission_id, template_json, template_sha, ops_steps_json, ops_body_sha, bundle_id, bundle_sha, created_by, created_at, updated_at)
+    SELECT 'dlv_other', project_id, title, status, mission_id, template_json, template_sha, ops_steps_json, ops_body_sha, 'bnd_replacement', bundle_sha, created_by, created_at, updated_at FROM deliveries WHERE id = ?`).run(b.deliveryId);
+  const other = t.hub.deliveries.bindItem("dlv_other", { kind: "bundle", refTable: "factory_bundles", refId: "bnd_replacement", refSha: b.bundleSha, meta: { status: "READY_FOR_OWNER_ACCEPTANCE" } });
+  const otherBefore = JSON.stringify(db.prepare("SELECT * FROM delivery_items WHERE id = ?").get(other.id));
+  db.prepare("INSERT INTO media_edit_projects (id, title, created_by, created_at, updated_at) VALUES ('mep_accept','Synthetic','test',?,?)").run(at, at);
+  for (const [role, version] of [["master", 1], ["vertical", 2]]) {
+    db.prepare("INSERT INTO media_edit_versions (id, edit_project_id, version, ir_json, ir_sha256, change_kind, created_by, created_at) VALUES (?,'mep_accept',?,'{}',?,'initial','test',?)").run(`mev_${role}`, version, "a".repeat(64), at);
+    db.prepare("INSERT INTO media_reviews (id, edit_version_id, kind, status, provenance, actor, created_at, updated_at) VALUES (?,?,'CREATIVE_APPROVED','RECORDED','owner','owner',?,?)").run(`review_${role}`, `mev_${role}`, at, at);
+  }
+  db.prepare("INSERT INTO media_variants (id, edit_project_id, master_version_id, platform_key, variant_version_id, status, created_by, created_at, updated_at) VALUES ('mvr_accept','mep_accept','mev_master','reels_9x16','mev_vertical','READY','owner',?,?)").run(at, at);
+  t.hub.deliveries.bindItem(b.deliveryId, { kind: "edit", role: "master", refTable: "media_edit_versions", refId: "mev_master" });
+  t.hub.deliveries.bindItem(b.deliveryId, { kind: "variant", role: "vertical", refTable: "media_variants", refId: "mvr_accept", meta: { editVersionId: "mev_vertical" } });
+  const approval = JSON.stringify({ kind: "PRESENTATION_READY", sha: "summary-sha", by: "owner", at });
+  db.prepare("INSERT INTO delivery_documents (id, delivery_id, kind, version, sections_json, text, content_sha, basis_json, basis_sha, author_kind, status, approval_json, created_by, created_at) VALUES ('ddoc_accept',?,'commercial_summary',1,'[]','Synthetic summary','summary-sha','{}','basis','owner','CURRENT',?,'owner',?)").run(b.deliveryId, approval, at);
+  const otherDecisions = () => {
+    const { software, ...decisions } = t.hub.deliveries.view(b.deliveryId).decisions;
+    return JSON.stringify({ decisions, rows: ["media_reviews", "media_variants", "delivery_documents"].map(table => db.prepare(`SELECT * FROM ${table} ORDER BY id`).all()) });
+  };
+  const before = otherDecisions();
+  assert.equal(t.hub.deliveries.view(b.deliveryId).decisions.creativeMaster, "APPROVED");
+  await t.authenticate(); assert.equal((await t.request(b.room, { body: b.body })).status, 200); await settle();
+  assert.equal(otherDecisions(), before);
+  assert.equal(JSON.stringify(db.prepare("SELECT * FROM delivery_items WHERE id = ?").get(other.id)), otherBefore);
+  assert.equal(t.hub.deliveries.items(b.deliveryId).find(i => i.kind === "bundle").meta.status, "OWNER_ACCEPTED");
+});
+
+test("ACCEPT Room shows latest unbound bundle read-only; inbox uses Room only in acceptance states", async c => {
+  const { t, target: b } = await fixture(c), db = t.hub.db;
+  for (const status of ["PLANNED", "ARMED"]) {
+    db.prepare("UPDATE deliveries SET status = ?, bundle_id = NULL, bundle_sha = NULL WHERE id = ?").run(status, b.deliveryId);
+    const view = t.hub.deliveries.view(b.deliveryId);
+    assert.equal(view.software.bundle.id, b.bundleId); assert.equal(view.software.bound, false);
+    assert.equal(decisionRows(view).find(r => r.key === "software").action.enabled, false);
+  }
+  db.prepare("UPDATE deliveries SET bundle_id = ?, bundle_sha = ? WHERE id = ?").run(b.bundleId, b.bundleSha, b.deliveryId);
+  for (const status of ["PLANNED", "ARMED", "ACTIVE", "READY", "NEEDS_OWNER", "STALE", "CLOSED", "FAILED", "EXPIRED", "CANCELLED"]) {
+    db.prepare("UPDATE deliveries SET status = ? WHERE id = ?").run(status, b.deliveryId);
+    const item = decisionsInbox(t.hub).items.find(i => i.kind === "software_bundle");
+    assert.equal(item.link, ["PLANNED", "ARMED", "ACTIVE", "READY", "NEEDS_OWNER"].includes(status) ? `/livrare/${b.deliveryId}` : `/missions/${b.missionId}`);
+  }
 });

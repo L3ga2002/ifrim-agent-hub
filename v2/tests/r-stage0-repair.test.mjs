@@ -299,15 +299,15 @@ for (const action of ["stop", "reject"]) test(`S0R-10 ${action} before writer re
   } finally { await t.cleanup(); }
 });
 
-test("S0R-11 deadline hold is not definitive; retirement remains and the parent's own protected test is no longer current", async () => {
+test("S0R-11 deadline hold is not definitive; retirement remains and parent stays READY", async () => {
   const t = await stateHub();
   try {
     const id = parentDelivery(t); recordStarted(t, { protectedTest: true });
     t.hub.db.prepare("UPDATE factory_missions SET stage = 'BASELINE', deadline_at = '2000-01-01T00:00:00.000Z' WHERE mission_id = ?").run(t.child.id);
     await t.hub.factory.tick();
     assert.equal(readRetireJournal(t.project, t.child.id).status, "MOVED");
-    assert.equal(t.hub.deliveries.verify(id).equal, false);
-    assert.equal(t.hub.deliveries.get(id).status, "STALE");
+    assert.equal(t.hub.deliveries.verify(id).equal, true);
+    assert.equal(t.hub.deliveries.get(id).status, "READY");
   } finally { await t.cleanup(); }
 });
 
@@ -349,7 +349,8 @@ test("S0R-14 provenance is per path: staging, retirement and protected test qual
     write(t.dir, ".ifrim-hub/staging/unknown.mjs", "external");
     assert.deepEqual(t.hub.factory.driftProvenance(t.project.id, [".ifrim-hub/staging/unknown.mjs"]).software, [".ifrim-hub/staging/unknown.mjs"]);
     fs.unlinkSync(path.join(t.dir, ".ifrim-hub/staging/unknown.mjs"));
-    assert.equal(t.hub.deliveries.verify(id).equal, false, "proven retirement does not replace this bundle's own protected test");
+    assert.equal(t.hub.deliveries.verify(id).equal, true);
+    assert.equal(t.hub.deliveries.get(id).status, "READY");
     write(t.dir, "src/external.js", "export const value = 2;");
     assert.equal(t.hub.deliveries.verify(id).equal, false);
     assert.equal(t.hub.deliveries.get(id).status, "STALE");

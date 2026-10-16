@@ -37,15 +37,9 @@ export function createDeliveryExecutors({ deliveries, factory, media, projects, 
     if (record) await deliveries.checkCorrection(deliveryId, record, { planId });
   };
   const snapshotEqual = (d) => {
-    const s = factory.snapshotCheck(d.missionId);
-    const drift = factory.driftProvenance(d.projectId, s.changedFiles);
-    if (drift.software.length) {
-      deliveries.trigger(d.id, "software_changed", { changedFiles: s.changedFiles, cause: `fișiere schimbate: ${s.changedFiles.slice(0, 5).join(", ") || "snapshot diferit"}` }, "delivery");
-      throw refuse("SNAPSHOT_DRIFT", `Proiectul nu mai e versiunea verificată (${s.changedFiles.slice(0, 5).join(", ") || "snapshot diferit"}); nimic nu se filmează.`);
-    }
-    if (!s.expected || s.expected !== d.snapshotSha || s.bundleId !== d.bundleId || (d.changeSetId && s.changeSetId !== d.changeSetId)) throw refuse("SNAPSHOT_DRIFT", "Legătura cu versiunea verificată nu mai corespunde; nimic nu se filmează.");
-    deliveries.verify(d.id, { by: "delivery" });
-    return s;
+    const verified = deliveries.verify(d.id, { by: "delivery" });
+    if (!verified.equal) throw refuse("SNAPSHOT_DRIFT", `Proiectul nu mai e versiunea verificată (${verified.unproven?.map(c => c.path).slice(0, 5).join(", ") || "snapshot diferit"}); nimic nu se filmează.`);
+    return verified;
   };
   const exportsDest = (d) => path.join(d.template.exports.dir, d.template.exports.folder, "x.mp4");
   const doneResult = (planId, kind) => (opsPlans.view(planId)?.steps || []).filter((s) => s.kind === kind && s.status === "DONE").map((s) => s.result).at(-1) || null;
@@ -146,8 +140,8 @@ export function createDeliveryExecutors({ deliveries, factory, media, projects, 
           deviceScaleFactor: cap.dsf, fps: cap.fps, maxDurationMs: cap.maxDurationMs, redactSelectors: cap.redactSelectors, captureLabel: cap.captureLabel,
           title: `${d.template.project.name} — ${cap.label || cap.role}`, pageGuard: pageGuard({ bannerSelector: d.template.data.bannerSelector }), actor: `plan:${planId}` });
         // The snapshot bracket: a project that changed during the capture makes the capture unbound (it stays in the library).
-        const after = factory.snapshotCheck(d.missionId);
-        if (after.actual !== before.actual) throw refuse("SNAPSHOT_DRIFT", `Proiectul s-a schimbat în timpul capturii (${after.changedFiles.slice(0, 5).join(", ")}); captura nu se leagă de livrare.`);
+        const after = snapshotEqual(d);
+        // Both ends use the same per-path integrity rule; proven Hub writes are accepted.
         const bundleItem = deliveries.currentItem(d.id, "bundle");
         const item = deliveries.bindItem(d.id, { kind: "capture", role: cap.role, refTable: "media_asset_versions", refId: out.version.id, refSha: out.version.sha256 || "", upstream: bundleItem ? [bundleItem.id] : [],
           meta: { viewport: cap.viewport, dsf: cap.dsf, label: cap.captureLabel, durationMs: out.durationMs, width: out.width, height: out.height, markers: out.markers, sessionId: session.id, snapshotBefore: before.actual, snapshotAfter: after.actual,

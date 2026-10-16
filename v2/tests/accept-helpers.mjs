@@ -156,7 +156,7 @@ export async function acceptanceHub({ devProfile, clock } = {}) {
   } catch (error) { await cleanup(); throw error; }
 }
 
-export async function seedReady(t, { beforeSnapshot } = {}) {
+export async function seedReady(t, { beforeSnapshot, mode = "walk" } = {}) {
   const { hub, project, config } = t, db = hub.db;
   const v = (await hub.commands.dispatch({ type: "factory.prepare", channel: "test", actor: "test", payload: { projectId: project.id, ...demoSpec("bug-demo"), limits: { writerModel: "gpt-fake-sol", reviewerModel: "sonnet" } } })).result;
   const missionId = v.mission.id, bundleId = `bnd_${missionId.slice(4)}`, deliveryId = `dlv_${missionId.slice(4)}`, csId = `cs_${missionId}`, snapId = `snap_${missionId}`;
@@ -164,7 +164,7 @@ export async function seedReady(t, { beforeSnapshot } = {}) {
   db.prepare("UPDATE factory_specs SET status = 'APPROVED', protected_json = ? WHERE mission_id = ?").run(JSON.stringify({ files: { "test/acceptance.test.mjs": sha256(fs.readFileSync(path.join(project.path, "test/acceptance.test.mjs"))) }, historic: { active: [], retired: [] } }), missionId);
   db.prepare("UPDATE factory_missions SET stage = 'DELIVERY_READY', approved_spec_version = 1, base_snapshot_id = ? WHERE mission_id = ?").run(snapId, missionId);
   if (beforeSnapshot) await beforeSnapshot({ missionId, project });
-  const snap = takeSnapshot(project.path, { mode: "walk", ignore: spec.workspace?.ignore || [] }), csSha = hashCanonical({ snapshot: snap.sha256, changes: [] });
+  const snap = takeSnapshot(project.path, { mode, ignore: spec.workspace?.ignore || [] }), csSha = hashCanonical({ snapshot: snap.sha256, changes: [] });
   db.prepare("INSERT INTO factory_snapshots (id, mission_id, seq, kind, manifest_json, stats_json, sha256, created_at) VALUES (?,?,1,'base',?,?,?,?)").run(snapId, missionId, JSON.stringify(snap.files), JSON.stringify(snap.stats), snap.sha256, at);
   db.prepare("INSERT INTO factory_change_sets (id, mission_id, seq, snapshot_id, changes_json, sha256, status, created_at) VALUES (?,?,1,?,'[]',?,'CURRENT',?)").run(csId, missionId, snapId, csSha, at);
   const manifest = { mission: { id: missionId }, spec: { version: 1, sha256: v.spec.sha256, criteria: spec.acceptance.map(c => ({ ...c, status: "PASS_EVIDENCE", evidence: [] })) },

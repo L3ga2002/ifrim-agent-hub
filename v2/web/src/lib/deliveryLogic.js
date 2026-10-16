@@ -611,6 +611,7 @@ export function isCaptureStep(step) {
   return kind ? kind === CAPTURE_STEP_KIND : CAPTURE_TITLE.test(foldRo(step?.title));
 }
 export function captureRunning(view) {
+  if (view?.captureBlockers?.planId || view?.captureBlockers?.sessionId || arr(view?.captureSessions).some(s => up(s?.status) === "RECORDING")) return true;
   return arr(view?.plans).some((p) => ["RUNNING", "CONFIRMED"].includes(up(p?.status)) && arr(p.steps).some((s) => up(s?.status) === "RUNNING" && isCaptureStep(s)));
 }
 
@@ -664,6 +665,7 @@ function softwareRow(view, ctx) {
     const base = { kind: "command", command: DECISION_COMMANDS.software, label: "Accept local", needsSession: true, fresh: true, enabled: true, reason: "",
       request: present ? { method: "POST", path: deliveryActionPath(str(view?.delivery?.id), "softwareAccept"), body: { bundleId: str(b.id), displayedBundleSha: displayed } } : null };
     if (!present) action = { ...base, enabled: false, reason: "Nu există încă un pachet de livrare." };
+    else if (view?.software?.bound === false) action = { ...base, enabled: false, reason: "Pachetul misiunii nu este încă legat de această livrare." };
     else if (why || status === "STALE") action = { ...base, enabled: false, reason: `Pachetul nu mai corespunde codului de acum: ${why?.text || "a fost înlocuit de unul mai nou"}.` };
     else if (status !== "READY_FOR_OWNER_ACCEPTANCE") action = { ...base, enabled: false, reason: `Pachetul nu așteaptă acceptarea (stare: ${status || "necunoscută"}).` };
     else if (!/^[0-9a-f]{64}$/.test(displayed)) action = { ...base, enabled: false, reason: "Lipsește amprenta completă a pachetului afișat; reîncarcă pagina." };
@@ -1108,4 +1110,10 @@ export function cockpitDeliveryCard(view) {
   return { id, title: str(d.title) || "Livrare", href: id ? `#${deliveryHref(id)}` : null, chips: headerChips(view),
     line: banner ? `${banner.title}: ${banner.reason}` : up(d.status) === "READY" ? (open ? `${open} ${open === 1 ? "decizie separată te așteaptă" : "decizii separate te așteaptă"}` : "Nicio decizie deschisă") : statusNotice(view)?.text || "",
     pendingDecisions: banner ? 0 : open, stale: Boolean(banner) };
+}
+
+/** Freshness is a five-minute window; the local development profile never asks for Hello. */
+export function confirmationHint(action, owner) {
+  if (!action?.fresh || !action.enabled) return "";
+  return owner?.devProfile?.enabled ? "profil local de dezvoltare" : "cere o confirmare recentă (Windows Hello)";
 }

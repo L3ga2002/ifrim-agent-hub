@@ -23,7 +23,7 @@ export function SoftwarePanel({ room }) {
           )}
           {simulation && <Notice tone="warn" title="SIMULARE">Rezultatele vin din provideri și sandbox de test; un PASS aici este cel mult PASS_SIMULATED.</Notice>}
           <dl className="kv small delivery-ids" aria-label="Ce versiune dovedesc rezultatele">
-            <dt>Pachet</dt><dd><code className="mono">{sw.bundle.id}</code>{sw.bundle.shaPrefix && <> · sha <code className="mono">{sw.bundle.shaPrefix}</code></>}</dd>
+            <dt>Pachet{room.view.software?.bound === false ? " (încă nelegat de livrare)" : ""}</dt><dd><code className="mono">{sw.bundle.id}</code>{sw.bundle.shaPrefix && <> · sha <code className="mono">{sw.bundle.shaPrefix}</code></>}</dd>
             <dt>Specificație</dt><dd>{sw.spec.version !== null ? `v${sw.spec.version}` : "—"}{sw.spec.shaPrefix && <> · sha <code className="mono">{sw.spec.shaPrefix}</code></>}</dd>
             <dt>Change set</dt><dd>{sw.changeSet.seq !== null ? `#${sw.changeSet.seq}` : "—"}{sw.changeSet.shaPrefix && <> · sha <code className="mono">{sw.changeSet.shaPrefix}</code></>}</dd>
             <dt>Snapshot verificat</dt><dd>{sw.snapshotPrefix ? <code className="mono">{sw.snapshotPrefix}</code> : <span className="faint">legat de change set-ul de mai sus</span>}</dd>

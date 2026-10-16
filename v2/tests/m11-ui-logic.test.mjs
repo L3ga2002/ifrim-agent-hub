@@ -36,7 +36,7 @@ import {
   notCurrentReason, isCurrentEvidence, oldClipLabel, staleBanner, statusNotice, lineageLinks, safePreviewUrl, previewState, softwareCurrent, softwareView,
   isPhoneShot, safeShotSrc, shotRows, QA_KINDS, qaChips, clipLabelChip, creativeState, fmtClock, fmtDuration, markerRows, textItemRows, clipSlots, selectionFor,
   selectionValid, PLAYER_KEYS, LABEL_ITEM_ID, rightsView, versionChain, historyGroups, ownerSessionState, sessionGate, sessionLabel, SESSION_HINT, captureRunning, isCaptureStep,
-  CAPTURE_STEP_KIND, AUTO_SECTION_IDS, summaryApproval,
+  confirmationHint, CAPTURE_STEP_KIND, AUTO_SECTION_IDS, summaryApproval,
   DECISION_COMMANDS, DECISION_KEYS, PUBLISHING_ROW_TEXT, rightsHref, decisionRows, decisionGroups, decisionRequest, pendingDecisions, NOT_CONFIGURED_TEXT,
   SUMMARY_LIMITS, findPlaceholders, assertedFacts, summaryView, lineDiff, summaryDiff, summaryEditBody, bindableServices, REVISION_LIMITS, revisionAvailability,
   revisionBody, revisionOutcome, clarificationReply, revisionRows, planRows, repackageState, observationRows, spineTiles, currentEvidence, cockpitDeliveryCard, sentence,
@@ -1380,4 +1380,24 @@ test("M11-UI-17 in a real browser: keyboard and focus, ONE answer per request, o
     await browser.close();
     await new Promise((resolve) => server.close(resolve));
   }
+});
+
+
+test("M11-UI acceptance hints reflect recent confirmation and the local dev profile", () => {
+  for (const key of ["software", "creativeMaster", "creativeVertical"]) {
+    const action = decisionRows(ready()).find(row => row.key === key).action;
+    assert.match(confirmationHint(action, { devProfile: { enabled: false } }), /confirmare recentă/);
+    assert.doesNotMatch(confirmationHint(action, { devProfile: { enabled: true } }), /Windows Hello/);
+    assert.equal(confirmationHint({ ...action, enabled: false }, {}), "");
+  }
+});
+
+test("M11-UI capture blocker rule covers plan lifecycle and recording sessions", () => {
+  for (const status of ["RUNNING", "CONFIRMED", "PAUSED", "CANCELLED", "DONE"]) {
+    const view = { plans: [{ status, steps: [{ kind: "delivery.capture", status: "RUNNING" }] }] };
+    assert.equal(captureRunning(view), ["RUNNING", "CONFIRMED"].includes(status));
+  }
+  assert.equal(captureRunning({ captureBlockers: { planId: "op_other_delivery" } }), true);
+  assert.equal(captureRunning({ captureSessions: [{ status: "RECORDING" }] }), true);
+  assert.equal(captureRunning({ captureSessions: [{ status: "DONE" }] }), false);
 });

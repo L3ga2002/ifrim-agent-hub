@@ -16,7 +16,7 @@ export function decisionsInbox(hub) {
       const bundle = db.prepare("SELECT * FROM factory_bundles WHERE mission_id = ? AND status = 'READY_FOR_OWNER_ACCEPTANCE' ORDER BY created_at DESC LIMIT 1").get(f.missionId);
       if (!bundle) continue;
       const manifest = parse(bundle.manifest_json, {});
-      const room = db.prepare("SELECT id FROM deliveries WHERE bundle_id = ? AND status NOT IN ('CLOSED','CANCELLED','EXPIRED','FAILED') ORDER BY created_at DESC LIMIT 1").get(bundle.id);
+      const room = db.prepare("SELECT id FROM deliveries WHERE bundle_id = ? AND status IN ('PLANNED','ARMED','ACTIVE','READY','NEEDS_OWNER') ORDER BY created_at DESC LIMIT 1").get(bundle.id);
       const files = (manifest.changeSet?.files || []).map((x) => `${x.status === "added" ? "nou" : x.status === "deleted" ? "șters" : "modificat"}: ${x.path}`);
       const criteria = manifest.spec?.criteria || [];
       const passed = criteria.filter((c) => String(c.status).startsWith("PASS")).length;

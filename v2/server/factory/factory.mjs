@@ -1,3 +1,4 @@
+import { captureBlockers } from "../delivery/capture-blockers.mjs";
 import { criterionFingerprint } from "../media/claims.mjs";
 import { findingCode, codedReviewFindings } from "./review.mjs";
 import { datasetProblem } from "./dataset.mjs";
@@ -615,16 +616,7 @@ export function createFactory(deps) {
     }
   }
 
-  function restoredTest(project, r) {
-    const missionId = r.retiredBy || r.to?.split("/")[2];
-    const journal = readRetireJournal(project, missionId);
-    const rows = db.prepare("SELECT protected_json FROM factory_specs WHERE mission_id = ?").all(missionId);
-    const recorded = rows.some((row) => (parse(row.protected_json, {}).restored || []).some((x) => x.from === r.from && x.to === r.to && x.sha256 === r.sha256));
-    const item = journal?.items?.some((x) => x.from === r.from && x.to === r.to && x.sha256 === r.sha256);
-    if (!(recorded || journal?.status === "RESTORED" && item)) return false;
-    const folder = safeFolder(project.path, path.posix.dirname(r.from), { create: false });
-    return folder && fileShaAt(folder, path.posix.basename(r.from)) === r.sha256;
-  }
+  const restoredTest = (project, r) => restoredHistoricTest(db, project, r);
 
   function compensateRetirement(missionId, cause) {
     return bus.transaction(() => compensateRetirementNow(missionId, cause));
@@ -726,30 +718,7 @@ export function createFactory(deps) {
    * Closure R-HIST-02: the deterministic check the bundle and the acceptance make on disk: every historic active Hub test still holds
    * the bytes it had at the start, every retired copy still holds its bytes, and no retired test is back at its old path. → [problem]
    */
-  function historicViolations(missionId, project) {
-    const spec = approvedSpec(fm(missionId));
-    const h = historicOf(missionId, spec, project);
-    const shaOf = (rel) => { const folder = safeFolder(project.path, path.posix.dirname(rel), { create: false }); return folder ? fileShaAt(folder, path.posix.basename(rel)) : null; };
-    const out = [];
-    for (const a of h.active || []) { const now2 = shaOf(a.ref); if (now2 !== a.sha256) out.push(`testul Hub anterior ${a.ref} (misiunea ${a.missionId}) a fost ${now2 === null ? "șters" : "modificat"}`); }
-    for (const r of h.retired || []) {
-      if (restoredTest(project, r)) continue;
-      if (shaOf(r.to) !== r.sha256) out.push(`copia retrasă ${r.to} a fost ${shaOf(r.to) === null ? "ștearsă" : "modificată"}`);
-      if (shaOf(r.from) !== null) out.push(`testul retras ${r.from} a fost recreat`);
-    }
-    // Review #6: the retired bytes back in the active Hub suite under another name (on disk, whatever the snapshot identity).
-    const retiredShas = new Map((h.retired || []).filter((r) => !restoredTest(project, r)).map((r) => [r.sha256, r.from]));
-    if (retiredShas.size) {
-      const folder = safeFolder(project.path, HUB_TEST_DIR, { create: false });
-      for (const name of folder ? fs.readdirSync(folder).filter((n) => /\.(?:test|spec)\.[cm]?[jt]sx?$/i.test(n)).slice(0, 200) : []) {
-        let digest = null;
-        try { digest = fileShaAt(folder, name); } catch { digest = null; }
-        const from = digest ? retiredShas.get(digest) : null;
-        if (from && `${HUB_TEST_DIR}/${name}`.toLowerCase() !== from.toLowerCase()) out.push(`octeții testului retras ${from} au reapărut ca ${HUB_TEST_DIR}/${name}`);
-      }
-    }
-    return out;
-  }
+  const missionHistoricViolations = (missionId, project) => historicViolations(db, project, approvedSpec(fm(missionId))?.protected);
 
   /** Starts an approved scope: records it, protects the acceptance tests, snapshots the base and runs the baseline (or step 0 first). */
   async function startApproved(missionId, payload, { approvalId = null, actor = "user" } = {}) {
@@ -1717,6 +1686,8 @@ export function createFactory(deps) {
    * candidate's bytes. Returns { others: [paths changed besides it], staged: sha256 of the staging file | null }.
    */
   function verifiedRestorePaths(missionId, project, files) {
+    // Step zero has no verified bundle yet: this checks the pre-test base and retirement plan,
+    // so it retains driftProvenance rather than applying the final bundle identity decision.
     const spec = approvedSpec(fm(missionId)), plan = retirementPlan(missionId, spec?.spec);
     const ref = `.ifrim-hub/retired/${missionId}/journal.json`, journal = readRetireJournal(project, missionId);
     if (!plan.length || journal?.status !== "RESTORED" || driftProvenance(project.id, [ref]).software.length
@@ -2213,7 +2184,7 @@ export function createFactory(deps) {
     const mission = missions.get(missionId);
     const project = projects.get(mission.projectId);
     // Closure R-HIST-02: no bundle while an earlier Hub test, a retired copy or a retired path is not exactly as at the start.
-    const hist = historicViolations(missionId, project);
+    const hist = missionHistoricViolations(missionId, project);
     if (hist.length) return setStage(missionId, "NEEDS_OWNER_DECISION", { waitReason: "owner_decision", reason: `Integritatea testelor Hub anterioare: ${hist.join("; ")}; pachetul nu se construiește` });
     const spec = approvedSpec(f);
     const cs = currentCs(missionId);
@@ -2299,6 +2270,8 @@ export function createFactory(deps) {
       if (closed) refuse("FACTORY_CLOSED", "Fabrica se închide; acceptarea nu s-a aplicat");
       const bundle = db.prepare("SELECT * FROM factory_bundles WHERE id = ?").get(bundleId);
       if (!bundle || bundle.mission_id !== missionId || bundle.sha256 !== bundleSha) refuse("BUNDLE_TARGET_STALE", "Pachetul afișat nu mai corespunde; reîncarcă pagina");
+      if (bundle.status === "OWNER_ACCEPTED") return { duplicate: { duplicate: true, accepted: true, bundleId, bundleSha, missionId, deliveryId,
+        decidedAt: bundle.decided_at, note: bundle.decision_note, noteIgnored: note !== (bundle.decision_note || "") } };
       if (deliveryId) {
         const d = db.prepare("SELECT * FROM deliveries WHERE id = ?").get(deliveryId);
         if (!d || d.mission_id !== missionId || d.bundle_id !== bundleId || d.bundle_sha !== bundleSha) refuse("DELIVERY_BUNDLE_DISPLAYED", "Legătura livrării cu pachetul afișat s-a schimbat");
@@ -2306,26 +2279,20 @@ export function createFactory(deps) {
       }
       const latest = db.prepare("SELECT id FROM factory_bundles WHERE mission_id = ? ORDER BY created_at DESC, rowid DESC LIMIT 1").get(missionId);
       if (latest?.id !== bundleId) refuse("BUNDLE_REPLACED", "Un alt pachet l-a înlocuit pe cel afișat");
-      if (bundle.status === "OWNER_ACCEPTED") return { duplicate: { duplicate: true, accepted: true, bundleId, bundleSha, missionId, deliveryId,
-        decidedAt: bundle.decided_at, note: bundle.decision_note, noteIgnored: note !== (bundle.decision_note || "") } };
       const f = need(fm(missionId));
       if (bundle.status !== "READY_FOR_OWNER_ACCEPTANCE" || bundle.decided_at || f.stage !== "DELIVERY_READY" || f.cancelRequestedAt) refuse("BUNDLE_TARGET_STALE", "Pachetul sau misiunea nu mai așteaptă acceptarea");
       const projectId = missions.get(missionId).projectId;
-      const capture = db.prepare(`SELECT 1 FROM ops_plan_steps s WHERE s.kind = 'delivery.capture' AND s.status = 'RUNNING' AND
-        (s.plan_id IN (SELECT ops_plan_id FROM deliveries WHERE mission_id = ?) OR s.plan_id IN
-        (SELECT r.ops_plan_id FROM delivery_revisions r JOIN deliveries d ON d.id = r.delivery_id WHERE d.mission_id = ?)) LIMIT 1`).get(missionId, missionId);
-      const recording = db.prepare(`SELECT 1 FROM media_capture_sessions c WHERE c.status = 'RECORDING' AND
-        (json_extract(c.scope_json, '$.projectId') = ? OR json_extract(c.scope_json, '$.deliveryId') IN (SELECT id FROM deliveries WHERE project_id = ?)
-        OR c.content_project_id IN (SELECT content_project_id FROM deliveries WHERE project_id = ?)
-        OR c.content_project_id IN (SELECT id FROM content_projects WHERE json_extract(scope_json, '$.projectId') = ?)) LIMIT 1`).get(projectId, projectId, projectId, projectId);
-      if (capture || recording) refuse("DELIVERY_CAPTURE_RUNNING", "Aștept capturile sau oprește planul livrării înainte de acceptare");
+      const blockers = captureBlockers(db, { missionId, projectId });
+      if (blockers.planId || blockers.sessionId) refuse("DELIVERY_CAPTURE_RUNNING", "Aștept capturile sau oprește planul livrării înainte de acceptare", blockers);
       const integrity = bundleIntegrity(missionId, { bundleId, bundleSha });
       if (!integrity.ok) {
         if (integrity.identityProblems.length) refuse("BUNDLE_IDENTITY", "Identitatea pachetului verificat nu mai corespunde", { integrity });
+        if (!integrity.hubOnlyScope) {
+          bus.transaction(() => { db.prepare("UPDATE factory_bundles SET status = 'STALE' WHERE id = ?").run(bundle.id); bundleStatusEvent(missionId, bundle.id, "STALE", "workspace-ul s-a schimbat după verificare"); });
+        }
         if (integrity.historicProblems.length) refuse("HISTORIC_INTEGRITY", `Integritatea testelor Hub anterioare: ${integrity.historicProblems.join("; ")}`, { integrity });
         if (integrity.protectedProblems.length) refuse("PROTECTED_INTEGRITY", "Testul protejat nu mai are octeții verificați", { integrity });
         if (integrity.hubOnlyScope) refuse("HUB_RECORD_UNPROVEN", "Diferența din înregistrările Hub nu are proveniență verificată", { integrity });
-        bus.transaction(() => { db.prepare("UPDATE factory_bundles SET status = 'STALE' WHERE id = ?").run(bundle.id); bundleStatusEvent(missionId, bundle.id, "STALE", "workspace-ul s-a schimbat după verificare"); });
         refuse("SNAPSHOT_DRIFT", "Workspace-ul nu mai corespunde versiunii testate: pachetul e STALE (refă verificările)", { integrity });
       }
       return { bundle, session, integrity };
@@ -2417,6 +2384,7 @@ export function createFactory(deps) {
     return { software: paths.filter((ref) => !owned.has(ref)), hub: paths.filter((ref) => owned.has(ref)).map((ref) => ({ path: ref, provenance: owned.get(ref) })) };
   }
 
+  // Legacy read adapter retained for callers/test doubles; delivery verdicts use bundleIntegrity.
   function snapshotCheck(missionId) {
     const f = need(fm(missionId));
     const bundle = latestBundleRow(missionId);
@@ -3041,7 +3009,7 @@ export function createFactory(deps) {
       if (!config.testMode) throw new HubError("policy", "Punctele de eșec ale pornirii există doar în modul de test");
       startFault = typeof fn === "function" ? fn : null;
     },
-    historicViolations: (missionId) => historicViolations(missionId, projects.get(missions.get(missionId).projectId)),
+    historicViolations: (missionId) => missionHistoricViolations(missionId, projects.get(missions.get(missionId).projectId)),
     setFindingStatus, view, list, summary: (missionId) => { const v = view(missionId); return v && { stage: v.factory.stage, waitReason: v.factory.waitReason, reason: v.factory.stageReason, spec: specSummary(v.spec.spec) }; } };
 }
 
@@ -3360,4 +3328,43 @@ function bundleMarkdown(m, sha) {
     "## Migrare", m.migration, "",
     "## Revenire", ...m.rollback.files.map((f) => `- ${f}`), m.rollback.note, "",
   ].join("\n");
+}
+
+function restoredHistoricTest(db, project, r) {
+  const missionId = r.retiredBy || r.to?.split("/")[2];
+  const journal = readRetireJournal(project, missionId);
+  const rows = db.prepare("SELECT protected_json FROM factory_specs WHERE mission_id = ?").all(missionId);
+  const recorded = rows.some((row) => (parse(row.protected_json, {}).restored || []).some((x) => x.from === r.from && x.to === r.to && x.sha256 === r.sha256));
+  const item = journal?.items?.some((x) => x.from === r.from && x.to === r.to && x.sha256 === r.sha256);
+  if (!(recorded || journal?.status === "RESTORED" && item)) return false;
+  const folder = safeFolder(project.path, path.posix.dirname(r.from), { create: false });
+  return folder && fileShaAt(folder, path.posix.basename(r.from)) === r.sha256;
+}
+
+export function historicViolations(db, project, protectedRecord) {
+  const h = protectedRecord?.historic || { active: [], retired: [] };
+  const restoredTest = (project, r) => restoredHistoricTest(db, project, r);
+  const shaOf = (rel) => { const folder = safeFolder(project.path, path.posix.dirname(rel), { create: false }); return folder ? fileShaAt(folder, path.posix.basename(rel)) : null; };
+  const out = [];
+  try {
+    const suite = safeFolder(project.path, HUB_TEST_DIR, { create: false });
+    if (suite) fs.readdirSync(suite);
+    for (const a of h.active || []) { const now2 = shaOf(a.ref); if (now2 !== a.sha256) out.push(`testul Hub anterior ${a.ref} (misiunea ${a.missionId}) a fost ${now2 === null ? "șters" : "modificat"}`); }
+    for (const r of h.retired || []) {
+      if (restoredTest(project, r)) continue;
+      if (shaOf(r.to) !== r.sha256) out.push(`copia retrasă ${r.to} a fost ${shaOf(r.to) === null ? "ștearsă" : "modificată"}`);
+      if (shaOf(r.from) !== null) out.push(`testul retras ${r.from} a fost recreat`);
+    }
+    // Review #6: the retired bytes back in the active Hub suite under another name (on disk, whatever the snapshot identity).
+    const retiredShas = new Map((h.retired || []).filter((r) => !restoredTest(project, r)).map((r) => [r.sha256, r.from]));
+    if (retiredShas.size) {
+      const folder = safeFolder(project.path, HUB_TEST_DIR, { create: false });
+      for (const name of folder ? fs.readdirSync(folder).filter((n) => /\.(?:test|spec)\.[cm]?[jt]sx?$/i.test(n)).slice(0, 200) : []) {
+        const digest = fileShaAt(folder, name);
+        const from = digest ? retiredShas.get(digest) : null;
+        if (from && `${HUB_TEST_DIR}/${name}`.toLowerCase() !== from.toLowerCase()) out.push(`octeții testului retras ${from} au reapărut ca ${HUB_TEST_DIR}/${name}`);
+      }
+    }
+  } catch (error) { out.push(`test/hub nu poate fi verificat: ${error.message}`); }
+  return out;
 }
