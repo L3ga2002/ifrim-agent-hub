@@ -1,4 +1,4 @@
-# Etapa „2.14.19: acceptarea locală a pachetului §25” (2026-10-16 11:43 UTC →)
+# Etapa „2.14.19: acceptarea locală a pachetului §25” (2026-10-16 11:43 → 17:55 UTC)
 
 Promptul proprietarului: thread-ul „Acceptarea locală a pachetului §25”, 2026-10-16 11:43 UTC (copie: `C:\Users\mihai\s25-accept\OWNER_PROMPT.md`).
 Scop: repararea acceptării software-ului din camera livrării, cu identitatea pachetului, integritatea proiectului și aprobările existente
@@ -9,8 +9,9 @@ autentică a proprietarului, recitită din baza de date, pe ambele căi (camera 
 (ID + sha complet) e purtată până la tranziția finală, verificată într-o secțiune serializată și reverificată după singura așteptare,
 cu compare-and-swap și rezultat idempotent la repetare. Acceptarea și verificarea livrării folosesc o singură decizie de integritate;
 jurnalul reparat de 2.14.18 e recunoscut prin conținut validat ȘI octeți egali cu înregistrarea Hub-ului (evenimentul 8472).
-Poarta finală pe `7074ab5` a trecut (cu reluările izolate din §6), îmbinat în `v2-milestone-01` ca `f1a3845`. Upgrade-ul gestionat și
-push-ul rămân ale proprietarului (§8); acceptarea live („Accept local”) e clicul lui.
+Poarta finală pe `7074ab5` a trecut (cu reluările izolate din §6), îmbinat ca `f1a3845`. Proprietarul a rulat release-ul (17:44 UTC,
+live `2.14.19-m11`, contract 14) și a apăsat „Accept local” în camera livrării la 17:49:43 UTC: pachetul `bnd_mva0hc23_b3d65a8da9`
+e OWNER_ACCEPTED, misiunea `mis_mva09tjh_7692421b52` COMPLETED (stadiul ACCEPTED), clipurile, rezumatul și aprobările v2 neschimbate.
 
 ## 1. Baseline (11:43–11:55 UTC)
 - `v2-milestone-01` local = `16d24de`; `origin/v2-milestone-01` = `79abea2` (fetch 11:45 UTC): `16d24de` (docs §12) nu era pe GitHub.
@@ -128,10 +129,25 @@ constatare medie+, critic de completitudine). Rapoarte: `inv-*.md`, `REVIEW_1..3
   `C:Usersmihais25-acceptowner-release.cmd`. Până atunci live rămâne `2.14.18-m11`, iar arborele de lucru are 2.14.19: o repornire a
   PC-ului l-ar porni prin autostart fără upgrade gestionat (același risc ca în etapele anterioare).
 
-## 9. După upgrade (al proprietarului) și clicul „Accept local”
-În așteptarea proprietarului: scriptul `owner-release.cmd` (preflight doar-citire, upgrade gestionat, verificarea versiunii, push),
-apoi verificarea mea prin API (versiune, integritate, pachet / specificație / artefacte, aprobările v2), apoi un singur clic real
-„Accept local” în camera livrării `dlv_mva09x21_b0b0cbfb2a`, după care verific OWNER_ACCEPTED, starea misiunii și evenimentul de audit.
+## 9. După upgrade (al proprietarului) și clicul „Accept local” (verificat prin API-ul GET al instanței, 17:45–17:55 UTC)
+- Proprietarul a rulat `owner-release.cmd` („gata” la 17:45 UTC): preflight-ul doar-citire a ieșit 0, upgrade gestionat, live
+  `2.14.19-m11`, contract 14, `boot_mvb9cm9z_091807e786` (17:44:55 UTC), BUILD_SAFE; GitHub: `v2-milestone-01` = `1e72aca`,
+  `claude/project-thread-a4nk7r` = `7074ab5` (`git ls-remote`).
+- Pornirea (evenimentele 8624–8633): doar `delivery.stale_reconcile_refused` pentru cele 6 livrări vechi deja STALE; nicio rescriere de
+  jurnal, nicio propunere de corectură, nimic pe `dlv_mva09x21`. Prima verificare 17:45:12 UTC: `equal: true`, expected `696cb23e…`,
+  actual `00d7e928…` (brute, neschimbate), `accepted` = jurnalul `mis_mv2ql0fp` cu proveniența `hub_retire_journal`, înregistrarea 8472
+  (sha `9629dc0f…`), `unproven` gol, `decisionSha` `842fd89a…`. Pachetul `43ad3531…`, specificația `a69b8e9f…`, change set-ul
+  `b2d4c9eb…` neschimbate; secțiunile clip / rezumat / Office / decizii identice octet cu octet cu vederea de la 11:50 UTC.
+- Prima încercare (17:47:53 UTC) a fost în camera livrării vechi `dlv_mv1eo8oo` (deja STALE): doar „Verifică acum”, fără efect.
+- **Clicul real** în `dlv_mva09x21_b0b0cbfb2a` (17:49:43 UTC), sesiunea `osn_mv9zy3yk_21177dac68` (profilul local de dezvoltare):
+  `delivery.software.accept` și `factory.accept` pe canalul `owner`, aceeași corelație `cmd_mvb9is48_424cae335f`; un singur eveniment
+  `factory.bundle.status` OWNER_ACCEPTED (seq 8638, sursa `owner:osn_mv9zy3yk_21177dac68`) cu bundleId, bundleSha = sha-ul afișat
+  (`43ad3531…`), deliveryId, `via: delivery_room`, sessionId, `authority: local_dev_profile`, commandId `cmd_mvb9is4b_171d214d63` și
+  decizia de integritate (aceeași `decisionSha` `842fd89a…` ca verificarea livrării). Taskurile misiunii → COMPLETED, misiunea COMPLETED,
+  stadiul Fabricii ACCEPTED („Commit/push/deploy rămân acțiuni separate”); o idee de conținut `event:factory-accepted` (efect existent).
+- După clic: livrarea READY, decizii `software: ACCEPTED`, `creativeMaster`/`creativeVertical`: APPROVED, `summaryReady`: READY,
+  `rightsPublic`: NOT_RECORDED, `publishing`: OFF; secțiunile clip / rezumat / Office identice cu cele dinaintea clicului; niciun alt
+  eveniment după comandă.
 
 ## 10. Deschise
 - Minore (runda 3, documentate, nereparate ca să nu mai cer o poartă nouă): camera arată „snapshot identic ✓” fără a lista diferența

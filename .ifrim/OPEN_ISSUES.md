@@ -1,6 +1,6 @@
 # Open Issues - Ifrim Agent Hub
 
-## 2026-10-16 evening — 2.14.19 merged (`f1a3845`), NOT live: the software acceptance is repaired in code; upgrade, push and the „Accept local” click are the owner's (live `2.14.18-m11`, contract 13; detail: `.ifrim/STAGE_2026-10-16_ACCEPTARE_LOCALA_S25.md`)
+## 2026-10-16 evening (live) — 2.14.19 live; §25 software ACCEPTED by the owner (17:49:43 UTC); mission COMPLETED (live `2.14.19-m11`, contract 14, schema 12; detail: `.ifrim/STAGE_2026-10-16_ACCEPTARE_LOCALA_S25.md` §9)
 
 This section takes precedence over every older one where they overlap. Closed in code (2.14.19-m11, contract 14, schema 12): the
 acceptance authority (owner channel refused since M11; Factory route sessionless on `ui`), the displayed-bundle identity, the race /
@@ -9,10 +9,10 @@ repeat behaviour and the two divergent integrity rules (item 1 of the next secti
 `bkp_mvb8o87f_4e43830bff` (Hub) and `bkp_mvb8ovp1_05f5adebd7` (demo project), 17:26 UTC.
 
 Open:
-1. **Owner actions.** Run `C:Usersmihais25-acceptowner-release.cmd` (read-only preflight of `dlv_mva09x21_b0b0cbfb2a` — stops before
-   the upgrade if it does not exit 0 —, managed upgrade to 2.14.19-m11, version check, push of `v2-milestone-01` incl. `16d24de` and of
-   `claude/project-thread-a4nk7r`). Then reload the Delivery Room (contract 14) and click „Accept local” once, after the agent's post-upgrade
-   check. Until then the bundle stays READY_FOR_OWNER_ACCEPTANCE; the clip / summary approvals of 11:19 UTC are kept.
+1. Done: the owner ran `owner-release.cmd` (17:44 UTC: preflight exit 0, upgrade, push `1e72aca` / `7074ab5`) and clicked „Accept local”
+   once in `dlv_mva09x21_b0b0cbfb2a` (17:49:43 UTC): one OWNER_ACCEPTED for `bnd_mva0hc23_b3d65a8da9` (sha `43ad3531…`, channel owner,
+   `local_dev_profile`, integrity decision `842fd89a…`), mission COMPLETED, the clip / summary approvals unchanged. Push of the closing
+   docs commit is the owner's.
 2. Pre-existing residuals for the owner's decision: with the local dev profile on, `POST /api/owner/dev-session` opens an owner session for
    any loopback process with the canonical Origin (acceptances are still recorded as `local_dev_profile`); `factory.reject` stays on
    `ui` without a session (a reject is terminal for the bundle and stales the delivery).
