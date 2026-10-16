@@ -1,5 +1,29 @@
 # Open Issues - Ifrim Agent Hub
 
+## 2026-10-16 night — one coherent full regression on the final code; M12 prompt updated, still DRAFT (live `2.14.19-m11`, contract 14, schema 12; detail: `.ifrim/STAGE_2026-10-16_STABILITATE_M12.md`)
+
+This section takes precedence over every older one where they overlap. No code change, no live upgrade. One run on a fresh synthetic
+clone `C:\Users\mihai\hub-gate` at `ee6c93a` (executable tree = `7074ab5`), Studio built for the test with `HUB_V2_STUDIO_DIST`,
+logs in `C:\Users\mihai\hub-gate-logs\run-20261016T1809Z\`: `npm run test:v2` exit 0, **2311 = 2310 pass, 0 fail, 0 cancelled, 1 skip
+(T25)**, 0 own processes left → the V2 gate is met. The 7074ab5 gate stays recorded as it was (2311 = 2306 pass, 4 fail, 0 cancelled,
+1 skip; the affected tests passed later alone). Its M09-SB-01 cause was a stale Studio build (2.14.17 / contract 13 → `UI_STALE`), not a
+missing one; the shutdown failures were the 18 s `execFile` limit (CPU cause presumed, not demonstrated).
+
+Open:
+1. V1 in the isolated clone: 552 = 549 pass, **2 fail**, 1 skip. `tests/conversation-api.test.mjs` and `tests/workflow-refresh-api.test.mjs`
+   resolve `projectSlug: "ifrim-agent-hub"` through `..\PROJECTS.md` (`apps/api/src/server.mjs:21–22`), the owner's real registry in the
+   parent folder; the clone's parent has none. Not synthetic; a fixture registry (and cleanup of `.env.hub016-*` in `finally`) is a test
+   change for a separate stage. No green fully isolated V1 run exists on this code.
+2. `factory.reject` has no owner session (default `ui`/`test`, `command-catalog.mjs:235–236`; handler `factory.mjs:2330–2345`): a terminal
+   decision; separate fix, priority before any new project goes through the Factory.
+3. Local development profile: any loopback process with the canonical Origin can open an owner session (`user_verified = 0`, always
+   fresh); approved behaviour unchanged.
+4. Unchanged, separate: media follow-ups and Word / campaign claims (next sections), step-0 author simplification, the minor display items
+   (section 2026-10-16 evening, item 3; next section, item 4). None reopens the §25 acceptance.
+5. M12: `.ifrim/M12_PROMPT.md` updated to the real state (baseline, §25 closure, isolation rule, authority / provenance / integrity
+   mechanisms, this regression); still DRAFT. New finding for the owner (§4c): all `sales.*` commands run on `ui`/`test` without an owner
+   session, and `approveProposal` checks the sha only when one is passed (`sales.mjs:1080`). Live catalog: 0 services; prices unknown.
+
 ## 2026-10-16 evening (live) — 2.14.19 live; §25 software ACCEPTED by the owner (17:49:43 UTC); mission COMPLETED (live `2.14.19-m11`, contract 14, schema 12; detail: `.ifrim/STAGE_2026-10-16_ACCEPTARE_LOCALA_S25.md` §9)
 
 This section takes precedence over every older one where they overlap. Closed in code (2.14.19-m11, contract 14, schema 12): the
