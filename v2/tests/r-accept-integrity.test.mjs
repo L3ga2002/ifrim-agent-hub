@@ -45,7 +45,7 @@ function retiredHistory(t) {
   const spec = { supersedes: [{ testRef: REF, sha256: digest, missionId: "mis_origin", specVersion: 1, reason: "synthetic replacement" }] };
   for (const [id, at] of [[OLD, "2026-10-10T10:00:00.000Z"], [LATER, "2026-10-15T10:00:00.000Z"]]) {
     db.prepare("INSERT INTO missions (id, project_id, kind, title, objective, created_at, updated_at) VALUES (?,?,'factory','Retire synthetic','Retire synthetic',?,?)").run(id, project.id, at, at);
-    db.prepare("INSERT INTO factory_missions (mission_id, work_type, stage, approved_spec_version, created_at, updated_at) VALUES (?,'FEATURE','CANCELLED',1,?,?)").run(id, at, at);
+    db.prepare("INSERT INTO factory_missions (mission_id, work_type, stage, limits_json, approved_spec_version, created_at, updated_at) VALUES (?,'FEATURE','CANCELLED','{}',1,?,?)").run(id, at, at);
     db.prepare("INSERT INTO factory_specs (id, mission_id, version, status, spec_json, sha256, author, created_at) VALUES (?,?,1,'APPROVED',?,?,'test',?)").run(`sp_${id}`, id, JSON.stringify(spec), hashCanonical(spec), at);
   }
   const file = path.join(project.path, REF); fs.mkdirSync(path.dirname(file), { recursive: true }); fs.writeFileSync(file, TEXT);

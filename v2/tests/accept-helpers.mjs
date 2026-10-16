@@ -37,26 +37,33 @@ export function assertInside(root, value) {
   return target;
 }
 
+// Node internals that load lazily (e.g. fs.cpSync's implementation) capture whichever fs functions exist on first use, so an earlier
+// test's wrapper can outlive its restore: every wrapper checks the fence that is active NOW and passes through when none is.
+let activeFence = null;
+
 /** Mandatory process-local write fence; native SQLite paths are asserted separately before opening. */
 export function installWriteTripwire(root) {
   const originals = [], fds = new Set([1, 2]);
-  const check = value => { if (typeof value === "number") { assert.ok(fds.has(value), `untracked write fd ${value}`); return; } assertInside(root, Buffer.isBuffer(value) ? value.toString() : value); };
+  activeFence = { root, fds };
+  const check = value => { const fence = activeFence; if (!fence) return; if (typeof value === "number") { assert.ok(fence.fds.has(value), `untracked write fd ${value}`); return; } assertInside(fence.root, Buffer.isBuffer(value) ? value.toString() : value); };
   const patch = (obj, key, wrap) => { if (typeof obj[key] !== "function") return; const original = obj[key]; originals.push(() => { obj[key] = original; }); obj[key] = wrap(original); };
   const writing = flags => typeof flags === "number" ? Boolean(flags & (fs.constants.O_WRONLY | fs.constants.O_RDWR | fs.constants.O_CREAT | fs.constants.O_TRUNC | fs.constants.O_APPEND)) : /[wa+]/.test(flags || "r");
   for (const obj of [fs, fsp]) {
     for (const stem of ["writeFile", "appendFile", "mkdir", "mkdtemp", "rm", "rmdir", "unlink", "truncate", "chmod", "chown", "utimes", "lutimes", "createWriteStream"]) {
       for (const key of [stem, `${stem}Sync`]) patch(obj, key, original => function (...args) { check(args[0]); return original.apply(this, args); });
     }
-    for (const stem of ["rename", "copyFile", "cp", "link", "symlink"]) for (const key of [stem, `${stem}Sync`]) patch(obj, key, original => function (...args) { check(args[0]); check(args[1]); return original.apply(this, args); });
+    // rename removes its source; a copy, hard link or symlink only reads (or points at) the first path and writes the second.
+    for (const stem of ["rename"]) for (const key of [stem, `${stem}Sync`]) patch(obj, key, original => function (...args) { check(args[0]); check(args[1]); return original.apply(this, args); });
+    for (const stem of ["copyFile", "cp", "link", "symlink"]) for (const key of [stem, `${stem}Sync`]) patch(obj, key, original => function (...args) { check(args[1]); return original.apply(this, args); });
     for (const key of ["write", "writeSync", "writev", "writevSync", "ftruncate", "ftruncateSync", "fchmod", "fchmodSync", "fchown", "fchownSync", "futimes", "futimesSync"]) patch(obj, key, original => function (...args) { check(args[0]); return original.apply(this, args); });
   }
-  patch(fs, "openSync", original => function (file, flags, ...rest) { if (writing(flags)) check(file); const fd = original.call(this, file, flags, ...rest); if (writing(flags)) fds.add(fd); return fd; });
-  patch(fs, "open", original => function (file, flags, ...rest) { if (writing(flags)) check(file); const cb = rest.pop(); return original.call(this, file, flags, ...rest, (error, fd) => { if (!error && writing(flags)) fds.add(fd); cb(error, fd); }); });
+  patch(fs, "openSync", original => function (file, flags, ...rest) { if (writing(flags)) check(file); const fd = original.call(this, file, flags, ...rest); if (writing(flags)) activeFence?.fds.add(fd); return fd; });
+  patch(fs, "open", original => function (file, flags, ...rest) { if (writing(flags)) check(file); const cb = rest.pop(); return original.call(this, file, flags, ...rest, (error, fd) => { if (!error && writing(flags)) activeFence?.fds.add(fd); cb(error, fd); }); });
   patch(fsp, "open", original => async function (file, flags, ...rest) { if (writing(flags)) check(file); return original.call(this, file, flags, ...rest); });
-  patch(fs, "closeSync", original => function (fd) { fds.delete(fd); return original.call(this, fd); });
-  patch(fs, "close", original => function (fd, cb) { fds.delete(fd); return original.call(this, fd, cb); });
+  patch(fs, "closeSync", original => function (fd) { activeFence?.fds.delete(fd); return original.call(this, fd); });
+  patch(fs, "close", original => function (fd, cb) { activeFence?.fds.delete(fd); return original.call(this, fd, cb); });
   syncBuiltinESMExports();
-  return () => { for (const restore of originals.reverse()) restore(); syncBuiltinESMExports(); };
+  return () => { activeFence = null; for (const restore of originals.reverse()) restore(); syncBuiltinESMExports(); };
 }
 
 export function assertStoredPaths(config, root) {
@@ -139,7 +146,8 @@ export async function acceptanceHub({ devProfile, clock } = {}) {
         result = await request("/api/owner/auth/finish", { body: { challengeId: begin.json.challengeId, credential: auth.get({ challenge: begin.json.publicKey.challenge }) } });
       }
       assert.equal(result.status, 200, JSON.stringify(result.json));
-      cookie = String(result.headers["set-cookie"]).split(";")[0];
+      // A reauth refreshes the open session in place and may not send a new cookie: keep the current one then.
+      if (result.headers["set-cookie"]) cookie = String(result.headers["set-cookie"]).split(";")[0];
       return result.json;
     };
     const t = { root, hub, config, project, projectDir, homeDir, request, authenticate, cleanup, assertPaths: () => assertStoredPaths(config, root) };
