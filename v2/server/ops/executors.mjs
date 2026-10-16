@@ -194,7 +194,7 @@ export function createExecutors({ desktop = null, media = null, settings, live =
       run: async ({ params, planId, abort, authorize }) => {
         const actor = `plan:${planId}`;
         authorize({ op: "media.variant" });
-        const d = media.variants.derive({ masterVersionId: params.masterVersionId, platformKey: params.platformKey, ...(params.overrides ? { overrides: params.overrides } : {}), actor });
+        const d = media.variants.derive({ masterVersionId: params.masterVersionId, platformKey: params.platformKey, ...(params.overrides !== undefined ? { overrides: params.overrides } : {}), actor });
         checkAbort(abort);
         authorize({ op: "media.render" });
         const job = await renderVerified(d.version.id, "final", { actor, abort });

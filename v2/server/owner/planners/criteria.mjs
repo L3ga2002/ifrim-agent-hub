@@ -109,8 +109,12 @@ const stepKind = (s) => (s && typeof s === "object" ? Object.keys(s)[0] : null);
  * An inherited flow with the new field filled before the submit: [expectLabel, fill] go right before the last click that precedes the
  * flow's final expectText. → steps | null when the flow has no such shape (it is then kept unchanged).
  */
+export const sameField = (selector, field) => ["[name='" + field.key + "']", '[name="' + field.key + '"]'].some(suffix => String(selector || "").endsWith(suffix));
+
 export function withField(steps, field) {
   if (!Array.isArray(steps)) return null;
+  const fill = steps.findIndex(s => sameField(s.fill?.selector, field));
+  if (fill >= 0) return steps.some(s => sameField(s.expectLabel?.selector, field)) ? steps : [...steps.slice(0, fill), { expectLabel: { selector: steps[fill].fill.selector, text: field.label } }, ...steps.slice(fill)];
   const lastText = steps.map(stepKind).lastIndexOf("expectText");
   if (lastText < 1) return null;
   let submit = -1;
@@ -127,7 +131,22 @@ export function withoutField(steps, field) {
   if (lastText < 1) return null;
   const success = steps[lastText].expectText;
   const sel = `[name='${field.key}']`;
-  return [...steps.slice(0, lastText), { expectInvalid: sel }, { expectNoText: success }];
+  return [...steps.slice(0, lastText).filter(s => !sameField(s.fill?.selector, field)), { expectInvalid: sel }, { expectNoText: success }];
+}
+
+function augmentFlow(flow, field, origin) {
+  const collapsed = [];
+  for (let i = 0; i < (flow.steps || []).length; i++) {
+    const pair = flow.steps.slice(i, i + 2);
+    if (pair[0]?.expectLabel && pair[1]?.fill && sameField(pair[1].fill.selector, field) && JSON.stringify(collapsed.slice(-2)) === JSON.stringify(pair)) { i++; continue; }
+    collapsed.push(flow.steps[i]);
+  }
+  const steps = withField(collapsed, field);
+  const clause = "; câmpul „" + field.label + "” are etichetă și se completează";
+  const raw = String(flow.text || "").replace(/\s+$/, "");
+  const [beforeClause, ...afterClauses] = raw.split(clause);
+  const text = afterClauses.length ? beforeClause + clause + afterClauses.join("") : raw;
+  return steps ? { ...flow, text: text.includes(clause) ? text : text + clause, steps, origin } : { ...flow, origin: "fluxul existent al proiectului" };
 }
 
 /**
@@ -148,10 +167,7 @@ export function deriveCriteria({ words, flows = [] } = {}) {
       { text: `Câmpul ${f.label} trimis cu ${e.art} ${adj(e, "validă", "valid")} se păstrează în ${e.saved}: o citire separată după salvare (datele proiectului) îl regăsește, nu doar ecoul din răspunsul la creare`, origin: `${said}: valoarea cerută nu se pierde` },
       { text: `${e.art[0].toUpperCase()}${e.art.slice(1)} cu ${f.bare} și celelalte date valide${e.slot} e în continuare ${adj(e, "acceptată", "acceptat")} (control: trece azi și după)`, guard: true, origin: "comportamentul existent al proiectului: o implementare care refuză tot nu trece" },
     );
-    const augmented = inherited.map((flow) => {
-      const steps = withField(flow.steps, f);
-      return steps ? { ...flow, text: `${String(flow.text || "").replace(/\s+$/, "")}; câmpul „${f.label}” are etichetă și se completează`, steps, origin: "fluxul existent al proiectului, cu câmpul nou completat" } : { ...flow, origin: "fluxul existent al proiectului" };
-    });
+    const augmented = inherited.map(flow => augmentFlow(flow, f, "fluxul existent al proiectului, cu câmpul nou completat"));
     out.flows = augmented;
     const usable = inherited.filter((flow) => withoutField(flow.steps, f));
     const base = usable.find((flow) => flow.steps.some((st) => st?.viewport?.width >= 1024)) || usable[0] || null;
@@ -184,10 +200,7 @@ export function deriveCriteria({ words, flows = [] } = {}) {
       { text: `${f.label} trimis cu ${e.art} ${adj(e, "validă", "valid")} se păstrează exact în datele salvate ale aplicației: testul citește înregistrarea prin stocarea internă a aplicației în mediul de test (fișierul sau stratul ei de date), nu printr-o rută publică; nu se adaugă nicio rută anonimă pentru recitirea ${f.gen} (control: trece azi și după)`, guard: true, origin: `cererea ta: ${f.noun} e salvat corect`, kind: "internal_persistence" },
       { text: `${art} cu ${f.bare} și celelalte date valide${e.slot} e în continuare ${adj(e, "acceptată", "acceptat")} (control: trece azi și după)`, guard: true, origin: "comportamentul existent al proiectului: o implementare care refuză tot nu trece", kind: "valid_accepted" },
     );
-    const augmented = inherited.map((flow) => {
-      const steps = withField(flow.steps, f);
-      return steps ? { ...flow, text: `${String(flow.text || "").replace(/\s+$/, "")}; câmpul „${f.label}” are etichetă și se completează`, steps, origin: "fluxul existent al proiectului, cu câmpul completat" } : { ...flow, origin: "fluxul existent al proiectului" };
-    });
+    const augmented = inherited.map(flow => augmentFlow(flow, f, "fluxul existent al proiectului, cu câmpul completat"));
     out.flows = augmented;
     const shown = augmented.find((flow) => flow.steps.some((st) => st?.viewport?.width >= 1024) && flow.steps.some((st) => stepKind(st) === "fill" && st.fill?.value === f.value))
       || augmented.find((flow) => flow.steps.some((st) => stepKind(st) === "fill" && st.fill?.value === f.value)) || null;

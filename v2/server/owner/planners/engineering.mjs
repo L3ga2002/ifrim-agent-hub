@@ -330,7 +330,7 @@ export function buildEngineeringSpec({ text, args = {}, project, hubWrites = {},
   // `inheritDemo`; the inherited criteria are renumbered after the owner's and stay ordinary acceptance criteria (a flow the change
   // breaks fails the mission honestly; it is never dropped).
   const inherit = project?.source === "hub-test" && args.inheritDemo && typeof args.inheritDemo === "object" ? args.inheritDemo : null;
-  const inheritedFlows = inherit ? (Array.isArray(inherit.criteria) ? inherit.criteria : []).filter((c) => ["preview", "e2e"].includes(c?.verify)).slice(0, 4) : [];
+  const inheritedFlows = inherit ? (Array.isArray(inherit.criteria) ? inherit.criteria : []).filter((c) => ["preview", "e2e"].includes(c?.verify)) : [];
   // §25 closure: a Hub-written test with no structured criteria derives the checks the request's shape needs (planners/criteria.mjs)
   // instead of one sentence; a structured list (Lega's tool, the 2-minute answer) or an existing bound test keep their criteria.
   const derived = testFirst?.ok && !criteria.length ? deriveCriteria({ words, flows: inheritedFlows.filter((c) => c.verify === "e2e") }) : null;
@@ -418,9 +418,11 @@ export function buildEngineeringSpec({ text, args = {}, project, hubWrites = {},
           : `Testul de acceptanță ${named} există deja în proiect și verifică cerința (îl protejez la pornire)`] : [] },
     },
   };
-  const { problems } = checkSpec({ ...input.spec, workType, title: input.title, objective: input.objective });
+  const { problems, spec: checked } = checkSpec({ ...input.spec, workType, title: input.title, objective: input.objective });
+  const inheritedOverflow = Boolean(inherit && checked.acceptance.length < acceptance.length);
+  if (inheritedOverflow) problems.push(`Nu pot păstra toate cele ${acceptance.length} criterii: specificația acceptă cel mult 20. Nu elimin niciun flux moștenit; planul este refuzat.`);
   const missing = route === "B" ? String(said[0]).replace(/[\u0000-\u001f\u007f]/g, " ").trim().slice(0, 120) : null;
-  return { input, problems, testRef: named, workType, autoBound, route, testFirst, missing, topic: autoBound === "topic" ? topic : null };
+  return { input, problems, testRef: named, workType, autoBound, route, testFirst, missing, topic: autoBound === "topic" ? topic : null, ...(inheritedOverflow ? { inheritedOverflow: true } : {}) };
 }
 
 /** R-PRIV: the field a hide_public request names (planners/criteria.mjs), for conflictingHubTests. */
@@ -609,6 +611,7 @@ export function registerEngineeringPlanner(hub, intake) {
       }
     }
     if (built.problems.length) {
+      if (built.inheritedOverflow) return { kind: 'message', projectId: project.id, text: built.problems.join('; ') };
       remember(key, { text: words, args, projectId: project.id, awaiting: "text", options: [] });
       return { kind: "question", projectId: project.id, forIntent: "engineering", options: [], question: `Ca să pot verifica cerința îmi lipsește: ${built.problems.slice(0, 2).join("; ")}. Poți preciza?` };
     }

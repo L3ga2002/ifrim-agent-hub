@@ -12,6 +12,8 @@ import { createContent, BOARD_COLUMNS, CONTENT_ROLES } from "../server/media/con
 import { createCampaigns } from "../server/media/campaigns.mjs";
 import { createSales } from "../server/sales/sales.mjs";
 import { newId } from "../server/core/ids.mjs";
+import { hashCanonical } from "../server/core/canonical.mjs";
+import { criterionFingerprint, criterionRef, displaySha } from "../server/media/claims.mjs";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const T0 = Date.parse("2026-10-20T10:00:00.000Z");
@@ -55,6 +57,24 @@ const stageEvent = (s, missionId, stage) => s.bus.emit({ type: "factory.stage", 
 
 const brief = { objective: "Arătăm cum Hub-ul validează un formular real", angles: { technical: "Validare pe server cu teste reale", business: "" }, platforms: ["youtube"] };
 const shot = (id, extra = {}) => ({ id, purpose: `Cadrul ${id}`, source: { kind: "text_only" }, durationMs: 2000, acceptance: "Textul e lizibil", ...extra });
+
+test("M09-CT-11 criterion, display and method-specific evidence kinds validate their stored source", t => {
+  const s = setup(); t.after(() => s.env.cleanup());
+  const { missionId } = seedMission(s), project = s.content.createProject({ title: "Criterion claims" });
+  const item = { id: "AC-1", text: "Test verificat", verify: "test", testRef: "test.mjs" }, spec = { acceptance: [item] }, specSha = hashCanonical(spec);
+  s.db.prepare("INSERT INTO factory_specs (id,mission_id,version,status,spec_json,sha256,author,created_at) VALUES ('sp_claim',?,1,'APPROVED',?,?,'test',?)").run(missionId, JSON.stringify(spec), specSha, s.at());
+  for (const stage of ["E2E", "PREVIEW"]) s.db.prepare("INSERT INTO factory_evidence (id,mission_id,change_set_id,stage,kind,command,runner,isolation,status,counts_json,detail_json,created_at) VALUES (?,?,'cs',?,'check','check','test','test','PASS','{}','{}',?)").run("ev_" + stage, missionId, stage, s.at());
+  s.db.prepare("INSERT INTO factory_reviews (id,mission_id,change_set_id,change_set_sha,reviewer,verdict,validation_json,status,created_at) VALUES ('rv_claim',?,'cs',?,'test','PASS','{}','VALID',?)").run(missionId, "a".repeat(64), s.at());
+  const save = evidence => s.content.saveClaim(project.id, { text: "Test verificat", status: "SUPPORTED", evidence });
+  const criterion = { kind: "criterion", ref: criterionRef(specSha, item.id), sha256: criterionFingerprint(item) };
+  const claim = save([criterion, { kind: "display", ref: "t-hook:business", sha256: displaySha("Test verificat") }, { kind: "e2e", ref: "ev_E2E" }, { kind: "preview", ref: "ev_PREVIEW" }, { kind: "review", ref: "rv_claim" }]);
+  assert.equal(claim.status, "SUPPORTED"); assert.equal(claim.evidence.length, 5);
+  assert.throws(() => save([{ ...criterion, sha256: "b".repeat(64) }]), e => e.code === "CRITERION_CHANGED");
+  for (const evidence of [{ ...criterion, ref: criterionRef(specSha, "AC-2") }, { kind: "e2e", ref: "ev_PREVIEW" }, { kind: "preview", ref: "ev_E2E" }, { kind: "review", ref: "missing" }]) assert.throws(() => save([evidence]), e => e.code === "EVIDENCE_NOT_FOUND");
+  assert.throws(() => save([{ kind: "display", ref: "t-hook", sha256: "bad" }]));
+  s.db.prepare("UPDATE factory_specs SET status = 'DRAFT' WHERE id = 'sp_claim'").run();
+  assert.throws(() => save([criterion]), e => e.code === "EVIDENCE_NOT_FOUND");
+});
 
 test("M09-CT-01 ideas: dedupe on the folded title, event ideas refused manually, status transitions, idempotent promotion", (t) => {
   const s = setup(); t.after(() => s.env.cleanup());

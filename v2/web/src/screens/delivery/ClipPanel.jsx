@@ -266,7 +266,9 @@ export function ClipPanel({ room }) {
     return onTimeOf.current[key];
   };
   const answer = room.answers.revise;
-  const past = revisionRows(room.view);
+  const allRevisions = revisionRows(room.view);
+  const past = allRevisions.filter(r => r.source !== "hub");
+  const hubRevisions = allRevisions.filter(r => r.source === "hub");
   // „The current moment” is offered only while the player it was taken in still shows the current version of its clip.
   const momentCurrent = Boolean(moment) && slots.some((s) => s.key === moment.key && s.mode === "current");
   return (
@@ -284,6 +286,7 @@ export function ClipPanel({ room }) {
         </div>
         <RevisionBox room={room} moment={momentCurrent && moment.ms > 0 ? moment : null} />
         <AnswerCard outcome={answer} room={room} slot="revise" />
+        {hubRevisions.length > 0 && <details><summary>Corecturi propuse de Hub ({hubRevisions.length})</summary><ul>{hubRevisions.map(r => <li key={r.id}>{r.text} — propusă de Hub · {r.statusText}</li>)}</ul></details>}
         {past.length > 0 && (
           <details className="studio-details">
             <summary>Ce ai cerut până acum ({past.length})</summary>

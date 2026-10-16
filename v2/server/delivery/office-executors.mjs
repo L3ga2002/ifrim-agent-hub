@@ -24,19 +24,25 @@ const day = (iso) => { try { return new Date(iso).toLocaleDateString("ro-RO", { 
  * The live Hub uses "com"; config.testMode defaults to "skip" unless HUB_V2_OFFICE_COM=1.
  */
 export function createOfficeExecutors({ deliveries, factory, opsPlans, config, appCheck = (config.testMode && process.env.HUB_V2_OFFICE_COM !== "1") ? "skip" : "com" }) {
+  // Export paths are frozen; describing a confirmed package must not resolve new presentation facts.
+  const describedDelivery = id => deliveries.get(id);
   function bound(params, planId) {
     let d = deliveries.need(params.deliveryId);
     if (d.status === "PLANNED" && d.opsPlanId === planId) d = deliveries.startDirect(d.id, planId);
-    if (d.opsPlanId !== planId) throw refuse("CAPTURE_NOT_BOUND", "Pasul nu aparține planului acestei livrări.");
+    if (d.opsPlanId !== planId && !deliveries.revisionOfPlan(d.id, planId)?.delta?.correction) throw refuse("CAPTURE_NOT_BOUND", "Pasul nu aparține planului acestei livrări.");
     if (!["ACTIVE", "READY", "NEEDS_OWNER"].includes(d.status)) throw refuse("DELIVERY_NOT_ACTIVE", `Livrarea e ${d.status}; pașii ei nu rulează.`);
-    return d;
+    return { ...d, template: deliveries.effectiveTemplate(d, { planId }) };
   }
+  const correctionOf = (d, planId) => deliveries.revisionOfPlan?.(d.id, planId)?.delta?.correction;
+  const previousStep = (d, kind) => deliveries.officeSteps?.(d).find(s => s.kind === kind && s.status === 'DONE');
+  const kept = (step, digest) => { try { return step?.result?.sha256 === digest && sha(fs.readFileSync(step.result.file)) === digest && (!step.result.pdf || (step.result.pdfSha && sha(fs.readFileSync(step.result.pdf)) === step.result.pdfSha)); } catch { return false; } };
   const folderOf = (d) => path.join(d.template.exports.dir, d.template.exports.folder);
   const workDir = () => path.join(config.workDir || path.join(config.dataDir, "work"), "office");
 
   /** The facts the documents may state, all from the Hub's records (criteria of the verified bundle, the exported clips). */
   function facts(d) {
     const binding = factory.deliveryBinding(d.missionId) || {};
+    if (binding.bundleId !== d.bundleId || binding.bundleSha !== d.bundleSha) throw refuse('CORRECTION_BASE_CHANGED', 'Documentele trebuie să descrie propriul pachet al livrării.');
     const items = deliveries.items(d.id).filter((i) => i.status === "CURRENT");
     const renders = Object.fromEntries(items.filter((i) => i.kind === "render").map((i) => [i.role, i]));
     const clips = items.filter((i) => i.kind === "export").map((i) => {
@@ -80,19 +86,23 @@ export function createOfficeExecutors({ deliveries, factory, opsPlans, config, a
 
   return {
     "delivery.office.document": {
-      describe: ({ deliveryId }) => {
-        const d = deliveries.get(deliveryId);
-        const dest = d ? path.join(folderOf(d), "Prezentare demo.docx") : undefined;
-        return { title: "Scrie documentul Word al prezentării (titluri, tabele, date demonstrative) și verifică-l în Word", params: { deliveryId },
+      describe: ({ deliveryId, revisionId }) => {
+        const d = describedDelivery(deliveryId);
+        const correction = revisionId && deliveries.getRevision(revisionId)?.delta?.correction;
+        const name = correction ? `Prezentare demo v${correction.version + 1}.docx` : 'Prezentare demo.docx';
+        const dest = d ? path.join(folderOf(d), name) : undefined;
+        return { title: "Scrie documentul Word al prezentării (titluri, tabele, date demonstrative) și verifică-l în Word", params: { deliveryId, ...(revisionId ? { revisionId } : {}) },
           ops: [{ op: "export.local", destination: dest }, { op: "office.verify" }], folders: d ? [folderOf(d)] : [], observed: ["criteriile verificate și clipurile exportate ale livrării"], transmitted: [],
-          outputs: ["Prezentare demo.docx + PDF (verificat în Word)"] };
+          outputs: [correction ? `${name} + PDF, sau fișiere identice păstrate prin dovadă` : "Prezentare demo.docx + PDF (verificat în Word)"] };
       },
       run: async ({ params, planId, authorize }) => {
         const d = bound(params, planId);
         const f = facts(d);
         const model = presentationDocument(f);
         const buf = buildDocx(model, { created: new Date(d.createdAt) });
-        const w = writeOnce(folderOf(d), "Prezentare demo.docx", buf, authorize);
+        const correction = correctionOf(d, planId), prior = previousStep(d, 'delivery.office.document'), inputsSha = hashCanonical(f), clipShas = f.clips.map(c => c.sha256);
+        if (correction && kept(prior, sha(buf))) return { result: { ...prior.result, inputsSha, clipShas, keptByProof: { planId: prior.planId, seq: prior.seq, sha256: sha(buf) } } };
+        const w = writeOnce(folderOf(d), correction ? 'Prezentare demo v' + (correction.version + 1) + '.docx' : 'Prezentare demo.docx', buf, authorize);
         const shape = expectedDocxShape(model);
         const file = checkDocxFile(w.file, shape);
         if (!file.ok) throw fail("Documentul salvat nu are structura cerută", file);
@@ -101,14 +111,14 @@ export function createOfficeExecutors({ deliveries, factory, opsPlans, config, a
         authorize({ op: "export.local", destination: pdf });
         const app = await appVerify("docx", w.file, shape, fs.existsSync(pdf) && w.reused ? null : pdf);
         if (!app.ok) throw fail("Word nu confirmă documentul", app);
-        return { result: { file: w.file, sha256: w.sha256, reused: w.reused, level: app.level === "APP_VERIFIED" ? "APP_VERIFIED" : "FILE_CHECKED", app: app.app || null, version: app.version || null,
+        return { result: { file: w.file, sha256: w.sha256, inputsSha, clipShas, pdfSha: fs.existsSync(pdf) ? sha(fs.readFileSync(pdf)) : null, reused: w.reused, level: app.level === "APP_VERIFIED" ? "APP_VERIFIED" : "FILE_CHECKED", app: app.app || null, version: app.version || null,
           pages: app.pages || null, headings: file.headings.length, tables: file.tables.length, pdf: fs.existsSync(pdf) ? pdf : null } };
       },
     },
 
     "delivery.office.workbook": {
       describe: ({ deliveryId }) => {
-        const d = deliveries.get(deliveryId);
+        const d = describedDelivery(deliveryId);
         const dest = d ? path.join(folderOf(d), "Programari demo.xlsx") : undefined;
         return { title: "Construiește registrul Excel cu programări demonstrative (formule, filtre, formatare) și recalculează-l în Excel", params: { deliveryId },
           ops: [{ op: "export.local", destination: dest }, { op: "office.verify" }], folders: d ? [folderOf(d)] : [], observed: [], transmitted: [], outputs: ["Programari demo.xlsx + PDF (formule verificate de Excel)"] };
@@ -131,19 +141,26 @@ export function createOfficeExecutors({ deliveries, factory, opsPlans, config, a
     },
 
     "delivery.campaign": {
-      describe: ({ deliveryId }) => {
-        const d = deliveries.get(deliveryId);
-        const dir = d ? path.join(folderOf(d), "Campanie") : undefined;
-        return { title: "Pregătește local pachetul de campanie (obiectiv, public, mesaj, calendar, texte și variante pe canale), fără publicare", params: { deliveryId },
+      describe: ({ deliveryId, revisionId }) => {
+        const d = describedDelivery(deliveryId);
+        const correction = revisionId && deliveries.getRevision(revisionId)?.delta?.correction;
+        const name = correction ? `Campanie v${correction.version + 1}` : 'Campanie';
+        const dir = d ? path.join(folderOf(d), name) : undefined;
+        return { title: "Pregătește local pachetul de campanie (obiectiv, public, mesaj, calendar, texte și variante pe canale), fără publicare", params: { deliveryId, ...(revisionId ? { revisionId } : {}) },
           ops: [{ op: "export.local", destination: dir ? path.join(dir, "campanie.md") : undefined }, { op: "office.verify" }], folders: d ? [folderOf(d)] : [], observed: ["clipurile exportate ale livrării"], transmitted: [],
-          outputs: ["dosarul Campanie (campanie.md, calendar.xlsx, texte pe canale, campanie.json); nimic publicat"] };
+          outputs: [`dosarul ${name} (campanie.md, calendar.xlsx, texte pe canale, campanie.json); nimic publicat${correction ? '; sau fișiere identice păstrate prin dovadă' : ''}`] };
       },
       run: async ({ params, planId, authorize }) => {
         const d = bound(params, planId);
         const f = facts(d);
         const c = buildCampaign({ noun: "programarea", proofs: f.criteria.filter((x) => x.status === "PASS").map((x) => `${x.id}: ${x.text}`), cta: "Hai să discutăm",
           materials: f.clips.map((m) => ({ name: m.name, file: m.file, format: m.format, sha256: m.sha256, durationSec: m.durationSec })), startDate: new Date(Date.parse(d.createdAt) + 4 * 86400000).toISOString().slice(0, 10) });
-        const dir = path.join(folderOf(d), "Campanie");
+        const correction = correctionOf(d, planId), inputsSha = hashCanonical(f), clipShas = f.clips.map(c => c.sha256);
+        const calProof = campaignWorkbook(c);
+        const buffers = [{ path: 'campanie.md', buf: Buffer.from(campaignMarkdown(c), 'utf8') }, { path: 'campanie.json', buf: Buffer.from(JSON.stringify(c, null, 2) + '\n', 'utf8') }, ...c.texts.map(t => ({ path: 'texte/' + t.channel + '.txt', buf: Buffer.from(t.text + '\n', 'utf8') })), { path: 'calendar.xlsx', buf: buildXlsx(calProof.model, { created: new Date(d.createdAt) }) }];
+        const prior = previousStep(d, 'delivery.campaign');
+        if (correction && prior?.result?.fileProofs && buffers.every(b => { try { const p = path.join(prior.result.dir, b.path), digest = sha(b.buf); return prior.result.fileProofs.some(x => x.path === p && x.sha256 === digest) && sha(fs.readFileSync(p)) === digest; } catch { return false; } })) return { result: { ...prior.result, inputsSha, clipShas, keptByProof: { planId: prior.planId, seq: prior.seq, sha256: hashCanonical(prior.result.fileProofs) } } };
+        const dir = path.join(folderOf(d), correction ? 'Campanie v' + (correction.version + 1) : 'Campanie');
         const files = [];
         files.push(writeOnce(dir, "campanie.md", Buffer.from(campaignMarkdown(c), "utf8"), authorize));
         files.push(writeOnce(dir, "campanie.json", Buffer.from(`${JSON.stringify(c, null, 2)}\n`, "utf8"), authorize));
@@ -157,20 +174,28 @@ export function createOfficeExecutors({ deliveries, factory, opsPlans, config, a
         const app = await appVerify("xlsx", x.file, cal.expect, null);
         if (!app.ok) throw fail("Excel nu confirmă calendarul campaniei", app);
         const complete = Boolean(c.objective && c.audience.length && c.message && c.calendar.length && c.texts.length === c.channels.length);
-        return { result: { dir, files: files.map((w) => path.relative(folderOf(d), w.file)), channels: c.channels.length, posts: c.calendar.length, materials: c.materials.length, missing: c.missing,
+        return { result: { dir, inputsSha, clipShas, sha256: hashCanonical(files.map(w => w.sha256)), fileProofs: files.map(w => ({ path: w.file, sha256: w.sha256 })), files: files.map((w) => path.relative(folderOf(d), w.file)), channels: c.channels.length, posts: c.calendar.length, materials: c.materials.length, missing: c.missing,
           complete, calendarLevel: app.level === "APP_VERIFIED" ? "APP_VERIFIED" : "FILE_CHECKED", published: false } };
       },
     },
 
     "delivery.package.index": {
-      describe: ({ deliveryId }) => {
-        const d = deliveries.get(deliveryId);
-        return { title: "Scrie cuprinsul dosarului (README + manifest cu sha256 pentru fiecare fișier)", params: { deliveryId },
-          ops: [{ op: "export.local", destination: d ? path.join(folderOf(d), "README.md") : undefined }], folders: d ? [folderOf(d)] : [], observed: [], transmitted: [], outputs: ["README.md + manifest.json în dosar"] };
+      describe: ({ deliveryId, revisionId }) => {
+        const d = describedDelivery(deliveryId);
+        const correction = revisionId && deliveries.getRevision(revisionId)?.delta?.correction;
+        const suffix = correction ? `-v${correction.version + 1}` : '';
+        return { title: "Scrie cuprinsul dosarului (README + manifest cu sha256 pentru fiecare fișier)", params: { deliveryId, ...(revisionId ? { revisionId } : {}) },
+          ops: [{ op: "export.local", destination: d ? path.join(folderOf(d), `README${suffix}.md`) : undefined }], folders: d ? [folderOf(d)] : [], observed: [], transmitted: [], outputs: [`README${suffix}.md + manifest${suffix}.json în dosar`] };
       },
       run: async ({ params, planId, authorize }) => {
         const d = bound(params, planId);
-        const root = folderOf(d);
+        const root = folderOf(d), correction = correctionOf(d, planId);
+        if (correction?.office.workbook === 'keep-by-proof') {
+          const reused = d.template.reused?.find(r => r.kind === 'workbook');
+          const source = reused ? deliveries.need(reused.sourceDeliveryId) : d;
+          const proof = workbookReuse({ source, sourcePlan: { steps: deliveries.officeSteps(source) } });
+          if (!proof.ok) throw refuse('CORRECTION_WORKBOOK_PROOF', proof.detail);
+        }
         // Closure R-PACK: a file kept by proof from an earlier delivery is COPIED into this folder (the same verified bytes, never
         // regenerated), so the package stands on its own after the source folder moves or disappears; the source stays untouched.
         const reusedSource = (d.template.reused || []).map((r) => ({ kind: r.kind, file: r.file, sha256: r.sha256, sourceDeliveryId: r.sourceDeliveryId, inputsSha: r.inputsSha, reason: r.reason }));
@@ -193,16 +218,32 @@ export function createOfficeExecutors({ deliveries, factory, opsPlans, config, a
           localCopies.push({ ...r, local: w.file, copied: !w.reused });
         }
         const list = [];
-        const walk = (dir) => { for (const e of fs.readdirSync(dir, { withFileTypes: true })) { const p = path.join(dir, e.name); if (e.isDirectory()) walk(p); else if (!/^(README\.md|manifest\.json)$/i.test(e.name) && !/\.tmp$/.test(e.name)) list.push(p); } };
+        const walk = (dir) => { for (const e of fs.readdirSync(dir, { withFileTypes: true })) { const p = path.join(dir, e.name); if (e.isDirectory()) walk(p); else if ((correction || !/^(README\.md|manifest\.json)$/i.test(e.name)) && !/\.tmp$/.test(e.name) && e.name !== `manifest-v${correction?.version + 1}.json` && e.name !== `README-v${correction?.version + 1}.md`) list.push(p); } };
         walk(root);
         list.sort();
         const files = list.map((p) => { const b = fs.readFileSync(p); return { path: path.relative(root, p).replace(/\\/g, "/"), bytes: b.length, sha256: sha(b) }; });
-        const steps = (opsPlans.view(planId)?.steps || []).filter((s) => s.status === "DONE" && s.result);
-        const level = (kind) => steps.find((s) => s.kind === kind)?.result?.level || steps.find((s) => s.kind === kind)?.result?.calendarLevel || null;
+        const steps = (deliveries.officeSteps?.(d) || opsPlans.view(planId)?.steps || []).filter((s) => s.status === "DONE" && s.result);
+        const level = (kind) => steps.find((s) => s.kind === kind)?.result?.level || steps.find((s) => s.kind === kind)?.result?.calendarLevel || d.template.reused?.find(r => `delivery.office.${r.kind}` === kind)?.level || null;
         // R-REV + closure R-PACK: an artifact kept by proof (same inputs, same bytes) is listed by its LOCAL path in this folder (relative,
         // in `files` with the same sha), with its provenance (the source delivery and its original file) and the reason.
         const reused = localCopies.map((r) => ({ kind: r.kind, file: path.relative(root, r.local).replace(/\\/g, "/"), sha256: r.sha256,
           source: { deliveryId: r.sourceDeliveryId, file: r.file }, inputsSha: r.inputsSha, reason: r.reason, copiedVerified: true }));
+        if (correction) {
+          const all = deliveries.items(d.id), docs = deliveries.view(d.id).summary;
+          const currentFiles = new Set([...all.filter(i => i.status === 'CURRENT' && i.kind === 'export').map(i => i.meta.file), ...Object.values(docs?.exports || {}).map(x => x.file)]);
+          for (const s of steps.filter(s => s.kind !== 'delivery.package.index')) for (const p of [s.result.file, s.result.pdf, ...(s.result.fileProofs || []).map(x => x.path)].filter(Boolean)) currentFiles.add(p);
+          for (const r of localCopies) currentFiles.add(r.local);
+          const history = (deliveries.officeSteps?.(d, { history: true }) || steps).filter(s => s.status === 'DONE' && s.result);
+          for (const f of files) {
+            const abs = path.join(root, f.path), item = all.find(i => i.kind === 'export' && i.meta.file === abs);
+            const old = !currentFiles.has(abs);
+            f.status = old ? 'SUPERSEDED' : 'CURRENT';
+            const producer = history.find(s => s.result.file === abs || s.result.pdf === abs || s.result.fileProofs?.some(x => x.path === abs) || s.kind === 'delivery.package.index' && s.result.file?.replace(/manifest(-v\d+)?\.json$/, 'README$1.md') === abs);
+            const summaryVersion = f.path.match(/^rezumat-v(\d+)\.(md|html)$/)?.[1];
+            f.producedBy = item ? { itemId: item.id } : summaryVersion ? { deliveryId: d.id, documentVersion: Number(summaryVersion) } : { planId: producer?.planId || d.opsPlanId, ...(producer ? { seq: producer.seq } : {}) };
+            f.supersededBy = old ? { planId, correctionSha: hashCanonical(correction) } : null;
+          }
+        }
         const manifest = { schema: 1, deliveryId: d.id, project: d.template.project.name, folder: root, files, ...(reused.length ? { reused } : {}),
           verification: { document: level("delivery.office.document"), workbook: level("delivery.office.workbook"), campaignCalendar: level("delivery.campaign") }, published: false, note: "Date demonstrative; nimic publicat." };
         const readme = [`# ${d.title}`, "", "Dosarul prezentării, pregătit de Ifrim Agent Hub dintr-un singur plan confirmat. Nimic nu a fost publicat.", "",
@@ -212,12 +253,20 @@ export function createOfficeExecutors({ deliveries, factory, opsPlans, config, a
           "Date demonstrative: programările și cifrele sunt exemple; prețurile sunt „De stabilit”.", ""].join("\n");
         // README/manifest describe the folder as it is now: rewritten on purpose (they are the index, not a deliverable copy).
         authorize({ op: "export.local", destination: path.join(root, "README.md") });
-        fs.writeFileSync(path.join(root, "README.md"), readme, "utf8");
-        fs.writeFileSync(path.join(root, "manifest.json"), `${JSON.stringify(manifest, null, 2)}\n`, "utf8");
+        if (correction) {
+          writeOnce(root, 'README-v' + (correction.version + 1) + '.md', Buffer.from(readme), authorize);
+          const readmePath = 'README-v' + (correction.version + 1) + '.md', b = fs.readFileSync(path.join(root, readmePath));
+          manifest.files.push({ path: readmePath, bytes: b.length, sha256: sha(b), status: 'CURRENT', producedBy: { planId }, supersededBy: null });
+          writeOnce(root, 'manifest-v' + (correction.version + 1) + '.json', Buffer.from(JSON.stringify(manifest, null, 2) + '\n'), authorize);
+        } else {
+          fs.writeFileSync(path.join(root, "README.md"), readme, "utf8");
+          fs.writeFileSync(path.join(root, "manifest.json"), JSON.stringify(manifest, null, 2) + '\n', "utf8");
+        }
         // Closure R-PACK: the folder is checked on its own (manifest → every file inside it, by sha), never through the source folder.
         const self = verifyPackageFolder(root);
         if (!self.ok) throw refuse("PACKAGE_NOT_SELF_CONTAINED", `Dosarul nu se verifică singur: ${self.problems.join("; ")}`);
-        return { result: { folder: root, files: files.length, verification: manifest.verification, ...(reused.length ? { reused: localCopies.map((r) => ({ kind: r.kind, file: r.local, sha256: r.sha256, sourceDeliveryId: r.sourceDeliveryId })) } : {}) } };
+        const manifestFile = path.join(root, correction ? `manifest-v${correction.version + 1}.json` : 'manifest.json');
+        return { result: { folder: root, file: manifestFile, sha256: sha(fs.readFileSync(manifestFile)), files: files.length, verification: manifest.verification, ...(reused.length ? { reused: localCopies.map((r) => ({ kind: r.kind, file: r.local, sha256: r.sha256, sourceDeliveryId: r.sourceDeliveryId })) } : {}) } };
       },
     },
   };
@@ -231,7 +280,8 @@ export function createOfficeExecutors({ deliveries, factory, opsPlans, config, a
 export function verifyPackageFolder(root) {
   const problems = [];
   let manifest = null;
-  try { manifest = JSON.parse(fs.readFileSync(path.join(root, "manifest.json"), "utf8")); } catch { return { ok: false, problems: ["manifest.json lipsește sau nu se poate citi"], files: 0 }; }
+  const newest = (fs.existsSync(root) ? fs.readdirSync(root) : []).filter(n => /^manifest-v[0-9]+\.json$/.test(n)).sort((a,b) => Number(b.match(/[0-9]+/)[0]) - Number(a.match(/[0-9]+/)[0]))[0] || 'manifest.json';
+  try { manifest = JSON.parse(fs.readFileSync(path.join(root, newest), "utf8")); } catch { return { ok: false, problems: ["manifest.json lipsește sau nu se poate citi"], files: 0 }; }
   const real = (() => { try { return fs.realpathSync.native(root); } catch { return path.resolve(root); } })();
   const inside = (rel) => {
     if (typeof rel !== "string" || !rel || path.isAbsolute(rel) || /^[a-z]:/i.test(rel) || rel.split(/[\\/]/).includes("..")) return null;
@@ -249,7 +299,7 @@ export function verifyPackageFolder(root) {
     listed.set(String(f.path).toLowerCase(), f.sha256);
   }
   // A file in the folder that the manifest does not list (README / manifest themselves and temporary files aside) is reported too.
-  const walk = (dir) => { let n = []; try { n = fs.readdirSync(dir, { withFileTypes: true }); } catch { return; } for (const e of n) { const p = path.join(dir, e.name); if (e.isDirectory()) walk(p); else if (!/^(README\.md|manifest\.json)$/i.test(e.name) && !/\.tmp$/.test(e.name)) { const rel = path.relative(real, p).replace(/\\/g, "/"); if (!listed.has(rel.toLowerCase()) && !problems.some((x) => x.startsWith(`${rel}:`))) problems.push(`${rel}: nu e în manifest`); } } };
+  const walk = (dir) => { let n = []; try { n = fs.readdirSync(dir, { withFileTypes: true }); } catch { return; } for (const e of n) { const p = path.join(dir, e.name); if (e.isDirectory()) walk(p); else if (e.name !== newest && !/^(README\.md|manifest\.json)$/i.test(e.name) && !/\.tmp$/.test(e.name)) { const rel = path.relative(real, p).replace(/\\/g, "/"); if (!listed.has(rel.toLowerCase()) && !problems.some((x) => x.startsWith(`${rel}:`))) problems.push(`${rel}: nu e în manifest`); } } };
   walk(real);
   for (const r of Array.isArray(manifest.reused) ? manifest.reused : []) {
     if (!inside(r?.file)) { problems.push(`${r?.file}: fișierul refolosit nu e în dosar (trimitere în afara lui)`); continue; }

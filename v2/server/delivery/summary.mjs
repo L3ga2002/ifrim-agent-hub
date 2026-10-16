@@ -1,3 +1,5 @@
+import { claimState } from "./presentation.mjs";
+import { citedCriteria, PASS_BY_METHOD } from "../media/claims.mjs";
 // M11 „Ifrim Delivery” — the commercial summary (pure, deterministic: no model, no clock, no network; `generatedAt` is passed in).
 //
 // It answers, for a conversation with a possible client (owner's brief §21): the problem, what the demo shows, how it works, the
@@ -23,8 +25,15 @@ export const SECTION_BASIS = Object.freeze({
   problem: "software", demonstrated: "software", how: "software", benefits: "software", cannot_claim: "software", questions: "template",
   next_step: "template", video: "media", price_terms: "services", provenance: "software",
 });
-const PASS = (c) => typeof c?.status === "string" && c.status.startsWith("PASS");
+const PASS = (c) => PASS_BY_METHOD[c?.verify]?.includes(c.status) === true;
+export const SECTION_BASES = Object.freeze(Object.fromEntries(Object.entries(SECTION_BASIS).map(([k, v]) => [k, Object.freeze([v, ...(["software", "template"].includes(v) ? ["claims"] : [])])])));
 const bullets = (lines) => lines.map((l) => `- ${l}`).join("\n");
+const fallbackText = (value, max = 200) => {
+  const s = String(value || '').replace(/\s+/g, ' ').trim();
+  if (s.length <= max) return s;
+  const cut = s.slice(0, max + 1).lastIndexOf(' ');
+  return (cut > 0 ? s.slice(0, cut).trimEnd() : '') + '…';
+};
 
 // ---------- fact guard ----------
 const FACT_PATTERNS = Object.freeze([
@@ -116,10 +125,21 @@ const ROLE_LABEL = { master: "Clip 16:9", vertical: "Variantă verticală 9:16" 
  *   generatedAt: string }} input
  */
 export function renderSummary(input) {
-  const { projectName = "", synthetic = true, simulation = false, manifest = {}, bundleId = "", bundleSha = "", issue = null, block = null, media = [], services = [], owner = {}, generatedAt } = input || {};
+  const { projectName = "", synthetic = true, simulation = false, manifest = {}, bundleId = "", bundleSha = "", issue = null, presentation = null, proofs = {}, media = [], services = [], owner = {}, generatedAt } = input || {};
   if (!generatedAt) throw new HubError("validation", "Rezumatul are nevoie de momentul generării (generatedAt)");
+  const states = (presentation?.claims || []).map(c => ({ ...c, result: claimState(c, proofs) }));
+  const shownClaim = key => states.find(c => c.key === key && c.result.shown);
+  const group = prefix => states.filter(c => c.key.startsWith(prefix) && c.result.shown).map(c => ({ text: c.texts.text, criteria: c.needs.map(n => n.id) }));
+  const pc = shownClaim("summary.problem"), hc = shownClaim("summary.how");
+  // The original booking story keeps its established problem/flow wording byte for byte.
+  const compat = presentation?.key === "booking-mobile-fix";
+  const block = presentation ? { summary: { problem: pc ? pc.texts.text + (compat ? "" : " (criteriile: " + pc.needs.map(n => n.id).join(", ") + ")") : null,
+    demonstrates: group("summary.demonstrates."), benefits: group("summary.benefits."),
+    how: hc ? { criteria: hc.needs.map(n => n.id), lines: hc.texts.lines } : null,
+    questions: presentation.questions } } : input?.block;
   const criteria = Array.isArray(manifest.spec?.criteria) ? manifest.spec.criteria : [];
-  const passed = new Set(criteria.filter(PASS).map((c) => c.id));
+  const passes = c => presentation ? proofs[c.id]?.ok === true : PASS(c);
+  const passed = new Set(criteria.filter(passes).map((c) => c.id));
   const allPass = (ids) => ids.length > 0 && ids.every((id) => passed.has(id));
   const claims = [];
   const warnings = [];
@@ -127,25 +147,27 @@ export function renderSummary(input) {
   const tpl = (id, text) => { sections[id] = { id, heading: SECTION[id].heading, text, source: "template", auto: AUTO.has(id) }; };
 
   // Problem: the business problem of the block, else the agreed issue; the approved objective as the detail.
-  const problemLine = clean(block?.summary?.problem || issue || manifest.mission?.title, 240);
+  const problemLine = pc ? block.summary.problem : clean(block?.summary?.problem || issue || manifest.mission?.title, 240);
   tpl("problem", [problemLine, "Demo local pentru prezentare, cu date sintetice; nu este un sistem în producție."].filter(Boolean).map((l) => assertNoInventedFacts(l, "problema")).join("\n"));
 
-  const passLines = criteria.filter(PASS).map((c) => `${clean(c.text, 200)}: verificat ${verifiedHow(c)}.`);
+  const passLines = criteria.filter(passes).map((c) => `${fallbackText(c.text)}: verificat ${verifiedHow(c)}.`);
   const shown = (block?.summary?.demonstrates || []).filter((b) => allPass(b.criteria)).map((b) => `${assertNoInventedFacts(b.text, "ce demonstrăm")} (verificat: ${b.criteria.join(", ")})`);
   if (shown.length) tpl("demonstrated", `${bullets(shown)}\n\nVerificări tehnice trecute: ${passLines.length} din ${criteria.length} (lista e în „Trasabilitate”).`);
-  else tpl("demonstrated", passLines.length ? bullets(passLines) : "Nimic nu este încă verificat în această versiune.");
+  else tpl("demonstrated", presentation?.status === "CURATED" ? "Nimic nu este încă verificat în această versiune." : passLines.length ? bullets(passLines) : "Nimic nu este încă verificat în această versiune.");
 
   const how = block?.summary?.how;
-  if (how?.lines?.length && allPass(how.criteria)) tpl("how", bullets(how.lines.map((l) => assertNoInventedFacts(l, "cum funcționează"))));
+  if (how?.lines?.length && allPass(how.criteria)) tpl("how", bullets(how.lines.map((l) => assertNoInventedFacts(l, "cum funcționează")))
+    + (presentation?.status === "CURATED" && !compat ? `\nFlux verificat: ${how.criteria.join(", ")}.` : ""));
   else tpl("how", how?.lines?.length ? `Fluxul nu e verificat cap-coadă în această versiune (${how.criteria.filter((id) => !passed.has(id)).join(", ")} nu au trecut).` : "Fluxul se descrie după prezentare, pe baza demo-ului.");
 
   const benefits = (block?.summary?.benefits || []).filter((b) => allPass(b.criteria)).map((b) => `${assertNoInventedFacts(b.text, "beneficii")} (dovadă: ${b.criteria.join(", ")})`);
-  tpl("benefits", benefits.length ? bullets(benefits) : "Niciun beneficiu nu poate fi afirmat încă: criteriile lui nu au trecut.");
+  tpl("benefits", benefits.length ? bullets(benefits) : presentation && passed.size ? "Nicio afirmație curată nu se aplică acestei specificații; criteriile trecute sunt în „Ce demonstrăm” și „Trasabilitate”." : "Niciun beneficiu nu poate fi afirmat încă: criteriile lui nu au trecut.");
 
-  const notPassed = criteria.filter((c) => !PASS(c)).map((c) => `${c.id} ${clean(c.text, 160)}: ${c.status}${c.note ? ` (${clean(c.note, 120)})` : ""}`);
+  const notPassed = criteria.filter((c) => !passes(c)).map((c) => `${c.id} ${fallbackText(c.text, 160)}: ${c.status}${c.note ? ` (${clean(c.note, 120)})` : ""}`);
   for (const l of notPassed) claims.push(l);
   const priceConfigured = services.some((s) => priceText(s));
-  const cannot = [...notPassed.map((l) => `Nu afirmăm: ${l}`), ...FIXED_CANNOT, ...(priceConfigured ? [] : ["Preț și termen: nu sunt configurate în catalog, deci nu le afirmăm."]),
+  const omitted = states.filter(c => c.key.startsWith("summary.") && !c.result.shown).map(c => `Nu afirmăm: «${c.texts.text || c.texts.lines?.join(" ") || ""}» — ${c.result.plain}`);
+  const cannot = [...omitted, ...(presentation?.limits || []), ...notPassed.map((l) => `Nu afirmăm: ${l}`), ...FIXED_CANNOT, ...(priceConfigured ? [] : ["Preț și termen: nu sunt configurate în catalog, deci nu le afirmăm."]),
     ...(simulation ? ["SIMULARE: probă cu provideri fixture; nu arată calitatea unui model."] : [])];
   tpl("cannot_claim", bullets(cannot));
 
@@ -169,7 +191,7 @@ export function renderSummary(input) {
   const files = (cs.files || []).map((f) => clean(f.path, 120)).filter(Boolean);
   sections.provenance = { id: "provenance", heading: SECTION.provenance.heading, source: "bundle", auto: true,
     text: bullets([`Pachet verificat ${clean(bundleId, 60)} (${String(bundleSha).slice(0, 12)})`, `Set de modificări ${String(cs.sha256 || "").slice(0, 12)}, snapshot ${String(cs.snapshot || "").slice(0, 12)}${files.length ? `; fișiere: ${files.join(", ")}` : ""}`,
-      `Specificația v${manifest.spec?.version ?? "?"}`, ...(shown.length ? criteria.map((c) => `${c.id} ${clean(c.text, 200)}: ${c.status}${PASS(c) ? ` (verificat ${verifiedHow(c)})` : ""}`) : []), `Generat ${generatedAt}`]) };
+      `Specificația v${manifest.spec?.version ?? "?"}`, ...((shown.length || presentation) ? criteria.map((c) => `${c.id} ${fallbackText(c.text)}: ${c.status}${PASS(c) ? ` (verificat ${verifiedHow(c)})` : ""}`) : []), `Generat ${generatedAt}`]) };
 
   const materials = materialLines(owner);
   for (const m of materials) claims.push(`Material de prezentare: ${m}`);
@@ -178,7 +200,7 @@ export function renderSummary(input) {
 
   const ordered = SUMMARY_SECTIONS.map((s) => sections[s.id]);
   const title = `${simulation ? "[SIMULARE] " : ""}${synthetic ? "[DATE SINTETICE] " : ""}Rezumat: ${clean(projectName, 120)}`;
-  const basis = basisOf({ manifest, bundleSha, media, services, owner });
+  const basis = basisOf({ manifest, bundleSha, media, services, owner, presentation, states });
   return finish({ title, sections: ordered, claimsToVerify: claims, warnings, basis, authorKind: "template" });
 }
 
@@ -188,8 +210,9 @@ function videoSection(media) {
   return { id: "video", heading: SECTION.video.heading, text: lines.length ? bullets(lines) : "Clipurile nu sunt gata încă.", source: "media", auto: true };
 }
 
-function basisOf({ manifest, bundleSha, media, services, owner }) {
+function basisOf({ manifest, bundleSha, media, services, owner, presentation, states = [] }) {
   return {
+    ...(presentation ? { claims: { key: presentation.key, status: presentation.status, catalogSha: presentation.catalogSha, specSha: presentation.specSha, shown: states.filter(c => c.result.shown).map(c => ({ key: c.key, ids: c.needs.map(n => n.id), fps: c.needs.map(n => n.fp) })), omitted: states.filter(c => !c.result.shown).map(c => ({ key: c.key, code: c.result.code })) }, ...(presentation.origin ? { origin: presentation.origin } : {}) } : {}),
     software: { bundleSha: String(bundleSha || ""), criteria: (manifest.spec?.criteria || []).map((c) => ({ id: c.id, status: c.status })) },
     media: (media || []).filter((m) => m?.id).map((m) => ({ id: m.id, role: m.role, qa: m.qa || null })),
     services: (services || []).filter((s) => s?.id).map((s) => `${s.id}@${s.version ?? 1}`),
@@ -227,11 +250,11 @@ export function editSummary(prev, edits) {
     const left = findUnresolvedPlaceholders(text);
     if (left.length) throw new HubError("validation", `„${SECTION[id].heading}” conține câmpuri nerezolvate: ${left.join(", ")}`, { data: { code: "SUMMARY_PLACEHOLDER" } });
     for (const f of factsIn(text)) claims.push(`Afirmat de tine în „${SECTION[id].heading}”: ${f.text}`);
-    byId.set(id, { ...byId.get(id), text, source: "owner", needsReview: false });
+    byId.set(id, { ...byId.get(id), text, source: "owner", needsReview: false, reviewReason: null });
   }
   const sections = SUMMARY_SECTIONS.map((s) => byId.get(s.id));
   const authorKind = sections.every((s) => s.source === "owner" || s.auto) ? "owner" : sections.some((s) => s.source === "owner") ? "mixed" : "template";
-  return finish({ title: prev.title, sections, claimsToVerify: claims, warnings: prev.warnings || [], basis: prev.basis, authorKind });
+  return finish({ title: prev.title, sections, claimsToVerify: claimsOf(sections, claims), warnings: prev.warnings || [], basis: prev.basis, authorKind });
 }
 
 /**
@@ -239,19 +262,57 @@ export function editSummary(prev, edits) {
  * are replaced; an owner-written section on a changed basis keeps its text and is flagged needsReview (its facts may no longer hold).
  * @param {"software"|"media"|"services"} changed
  */
+export function claimsOf(sections, templateClaims = []) {
+  return [...templateClaims.filter(t => !t.startsWith("Afirmat de tine") && !t.startsWith("De revăzut:")),
+    ...sections.filter(s => s.source === "owner").flatMap(s => factsIn(s.text).map(f => "Afirmat de tine în „" + s.heading + "”: " + f.text)),
+    ...sections.filter(s => s.needsReview).map(s => "De revăzut: „" + s.heading + "” (faptele s-au schimbat după editarea ta)")];
+}
 export function regenerateSummary(prev, fresh, changed) {
-  if (!["software", "media", "services"].includes(changed)) throw new HubError("validation", `Schimbare necunoscută „${changed}”`);
-  const old = new Map((prev?.sections || []).map((s) => [s.id, s]));
-  const sections = fresh.sections.map((s) => {
+  const changes = Array.isArray(changed) ? changed : [changed];
+  if (changes.some(c => !["software", "media", "services", "claims", "template"].includes(c))) throw new HubError("validation", "Schimbare necunoscută");
+  const old = new Map((prev?.sections || []).map(s => [s.id, s]));
+  const sections = fresh.sections.map(s => {
     const before = old.get(s.id);
-    if (SECTION_BASIS[s.id] !== changed || !before) return before || s;
-    if (before.source === "owner") return { ...before, needsReview: true };
-    return s;
+    if (!before) return s;
+    if (!SECTION_BASES[s.id].some(b => changes.includes(b))) return before;
+    return before.source === "owner" ? { ...before, needsReview: true, reviewReason: "Baza secțiunii s-a schimbat: " + changes.filter(c => SECTION_BASES[s.id].includes(c)).join(", ") } : s;
   });
-  const claims = changed === "software" ? fresh.claimsToVerify : prev.claimsToVerify;
-  const authorKind = sections.some((s) => s.source === "owner") ? (sections.every((s) => s.source === "owner" || s.auto) ? "owner" : "mixed") : "template";
-  return finish({ title: fresh.title, sections, claimsToVerify: [...claims, ...sections.filter((s) => s.needsReview).map((s) => `De revăzut: „${s.heading}” (faptele s-au schimbat după editarea ta)`)],
-    warnings: fresh.warnings, basis: { ...prev.basis, [changed]: fresh.basis[changed] }, authorKind });
+  const authorKind = sections.some(s => s.source === "owner") ? (sections.every(s => s.source === "owner" || s.auto) ? "owner" : "mixed") : "template";
+  const basis = { ...prev.basis, ...Object.fromEntries(changes.filter(c => fresh.basis[c] !== undefined).map(c => [c, fresh.basis[c]])) };
+  if (fresh.basis.origin) basis.origin = fresh.basis.origin;
+  return finish({ title: fresh.title, sections, claimsToVerify: claimsOf(sections, changes.includes("software") || changes.includes("claims") ? fresh.claimsToVerify : prev.claimsToVerify || []), warnings: fresh.warnings, basis, authorKind });
+}
+
+/** Deterministic citation check; owner sections remain explicitly owner-authored. */
+export function summaryFactCheck({ doc, presentation, proofs = {}, spec }) {
+  const allowed = new Map(["problem", "demonstrated", "how", "benefits"].map(k => [k, new Set()]));
+  for (const c of presentation?.claims || []) {
+    if (!claimState(c, proofs).shown || !c.key.startsWith("summary.")) continue;
+    const part = c.key.split(".")[1], section = part === "demonstrates" ? "demonstrated" : part;
+    if (!allowed.has(section)) continue;
+    const ids = c.needs.map(n => n.id).join(", ");
+    const compat = presentation.key === "booking-mobile-fix";
+    for (const text of c.texts.lines || [c.texts.text]) {
+      if (section === "problem") allowed.get(section).add(text + (compat ? "" : ` (criteriile: ${ids})`));
+      else if (section === "how") allowed.get(section).add(text);
+      else for (const suffix of [" (verificat: " + ids + ")", " (dovadă: " + ids + ")"]) allowed.get(section).add(text + suffix);
+    }
+    if (section === "how" && presentation.status === "CURATED" && !compat) allowed.get(section).add(`Flux verificat: ${ids}.`);
+  }
+  if (presentation?.status === "GENERATED") for (const c of spec?.acceptance || []) if (proofs[c.id]?.ok) allowed.get("demonstrated").add(fallbackText(c.text) + ": verificat " + verifiedHow(c) + ".");
+  // Fixed template prose is allowed by exact line; arbitrary claimless prose is not evidence.
+  const criteria = spec?.acceptance || [];
+  const generated = presentation ? renderSummary({ presentation, proofs, manifest: { spec: { criteria: criteria.map(c => ({ ...c, status: proofs[c.id]?.status || 'UNKNOWN' })) } }, issue: spec?.title, generatedAt: 'fact-check' }) : null;
+  const fixed = new Map((generated?.sections || []).map(s => [s.id, new Set(s.text.split('\n').map(t => t.replace(/^- /, '').trim()).filter(Boolean))]));
+  const findings = [];
+  for (const section of doc.sections || []) {
+    if (!allowed.has(section.id) || section.source === "owner") continue;
+    for (const line of section.text.split("\n").map(t => t.replace(/^- /, "").trim()).filter(Boolean)) {
+      if (citedCriteria(line).length && !allowed.get(section.id).has(line)) findings.push({ code: "SUMMARY_CITATION_UNBOUND", sectionId: section.id, text: line, ids: citedCriteria(line) });
+      if (presentation && !allowed.get(section.id).has(line) && !fixed.get(section.id)?.has(line)) findings.push({ code: section.id === 'problem' ? 'NARRATIVE_FROM_OTHER_SPEC' : 'SUMMARY_LINE_NOT_CURATED', sectionId: section.id, text: line, ids: citedCriteria(line) });
+    }
+  }
+  return { status: findings.length ? "FAIL" : "PASS", findings };
 }
 
 // ---------- export ----------

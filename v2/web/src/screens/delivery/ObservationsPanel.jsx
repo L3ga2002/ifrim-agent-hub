@@ -41,6 +41,7 @@ export function ObservationsPanel({ room, hiddenPlanIds = [] }) {
                   {o.target && <button type="button" className="link-btn small" onClick={() => room.jump(o.target)}>{o.target.label}</button>}
                 </span>
                 <span className="small">{o.text}</span>
+                {o.link && <a className="small" href={o.link.href}>{o.link.label}</a>}
               </li>
             ))}
           </ul>

@@ -16,7 +16,8 @@ const PENDING_TEXT = { software: "Se verifică și se acceptă…", creativeMast
  * A disabled button always says why. Exported so the summary editor can show „Gata de prezentare” next to the text it approves.
  */
 export function DecisionAction({ room, row, place = "" }) {
-  const a = row?.action;
+  const blocked = room.view.correction?.available && ['creativeMaster', 'creativeVertical', 'summaryReady'].includes(row?.key);
+  const a = blocked && row?.action ? { ...row.action, enabled: false, reason: 'Afirmațiile acestei versiuni trebuie corectate; confirmă planul de corectură.' } : row?.action;
   if (!a) return null;
   const key = `decision:${row.key}`;
   // `place` keeps the ids unique when the same decision is offered in two panels (the summary editor and the decisions list).

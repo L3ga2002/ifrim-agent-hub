@@ -1,5 +1,11 @@
 # Open Issues - Ifrim Agent Hub
 
+## 2.14.17 part B — known issue outside correction scope
+
+`delivery.package.propose` does not bind its proposed plan to the delivery. Confirming that re-package card can fail at its first
+step with `CAPTURE_NOT_BOUND`. This is not changed by R-CORRECT; the descendant-aware replacement link currently hides that offer
+for the reported lineage. Track and fix the package-proposal binding separately.
+
 ## 2026-10-15 night — 2.14.16 live; §25 delivered READY and verified; summary/clip criterion citations wrong (live `2.14.16-m11`, contract 13, schema 12; detail: `.ifrim/STAGE_2026-10-15_CORECTII_S25.md` §8–§10)
 
 This section takes precedence over every older one where they overlap. Closed: items 1–4 of the 2026-10-14 evening section (release,

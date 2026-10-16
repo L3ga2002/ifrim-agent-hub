@@ -324,8 +324,8 @@ export function buildMaster(input = {}) {
   for (const role of ROLES) {
     const cap = caps[role];
     const start = cursor;
-    // The clip claims what its slot's texts claim, and only for criteria that passed and have a recorded claim.
-    const claims = [...new Set(texts[role].criteria.filter((c) => passed.has(c)).map((c) => claimIds.get(c)).filter(Boolean))];
+    // New deliveries bind footage to its capture proof; legacy callers retain the slot-criteria mapping.
+    const claims = input.claimIdByRole ? [input.claimIdByRole[role]].filter(Boolean) : [...new Set(texts[role].criteria.filter((c) => passed.has(c)).map((c) => claimIds.get(c)).filter(Boolean))];
     const framing = clipFraming({ fit: "contain", crop: FULL_RECT }, { w: cap.width, h: cap.height }, canvas);
     // frameAt: the timeline frame of a capture time = round(ms · fps / 1000) + the clip's offset, kept inside the clip.
     clipOf[role] = { id: CLIP_IDS[role], role, cap, start, frames: cap.frames, end: start + cap.frames, claims, framing, frameAt: (ms) => start + clamp(F(ms), 0, cap.frames - 1) };
@@ -370,9 +370,9 @@ export function buildMaster(input = {}) {
   const gap = F(PACING.gapMs), minText = F(PACING.minTextMs);
   const longest = (slot) => Math.max(charCount(texts[slot].business), charCount(texts[slot].technical));
   const readFrames = (slot, baseMs, maxMs) => F(clamp(Math.ceil((longest(slot) / PACING.readCps) * 1000), baseMs, maxMs));
-  const passes = (slot) => texts[slot].criteria.every((c) => passed.has(c));
+  const passes = (slot) => input.claimIdBySlot ? !input.texts[slot].unbound && (!texts[slot].criteria.length || Boolean(input.claimIdBySlot[slot])) : texts[slot].criteria.every((c) => passed.has(c));
   const shown = textsForTone(texts, tone);
-  for (const slot of TEXT_SLOTS) if (!passes(slot)) omitted.push({ id: TEXT_IDS[slot], reason: "CRITERIA_NOT_PASS", criteria: texts[slot].criteria.filter((c) => !passed.has(c)) });
+  for (const slot of TEXT_SLOTS) if (!passes(slot)) omitted.push({ id: TEXT_IDS[slot], reason: texts[slot].unbound ? "CLAIM_UNBOUND" : "CRITERIA_NOT_PASS", criteria: texts[slot].criteria.filter((c) => !passed.has(c)) });
   const desk = clipOf.desktop, mob = clipOf.mobile;
   const firstMarker = (role, kind) => clipOf[role].cap.markers.find((m) => m.kind === kind) || null;
   const demoFrame = { desktop: firstMarker("desktop", "demo") ? desk.frameAt(firstMarker("desktop", "demo").atMs) : desk.start, mobile: firstMarker("mobile", "demo") ? mob.frameAt(firstMarker("mobile", "demo").atMs) : mob.start };
@@ -423,7 +423,7 @@ export function buildMaster(input = {}) {
     if (!w) return;
     // Stage before M12 (pilot QA 2026-10-08: the CTA measured 3.94:1 in 16:9 and 4.2:1 in 9:16, under 4.5): every delivery text sits on
     // its own plate (drawn at ≥ 0.9 opacity by compile.mjs), so its contrast holds by construction whatever the capture shows behind it.
-    items.push(place({ id: TEXT_IDS[slot], start: w.start, end: w.end, text: shown[slot], style: TEXT_STYLE[slot], animation: anim, plate: true }, candidates));
+    items.push(place({ id: TEXT_IDS[slot], start: w.start, end: w.end, text: shown[slot], style: TEXT_STYLE[slot], animation: anim, plate: true, ...(input.claimIdBySlot?.[slot] ? { claimIds: [input.claimIdBySlot[slot]] } : {}) }, candidates));
     included.push(TEXT_IDS[slot]);
   };
   addText("hook", wide, "fade");

@@ -1,3 +1,4 @@
+import fs from "node:fs";
 // M11 U3 — the commercial summary (PASS_LOCAL: pure module, inline facts shaped as the factory bundle manifest).
 // Covers T07 (a business finding stays visible next to a technical PASS), T10 (a claim without evidence is not stated), T13 (a copy-only
 // change regenerates no engineering section), and the owner's §21 rule: no invented price, ROI, lead count, revenue or deadline.
@@ -8,8 +9,8 @@ import { SUMMARY_SECTIONS } from "../server/delivery/revision.mjs";
 import { BOOKING_DEMO } from "../server/factory/booking-demo-def.mjs";
 import { normalizeDeliveryBlock } from "../server/delivery/template.mjs";
 
-const block = normalizeDeliveryBlock(BOOKING_DEMO.delivery).block;
-const crit = (status = {}) => BOOKING_DEMO.spec.acceptance.map((a) => ({ ...a, status: status[a.id] || "PASS_EVIDENCE", evidence: [`ev_${a.id}`] }));
+const block = JSON.parse(fs.readFileSync(new URL("fixtures/claims-baseline.json", import.meta.url))).delivery;
+const crit = (status = {}) => BOOKING_DEMO.spec.acceptance.map((a) => ({ ...a, status: status[a.id] || (a.verify === "review" ? "PASS_REVIEW" : "PASS_EVIDENCE"), evidence: [`ev_${a.id}`] }));
 const manifest = (status) => ({ mission: { title: BOOKING_DEMO.title }, spec: { version: 2, criteria: crit(status) },
   changeSet: { sha256: "c".repeat(64), snapshot: "s".repeat(64), files: [{ path: "public/js/slots-view.mjs" }] } });
 const MEDIA = [{ id: "dli_m", role: "master", file: "demo-master.mp4", durationMs: 24000, label: "ORIGINAL", qa: "PASS" }, { id: "dli_v", role: "vertical", file: "demo-vertical.mp4", durationMs: 18000, label: "ORIGINAL", qa: "PASS" }];
@@ -99,4 +100,24 @@ test("M11-SU-07 exports: Markdown, and escaped self-contained HTML with no scrip
   assert.match(html, /&lt;script&gt;alert\(1\)&lt;\/script&gt; &amp;/);
   assert.doesNotMatch(html, /https?:\/\/|<link|src=/);
   assert.match(toMarkdown(doc), /^# \[DATE SINTETICE\] Rezumat: /);
+});
+
+test('RCE-03 every criterion fallback cuts at a whole word, including provenance and failed criteria', () => {
+  const text = 'cuvânt '.repeat(21) + 'relaționare '.repeat(12);
+  const expected = max => text.trim().split(' ').reduce((out, word) => out.done ? out :
+    (out.text ? out.text.length + 1 : 0) + word.length <= max ? { text: out.text ? out.text + ' ' + word : word } : { ...out, done: true }, { text: '' }).text + '…';
+  for (const presentation of [null, { status: 'GENERATED', claims: [], key: null }]) {
+    const criteria = [{ id: 'AC-1', verify: 'test', text, status: 'PASS_EVIDENCE' }, { id: 'AC-2', verify: 'test', text, status: 'FAIL' }];
+    const doc = renderSummary(base({ block: null, presentation, proofs: { 'AC-1': { ok: true } }, manifest: { spec: { criteria } } }));
+    assert.ok(section(doc, 'demonstrated').text.includes(expected(200) + ': verificat'));
+    assert.ok(section(doc, 'cannot_claim').text.includes('AC-2 ' + expected(160) + ': FAIL'));
+    if (presentation) for (const id of ['AC-1', 'AC-2']) assert.ok(section(doc, 'provenance').text.includes(id + ' ' + expected(200) + ':'));
+  }
+  for (const text of ['x'.repeat(220), 'cuvânt\t'.repeat(40), 'x'.repeat(200) + ' final']) {
+    const doc = renderSummary(base({ block: null, manifest: { spec: { criteria: [{ id: 'AC-1', verify: 'test', text, status: 'PASS_EVIDENCE' }] } } }));
+    const prefix = section(doc, 'demonstrated').text.slice(2).split(': verificat')[0];
+    assert.ok(prefix.endsWith('…'));
+    const kept = prefix.slice(0, -1), normalized = text.replace(/\s+/g, ' ').trim();
+    assert.ok(!kept || (normalized.startsWith(kept) && normalized[kept.length] === ' '), 'never a partial token');
+  }
 });

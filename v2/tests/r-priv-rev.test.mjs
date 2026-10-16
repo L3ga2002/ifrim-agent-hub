@@ -14,7 +14,7 @@ import crypto from "node:crypto";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { createRequire } from "node:module";
 import { DatabaseSync } from "node:sqlite";
-import { requestShape, deriveCriteria, conflictingHubTests } from "../server/owner/planners/criteria.mjs";
+import { requestShape, deriveCriteria, conflictingHubTests, withField, withoutField } from "../server/owner/planners/criteria.mjs";
 import { classify } from "../server/delivery/revision.mjs";
 import { checkSpec, specHash } from "../server/factory/spec.mjs";
 import { retireSuperseded, restoreRetired } from "../server/factory/factory.mjs";
@@ -28,6 +28,34 @@ const HUB_ROOT = path.resolve(here, "..", "..");
 const FIXTURE = path.join(here, "fixtures", "r-priv-booking");
 const AUTHORIZED = "Telefonul rămâne obligatoriu la programare și este salvat corect, dar lista publică a zilei nu afișează și nu transmite telefonul. Programările valide și fluxurile existente continuă să funcționeze.";
 const sha = (buf) => crypto.createHash("sha256").update(buf).digest("hex");
+
+test('RP-12 inherited adjacent duplicate label/fill pairs and clauses collapse without changing the approved input', () => {
+  const spec = JSON.parse(fs.readFileSync(new URL('fixtures/s25-spec-a69b8e9f.json', import.meta.url)));
+  const before = JSON.stringify(spec);
+  const result = deriveCriteria({ words: AUTHORIZED, flows: spec.acceptance.filter(c => c.verify === 'e2e') });
+  for (const flow of result.flows) {
+    const fills = flow.steps.filter(s => s.fill?.selector === "[name='phone']");
+    assert.ok(fills.length <= 1);
+    assert.ok(flow.text.split('; câmpul „Telefon” are etichetă și se completează').length <= 2);
+  }
+  assert.equal(JSON.stringify(spec), before);
+});
+
+test('RP-13 every inherited preview/e2e criterion is kept; exceeding the normalized limit refuses without dropping flows', async t => {
+  const { buildEngineeringSpec } = await import('../server/owner/planners/engineering.mjs');
+  const spec = JSON.parse(fs.readFileSync(new URL('fixtures/s25-spec-a69b8e9f.json', import.meta.url)));
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'r-priv-criteria-'));
+  assert.equal(path.dirname(dir), os.tmpdir());
+  t.after(() => { fs.rmSync(dir, { recursive: true, force: true }); assert.equal(fs.existsSync(dir), false); });
+  const project = { id: 'prj_criteria_b', path: dir, source: 'hub-test', name: 'Demo' };
+  const inherited = spec.acceptance.filter(c => ['preview', 'e2e'].includes(c.verify));
+  const build = criteria => buildEngineeringSpec({ text: AUTHORIZED, project, args: { inheritDemo: { criteria, preview: spec.verification.preview } } });
+  const all = build(inherited);
+  assert.equal(all.input.spec.acceptance.filter(c => c.verify === 'preview').length, 1);
+  for (const c of inherited.filter(c => c.verify === 'e2e')) assert.ok(all.input.spec.acceptance.some(x => x.verify === 'e2e' && x.text.startsWith(c.text.split('; câmpul')[0])));
+  const overflow = build([...inherited, ...Array.from({ length: 20 }, (_, i) => ({ ...inherited.find(c => c.verify === 'e2e'), id: 'AC-' + (30 + i) }))]);
+  assert.equal(overflow.inheritedOverflow, true); assert.ok(overflow.input.spec.acceptance.length > 20); assert.match(overflow.problems.join(' '), /Nu elimin niciun flux/);
+});
 const tmp = (label) => fs.mkdtempSync(path.join(os.tmpdir(), `r-priv-${label}-`));
 
 // ---------------------------------------------------------------------------------------------------------------------------
@@ -36,6 +64,22 @@ const tmp = (label) => fs.mkdtempSync(path.join(os.tmpdir(), `r-priv-${label}-`)
 
 const FLOW = { id: "AC-5", text: "Programare pe desktop", verify: "e2e", steps: [{ viewport: { width: 1280, height: 800 } }, { goto: "/" }, { click: "[data-slot]" },
   { fill: { selector: "[name='name']", value: "Client {run}" } }, { fill: { selector: "[name='vehicle']", value: "Autoturism test" } }, { click: "button[type=submit]" }, { expectText: "Programare confirmată" }] };
+
+test("RP-11 two revision generations add the phone only once and the refusal flow removes it", () => {
+  const field = { key: "phone", label: "Telefon", value: "0700 123 456" };
+  const first = deriveCriteria({ words: "Telefonul devine obligatoriu la programare", flows: [FLOW] });
+  const second = deriveCriteria({ words: AUTHORIZED, flows: first.flows });
+  assert.deepEqual(second.flows[0].steps, first.flows[0].steps);
+  assert.equal(second.flows[0].text, first.flows[0].text);
+  for (const selector of ["input[name='phone']", 'input[name="phone"]']) {
+    const steps = [...FLOW.steps.slice(0, -2), { fill: { selector, value: field.value } }, ...FLOW.steps.slice(-2)];
+    const augmented = withField(steps, field);
+    assert.equal(augmented.filter(s => s.fill?.selector === selector).length, 1);
+    assert.equal(augmented.filter(s => s.expectLabel?.selector === selector).length, 1);
+    assert.deepEqual(withField(augmented, field), augmented);
+    assert.ok(!withoutField(augmented, field).some(s => s.fill?.selector === selector));
+  }
+});
 
 test("RP-01 the authorized sentence is a hide_public request: two NEW checks (public list, anonymous parameters) and three „păstrare” checks, distinct, defined before any code", () => {
   const s = requestShape(AUTHORIZED);

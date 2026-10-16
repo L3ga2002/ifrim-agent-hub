@@ -1,3 +1,5 @@
+import { citedCriteria, parseCriterionRef, criterionFingerprint, criterionProof, displaySha, PASS_BY_METHOD } from "./claims.mjs";
+import { hashCanonical } from "../core/canonical.mjs";
 import fs from "node:fs";
 import path from "node:path";
 import { HubError } from "../core/errors.mjs";
@@ -39,7 +41,7 @@ import { PLATFORM_PROFILES, DEFAULT_SAFE_AREA, TEXT_METRICS, safeRect, estimateT
  * `media.qa.reported` event. A FAIL blocks manifest approval (distribution reads the latest row per kind or `summary()`).
  */
 
-export const QA_VERSION = 1;
+export const QA_VERSION = 2;
 export const QA_THRESHOLDS = Object.freeze({
   blackMinS: 0.25, blackPixTh: 0.1, blackPicTh: 0.98,
   freezeMinS: 1, freezeNoiseDb: -60,
@@ -397,7 +399,7 @@ function uncovered(s, e, intervals) {
 }
 
 /** `factualCheck({ ir, claims, getVersion, presets })` → report { kind: "factual", … }. */
-export function factualCheck({ ir, claims = [], getVersion = null, presets = PRESETS } = {}) {
+export function factualCheck({ ir, claims = [], getVersion = null, presets = PRESETS, context = null } = {}) {
   const { list, add } = makeCollector("factual");
   const v = validateIR(ir, { presets });
   if (!v.ok) {
@@ -408,19 +410,49 @@ export function factualCheck({ ir, claims = [], getVersion = null, presets = PRE
   const fps = nir.fps;
   const preset = presetForIR(nir, presets);
   const byId = claimsMap(claims);
-  const referenced = new Map();
-  for (const c of primaryVideoTrack(nir).clips) for (const id of c.claimIds || []) if (!referenced.has(id)) referenced.set(id, { clipId: c.id, from: c.start, to: c.start + clipDuration(c) });
-  for (const r of nir.evidenceRegions) if (r.claimId && !referenced.has(r.claimId)) referenced.set(r.claimId, { clipId: r.clipId, from: r.from, to: r.to });
-  for (const [id, where] of referenced) {
-    const claim = byId.get(id);
+  const referenced = new Set(), occurrences = [];
+  for (const t of nir.tracks.filter(t => t.kind === "video")) for (const c of t.clips) for (const id of c.claimIds || []) occurrences.push({ id, clipId: c.id, from: c.start, to: c.start + clipDuration(c) });
+  for (const r of nir.evidenceRegions) if (r.claimId) occurrences.push({ id: r.claimId, clipId: r.clipId, from: r.from, to: r.to });
+  let textItemsClaimed = 0, textItemsUnclaimed = 0;
+  for (const t of nir.tracks.filter(t => t.kind === "text")) for (const item of t.items) {
+    const ids = citedCriteria(item.text);
+    // Disclosure labels are exempt from vocabulary heuristics, never from explicit citations.
+    if (isDisclosureText(item) && !ids.length) continue;
+    if (item.claimIds?.length) {
+      textItemsClaimed++;
+      for (const id of item.claimIds) occurrences.push({ id, itemId: item.id, text: item.text, from: item.start, to: item.end });
+    } else {
+      textItemsUnclaimed++;
+      // Citations are deterministic; the closed factual vocabulary is explicitly a heuristic.
+      if (ids.length || /(?<![\p{L}\p{N}_])(?:PASS|E2E|verificat|testat|revizuit)(?:ă|e|a|i)?(?![\p{L}\p{N}_])/iu.test(item.text)) add({ code: "TEXT_CLAIM_MISSING", severity: ids.length || String(nir.meta?.author || "").startsWith("delivery:") ? "error" : "warning", criterion: "Textul factual are o afirmație legată", message: "Textul citează un criteriu sau folosește vocabular factual fără dovadă legată.", evidence: { heuristic: !ids.length, ids }, range: frameRange(item.start, item.end, fps), itemId: item.id, claimId: null });
+    }
+  }
+  for (const where of occurrences) {
+    const id = where.id, claim = byId.get(id); referenced.add(id);
     const range = frameRange(where.from, where.to, fps);
-    if (!claim) { add({ code: "CLAIM_UNKNOWN", severity: "error", criterion: "Fiecare afirmație are o înregistrare", message: `Afirmația „${id}” din clipul „${where.clipId}” nu există în proiectul de conținut.`, evidence: { claimId: id }, range, clipId: where.clipId, proposedFix: "Înregistrează afirmația cu dovada ei sau scoate referința." }); continue; }
-    if (claim.status === "BLOCKED") add({ code: "CLAIM_BLOCKED", severity: "error", criterion: "Nicio afirmație blocată în video", message: `Afirmația „${clip30(claim.text)}” este BLOCKED și apare în clipul „${where.clipId}”.`, evidence: { claimId: id, status: claim.status }, range, clipId: where.clipId, proposedFix: "Scoate segmentul sau reformulează fără afirmația blocată." });
-    else if (claim.status !== "SUPPORTED") add({ code: "CLAIM_NOT_SUPPORTED", severity: "error", criterion: "Afirmațiile publice au dovadă", message: `Afirmația „${clip30(claim.text)}” are starea ${claim.status || "necunoscută"} (fără dovadă confirmată).`, evidence: { claimId: id, status: claim.status }, range, clipId: where.clipId, proposedFix: "Atașează dovada (rulare, test, commit) și marchează afirmația SUPPORTED, sau formulează-o ca ipoteză." });
-    else if (claim.evidence.some((e) => e?.kind === "bundle" && ["STALE", "REJECTED", "MISSING"].includes(e.bundleStatus))) add({ code: "CLAIM_EVIDENCE_STALE", severity: "error", criterion: "Dovada corespunde codului curent",
-      message: `Afirmația „${clip30(claim.text)}” se sprijină pe un pachet care nu mai dovedește codul (${claim.evidence.find((e) => e?.kind === "bundle" && e.bundleStatus)?.bundleStatus}).`, evidence: { claimId: id }, range, clipId: where.clipId,
-      proposedFix: "Refă captura și clipul din versiunea verificată curentă." });
-    else if (!claim.evidence.length) add({ code: "CLAIM_WITHOUT_EVIDENCE", severity: "error", criterion: "SUPPORTED înseamnă dovadă atașată", message: `Afirmația „${clip30(claim.text)}” este SUPPORTED fără nicio dovadă atașată.`, evidence: { claimId: id }, range, clipId: where.clipId, proposedFix: "Atașează dovada." });
+    const report = (code, message) => add({ code, severity: "error", criterion: "Afirmația corespunde dovezii și textului afișat", message, evidence: { claimId: id }, range, claimId: id, ...(where.itemId ? { itemId: where.itemId } : { clipId: where.clipId }), proposedFix: "Refă afirmația din criteriile aprobate și dovezile versiunii livrate." });
+    if (!claim) { report("CLAIM_UNKNOWN", "Afirmația nu există în proiectul de conținut."); continue; }
+    if (claim.status === "BLOCKED") report("CLAIM_BLOCKED", "Afirmația este blocată.");
+    else if (claim.status !== "SUPPORTED") report("CLAIM_NOT_SUPPORTED", "Afirmația nu are dovadă confirmată.");
+    const evidence = claim.evidence || [];
+    if (!evidence.length) report("CLAIM_WITHOUT_EVIDENCE", "Afirmația SUPPORTED nu are dovezi.");
+    const bundles = evidence.filter(e => e.kind === "bundle"), criteria = evidence.filter(e => e.kind === "criterion");
+    if (bundles.some(e => ["STALE", "REJECTED", "MISSING"].includes(e.bundleStatus))) report("CLAIM_EVIDENCE_STALE", "Pachetul nu mai dovedește versiunea livrată.");
+    if (criteria.length) {
+      if (context && (bundles.length !== 1 || bundles[0].ref !== context.bundleId || bundles[0].sha256 !== context.bundleSha || (bundles[0].actualSha && bundles[0].actualSha !== context.bundleSha))) report("CLAIM_BUNDLE_MISMATCH", "Afirmația aparține altui pachet software.");
+      if (where.itemId) {
+        const cited = citedCriteria(where.text).sort(), expected = [...new Set(criteria.map(e => parseCriterionRef(e.ref)?.id).filter(Boolean))].sort();
+        if (cited.length && JSON.stringify(cited) !== JSON.stringify(expected)) report("CLAIM_CRITERIA_MISMATCH", "Criteriile citate nu sunt exact cele legate de afirmație.");
+      }
+      for (const e of criteria) {
+        const ref = parseCriterionRef(e.ref);
+        if (!ref || e.specRowFound !== true || e.manifestSpecSha !== ref.specSha || (context && ref.specSha !== context.specSha)) report("CLAIM_SPEC_MISMATCH", "Specificația aprobată nu corespunde afirmației.");
+        if (!e.found || e.fpNow !== e.sha256) report("CLAIM_CRITERION_CHANGED", "Conținutul criteriului nu mai corespunde amprentei aprobate.");
+        const allowed = e.verify ? PASS_BY_METHOD[e.verify] || [] : Object.values(PASS_BY_METHOD).flat();
+        if (!allowed.includes(e.status) || e.proof?.ok === false) report("CLAIM_CRITERION_NOT_PASS", "Criteriul nu are dovada trecută cerută.");
+      }
+    }
+    if (where.itemId && (criteria.length || evidence.some(e => e.kind === "display")) && !evidence.some(e => e.kind === "display" && e.sha256 === displaySha(where.text))) report("CLAIM_TEXT_UNBOUND", "Textul afișat nu este unul dintre textele legate de afirmație.");
   }
   // Disclosure labels: every SIMULATION/RECONSTRUCTION/REPLAY/GENERATED clip needs a visible on-screen label for its whole duration.
   const texts = nir.tracks.filter((t) => t.kind === "text").flatMap((t) => t.items);
@@ -451,7 +483,7 @@ export function factualCheck({ ir, claims = [], getVersion = null, presets = PRE
       if (!labels.has(label)) add({ code: "LABEL_NOT_DECLARED", severity: "warning", criterion: "meta.labels declară eticheta", message: `meta.labels nu declară ${label} (necesar pentru manifest și dezvăluire).`, evidence: { label }, range, clipId: c.id, proposedFix: `Adaugă „${label}” în meta.labels.` });
     }
   }
-  return { kind: "factual", status: statusOf(list), findings: list, measurements: { qaVersion: QA_VERSION, claimsReferenced: referenced.size, claimsKnown: byId.size, labelledClips: labelled } };
+  return { kind: "factual", status: statusOf(list), findings: list, measurements: { qaVersion: QA_VERSION, claimsReferenced: referenced.size, claimsKnown: byId.size, labelledClips: labelled, textItemsClaimed, textItemsUnclaimed } };
 }
 
 // ---------------------------------------------------------------------------------------------------------------------
@@ -739,7 +771,7 @@ export function createMediaQa({ db, bus, clock = () => new Date(), tools = null,
   }
 
   const layout = ({ ir, profile = null, captionAnchor = null } = {}) => layoutCheck({ ir, profile, presets, captionAnchor });
-  const factual = ({ ir, claims = [] } = {}) => factualCheck({ ir, claims, getVersion, presets });
+  const factual = ({ ir, claims = [], context = null } = {}) => factualCheck({ ir, claims, getVersion, presets, context });
   const editorial = ({ ir, brief = null } = {}) => editorialCheck({ ir, brief, presets });
 
   /** Rights of every asset the IR uses, for the platform (profile key or rights platform) and use. */
@@ -794,13 +826,36 @@ export function createMediaQa({ db, bus, clock = () => new Date(), tools = null,
         const ids = new Set();
         const nir = normalizeIR(ir);
         for (const t of nir.tracks || []) if (t.kind === "video") for (const c of t.clips || []) for (const id of c.claimIds || []) ids.add(id);
+        for (const t of nir.tracks || []) if (t.kind === "text") for (const i of t.items || []) for (const id of i.claimIds || []) ids.add(id);
         for (const r of nir.evidenceRegions || []) if (r.claimId) ids.add(r.claimId);
         claimList = ids.size ? db.prepare(`SELECT id, text, status, evidence_json FROM content_claims WHERE id IN (${[...ids].map(() => "?").join(",")})`).all(...ids)
           .map((c) => ({ id: c.id, text: c.text, status: c.status, evidence: parse(c.evidence_json, []) })) : [];
-        // M11: each bundle evidence carries its package's current status, so factual QA sees evidence that no longer proves the code.
-        const bundleStatus = db.prepare("SELECT status FROM factory_bundles WHERE id = ?");
-        claimList = claimList.map((c) => ({ ...c, evidence: c.evidence.map((e) => (e?.kind === "bundle" ? { ...e, bundleStatus: bundleStatus.get(String(e.ref || ""))?.status || "MISSING" } : e)) }));
       }
+      const author = normalizeIR(ir).meta?.author || "";
+      const deliveryRow = author.startsWith("delivery:") ? db.prepare("SELECT spec_sha, bundle_id, bundle_sha FROM deliveries WHERE id = ?").get(author.slice(9)) : null;
+      const context = author.startsWith("delivery:") ? { specSha: deliveryRow?.spec_sha || null, bundleId: deliveryRow?.bundle_id || null, bundleSha: deliveryRow?.bundle_sha || null } : null;
+      claimList = claimList.map(c => {
+        const evidence = Array.isArray(c.evidence) ? c.evidence : [];
+        if (claims !== undefined && !evidence.some(e => e.kind === "criterion")) return c;
+        const bundleRef = evidence.find(e => e.kind === "bundle");
+        const bundle = bundleRef ? db.prepare("SELECT * FROM factory_bundles WHERE id = ?").get(bundleRef.ref) : null;
+        const manifest = bundle ? parse(bundle.manifest_json, {}) : {};
+        return { ...c, evidence: evidence.map(e => {
+          if (e.kind === "bundle") return { ...e, bundleStatus: bundle?.status || "MISSING", actualSha: bundle?.sha256 || null };
+          if (e.kind !== "criterion") return e;
+          const ref = parseCriterionRef(e.ref);
+          const row = ref ? db.prepare("SELECT * FROM factory_specs WHERE sha256 = ? AND status = 'APPROVED'").get(ref.specSha) : null;
+          const spec = row ? parse(row.spec_json, {}) : null;
+          const item = manifest.spec?.criteria?.find(i => i.id === ref?.id);
+          const stored = spec?.acceptance?.find(i => i.id === ref?.id);
+          const evidenceRows = (item?.evidence || []).map(id => db.prepare("SELECT * FROM factory_evidence WHERE id = ?").get(id)).filter(Boolean);
+          const reviewRows = [...(item?.evidence || []), manifest.acceptanceTest?.reviewer?.reviewId].filter(Boolean).map(id => db.prepare("SELECT * FROM factory_reviews WHERE id = ?").get(id)).filter(Boolean);
+          const previewCommand = spec?.verification?.preview?.command ?? null;
+          const proof = criterionProof({ manifest, bundle, id: ref?.id, expectedFp: e.sha256, evidenceRows, reviewRows, previewCommand });
+          return { ...e, specRowFound: Boolean(spec && hashCanonical(spec) === row.sha256), manifestSpecSha: manifest.spec?.sha256 || null,
+            found: Boolean(item && stored), fpNow: stored ? criterionFingerprint(stored, { previewCommand }) : null, verify: stored?.verify || null, status: item?.status || null, evidenceRows, proof };
+        }) };
+      });
       let briefBody = brief;
       if (briefBody === undefined) {
         const project = db.prepare("SELECT content_project_id FROM media_edit_projects WHERE id = ?").get(row.edit_project_id);
@@ -816,7 +871,7 @@ export function createMediaQa({ db, bus, clock = () => new Date(), tools = null,
       }
       const lay = layout({ ir, profile: profileKey });
       const edi = editorial({ ir, brief: briefBody });
-      const fac = factual({ ir, claims: claimList });
+      const fac = factual({ ir, claims: claimList, context });
       const rig = rightsCheck({ ir, platform: rightsPlatform, use, at });
       // M10: legibility measured on the rendered file (part of the editorial row; NOT_RUN without a usable render).
       const leg = target && tech.status !== "FAIL" ? await legibility({ assetVersionId: target, ir }).catch((error) => {

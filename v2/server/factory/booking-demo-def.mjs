@@ -90,29 +90,370 @@ export const BOOKING_DEMO = freeze({
     bannerSelector: "[data-demo-banner]",
     evidenceNote: "interval ocupat pe telefon",
     exportPrefix: "demo-programari",
-    texts: {
-      hook: { criteria: ["AC-1"], business: "Programări online pentru detailing — demo", technical: "Fix verificat: intervalele ocupate pe telefon (AC-1)" },
-      desktop: { criteria: ["AC-7"], business: "Clientul alege serviciul și ora", technical: "E2E desktop 1280×800: PASS" },
-      mobile: { criteria: ["AC-1", "AC-6"], business: "Pe telefon, orele ocupate nu mai pot fi alese", technical: "AC-1 + AC-6: interval ocupat → indisponibil (390 px)" },
-      cta: { criteria: [], business: "Hai să discutăm", technical: "Pachet local, gata de verificare" },
-    },
-    variant: { platformKey: "shorts_9x16", overrides: { hookText: "Programări online — demo", ctaText: "Hai să vorbim" } },
-    // The commercial summary's template text (delivery/summary.mjs): shown only when its criteria passed; no price, result or deadline.
-    summary: {
-      problem: "Clienții care programează de pe telefon pot alege ore deja ocupate; programarea pică abia la confirmare.",
-      demonstrates: [
-        { text: "Clientul își face programarea de pe telefon și nu poate alege o oră ocupată.", criteria: ["AC-1", "AC-6"] },
-        { text: "Același flux funcționează pe desktop.", criteria: ["AC-2", "AC-7"] },
-        { text: "O oră deja rezervată este refuzată, iar programarea confirmată apare imediat.", criteria: ["AC-3"] },
-        { text: "Corectura a fost verificată de un reviewer independent.", criteria: ["AC-4"] },
-      ],
-      how: { criteria: ["AC-6", "AC-7"], lines: ["Clientul alege serviciul, ziua și o oră liberă.", "Completează numele și mașina.", "Primește confirmarea programării pe loc.", "Orele ocupate apar indisponibile și nu pot fi alese, nici pe telefon."] },
-      benefits: [
-        { text: "Pe telefon, clientul vede doar orele pe care le poate rezerva.", criteria: ["AC-1", "AC-6"] },
-        { text: "Aceeași programare funcționează și pe desktop.", criteria: ["AC-2", "AC-7"] },
-        { text: "O oră ocupată nu poate fi rezervată a doua oară.", criteria: ["AC-3"] },
-      ],
-      questions: ["Cum primiți acum programările (telefon, mesaje, alt sistem)?", "Ce servicii și ce durate ar trebui să apară în listă?", "Cine confirmă programările și cum vreți să fiți anunțat?", "De pe ce dispozitive programează clienții dumneavoastră?"],
-    },
+    variant: { platformKey: "shorts_9x16" },
+    presentations: [
+      {
+        "key": "booking-mobile-fix",
+        "version": 1,
+        "label": "Corectura intervalelor ocupate pe telefon",
+        "reference": {
+          "label": "Specificația fixture-ului booking-demo",
+          "specSha": "f0009c3896e399cc0528aff370056707ea861fb38823aa7ffe65c1b5879f910b",
+          "previewCommand": "node server.js",
+          "criteria": {
+            "AC-1": {
+              "verify": "test",
+              "fp": "892f4108e69bd00652966cfd22c0ddb8c784d985c600905d14815ee2ef89e363"
+            },
+            "AC-2": {
+              "verify": "test",
+              "fp": "3a15d9b288778945b093bf3adb4a5bd11458df610deff2d1f62f59167a9458a0"
+            },
+            "AC-3": {
+              "verify": "test",
+              "fp": "2028c020e03fe1ca6a669b9e13ec63ab65fc3db271a348ad0ccefacf870516e8"
+            },
+            "AC-4": {
+              "verify": "review",
+              "fp": "95e63fe723e1eca8c872b793a1c41ae1e2e2aba05ab55c50c674f89be69c8ab6"
+            },
+            "AC-5": {
+              "verify": "preview",
+              "fp": "204cc97ad913e1338dde68ebf78cf4a071a81d950edd140a821b88e8c2725500"
+            },
+            "AC-6": {
+              "verify": "e2e",
+              "fp": "425e8c39c7ed3ad3d618bffa231e3d2cc195c0da8f2a5d6a429482bef398e487"
+            },
+            "AC-7": {
+              "verify": "e2e",
+              "fp": "12453ee91df7ffe491d77cc1adf9f7403a9faaf4046dd24b9287bf9f4a7a8cd9"
+            }
+          }
+        },
+        "anchors": [
+          "AC-1"
+        ],
+        "clip": {
+          "hook": {
+            "needs": [
+              "AC-1"
+            ],
+            "business": "Programări online pentru detailing — demo",
+            "technical": "Fix verificat: intervalele ocupate pe telefon ({cite})"
+          },
+          "desktop": {
+            "needs": [
+              "AC-7"
+            ],
+            "business": "Clientul alege serviciul și ora",
+            "technical": "E2E desktop 1280×800: PASS"
+          },
+          "mobile": {
+            "needs": [
+              "AC-1",
+              "AC-6"
+            ],
+            "business": "Pe telefon, orele ocupate nu mai pot fi alese",
+            "technical": "{cite}: interval ocupat → indisponibil (390 px)"
+          },
+          "cta": {
+            "needs": [],
+            "business": "Hai să discutăm",
+            "technical": "Pachet local, gata de verificare"
+          }
+        },
+        "variant": {
+          "hookText": "Programări online — demo",
+          "ctaText": "Hai să vorbim"
+        },
+        "summary": {
+          "problem": {
+            "needs": [
+              "AC-1"
+            ],
+            "text": "Clienții care programează de pe telefon pot alege ore deja ocupate; programarea pică abia la confirmare."
+          },
+          "demonstrates": [
+            {
+              "needs": [
+                "AC-1",
+                "AC-6"
+              ],
+              "text": "Clientul își face programarea de pe telefon și nu poate alege o oră ocupată."
+            },
+            {
+              "needs": [
+                "AC-2",
+                "AC-7"
+              ],
+              "text": "Același flux funcționează pe desktop."
+            },
+            {
+              "needs": [
+                "AC-3"
+              ],
+              "text": "O oră deja rezervată este refuzată, iar programarea confirmată apare imediat."
+            },
+            {
+              "needs": [
+                "AC-4"
+              ],
+              "text": "Corectura a fost verificată de un reviewer independent."
+            }
+          ],
+          "how": {
+            "needs": [
+              "AC-6",
+              "AC-7"
+            ],
+            "lines": [
+              "Clientul alege serviciul, ziua și o oră liberă.",
+              "Completează numele și mașina.",
+              "Primește confirmarea programării pe loc.",
+              "Orele ocupate apar indisponibile și nu pot fi alese, nici pe telefon."
+            ]
+          },
+          "benefits": [
+            {
+              "needs": [
+                "AC-1",
+                "AC-6"
+              ],
+              "text": "Pe telefon, clientul vede doar orele pe care le poate rezerva."
+            },
+            {
+              "needs": [
+                "AC-2",
+                "AC-7"
+              ],
+              "text": "Aceeași programare funcționează și pe desktop."
+            },
+            {
+              "needs": [
+                "AC-3"
+              ],
+              "text": "O oră ocupată nu poate fi rezervată a doua oară."
+            }
+          ],
+          "limits": [],
+          "questions": [
+            "Cum primiți acum programările (telefon, mesaje, alt sistem)?",
+            "Ce servicii și ce durate ar trebui să apară în listă?",
+            "Cine confirmă programările și cum vreți să fiți anunțat?",
+            "De pe ce dispozitive programează clienții dumneavoastră?"
+          ]
+        }
+      },
+      {
+        "key": "phone-privacy",
+        "version": 1,
+        "label": "Telefonul nu apare în lista publică",
+        "reference": {
+          "label": "Specificația aprobată §25",
+          "specSha": "a69b8e9f182601a2aa3c0584c6c2c45a3db9babcfb455a348eca28a1e0544da4",
+          "previewCommand": "node server.js",
+          "criteria": {
+            "AC-1": {
+              "verify": "test",
+              "fp": "a99c2df4e7ea120851470370c2bc6f941704e7847a65e6863a80c561c1736fc3"
+            },
+            "AC-2": {
+              "verify": "test",
+              "fp": "9218585c5710edb0ab6d2272c2d32f56ca82bb714839059da76a8309123086b1"
+            },
+            "AC-3": {
+              "verify": "test",
+              "fp": "dae850a0f97edde6df39ddc13aeb66fdf2bdf95780e1fe059bdb53b3b19a23fb"
+            },
+            "AC-4": {
+              "verify": "test",
+              "fp": "79427072929ba99d59722ec7c54dc01b7368a13af8e24b9e9151775079c7cdef"
+            },
+            "AC-5": {
+              "verify": "test",
+              "fp": "18110f58428a25d844ede2a1a1e55afa03f14abfecf62c48a0fd500b8b0896fc"
+            },
+            "AC-6": {
+              "verify": "preview",
+              "fp": "204cc97ad913e1338dde68ebf78cf4a071a81d950edd140a821b88e8c2725500"
+            },
+            "AC-7": {
+              "verify": "e2e",
+              "fp": "dbbe27cbcae5e4c7e947c76089e7f2ce24281595c28167acc2ed5030e8ef0189"
+            },
+            "AC-8": {
+              "verify": "e2e",
+              "fp": "f426bf9669b315f0e9d3ec2a1e2c4dd23e28eca1dbcd091e7aa1de8d3f1ccef3"
+            },
+            "AC-9": {
+              "verify": "e2e",
+              "fp": "aa2e6306256676b58ce9aaecc3ea70cbf282a52dda0ef22139c5956ac0ee491c"
+            },
+            "AC-10": {
+              "verify": "e2e",
+              "fp": "61480e5e33a5753a1b6774ac7fbad04d529099ddedafd33f905fc8ace9ead62c"
+            },
+            "AC-11": {
+              "verify": "review",
+              "fp": "6b885ff9652d37fcfbe6344b8275d0cfb0b19c12b68d2e96fc09222bb2e40ef7"
+            }
+          }
+        },
+        "anchors": [
+          "AC-1",
+          "AC-2"
+        ],
+        "clip": {
+          "hook": {
+            "needs": [
+              "AC-1",
+              "AC-2",
+              "AC-10"
+            ],
+            "business": "Programări online: telefonul nu apare în lista publică",
+            "technical": "Lista publică a zilei fără telefon ({cite})"
+          },
+          "desktop": {
+            "needs": [
+              "AC-8"
+            ],
+            "business": "Clientul alege ora și își lasă telefonul",
+            "technical": "{cite}: desktop 1280×800, câmpul „Telefon” etichetat, programare confirmată"
+          },
+          "mobile": {
+            "needs": [
+              "AC-7"
+            ],
+            "business": "Pe telefon, orele ocupate rămân indisponibile",
+            "technical": "{cite}: 390 px, interval ocupat indisponibil, programare confirmată"
+          },
+          "cta": {
+            "needs": [],
+            "business": "Hai să discutăm",
+            "technical": "Pachet local, gata de verificare"
+          }
+        },
+        "variant": {
+          "hookText": "Telefonul nu apare în lista publică — demo",
+          "ctaText": "Hai să vorbim"
+        },
+        "summary": {
+          "problem": {
+            "needs": [
+              "AC-1",
+              "AC-2",
+              "AC-3"
+            ],
+            "text": "Lista publică a zilei nu trebuie să afișeze sau să transmită telefonul clientului, iar telefonul rămâne obligatoriu la programare."
+          },
+          "demonstrates": [
+            {
+              "needs": [
+                "AC-1"
+              ],
+              "text": "Lista publică a zilei, cerută direct de la server, nu conține telefonul niciunei programări testate: cele inițiale, cea păstrată după repornire și cea nouă."
+            },
+            {
+              "needs": [
+                "AC-2"
+              ],
+              "text": "Nici cererile anonime testate (includePhone=1, phone=1, fields=phone, debug=1, all=1) nu fac lista publică să trimită telefonul."
+            },
+            {
+              "needs": [
+                "AC-3"
+              ],
+              "text": "Serverul refuză în continuare o programare fără telefon (lipsă, gol sau doar spații) și nu salvează nimic."
+            },
+            {
+              "needs": [
+                "AC-9"
+              ],
+              "text": "În formular, fără telefon, programarea nu se finalizează, iar câmpul „Telefon” este marcat cu un mesaj vizibil."
+            },
+            {
+              "needs": [
+                "AC-4"
+              ],
+              "text": "Telefonul trimis cu o programare validă se păstrează exact în datele interne ale aplicației."
+            },
+            {
+              "needs": [
+                "AC-5"
+              ],
+              "text": "O programare validă, cu telefon, pe un interval liber, este acceptată în continuare."
+            },
+            {
+              "needs": [
+                "AC-7",
+                "AC-8"
+              ],
+              "text": "Fluxul de programare merge pe desktop și la lățimea unui telefon (390 px, Chromium), cu câmpul „Telefon” etichetat."
+            },
+            {
+              "needs": [
+                "AC-10"
+              ],
+              "text": "După programare, telefonul nu apare în textul paginii, inclusiv în lista zilei."
+            },
+            {
+              "needs": [
+                "AC-11"
+              ],
+              "text": "Modificarea a fost revizuită independent, doar în citire."
+            }
+          ],
+          "how": {
+            "needs": [
+              "AC-7",
+              "AC-8",
+              "AC-10"
+            ],
+            "lines": [
+              "Clientul alege serviciul, ziua și o oră liberă.",
+              "Completează numele, mașina și telefonul.",
+              "Primește mesajul „Programare confirmată”.",
+              "Telefonul nu apare în pagină, nici în lista zilei."
+            ]
+          },
+          "benefits": [
+            {
+              "needs": [
+                "AC-1",
+                "AC-2",
+                "AC-10"
+              ],
+              "text": "Telefonul clienților nu apare în lista publică a zilei, nici la cererile anonime testate."
+            },
+            {
+              "needs": [
+                "AC-3",
+                "AC-4"
+              ],
+              "text": "Telefonul rămâne obligatoriu și se păstrează exact cum a fost trimis."
+            },
+            {
+              "needs": [
+                "AC-5",
+                "AC-7",
+                "AC-8"
+              ],
+              "text": "Programarea funcționează în continuare pe telefon și pe desktop."
+            }
+          ],
+          "limits": [
+            "Am verificat lista publică a zilei (direct de la server și cu parametrii anonimi enumerați) și textul paginii; alte rute sau exporturi nu sunt acoperite de aceste probe.",
+            "Nu afirmăm o protecție completă a datelor personale (acces, criptare, conformitate): nu au fost verificate."
+          ],
+          "questions": [
+            "Cine din echipă trebuie să vadă telefonul clientului și unde?",
+            "Ce alte date ale clientului nu trebuie să apară public?",
+            "Cum primiți acum programările (telefon, mesaje, alt sistem)?",
+            "Cum vreți să fie anunțat clientul după programare?"
+          ]
+        }
+      }
+    ],
   },
 });

@@ -1,3 +1,4 @@
+import { resolvePresentation, storyFromPresentation } from "../server/delivery/presentation.mjs";
 // Milestone 11 — the delivery master clip (v2/server/delivery/clip-ir.mjs), pure: a valid EditProjectIR v1 from two captures of the
 // verified preview, hard cuts, the always-on synthetic-data label, tone texts gated by PASS criteria, markers and evidence regions,
 // toneOps, the marker jump and applyPrefs. Checked with the REAL validateIR, the real QA checks (layout / factual / editorial), the
@@ -39,6 +40,17 @@ const captureMarkers = (role) => [
 ];
 const DESK_MS = 17600, MOB_MS = 16500; // 528 and 495 frames at 30 fps
 const PROOF = "[data-state='success']";
+
+test("M11-CI-14 text claims and footage claims remain distinct; a missing slot claim omits its text", () => {
+  const built = buildMaster(input({ claimIdBySlot: { hook: "ccl_hook", mobile: "ccl_mobile", cta: "ccl_cta" }, claimIdByRole: { desktop: "ccl_capture_desk", mobile: "ccl_capture_mob" } }));
+  const texts = built.ir.tracks.filter(t => t.kind === "text").flatMap(t => t.items);
+  assert.ok(!texts.some(i => i.id === "t-desktop"));
+  assert.deepEqual(texts.find(i => i.id === "t-hook").claimIds, ["ccl_hook"]);
+  const clips = primaryVideoTrack(built.ir).clips;
+  assert.deepEqual(clips[0].claimIds, ["ccl_capture_desk"]);
+  assert.deepEqual(clips[1].claimIds, ["ccl_capture_mob"]);
+  assert.ok(built.ir.evidenceRegions.every(r => ["ccl_capture_desk", "ccl_capture_mob"].includes(r.claimId)));
+});
 const SUCCESS_RECT = { x: 0.1, y: 0.7, w: 0.8, h: 0.08 };
 const input = (over = {}, label = "ORIGINAL_RECORDING") => ({
   captures: [
@@ -101,8 +113,8 @@ test("M11-CI-02 the synthetic-data label covers 100% of the timeline; a SIMULATI
   assert.deepEqual(primaryVideoTrack(sim).clips.map((c) => c.label), ["SIMULATION", "SIMULATION"]);
   assert.deepEqual(sim.meta.labels, ["SIMULATION"]);
   const factual = factualCheck({ ir: sim, claims: CLAIMS, getVersion: versions("SIMULATION") });
-  assert.deepEqual(codes(factual), []); // no LABEL_MISSING, no LABEL_PARTIAL, no LABEL_NOT_DECLARED
-  assert.equal(factual.status, "PASS");
+  assert.ok(codes(factual).length > 0 && codes(factual).every(c => c === "TEXT_CLAIM_MISSING")); // no LABEL_MISSING, no LABEL_PARTIAL, no LABEL_NOT_DECLARED
+  assert.equal(factual.status, "FAIL");
   assert.equal(factual.measurements.labelledClips, 2);
   assert.deepEqual(validateIR(sim, { presets: PRESETS, getVersion: versions("SIMULATION") }).warnings.map((w) => w.code), []);
   // The honest counter-check: the same SIMULATION clips WITHOUT the label fail factual QA.
@@ -118,7 +130,7 @@ test("M11-CI-02 the synthetic-data label covers 100% of the timeline; a SIMULATI
   // After a cut the label still covers everything.
   const cut = applyOps(sim, [{ op: "cut_range", from: 300, to: 552 }]);
   assert.deepEqual([item(cut, LABEL_ITEM_ID).start, item(cut, LABEL_ITEM_ID).end], [0, timelineDuration(cut)]);
-  assert.equal(factualCheck({ ir: cut, claims: CLAIMS, getVersion: versions("SIMULATION") }).status, "PASS");
+  assert.ok(codes(factualCheck({ ir: cut, claims: CLAIMS, getVersion: versions("SIMULATION") })).every(c => c === "TEXT_CLAIM_MISSING"));
 });
 
 test("M11-CI-03 capture markers map to frames (round(ms·30/1000) + the clip offset); the IR carries the five story markers", () => {
@@ -263,7 +275,7 @@ test("M11-CI-07 pacing and legibility: one story text at a time, ≤ 15 characte
     const layout = layoutCheck({ ir });
     assert.deepEqual(codes(layout), [], `${tone}: ${layout.findings.map((f) => f.message).join(" | ")}`);
     assert.deepEqual(codes(editorialCheck({ ir })), []);
-    assert.equal(factualCheck({ ir, claims: CLAIMS, getVersion: versions() }).status, "PASS");
+    assert.ok(codes(factualCheck({ ir, claims: CLAIMS, getVersion: versions() })).every(c => c === "TEXT_CLAIM_MISSING"));
   }
   const ir = buildMasterIR(input());
   // The hook is on from the first frame; the phone text starts at the proof (the booked slot's highlight).
@@ -367,7 +379,7 @@ test("M11-CI-11 the vertical variant derives from the master: valid, the hook an
   // Evidence is never cut silently: a letterbox is a shown finding, not an error.
   assert.ok(!v.findings.some((f) => f.severity === "error"), JSON.stringify(v.findings));
   assert.ok(v.findings.every((f) => f.code === "EVIDENCE_REQUIRES_LETTERBOX"));
-  assert.equal(factualCheck({ ir: v.ir, claims: CLAIMS, getVersion: versions("SIMULATION") }).status, "PASS");
+  assert.ok(codes(factualCheck({ ir: v.ir, claims: CLAIMS, getVersion: versions("SIMULATION") })).every(c => c === "TEXT_CLAIM_MISSING"));
   const layout = layoutCheck({ ir: v.ir, profile: "shorts_9x16" });
   assert.ok(!layout.findings.some((f) => f.severity === "error"), layout.findings.map((f) => f.message).join(" | "));
   // The markers the revision needs survive in the variant.
@@ -394,7 +406,7 @@ test("M11-CI-12 inputs are validated: both captures, a known label, valid ids, c
 test("M11-CI-13 no text on screen names a criterion that did not pass: in every tone and for every set of PASS criteria, a shown text cites only criteria of its own gate", () => {
   const cited = (text) => [...new Set((String(text).match(/AC-\d{1,3}/g) || []))];
   // The texts of this file are the real ones of the booking fixture; each cites only criteria of its own list.
-  assert.deepEqual(TEXTS, JSON.parse(JSON.stringify(BOOKING_DEMO.delivery.texts)));
+  assert.deepEqual(TEXTS, Object.fromEntries(Object.entries(storyFromPresentation(resolvePresentation({ presentations: BOOKING_DEMO.delivery.presentations, spec: BOOKING_DEMO.spec, specSha: "a".repeat(64) })).texts).map(([k, { claim, ...v }]) => [k, v])));
   for (const [slot, entry] of Object.entries(TEXTS)) for (const tone of ["business", "technical"]) {
     assert.deepEqual(cited(entry[tone]).filter((id) => !entry.criteria.includes(id)), [], `texts.${slot}.${tone} cites a criterion it is not gated on`);
   }

@@ -7,7 +7,7 @@ test("M11-PF-01 the delivery preview waits for a cold Windows sandbox (the pilot
   const d = { id: "dlv_x", status: "ACTIVE", opsPlanId: "ops_x", missionId: "mis_x", projectId: "prj_x", snapshotSha: "s", bundleId: "bundle_x", changeSetId: "cs_x", template: { preview: { command: "node server.mjs", url: "http://127.0.0.1:4620/" } } };
   let seen = null;
   const ex = createDeliveryExecutors({
-    deliveries: { need: () => d, revisionOfPlan: () => null, trigger: () => {}, verify: () => {} },
+    deliveries: { need: () => d, revisionOfPlan: () => null, trigger: () => {}, verify: () => {}, effectiveTemplate: (x) => x.template },
     factory: {
       previewStatus: () => ({ running: false }),
       snapshotCheck: () => ({ expected: "s", actual: "s", bundleId: "bundle_x", changeSetId: "cs_x", changedFiles: [] }),

@@ -110,7 +110,7 @@ const KEYS = {
   color: ["preset"],
   // M10: `plate` = a background plate behind the text (legibility over a busy frame); `scale` = the style size × 0.6–2 (a legible
   // minimum in a narrow variant). Both optional; the renderer and QA's text-box estimate read them the same way.
-  textItem: ["id", "start", "end", "text", "style", "anchor", "x", "y", "maxWidth", "animation", "plate", "scale"],
+  textItem: ["id", "start", "end", "text", "style", "anchor", "x", "y", "maxWidth", "animation", "plate", "scale", "claimIds"],
   audioClip: ["id", "assetVersionId", "sourceIn", "sourceOut", "start", "role", "gainDb", "fadeIn", "fadeOut", "envelope"],
   envelopePoint: ["frame", "gainDb"],
   cue: ["id", "start", "end", "text"],
@@ -701,6 +701,7 @@ export function validateIR(ir, opts = {}) {
       const start = int(item.start, `${path}.start`, { min: 0, max: LIMITS.maxFrames });
       const end = int(item.end, `${path}.end`, { min: 1, max: LIMITS.maxFrames });
       if (start !== undefined && end !== undefined && end <= start) err(`${path}.end`, "FRAME_RANGE", "end trebuie să fie după start.");
+      list(item.claimIds, `${path}.claimIds`, LIMITS.claimIds, "claimIds", { required: false }).forEach((c, k) => str(c, `${path}.claimIds[${k}]`, { pattern: ID_RE, max: 64 }));
       const text = str(item.text, `${path}.text`, { max: LIMITS.text, multiline: true, min: 1, label: "text" });
       if (text !== undefined && CEDILLA_RE.test(text)) warn(`${path}.text`, "DIACRITIC_CEDILLA", "Textul folosește " + CEDILLA_FORMS + " cu sedilă; forma corectă este ș/ț (virgulă dedesubt).");
       const style = str(item.style, `${path}.style`, { pattern: /^[a-z][a-z0-9_]{0,31}$/, max: 32, label: "style" });

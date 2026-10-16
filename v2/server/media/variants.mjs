@@ -521,6 +521,7 @@ export function deriveVariant({ masterIr, platformKey, overrides = {}, getVersio
     const text = cleanOverride(o.hookText, "hook");
     const hook = allItems().filter((i) => i.style === "hook").sort((a, b) => a.start - b.start)[0];
     if (hook) { if (hook.text !== text) { hook.text = text; changes.push({ kind: "hook", itemId: hook.id, message: `Hook nou pentru ${prof.label}: „${text}”.` }); } }
+    else if (allItems().some(i => i.claimIds?.length)) findings.push(finding("OVERRIDE_TARGET_MISSING", "warning", "Textul legat de dovezi lipsește; override-ul nu se adaugă."));
     else {
       if (!styleOk("hook")) throw new HubError("validation", `Presetul „${preset.id}” nu are stilul „hook”.`, { code: "STYLE_UNKNOWN" });
       const item = { id: uniqueId(ir, "vhook"), start: 0, end: Math.min(D, msToFrames(2000, fps)), text, style: "hook", anchor: "top", x: 0.5, y: safe.y + 0.02, maxWidth: round4(safe.w), animation: "fade" };
@@ -532,6 +533,7 @@ export function deriveVariant({ masterIr, platformKey, overrides = {}, getVersio
     const text = cleanOverride(o.ctaText, "CTA");
     const cta = allItems().filter((i) => i.style === "cta").sort((a, b) => b.start - a.start)[0];
     if (cta) { if (cta.text !== text) { cta.text = text; changes.push({ kind: "cta", itemId: cta.id, message: `CTA nou pentru ${prof.label}: „${text}”.` }); } }
+    else if (allItems().some(i => i.claimIds?.length)) findings.push(finding("OVERRIDE_TARGET_MISSING", "warning", "Textul legat de dovezi lipsește; override-ul nu se adaugă."));
     else {
       if (!styleOk("cta")) throw new HubError("validation", `Presetul „${preset.id}” nu are stilul „cta”.`, { code: "STYLE_UNKNOWN" });
       const len = Math.min(D, msToFrames(Number(preset?.cta?.minMs) || 2000, fps));

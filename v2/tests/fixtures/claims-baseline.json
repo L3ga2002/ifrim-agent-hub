@@ -1,0 +1,332 @@
+{
+  "derive": [
+    {
+      "words": "Butonul de programare trebuie să ceară și numărul de telefon",
+      "sha": "98ab5c7729d7938151ac072172438e0a22ae10a0375872a39d7c3e9d022d7ae0"
+    },
+    {
+      "words": "Telefonul rămâne obligatoriu la programare și este salvat corect, dar lista publică a zilei nu afișează și nu transmite telefonul. Programările valide și fluxurile existente continuă să funcționeze.",
+      "sha": "964fb07fcfd00c08ed4dab5f6c5060d2356593e6df5499a25074c1f310ef5b57"
+    },
+    {
+      "words": "Formularul să nu accepte un telefon gol",
+      "sha": "ea2c4f86735ad416c0a7ee9c9b46e6927bf421f90ed92c3868a3a9f1bb8b487e"
+    },
+    {
+      "words": "Pagina publică să aibă un titlu mai mare",
+      "sha": "6baba89633472c793751be0a332e7d934bf5374d4cb31dea41d1ef119bc5b9ec"
+    }
+  ],
+  "bookingSpec": "f0009c3896e399cc0528aff370056707ea861fb38823aa7ffe65c1b5879f910b",
+  "storedBookingSpec": {
+    "spec": {
+      "schema": 1,
+      "workType": "",
+      "title": "",
+      "objective": "",
+      "inScope": [
+        "public/js/slots-view.mjs",
+        "public/styles.css (doar dacă este necesar)",
+        "teste noi de regresie"
+      ],
+      "outOfScope": [
+        "API-ul și serverul (src/)",
+        "date reale",
+        "autentificare, plăți, SMS, e-mail",
+        "dependențe noi"
+      ],
+      "acceptance": [
+        {
+          "id": "AC-1",
+          "text": "Pe telefon un interval ocupat apare indisponibil și nu poate fi ales",
+          "verify": "test",
+          "testRef": "test/acceptance.test.mjs",
+          "expectFailure": "interval_ocupat_liber_pe_mobil"
+        },
+        {
+          "id": "AC-2",
+          "text": "Pe desktop afișarea intervalelor rămâne aceeași",
+          "verify": "test",
+          "testRef": "test/acceptance.test.mjs"
+        },
+        {
+          "id": "AC-3",
+          "text": "API: 201 + listă + persistență după repornire; 409 pe interval ocupat; 400 pe interval trecut / date invalide",
+          "verify": "test",
+          "testRef": "test/acceptance.test.mjs"
+        },
+        {
+          "id": "AC-4",
+          "text": "Cauza și fixul sunt explicate și revizuite independent",
+          "verify": "review"
+        },
+        {
+          "id": "AC-5",
+          "text": "Preview local pornit din versiunea verificată",
+          "verify": "preview"
+        },
+        {
+          "id": "AC-6",
+          "text": "Fluxul complet în browser la lățimea unui telefon (390 px în Chromium): fără derulare orizontală, un interval ocupat este indisponibil, un interval liber se programează cu succes",
+          "verify": "e2e",
+          "steps": [
+            {
+              "viewport": {
+                "width": 390,
+                "height": 844
+              }
+            },
+            {
+              "goto": "/"
+            },
+            {
+              "noHorizontalOverflow": true
+            },
+            {
+              "click": "label[data-service='spalare-exterior']"
+            },
+            {
+              "click": "button[data-day='1']"
+            },
+            {
+              "expectSelector": ".slot[data-booked='true'][aria-disabled='true']"
+            },
+            {
+              "click": ".slot[data-booked='false'][aria-disabled='false']"
+            },
+            {
+              "fill": {
+                "selector": "input[name='name']",
+                "value": "Client Demo {run}"
+              }
+            },
+            {
+              "fill": {
+                "selector": "input[name='vehicle']",
+                "value": "Autoturism test"
+              }
+            },
+            {
+              "click": "button[type='submit']"
+            },
+            {
+              "expectText": "Programare confirmată"
+            }
+          ]
+        },
+        {
+          "id": "AC-7",
+          "text": "Același flux în browser pe desktop (1280×800): un interval ocupat este indisponibil, un interval liber se programează cu succes",
+          "verify": "e2e",
+          "steps": [
+            {
+              "viewport": {
+                "width": 1280,
+                "height": 800
+              }
+            },
+            {
+              "goto": "/"
+            },
+            {
+              "noHorizontalOverflow": true
+            },
+            {
+              "click": "label[data-service='spalare-exterior']"
+            },
+            {
+              "click": "button[data-day='1']"
+            },
+            {
+              "expectSelector": ".slot[data-booked='true'][aria-disabled='true']"
+            },
+            {
+              "click": ".slot[data-booked='false'][aria-disabled='false']"
+            },
+            {
+              "fill": {
+                "selector": "input[name='name']",
+                "value": "Client Demo {run}"
+              }
+            },
+            {
+              "fill": {
+                "selector": "input[name='vehicle']",
+                "value": "Autoturism test"
+              }
+            },
+            {
+              "click": "button[type='submit']"
+            },
+            {
+              "expectText": "Programare confirmată"
+            }
+          ]
+        }
+      ],
+      "constraints": [
+        "Fix minim",
+        "Fără dependențe noi",
+        "Doar date sintetice"
+      ],
+      "risks": [
+        "O corecție care atinge ramura de desktop poate schimba afișarea de acolo"
+      ],
+      "dataNeeded": [],
+      "artifacts": [],
+      "verification": {
+        "checks": [
+          "node --test"
+        ],
+        "acceptance": [
+          "node --test test/acceptance.test.mjs"
+        ],
+        "preview": {
+          "command": "node server.js",
+          "url": "http://127.0.0.1:4620/"
+        }
+      },
+      "workspace": {
+        "ignore": [
+          "data"
+        ]
+      },
+      "sources": {
+        "user": [
+          "Pe telefon, intervalele ocupate apar libere."
+        ],
+        "code": [
+          {
+            "ref": "public/js/slots-view.mjs",
+            "note": "pe telefon, disponibilitatea unui interval se decide altfel decât pe desktop"
+          }
+        ],
+        "assumptions": [
+          "„Telefon” înseamnă lățimea de 390 px în Chromium, fără emularea unui dispozitiv",
+          "Afișarea de pe desktop este cea corectă"
+        ]
+      }
+    },
+    "problems": [
+      "workType trebuie să fie BUGFIX / FEATURE / REFACTOR",
+      "titlul are minimum 3 caractere",
+      "obiectivul are minimum 10 caractere"
+    ]
+  },
+  "delivery": {
+    "noun": "programare",
+    "issue": "Pe telefon, intervalele ocupate apar libere",
+    "proofSelector": "[data-state='success']",
+    "bannerSelector": "[data-demo-banner]",
+    "evidenceNote": "interval ocupat pe telefon",
+    "exportPrefix": "demo-programari",
+    "texts": {
+      "hook": {
+        "criteria": [
+          "AC-1"
+        ],
+        "business": "Programări online pentru detailing — demo",
+        "technical": "Fix verificat: intervalele ocupate pe telefon (AC-1)"
+      },
+      "desktop": {
+        "criteria": [
+          "AC-7"
+        ],
+        "business": "Clientul alege serviciul și ora",
+        "technical": "E2E desktop 1280×800: PASS"
+      },
+      "mobile": {
+        "criteria": [
+          "AC-1",
+          "AC-6"
+        ],
+        "business": "Pe telefon, orele ocupate nu mai pot fi alese",
+        "technical": "AC-1 + AC-6: interval ocupat → indisponibil (390 px)"
+      },
+      "cta": {
+        "criteria": [],
+        "business": "Hai să discutăm",
+        "technical": "Pachet local, gata de verificare"
+      }
+    },
+    "variant": {
+      "platformKey": "shorts_9x16",
+      "overrides": {
+        "hookText": "Programări online — demo",
+        "ctaText": "Hai să vorbim"
+      }
+    },
+    "summary": {
+      "problem": "Clienții care programează de pe telefon pot alege ore deja ocupate; programarea pică abia la confirmare.",
+      "demonstrates": [
+        {
+          "text": "Clientul își face programarea de pe telefon și nu poate alege o oră ocupată.",
+          "criteria": [
+            "AC-1",
+            "AC-6"
+          ]
+        },
+        {
+          "text": "Același flux funcționează pe desktop.",
+          "criteria": [
+            "AC-2",
+            "AC-7"
+          ]
+        },
+        {
+          "text": "O oră deja rezervată este refuzată, iar programarea confirmată apare imediat.",
+          "criteria": [
+            "AC-3"
+          ]
+        },
+        {
+          "text": "Corectura a fost verificată de un reviewer independent.",
+          "criteria": [
+            "AC-4"
+          ]
+        }
+      ],
+      "how": {
+        "criteria": [
+          "AC-6",
+          "AC-7"
+        ],
+        "lines": [
+          "Clientul alege serviciul, ziua și o oră liberă.",
+          "Completează numele și mașina.",
+          "Primește confirmarea programării pe loc.",
+          "Orele ocupate apar indisponibile și nu pot fi alese, nici pe telefon."
+        ]
+      },
+      "benefits": [
+        {
+          "text": "Pe telefon, clientul vede doar orele pe care le poate rezerva.",
+          "criteria": [
+            "AC-1",
+            "AC-6"
+          ]
+        },
+        {
+          "text": "Aceeași programare funcționează și pe desktop.",
+          "criteria": [
+            "AC-2",
+            "AC-7"
+          ]
+        },
+        {
+          "text": "O oră ocupată nu poate fi rezervată a doua oară.",
+          "criteria": [
+            "AC-3"
+          ]
+        }
+      ],
+      "questions": [
+        "Cum primiți acum programările (telefon, mesaje, alt sistem)?",
+        "Ce servicii și ce durate ar trebui să apară în listă?",
+        "Cine confirmă programările și cum vreți să fiți anunțat?",
+        "De pe ce dispozitive programează clienții dumneavoastră?"
+      ]
+    }
+  },
+  "legacyIrSha": "acf94b68bdad366f2ea57dfb7ee130781beab2f91cbc05e7b97061145f92b89b"
+}

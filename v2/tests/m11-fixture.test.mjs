@@ -1,3 +1,4 @@
+import { resolvePresentation, storyFromPresentation } from "../server/delivery/presentation.mjs";
 // Milestone 11 — the booking fixture (v2/fixtures/factory/booking-demo), PASS_LOCAL: real node, real node:sqlite, real local
 // HTTP on random free ports, no browser, no Hub, no model. The fixture is always copied to a temp folder first; nothing is
 // run or written inside the repository copy. The commands are built and judged with the Hub runner's own helpers
@@ -262,7 +263,7 @@ test("M11-FX-07 BOOKING_DEMO: the spec validates with the factory's validator, t
   assert.equal(BOOKING_DEMO.name, "Demo Livrare — Detailing (programări)");
   assert.match(BOOKING_DEMO.dirName, /^[a-z0-9][a-z0-9-]{2,60}$/, "accepted by create-factory-fixture's --dir rule");
   assert.ok(fs.existsSync(path.join(FIXTURE, BOOKING_DEMO.checkFile)));
-  assert.ok(Object.isFrozen(BOOKING_DEMO) && Object.isFrozen(BOOKING_DEMO.spec.acceptance[5].steps) && Object.isFrozen(BOOKING_DEMO.delivery.texts.hook));
+  assert.ok(Object.isFrozen(BOOKING_DEMO) && Object.isFrozen(BOOKING_DEMO.spec.acceptance[5].steps) && Object.isFrozen(BOOKING_DEMO.delivery.presentations[0].clip.hook));
   assert.deepEqual(BOOKING_DEMO.limits, { maxDurationMin: 60, maxRepairCycles: 2 });
 
   assert.deepEqual(spec.acceptance.map((a) => [a.id, a.verify]), [["AC-1", "test"], ["AC-2", "test"], ["AC-3", "test"], ["AC-4", "review"], ["AC-5", "preview"], ["AC-6", "e2e"], ["AC-7", "e2e"]]);
@@ -298,7 +299,9 @@ test("M11-FX-07 BOOKING_DEMO: the spec validates with the factory's validator, t
   assert.match(readFixture("public/styles.css"), /@media \(max-width: 600px\)[\s\S]*\.slots \{ grid-template-columns: repeat\(2,/);
   assert.match(readFixture("src/catalog.js"), /id: "spalare-exterior"/);
 
-  const d = BOOKING_DEMO.delivery;
+  const original = BOOKING_DEMO.delivery;
+  const resolved = storyFromPresentation(resolvePresentation({ presentations: original.presentations, spec: BOOKING_DEMO.spec, specSha: "a".repeat(64) }));
+  const d = { ...original, texts: Object.fromEntries(Object.entries(resolved.texts).map(([k, { claim, ...v }]) => [k, v])), variant: { ...original.variant, overrides: resolved.overrides } };
   assert.deepEqual([d.noun, d.issue, d.proofSelector, d.bannerSelector], ["programare", "Pe telefon, intervalele ocupate apar libere", "[data-state='success']", "[data-demo-banner]"]);
   assert.equal(d.issue, BOOKING_DEMO.title);
   assert.deepEqual(Object.keys(d.texts), ["hook", "desktop", "mobile", "cta"]);
@@ -318,7 +321,7 @@ test("M11-FX-07 BOOKING_DEMO: the spec validates with the factory's validator, t
   assert.equal(d.evidenceNote, "interval ocupat pe telefon");
   assert.match(d.exportPrefix, /^[a-z0-9][a-z0-9-]{1,30}$/);
   assert.equal(d.exportPrefix, "demo-programari");
-  assert.deepEqual(Object.keys(d), ["noun", "issue", "proofSelector", "bannerSelector", "evidenceNote", "exportPrefix", "texts", "variant", "summary"]);
+  assert.deepEqual(Object.keys(BOOKING_DEMO.delivery), ["noun", "issue", "proofSelector", "bannerSelector", "evidenceNote", "exportPrefix", "variant", "presentations"]);
   // The owner-facing texts never promise a price, a term or a contact, and "phone" is always a width, not a device.
   const ownerTexts = JSON.stringify([BOOKING_DEMO.title, BOOKING_DEMO.objective, spec.acceptance.map((a) => a.text), d]);
   assert.doesNotMatch(ownerTexts, /\b(?:lei|ron|eur|euro|gratuit|reducere|garant\w*|zile lucrătoare)\b|€|\d+\s*%/i);
@@ -636,7 +639,7 @@ test("M11-FX-15 the delivery block and the approved steps are accepted by delive
   assert.deepEqual(problems, []);
   const d = BOOKING_DEMO.delivery;
   assert.deepEqual([block.noun, block.issue, block.proofSelector, block.bannerSelector, block.evidenceNote, block.exportPrefix], [d.noun, d.issue, d.proofSelector, d.bannerSelector, d.evidenceNote, d.exportPrefix]);
-  assert.deepEqual(block.texts, JSON.parse(JSON.stringify(d.texts)), "the texts are already in the normalized form");
+  assert.deepEqual(block.presentations, JSON.parse(JSON.stringify(BOOKING_DEMO.delivery.presentations)), "the presentations are already normalized");
   assert.deepEqual(block.variant, JSON.parse(JSON.stringify(d.variant)));
   const spec = approvedSpec();
   for (const [id, role, viewport, note] of [["AC-7", "desktop", { width: 1280, height: 720 }, "programare desktop"], ["AC-6", "mobile", { width: 390, height: 844 }, "programare mobil"]]) {

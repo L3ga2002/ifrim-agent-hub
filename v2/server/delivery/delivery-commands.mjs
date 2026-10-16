@@ -17,8 +17,8 @@ export function registerDeliveryCommands(reg, hub) {
 
   reg("delivery.verify", { describe: "Verifică dacă proiectul e încă versiunea legată de livrare (poate doar marca învechit)", channels: ANY, schema: { deliveryId: { required: true, max: 80 } },
     execute: (input, ctx) => deliveries.verify(input.deliveryId, { by: ctx.actor }) });
-  reg("delivery.summary.edit", { describe: "O versiune nouă a rezumatului comercial (secțiunile tale)", channels: OWNER, schema: { deliveryId: { required: true, max: 80 }, sections: { type: "array", required: true, max: 12 } },
-    execute: (input, ctx) => deliveries.editDocument(input.deliveryId, { sections: input.sections, session: needSession(ctx, "editarea rezumatului") }) });
+  reg("delivery.summary.edit", { describe: "O versiune nouă a rezumatului comercial (secțiunile tale)", channels: OWNER, schema: { deliveryId: { required: true, max: 80 }, sections: { type: "array", required: true, max: 12 }, displayedSha: { max: 64 } },
+    execute: (input, ctx) => deliveries.editDocument(input.deliveryId, { sections: input.sections, displayedSha: input.displayedSha, session: needSession(ctx, "editarea rezumatului") }) });
   reg("delivery.summary.approve", { describe: "Marchează versiunea afișată a rezumatului „gata de prezentare”", channels: OWNER, schema: { deliveryId: { required: true, max: 80 }, displayedSha: { required: true, max: 64 } },
     execute: (input, ctx) => deliveries.approveDocument(input.deliveryId, { displayedSha: input.displayedSha, session: needSession(ctx, "rezumatul gata de prezentare") }) });
   reg("delivery.software.accept", { describe: "Accept local software-ul afișat (pachetul exact)", async: true, channels: OWNER, schema: { deliveryId: { required: true, max: 80 }, displayedBundleSha: { required: true, max: 64 }, note: { max: 500, default: "" } },
@@ -32,11 +32,13 @@ export function registerDeliveryCommands(reg, hub) {
       // ONLY the factory's own acceptance; no other effect.
       return (await commands.dispatch({ type: "factory.accept", payload: { missionId: d.missionId, note: input.note }, channel: ctx.channel, actor: ctx.actor, ownerSession: ctx.ownerSession })).result;
     } });
+  reg("delivery.correction.propose", { describe: "Pregătește corectura afirmațiilor, fără a o confirma", async: true, channels: OWNER, schema: { deliveryId: { required: true, max: 80 } },
+    execute: (input, ctx) => { needSession(ctx, "corectura afirmațiilor"); return deliveries.proposeCorrection(input.deliveryId, { actor: ctx.actor, via: ctx.channel }); } });
   reg("delivery.package.propose", { describe: "Cardul pașilor de livrare (o confirmare): captură, clip, rezumat pe versiunea verificată", async: true, channels: OWNER, schema: { deliveryId: { required: true, max: 80 } },
     execute: async (input, ctx) => {
       needSession(ctx, "pașii de livrare");
       const d = deliveries.need(input.deliveryId);
-      return opsPlans.propose({ kind: PACKAGE_KIND, title: d.title, steps: packageSteps(d.template, d.id), limits: { maxDurationMin: DELIVERY_LIMITS.phaseMinutes, maxActions: DELIVERY_LIMITS.maxActions }, actor: ctx.actor, via: ctx.channel });
+      return opsPlans.propose({ kind: PACKAGE_KIND, title: d.title, steps: packageSteps(deliveries.effectiveTemplate(d), d.id), limits: { maxDurationMin: DELIVERY_LIMITS.phaseMinutes, maxActions: DELIVERY_LIMITS.maxActions }, actor: ctx.actor, via: ctx.channel });
     } });
   reg("delivery.revise", { describe: "Spune ce schimbi la livrare: o observație, rezumatul, clipul sau software-ul (un singur card sau o întrebare)", async: true, channels: OWNER,
     schema: { deliveryId: { required: true, max: 80 }, text: { required: true, max: 2000 }, selection: { type: "object" }, timecodeMs: { type: "number" }, player: { max: 20 }, choice: { type: "object" }, revisionId: { max: 80 } },
@@ -61,7 +63,9 @@ export function registerDeliveryCommands(reg, hub) {
     execute: async (input, ctx) => {
       needSession(ctx, "revizuirea clipului");
       const d = deliveries.need(input.deliveryId);
-      const plan = await opsPlans.propose({ kind: REVISE_KIND, title: `Revizuire clip: ${d.title}`, steps: revisionSteps(d.template, d.id, input.revisionId), limits: { maxDurationMin: DELIVERY_LIMITS.revisionMinutes, maxActions: 60 }, actor: ctx.actor, via: ctx.channel });
+      const revision = deliveries.getRevision(input.revisionId);
+      if (!revision || revision.deliveryId !== d.id) throw new HubError("conflict", "Revizuirea nu aparține acestei livrări.", { code: "REVISION_MISSING" });
+      const plan = await opsPlans.propose({ kind: REVISE_KIND, title: `Revizuire clip: ${d.title}`, steps: revisionSteps(deliveries.effectiveTemplate(d), d.id, input.revisionId), limits: { maxDurationMin: DELIVERY_LIMITS.revisionMinutes, maxActions: 60 }, actor: ctx.actor, via: ctx.channel });
       deliveries.updateRevision(input.revisionId, { opsPlanId: plan.id, status: "PROPOSED" });
       return plan;
     } });

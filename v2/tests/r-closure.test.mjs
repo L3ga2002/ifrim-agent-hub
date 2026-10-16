@@ -490,7 +490,7 @@ function packHarness() {
     template: { exports: { dir: root, folder: "Livrare noua" }, project: { name: "copie §25" }, reused } };
   fs.mkdirSync(path.join(root, "Livrare noua"), { recursive: true });
   fs.writeFileSync(path.join(root, "Livrare noua", "Prezentare demo.docx"), "docx demo");
-  const deliveries = { need: () => d, get: () => d, items: () => [], startDirect: () => d };
+  const deliveries = { need: () => d, get: () => d, items: () => [], startDirect: () => d, effectiveTemplate: d => d.template };
   const opsPlans = { view: () => ({ steps: [] }) };
   const ex = createOfficeExecutors({ deliveries, factory: {}, opsPlans, config: { testMode: true, dataDir: root }, appCheck: "skip" });
   const run = () => ex["delivery.package.index"].run({ params: { deliveryId: d.id }, planId: "opp_x", authorize: () => {} });

@@ -1,3 +1,4 @@
+import { criterionFingerprint } from "../media/claims.mjs";
 import { findingCode, codedReviewFindings } from "./review.mjs";
 import { datasetProblem } from "./dataset.mjs";
 import fs from "node:fs";
@@ -2363,6 +2364,20 @@ export function createFactory(deps) {
       equal: Boolean(expected) && expected === actual.sha256 && Boolean(bundle) && bundle.change_set_id === cs?.id, changedFiles, snapshotAt: expectedRow?.createdAt || expectedRow?.created_at || null };
   }
   /** The facts a delivery binds to: the current ready or accepted bundle, its change set, snapshot, spec and E2E evidence. */
+  function claimFacts(missionId, { bundleId } = {}) {
+    const bundle = db.prepare("SELECT * FROM factory_bundles WHERE id = ? AND mission_id = ?").get(bundleId, missionId);
+    if (!bundle) throw new HubError("not_found", "Pachetul propriu al livrării lipsește.", { code: "EVIDENCE_MISSING" });
+    const manifest = parse(bundle.manifest_json, {});
+    const specRow = db.prepare("SELECT * FROM factory_specs WHERE mission_id = ? AND sha256 = ? AND status = 'APPROVED'").get(missionId, manifest.spec?.sha256);
+    const spec = specRow ? parse(specRow.spec_json, null) : null;
+    if (!spec || hashCanonical(spec) !== specRow.sha256 || specRow.sha256 !== manifest.spec.sha256) throw new HubError("conflict", "Specificația aprobată a livrării nu corespunde amprentei sale.", { code: "CRITERION_CHANGED" });
+    const ids = new Set((manifest.spec.criteria || []).flatMap(c => c.evidence || []));
+    const reviewIds = new Set([...ids, manifest.acceptanceTest?.reviewer?.reviewId].filter(Boolean));
+    const evidenceRows = [...ids].map(id => db.prepare("SELECT * FROM factory_evidence WHERE id = ? AND mission_id = ?").get(id, missionId)).filter(Boolean)
+      .map(r => ({ ...r, counts: parse(r.counts_json, {}), detail: parse(r.detail_json, {}) }));
+    const reviewRows = [...reviewIds].map(id => db.prepare("SELECT * FROM factory_reviews WHERE id = ? AND mission_id = ?").get(id, missionId)).filter(Boolean);
+    return { bundle, manifest, specRow: { ...specRow, spec }, spec, evidenceRows, reviewRows };
+  }
   function deliveryBinding(missionId) {
     const f = need(fm(missionId));
     const bundle = latestBundleRow(missionId);
@@ -2378,7 +2393,7 @@ export function createFactory(deps) {
     return { missionId, bundleId: bundle.id, bundleSha: bundle.sha256, bundleStatus: bundle.status, changeSetId: bundle.change_set_id, changeSetSha: bundle.change_set_sha,
       snapshotSha: manifest.changeSet?.snapshot || null, specVersion: bundle.spec_version, specSha: manifest.spec?.sha256 || spec?.sha256 || null, startUrl: manifest.start?.url || null,
       startCommand: manifest.start?.command || null,
-      criteria: (manifest.spec?.criteria || []).map((c) => ({ id: c.id, text: c.text, verify: c.verify, status: c.status, evidence: c.evidence || [], note: c.note || null, ...(c.steps ? { steps: c.steps } : {}) })),
+      criteria: (manifest.spec?.criteria || []).map((c) => ({ fingerprint: criterionFingerprint(c, { previewCommand: manifest.start?.command ?? null }), id: c.id, text: c.text, verify: c.verify, status: c.status, evidence: c.evidence || [], note: c.note || null, ...(c.steps ? { steps: c.steps } : {}) })),
       manifest, e2e };
   }
   /** The factory preview of a mission, as the supervisor sees it (never started here). */
@@ -2933,7 +2948,7 @@ export function createFactory(deps) {
 
   return { initialize, reviseSpec, setLimits, scopeFor, assertStartable, startApproved, onRunFinished, stop, pause, resume, accept, reject, stopAll, recover, tick, idle, close,
     // M11 delivery hooks (read-only).
-    snapshotCheck, writerStarted, compensateRetirement, driftProvenance, deliveryBinding, previewStatus, e2eShotPath,
+    snapshotCheck, writerStarted, compensateRetirement, driftProvenance, deliveryBinding, claimFacts, previewStatus, e2eShotPath,
     continuationScope, rebindForPlan, raiseLimits, exhaustedStep: (missionId) => exhaustedStep(missionId),
     // M11 L5: step 0 of a test-first mission is open (no repair cycle there); the Hub's own files in its work area on a project.
     inStageZero, hubWrites, remainingAuthoring: (missionId) => remainingAuthoring(missionId),
