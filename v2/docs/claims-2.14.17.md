@@ -444,3 +444,38 @@ Not run / remaining:
 - Full repository suite, live Hub/port 8011, live hub-data, external network, models, npm installation, Word/Excel COM, PDF application verification and Brave visual QA. RCO-04's explicitly requested Chromium is not Brave QA.
 
 No migration, protected helpers, node_modules junction or credential-folder edits/reads; no edits outside the repository and no state-changing git command. No commit was created.
+
+## 2.14.18-m11 — round G: later legitimate retirement (2026-10-16)
+
+Implemented without committing. API contract remains 13, with no migration and no change to stored spec/template/bundle hashing. All recovery tests construct synthetic project files and a newly migrated temporary database inside this repository; none constructs the Hub or the factory over real data or a copy of real data.
+
+| Spec G item | Change | Regression proof |
+| --- | --- | --- |
+| 1 — later retirement evidence | `compensateRetirementNow` queries other missions created strictly later in the same project with an APPROVED spec. It requires a readable MOVED journal, matching `protected.retired` path/hash/cycle evidence, and the exact SHA-256 at that mission's own retired path. Only verified records reach the DB-independent `restoreRetired` helper. | `r-retire-later` RL-01 covers missing and different original bytes with valid later evidence. RL-03 rejects missing/unapproved/older/same-time/foreign-project evidence, absent or non-MOVED journals, missing records, mismatched hashes and missing/changed retired copies. |
+| 2 — preserve or repair the old restore | An explained item is `retired_later` with `by`. A valid RESTORED journal returns `already_restored` without journal, DB or event writes, preserving `restoreBlocked`. A false RESTORE_INCOMPLETE is repaired only with restore records for every item in the journal's cycle and no unexplained item. Its history retains prior entries and adds `repairedAt`, `laterRetiredBy` and the specified Romanian cause. Recovery clears `restoreBlocked` and emits the complete `repaired_after_later_retirement` event with the new journal `sha256`. Mixed failures remain refused, without resurrecting any later-retired test. | RL-01 asserts identical journal/protected JSON, unchanged SQLite `total_changes()`, no restore/refusal event and READY after real snapshot verification. RL-02 exercises the actual boot entry point `factory.recover()`, legacy problem/history bytes, the live delivery listener, boot event replay and multi-item repair; it asserts STALE → READY, provenance evidence, stable spec hashes and a second recovery with zero writes. RL-03 covers wrong restore cycles, missing restore records, unexplained original bytes and mixed failures, including an old copy that must not trigger a partial restore. |
+| 3 — journal drift provenance | Existing `driftProvenance` rules already classify a consistent RESTORED journal as Hub-owned even when its bytes differ from the delivery snapshot; no production change was needed there. | RL-04 checks the same path before and after repair: RESTORE_INCOMPLETE is software, repaired RESTORED is `hub_retire_journal`, and the real snapshot still reports the changed journal bytes. RL-02 verifies that classification is recorded in delivery reconciliation evidence. |
+| 4 — version | `HUB_VERSION` is `2.14.18-m11` with a one-sentence comment; API contract stays 13. INT-05 pins both constants independently of its HTTP fixture. The preserved HTTP test is named INT-05-HTTP and its response assertion also pins 2.14.18-m11. | `m10-2-p0r-integration` INT-05 passes; the HTTP fixture remains unrun under the Git guardrail. |
+
+### Round G verification
+
+Executed one test file at a time with `C:\Program Files\nodejs\node.exe --test --test-concurrency=1 --test-reporter=tap`. The sequential runner, exact name filters, TAP logs and per-file JSON counts are in `.tmp-round-g/run.mjs` and `.tmp-round-g/results/`. TEMP/TMP point inside the repository. Each process preloads the existing `claims-offline-guard.mjs`, which rejects network, browser/model binaries and Git subprocesses. Selected exclusions are not Node skips.
+
+| File in `v2/tests/` | Tests | Pass | Fail | Skipped | Cancelled | Todo |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| r-retire-later.test.mjs | 25 | 25 | 0 | 0 | 0 | 0 |
+| r-closure.test.mjs (HIST, SUP, ROLL, PACK, REV-01–03) | 16 | 16 | 0 | 0 | 0 | 0 |
+| m11-stale-graph.test.mjs | 12 | 12 | 0 | 0 | 0 | 0 |
+| r-correct.test.mjs (RCO-04 excluded) | 10 | 10 | 0 | 0 | 0 | 0 |
+| r-correct-review.test.mjs | 20 | 20 | 0 | 0 | 0 | 0 |
+| m10-2-p0r-integration.test.mjs (INT-05 constant pin) | 1 | 1 | 0 | 0 | 0 | 0 |
+| Total selected | 84 | 84 | 0 | 0 | 0 | 0 |
+
+All four changed JavaScript modules passed `node --check`; `git diff --check` passed. No timing failure occurred. The first new-suite invocation reported 20 pass / 2 fail out of 22 (the cross-project fixture setup and its parent test); correcting when the fixture changes project ownership produced 22/22, then expanded coverage passed 25/25. The original combined INT-05 passed its constant assertions but its fixture attempted Git creation; the preload rejected it before any Git process launched (1 test / 0 pass / 1 fail). The constant check was then separated from the unchanged HTTP scenario and passed 1/1. The guarded INT-05 TAP remains in the results directory.
+
+Not run / not completed:
+
+- `r-closure` FAC-01–07 and REV-05, all four `m11-delivery-guards` tests, and `m10-2-p0r-integration` INT-01–04 / INT-05-HTTP: their shared `makeTestHub` setup uses `git init`, `git add` and `git commit`. The explicit ban on state-changing Git commands takes precedence; `v2/tests/helpers.mjs` was not changed. Retirement HIST/SUP/ROLL coverage is consolidated in `r-closure`, not separate r-hist/r-sup/r-roll files.
+- RCO-04: the existing real-media harness explicitly launches Chromium. The session requires Brave and does not authorize a Chromium exception. No browser was launched and no Brave QA is claimed.
+- Full repository suite, live Hub/port 8011, real project folders, live hub-data, external network, models, package installation and production deployment: outside this isolated implementation/verification scope or explicitly prohibited.
+
+No migration, protected helper or DecisionInbox.jsx edits, node_modules junction changes, private credential-directory reads, edits outside the repository, or state-changing Git command execution. No commit was created.

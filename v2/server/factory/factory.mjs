@@ -651,13 +651,33 @@ export function createFactory(deps) {
         if (plan.some((r) => { const state = retireState(project, r); return state.fromSha !== null || state.toSha !== r.sha256; })) return refuse("retragerea anticipată nu are copia verificată sau calea originală liberă");
       } catch (e) { return refuse(String(e.message)); }
     }
-    const restore = restoreRetired(plan, project, { missionId });
+    // A later approved mission may legitimately have retired these same bytes again.
+    const laterRetirements = [];
+    const later = db.prepare(`SELECT fs.mission_id, fs.protected_json FROM factory_specs fs JOIN missions m ON m.id = fs.mission_id
+      WHERE m.project_id = ? AND m.id <> ? AND m.created_at > (SELECT created_at FROM missions WHERE id = ?)
+      AND fs.status = 'APPROVED' ORDER BY m.created_at DESC, m.id`).all(project.id, missionId, missionId);
+    for (const row of later) {
+      const j = readRetireJournal(project, row.mission_id);
+      if (j?.status !== "MOVED") continue;
+      const recorded = parse(row.protected_json, {}).retired || [];
+      for (const item of j.items) {
+        if (!plan.some((r) => r.from === item.from && r.sha256 === item.sha256)
+          || !recorded.some((r) => r.from === item.from && r.to === item.to && r.sha256 === item.sha256 && (r.cycle || 1) === (j.cycle || 1))) continue;
+        try {
+          const folder = safeFolder(project.path, path.posix.dirname(item.to), { create: false });
+          if (folder && fileShaAt(folder, path.posix.basename(item.to)) === item.sha256) laterRetirements.push({ ...item, by: row.mission_id });
+        } catch { /* Unverifiable copies cannot explain a missing original. */ }
+      }
+    }
+    const restore = restoreRetired(plan, project, { missionId, laterRetirements, restored: spec.protected?.restored || [] });
+    if (restore.state === "already_restored") return restore;
     const fresh = (approvedSpec(fm(missionId)) || latestSpec(missionId)).protected || {};
     const records = [...(fresh.restored || [])];
     if (restore.complete) for (const r of plan) if (!records.some((x) => x.from === r.from && x.to === r.to && x.sha256 === r.sha256 && (x.cycle || 1) === (journal.cycle || 1))) records.push({ from: r.from, to: r.to, sha256: r.sha256, cycle: journal.cycle || 1, at: now(), cause });
     db.prepare("UPDATE factory_specs SET protected_json = ? WHERE id = ?").run(json({ ...fresh, restored: records, restoreBlocked: !restore.complete }), spec.id);
-    if (restore.state !== "already_restored" || records.length !== (fresh.restored || []).length) bus.append({ type: restore.complete ? "factory.retire_restored" : "factory.retire_restore_refused", scopeType: "mission", scopeId: missionId, source: "factory",
-      payload: { missionId, projectId: project.id, complete: restore.complete, items: restore.items, cause, state: restore.state, code: restore.complete ? null : "RETIRE_RESTORE_INCOMPLETE" } });
+    bus.append({ type: restore.complete ? "factory.retire_restored" : "factory.retire_restore_refused", scopeType: "mission", scopeId: missionId, source: "factory",
+      payload: { missionId, projectId: project.id, complete: restore.complete, items: restore.items, cause, state: restore.state,
+        ...(restore.sha256 ? { sha256: restore.sha256 } : {}), code: restore.complete ? null : "RETIRE_RESTORE_INCOMPLETE" } });
     return restore;
   }
 
@@ -3081,13 +3101,14 @@ export function readRetireJournal(project, missionId) {
   } catch { return null; }
 }
 
-function writeJournal(project, missionId, { status, items, problems = [] }) {
+function writeJournal(project, missionId, { status, items, problems = [], repair = null }) {
   const folder = safeFolder(project.path, `.ifrim-hub/retired/${missionId}`);
   const previous = readRetireJournal(project, missionId);
   if (!previous && retireJournalExists(project, missionId)) throw new HubError("conflict", "Jurnalul retragerii este invalid; istoricul nu poate fi înlocuit");
   sweepRetireTemps(folder, "journal");
   const cycle = (previous?.cycle || 1) + (status === "MOVING" && previous?.status === "RESTORED" ? 1 : 0);
   const history = previous ? [...(previous.history || []), { status: previous.status, items: previous.items, problems: previous.problems, cycle: previous.cycle || 1, at: previous.at }] : [];
+  if (repair) history.push(repair);
   const temp = path.join(folder, `.journal.${crypto.randomBytes(6).toString("hex")}.tmp`);
   fs.writeFileSync(temp, JSON.stringify({ schema: "ifrim.retire-journal/1", missionId, status, items, problems, history, cycle, at: new Date().toISOString() }, null, 2), { flag: "wx" });
   fs.renameSync(temp, path.join(folder, "journal.json"));
@@ -3096,27 +3117,59 @@ function writeJournal(project, missionId, { status, items, problems = [] }) {
 /**
  * Review F3 + closure R-ROLL-03: puts the retired tests of a failed start back and VERIFIES the result. For each move: an original with
  * the exact bytes is back (and only then the retired copy is removed), or nothing had moved; anything else is reported. → { complete,
- * items: [{ from, state: restored | untouched | incomplete, problem? }] }; the journal records RESTORED or RESTORE_INCOMPLETE. Never
+ * items: [{ from, state: restored | untouched | incomplete | retired_later, problem?, by? }] }; the journal records RESTORED or RESTORE_INCOMPLETE.
+ * Later retirements are verified by the caller; a previously completed restore stays read-only, or repairs only its journal with cycle-matched restore records. Never
  * throws: the caller reports an incomplete restore and stops (factory.startApproved).
  */
-export function restoreRetired(retired, project, { missionId = null } = {}) {
+export function restoreRetired(retired, project, { missionId = null, laterRetirements = [], restored = [] } = {}) {
   const items = [];
   const journal = missionId ? readRetireJournal(project, missionId) : null;
+  const priorRestore = journal?.items.every((r) => restored.some((x) => x.from === r.from && x.to === r.to && x.sha256 === r.sha256 && (x.cycle || 1) === (journal.cycle || 1)));
+  const canExplain = journal?.status === "RESTORED" || journal?.status === "RESTORE_INCOMPLETE" && priorRestore;
+  const explained = new Map(), states = [];
   for (const r of retired || []) {
     try {
-      const state = retireState(project, r, { clean: true });
-      if (journal?.status === "RESTORED" && state.fromSha !== r.sha256) items.push({ ...r, state: "incomplete", problem: "jurnal RESTORED, dar originalul nu are octeții confirmați" });
+      const state = retireState(project, r, { clean: !canExplain });
+      states.push({ ...state, from: r.from, sha256: r.sha256 });
+      const later = canExplain && state.fromSha !== r.sha256 && (state.toSha === null || state.toSha === r.sha256)
+        && laterRetirements.find((x) => x.from === r.from && x.sha256 === r.sha256);
+      if (later) explained.set(r.from, { ...r, state: "retired_later", by: later.by });
+      else if (journal?.status === "RESTORED" && state.fromSha !== r.sha256) items.push({ ...r, state: "incomplete", problem: "jurnal RESTORED, dar originalul nu are octeții confirmați" });
       else if (state.state === "mismatch") items.push({ ...r, state: "incomplete", problem: state.problem });
     } catch (e) { items.push({ ...r, state: "incomplete", problem: String(e.message) }); }
   }
+  // A mixed list cannot fall through to the ordinary move-back loop and resurrect a later retirement.
+  if (explained.size && journal?.status === "RESTORE_INCOMPLETE") {
+    for (const state of states) {
+      const r = retired.find((r) => r.from === state.from);
+      if (state.fromSha !== r.sha256 && !explained.has(r.from) && !items.some((x) => x.from === r.from)) {
+        items.push({ ...r, state: "incomplete", problem: "jurnal RESTORE_INCOMPLETE, dar originalul nu are octeții confirmați și nu este retras ulterior" });
+      }
+    }
+  }
   if (items.length) {
     if (missionId && journal) {
-      try { writeJournal(project, missionId, { status: "RESTORE_INCOMPLETE", items: retired.map((r) => ({ ...r, state: items.find((i) => i.from === r.from)?.state || "unchanged" })), problems: items.map((i) => i.problem) }); }
+      try { writeJournal(project, missionId, { status: "RESTORE_INCOMPLETE", items: retired.map((r) => explained.get(r.from) || { ...r, state: items.find((i) => i.from === r.from)?.state || "unchanged" }), problems: items.map((i) => i.problem) }); }
       catch (e) { items.push({ state: "incomplete", problem: `jurnalul restaurării: ${String(e.message)}` }); }
     }
-    return { complete: false, items: retired.map((r) => items.find((i) => i.from === r.from) || { ...r, state: "not_restored", problem: "restaurarea întregii liste a fost refuzată înainte de prima mutare" }), state: "refused" };
+    return { complete: false, items: retired.map((r) => items.find((i) => i.from === r.from) || explained.get(r.from) || { ...r, state: "not_restored", problem: "restaurarea întregii liste a fost refuzată înainte de prima mutare" }), state: "refused" };
   }
-  if (journal?.status === "RESTORED") return { complete: true, items: (retired || []).map((r) => ({ ...r, state: "already_restored" })), state: "already_restored" };
+  const restoredItems = () => (retired || []).map((r) => explained.get(r.from) || { ...r, state: "already_restored" });
+  if (journal?.status === "RESTORED") return { complete: true, items: restoredItems(), state: "already_restored" };
+  if (journal?.status === "RESTORE_INCOMPLETE" && priorRestore && explained.size
+    && states.every((s) => s.fromSha === s.sha256 || explained.has(s.from))) {
+    const laterRetiredBy = [...new Set([...explained.values()].map((x) => x.by))];
+    try {
+      writeJournal(project, missionId, { status: "RESTORED", items: restoredItems(), repair: {
+        repairedAt: new Date().toISOString(), laterRetiredBy,
+        cause: `retras ulterior de ${laterRetiredBy.join(", ")}; jurnalul fusese rescris greșit ca incomplet`,
+      } });
+      const folder = safeFolder(project.path, `.ifrim-hub/retired/${missionId}`, { create: false });
+      return { complete: true, items: restoredItems(), state: "repaired_after_later_retirement", sha256: fileShaAt(folder, "journal.json") };
+    } catch (e) {
+      return { complete: false, items: [{ state: "incomplete", problem: `jurnalul restaurării: ${String(e.message)}` }], state: "refused" };
+    }
+  }
   for (const r of retired || []) {
     try {
       const fromFolder = safeFolder(project.path, path.posix.dirname(r.from), { create: false });
