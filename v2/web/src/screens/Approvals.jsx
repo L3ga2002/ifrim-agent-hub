@@ -4,6 +4,8 @@ import { api, fmt } from "../api.js";
 import { useResource, useAction, pushToast } from "../store.js";
 import { Panel, Empty, Loading, ErrorNotice, StatusChip, DiffView, Notice } from "../components/ui.jsx";
 import { isCommandApproval, approvedNotStarted, LOCAL_TOOL_APPROVALS } from "../lib/uiLogic.js";
+import { ownerSalesKind, salesApprovalCardText, salesAuthorityLabel } from "../lib/salesAuthorityLogic.js";
+import { approveSales } from "../lib/salesOwnerActions.js";
 
 /** Starts an approved command; a failure is also a toast, because the card may already have left the list (SSE reload). */
 async function startApproved(approval) {
@@ -27,15 +29,18 @@ export function ApprovalCard({ approval, onDone }) {
   const [note, setNote] = useState("");
   const [result, setResult] = useState(null);
   const commandScoped = isCommandApproval(approval);
+  const reserved = ownerSalesKind(approval);
+  const owner = useResource(reserved ? "/api/owner/status" : null, { reloadOn: e => e.type.startsWith("owner.") });
   // For a proposed command, approving IS the order to run it: one click decides and starts it (found live on 2026-09-30:
   // after "Aprobă" the card left the pending list, the separate start button was never seen and nothing ran).
   const decide = useAction(async (decision) => {
+    if (reserved) { await approveSales({ approval, decision, note }); onDone(); return; }
     await api(`/api/approvals/${approval.id}/decide`, { method: "POST", body: { decision, displayedHash: approval.payloadHash, note } });
     if (decision === "approved" && commandScoped) await startApproved(approval);
     onDone();
   });
   const execute = useAction(async () => { setResult(await api(`/api/approvals/${approval.id}/execute`, { method: "POST", body: {} })); onDone(); });
-  const runCommand = useAction(async () => { await startApproved(approval); onDone(); });
+  const runCommand = useAction(async () => { await (reserved ? approveSales({ approval }) : startApproved(approval)); onDone(); });
   const expired = new Date(approval.expiresAt) <= new Date();
   return (
     <Panel className={approval.status === "pending" ? "accent-approval" : ""} title={approval.actionKind} icon={ShieldCheck} actions={<StatusChip status={expired && approval.status === "pending" ? "expired" : approval.status} />}>
@@ -51,11 +56,12 @@ export function ApprovalCard({ approval, onDone }) {
           {approval.decisionNote && <><dt>Notă</dt><dd>{approval.decisionNote}</dd></>}
         </dl>
         <ActionView approval={approval} />
+        {reserved && <Notice tone="info" title={salesApprovalCardText(approval)}>{salesAuthorityLabel(owner.data?.session)}</Notice>}
         {approval.status === "pending" && !expired && (
           <>
             <label className="field"><span>Notă (obligatorie la respingere)</span><input className="input" value={note} onChange={(e) => setNote(e.target.value)} maxLength={500} /></label>
             <div className="row wrap">
-              <button className="btn approve" disabled={decide.pending} onClick={() => decide.run("approved")}>{decide.pending ? "Se pornește…" : commandScoped ? "Aprobă și pornește" : "Aprobă exact această acțiune"}</button>
+              <button className="btn approve" disabled={decide.pending} onClick={() => decide.run("approved")}>{decide.pending ? "Se pornește…" : reserved ? "Aprob intern" : commandScoped ? "Aprobă și pornește" : "Aprobă exact această acțiune"}</button>
               <button className="btn danger" disabled={decide.pending || note.trim().length < 3} onClick={() => decide.run("rejected")}>Respinge</button>
             </div>
             <p className="faint" style={{ margin: 0, fontSize: 12 }}>Aprobarea este legată de amprenta de mai sus. Dacă acțiunea, ținta, versiunea sau scope-ul se schimbă, aprobarea devine invalidă.</p>

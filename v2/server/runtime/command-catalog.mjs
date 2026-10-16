@@ -8,6 +8,7 @@ import { nextSuspension, originFields, classifySuspension, suspensionKey } from 
 import { CODEX_ACL_CONSENT_TEXT, R2_ACCEPT_TEXT, R2_MAX_ACCEPT_DAYS } from "../policy/isolation.mjs";
 import { LEGA_CONSENT_TEXT, LEGA_CONSENT_VERSION, LEGA_VOICES, LEGA_TASK_MAX, LEGA_WEB_SEARCH_MODES, LEGA_DEFAULTS } from "../policy/lega-policy.mjs";
 import { APPROVAL_POLICIES } from "../policy/approval-policy.mjs";
+import { OWNER_DECIDED } from "../policy/approvals.mjs";
 import { EFFORT_PROFILES } from "../policy/run-plan.mjs";
 import { MISSION_TEMPLATES } from "../domain/missions.mjs";
 import { MEMORY_SCOPES, MEMORY_TYPES } from "../domain/memory.mjs";
@@ -257,6 +258,12 @@ export function registerCommands(commands, hub) {
   reg("approval.decide", { describe: "Decizia ta asupra unei aprobări (doar din UI, cu hash-ul afișat)", async: true, schema: { approvalId: { required: true },
     decision: { enum: ["approved", "rejected"], required: true }, displayedHash: { required: true, max: 128 }, note: { max: 500, default: "" } },
     execute: async (input, ctx) => {
+      if (ctx.channel === "test" && !hub.config.testMode) throw new HubError("policy", "Canal de test în afara modului de test");
+      if (ctx.channel === "test" && hub.config.testMode && OWNER_DECIDED.has(approvals.get(input.approvalId)?.actionKind)) {
+        const approval = approvals.decideByOwner(input.approvalId, { ...input, channel: "test" });
+        runs.resolveApproval(input.approvalId, input.decision);
+        return approval;
+      }
       // The decision row records who decided: the owner's UI, or an agent on a recorded delegation (M07), never a fake click.
       // An agent decides only the kinds the owner delegated (the Software Factory start of a test mission), never sensitive,
       // external, sales or Lega approvals.
@@ -266,6 +273,17 @@ export function registerCommands(commands, hub) {
       }
       const via = ctx.channel === "agent" ? { channel: "agent", actor: "agent", note: `${input.note ? `${input.note} · ` : ""}[delegat] ${ctx.delegation}`.slice(0, 500) } : { channel: "ui", actor: "user", note: input.note };
       const approval = bus.transaction(() => approvals.decide(input.approvalId, { decision: input.decision, displayedHash: input.displayedHash, note: via.note, channel: via.channel, actor: via.actor }));
+      runs.resolveApproval(input.approvalId, input.decision);
+      return approval;
+    } });
+  reg("approval.owner_decide", { describe: "Decizia ta asupra unei aprobări rezervate proprietarului", channels: ["owner", "test"],
+    schema: { approvalId: { required: true, max: 80 }, decision: { enum: ["approved", "rejected"], required: true },
+      displayedHash: { required: true, pattern: /^[0-9a-f]{64}$/, trim: false }, note: { max: 500, default: "" } },
+    execute: (input, ctx) => {
+      const what = OWNER_DECIDED.get(approvals.get(input.approvalId)?.actionKind);
+      if (!what) throw new HubError("policy", "Doar aprobările rezervate proprietarului se decid aici");
+      const approval = approvals.decideByOwner(input.approvalId, { ...input, channel: ctx.channel,
+        sessionCheck: () => hub.trust.requireFresh(ctx.ownerSession, what) });
       runs.resolveApproval(input.approvalId, input.decision);
       return approval;
     } });

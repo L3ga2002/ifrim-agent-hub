@@ -84,7 +84,7 @@ export function assertAgentScope(db, type, payload) {
   if (!named.length || bad) throw new HubError("policy", `${type}: delegarea acoperă doar proiectele de test; pe un proiect real (sau fără proiect) decizi tu${bad ? ` (${bad.field})` : ""}`);
 }
 
-export function createCommandBus({ db, bus, clock, policy, approvals }) {
+export function createCommandBus({ db, bus, clock, policy, approvals, config = {} }) {
   const handlers = new Map();
 
   const rowTo = (row) => row && ({ id: row.id, type: row.type, actor: row.actor, channel: row.channel, intentText: row.intent_text,
@@ -182,7 +182,7 @@ export function createCommandBus({ db, bus, clock, policy, approvals }) {
     return execute(id, type, handler, input, ctx, decision);
   }
 
-  async function execute(id, type, handler, input, ctx, decision) {
+  async function execute(id, type, handler, input, ctx, decision, beforeSync = null) {
     let route = null;
     try {
       if (handler.route) {
@@ -199,6 +199,7 @@ export function createCommandBus({ db, bus, clock, policy, approvals }) {
         return { command: get(id), result };
       }
       const result = bus.transaction(() => {
+        beforeSync?.();
         const out = handler.execute(input, runCtx);
         finish(id, "executed", { result: handler.logResult ? handler.logResult(out) : out });
         bus.append({ type: "command.executed", scopeType: "command", scopeId: id, source: ctx.actor, correlationId: ctx.correlationId, payload: { type, ...(ctx.delegation ? { delegation: String(ctx.delegation).slice(0, 300) } : {}) } });
@@ -220,19 +221,28 @@ export function createCommandBus({ db, bus, clock, policy, approvals }) {
    * (the exact action you approved), not the redacted copy in the command log; the approval is consumed
    * against it. A missing, rejected, expired or invalidated approval ends the command as failed.
    */
-  async function executeApproved(commandId, actor = "user", { delegation = null } = {}) {
+  async function executeApproved(commandId, actor = "user", { delegation = null, ownerSession = null } = {}) {
     const command = get(commandId);
     if (!command) throw new HubError("not_found", "Command not found");
     return bus.withContext({ correlationId: command.correlationId }, async () => {
       const approval = command.approvalId ? approvals.get(command.approvalId) : null;
+      const handler = handlers.get(command.type);
+      if (!handler || (command.channel === "agent" ? !AGENT_COMMANDS.has(command.type) : !handler.channels.includes(command.channel))) throw new HubError("policy", "Canalul comenzii nu mai este permis");
+      if (command.channel === "test" && !config.testMode) throw new HubError("policy", "Canal de test în afara modului de test");
+      const ctx = { actor, channel: command.channel, commandId, correlationId: command.correlationId, delegation,
+        ownerSession: command.channel === "owner" || (command.channel === "test" && config.testMode) ? ownerSession : null };
+      // Re-read authority before consuming anything, including a replay of an owner decision.
+      // Only reserved owner decisions (handler.ownerDecision) need the executing session here; other owner-channel commands
+      // (e.g. a mission started by an envelope confirmation) keep their own checks.
+      if (handler.ownerDecision && command.channel !== "test" && !ownerSession?.id) throw new HubError("authentication", "Deschide sesiunea de proprietar", { data: { needSession: true } });
+      handler.authorizeApproved?.(approval?.payload, ctx, approval);
+      if (handler.ownerDecision && command.status === "executed") return { command, result: command.result, duplicate: true };
       if (command.status !== "pending_approval") {
         if (command.status === "failed" && approval && ["rejected", "invalidated", "expired"].includes(approval.status)) throw new HubError("gate", `Approval is ${approval.status}`);
         throw new HubError("conflict", `Command is ${command.status}`);
       }
       // Still waiting for your decision: nothing changes, the command can run after approval.
       if (approval?.status === "pending") throw new HubError("gate", "Approval is pending");
-      const handler = handlers.get(command.type);
-      const ctx = { actor, channel: command.channel, commandId, correlationId: command.correlationId, delegation };
       const failCommand = (error) => bus.transaction(() => {
         finish(commandId, "failed", { error: String(error?.message || error).slice(0, 2000), errorCategory: error?.category || "gate" });
         bus.append({ type: "command.failed", scopeType: "command", scopeId: commandId, source: actor, correlationId: command.correlationId,
@@ -255,9 +265,17 @@ export function createCommandBus({ db, bus, clock, policy, approvals }) {
       // Another click (second tab, double click) already consumed the approval and is running the command: this start is
       // a conflict, not a failure of the command that is running.
       if (approval.status === "consumed") throw new HubError("conflict", "Command is already starting");
+      const boundAction = { actionKind: action.actionKind, target: action.target || command.type, payload,
+        codeVersion: action.codeVersion || "hub", permissionTier: approval.permissionTier, scopeType: action.taskId ? "task" : "command", scopeId: action.taskId || commandId };
+      if (handler.ownerDecision) {
+        // Owner decisions are synchronous: consumption, final session/target checks and the decision commit together.
+        // A refused final check rolls consumption back too; there is no await in this critical section.
+        if (handler.async || handler.route) throw new HubError("policy", "Owner decisions must execute synchronously");
+        const input = validate(payload ?? {}, handler.schema, command.type);
+        return execute(commandId, command.type, handler, input, ctx, command.policy, () => approvals.consume(command.approvalId, boundAction));
+      }
       try {
-        approvals.consume(command.approvalId, { actionKind: action.actionKind, target: action.target || command.type, payload,
-          codeVersion: action.codeVersion || "hub", permissionTier: approval.permissionTier, scopeType: action.taskId ? "task" : "command", scopeId: action.taskId || commandId });
+        approvals.consume(command.approvalId, boundAction);
       } catch (error) {
         failCommand(error);
         throw error;

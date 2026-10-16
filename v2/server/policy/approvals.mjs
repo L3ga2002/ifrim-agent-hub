@@ -11,6 +11,7 @@ export const PERMISSION_TIERS = Object.freeze(["READ_ONLY", "WORKSPACE_EDIT", "D
 const DECISION_CHANNELS = new Set(["ui", "agent"]);
 /** M06: the only action kinds a confirmed Mission Authorization Envelope may decide (the exact factory scope it bound). */
 export const ENVELOPE_DECIDABLE = Object.freeze(new Set(["factory.scope"]));
+export const OWNER_DECIDED = Object.freeze(new Map([["sales.proposal_approve", "aprobarea internă a ofertei"]]));
 
 export function approvalHash({ actionKind, target, payload, codeVersion, permissionTier, scopeType, scopeId }) {
   return hashCanonical({ actionKind, target, payload, codeVersion, permissionTier, scopeType, scopeId });
@@ -21,7 +22,7 @@ export function approvalHash({ actionKind, target, payload, codeVersion, permiss
  * permission tier, scope and expiry. Any change produces a different hash, so an old approval
  * cannot be reused for a modified action or another task.
  */
-export function createApprovals(db, bus, clock = () => new Date()) {
+export function createApprovals(db, bus, clock = () => new Date(), config = {}) {
   const byId = db.prepare("SELECT * FROM approvals WHERE id = ?");
 
   function request({ actionKind, target, payload, codeVersion, permissionTier, scopeType, scopeId, requestedBy, ttlMinutes = 60, singleUse = true }) {
@@ -45,6 +46,7 @@ export function createApprovals(db, bus, clock = () => new Date()) {
     const row = byId.get(id);
     if (!row) throw new HubError("not_found", "Approval not found");
     const approval = rowToApproval(row);
+    if (OWNER_DECIDED.has(approval.actionKind)) throw new HubError("authentication", "Această aprobare se decide doar în sesiunea proprietarului", { data: { needSession: true } });
     if (approval.status !== "pending") throw new HubError("conflict", `Approval is ${approval.status}`);
     if (new Date(approval.expiresAt) <= clock()) {
       expire(id);
@@ -57,6 +59,31 @@ export function createApprovals(db, bus, clock = () => new Date()) {
       .run(decision, actor, channel, note, clock().toISOString(), id);
     bus.append({ type: `approval.${decision}`, scopeType: approval.scopeType, scopeId: approval.scopeId, source: actor, payload: { approvalId: id, actionKind: approval.actionKind } });
     return rowToApproval(byId.get(id));
+  }
+
+  /** M12: owner decisions keep their authority in the existing decision record; no schema change. */
+  function decideByOwner(id, { decision, displayedHash, note = "", channel, sessionCheck }) {
+    return bus.transaction(() => {
+      const approval = rowToApproval(byId.get(id) || {});
+      if (!approval.id) throw new HubError("not_found", "Approval not found");
+      if (!OWNER_DECIDED.has(approval.actionKind)) throw new HubError("policy", "Doar aprobările rezervate proprietarului se decid aici");
+      const testing = channel === "test" && config.testMode;
+      if (!testing && (channel !== "owner" || typeof sessionCheck !== "function")) throw new HubError("authentication", "Lipsește sesiunea proprietarului", { data: { needSession: true } });
+      const session = testing ? null : sessionCheck();
+      if (!testing && (!session?.id || !session.credentialId || !["webauthn", "local_dev_profile"].includes(session.authority))) throw new HubError("authentication", "Sesiune de proprietar invalidă");
+      if (approval.status !== "pending") throw new HubError("conflict", `Approval is ${approval.status}`);
+      if (new Date(approval.expiresAt) <= clock()) throw new HubError("conflict", "Approval expired");
+      if (!/^[0-9a-f]{64}$/.test(displayedHash || "") || displayedHash !== approval.payloadHash) throw new HubError("conflict", "The action changed since it was displayed; review it again");
+      if (!["approved", "rejected"].includes(decision)) throw new HubError("validation", "decision must be approved or rejected");
+      if (decision === "rejected" && note.trim().length < 3) throw new HubError("validation", "A rejection needs a short note");
+      const via = testing ? "test" : "owner_session", actor = testing ? "test" : `owner:${session.id}`;
+      const authority = { sessionId: session?.id || null, credentialId: session?.credentialId || null, authority: session?.authority || "test" };
+      const changed = db.prepare("UPDATE approvals SET status=?, decided_by=?, decided_via=?, decision_note=?, decided_at=? WHERE id=? AND status='pending'")
+        .run(decision, actor, via, json({ note, ...authority }), clock().toISOString(), id).changes;
+      if (changed !== 1) throw new HubError("conflict", "Approval already decided");
+      bus.append({ type: `approval.${decision}`, scopeType: approval.scopeType, scopeId: approval.scopeId, source: actor, payload: { approvalId: id, actionKind: approval.actionKind, via, ...authority } });
+      return rowToApproval(byId.get(id));
+    });
   }
 
   /**
@@ -81,8 +108,8 @@ export function createApprovals(db, bus, clock = () => new Date()) {
 
   /**
    * Verifies an approval against the action about to execute and marks single-use approvals consumed.
-   * Runs its own transactions (callers must not wrap it) so that an invalidation or expiry is
-   * persisted even though the call then throws.
+   * Runs its own transactions so invalidation or expiry survives a refusal. The synchronous owner-decision path joins
+   * consumption to the final decision transaction: a refused final check leaves the approval unconsumed.
    */
   function consume(id, action) {
     const row = byId.get(id);
@@ -122,13 +149,14 @@ export function createApprovals(db, bus, clock = () => new Date()) {
     ? db.prepare("SELECT * FROM approvals WHERE status = ? ORDER BY created_at DESC LIMIT 200").all(status)
     : db.prepare("SELECT * FROM approvals ORDER BY created_at DESC LIMIT 200").all()).map(rowToApproval);
 
-  return { request, decide, decideByEnvelope, consume, expireStale, list, get: (id) => { const r = byId.get(id); return r ? rowToApproval(r) : null; } };
+  return { request, decide, decideByOwner, decideByEnvelope, consume, expireStale, list, get: (id) => { const r = byId.get(id); return r ? rowToApproval(r) : null; } };
 }
 
 export function rowToApproval(row) {
+  const owner = OWNER_DECIDED.has(row.action_kind) && ["owner_session", "test"].includes(row.decided_via) ? parse(row.decision_note, {}) : null;
   return { id: row.id, actionKind: row.action_kind, target: row.target, payload: parse(row.payload_json, {}), payloadHash: row.payload_hash,
     codeVersion: row.code_version, permissionTier: row.permission_tier, scopeType: row.scope_type, scopeId: row.scope_id,
     status: row.status, requestedBy: row.requested_by, decidedBy: row.decided_by, decidedVia: row.decided_via,
-    decisionNote: row.decision_note, singleUse: Boolean(row.single_use), expiresAt: row.expires_at, createdAt: row.created_at,
+    decisionNote: owner?.note ?? row.decision_note, ...(owner ? { sessionId: owner.sessionId, credentialId: owner.credentialId, authority: owner.authority } : {}), singleUse: Boolean(row.single_use), expiresAt: row.expires_at, createdAt: row.created_at,
     decidedAt: row.decided_at, consumedAt: row.consumed_at };
 }

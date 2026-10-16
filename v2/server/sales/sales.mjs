@@ -913,16 +913,27 @@ export function createSales({ db, bus, clock, config, settings }) {
     });
   }
 
-  function overrideQualification(id, { priority, reason }, actor) {
-    needOrg(id);
-    const current = latestQualification(id);
-    if (!current) throw new HubError("conflict", "Calculează întâi calificarea");
-    const updated = applyOverride(current.result, { priority, reason, actor, at: now() });
+  function overrideQualification(id, { priority, reason, displayedQualificationId } = {}, actor, { channel, sessionCheck } = {}) {
     return bus.transaction(() => {
+      const session = decisionSession(channel, sessionCheck, "suprascrierea calificării");
+      needOrg(id);
+      const current = latestQualification(id);
+      if (!current) throw new HubError("conflict", "Calculează întâi calificarea");
+      const updated = applyOverride(current.result, { priority, reason, actor, at: now() });
+      const target = displayedQualificationId || (channel === "test" && config.testMode ? current.id : null);
+      if (!target || !/^squ_[A-Za-z0-9_]+$/.test(target)) throw new HubError("validation", "Lipsește calificarea afișată (displayedQualificationId)");
+      if (current.id !== target) {
+        if (current.override?.basedOn === target && current.override.priority === updated.priority && current.override.reason === updated.override.reason) return { ...current, duplicate: true };
+        throw new HubError("conflict", "Calificarea s-a schimbat; revizuiește rezultatul nou", { code: "QUALIFICATION_TARGET_STALE" });
+      }
+      const basis = db.prepare("SELECT inputs_sha FROM sales_qualifications WHERE id=?").get(target);
+      const authority = { basedOn: target, sessionId: session?.id || null, credentialId: session?.credentialId || null, authority: session?.authority || "test", channel };
+      updated.override = { ...updated.override, ...authority };
+      updated.overrides[updated.overrides.length - 1] = updated.override;
       const qid = newId("squ");
       db.prepare("INSERT INTO sales_qualifications (id, org_id, formula_version, result_json, priority, override_json, inputs_sha, created_by, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)")
-        .run(qid, id, current.formulaVersion, json(updated), updated.priority ?? null, json(updated.override || { priority, reason, actor, at: now() }), "", actor, now());
-      emit("sales.qualification.override", id, { qualificationId: qid, priority }, actor);
+        .run(qid, id, current.formulaVersion, json(updated), updated.priority ?? null, json(updated.override), basis.inputs_sha, actor, now());
+      emit("sales.qualification.override", id, { qualificationId: qid, priority, ...authority }, actor);
       return latestQualification(id);
     });
   }
@@ -1072,18 +1083,42 @@ export function createSales({ db, bus, clock, config, settings }) {
     });
   }
 
-  function approveProposal(proposalId, { displayedSha }, actor) {
-    const p = rowToProposal(db.prepare("SELECT * FROM sales_proposals WHERE id = ?").get(proposalId));
-    if (!p) throw new HubError("not_found", "Propunerea nu există");
-    const latest = latestProposal(p.opportunityId);
-    if (latest.id !== p.id || p.status === "SUPERSEDED") throw new HubError("conflict", "Există o versiune mai nouă a propunerii: aprobarea nu se aplică");
-    if (displayedSha && displayedSha !== p.contentSha) throw new HubError("conflict", "Conținutul s-a schimbat față de ce ai văzut");
-    const opp = needOpp(p.opportunityId);
-    if (opp.status !== "READY_FOR_OWNER_REVIEW") throw new HubError("conflict", "Marchează întâi propunerea „gata de revizuire”");
+  function decisionSession(channel, sessionCheck, what) {
+    const testing = channel === "test" && config.testMode;
+    if ((!testing && channel !== "owner") || typeof sessionCheck !== "function") throw new HubError("authentication", `Pentru ${what} deschide sesiunea proprietarului`, { data: { needSession: true } });
+    const session = sessionCheck();
+    if (!testing && (!session?.id || !session.credentialId || !["webauthn", "local_dev_profile"].includes(session.authority))) throw new HubError("authentication", "Sesiune de proprietar invalidă");
+    return session;
+  }
+
+  function approveProposal(proposalId, { displayedSha } = {}, actor, { channel, sessionCheck, approvalId } = {}) {
+    if (!/^spr_[A-Za-z0-9_]+$/.test(proposalId || "") || typeof displayedSha !== "string" || !/^[0-9a-f]{64}$/.test(displayedSha)) throw new HubError("validation", "Aprobarea cere ID-ul și SHA-ul complet al versiunii afișate");
     return bus.transaction(() => {
-      db.prepare("UPDATE sales_proposals SET status = 'APPROVED_INTERNAL', approved_sha = ?, approved_at = ? WHERE id = ?").run(p.contentSha, now(), p.id);
-      setOppStatus(opp, "APPROVED_INTERNAL", actor, `Propunerea v${p.version} aprobată intern (nu e acceptarea clientului)`);
-      return getOpportunity(p.opportunityId);
+      const p = rowToProposal(db.prepare("SELECT * FROM sales_proposals WHERE id=?").get(proposalId));
+      if (!p) throw new HubError("not_found", "Propunerea nu există");
+      // Keep the historical superseded-version refusal, including direct callers (M04).
+      if (latestProposal(p.opportunityId)?.id !== p.id || p.status === "SUPERSEDED") throw new HubError("conflict", "Există o versiune mai nouă a propunerii: aprobarea nu se aplică");
+      const session = decisionSession(channel, sessionCheck, "aprobarea internă a ofertei");
+      if (displayedSha !== p.contentSha || hashCanonical(p.content) !== p.contentSha) throw new HubError("conflict", "Conținutul s-a schimbat față de ce ai văzut");
+      const result = (duplicate, at, aid) => ({ duplicate, approved: true, proposalId, version: p.version, contentSha: p.contentSha, approvedAt: at, approvalId: aid,
+        opportunity: { id: p.opportunityId, status: "APPROVED_INTERNAL" } });
+      if (p.status === "APPROVED_INTERNAL" && p.approvedSha === displayedSha) return result(true, p.approvedAt, p.approvalId);
+      const opp = needOpp(p.opportunityId);
+      if (p.status !== "DRAFT" || opp.status !== "READY_FOR_OWNER_REVIEW") throw new HubError("conflict", "Marchează întâi propunerea „gata de revizuire”");
+      const approval = approvalId && db.prepare("SELECT * FROM approvals WHERE id=?").get(approvalId);
+      if (!approval || approval.action_kind !== "sales.proposal_approve" || approval.status !== "consumed"
+        || parse(approval.payload_json, {}).proposalId !== proposalId || parse(approval.payload_json, {}).displayedSha !== displayedSha
+        || (channel === "owner" ? approval.decided_via !== "owner_session" : approval.decided_via !== "test")) throw new HubError("policy", "Lipsește aprobarea legată de această ofertă");
+      const at = now();
+      if (db.prepare("UPDATE sales_proposals SET status='APPROVED_INTERNAL', approved_sha=?, approved_at=?, approval_id=? WHERE id=? AND status='DRAFT' AND content_sha=? AND approved_at IS NULL AND version=(SELECT MAX(version) FROM sales_proposals WHERE opportunity_id=?)")
+        .run(displayedSha, at, approvalId, p.id, displayedSha, p.opportunityId).changes !== 1) throw new HubError("conflict", "Propunerea s-a schimbat");
+      if (db.prepare("UPDATE sales_opportunities SET status='APPROVED_INTERNAL', version=version+1, updated_at=? WHERE id=? AND status='READY_FOR_OWNER_REVIEW' AND version=?")
+        .run(at, opp.id, opp.version).changes !== 1) throw new HubError("conflict", "Oportunitatea s-a schimbat");
+      transition("opportunity", opp.id, opp.status, "APPROVED_INTERNAL", actor, `Propunerea v${p.version} aprobată intern (nu e acceptarea clientului)`);
+      emit("sales.opportunity.transition", opp.id, { from: opp.status, to: "APPROVED_INTERNAL" }, actor);
+      emit("sales.proposal.approved", opp.id, { proposalId, version: p.version, contentSha: displayedSha, opportunityId: opp.id, approvalId,
+        decidedVia: approval.decided_via, authority: session?.authority || "test", sessionId: session?.id || null, credentialId: session?.credentialId || null, channel }, actor);
+      return result(false, at, approvalId);
     });
   }
 

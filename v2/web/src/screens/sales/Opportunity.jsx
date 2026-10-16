@@ -12,6 +12,8 @@ import {
 } from "../../lib/salesLogic.js";
 import { SalesChip, SyntheticTag, useSalesResource, useSalesCommand, ApprovalGate, SalesError, when, localNowInput, inputToIso } from "./common.jsx";
 
+import { ProposalDecision } from "./ProposalDecision.jsx";
+
 const opPath = (id) => `/api/sales/opportunities/${encodeURIComponent(id)}`;
 
 /**
@@ -20,7 +22,6 @@ const opPath = (id) => `/api/sales/opportunities/${encodeURIComponent(id)}`;
  * once the opportunity is "ready for review".
  */
 function ProposalView({ opp, proposal, proposals, onChanged }) {
-  const approve = useSalesCommand(useCallback(async () => { pushToast("sales-proposal", "ok", "Propunere aprobată intern"); onChanged(); }, [onChanged]));
   const review = useSalesCommand(useCallback(async () => { pushToast("sales-proposal-review", "ok", "Propunerea e gata de revizuire"); onChanged(); }, [onChanged]));
   const ready = proposalApprovalReadiness(opp, proposal, proposals);
   const approved = proposalApproved(proposal);
@@ -43,10 +44,9 @@ function ProposalView({ opp, proposal, proposals, onChanged }) {
           <span className="faint small">Apoi ceri aprobarea internă a acestei versiuni.</span>
         </div>
       )}
-      {ready.ok && <div><button type="button" className="btn approve sm" disabled={approve.busy} onClick={() => approve.run(`/api/sales/proposals/${encodeURIComponent(proposal.id)}/approve`, { displayedSha: proposal.sha })}><ShieldCheck size={14} aria-hidden="true" />{approve.busy ? "Se cere…" : "Cere aprobarea acestei versiuni"}</button></div>}
+      <ProposalDecision opp={opp} proposal={proposal} proposals={proposals} onChanged={onChanged} />
       {!ready.ok && !ready.needsReview && ready.reason && <p className="faint small" style={{ margin: 0 }}>{ready.reason}</p>}
-      <ErrorNotice error={approve.error || review.error} />
-      <ApprovalGate gate={approve.approval} onDone={() => { approve.clearApproval(); onChanged(); }} onDismiss={approve.clearApproval} />
+      <ErrorNotice error={review.error} />
     </div>
   );
 }

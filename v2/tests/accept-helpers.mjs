@@ -85,7 +85,7 @@ export function assertStoredPaths(config, root) {
   } finally { db.close(); }
 }
 
-export async function acceptanceHub({ devProfile, clock } = {}) {
+export async function acceptanceHub({ devProfile, clock, listen = true, seedProject = true, salesTransport } = {}) {
   fs.mkdirSync(TEST_TMP, { recursive: true });
   const root = fs.mkdtempSync(path.join(TEST_TMP, "accept-"));
   try { assertInside(TEST_TMP, root); } catch (error) { fs.rmdirSync(root); throw error; }
@@ -110,7 +110,7 @@ export async function acceptanceHub({ devProfile, clock } = {}) {
     for (const dir of [homeDir, hubRoot]) fs.mkdirSync(dir);
     const config = loadConfig({ testMode: true, dataDir: path.join(root, "data"), hubRoot, browserRoot: hubRoot, projectsRoot: root,
       registryPath: path.join(root, "registry.md"), roleRegistryPath: path.join(root, "roles.json"), legacyDbPath: path.join(root, "legacy.sqlite"), voiceRoot: path.join(root, "voice"),
-      port: await freePort(), ...(clock ? { now: clock } : {}), devProfile });
+      port: listen ? await freePort() : 18971, ...(clock ? { now: clock } : {}), devProfile, salesTransport });
     assert.equal(config.testMode, true); assert.equal(config.dataLocation.source, "override");
     for (const key of ROOT_KEYS) assertInside(root, config[key]);
     for (const value of [homeDir, process.env.TEMP, process.env.TMP]) assertInside(root, value);
@@ -118,10 +118,15 @@ export async function acceptanceHub({ devProfile, clock } = {}) {
     assert.notEqual(config.port, 8011);
     hub = createHub(config, { homeDir });
     await hub.boot();
-    materializeFixture("bug-demo", projectDir);
-    const project = hub.projects.registerTest({ path: projectDir, name: "Accept synthetic" }, "test");
-    ({ server } = createHttpServer(hub));
-    await new Promise((resolve, reject) => { server.once("error", reject); server.listen(config.port, "127.0.0.1", resolve); });
+    let project;
+    if (seedProject) {
+      materializeFixture("bug-demo", projectDir);
+      project = hub.projects.registerTest({ path: projectDir, name: "Accept synthetic" }, "test");
+    }
+    if (listen) {
+      ({ server } = createHttpServer(hub));
+      await new Promise((resolve, reject) => { server.once("error", reject); server.listen(config.port, "127.0.0.1", resolve); });
+    }
     let token, cookie = "", auth;
     const request = (url, { method = "POST", body = {}, headers = {}, sessionCookie = cookie } = {}) => new Promise((resolve, reject) => {
       const req = http.request({ host: "127.0.0.1", port: config.port, path: url, method, headers: { Host: `localhost:${config.port}`, Origin: config.canonicalOrigin,
@@ -130,7 +135,7 @@ export async function acceptanceHub({ devProfile, clock } = {}) {
       });
       req.on("error", reject); req.end(method === "GET" ? undefined : JSON.stringify(body));
     });
-    token = (await request("/api/session", { method: "GET" })).json.token;
+    if (listen) token = (await request("/api/session", { method: "GET" })).json.token;
     const authenticate = async ({ dev = false, reauth = false } = {}) => {
       let result;
       if (dev) result = await request("/api/owner/dev-session");

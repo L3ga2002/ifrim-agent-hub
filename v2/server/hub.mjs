@@ -124,7 +124,7 @@ export function createHub(config, { providerOverrides = {}, homeDir, browserLaun
   const projects = createProjects({ db, bus, config, clock });
   const conversations = createConversations({ db, bus, config, clock });
   const missions = createMissions({ db, bus, clock });
-  const approvals = createApprovals(db, bus, clock);
+  const approvals = createApprovals(db, bus, clock, config);
   const policy = createApprovalPolicy({ db, bus, clock });
   const leases = createLeases(db, bus, clock);
   const grants = createGrants({ db, bus, clock });
@@ -198,7 +198,7 @@ export function createHub(config, { providerOverrides = {}, homeDir, browserLaun
   const tools = createTools({ db, bus, clock, projects, approvals, supervisor, config });
   const integrations = createIntegrations({ db, bus, clock, config, toolDefinitions: tools.definitions });
   const router = createRouter({ db, bus, clock, config, settings, surfaces, providerState, usage, projects, telemetry, computer, company, roleConfig });
-  const commands = createCommandBus({ db, bus, clock, policy, approvals });
+  const commands = createCommandBus({ db, bus, clock, policy, approvals, config });
   // Lega (voice): a separate Codex app-server with GPT-Live; admitted by gate.evaluateVoice, stopped by Stop All.
   const refreshCodexConfig = () => {
     try { const current = providerState.get("codex") || {}; if (providers.codex.inspectConfig) providerState.set("codex", { ...current, config: providers.codex.inspectConfig() }); } catch { /* reported by the gate */ }

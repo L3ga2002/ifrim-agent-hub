@@ -24,6 +24,11 @@ const brief = (r) => {
 export function registerSalesCommands(register, hub, { createMission }) {
   const { sales, projects } = hub;
   const reg = (type, handler) => register(type, { logResult: brief, ...handler });
+  const ownerCheck = (ctx, what, fresh = false) => {
+    if (ctx.channel === "test" && hub.config.testMode) return null;
+    if (ctx.channel !== "owner") throw new HubError("policy", "Decizia cere canalul proprietarului");
+    return fresh ? hub.trust.requireFresh(ctx.ownerSession, what) : hub.trust.requireSession(ctx.ownerSession, what);
+  };
 
   reg("sales.import.create", { describe: "Încarcă un fișier CSV/XLSX de firme (lot nou; nimic nu se importă încă)", async: false,
     schema: { fileName: { required: true, max: 200 }, contentBase64: { required: true, max: 28 * 1024 * 1024 }, synthetic: { type: "boolean", default: false } },
@@ -58,9 +63,10 @@ export function registerSalesCommands(register, hub, { createMission }) {
     execute: (input, ctx) => sales.auditOrg(input.orgId, { sourceKind: input.sourceKind }, ctx.actor) });
   reg("sales.org.qualify", { describe: "Calificare deterministă și explicabilă (fără model)", schema: { orgId: { required: true, max: 80 }, filters: { type: "object", default: {} } },
     execute: (input, ctx) => sales.qualifyOrg(input.orgId, { filters: input.filters }, ctx.actor) });
-  reg("sales.qualification.override", { describe: "Suprascrie prioritatea cu motiv (istoric păstrat)",
-    schema: { orgId: { required: true, max: 80 }, priority: { type: "number", required: true, min: 0, max: 100 }, reason: { required: true, min: 5, max: 300 } },
-    execute: (input, ctx) => sales.overrideQualification(input.orgId, input, ctx.actor) });
+  reg("sales.qualification.override", { describe: "Suprascrie prioritatea cu motiv (istoric păstrat)", channels: ["owner", "test"],
+    schema: { orgId: { required: true, max: 80 }, displayedQualificationId: { max: 80, pattern: /^squ_[A-Za-z0-9_]+$/ }, priority: { type: "number", required: true, min: 0, max: 100 }, reason: { required: true, min: 5, max: 300 } },
+    execute: (input, ctx) => sales.overrideQualification(input.orgId, input, ctx.actor, {
+      channel: ctx.channel, sessionCheck: () => ownerCheck(ctx, "suprascrierea calificării") }) });
   reg("sales.org.suppress", { describe: "DO_NOT_CONTACT: oprește orice pregătire de contact pentru firmă (și la reimport)", channels: UI_AND_VOICE,
     schema: { orgId: { required: true, max: 80 }, reason: { required: true, min: 3, max: 300 } },
     execute: (input, ctx) => sales.suppress(input.orgId, { reason: input.reason, source: ctx.channel === "voice" ? "voice" : "owner" }, ctx.actor) });
@@ -87,9 +93,26 @@ export function registerSalesCommands(register, hub, { createMission }) {
     schema: { opportunityId: { required: true, max: 80 }, edits: { type: "object" } },
     execute: (input, ctx) => sales.createProposal(input.opportunityId, { edits: input.edits || null }, ctx.actor) });
   reg("sales.proposal.approve", { describe: "Aprobarea internă a propunerii (legată de conținutul exact; nu e acceptarea clientului)",
-    schema: { proposalId: { required: true, max: 80 }, displayedSha: { required: true, max: 64 } },
-    action: (input) => ({ actionKind: "sales.proposal_approve", target: `${input.proposalId}@${String(input.displayedSha).slice(0, 12)}`, projectId: "*" }),
-    execute: (input, ctx) => sales.approveProposal(input.proposalId, input, ctx.actor) });
+    channels: ["owner", "test"], ownerDecision: true, logResult: (r) => r,
+    schema: { proposalId: { required: true, max: 80, pattern: /^spr_[A-Za-z0-9_]+$/ }, displayedSha: { required: true, pattern: /^[0-9a-f]{64}$/, trim: false } },
+    action: (input, ctx) => {
+      ownerCheck(ctx, "aprobarea internă a ofertei");
+      return { actionKind: "sales.proposal_approve", target: `${input.proposalId}@${String(input.displayedSha).slice(0, 12)}`, projectId: "*" };
+    },
+    authorizeApproved: (_input, ctx, approval) => {
+      const session = ownerCheck(ctx, "aprobarea internă a ofertei", true);
+      if (ctx.channel === "test" && hub.config.testMode) return;
+      if (approval?.decidedVia !== "owner_session" || approval.credentialId !== session.credentialId) throw new HubError("conflict", "Aprobarea aparține altei credențiale", { code: "OWNER_CREDENTIAL_MISMATCH" });
+      if (!hub.trust.confirmedAuthority(approval.sessionId).ok) throw new HubError("authentication", "Autoritatea aprobării a fost revocată", { data: { needSession: true } });
+      // Revoke-all ends active sessions. A decider already rotated/logged out must not carry an unexecuted decision
+      // across that security boundary either. Event order works even with a fixed clock or decisions in the same millisecond.
+      const revoked = hub.db.prepare(`SELECT 1 FROM events WHERE type='owner.sessions_revoked' AND seq >
+        (SELECT MAX(seq) FROM events WHERE type='approval.approved' AND json_extract(payload_json, '$.approvalId')=?) LIMIT 1`).get(approval.id);
+      if (revoked) throw new HubError("authentication", "Autoritatea aprobării a fost revocată", { data: { needSession: true } });
+    },
+    execute: (input, ctx) => sales.approveProposal(input.proposalId, input, ctx.actor, {
+      channel: ctx.channel, approvalId: hub.commands.get(ctx.commandId)?.approvalId,
+      sessionCheck: () => ownerCheck(ctx, "aprobarea internă a ofertei") }) });
   reg("sales.draft.create", { describe: "Ciornă de contact (nu se trimite nimic)", schema: { opportunityId: { required: true, max: 80 }, contactId: { max: 80 }, proposalId: { max: 80 } },
     execute: (input, ctx) => sales.createDraft(input.opportunityId, input, ctx.actor) });
   reg("sales.draft.revise", { describe: "Editezi ciorna (versiune nouă; aprobările vechi nu se mai aplică)",

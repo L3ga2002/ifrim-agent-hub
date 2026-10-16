@@ -4,6 +4,7 @@ import path from "node:path";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { HubError } from "../core/errors.mjs";
+import { OWNER_DECIDED } from "../policy/approvals.mjs";
 import { validate } from "../core/validate.mjs";
 import { redactDeep, redactText } from "../security/redact.mjs";
 import { evaluateRoute, scanEnvironment, ATTESTATION_TEXT, BILLING_POLICY } from "../policy/billing.mjs";
@@ -234,7 +235,8 @@ export function registerRoutes(router, hub, { token }) {
       if (!command) throw new HubError("not_found", "Command not found");
       if (!AGENT_COMMANDS.has(command.type)) throw new HubError("policy", `Command ${command.type} cannot be executed through agent (not delegated)`);
     }
-    return commands.executeApproved(params.id, channel === "agent" ? "agent" : "user", { delegation });
+    const ownerSession = channel === "agent" ? null : owner.sessionOf(req);
+    return commands.executeApproved(params.id, channel === "agent" ? "agent" : ownerSession ? `owner:${ownerSession.id}` : "user", { delegation, ownerSession });
   });
 
   // ---------- settings, mode, gate, stop ----------
@@ -383,7 +385,10 @@ export function registerRoutes(router, hub, { token }) {
 
   // ---------- approvals & policies ----------
   get("/api/approvals", ({ query }) => ({ approvals: approvals.list(query.status || null) }));
-  post("/api/approvals/:id/decide", cmd("approval.decide", ({ params, body }) => ({ ...body, approvalId: params.id })));
+  post("/api/approvals/:id/decide", ({ req, params, body }) => OWNER_DECIDED.has(approvals.get(params.id)?.actionKind)
+    ? owner.dispatch(req, "approval.owner_decide", { ...body, approvalId: params.id }, { requireOwner: true })
+    : dispatch(req, "approval.decide", { ...body, approvalId: params.id }));
+  post("/api/approvals/:id/owner_decide", ({ req, params, body }) => owner.dispatch(req, "approval.owner_decide", { ...body, approvalId: params.id }, { requireOwner: true }));
   // Executes an approved local action; the command is chosen by the approval's action kind (script or browser check).
   post("/api/approvals/:id/execute", ({ req, params }) => {
     const approval = approvals.get(params.id);
@@ -550,7 +555,7 @@ export function registerRoutes(router, hub, { token }) {
   post("/api/sales/orgs/:id/evidence", cmd("sales.evidence.add", ({ params, body }) => ({ ...body, subjectType: "org", subjectId: params.id })));
   post("/api/sales/orgs/:id/audit", cmd("sales.org.audit", ({ params, body }) => ({ orgId: params.id, sourceKind: body?.sourceKind || "fixture" })));
   post("/api/sales/orgs/:id/qualify", cmd("sales.org.qualify", ({ params, body }) => ({ orgId: params.id, filters: body?.filters || {} })));
-  post("/api/sales/orgs/:id/qualification/override", cmd("sales.qualification.override", ({ params, body }) => ({ ...body, orgId: params.id })));
+  post("/api/sales/orgs/:id/qualification/override", ({ req, params, body }) => owner.dispatch(req, "sales.qualification.override", { ...body, orgId: params.id }, { requireOwner: true }));
   post("/api/sales/orgs/:id/suppress", cmd("sales.org.suppress", ({ params, body }) => ({ orgId: params.id, reason: body?.reason })));
   post("/api/sales/orgs/:id/suppression/lift", cmd("sales.suppression.lift", ({ params, body }) => ({ orgId: params.id, reason: body?.reason })));
   post("/api/sales/orgs/:id/merge", cmd("sales.org.merge", ({ params, body }) => ({ ...body, orgId: params.id })));
@@ -563,7 +568,7 @@ export function registerRoutes(router, hub, { token }) {
   get("/api/sales/opportunities/:id", ({ params }) => sales.getOpportunity(params.id));
   post("/api/sales/opportunities/:id/transition", cmd("sales.opportunity.transition", ({ params, body }) => ({ ...body, opportunityId: params.id })));
   post("/api/sales/opportunities/:id/proposals", cmd("sales.proposal.create", ({ params, body }) => ({ opportunityId: params.id, ...(body?.edits ? { edits: body.edits } : {}) }), { created: true }));
-  post("/api/sales/proposals/:id/approve", cmd("sales.proposal.approve", ({ params, body }) => ({ proposalId: params.id, displayedSha: body?.displayedSha || body?.contentSha || body?.sha })));
+  post("/api/sales/proposals/:id/approve", ({ req, params, body }) => owner.dispatch(req, "sales.proposal.approve", { proposalId: params.id, displayedSha: body?.displayedSha }, { requireOwner: true }));
   post("/api/sales/opportunities/:id/drafts", cmd("sales.draft.create", ({ params, body }) => ({ ...body, opportunityId: params.id }), { created: true }));
   post("/api/sales/drafts/:id/revise", cmd("sales.draft.revise", ({ params, body }) => ({ ...body, draftId: params.id })));
   post("/api/sales/drafts/:id/approve-content", cmd("sales.draft.approve_content", ({ params, body }) => ({ draftId: params.id, displayedSha: body?.displayedSha || body?.contentSha || body?.sha })));
