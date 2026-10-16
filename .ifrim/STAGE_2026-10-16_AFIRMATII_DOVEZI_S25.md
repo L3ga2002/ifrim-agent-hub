@@ -106,3 +106,28 @@ Runda E: formulări din proba pe datele live (problema citează cerințele, nu �
   `demo-9x16-v2.mp4`, `rezumat-v2.md/.html`, `Prezentare demo v2.docx` + PDF și `Campanie v2` (sau păstrate prin dovadă), `manifest-v2.json`,
   `README-v2.md`; versiunile v1 rămân neschimbate; aprobările creative și a rezumatului se dau din nou; software-ul, pachetul și
   specificația rămân neatinse.
+
+## 10. 2026-10-16 dimineața: release-ul 2.14.17 și livrarea STALE → 2.14.18
+- 06:38 UTC proprietarul a rulat `owner-release.cmd`: upgrade `upg_mvalk291` DONE (live `2.14.17-m11`, contract 13, `boot_mvalk5qy`),
+  push confirmat (`v2-milestone-01` = `cb1ad32`, ramura = `b1db203`).
+- Cardul de corectură nu a apărut: `dlv_mva09x21_b0b0cbfb2a` era STALE de la 00:50:49 UTC („fișiere schimbate:
+  .ifrim-hub/retired/mis_mv2ql0fp_ee35f8071e/journal.json”).
+- **Cauza (defect Hub, pre-existent):** la fiecare pornire, recuperarea Fabricii reverifică misiunea finală `mis_mv2ql0fp` (10-10), al cărei
+  test istoric fusese retras și restaurat; misiunea §25 l-a retras legitim din nou pe 10-15, deci originalul lipsește, iar recuperarea
+  rescria jurnalul vechii misiuni ca RESTORE_INCOMPLETE. Fișierul e în proiectul livrării și nu era recunoscut ca scris de Hub, deci
+  verificarea la 10 minute marca livrarea STALE. Pornirea de la upgrade (06:38:41) a făcut același lucru.
+- **Declanșatorul (greșeala mea de instrucțiuni):** la 00:48:02 UTC un agent al review-ului final (`find:upgrade`) a pornit codul Hub-ului
+  peste o COPIE a bazei de date; căile proiectelor din copie sunt absolute și duc la folderele reale, așa că recuperarea a scris jurnalul
+  în proiectul demo real. Scanare a celor 31 de foldere de proiect pentru fișiere modificate în 00:43–00:53 UTC: niciun alt fișier.
+  Software-ul livrării nu a fost atins. Regulă nouă: niciun agent nu construiește Hub-ul / Fabrica peste date reale sau copii ale lor.
+- **2.14.18-m11** (`4ce54a7` + `09f1364`, contract 13, schema 12): o retragere ulterioară legitimă (misiune APPROVED, jurnal MOVED,
+  element înregistrat, copie retrasă cu același sha) explică originalul lipsă; un jurnal RESTORED nu mai e rescris; un jurnal rescris
+  greșit ca RESTORE_INCOMPLETE e reparat la pornire în RESTORED, cu istoric, atribuire și eveniment `factory.retire_restored` (cu sha),
+  ceea ce declanșează reconcilierea auditată existentă (STALE → READY); orice problemă reală păstrează refuzul. Review independent
+  (6 agenți): 1 constatare medie (reconcilierea DB sărită la „already_restored”) reparată în `09f1364`. Datele live corespund exact
+  cazului reparat (citite doar în SQL, fără a porni nimic).
+- Poarta pe `09f1364` (07:10–08:46 UTC, CPU 48–77 %): build 0, build:v2 0, `test:v2` 2239 teste — 2238 PASS, 0 FAIL, 0 anulate, 1 SKIP
+  (T25, privilegiu symlink); V1 552 — 551 PASS, 1 SKIP (symlink); procesele noi din timpul porții erau ale aplicației Codex desktop, niciunul al
+  porții. Backup verificat `bkp_mvaq511v_2b957e0eff` (08:47 UTC); îmbinare `3e887c4`.
+- Upgrade-ul și push-ul rămân ale proprietarului (refuzate agentului): `C:\Users\mihai\s25-claims\owner-release-2.cmd`. La pornirea 2.14.18,
+  recuperarea repară jurnalul, reconcilierea readuce `dlv_mva09x21` la READY, iar Hub-ul propune cardul de corectură (o dată pe versiune).

@@ -1,6 +1,6 @@
 # Open Issues - Ifrim Agent Hub
 
-## 2026-10-16 — 2.14.17 merged (`cfc58a7`), NOT yet live: claims bound to criteria, frozen presentation, correction card (live `2.14.16-m11`, contract 13, schema 12; detail: `.ifrim/STAGE_2026-10-16_AFIRMATII_DOVEZI_S25.md`)
+## 2026-10-16 — 2.14.17 live (owner, 06:38 UTC); 2.14.18 merged (`3e887c4`), NOT yet live: the §25 delivery went STALE through a retire-journal defect (detail: `.ifrim/STAGE_2026-10-16_AFIRMATII_DOVEZI_S25.md` §10)
 
 This section takes precedence over every older one where they overlap. Closed in code (not yet live): items 1 and 4 of the 2026-10-15
 night section — clip and summary claims are bound to the approved spec's criteria by canonical fingerprint and proven per method on the
@@ -9,9 +9,11 @@ a valid descendant; the AC-7/AC-8 duplicate clause is fixed at its source (two r
 author) is documented as a design for a separate stage: `.ifrim/DESIGN_2026-10-16_AUTOR_PAS0_HUB_TEMPLATE.md` (not implemented).
 
 Open:
-1. **Release (owner):** the managed upgrade and the push were refused to the agent (`[Production Deploy]`; git push denied). Run
-   `C:\Users\mihai\s25-claims\owner-release.cmd`. Until then the live Hub is 2.14.16 while the working tree is 2.14.17 (a reboot would
-   autostart 2.14.17 without the managed upgrade). Verified backup `bkp_mvacxszx_e1d7098238`; revert `git revert -m 1 cfc58a7` (verified).
+1. **Release 2.14.18 (owner):** run `C:\Users\mihai\s25-claims\owner-release-2.cmd` (managed upgrade + push; both refused to the agent).
+   2.14.17 is live since 06:38 UTC (`upg_mvalk291`). `dlv_mva09x21_b0b0cbfb2a` is STALE since 00:50 UTC: every boot rewrote the retire journal
+   of the old final mission `mis_mv2ql0fp_ee35f8071e` after §25 legitimately retired the same test (first triggered at 00:48 UTC by a
+   review agent that booted Hub code over a copy of the live DB whose project paths point to the real folders). 2.14.18 repairs the
+   journal at boot and the audited reconciliation returns the delivery to READY. Verified backup `bkp_mvaq511v_2b957e0eff`.
 2. **Correction of `dlv_mva09x21_b0b0cbfb2a` (owner):** after the upgrade the Hub proposes the card „Corectură afirmații (clip + rezumat)”
    (once per version). Confirm it in the Delivery Room. It re-captures both flows (the v1 footage shows the phone typed twice), builds
    master v2 + vertical v2, `rezumat-v2`, Word/campaign v2 (or kept by proof), `manifest-v2`. Then: creative approvals, summary approval
