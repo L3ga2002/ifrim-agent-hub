@@ -1,5 +1,28 @@
 # Open Issues - Ifrim Agent Hub
 
+## 2026-10-16 evening — 2.14.19 merged (`f1a3845`), NOT live: the software acceptance is repaired in code; upgrade, push and the „Accept local” click are the owner's (live `2.14.18-m11`, contract 13; detail: `.ifrim/STAGE_2026-10-16_ACCEPTARE_LOCALA_S25.md`)
+
+This section takes precedence over every older one where they overlap. Closed in code (2.14.19-m11, contract 14, schema 12): the
+acceptance authority (owner channel refused since M11; Factory route sessionless on `ui`), the displayed-bundle identity, the race /
+repeat behaviour and the two divergent integrity rules (item 1 of the next section). Gate on `7074ab5`: build 0, build:v2 0, test:v2
+2306/2311 (3 shutdown timing + M09-SB-01 clone dist, all passing alone on the same commit; T25 skip), V1 551/552 (0 fail). Backups
+`bkp_mvb8o87f_4e43830bff` (Hub) and `bkp_mvb8ovp1_05f5adebd7` (demo project), 17:26 UTC.
+
+Open:
+1. **Owner actions.** Run `C:Usersmihais25-acceptowner-release.cmd` (read-only preflight of `dlv_mva09x21_b0b0cbfb2a` — stops before
+   the upgrade if it does not exit 0 —, managed upgrade to 2.14.19-m11, version check, push of `v2-milestone-01` incl. `16d24de` and of
+   `claude/project-thread-a4nk7r`). Then reload the Delivery Room (contract 14) and click „Accept local” once, after the agent's post-upgrade
+   check. Until then the bundle stays READY_FOR_OWNER_ACCEPTANCE; the clip / summary approvals of 11:19 UTC are kept.
+2. Pre-existing residuals for the owner's decision: with the local dev profile on, `POST /api/owner/dev-session` opens an owner session for
+   any loopback process with the canonical Origin (acceptances are still recorded as `local_dev_profile`); `factory.reject` stays on
+   `ui` without a session (a reject is terminal for the bundle and stales the delivery).
+3. Low follow-ups (documented, not fixed to avoid a new gate): the Room shows „snapshot identic ✓” without listing the provenance-accepted
+   difference; non-path integrity problems are recorded but displayed as a workspace difference; the preflight does not read
+   `cancel_requested_at` / `decided_at`; the off-localhost notice and revision answers still mention Windows Hello under the dev profile;
+   some new test assertions lack preconditions. RL-06: an attestation alone no longer heals a repair whose DB event was lost.
+4. Unchanged from the next section: media QA follow-ups (9:16 desktop band, text timing), uncurated Word / campaign phrases, README-v2
+   status column, step-0 author simplification; M12 stays DRAFT.
+
 ## 2026-10-16 (live) — 2.14.18 live; §25 corrected; clips v2 + summary v2 approved by the owner (11:19 UTC); software acceptance blocked by a Hub defect (live `2.14.18-m11`, contract 13, schema 12; detail: `.ifrim/STAGE_2026-10-16_AFIRMATII_DOVEZI_S25.md` §10–§12)
 
 This section takes precedence over every older one where they overlap. Closed: claims bound to the approved spec (2.14.17), the retire-journal
