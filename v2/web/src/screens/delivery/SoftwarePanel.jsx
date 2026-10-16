@@ -15,6 +15,7 @@ export function SoftwarePanel({ room }) {
     <Panel title="2 · Software verificat" icon={FileDiff} id="livrare-software-panel" actions={sw.present ? <Chip tone={sw.bundle.chip.tone}>{sw.bundle.chip.text}</Chip> : null}>
       {!sw.present ? <Empty title="Încă nu există un pachet de livrare">Pachetul apare când misiunea trece de verificări, review, QA, preview și E2E.</Empty> : (
         <div className="stack">
+          {room.view.software?.bundleMismatch && <Notice tone="error" title="Pachet diferit">Livrarea rămâne legată de pachetul afișat mai jos. Misiunea are alt pachet; acceptarea este oprită.</Notice>}
           {!sw.current && (
             <Notice tone="error" title="Dovezi pentru versiunea veche">
               {sw.why?.text ? `${sentence(sw.why.text)} ` : ""}Testele, review-ul și criteriile de mai jos descriu pachetul <code className="mono">{sw.bundle.id}</code>, nu codul de acum.

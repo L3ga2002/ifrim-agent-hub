@@ -223,8 +223,15 @@ export function registerCommands(commands, hub) {
         throw error;
       }
     } });
-  reg("factory.accept", { describe: "Accepți local pachetul de livrare (OWNER_ACCEPTED; fără commit, push sau deploy)", async: true,
-    schema: { missionId: { required: true, max: 80 }, note: { max: 500, default: "" } }, execute: (input, ctx) => hub.factory.accept(input.missionId, { note: input.note, actor: ctx.actor }) });
+  reg("factory.accept", { describe: "Accepți local pachetul de livrare (OWNER_ACCEPTED; fără commit, push sau deploy)", async: true, channels: ["owner", "test"],
+    schema: { missionId: { required: true, max: 80 }, bundleId: { required: true, max: 80, pattern: /^bnd_[A-Za-z0-9_-]+$/ }, bundleSha: { required: true, pattern: /^[0-9a-f]{64}$/, trim: false },
+      deliveryId: { max: 80 }, via: { enum: ["delivery_room", "factory_panel"] }, note: { max: 500, default: "" } },
+    execute: (input, ctx) => {
+      const authenticated = ctx.channel === "owner" || Boolean(ctx.ownerSession);
+      if (authenticated) hub.trust.requireFresh(ctx.ownerSession, "acceptarea software-ului");
+      return hub.factory.accept(input.missionId, { ...input, ...ctx,
+        sessionCheck: authenticated ? () => hub.trust.requireSession(ctx.ownerSession, "acceptarea software-ului") : null });
+    } });
   reg("factory.reject", { describe: "Respingi rezultatul (cu motiv)", async: true,
     schema: { missionId: { required: true, max: 80 }, note: { required: true, min: 3, max: 500 } }, execute: (input, ctx) => hub.factory.reject(input.missionId, { note: input.note, actor: ctx.actor }) });
   reg("factory.finding", { describe: "Marchezi un finding (fals pozitiv, contestat, acceptat ca atare) cu motiv",

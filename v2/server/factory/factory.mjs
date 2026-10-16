@@ -19,6 +19,8 @@ import { buildPlan, normalizeLimits, turnTimeoutsOf, ROUTES } from "./plan.mjs";
 import { takeSnapshot, diffManifests, readGitEntry, gitEntryHash, readBlob, isTestPath, skippedTreeFingerprint, skippedTreeChanges } from "./snapshot.mjs";
 import { renderChanges } from "./diff.mjs";
 import { integrityFindings, isTestFirstBlocking } from "./integrity.mjs";
+import { integrityDecision } from "./bundle-integrity.mjs";
+import { gatherBundleIntegrityFacts } from "./bundle-integrity-facts.mjs";
 import { contractDrift, publicReadRoutes, readPublicClient } from "./supersede.mjs";
 import { buildReviewBrief, parseReview, BLOCKING_SEVERITIES } from "./review.mjs";
 import { buildAuthorBrief, lintDatasetBrief, parseAuthorOutput, lintTestBody, normalizeNeeds, TEST_HARNESS_VERSION, baselineGate, assembleTestFile, classifyProof, proofSignature, buildTestReviewBrief, parseTestReview, ownerSummary, ownerOutcome,
@@ -680,6 +682,8 @@ export function createFactory(deps) {
       restore.sha256 = fileShaAt(folder, "journal.json");
     }
     db.prepare("UPDATE factory_specs SET protected_json = ? WHERE id = ?").run(json({ ...fresh, restored: records, restoreBlocked: !restore.complete }), spec.id);
+    if (!restore.complete && restore.sha256) bus.append({ type: "factory.retire_restored", scopeType: "mission", scopeId: missionId, source: "factory",
+      payload: { missionId, projectId: project.id, complete: false, state: restore.state, sha256: restore.sha256, cause } });
     bus.append({ type: restore.complete ? "factory.retire_restored" : "factory.retire_restore_refused", scopeType: "mission", scopeId: missionId, source: "factory",
       payload: { missionId, projectId: project.id, complete: restore.complete, items: restore.items, cause, state: restore.state,
         ...(restore.sha256 ? { sha256: restore.sha256 } : {}), code: restore.complete ? null : "RETIRE_RESTORE_INCOMPLETE" } });
@@ -806,7 +810,7 @@ export function createFactory(deps) {
         const plan = retirementPlan(missionId, strict);
         if (plan.length && ["MOVING", "MOVED"].includes(readRetireJournal(project, missionId)?.status)) {
           const restore = restoreRetired(plan, project, { missionId });
-          try { bus.transaction(() => bus.append({ type: "factory.retire_restored", scopeType: "mission", scopeId: missionId, source: "factory", payload: { missionId, complete: restore.complete, items: restore.items, cause: String(error?.message || error).slice(0, 300) } })); }
+          try { bus.transaction(() => bus.append({ type: "factory.retire_restored", scopeType: "mission", scopeId: missionId, source: "factory", payload: { missionId, complete: restore.complete, items: restore.items, state: restore.state, ...(restore.sha256 ? { sha256: restore.sha256 } : {}), cause: String(error?.message || error).slice(0, 300) } })); }
           catch { /* the record failed; the restore's own result (journal + the error below) still says it */ }
           if (!restore.complete) {
             throw new HubError("conflict", `Pornirea a eșuat (${String(error?.message || error).slice(0, 200)}) și testele retrase NU au putut fi puse toate înapoi: ${restore.items.filter((i) => i.state === "incomplete").map((i) => `${i.from} — ${i.problem}`).join("; ")}. Misiunea nu continuă până nu se verifică fișierele`, { code: "RETIRE_RESTORE_INCOMPLETE", data: { restore } });
@@ -2285,24 +2289,59 @@ export function createFactory(deps) {
     return view(missionId);
   }
 
-  async function accept(missionId, { note = "", actor = "user" } = {}) {
-    return serial(missionId, async () => {
-      const f = need(fm(missionId));
-      if (f.stage !== "DELIVERY_READY") throw new HubError("conflict", `Misiunea e în ${f.stage}, nu are un pachet gata`);
-      const bundle = db.prepare("SELECT * FROM factory_bundles WHERE mission_id = ? AND status = 'READY_FOR_OWNER_ACCEPTANCE' ORDER BY created_at DESC LIMIT 1").get(missionId);
-      const cs = currentCs(missionId);
-      const project = projects.get(missions.get(missionId).projectId);
-      const nowSha = takeSnapshot(project.path, { ignore: ignoreOf(missionId), mode: baseMode(missionId) }).sha256;
-      if (!bundle || bundle.change_set_id !== cs.id || nowSha !== snapshotRow(cs.snapshotId).sha256) {
-        bus.transaction(() => { if (bundle) { db.prepare("UPDATE factory_bundles SET status = 'STALE' WHERE id = ?").run(bundle.id); bundleStatusEvent(missionId, bundle.id, "STALE", "workspace-ul s-a schimbat după verificare"); } });
-        throw new HubError("conflict", "Workspace-ul nu mai corespunde versiunii testate: pachetul e STALE (refă verificările)");
+  async function accept(missionId, { bundleId, bundleSha, deliveryId = null, via = "factory_panel", note = "", actor = "user", channel = config.testMode ? "test" : null,
+    sessionCheck = null, commandId = null, correlationId = null } = {}) {
+    const refuse = (code, message, data) => { throw new HubError("conflict", message, { code, data }); };
+    if (!["owner", "test"].includes(channel) || channel === "owner" && !sessionCheck) throw new HubError("authentication", "Acceptarea cere sesiunea proprietarului", { data: { needSession: true } });
+    if (!/^bnd_[A-Za-z0-9_-]+$/.test(bundleId || "") || !/^[0-9a-f]{64}$/.test(bundleSha || "")) throw new HubError("validation", "Acceptarea cere ID-ul și SHA-ul complet al pachetului afișat");
+    const check = () => {
+      const session = sessionCheck?.() || null;
+      if (closed) refuse("FACTORY_CLOSED", "Fabrica se închide; acceptarea nu s-a aplicat");
+      const bundle = db.prepare("SELECT * FROM factory_bundles WHERE id = ?").get(bundleId);
+      if (!bundle || bundle.mission_id !== missionId || bundle.sha256 !== bundleSha) refuse("BUNDLE_TARGET_STALE", "Pachetul afișat nu mai corespunde; reîncarcă pagina");
+      if (deliveryId) {
+        const d = db.prepare("SELECT * FROM deliveries WHERE id = ?").get(deliveryId);
+        if (!d || d.mission_id !== missionId || d.bundle_id !== bundleId || d.bundle_sha !== bundleSha) refuse("DELIVERY_BUNDLE_DISPLAYED", "Legătura livrării cu pachetul afișat s-a schimbat");
+        if (!["PLANNED", "ARMED", "ACTIVE", "READY", "NEEDS_OWNER"].includes(d.status)) refuse("DELIVERY_ACCEPT_STATE", "Livrarea nu mai permite acceptarea");
       }
-      { const hist = historicViolations(missionId, project); if (hist.length) throw new HubError("conflict", `Integritatea testelor Hub anterioare: ${hist.join("; ")}; acceptarea nu se aplică`, { code: "HISTORIC_INTEGRITY" }); }
+      const latest = db.prepare("SELECT id FROM factory_bundles WHERE mission_id = ? ORDER BY created_at DESC, rowid DESC LIMIT 1").get(missionId);
+      if (latest?.id !== bundleId) refuse("BUNDLE_REPLACED", "Un alt pachet l-a înlocuit pe cel afișat");
+      if (bundle.status === "OWNER_ACCEPTED") return { duplicate: { duplicate: true, accepted: true, bundleId, bundleSha, missionId, deliveryId,
+        decidedAt: bundle.decided_at, note: bundle.decision_note, noteIgnored: note !== (bundle.decision_note || "") } };
+      const f = need(fm(missionId));
+      if (bundle.status !== "READY_FOR_OWNER_ACCEPTANCE" || bundle.decided_at || f.stage !== "DELIVERY_READY" || f.cancelRequestedAt) refuse("BUNDLE_TARGET_STALE", "Pachetul sau misiunea nu mai așteaptă acceptarea");
+      const projectId = missions.get(missionId).projectId;
+      const capture = db.prepare(`SELECT 1 FROM ops_plan_steps s WHERE s.kind = 'delivery.capture' AND s.status = 'RUNNING' AND
+        (s.plan_id IN (SELECT ops_plan_id FROM deliveries WHERE mission_id = ?) OR s.plan_id IN
+        (SELECT r.ops_plan_id FROM delivery_revisions r JOIN deliveries d ON d.id = r.delivery_id WHERE d.mission_id = ?)) LIMIT 1`).get(missionId, missionId);
+      const recording = db.prepare(`SELECT 1 FROM media_capture_sessions c WHERE c.status = 'RECORDING' AND
+        (json_extract(c.scope_json, '$.projectId') = ? OR json_extract(c.scope_json, '$.deliveryId') IN (SELECT id FROM deliveries WHERE project_id = ?)
+        OR c.content_project_id IN (SELECT content_project_id FROM deliveries WHERE project_id = ?)
+        OR c.content_project_id IN (SELECT id FROM content_projects WHERE json_extract(scope_json, '$.projectId') = ?)) LIMIT 1`).get(projectId, projectId, projectId, projectId);
+      if (capture || recording) refuse("DELIVERY_CAPTURE_RUNNING", "Aștept capturile sau oprește planul livrării înainte de acceptare");
+      const integrity = bundleIntegrity(missionId, { bundleId, bundleSha });
+      if (!integrity.ok) {
+        if (integrity.identityProblems.length) refuse("BUNDLE_IDENTITY", "Identitatea pachetului verificat nu mai corespunde", { integrity });
+        if (integrity.historicProblems.length) refuse("HISTORIC_INTEGRITY", `Integritatea testelor Hub anterioare: ${integrity.historicProblems.join("; ")}`, { integrity });
+        if (integrity.protectedProblems.length) refuse("PROTECTED_INTEGRITY", "Testul protejat nu mai are octeții verificați", { integrity });
+        if (integrity.hubOnlyScope) refuse("HUB_RECORD_UNPROVEN", "Diferența din înregistrările Hub nu are proveniență verificată", { integrity });
+        bus.transaction(() => { db.prepare("UPDATE factory_bundles SET status = 'STALE' WHERE id = ?").run(bundle.id); bundleStatusEvent(missionId, bundle.id, "STALE", "workspace-ul s-a schimbat după verificare"); });
+        refuse("SNAPSHOT_DRIFT", "Workspace-ul nu mai corespunde versiunii testate: pachetul e STALE (refă verificările)", { integrity });
+      }
+      return { bundle, session, integrity };
+    };
+    const result = await serial(missionId, async () => {
+      const first = check();
+      if (first.duplicate) return first.duplicate;
       await runner.stop(`factory-preview-${missionId}`).catch(() => {});
-      { const now2 = fm(missionId); if (now2.stage !== "DELIVERY_READY" || now2.cancelRequestedAt) throw new HubError("conflict", `Misiunea a trecut în ${now2.stage} între timp; acceptarea nu s-a aplicat`); }
+      const final = check();
+      if (final.duplicate) return final.duplicate;
+      const { bundle, session, integrity } = final, cs = currentCs(missionId), decidedAt = now();
       bus.transaction(() => {
-        db.prepare("UPDATE factory_bundles SET status = 'OWNER_ACCEPTED', decided_at = ?, decision_note = ? WHERE id = ?").run(now(), String(note).slice(0, 500), bundle.id);
-        bundleStatusEvent(missionId, bundle.id, "OWNER_ACCEPTED", "acceptat local de proprietar");
+        const changed = db.prepare("UPDATE factory_bundles SET status = 'OWNER_ACCEPTED', decided_at = ?, decision_note = ? WHERE id = ? AND status = 'READY_FOR_OWNER_ACCEPTANCE' AND sha256 = ? AND decided_at IS NULL").run(decidedAt, String(note).slice(0, 500), bundle.id, bundleSha);
+        if (changed.changes !== 1) refuse("BUNDLE_TARGET_STALE", "Pachetul s-a schimbat înainte de decizie");
+        bundleStatusEvent(missionId, bundle.id, "OWNER_ACCEPTED", "acceptat local de proprietar", { bundleSha, bundleShaDisplayed: bundleSha, missionId, deliveryId, via,
+          sessionId: session?.id || null, authority: session?.authority || "test", channel, commandId, correlationId, integrity }, actor);
         const runIds = db.prepare("SELECT run_id FROM factory_dispatches WHERE mission_id = ? AND status = 'DONE'").all(missionId).map((r) => r.run_id);
         const reviewRun = db.prepare("SELECT run_id FROM factory_reviews WHERE change_set_id = ? AND status = 'VALID' AND verdict = 'PASS' ORDER BY created_at DESC LIMIT 1").get(cs.id)?.run_id;
         const tests = db.prepare("SELECT id FROM factory_evidence WHERE change_set_id = ? AND stale = 0 AND status = 'PASS'").all(cs.id).map((r) => r.id);
@@ -2313,8 +2352,12 @@ export function createFactory(deps) {
         missions.refreshMissionStatus(missionId);
         setStage(missionId, "ACCEPTED", { reason: "Acceptat local de proprietar (OWNER_ACCEPTED). Commit/push/deploy rămân acțiuni separate", actor });
       });
-      return view(missionId);
+      const acceptedView = view(missionId);
+      return { accepted: true, bundleId, bundleSha, decidedAt, missionId, deliveryId, duplicate: false,
+        factory: acceptedView.factory, bundles: acceptedView.bundles, tasks: acceptedView.tasks };
     });
+    if (!result) refuse("FACTORY_CLOSED", "Fabrica se închide; acceptarea nu s-a aplicat");
+    return result;
   }
 
   async function reject(missionId, { note, actor = "user" } = {}) {
@@ -2336,10 +2379,12 @@ export function createFactory(deps) {
 
   // ---------- M11 delivery hooks (read-only: no status write, no process started) ----------
   /** The bundle status change other services follow (deliveries mark their items STALE); appended inside the caller's transaction. */
-  function bundleStatusEvent(missionId, bundleId, status, reason) {
-    bus.append({ type: "factory.bundle.status", scopeType: "mission", scopeId: missionId, source: "factory", payload: { missionId, bundleId, status, reason } });
+  function bundleStatusEvent(missionId, bundleId, status, reason, decision = {}, source = "factory") {
+    bus.append({ type: "factory.bundle.status", scopeType: "mission", scopeId: missionId, source, payload: { missionId, bundleId, status, reason, ...decision } });
   }
   const latestBundleRow = (missionId) => db.prepare("SELECT * FROM factory_bundles WHERE mission_id = ? AND status IN ('READY_FOR_OWNER_ACCEPTANCE','OWNER_ACCEPTED') ORDER BY created_at DESC LIMIT 1").get(missionId);
+  const integrityFacts = (missionId, target) => gatherBundleIntegrityFacts(db, missionId, target);
+  const bundleIntegrity = (missionId, target) => integrityDecision(integrityFacts(missionId, target));
   /**
    * Whether the project folder is still exactly the verified version: the same snapshot the accept step takes (same ignore list and
    * mode). Nothing is written; a drift is only reported (the delivery marks its items STALE from it).
@@ -2382,9 +2427,7 @@ export function createFactory(deps) {
     const actual = takeSnapshot(project.path, { ignore: ignoreOf(missionId), mode: baseMode(missionId) });
     const expectedFiles = expectedRow?.files || {};
     const actualFiles = actual.files || {};
-    const changedFiles = [];
-    for (const [rel, meta] of Object.entries(actualFiles)) if (expectedFiles[rel]?.sha256 !== meta?.sha256) changedFiles.push(rel);
-    for (const rel of Object.keys(expectedFiles)) if (!(rel in actualFiles)) changedFiles.push(rel);
+    const changedFiles = diffManifests(expectedFiles, actualFiles, { resolve: sha => gitEntryHash(project.path, sha) }).map(c => c.path);
     return { missionId, stage: f.stage, bundleId: bundle?.id || null, bundleStatus: bundle?.status || null, changeSetId: cs?.id || null, expected, actual: actual.sha256,
       equal: Boolean(expected) && expected === actual.sha256 && Boolean(bundle) && bundle.change_set_id === cs?.id, changedFiles, snapshotAt: expectedRow?.createdAt || expectedRow?.created_at || null };
   }
@@ -2403,9 +2446,9 @@ export function createFactory(deps) {
     const reviewRows = [...reviewIds].map(id => db.prepare("SELECT * FROM factory_reviews WHERE id = ? AND mission_id = ?").get(id, missionId)).filter(Boolean);
     return { bundle, manifest, specRow: { ...specRow, spec }, spec, evidenceRows, reviewRows };
   }
-  function deliveryBinding(missionId) {
+  function deliveryBinding(missionId, { bundleId } = {}) {
     const f = need(fm(missionId));
-    const bundle = latestBundleRow(missionId);
+    const bundle = bundleId ? db.prepare("SELECT * FROM factory_bundles WHERE id = ? AND mission_id = ?").get(bundleId, missionId) : latestBundleRow(missionId);
     if (!bundle) return null;
     const manifest = parse(bundle.manifest_json, {});
     const spec = approvedSpec(f);
@@ -2973,7 +3016,7 @@ export function createFactory(deps) {
 
   return { initialize, reviseSpec, setLimits, scopeFor, assertStartable, startApproved, onRunFinished, stop, pause, resume, accept, reject, stopAll, recover, tick, idle, close,
     // M11 delivery hooks (read-only).
-    snapshotCheck, writerStarted, compensateRetirement, driftProvenance, deliveryBinding, claimFacts, previewStatus, e2eShotPath,
+    integrityFacts, bundleIntegrity, snapshotCheck, writerStarted, compensateRetirement, driftProvenance, deliveryBinding, claimFacts, previewStatus, e2eShotPath,
     continuationScope, rebindForPlan, raiseLimits, exhaustedStep: (missionId) => exhaustedStep(missionId),
     // M11 L5: step 0 of a test-first mission is open (no repair cycle there); the Hub's own files in its work area on a project.
     inStageZero, hubWrites, remainingAuthoring: (missionId) => remainingAuthoring(missionId),
@@ -3153,11 +3196,12 @@ export function restoreRetired(retired, project, { missionId = null, laterRetire
     }
   }
   if (items.length) {
+    let writtenSha;
     if (missionId && journal) {
-      try { writeJournal(project, missionId, { status: "RESTORE_INCOMPLETE", items: retired.map((r) => explained.get(r.from) || { ...r, state: items.find((i) => i.from === r.from)?.state || "unchanged" }), problems: items.map((i) => i.problem) }); }
+      try { writeJournal(project, missionId, { status: "RESTORE_INCOMPLETE", items: retired.map((r) => explained.get(r.from) || { ...r, state: items.find((i) => i.from === r.from)?.state || "unchanged" }), problems: items.map((i) => i.problem) }); writtenSha = fileShaAt(safeFolder(project.path, `.ifrim-hub/retired/${missionId}`, { create: false }), "journal.json"); }
       catch (e) { items.push({ state: "incomplete", problem: `jurnalul restaurării: ${String(e.message)}` }); }
     }
-    return { complete: false, items: retired.map((r) => items.find((i) => i.from === r.from) || explained.get(r.from) || { ...r, state: "not_restored", problem: "restaurarea întregii liste a fost refuzată înainte de prima mutare" }), state: "refused" };
+    return { complete: false, items: retired.map((r) => items.find((i) => i.from === r.from) || explained.get(r.from) || { ...r, state: "not_restored", problem: "restaurarea întregii liste a fost refuzată înainte de prima mutare" }), state: writtenSha ? "restore_incomplete" : "refused", ...(writtenSha ? { sha256: writtenSha } : {}) };
   }
   const restoredItems = () => (retired || []).map((r) => explained.get(r.from) || { ...r, state: "already_restored" });
   if (journal?.status === "RESTORED") return { complete: true, items: restoredItems(), state: "already_restored" };
@@ -3201,11 +3245,12 @@ export function restoreRetired(retired, project, { missionId = null, laterRetire
     } catch (error) { items.push({ from: r.from, state: "incomplete", problem: String(error?.message || error).slice(0, 200) }); }
   }
   let complete = items.every((i) => i.state !== "incomplete");
+  let writtenSha;
   if (missionId && items.length) {
-    try { writeJournal(project, missionId, { status: complete ? "RESTORED" : "RESTORE_INCOMPLETE", items: items.map((i) => ({ ...retired.find((r) => r.from === i.from), state: i.state })), problems: items.filter((i) => i.problem).map((i) => `${i.from}: ${i.problem}`) }); }
+    try { writeJournal(project, missionId, { status: complete ? "RESTORED" : "RESTORE_INCOMPLETE", items: items.map((i) => ({ ...retired.find((r) => r.from === i.from), state: i.state })), problems: items.filter((i) => i.problem).map((i) => `${i.from}: ${i.problem}`) }); writtenSha = fileShaAt(safeFolder(project.path, `.ifrim-hub/retired/${missionId}`, { create: false }), "journal.json"); }
     catch (e) { complete = false; items.push({ state: "incomplete", problem: `jurnalul restaurării nu a putut fi scris: ${String(e.message)}` }); }
   }
-  return { complete, items };
+  return { complete, items, ...(writtenSha ? { state: complete ? "restored" : "restore_incomplete", sha256: writtenSha } : {}) };
 }
 
 // ---------- M11 L5: the files the Hub itself writes into a project (§5.1 S2) ----------

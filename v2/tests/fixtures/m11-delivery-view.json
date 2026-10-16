@@ -1,7 +1,7 @@
 {
   "about": "M11 Delivery Room — JSON fixture of the aggregated view contract (GET /api/deliveries/:id, .ifrim/M11_DESIGN.md → DELIVERY ROOM UI). Synthetic data only. Two variants hold ONLY the documented fields — plus plans[].steps[].kind, which the Room reads to tell a capture step: READY (after the reference clip revision: v2 current, v1 superseded with real links) and STALE (the workspace changed after the owner's acceptance). The plan steps (kind + title), the criteria, the start command, the changed files, the label item id and the marker notes are the REAL ones of the booking fixture (server/delivery/template.mjs packageSteps / revisionSteps, server/factory/booking-demo-def.mjs, server/delivery/clip-ir.mjs); m11-ui-logic.test.mjs M11-UI-18 keeps them equal. Used by v2/tests/m11-ui-logic.test.mjs.",
   "contract": "GET /api/deliveries/:id",
-  "apiContract": 13,
+  "apiContract": 14,
   "variants": {
     "READY": {
       "correction": { "available": false, "defects": [], "plan": null, "applied": [] },
@@ -20,7 +20,7 @@
         "verified": { "at": "2026-10-06T09:41:12.000Z", "equal": true, "changedFiles": [] }
       },
       "software": {
-        "bundle": { "id": "bnd_mv3k1p0z_0d9e8f7a6b", "shaPrefix": "4c1f0a9be27d", "status": "READY_FOR_OWNER_ACCEPTANCE" },
+        "bundle": { "id": "bnd_mv3k1p0z_0d9e8f7a6b", "shaPrefix": "4c1f0a9be27d", "sha": "4c1f0a9be27d0000000000000000000000000000000000000000000000000000", "status": "READY_FOR_OWNER_ACCEPTANCE" },
         "spec": { "version": 1, "shaPrefix": "9ab3e1c07f52" },
         "changeSet": {
           "seq": 2,
@@ -241,7 +241,7 @@
         "verified": { "at": "2026-10-06T11:15:40.000Z", "equal": false, "changedFiles": ["public/js/app.mjs", "public/styles.css"] }
       },
       "software": {
-        "bundle": { "id": "bnd_mv3k1p0z_0d9e8f7a6b", "shaPrefix": "4c1f0a9be27d", "status": "OWNER_ACCEPTED" },
+        "bundle": { "id": "bnd_mv3k1p0z_0d9e8f7a6b", "shaPrefix": "4c1f0a9be27d", "sha": "4c1f0a9be27d0000000000000000000000000000000000000000000000000000", "status": "OWNER_ACCEPTED" },
         "spec": { "version": 1, "shaPrefix": "9ab3e1c07f52" },
         "changeSet": {
           "seq": 2,

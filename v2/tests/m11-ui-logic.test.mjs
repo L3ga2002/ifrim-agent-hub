@@ -83,7 +83,7 @@ test("M11-UI-01 the fixture holds exactly the documented view contract; routes a
     assert.deepEqual(keys(v.delivery), ["childId", "childStatus", "generation", "id", "labels", "parentId", "projectId", "projectName", "status", "statusReason", "title", "verified"]);
     assert.deepEqual(keys(v.delivery.verified), ["at", "changedFiles", "equal"]);
     assert.deepEqual(keys(v.software), ["bundle", "changeSet", "criteria", "diff", "review", "spec", "tests"]);
-    assert.deepEqual(keys(v.software.bundle), ["id", "shaPrefix", "status"]);
+    assert.deepEqual(keys(v.software.bundle), ["id", "sha", "shaPrefix", "status"]);
     assert.deepEqual(keys(v.software.tests[0]), ["command", "counts", "isolation", "runner", "status"]);
     assert.deepEqual(keys(v.software.criteria[0]), ["id", "note", "status", "text", "verify"]);
     assert.deepEqual(keys(v.preview), ["key", "running", "shots", "startCommand", "url"]);
@@ -303,7 +303,7 @@ test("M11-UI-06 five separate decisions → distinct commands; publishing has no
   assert.deepEqual(actionable.map((k) => DECISION_COMMANDS[k]), requests.map((r) => r.command));
   assert.equal(new Set(requests.map((r) => r.command)).size, 4, "creative approval is one command, sent per version");
   assert.equal(new Set(requests.map((r) => JSON.stringify([r.path || r.href, r.body || null]))).size, 5, "five distinct dispatches");
-  assert.deepEqual(requests[0], { command: "delivery.software.accept", method: "POST", path: "/api/deliveries/dlv_mv3k9q2a_7f3a9c1e2b/software-accept", body: { bundleId: "bnd_mv3k1p0z_0d9e8f7a6b", displayedBundleSha: "4c1f0a9be27d" } });
+  assert.deepEqual(requests[0], { command: "delivery.software.accept", method: "POST", path: "/api/deliveries/dlv_mv3k9q2a_7f3a9c1e2b/software-accept", body: { bundleId: "bnd_mv3k1p0z_0d9e8f7a6b", displayedBundleSha: "4c1f0a9be27d0000000000000000000000000000000000000000000000000000" } });
   assert.deepEqual(requests[1], { command: "media.review.decide", method: "POST", path: "/api/media/edit-versions/mev_mv3m2a9c_b2b2b2b2b2/decision", body: { kind: "CREATIVE_APPROVED", note: "" } });
   assert.equal(requests[2].path, "/api/media/edit-versions/mev_mv3m4k7e_d2d2d2d2d2/decision", "the vertical is approved on ITS edit version");
   assert.deepEqual(requests[3], { command: "media.rights.record", href: "#/studio/library" }, "rights are recorded in the existing Studio UI, not sent from the Room");
@@ -434,7 +434,8 @@ test("M11-UI-08 enabled states: owner session wording, one write at a time, acce
   assert.match(rowOf(variant(ready, (v) => { v.software.bundle = {}; }), "software").action.reason, /Nu există încă un pachet/);
   assert.equal(rowOf(variant(ready, (v) => { v.software.bundle.status = "REJECTED"; }), "software").state, "REJECTED");
   assert.equal(rowOf(variant(ready, (v) => { v.software.bundle.status = "REJECTED"; }), "software").action, null);
-  assert.equal(rowOf(variant(ready, (v) => { v.software.bundle.shaPrefix = ""; }), "software", { session: "open" }).action.enabled, false, "nothing displayed → nothing to bind the acceptance to");
+  assert.equal(rowOf(variant(ready, (v) => { v.software.bundle.sha = ""; }), "software", { session: "open" }).action.enabled, false, "a prefix cannot bind acceptance to the displayed bundle");
+  assert.equal(rowOf(variant(ready, (v) => { v.software.bundle.mismatch = true; }), "software", { session: "open" }).action.enabled, false, "a delivery bound to an older bundle cannot accept the latest one");
 
   // STALE variant: the past acceptance is historical, nothing new can be approved on old material.
   const sView = stale();
@@ -993,7 +994,7 @@ function loadRoomBundle() {
     const outDir = path.join(scratch, "out");
     await env.vite.build({
       configFile: false, root: scratch, cacheDir: path.join(scratch, ".vite"), logLevel: "silent", plugins: [env.react()],
-      define: { __UI_VERSION__: JSON.stringify("m11-ui-test"), __UI_CONTRACT__: "13" }, ssr: { noExternal: true },
+      define: { __UI_VERSION__: JSON.stringify("m11-ui-test"), __UI_CONTRACT__: "14" }, ssr: { noExternal: true },
       build: { ssr: entry, outDir, emptyOutDir: true, minify: false, rollupOptions: { output: { format: "esm", entryFileNames: "room.mjs" } } },
     });
     return { mod: await import(pathToFileURL(path.join(outDir, "room.mjs")).href) };
@@ -1209,7 +1210,7 @@ test("M11-UI-17 in a real browser: keyboard and focus, ONE answer per request, o
   fs.writeFileSync(path.join(app, "main.jsx"), clientMain());
   const dist = path.join(scratchDir(), "client-dist");
   await env.vite.build({ configFile: false, root: app, cacheDir: path.join(scratchDir(), ".vite-client"), logLevel: "silent", plugins: [env.react()],
-    define: { __UI_VERSION__: JSON.stringify("m11-ui-test"), __UI_CONTRACT__: "13" }, build: { outDir: dist, emptyOutDir: true, minify: false, chunkSizeWarningLimit: 10000 } });
+    define: { __UI_VERSION__: JSON.stringify("m11-ui-test"), __UI_CONTRACT__: "14" }, build: { outDir: dist, emptyOutDir: true, minify: false, chunkSizeWarningLimit: 10000 } });
   const TYPES = { ".html": "text/html; charset=utf-8", ".js": "text/javascript", ".css": "text/css" };
   const PNG = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==", "base64");
   const requested = [];
@@ -1311,7 +1312,7 @@ test("M11-UI-17 in a real browser: keyboard and focus, ONE answer per request, o
       others: [...document.querySelectorAll('[data-decision="creativeMaster"] button.approve, [data-decision="summaryReady"] button.approve, .delivery-verify button')].map((b) => b.disabled) })),
     { sends: 1, label: "Se verifică și se acceptă…", others: [true, true, true] });
     await s.page.waitForFunction(() => !document.querySelector('[data-decision="software"] button.approve').disabled);
-    assert.deepEqual(await calls(s.page, "send"), [{ kind: "send", path: "/api/deliveries/dlv_mv3k9q2a_7f3a9c1e2b/software-accept", body: { bundleId: "bnd_mv3k1p0z_0d9e8f7a6b", displayedBundleSha: "4c1f0a9be27d" } }]);
+    assert.deepEqual(await calls(s.page, "send"), [{ kind: "send", path: "/api/deliveries/dlv_mv3k9q2a_7f3a9c1e2b/software-accept", body: { bundleId: "bnd_mv3k1p0z_0d9e8f7a6b", displayedBundleSha: "4c1f0a9be27d0000000000000000000000000000000000000000000000000000" } }]);
     assert.equal(await s.page.evaluate(() => window.__reloads), 4, "the view is read again after every command (three revision answers, one acceptance)");
 
     // The summary: an edited section shows what a save would change; the approval refuses while the edit is unsaved; saving sends only the change.

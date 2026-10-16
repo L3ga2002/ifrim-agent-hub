@@ -5,6 +5,7 @@ import { useResource, useAction, pushToast } from "../../store.js";
 import { FACTORY_STAGE_RO, factoryPathOf, factoryWaitLabel, factoryProgress, formatMs, parseCriteriaLines, mergeCriteria, evidenceResult, evidenceStageLabel, testFirstSummary } from "../../lib/uiLogic.js";
 import { Panel, Empty, Loading, ErrorNotice, StatusChip, Notice, Chip, DiffView, Dialog } from "../../components/ui.jsx";
 import { boundaryOf } from "../../lib/environmentLogic.js";
+import { withReauth } from "../../lib/ownerSession.js";
 
 const SEVERITY_TONE = { critical: "error", high: "error", medium: "warn", low: "neutral", info: "neutral" };
 const EVIDENCE_TONE = { PASS: "ok", FAIL: "error", INCONCLUSIVE: "warn", BLOCKED: "error", NOT_RUN: "neutral", NEEDS_INSTALL_APPROVAL: "warn" };
@@ -210,7 +211,11 @@ export function FactoryPanel({ missionId }) {
   const [editingSpec, setEditingSpec] = useState(false);
   const [note, setNote] = useState("");
   const [showDiff, setShowDiff] = useState(false);
-  const act = useAction(async (path, body = {}) => { await api(`/api/factory/${missionId}/${path}`, { method: "POST", body }); reload(); });
+  const act = useAction(async (path, body = {}) => {
+    const send = () => api(`/api/factory/${missionId}/${path}`, { method: "POST", body });
+    if (path === "accept") await withReauth(send); else await send();
+    reload();
+  });
   const [reviewerModel, setReviewerModel] = useState(""); // the owner may pick an allowed reviewer model when resuming
   // M10.2 (U15): under voice-first the draft's scope is ONE plan in the cockpit; the M03 scope approval stays reachable, collapsed.
   const ownerStatus = useResource("/api/owner/status", { reloadOn: (e) => e.type === "settings.changed" && e.payload?.key === "ownerPolicy" });
@@ -328,7 +333,7 @@ export function FactoryPanel({ missionId }) {
             {f.stage === "DELIVERY_READY" && (
               <div className="row wrap">
                 <input className="input" value={note} onChange={(e) => setNote(e.target.value)} placeholder="Notă (opțional la acceptare, obligatorie la respingere)" />
-                <button className="btn primary" disabled={act.pending} onClick={() => act.run("accept", { note })} data-lega-target="factory-accept"><CheckCircle2 size={14} />Accept local</button>
+                <button className="btn primary" disabled={act.pending || latestBundle.status !== "READY_FOR_OWNER_ACCEPTANCE"} onClick={() => act.run("accept", { bundleId: latestBundle.id, bundleSha: latestBundle.sha256, note })} data-lega-target="factory-accept"><CheckCircle2 size={14} />Accept local</button>
                 <button className="btn" disabled={act.pending || note.trim().length < 3} onClick={() => act.run("reject", { note })}><XCircle size={14} />Resping</button>
               </div>
             )}

@@ -32,12 +32,15 @@ export function registerOwnerRoutes(router, hub) {
     const session = sessionOf(req);
     if (requireOwner && !session) throw new HubError("authentication", "Deschide sesiunea de proprietar (Windows Hello / cheia ta) pentru această acțiune", { data: { needSession: true } });
     const result = await commands.dispatch({ type, payload, actor: session ? `owner:${session.id}` : "user", channel: session ? "owner" : "ui", ownerSession: session,
-      idempotencyKey: req.headers["idempotency-key"] || null, intentText: type === "owner.intent" ? String(payload.text || "").slice(0, 500) : "" });
+      idempotencyKey: type === "factory.accept" ? null : req.headers["idempotency-key"] || null, intentText: type === "owner.intent" ? String(payload.text || "").slice(0, 500) : "" });
     if (result.approvalRequired) return { __status: 202, body: { approvalRequired: true, approval: result.approval, commandId: result.command.id } };
     return created ? { __status: 201, body: result.result } : result.result;
   }
 
   // ---------- trusted session ----------
+  post("/api/factory/:id/accept", ({ req, params, body }) => dispatch(req, "factory.accept", {
+    missionId: params.id, bundleId: body?.bundleId, bundleSha: body?.bundleSha, via: "factory_panel", note: body?.note || "",
+  }, { requireOwner: true }));
   get("/api/owner/status", ({ req }) => ({ ...trust.status(sessionOf(req, false)), origin: originOf(req), webauthnOrigin: `http://localhost:${config.port}`,
     autonomyLevels: AUTONOMY_LEVELS.map((l) => ({ level: l, label: AUTONOMY_LABELS[l] })), deniedEffects: DENIED_EFFECTS, projectStates: PROJECT_STATES }));
   post("/api/owner/register/begin", ({ req, body }) => dispatch(req, "owner.register.begin", { origin: originOf(req), setupText: body.setupText || "" }));

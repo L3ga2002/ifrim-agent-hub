@@ -180,6 +180,7 @@ export function notCurrentReason(view, node) {
   const d = obj(view?.delivery);
   const status = up(d.status);
   if (!node || typeof node !== "object") return { code: "MISSING", text: "nu există" };
+  if (node.mismatch === true) return { code: "BUNDLE_MISMATCH", text: "pachetul legat de livrare diferă de ultimul pachet al misiunii" };
   if (status === "STALE") return { code: "DELIVERY_STALE", text: str(d.statusReason).trim() || "baza livrării s-a schimbat" };
   if (NOT_CURRENT_DELIVERY.has(status)) return { code: `DELIVERY_${status}`, text: str(d.statusReason).trim() || `livrarea este ${(DELIVERY_STATUS[status] || [0, status.toLowerCase()])[1]}` };
   if (obj(d.verified).equal === false) return { code: "SNAPSHOT_DIFFERS", text: "workspace-ul diferă de versiunea testată" };
@@ -657,15 +658,15 @@ function softwareRow(view, ctx) {
   // Only a bundle sent without a status falls back to the block's word.
   const record = status || (present ? claimedState(view, "software") : "");
   const state = ["OWNER_ACCEPTED", "ACCEPTED"].includes(record) ? "DONE" : record === "REJECTED" ? "REJECTED" : "PENDING";
-  const displayed = str(b.sha) || str(b.shaPrefix);
+  const displayed = str(b.sha);
   let action = null;
   if (state === "PENDING") {
-    const base = { kind: "command", command: DECISION_COMMANDS.software, label: "Accept local", needsSession: true, fresh: false, enabled: true, reason: "",
+    const base = { kind: "command", command: DECISION_COMMANDS.software, label: "Accept local", needsSession: true, fresh: true, enabled: true, reason: "",
       request: present ? { method: "POST", path: deliveryActionPath(str(view?.delivery?.id), "softwareAccept"), body: { bundleId: str(b.id), displayedBundleSha: displayed } } : null };
     if (!present) action = { ...base, enabled: false, reason: "Nu există încă un pachet de livrare." };
     else if (why || status === "STALE") action = { ...base, enabled: false, reason: `Pachetul nu mai corespunde codului de acum: ${why?.text || "a fost înlocuit de unul mai nou"}.` };
     else if (status !== "READY_FOR_OWNER_ACCEPTANCE") action = { ...base, enabled: false, reason: `Pachetul nu așteaptă acceptarea (stare: ${status || "necunoscută"}).` };
-    else if (!displayed) action = { ...base, enabled: false, reason: "Lipsește amprenta pachetului afișat; reîncarcă pagina." };
+    else if (!/^[0-9a-f]{64}$/.test(displayed)) action = { ...base, enabled: false, reason: "Lipsește amprenta completă a pachetului afișat; reîncarcă pagina." };
     else if (captureRunning(view)) action = { ...base, enabled: false, reason: "Aștept capturile sau oprește planul: acceptarea ar opri preview-ul care se filmează." };
     else action = base;
   }

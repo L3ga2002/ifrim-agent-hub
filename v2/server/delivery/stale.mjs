@@ -228,9 +228,9 @@ export function documentsToRegenerate(updates, documents = []) {
 
 export const DELIVERY_STATUSES = Object.freeze(["PLANNED", "ARMED", "ACTIVE", "READY", "NEEDS_OWNER", "STALE", "CLOSED", "CANCELLED", "EXPIRED", "FAILED"]);
 export const DELIVERY_TRANSITIONS = Object.freeze({
-  PLANNED: Object.freeze(["ARMED", "ACTIVE", "CANCELLED"]),
-  ARMED: Object.freeze(["ARMED", "ACTIVE", "CANCELLED", "EXPIRED", "FAILED"]),
-  ACTIVE: Object.freeze(["READY", "NEEDS_OWNER"]),
+  PLANNED: Object.freeze(["ARMED", "ACTIVE", "CANCELLED", "STALE"]),
+  ARMED: Object.freeze(["ARMED", "ACTIVE", "CANCELLED", "EXPIRED", "FAILED", "STALE"]),
+  ACTIVE: Object.freeze(["READY", "NEEDS_OWNER", "STALE"]),
   // READY is permitted only through the verified correction finish path in the service.
   NEEDS_OWNER: Object.freeze(["ACTIVE", "STALE", "CLOSED", "ARMED", "READY"]),
   READY: Object.freeze(["NEEDS_OWNER", "STALE", "CLOSED"]),
@@ -252,7 +252,7 @@ const short = (v, n = 200) => String(v ?? "").replace(/\s+/g, " ").trim().slice(
  */
 export const RULES = Object.freeze({
   software_changed: Object.freeze({ mode: "STALE", code: "SOFTWARE_CHANGED", roots: "bundle", sweep: true, variants: true, documents: "STALE",
-    delivery: Object.freeze({ to: "STALE", from: Object.freeze(["READY", "NEEDS_OWNER"]) }), reason: (ctx) => `software-ul s-a schimbat: ${short(ctx.cause) || "versiunea verificată nu mai este cea din proiect"}` }),
+    delivery: Object.freeze({ to: "STALE", from: Object.freeze(["PLANNED", "ARMED", "ACTIVE", "READY", "NEEDS_OWNER"]) }), reason: (ctx) => `software-ul s-a schimbat: ${short(ctx.cause) || "versiunea verificată nu mai este cea din proiect"}` }),
   software_revision: Object.freeze({ mode: "STALE", code: "SOFTWARE_CHANGED", roots: "bundle", sweep: true, variants: true, documents: "STALE",
     delivery: Object.freeze({ to: "STALE", from: Object.freeze(["READY", "NEEDS_OWNER"]) }), reason: (ctx) => `revizie software în curs: misiunea ${short(ctx.missionId, 80) || "nouă"}` }),
   media_revision: Object.freeze({ mode: "SUPERSEDED", code: "", roots: "edit:master", sweep: false, variants: false, documents: "REGENERATE_VIDEO", delivery: null,

@@ -201,7 +201,8 @@ test("M11-SG-08 the delivery status machine: STALE and the closed states never l
   assert.deepEqual(Object.keys(DELIVERY_TRANSITIONS).sort(), [...DELIVERY_STATUSES].sort());
   for (const [from, to] of [["PLANNED", "ARMED"], ["PLANNED", "ACTIVE"], ["PLANNED", "CANCELLED"], ["ARMED", "ARMED"], ["ARMED", "ACTIVE"], ["ARMED", "EXPIRED"], ["ARMED", "FAILED"], ["ACTIVE", "READY"], ["ACTIVE", "NEEDS_OWNER"],
     ["NEEDS_OWNER", "ACTIVE"], ["NEEDS_OWNER", "STALE"], ["READY", "STALE"], ["READY", "CLOSED"], ["STALE", "CLOSED"], ["NEEDS_OWNER", "CLOSED"]]) assert.equal(canTransition(from, to), true, `${from}→${to}`);
-  for (const [from, to] of [["STALE", "READY"], ["STALE", "ACTIVE"], ["CLOSED", "READY"], ["CANCELLED", "ARMED"], ["EXPIRED", "ACTIVE"], ["FAILED", "ACTIVE"], ["READY", "ACTIVE"], ["PLANNED", "READY"], ["ACTIVE", "STALE"], ["X", "READY"]]) {
+  for (const from of ["PLANNED", "ARMED", "ACTIVE"]) assert.equal(canTransition(from, "STALE"), true, "an integrity refusal stales the delivery before preview/capture starts");
+  for (const [from, to] of [["STALE", "READY"], ["STALE", "ACTIVE"], ["CLOSED", "READY"], ["CANCELLED", "ARMED"], ["EXPIRED", "ACTIVE"], ["FAILED", "ACTIVE"], ["READY", "ACTIVE"], ["PLANNED", "READY"], ["X", "READY"]]) {
     assert.equal(canTransition(from, to), false, `${from}→${to}`);
   }
 });
@@ -222,9 +223,9 @@ test("M11-SG-09 rule software_changed / software_revision: the whole software-bo
   assert.deepEqual(r.documentUpdates, [{ id: "ddoc_1", status: "STALE", reason: r.reason }]);
   assert.deepEqual(r.delivery, { status: "STALE", reason: r.reason });
   assert.deepEqual(r.bundleMeta, []);
-  // From NEEDS_OWNER too; an ACTIVE delivery is not moved by this rule (its plan step fails and stops it first).
+  // The shared integrity decision refuses before activation or preview too.
   assert.equal(applyRule("software_changed", state({ delivery: { ...DELIVERY, status: "NEEDS_OWNER" } }), {}).delivery.status, "STALE");
-  assert.equal(applyRule("software_changed", state({ delivery: { ...DELIVERY, status: "ACTIVE" } }), {}).delivery, null);
+  for (const status of ["PLANNED", "ARMED", "ACTIVE"]) assert.equal(applyRule("software_changed", state({ delivery: { ...DELIVERY, status } }), {}).delivery.status, "STALE");
   // A missing link must not leave an old clip CURRENT: the sweep stales it and names it as an orphan.
   const unlinked = ITEMS().map((i) => (i.id === "exportV" ? { ...i, upstream_json: "[]" } : i));
   const swept = applyRule("software_changed", state({ items: unlinked }), { cause: "bundle nou" });

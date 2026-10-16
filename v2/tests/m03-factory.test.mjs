@@ -95,7 +95,7 @@ test("M03-FAC-01 Demo A (BUGFIX) simulated: spec v1 → approved scope → red b
     assert.equal(manifest.spec.criteria.find((c) => c.id === "AC-3").status, "PASS_REVIEW");
     assert.ok(manifest.limitations.some((l) => /SIMULARE/.test(l)));
 
-    const accepted = (await dispatch(t.hub, "factory.accept", { missionId, note: "Verificat în simulare" })).result;
+    const accepted = (await dispatch(t.hub, "factory.accept", { missionId, bundleId: bundle.id, bundleSha: bundle.sha256, note: "Verificat în simulare" })).result;
     assert.equal(accepted.factory.stage, "ACCEPTED");
     assert.equal(accepted.bundles.at(-1).status, "OWNER_ACCEPTED");
     assert.ok(accepted.tasks.every((task) => task.status === "COMPLETED"), JSON.stringify(accepted.tasks.map((x) => [x.title, x.status])));

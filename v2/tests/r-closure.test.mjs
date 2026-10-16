@@ -463,7 +463,7 @@ test("FAC-07 R-HIST-02 at the end: after DELIVERY_READY a retired copy or an ear
       if (tamper === "retired") fs.appendFileSync(path.join(t.dir, moved[0].to), "// alterat\n");
       else if (tamper === "active") fs.appendFileSync(path.join(t.dir, HIST), "// slăbit\n");
       else fs.copyFileSync(path.join(t.dir, moved[0].to), path.join(t.dir, "test/hub/alt-nume-cccccc.test.mjs"));
-      await assert.rejects(t.hub.factory.accept(m.id, { actor: "test" }), /STALE|Integritatea testelor Hub anterioare/, tamper);
+      await assert.rejects(t.hub.factory.accept(m.id, { actor: "test", bundleId: t.hub.factory.view(m.id).bundles.at(-1).id, bundleSha: t.hub.factory.view(m.id).bundles.at(-1).sha256 }), /STALE|Integritatea testelor Hub anterioare/, tamper);
       assert.notEqual(view(t, m.id).factory.stage, "ACCEPTED", tamper);
       const expected = { retired: `copia retrasă ${moved[0].to} a fost modificată`, active: `testul Hub anterior ${HIST} (misiunea ${view(t, m.id).spec.protected.historic.active[0].missionId}) a fost modificat`,
         renamed: `octeții testului retras ${moved[0].from} au reapărut ca test/hub/alt-nume-cccccc.test.mjs` }[tamper];

@@ -10,7 +10,7 @@ import { materializeFixture, demoSpec } from "../server/factory/fixtures.mjs";
 import { takeSnapshot } from "../server/factory/snapshot.mjs";
 import { buildEngineeringSpec } from "../server/owner/planners/engineering.mjs";
 import { canTransition } from "../server/delivery/stale.mjs";
-import { sha256 } from "../server/core/canonical.mjs";
+import { sha256, hashCanonical } from "../server/core/canonical.mjs";
 import { assembleTestFile, parseTapCases, classifyProof, lintTestBody, assertionInventory, removedAssertions, parseTestReview, parseAuthorOutput, buildAuthorBrief, buildTestReviewBrief, exportNamesOf } from "../server/factory/test-first.mjs";
 import { parseTestOutput, testStatus } from "../server/factory/runner.mjs";
 import { deriveCriteria } from "../server/owner/planners/criteria.mjs";
@@ -203,7 +203,7 @@ async function stateHub() {
   t.old = await prepareMission(t, demoSpec("booking-demo"));
   const { row, spec } = stored(t, t.old.id);
   const p = { files: { [oldRef]: sha256(oldText) }, authoring: { status: "PROTECTED", testRef: oldRef, protectedSha: sha256(oldText) } };
-  t.hub.db.prepare("UPDATE factory_specs SET status = 'APPROVED', spec_json = ?, protected_json = ? WHERE id = ?").run(JSON.stringify({ ...spec, ...oldSpec }), JSON.stringify(p), row.id);
+  t.hub.db.prepare("UPDATE factory_specs SET status = 'APPROVED', spec_json = ?, sha256 = ?, protected_json = ? WHERE id = ?").run(JSON.stringify({ ...spec, ...oldSpec }), hashCanonical({ ...spec, ...oldSpec }), JSON.stringify(p), row.id);
   t.hub.db.prepare("UPDATE factory_missions SET stage = 'ACCEPTED', approved_spec_version = 1 WHERE mission_id = ?").run(t.old.id);
   const built = buildEngineeringSpec({ text: words, project: t.project, hubTests: [{ ref: oldRef, sha256: sha256(oldText), text: oldText, missionId: t.old.id, specVersion: 1, previousSpec: oldSpec }] });
   assert.deepEqual(built.problems, []);
@@ -225,14 +225,23 @@ function recordStarted(t, { protectedTest = false, legacy = false } = {}) {
   if (legacy || protectedTest) { p.retired = retired; p.historic.retired = retired.map((r) => ({ ...r, retiredBy: t.child.id })); }
   t.hub.db.prepare("UPDATE factory_specs SET status = 'APPROVED', protected_json = ? WHERE id = ?").run(JSON.stringify(p), row.id);
   t.hub.db.prepare("UPDATE factory_missions SET approved_spec_version = 1, stage = 'NEEDS_OWNER_DECISION', started_at = ? WHERE mission_id = ?").run(new Date().toISOString(), t.child.id);
+  if (protectedTest) {
+    const base = takeSnapshot(t.dir, { mode: "walk", ignore: t.newSpec.workspace?.ignore || [] });
+    t.hub.db.prepare("INSERT INTO factory_snapshots (id, mission_id, seq, kind, manifest_json, sha256, created_at) VALUES ('s0r-child-base', ?, 1, 'base', ?, ?, ?)").run(t.child.id, JSON.stringify(base.files), base.sha256, new Date().toISOString());
+    t.hub.db.prepare("UPDATE factory_missions SET base_snapshot_id = 's0r-child-base' WHERE mission_id = ?").run(t.child.id);
+  }
   return p;
 }
 function parentDelivery(t) {
   const db = t.hub.db, snap = takeSnapshot(t.dir, { mode: "copy", ignore: ["data"] }), at = "2026-01-01T00:00:00.000Z";
   db.prepare("INSERT INTO factory_snapshots (id, mission_id, seq, kind, manifest_json, sha256, created_at) VALUES ('s0r-snap', ?, 1, 'base', ?, ?, ?)").run(t.old.id, JSON.stringify(snap.files), snap.sha256, at);
   db.prepare("UPDATE factory_missions SET base_snapshot_id = 's0r-snap' WHERE mission_id = ?").run(t.old.id);
-  db.prepare("INSERT INTO factory_change_sets (id, mission_id, seq, snapshot_id, changes_json, sha256, status, created_at) VALUES ('s0r-cs', ?, 1, 's0r-snap', '[]', ?, 'CURRENT', ?)").run(t.old.id, snap.sha256, at);
+  const csSha = hashCanonical({ snapshot: snap.sha256, changes: [] }), specSha = stored(t, t.old.id).row.sha256;
+  db.prepare("INSERT INTO factory_change_sets (id, mission_id, seq, snapshot_id, changes_json, sha256, status, created_at) VALUES ('s0r-cs', ?, 1, 's0r-snap', '[]', ?, 'CURRENT', ?)").run(t.old.id, csSha, at);
+  const manifest = { spec: { sha256: specSha }, changeSet: { id: 's0r-cs', sha256: csSha, snapshot: snap.sha256 } }, bundleSha = hashCanonical(manifest);
+  db.prepare("INSERT INTO factory_bundles (id, mission_id, change_set_id, change_set_sha, spec_version, manifest_json, sha256, status, created_at) VALUES ('bnd_s0r_parent',?,'s0r-cs',?,1,?,?,'OWNER_ACCEPTED',?)").run(t.old.id, csSha, JSON.stringify(manifest), bundleSha, at);
   db.prepare("INSERT INTO deliveries (id, project_id, title, status, mission_id, template_json, template_sha, ops_steps_json, ops_body_sha, snapshot_sha, created_by, created_at, updated_at) VALUES ('s0r-delivery', ?, 'Livrare sintetică', 'READY', ?, '{}', '', '[]', '', ?, 'test', ?, ?)").run(t.project.id, t.old.id, snap.sha256, at, at);
+  db.prepare("UPDATE deliveries SET bundle_id = 'bnd_s0r_parent', bundle_sha = ?, change_set_id = 's0r-cs' WHERE id = 's0r-delivery'").run(bundleSha);
   const d = t.hub.deliveries;
   const b = d.bindItem("s0r-delivery", { kind: "bundle", refTable: "synthetic", refId: "s0r-cs", refSha: snap.sha256 });
   const file = path.join(t.dataDir, "export.txt"); fs.writeFileSync(file, "verified render");
@@ -290,15 +299,15 @@ for (const action of ["stop", "reject"]) test(`S0R-10 ${action} before writer re
   } finally { await t.cleanup(); }
 });
 
-test("S0R-11 deadline hold is not definitive; retirement remains and parent stays READY", async () => {
+test("S0R-11 deadline hold is not definitive; retirement remains and the parent's own protected test is no longer current", async () => {
   const t = await stateHub();
   try {
     const id = parentDelivery(t); recordStarted(t, { protectedTest: true });
     t.hub.db.prepare("UPDATE factory_missions SET stage = 'BASELINE', deadline_at = '2000-01-01T00:00:00.000Z' WHERE mission_id = ?").run(t.child.id);
     await t.hub.factory.tick();
     assert.equal(readRetireJournal(t.project, t.child.id).status, "MOVED");
-    assert.equal(t.hub.deliveries.verify(id).equal, true);
-    assert.equal(t.hub.deliveries.get(id).status, "READY");
+    assert.equal(t.hub.deliveries.verify(id).equal, false);
+    assert.equal(t.hub.deliveries.get(id).status, "STALE");
   } finally { await t.cleanup(); }
 });
 
@@ -340,7 +349,7 @@ test("S0R-14 provenance is per path: staging, retirement and protected test qual
     write(t.dir, ".ifrim-hub/staging/unknown.mjs", "external");
     assert.deepEqual(t.hub.factory.driftProvenance(t.project.id, [".ifrim-hub/staging/unknown.mjs"]).software, [".ifrim-hub/staging/unknown.mjs"]);
     fs.unlinkSync(path.join(t.dir, ".ifrim-hub/staging/unknown.mjs"));
-    assert.equal(t.hub.deliveries.verify(id).equal, true);
+    assert.equal(t.hub.deliveries.verify(id).equal, false, "proven retirement does not replace this bundle's own protected test");
     write(t.dir, "src/external.js", "export const value = 2;");
     assert.equal(t.hub.deliveries.verify(id).equal, false);
     assert.equal(t.hub.deliveries.get(id).status, "STALE");
