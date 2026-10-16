@@ -101,3 +101,23 @@ test("M11-SU-07 exports: Markdown, and escaped self-contained HTML with no scrip
   assert.doesNotMatch(html, /https?:\/\/|<link|src=/);
   assert.match(toMarkdown(doc), /^# \[DATE SINTETICE\] Rezumat: /);
 });
+
+test('RCE-03 every criterion fallback cuts at a whole word, including provenance and failed criteria', () => {
+  const text = 'cuvânt '.repeat(21) + 'relaționare '.repeat(12);
+  const expected = max => text.trim().split(' ').reduce((out, word) => out.done ? out :
+    (out.text ? out.text.length + 1 : 0) + word.length <= max ? { text: out.text ? out.text + ' ' + word : word } : { ...out, done: true }, { text: '' }).text + '…';
+  for (const presentation of [null, { status: 'GENERATED', claims: [], key: null }]) {
+    const criteria = [{ id: 'AC-1', verify: 'test', text, status: 'PASS_EVIDENCE' }, { id: 'AC-2', verify: 'test', text, status: 'FAIL' }];
+    const doc = renderSummary(base({ block: null, presentation, proofs: { 'AC-1': { ok: true } }, manifest: { spec: { criteria } } }));
+    assert.ok(section(doc, 'demonstrated').text.includes(expected(200) + ': verificat'));
+    assert.ok(section(doc, 'cannot_claim').text.includes('AC-2 ' + expected(160) + ': FAIL'));
+    if (presentation) for (const id of ['AC-1', 'AC-2']) assert.ok(section(doc, 'provenance').text.includes(id + ' ' + expected(200) + ':'));
+  }
+  for (const text of ['x'.repeat(220), 'cuvânt\t'.repeat(40), 'x'.repeat(200) + ' final']) {
+    const doc = renderSummary(base({ block: null, manifest: { spec: { criteria: [{ id: 'AC-1', verify: 'test', text, status: 'PASS_EVIDENCE' }] } } }));
+    const prefix = section(doc, 'demonstrated').text.slice(2).split(': verificat')[0];
+    assert.ok(prefix.endsWith('…'));
+    const kept = prefix.slice(0, -1), normalized = text.replace(/\s+/g, ' ').trim();
+    assert.ok(!kept || (normalized.startsWith(kept) && normalized[kept.length] === ' '), 'never a partial token');
+  }
+});

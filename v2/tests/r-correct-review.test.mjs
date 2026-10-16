@@ -1,7 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { correctionEnv } from './correction-helpers.mjs';
-import { dedupeDefects, buildCorrectionRecord } from '../server/delivery/correction.mjs';
+import { dedupeDefects, groupDefects, buildCorrectionRecord } from '../server/delivery/correction.mjs';
+import { decisionsInbox } from '../server/delivery/inbox.mjs';
 import { hashCanonical } from '../server/core/canonical.mjs';
 import { correctionDryRun } from './manual/correction-dry-run.mjs';
 const id = 'dlv_correct';
@@ -187,7 +188,7 @@ test('RCD-08 audit de-duplicates bullet/plain findings and orders clips/captures
   const firstSummary = draft.audit.defects.findIndex(d => d.where.startsWith('summary.'));
   assert.ok(firstSummary > 0);
   assert.ok(draft.audit.defects.slice(firstSummary).every(d => d.where.startsWith('summary.')));
-  assert.equal(e.deliveries.view(id).correction.defects.length, draft.audit.defects.length);
+  assert.deepEqual(e.deliveries.view(id).correction.defects, groupDefects(draft.audit.defects));
   assert.deepEqual(draft.correction.defects, draft.audit.defects);
 });
 
@@ -236,9 +237,9 @@ test('RCD-13 card shows one actual-tone change per slot; summary preview uses cu
   const before = e.db.prepare('SELECT total_changes() n').get().n;
   const dry = await correctionDryRun({ dataRoot: e.config.dataDir, deliveryId: id });
   assert.equal(e.db.prepare('SELECT total_changes() n').get().n, before);
-  assert.deepEqual(dry.summaryPreview, draft.summaryPreview.sections);
+  assert.deepEqual(dry.summaryPreview.filter(s => s.id !== 'provenance'), draft.summaryPreview.sections.filter(s => s.id !== 'provenance'));
   assert.equal(dry.summaryPreview.find(s => s.id === 'video').text, '(după randare)');
-  for (const section of dry.summaryPreview) {
+  for (const section of draft.summaryPreview.sections) {
     const changed = section.text !== draft.summary.sections.find(s => s.id === section.id)?.text;
     assert.equal(dry.outputs.some(s => s.startsWith(`Rezumat, ${section.heading}:`)), changed);
   }
@@ -249,4 +250,37 @@ test('RCD-13 card shows one actual-tone change per slot; summary preview uses cu
   assert.notEqual(unproven.summaryPreview.find(s => s.id === 'problem').text, dry.summaryPreview.find(s => s.id === 'problem').text);
   assert.match(unproven.summaryPreview.find(s => s.id === 'cannot_claim').text, /Nu afirmăm:/);
   assert.ok(unproven.outputs.some(s => s.startsWith('hook (16:9):') && s.endsWith('→ «omis»')));
+});
+
+test('RCE-04 Room and correction card count distinct texts once and retain both reasons without changing audit records', async t => {
+  const sample = { code: 'SUMMARY_CITATION_UNBOUND', where: 'summary.how', text: 'same AC-99' };
+  const input = [sample, { ...sample, text: '- same AC-99', code: 'SUMMARY_LINE_NOT_CURATED' }, sample,
+    { ...sample, where: 'summary.benefits' }, { ...sample, itemId: 'other' }, { ...sample, text: 'other' }];
+  const before = hashCanonical(input), grouped = groupDefects(input);
+  assert.equal(grouped.length, 4);
+  assert.deepEqual(grouped[0].reasons.map(r => r.code), ['SUMMARY_CITATION_UNBOUND', 'SUMMARY_LINE_NOT_CURATED']);
+  assert.equal(grouped[0].plain.split('same AC-99').length - 1, 1);
+  for (const reason of grouped[0].reasons) assert.ok(grouped[0].plain.includes(reason.plain));
+  assert.equal(hashCanonical(input), before);
+  const e = await env(t), draft = e.deliveries.correctionDraft(id), auditSha = hashCanonical(draft.audit.defects);
+  await e.deliveries.proposeCorrection(id, { actor: 'hub' });
+  const room = e.deliveries.view(id).correction;
+  assert.equal(room.defectCount, new Set(draft.audit.defects.map(d => JSON.stringify([d.where, d.itemId || null, d.text.replace(/^- /, '')]))).size);
+  assert.equal(room.defects.length, room.defectCount);
+  assert.ok(room.defectCount < draft.audit.defects.length);
+  assert.ok(room.defects.some(d => d.reasons.some(r => r.code === 'SUMMARY_CITATION_UNBOUND') && d.reasons.some(r => r.code === 'SUMMARY_LINE_NOT_CURATED')));
+  const card = decisionsInbox({ db: e.db, deliveries: e.deliveries, factory: { list: () => [] }, projects: {} }).items.find(i => i.kind === 'delivery_correction');
+  assert.deepEqual(card.effects, room.defects.map(d => d.plain));
+  assert.equal(hashCanonical(draft.audit.defects), auditSha);
+});
+
+test('RCE-05 dry-run provenance shows runtime placeholder while persisted v1 and comparison stay unchanged', async t => {
+  const e = await env(t), before = e.db.prepare('SELECT * FROM delivery_documents').all();
+  const draft = e.deliveries.correctionDraft(id), dry = await correctionDryRun({ dataRoot: e.config.dataDir, deliveryId: id });
+  const provenance = dry.summaryPreview.find(s => s.id === 'provenance').text;
+  assert.equal(provenance.split('\n').filter(l => l.startsWith('- Generat ')).join('\n'), '- Generat (la rulare)');
+  assert.notEqual(provenance, draft.summaryPreview.sections.find(s => s.id === 'provenance').text);
+  assert.deepEqual(e.db.prepare('SELECT * FROM delivery_documents').all(), before);
+  assert.equal(dry.correctionSha, draft.correctionSha);
+  assert.deepEqual(dry.outputs, draft.correction.outputs);
 });

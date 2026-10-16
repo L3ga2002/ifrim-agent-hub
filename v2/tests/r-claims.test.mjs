@@ -186,6 +186,47 @@ test("RC-10 legacy presentation is generated from its own spec without rewriting
   const p = presentationForTemplate(t, factsOf()); assert.equal(p.status, "GENERATED"); assert.equal(p.origin, "legacy-generated"); assert.equal(hashCanonical(t), before);
   assert.equal(docOf(p).basis.origin, "legacy-generated");
 });
+
+test('RCE-01 problem cites requirements exactly, including resolved ids; verified/evidence/foreign citations fail', () => {
+  for (const renumber of [false, true]) {
+    const s = copy(spec); if (renumber) s.acceptance.forEach((c, i) => c.id = 'AC-' + (30 - i));
+    const p = resolve(s), f = factsOf(s), proofs = provePresentation(p, f), doc = docOf(p, f);
+    const claim = p.claims.find(c => c.key === 'summary.problem'), ids = claim.needs.map(n => n.id).join(', ');
+    const expected = `${claim.texts.text} (criteriile: ${ids})`;
+    assert.equal(doc.sections.find(s => s.id === 'problem').text.split('\n')[0], expected);
+    const check = text => summaryFactCheck({ doc: { sections: [{ id: 'problem', text }] }, presentation: p, proofs, spec: s });
+    assert.equal(check(expected).status, 'PASS');
+    for (const bad of [expected.replace('criteriile:', 'verificat:'), expected.replace('criteriile:', 'dovadă:'),
+      expected.replace(ids, 'AC-99'), expected.replace(ids, ids.split(', ').reverse().join(', ')), expected + ' AC-99', 'Alt text (criteriile: ' + ids + ')']) {
+      assert.ok(check(bad).findings.some(f => f.code === 'SUMMARY_CITATION_UNBOUND'), bad);
+    }
+    assert.equal(check(claim.texts.text).status, 'FAIL', 'the new requirement suffix is mandatory');
+    assert.equal(summaryFactCheck({ doc: { sections: [{ id: 'problem', text: expected }] }, presentation: p,
+      proofs: { ...proofs, [claim.needs[0].id]: { ok: false } }, spec: s }).status, 'FAIL');
+  }
+  const p = resolve(BOOKING_DEMO.spec), f = factsOf(BOOKING_DEMO.spec);
+  assert.equal(docOf(p, f).sections.find(s => s.id === 'problem').text.split('\n')[0], baseline.delivery.summary.problem);
+});
+
+test('RCE-02 curated flow has uncited exact lines and one resolved closing citation; foreign text/citations fail', () => {
+  for (const renumber of [false, true]) {
+    const s = copy(spec); if (renumber) s.acceptance.forEach((c, i) => c.id = 'AC-' + (30 - i));
+    const p = resolve(s), f = factsOf(s), proofs = provePresentation(p, f), doc = docOf(p, f);
+    const claim = p.claims.find(c => c.key === 'summary.how'), ids = claim.needs.map(n => n.id).join(', ');
+    const closing = `Flux verificat: ${ids}.`, lines = claim.texts.lines;
+    assert.equal(doc.sections.find(s => s.id === 'how').text, lines.map(t => '- ' + t).join('\n') + '\n' + closing);
+    const check = text => summaryFactCheck({ doc: { sections: [{ id: 'how', text }] }, presentation: p, proofs, spec: s });
+    for (const line of [...lines, closing]) assert.equal(check(line).status, 'PASS');
+    for (const bad of [lines[0] + ' alterat', `${lines[0]} (verificat: ${ids})`, `${lines[0]} (dovadă: ${ids})`,
+      closing.replace(ids, 'AC-99'), closing.replace(ids, ids.split(', ').reverse().join(', ')), closing.slice(0, -1)]) assert.equal(check(bad).status, 'FAIL', bad);
+    const missing = { ...proofs, [claim.needs[0].id]: { ok: false } };
+    assert.equal(summaryFactCheck({ doc, presentation: p, proofs: missing, spec: s }).status, 'FAIL');
+    const omitted = renderSummary({ presentation: p, proofs: missing, manifest: f.manifest, generatedAt: 'test' });
+    assert.doesNotMatch(omitted.sections.find(s => s.id === 'how').text, /Flux verificat:/);
+  }
+  const p = resolve(BOOKING_DEMO.spec), f = factsOf(BOOKING_DEMO.spec);
+  assert.equal(docOf(p, f).sections.find(s => s.id === 'how').text, baseline.delivery.summary.how.lines.map(t => '- ' + t).join('\n'));
+});
 test("RC-11 planner first-generation pins survive; two revision generations fill and label each field once", () => {
   const flows = BOOKING_DEMO.spec.acceptance.filter(c => c.verify === "e2e");
   for (const pin of baseline.derive) assert.equal(hashCanonical(deriveCriteria({ words: pin.words, flows })), pin.sha);
@@ -241,6 +282,8 @@ test("RC-18 original booking prose and summary sections remain byte-identical wi
   const current = renderSummary({ ...input, presentation: p, proofs: provePresentation(p, f) });
   assert.equal(current.text, previous.text);
   assert.equal(current.contentSha, previous.contentSha);
+  const pinned = renderSummary({ presentation: p, proofs: provePresentation(p, f), manifest: { spec: { criteria: f.manifest.spec.criteria } }, generatedAt: input.generatedAt });
+  assert.equal(pinned.contentSha, '7c6d1b429b7959baadcdf37b349e62830f91035f89cf096d9b364147b3c781d0', 'full booking summary hash computed from 112764c before round E');
   assert.equal(summaryFactCheck({ doc: current, presentation: p, proofs: provePresentation(p, f), spec: f.spec }).status, "PASS");
 });
 

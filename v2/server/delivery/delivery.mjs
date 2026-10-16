@@ -26,7 +26,7 @@ import { buildTemplate, templateSha, sectionOf, packageSteps, eligibility, PACKA
 import { itemOf, applyRule, currentView, slotsComplete, previousOf, documentOf, canTransition } from "./stale.mjs";
 import { renderSummary, summaryFactCheck, editSummary, regenerateSummary, toMarkdown, toHtml } from "./summary.mjs";
 import { writeNew } from "./files.mjs";
-import { presentationAudit, buildCorrectionRecord, overlayCorrection, correctionSteps, CORRECTION_KIND, LIVE_CORRECTION, irMetadata } from "./correction.mjs";
+import { presentationAudit, buildCorrectionRecord, overlayCorrection, correctionSteps, CORRECTION_KIND, LIVE_CORRECTION, irMetadata, groupDefects } from "./correction.mjs";
 import { captureScriptFrom } from "./template.mjs";
 
 /** The operations a derived delivery plan may contain (and nothing else: no model, no app, no decision). */
@@ -813,7 +813,7 @@ export function createDeliveries({ db, bus, clock, config, settings, projects, m
       .map((r) => opsPlans.view(r.id)).filter(Boolean).map((p) => ({ id: p.id, kind: p.kind, status: p.status, steps: p.steps.map((s) => ({ seq: s.seq, title: s.title, status: s.status, kind: s.kind })) }));
     const observations = [];
     let defects = [];
-    if (['READY', 'NEEDS_OWNER', 'STALE'].includes(d.status)) try { defects = correctionFacts(d.id).audit.defects; } catch { /* incomplete facts */ }
+    if (['READY', 'NEEDS_OWNER', 'STALE'].includes(d.status)) try { defects = groupDefects(correctionFacts(d.id).audit.defects); } catch { /* incomplete facts */ }
     const correctionPlan = plans.find(p => p.kind === CORRECTION_KIND && LIVE_CORRECTION.includes(p.status));
     const recovery = unfinishedCorrection(d);
     const correction = { available: ['READY', 'NEEDS_OWNER'].includes(d.status) && (defects.length > 0 || Boolean(recovery)), reason: recovery ? recoveryReason : null, defectCount: defects.length, defects, plan: correctionPlan ? { id: correctionPlan.id, status: correctionPlan.status } : null,

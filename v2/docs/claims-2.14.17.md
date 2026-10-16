@@ -347,3 +347,52 @@ Not run:
 5. The requested real Chromium/ffmpeg RCO-04 is treated as the narrow loopback/browser exception to the offline rule. Other network/browser tests remain excluded. The UI change was checked through compilation and static rendering, without substituting Chromium for Brave visual QA.
 
 No edits to `v2/tests/helpers.mjs`, `DecisionInbox.jsx`, migrations, the node_modules junction or files outside the repository. No credential-folder read, model invocation, installation, live-data access or git state-changing command was used. No commit was created.
+
+## Round E — summary wording polish (2026-10-16)
+
+Implemented on `112764c`, branch `claude/project-thread-98qmet`, without committing. Version remains 2.14.17-m11, schema 12, API contract 13 additive. Stored documents, templates, correction records, plan bodies, specs, bundles and edit IRs are not rewritten.
+
+| Spec E item | Change | Regression proof |
+| --- | --- | --- |
+| 1 — problem is a requirement | The curated problem ends with `(criteriile: <resolved ids>)`. The fact checker accepts only that text and suffix; it refuses verified/evidence suffixes, different text, foreign ids and reordered ids. Booking keeps its unsuffixed problem. | `r-claims` RCE-01 checks normal and renumbered specs, all rejected forms, missing evidence and booking compatibility. RC-18 pins the entire booking summary to the pre-E renderer. |
+| 2 — one flow citation | Curated flow bullets contain the exact uncited claim lines, followed by one `Flux verificat: <resolved ids>.` line. The fact checker accepts exact lines and the closing citation only for the shown flow claim. Booking keeps its previous output. | `r-claims` RCE-02 checks exact output, renumbering, rejected per-line citations/foreign prose/wrong closing ids or punctuation, missing proof and booking compatibility; RC-18 covers the full booking summary. |
+| 3 — whole-word truncation | Provenance, passed-criterion fallbacks (including the legacy block path), failed-criterion prose and claims-to-verify use the same word-boundary truncator. | `m11-summary` RCE-03 covers long passed/failed texts, generated/legacy paths, provenance, whitespace, an exact-boundary word and an oversized single token. |
+| 4 — distinct affected texts | Room defects group by `where + itemId + text` after removing a leading `- `. Each text appears once with every reason in additive `reasons` and in its Romanian `plain` text. `defectCount` is the grouped length. The correction inbox card consumes those same rows. | `r-correct-review` RCE-04 checks grouping keys, bullet normalization, both codes/reasons, one occurrence, Room count, actual inbox-card effects and unchanged audit input. RCD-08 retains audit ordering coverage. `m11-ui-logic` UI-16 statically renders one problem with both reasons. |
+| 5 — dry-run generation time | Only the returned dry-run provenance preview replaces `Generat <time>` with `Generat (la rulare)`. | `r-correct-review` RCE-05 checks the exact placeholder, unchanged persisted v1 rows and unchanged correction hash/output comparison. RCD-13 still checks the rest of the preview and section-change output. |
+
+### Round E verification
+
+Each file ran separately and sequentially with `C:\Program Files\nodejs\node.exe --test --test-concurrency=1 --test-reporter=tap`, preloading `claims-offline-guard.mjs`. TEMP/TMP point inside the workspace. Commands, exact name filters, counts and TAP logs are in `.tmp-s25-a/round-e-run.mjs` and `.tmp-s25-a/round-e-results/`.
+
+| File in `v2/tests/` | Tests | Pass | Fail | Skipped | Cancelled | Todo |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| r-claims.test.mjs | 21 | 21 | 0 | 0 | 0 | 0 |
+| r-claims-review.test.mjs | 6 | 6 | 0 | 0 | 0 | 0 |
+| r-correct.test.mjs | 10 | 10 | 0 | 0 | 0 | 0 |
+| r-correct-review.test.mjs | 13 | 13 | 0 | 0 | 0 | 0 |
+| m11-summary.test.mjs | 8 | 8 | 0 | 0 | 0 | 0 |
+| m11-ui-logic.test.mjs | 18 | 18 | 0 | 0 | 0 | 0 |
+| Total selected | 76 | 76 | 0 | 0 | 0 | 0 |
+
+Name-filtered exclusions are not counted as Node skips. The eight changed JavaScript modules passed `node --check`; `git diff --check` passed. UI verification compiled the actual components and rendered static markup; no browser was launched.
+
+The booking renderer was also compared directly with source read from commit `112764c` for identical inputs: full output is byte-identical, with content SHA `7c6d1b429b7959baadcdf37b349e62830f91035f89cf096d9b364147b3c781d0`. This value is now pinned in RC-18; the comparison script/result are `.tmp-s25-a/round-e-compat.mjs` and `round-e-results/booking-compat.json`. Existing first-generation planner and legacy-template hash assertions pass.
+
+Two test-setup mistakes were corrected during verification: the new inbox test initially passed `source` instead of the proposal API's `actor`, and the standalone booking-pin setup initially omitted proof fingerprints, producing a hash for omitted claims. After fixing those setups, correction-review passed 13/13 and claims passed 21/21. Initial failing TAP files are retained. No timing failure occurred.
+
+Not run:
+
+- RCO-04: the user explicitly requested it but also prohibited all network. This test starts a temporary loopback HTTP server and browser. A narrow loopback exception using Brave was requested; no approval was received during this round. The earlier round D Chromium exception was not assumed to override the current guardrails/browser preference. The other ten RCO tests passed.
+- M11-UI-17: browser/loopback integration, excluded under the strict offline rule. Brave's executable exists, but no Brave visual QA is claimed.
+- Full repository suite, live Hub/port 8011, live-data access, production-copy dry-run, network, models, npm install, media recapture/rendering, Word/Excel COM and PDF application verification. These were outside the permitted offline scope; the dry-run regression used a synthetic temporary database.
+
+### Round E implementation decisions
+
+1. Grouping is a read-only owner-facing projection. Raw audit findings and correction-record defects retain their existing per-code shape; grouped Room rows retain the first `code` for compatibility and add all `reasons`. This preserves existing audit consumers and stored correction hashes while fixing Room/card counts and wording.
+2. The new flow closing citation is a separate unbulleted line immediately after the flow bullets. Demonstration/benefit citation rules and owner-authored section exemptions remain unchanged.
+3. Whitespace is normalized before criterion truncation. If the first token alone exceeds the length budget, it is omitted and only `…` remains; no token is split. Criterion ids/status/verification labels remain visible outside the shortened text.
+4. The dry-run placeholder is applied after correction-plan comparison, only to returned preview sections. Comparison retains the previous generation timestamp to avoid a timestamp-only change; real execution still records the actual generation time.
+
+Changed implementation files: `server/delivery/summary.mjs` (wording, matching, truncation), `server/delivery/correction.mjs` (owner-facing grouping), `server/delivery/delivery.mjs` (grouped Room projection), and `tests/manual/correction-dry-run.mjs` (preview timestamp). Regression changes are in `r-claims`, `r-correct-review`, `m11-summary` and `m11-ui-logic`.
+
+No edits to `v2/tests/helpers.mjs`, `DecisionInbox.jsx`, migrations, the node_modules junction or files outside the repository. No credential-folder read, model invocation, network request, installation, live-data access or git state-changing command was used. No commit was created.

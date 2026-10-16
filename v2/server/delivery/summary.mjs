@@ -28,7 +28,12 @@ export const SECTION_BASIS = Object.freeze({
 const PASS = (c) => PASS_BY_METHOD[c?.verify]?.includes(c.status) === true;
 export const SECTION_BASES = Object.freeze(Object.fromEntries(Object.entries(SECTION_BASIS).map(([k, v]) => [k, Object.freeze([v, ...(["software", "template"].includes(v) ? ["claims"] : [])])])));
 const bullets = (lines) => lines.map((l) => `- ${l}`).join("\n");
-const fallbackText = (value, max = 200) => { const s = String(value || '').trim(); if (s.length <= max) return s; const cut = s.slice(0, max + 1).lastIndexOf(' '); return s.slice(0, cut > 0 ? cut : max).trimEnd() + '…'; };
+const fallbackText = (value, max = 200) => {
+  const s = String(value || '').replace(/\s+/g, ' ').trim();
+  if (s.length <= max) return s;
+  const cut = s.slice(0, max + 1).lastIndexOf(' ');
+  return (cut > 0 ? s.slice(0, cut).trimEnd() : '') + '…';
+};
 
 // ---------- fact guard ----------
 const FACT_PATTERNS = Object.freeze([
@@ -126,12 +131,11 @@ export function renderSummary(input) {
   const shownClaim = key => states.find(c => c.key === key && c.result.shown);
   const group = prefix => states.filter(c => c.key.startsWith(prefix) && c.result.shown).map(c => ({ text: c.texts.text, criteria: c.needs.map(n => n.id) }));
   const pc = shownClaim("summary.problem"), hc = shownClaim("summary.how");
-  const suffix = c => " (verificat: " + c.needs.map(n => n.id).join(", ") + ")";
   // The original booking story keeps its established problem/flow wording byte for byte.
   const compat = presentation?.key === "booking-mobile-fix";
-  const block = presentation ? { summary: { problem: pc ? pc.texts.text + (compat ? "" : suffix(pc)) : null,
+  const block = presentation ? { summary: { problem: pc ? pc.texts.text + (compat ? "" : " (criteriile: " + pc.needs.map(n => n.id).join(", ") + ")") : null,
     demonstrates: group("summary.demonstrates."), benefits: group("summary.benefits."),
-    how: hc ? { criteria: hc.needs.map(n => n.id), lines: hc.texts.lines.map(t => t + (compat ? "" : suffix(hc))) } : null,
+    how: hc ? { criteria: hc.needs.map(n => n.id), lines: hc.texts.lines } : null,
     questions: presentation.questions } } : input?.block;
   const criteria = Array.isArray(manifest.spec?.criteria) ? manifest.spec.criteria : [];
   const passes = c => presentation ? proofs[c.id]?.ok === true : PASS(c);
@@ -146,19 +150,20 @@ export function renderSummary(input) {
   const problemLine = pc ? block.summary.problem : clean(block?.summary?.problem || issue || manifest.mission?.title, 240);
   tpl("problem", [problemLine, "Demo local pentru prezentare, cu date sintetice; nu este un sistem în producție."].filter(Boolean).map((l) => assertNoInventedFacts(l, "problema")).join("\n"));
 
-  const passLines = criteria.filter(passes).map((c) => `${presentation ? fallbackText(c.text) : clean(c.text, 200)}: verificat ${verifiedHow(c)}.`);
+  const passLines = criteria.filter(passes).map((c) => `${fallbackText(c.text)}: verificat ${verifiedHow(c)}.`);
   const shown = (block?.summary?.demonstrates || []).filter((b) => allPass(b.criteria)).map((b) => `${assertNoInventedFacts(b.text, "ce demonstrăm")} (verificat: ${b.criteria.join(", ")})`);
   if (shown.length) tpl("demonstrated", `${bullets(shown)}\n\nVerificări tehnice trecute: ${passLines.length} din ${criteria.length} (lista e în „Trasabilitate”).`);
   else tpl("demonstrated", presentation?.status === "CURATED" ? "Nimic nu este încă verificat în această versiune." : passLines.length ? bullets(passLines) : "Nimic nu este încă verificat în această versiune.");
 
   const how = block?.summary?.how;
-  if (how?.lines?.length && allPass(how.criteria)) tpl("how", bullets(how.lines.map((l) => assertNoInventedFacts(l, "cum funcționează"))));
+  if (how?.lines?.length && allPass(how.criteria)) tpl("how", bullets(how.lines.map((l) => assertNoInventedFacts(l, "cum funcționează")))
+    + (presentation?.status === "CURATED" && !compat ? `\nFlux verificat: ${how.criteria.join(", ")}.` : ""));
   else tpl("how", how?.lines?.length ? `Fluxul nu e verificat cap-coadă în această versiune (${how.criteria.filter((id) => !passed.has(id)).join(", ")} nu au trecut).` : "Fluxul se descrie după prezentare, pe baza demo-ului.");
 
   const benefits = (block?.summary?.benefits || []).filter((b) => allPass(b.criteria)).map((b) => `${assertNoInventedFacts(b.text, "beneficii")} (dovadă: ${b.criteria.join(", ")})`);
   tpl("benefits", benefits.length ? bullets(benefits) : presentation && passed.size ? "Nicio afirmație curată nu se aplică acestei specificații; criteriile trecute sunt în „Ce demonstrăm” și „Trasabilitate”." : "Niciun beneficiu nu poate fi afirmat încă: criteriile lui nu au trecut.");
 
-  const notPassed = criteria.filter((c) => !passes(c)).map((c) => `${c.id} ${clean(c.text, 160)}: ${c.status}${c.note ? ` (${clean(c.note, 120)})` : ""}`);
+  const notPassed = criteria.filter((c) => !passes(c)).map((c) => `${c.id} ${fallbackText(c.text, 160)}: ${c.status}${c.note ? ` (${clean(c.note, 120)})` : ""}`);
   for (const l of notPassed) claims.push(l);
   const priceConfigured = services.some((s) => priceText(s));
   const omitted = states.filter(c => c.key.startsWith("summary.") && !c.result.shown).map(c => `Nu afirmăm: «${c.texts.text || c.texts.lines?.join(" ") || ""}» — ${c.result.plain}`);
@@ -186,7 +191,7 @@ export function renderSummary(input) {
   const files = (cs.files || []).map((f) => clean(f.path, 120)).filter(Boolean);
   sections.provenance = { id: "provenance", heading: SECTION.provenance.heading, source: "bundle", auto: true,
     text: bullets([`Pachet verificat ${clean(bundleId, 60)} (${String(bundleSha).slice(0, 12)})`, `Set de modificări ${String(cs.sha256 || "").slice(0, 12)}, snapshot ${String(cs.snapshot || "").slice(0, 12)}${files.length ? `; fișiere: ${files.join(", ")}` : ""}`,
-      `Specificația v${manifest.spec?.version ?? "?"}`, ...((shown.length || presentation) ? criteria.map((c) => `${c.id} ${clean(c.text, 200)}: ${c.status}${PASS(c) ? ` (verificat ${verifiedHow(c)})` : ""}`) : []), `Generat ${generatedAt}`]) };
+      `Specificația v${manifest.spec?.version ?? "?"}`, ...((shown.length || presentation) ? criteria.map((c) => `${c.id} ${fallbackText(c.text)}: ${c.status}${PASS(c) ? ` (verificat ${verifiedHow(c)})` : ""}`) : []), `Generat ${generatedAt}`]) };
 
   const materials = materialLines(owner);
   for (const m of materials) claims.push(`Material de prezentare: ${m}`);
@@ -286,10 +291,13 @@ export function summaryFactCheck({ doc, presentation, proofs = {}, spec }) {
     const part = c.key.split(".")[1], section = part === "demonstrates" ? "demonstrated" : part;
     if (!allowed.has(section)) continue;
     const ids = c.needs.map(n => n.id).join(", ");
+    const compat = presentation.key === "booking-mobile-fix";
     for (const text of c.texts.lines || [c.texts.text]) {
-      for (const suffix of [" (verificat: " + ids + ")", " (dovadă: " + ids + ")"]) allowed.get(section).add(text + suffix);
-      if (presentation.key === "booking-mobile-fix" && ["problem", "how"].includes(section)) allowed.get(section).add(text);
+      if (section === "problem") allowed.get(section).add(text + (compat ? "" : ` (criteriile: ${ids})`));
+      else if (section === "how") allowed.get(section).add(text);
+      else for (const suffix of [" (verificat: " + ids + ")", " (dovadă: " + ids + ")"]) allowed.get(section).add(text + suffix);
     }
+    if (section === "how" && presentation.status === "CURATED" && !compat) allowed.get(section).add(`Flux verificat: ${ids}.`);
   }
   if (presentation?.status === "GENERATED") for (const c of spec?.acceptance || []) if (proofs[c.id]?.ok) allowed.get("demonstrated").add(fallbackText(c.text) + ": verificat " + verifiedHow(c) + ".");
   // Fixed template prose is allowed by exact line; arbitrary claimless prose is not evidence.

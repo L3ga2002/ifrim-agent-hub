@@ -16,6 +16,29 @@ export function dedupeDefects(defects) {
     seen.add(key); return true;
   }).sort((a, b) => Number(a.where.startsWith('summary.')) - Number(b.where.startsWith('summary.')));
 }
+// Owner-facing rows count affected texts; the audit retains every individual code.
+export function groupDefects(defects) {
+  const groups = new Map();
+  for (const d of dedupeDefects(defects)) {
+    const text = d.text.replace(/^- /, ''), key = JSON.stringify([d.where, d.itemId || null, text]);
+    if (!groups.has(key)) groups.set(key, { ...d, text, reasons: [] });
+    const group = groups.get(key);
+    if (!group.reasons.some(r => r.code === d.code)) group.reasons.push({ code: d.code, plain: defectReason(d.code) });
+  }
+  return [...groups.values()].map(d => ({ ...d, plain: `${d.where}: ${d.text} — ${d.reasons.map(r => r.plain).join('; ')}` }));
+}
+function defectReason(code) {
+  return ({
+    SUMMARY_CITATION_UNBOUND: 'citarea nu corespunde afirmației aprobate',
+    SUMMARY_LINE_NOT_CURATED: 'textul nu aparține prezentării aprobate',
+    NARRATIVE_FROM_OTHER_SPEC: 'problema descrie altă specificație',
+    TEXT_CITES_WRONG_CRITERION: 'textul citează alte criterii',
+    TEXT_NOT_CURATED: 'textul nu aparține prezentării aprobate',
+    CAPTURE_STEPS_OUTDATED: 'pașii capturați diferă de cei aprobați',
+    CAPTURE_POSTCONDITION_FAILED: 'tastarea nu a produs valoarea cerută',
+    CAPTURE_PROVENANCE: 'proveniența capturii nu este confirmată',
+  })[code] || code;
+}
 export function irMetadata(ir) {
   const fps = (ir?.fps?.num || 30) / (ir?.fps?.den || 1);
   const textItems = (ir?.tracks || []).filter(t => t.kind === "text").flatMap(t => t.items).filter(i => /^t-/.test(i.id)).map(({ id, text, start, end }) => ({ id, text, start, end }));

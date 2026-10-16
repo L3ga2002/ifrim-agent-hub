@@ -42,6 +42,7 @@ import {
   revisionBody, revisionOutcome, clarificationReply, revisionRows, planRows, repackageState, observationRows, spineTiles, currentEvidence, cockpitDeliveryCard, sentence,
 } from "../web/src/lib/deliveryLogic.js";
 import { NOT_CONFIGURED_TEXT as SALES_NOT_CONFIGURED } from "../web/src/lib/salesLogic.js";
+import { groupDefects } from '../server/delivery/correction.mjs';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const V2 = path.resolve(here, "..");
@@ -1021,6 +1022,13 @@ test("M11-UI-16 the Room renders the six deliverables and five decisions from th
   for (const phrase of ['Pregătește corectura', 'Citarea mobilă este greșită.', 'propusă de Hub', 'Versiunile rezumatului', 'aprobată de tine', 'neaprobată', 'corectura v1 a schimbat faptele']) assert.ok(correctedText.includes(phrase), phrase);
   assert.ok(!correctedText.includes('Ce ai cerut până acum'), 'Hub corrections are never attributed to the owner');
   for (const label of ['Aprobă creația 16:9', 'Aprobă creația 9:16', 'Gata de prezentare']) assert.match(correctedHtml, new RegExp('<button[^>]*disabled=""[^>]*>' + label + '</button>'));
+  const grouped = groupDefects(['SUMMARY_CITATION_UNBOUND', 'SUMMARY_LINE_NOT_CURATED'].map(code => ({ code, where: 'summary.how', text: 'Text defect unic AC-99' })));
+  const groupedView = structuredClone(correction);
+  groupedView.correction.defects = grouped; groupedView.correction.defectCount = grouped.length;
+  const groupedText = textOf(render(groupedView));
+  assert.ok(groupedText.includes('(1 probleme)'));
+  assert.equal(groupedText.split('Text defect unic AC-99').length - 1, 1);
+  for (const reason of grouped[0].reasons) assert.ok(groupedText.includes(reason.plain));
   correction.correction.plan = { id: 'opp_hub', status: 'PROPOSED' };
   assert.ok(!textOf(render(correction)).includes('Pregătește corectura'), 'a live card is not duplicated');
   correction.correction.plan = null; correction.delivery.status = 'NEEDS_OWNER';
