@@ -19,6 +19,9 @@ export const HUB_VERSION = "2.15.0-m12"; // M12 Sales: owner-verified internal o
 // (lega.plan), intake choice/clarification, work requests, liveScopes, media tools pin/acknowledge.
 // 2.12.2 keeps 12: its fields are additive (gate.rearm ackLeases, the card's leases / scope, reopened:false for scope "leases", the plan
 // summary's limits line, the factory view's turnLimits / turnRetry, the probe's ownerList / breakdown / aliases).
+// 15 also carries additive M12 Sales fields (schema 13): sales.evidence.add dataKind / basis / reasoning, evidence rows dataKind / basis /
+// reasoning, sales.org.qualify formula (q-v1 default) with q-v2 results' inferences / unproven / missing, and on the preparation path only
+// (a brief given) proposal content pricing[] and section "request".
 export const API_CONTRACT = 15; // 15: Sales approve requires owner + exact SHA; override requires owner + displayedQualificationId; owner_decide records authority; execute carries the owner session and returns the original decision on replay.
 export const DEFAULT_PORT = 8011;
 export const DEFAULT_HOST = "127.0.0.1";

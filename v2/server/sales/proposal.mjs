@@ -16,6 +16,8 @@ import { redactText } from "../security/redact.mjs";
  */
 
 const NOT_CONFIGURED = "De stabilit (neconfigurat)";
+/** M12 C-02: a price or a term the catalog does not configure is the explicit state UNKNOWN with this reason (never 0, never estimated). */
+const UNKNOWN_PRICE_REASON = "catalog neconfigurat";
 const VERIFIED_FOR_TEXT = new Set(["OBSERVED", "USER_PROVIDED"]);
 const KNOWN_LABELS = new Set(["OBSERVED", "USER_PROVIDED", "SOURCE_REPORTED", "INFERRED", "UNKNOWN"]);
 const MAX_DRAFT_OBSERVATIONS = 3;
@@ -115,13 +117,33 @@ function pickServices(opportunity, services) {
 }
 
 /**
+ * „Ce s-a cerut” (M12): the client's need exactly as the owner stated it in the brief (a USER_PROVIDED statement with its
+ * `brief:<id>#problem` source). Only the verbatim problem enters the client text: inferred fields, the budget and the deadline of the
+ * brief stay internal. Null when the brief has no stated problem.
+ */
+function requestSection(brief) {
+  const problem = brief?.fields?.problem;
+  if (!problem || problem.provenance !== "USER_PROVIDED") return null;
+  const said = clean(problem.value, 300);
+  if (!said) return null;
+  const id = clean(brief.id, 80);
+  const source = `brief${id ? `:${id}` : ""}#problem`;
+  return { section: { id: "request", heading: "Ce s-a cerut", text: bullets([`${said} (sursa: ${source}; USER_PROVIDED)`]) },
+    evidenceId: problem.evidenceId ? String(problem.evidenceId) : null };
+}
+
+/**
  * Proposal text for one opportunity.
  * @returns {{ title: string, sections: { id: string, heading: string, text: string }[], claimsToVerify: string[],
  *   usedEvidenceIds: string[], warnings: string[], text: string,
- *   observations: { text: string, evidenceId: string|null, checkId?: string, label: string }[], serviceNames: string[] }}
+ *   observations: { text: string, evidenceId: string|null, checkId?: string, label: string }[], serviceNames: string[],
+ *   pricing?: { item: "price"|"leadTime", serviceId: string|null, status: "CONFIGURED"|"UNKNOWN", text: string, reason?: string }[] }}
  * `observations` and `serviceNames` are additive fields read by `renderContactDraft` (personalization with provenance).
+ * With a `brief` (M12 preparation path only) the proposal gains the section `request` („Ce s-a cerut”) after the context and the
+ * field `pricing`, which states every price and term explicitly: CONFIGURED with the catalog text, or UNKNOWN with the reason
+ * „catalog neconfigurat”. Without a brief (M04) the output is exactly the M04 output: nine sections, no `pricing`, the same content sha.
  */
-export function renderProposal({ org = null, opportunity = null, services = [], evidence = [], audit = null, owner = {} } = {}) {
+export function renderProposal({ org = null, opportunity = null, services = [], evidence = [], audit = null, owner = {}, brief = null } = {}) {
   const ev = arr(evidence).filter((e) => e && typeof e === "object");
   const warnings = [];
   const claims = [];
@@ -183,6 +205,10 @@ export function renderProposal({ org = null, opportunity = null, services = [], 
   const exclusions = [];
   const neededMaterials = [];
   const priceLines = [];
+  const pricing = [];
+  const priced = (item, serviceId, configured) => (configured
+    ? { item, serviceId, status: "CONFIGURED", text: configured }
+    : { item, serviceId, status: "UNKNOWN", text: NOT_CONFIGURED, reason: UNKNOWN_PRICE_REASON });
   for (const s of chosen) {
     const name = clean(s.name, 120) || clean(s.id, 80);
     const description = clean(s.description, 600);
@@ -195,7 +221,9 @@ export function renderProposal({ org = null, opportunity = null, services = [], 
     if (!price) warnings.push(`Prețul serviciului ${name} nu e configurat.`);
     if (!lead) warnings.push(`Termenul serviciului ${name} nu e configurat.`);
     priceLines.push(`${name}: preț ${price || NOT_CONFIGURED}; termen ${lead || NOT_CONFIGURED}`);
+    pricing.push(priced("price", clean(s.id, 80), price), priced("leadTime", clean(s.id, 80), lead));
   }
+  if (!chosen.length) pricing.push(priced("price", null, null), priced("leadTime", null, null));
   if (effect) solutionLines.push(`Efect posibil, de confirmat împreună: ${effect}`);
   if (!chosen.length) solutionLines.unshift("Serviciul potrivit se stabilește după o discuție cu dumneavoastră.");
 
@@ -214,6 +242,12 @@ export function renderProposal({ org = null, opportunity = null, services = [], 
     { id: "next_step", heading: "Următorul pas", text: "O discuție scurtă în care confirmăm observațiile și nevoile. După confirmare, trimitem oferta finală." },
     { id: "price_terms", heading: "Preț și termen", text: priceLines.length ? bullets(priceLines) : `Preț: ${NOT_CONFIGURED}. Termen: ${NOT_CONFIGURED}.` },
   ];
+  // Conditional on an explicit brief input (M12): M04 inputs keep exactly the nine sections above.
+  const request = brief ? requestSection(brief) : null;
+  if (request) {
+    sections.splice(1, 0, request.section);
+    if (request.evidenceId) usedEvidenceIds.push(request.evidenceId);
+  } else if (brief) warnings.push("Brieful nu are o nevoie spusă de tine: secțiunea „Ce s-a cerut” lipsește.");
   const presentation = materialLines(owner);
   if (presentation.length) sections.push({ id: "owner_materials", heading: "Materiale de prezentare", text: bullets(presentation) });
 
@@ -236,6 +270,8 @@ export function renderProposal({ org = null, opportunity = null, services = [], 
     text,
     observations,
     serviceNames: chosen.map((s) => clean(s.name, 120) || clean(s.id, 80)),
+    // M12 preparation path only: an M04 render keeps its exact shape (and so its content sha).
+    ...(brief ? { pricing } : {}),
   };
 }
 
@@ -314,3 +350,5 @@ export function renderContactDraft({ org = null, contact = null, proposal = null
 
 // M11: the commercial summary of a delivery (delivery/summary.mjs) reuses the same rules for untrusted text, price and term.
 export { NOT_CONFIGURED, clean, priceText, leadTimeText, materialLines };
+// M12: the reason of an UNKNOWN price or term (C-02).
+export { UNKNOWN_PRICE_REASON };

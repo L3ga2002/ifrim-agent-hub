@@ -13,6 +13,7 @@ import { auditHtml, opportunitiesFromAudit } from "./audit.mjs";
 import { createSourceRegistry, fixtureSiteAdapter, liveHttpAdapter } from "./research.mjs";
 import { QUALIFICATION_FORMULA, qualify, applyOverride } from "./qualify.mjs";
 import { renderProposal, renderContactDraft, findUnresolvedPlaceholders } from "./proposal.mjs";
+import { allowedCatalogTexts, proposalFigures } from "./figures.mjs";
 
 /**
  * Sales & Lead Generation (M04) on the Hub's own control plane. Everything commercial is local and evidence-based:
@@ -27,6 +28,28 @@ export const IMPORT_FIELDS = Object.freeze(["name", "fiscalCode", "website", "em
   "turnover", "turnoverYear", "employees", "notes", "source", "ignore"]);
 export const EVIDENCE_LABELS = Object.freeze(["USER_PROVIDED", "OBSERVED", "SOURCE_REPORTED", "INFERRED", "UNKNOWN"]);
 export const SOURCE_KINDS = Object.freeze(["file", "url", "fixture", "manual"]);
+/**
+ * M12 C-03: what kind of datum a piece of evidence is, separate from its confidence label (EVIDENCE_LABELS stays as it was).
+ * FIXTURE = produced by the fixture adapter or the synthetic generator; STATEMENT = said by the owner or a cited source, with that
+ * source; INFERENCE = derived by the Hub (a rule) from named evidence or brief fields, with its reasoning. The kind is written once
+ * and never changed (no code path updates sales_evidence); confirming an inference is a new STATEMENT row, never a relabel.
+ * Rows written before M12, and rows of the M04 paths that do not declare a kind, keep NULL („nedeclarat (M04)”).
+ */
+export const DATA_KINDS = Object.freeze(["FIXTURE", "STATEMENT", "INFERENCE"]);
+/** Which confidence labels each data kind may carry: an inference is only ever INFERRED (never OBSERVED or USER_PROVIDED). */
+export const DATA_KIND_LABELS = Object.freeze({
+  FIXTURE: Object.freeze(["OBSERVED", "USER_PROVIDED", "UNKNOWN"]),
+  STATEMENT: Object.freeze(["USER_PROVIDED", "SOURCE_REPORTED", "UNKNOWN"]),
+  INFERENCE: Object.freeze(["INFERRED"]),
+});
+/** M12 status sets: the CHECK lists of migration 13 are exactly these (the preparation and dossier flows use nothing else). */
+export const PREPARATION_STATUSES = Object.freeze(["PLANNED", "PREPARING", "WAITING_OWNER", "PACKAGING", "READY", "STALE", "STOPPED", "EXPIRED", "CANCELLED", "FAILED"]);
+export const DOSSIER_STATUSES = Object.freeze(["WRITING", "READY", "STALE", "SUPERSEDED", "INCOMPLETE"]);
+export const PLAN_OP_STATUSES = Object.freeze(["IN_PROGRESS", "DONE", "FAILED"]);
+/** What an inference may name as its basis: an evidence row, a field of the brief, or a check of a stored audit. */
+const BASIS_REF = /^(?:sev_[A-Za-z0-9_]+|brief:[A-Za-z0-9_]+#[A-Za-z0-9_.]+|audit:sad_[A-Za-z0-9_]+#[A-Za-z0-9_]+)$/;
+/** A statement is said by someone, somewhere: a Hub derivation (rule, evidence id, audit check) is never its source. */
+const DERIVED_SOURCE = /^\s*(?:rule:|inference:|sev_|audit:)/i;
 /** After how long a piece of evidence needs re-verification (days); a financial figure older than 2 years always does. */
 export const EVIDENCE_RECHECK_DAYS = Object.freeze({ audit: 90, import: 365, manual: 365 });
 const DAY_MS = 86400000;
@@ -223,7 +246,7 @@ export function createSales({ db, bus, clock, config, settings }) {
   const rowToEvidence = (r) => r && ({ id: r.id, subjectType: r.subject_type, subjectId: r.subject_id, subjectVersion: r.subject_version, claim: r.claim,
     value: parse(r.value_json, null), label: r.label, sourceKind: r.source_kind, sourceRef: r.source_ref, retrievedAt: r.retrieved_at, excerpt: r.excerpt,
     method: r.method, verifiedAt: r.verified_at, recheckAfter: r.recheck_after, contradicts: parse(r.contradicts_json, []), synthetic: Boolean(r.synthetic),
-    createdBy: r.created_by, createdAt: r.created_at });
+    createdBy: r.created_by, createdAt: r.created_at, dataKind: r.data_kind ?? null, basis: parse(r.basis_json, []), reasoning: r.reasoning ?? "" });
   const rowToService = (r) => r && ({ id: r.id, name: r.name, description: r.description, scope: parse(r.scope_json, []), exclusions: parse(r.exclusions_json, []),
     tags: parse(r.tags_json, []), price: parse(r.price_json, { status: "NOT_CONFIGURED" }), leadTime: parse(r.lead_time_json, { status: "NOT_CONFIGURED" }),
     materials: parse(r.materials_json, []), synthetic: Boolean(r.synthetic), active: Boolean(r.active), version: r.version, createdAt: r.created_at, updatedAt: r.updated_at });
@@ -289,17 +312,71 @@ export function createSales({ db, bus, clock, config, settings }) {
       .run(newId("str"), subjectType, subjectId, from, to, actor, String(reason || "").slice(0, 500), json(evidence), now());
   }
 
+  /**
+   * C-03 rules for a row that declares its data kind (the M04 paths that declare none are unchanged and stay NULL):
+   * - the label must be one the kind allows (an INFERENCE is only INFERRED; a STATEMENT or FIXTURE is never INFERRED);
+   * - FIXTURE comes only from the fixture adapter or the synthetic generator (`origin`), on synthetic data, with a fixture source;
+   *   a row added by hand is a STATEMENT or an INFERENCE;
+   * - STATEMENT has a real source (who said it, where): never a fixture or a Hub derivation (rule, evidence id, audit check);
+   * - INFERENCE names its basis (evidence rows, brief fields or stored audit checks, which must exist) and its reasoning;
+   * - a STATEMENT whose basis names an inference confirms it: a confirmed label and its OWN source (copying the inference's source
+   *   is refused). The inference row stays INFERENCE: a copy or a summary never turns an inference into a statement.
+   * Returns the normalised basis.
+   */
+  function checkDataKind({ dataKind, label, sourceKind, sourceRef, synthetic, basis, reasoning }, origin) {
+    if (!DATA_KINDS.includes(dataKind)) throw new HubError("validation", `Fel de dată necunoscut: ${dataKind}`);
+    if (!DATA_KIND_LABELS[dataKind].includes(label)) {
+      throw new HubError("validation", `O dată ${dataKind} nu poate avea eticheta ${label} (permise: ${DATA_KIND_LABELS[dataKind].join(", ")})`, { code: "DATA_KIND_LABEL_MISMATCH" });
+    }
+    const refs = Array.isArray(basis) ? basis.map((b) => String(b ?? "").trim()) : null;
+    if (!refs || refs.length > 20 || refs.some((ref) => !BASIS_REF.test(ref))) {
+      throw new HubError("validation", "Baza se dă prin id-uri de dovezi (sev_…), câmpuri din brief (brief:<id>#<câmp>) sau verificări de audit (audit:sad_…#<verificare>)");
+    }
+    for (const ref of refs) {
+      if (ref.startsWith("sev_") && !db.prepare("SELECT 1 FROM sales_evidence WHERE id = ?").get(ref)) throw new HubError("not_found", `Dovada ${ref} din bază nu există`);
+      if (ref.startsWith("audit:") && !db.prepare("SELECT 1 FROM sales_audits WHERE id = ?").get(ref.slice(6, ref.indexOf("#")))) throw new HubError("not_found", `Auditul din ${ref} nu există`);
+    }
+    if (dataKind === "FIXTURE") {
+      if (!["fixture", "synthetic"].includes(origin)) {
+        throw new HubError("policy", "Datele FIXTURE vin doar din adaptorul de fixture sau din generatorul sintetic; o dovadă adăugată de mână e o afirmație (STATEMENT) sau o inferență", { code: "FIXTURE_ORIGIN" });
+      }
+      if (!synthetic || sourceKind !== "fixture") throw new HubError("policy", "O dată FIXTURE e sintetică și are sursa „fixture”", { code: "FIXTURE_ORIGIN" });
+    }
+    if (dataKind === "STATEMENT") {
+      if (sourceKind === "fixture" || DERIVED_SOURCE.test(String(sourceRef))) {
+        throw new HubError("validation", "O afirmație are sursa ei (cine a spus și unde), nu un fixture sau o deducție a Hub-ului", { code: "STATEMENT_SOURCE" });
+      }
+      const confirmed = refs.filter((ref) => ref.startsWith("sev_")).map((ref) => db.prepare("SELECT data_kind, label, source_ref FROM sales_evidence WHERE id = ?").get(ref))
+        .filter((r) => r.data_kind === "INFERENCE" || r.label === "INFERRED");
+      if (confirmed.length) {
+        if (!["USER_PROVIDED", "SOURCE_REPORTED"].includes(label)) throw new HubError("validation", "Confirmarea unei inferențe e USER_PROVIDED sau SOURCE_REPORTED", { code: "DATA_KIND_LABEL_MISMATCH" });
+        if (confirmed.some((r) => clip(r.source_ref, 500) === clip(sourceRef, 500))) {
+          throw new HubError("validation", "O inferență nu devine afirmație prin copiere: confirmarea are sursa ei (cine a confirmat și unde)", { code: "INFERENCE_COPY" });
+        }
+      }
+    }
+    if (dataKind === "INFERENCE") {
+      if (!refs.length) throw new HubError("validation", "Inferența cere baza: dovezile sau câmpurile din brief din care a fost dedusă", { code: "INFERENCE_BASIS" });
+      if (!clip(reasoning, 400)) throw new HubError("validation", "Inferența cere raționamentul (de ce s-a dedus)", { code: "INFERENCE_BASIS" });
+    }
+    return refs;
+  }
+
   function addEvidenceRow({ subjectType, subjectId, subjectVersion = 1, claim, value = null, label, sourceKind, sourceRef, retrievedAt = null, excerpt = "", method = "",
-    verifiedAt = null, recheckAfter = null, contradicts = [], synthetic = false, batchId = null, actor }) {
+    verifiedAt = null, recheckAfter = null, contradicts = [], synthetic = false, batchId = null, actor, dataKind = null, basis = [], reasoning = "" }, { origin = "" } = {}) {
     if (!EVIDENCE_LABELS.includes(label)) throw new HubError("validation", `Etichetă de dovadă necunoscută: ${label}`);
     if (!SOURCE_KINDS.includes(sourceKind)) throw new HubError("validation", `Tip de sursă necunoscut: ${sourceKind}`);
     if (!String(claim || "").trim()) throw new HubError("validation", "Dovada are nevoie de o afirmație");
     if (!String(sourceRef || "").trim()) throw new HubError("validation", "Dovada are nevoie de sursă (fișier, URL sau înregistrare manuală)");
+    const declared = dataKind !== null && dataKind !== undefined;
+    const refs = declared ? checkDataKind({ dataKind, label, sourceKind, sourceRef, synthetic, basis, reasoning }, origin) : null;
     const id = newId("sev");
     db.prepare(`INSERT INTO sales_evidence (id, subject_type, subject_id, subject_version, claim, value_json, label, source_kind, source_ref, retrieved_at, excerpt,
-      method, verified_at, recheck_after, contradicts_json, synthetic, batch_id, created_by, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+      method, verified_at, recheck_after, contradicts_json, synthetic, batch_id, created_by, created_at, data_kind, basis_json, reasoning)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
       .run(id, subjectType, subjectId, subjectVersion, clip(claim, 300), json(value), label, sourceKind, clip(sourceRef, 500), retrievedAt, clip(excerpt, 400),
-        clip(method, 200), verifiedAt, recheckAfter, json(contradicts), synthetic ? 1 : 0, batchId, actor, now());
+        clip(method, 200), verifiedAt, recheckAfter, json(contradicts), synthetic ? 1 : 0, batchId, actor, now(),
+        declared ? dataKind : null, declared ? json(refs) : null, declared ? clip(reasoning, 400) : null);
     return id;
   }
 
@@ -805,8 +882,9 @@ export function createSales({ db, bus, clock, config, settings }) {
     else throw new HubError("validation", "Subiect necunoscut");
     const org = subjectType === "org" ? getOrgRow(subjectId) : null;
     return bus.transaction(() => {
-      const id = addEvidenceRow({ ...input, subjectType, subjectId, subjectVersion: org?.version || 1, synthetic: Boolean(org?.synthetic), actor });
-      emit("sales.evidence.added", subjectId, { evidenceId: id, label: input.label }, actor);
+      // Added by hand: a declared kind follows the C-03 rules, and FIXTURE is refused here (only the adapter and the generator make it).
+      const id = addEvidenceRow({ ...input, subjectType, subjectId, subjectVersion: org?.version || 1, synthetic: Boolean(org?.synthetic), actor }, { origin: "manual" });
+      emit("sales.evidence.added", subjectId, { evidenceId: id, label: input.label, ...(input.dataKind ? { dataKind: input.dataKind } : {}) }, actor);
       return rowToEvidence(db.prepare("SELECT * FROM sales_evidence WHERE id = ?").get(id));
     });
   }
@@ -875,10 +953,15 @@ export function createSales({ db, bus, clock, config, settings }) {
       db.prepare("INSERT INTO sales_audits (id, org_id, url, source_kind, fetched_at, version, result_json, opportunities_json, synthetic, created_by, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
         .run(auditId, id, audit.url || org.website, "fixture", fetched.fetchedAt || now(), audit.version, json(audit), json(opportunities), 1, actor, now());
       for (const check of audit.checks.filter((c) => c.status === "PASS" || c.status === "ISSUE")) {
+        // C-03 (M12): a check read directly from the fixture page is FIXTURE data; a check the audit deduced is an INFERENCE whose
+        // basis is the stored audit check and whose reasoning is the audit's own observation.
+        const inferred = check.label === "INFERRED";
         addEvidenceRow({ subjectType: "org", subjectId: id, subjectVersion: org.version, claim: `audit:${check.id}`, value: { status: check.status, observation: check.observation, auditId },
-          label: check.label === "INFERRED" ? "INFERRED" : "OBSERVED", sourceKind: "fixture", sourceRef: `${audit.url || org.website} (fixture sintetic)`, retrievedAt: fetched.fetchedAt || now(),
+          label: inferred ? "INFERRED" : "OBSERVED", sourceKind: "fixture", sourceRef: `${audit.url || org.website} (fixture sintetic)`, retrievedAt: fetched.fetchedAt || now(),
           excerpt: check.evidence?.excerpt || "", method: `${check.evidence?.method || "static-html"}${check.evidence?.selector ? ` · ${check.evidence.selector}` : ""}`,
-          recheckAfter: plusDays(fetched.fetchedAt || now(), EVIDENCE_RECHECK_DAYS.audit), synthetic: true, actor });
+          recheckAfter: plusDays(fetched.fetchedAt || now(), EVIDENCE_RECHECK_DAYS.audit), synthetic: true, actor,
+          dataKind: inferred ? "INFERENCE" : "FIXTURE", basis: inferred ? [`audit:${auditId}#${check.id}`] : [],
+          reasoning: inferred ? (check.observation || `Dedus de verificarea statică ${check.id}`) : "" }, { origin: "fixture" });
       }
       // The page was read asynchronously: the org may have changed meanwhile (do-not-contact, merge). Only its CURRENT status moves.
       const cur = getOrgRow(id);
@@ -897,13 +980,14 @@ export function createSales({ db, bus, clock, config, settings }) {
       .map((e) => ({ ...(e.value || {}), sourceRef: e.sourceRef, verifiedAt: e.verifiedAt || e.retrievedAt, evidenceId: e.id, freshness: e.freshness, conflictsWith: e.conflictsWith }));
   }
 
-  function qualifyOrg(id, { filters = {} } = {}, actor) {
+  /** `formula` defaults to q-v1 (M04); the M12 plan asks for q-v2 explicitly. A stored row keeps the version it was computed with. */
+  function qualifyOrg(id, { filters = {}, formula = QUALIFICATION_FORMULA.version } = {}, actor) {
     const org = needOrg(id);
     const sheet = getOrg(id);
     const latestAudit = sheet.audits[0] || null;
     const input = { org: { ...org, contacts: sheet.contacts.filter((c) => c.status === "ACTIVE") }, evidence: sheet.evidence.filter(usable), audit: latestAudit ? latestAudit.result : null,
       opportunities: latestAudit ? latestAudit.opportunities : [], catalog: services(), financials: financialsOf(id), filters };
-    const result = qualify(input);
+    const result = qualify(input, { formula });
     return bus.transaction(() => {
       const qid = newId("squ");
       db.prepare("INSERT INTO sales_qualifications (id, org_id, formula_version, result_json, priority, inputs_sha, created_by, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)")
@@ -1083,6 +1167,15 @@ export function createSales({ db, bus, clock, config, settings }) {
     });
   }
 
+  /** M12 (D7): a proposal written by a preparation records the shas of its inputs in `content.basis`; M04 proposals have none. */
+  const isPreparationBound = (content) => Boolean(content?.basis && typeof content.basis === "object" && !Array.isArray(content.basis));
+  /** The catalog entries a proposal was rendered from (`id@version`), only while that exact version is still the catalog's. */
+  const catalogOf = (serviceIds) => (Array.isArray(serviceIds) ? serviceIds : []).map((ref) => {
+    const [id, version] = String(ref).split("@");
+    const s = rowToService(db.prepare("SELECT * FROM sales_services WHERE id = ?").get(id));
+    return s && String(s.version) === version ? s : null;
+  }).filter(Boolean);
+
   function decisionSession(channel, sessionCheck, what) {
     const testing = channel === "test" && config.testMode;
     if ((!testing && channel !== "owner") || typeof sessionCheck !== "function") throw new HubError("authentication", `Pentru ${what} deschide sesiunea proprietarului`, { data: { needSession: true } });
@@ -1105,6 +1198,16 @@ export function createSales({ db, bus, clock, config, settings }) {
       if (p.status === "APPROVED_INTERNAL" && p.approvedSha === displayedSha) return result(true, p.approvedAt, p.approvalId);
       const opp = needOpp(p.opportunityId);
       if (p.status !== "DRAFT" || opp.status !== "READY_FOR_OWNER_REVIEW") throw new HubError("conflict", "Marchează întâi propunerea „gata de revizuire”");
+      // C-02 on the M12 path: an offer bound to a preparation is approved only without invented figures (amounts, terms, ROI,
+      // discounts, approximations); the CONFIGURED catalog texts it was rendered from are the only figures allowed. M04 offers
+      // (no `basis`) are not gated here.
+      if (isPreparationBound(p.content)) {
+        const figures = proposalFigures(p.content, { allow: allowedCatalogTexts(catalogOf(p.content.serviceIds)) });
+        if (figures.length) {
+          throw new HubError("policy", `Oferta conține cifre comerciale care nu vin din catalogul configurat (${figures.slice(0, 3).map((f) => `„${f.text}”`).join(", ")}): nu se aprobă`,
+            { code: "COMMERCIAL_FIGURES", data: { figures: figures.slice(0, 20) } });
+        }
+      }
       const approval = approvalId && db.prepare("SELECT * FROM approvals WHERE id=?").get(approvalId);
       if (!approval || approval.action_kind !== "sales.proposal_approve" || approval.status !== "consumed"
         || parse(approval.payload_json, {}).proposalId !== proposalId || parse(approval.payload_json, {}).displayedSha !== displayedSha

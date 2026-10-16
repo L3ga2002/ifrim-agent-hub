@@ -1081,4 +1081,43 @@ export const MIGRATIONS = [
       `);
     },
   },
+  {
+    // M12 Sales: the synthetic preparation brief → offer → „Dosarul ofertei”. Purely additive: older code runs on this schema, so
+    // `git revert` of the release + the managed upgrade is a valid rollback without a database restore.
+    // - sales_evidence gains the C-03 data kind (FIXTURE / STATEMENT / INFERENCE), separate from the M04 confidence label. Existing
+    //   rows are never rewritten: their kind stays NULL, shown as „nedeclarat (M04)”. An inference carries its basis and reasoning.
+    // - sales_preparations: one confirmed `sales.prepare` plan, its immutable brief and the exact offer it waits for (id + sha).
+    // - sales_plan_ops: the C-01 ledger, one row per (confirmed root plan + operation + normalised params); a resume reads it
+    //   instead of re-running an effect. `fixed_at` is the timestamp the operation's content uses, so a retry writes the same bytes.
+    // - sales_dossiers: the local „Dosarul ofertei” (never `sales_handoffs`, which stays the Engineering hand-off after acceptance).
+    // Everything M12 writes here is synthetic (CHECK synthetic = 1). The status lists equal the constants in sales.mjs.
+    version: 13,
+    name: "m12-sales-prep",
+    up(db) {
+      db.exec(`
+        ALTER TABLE sales_evidence ADD COLUMN data_kind TEXT CHECK (data_kind IS NULL OR data_kind IN ('FIXTURE','STATEMENT','INFERENCE'));
+        ALTER TABLE sales_evidence ADD COLUMN basis_json TEXT;
+        ALTER TABLE sales_evidence ADD COLUMN reasoning TEXT;
+        CREATE TABLE sales_preparations (id TEXT PRIMARY KEY, root_plan_id TEXT NOT NULL, root_plan_hash TEXT NOT NULL, phase_b_plan_id TEXT,
+          brief_json TEXT NOT NULL, brief_sha TEXT NOT NULL, org_id TEXT REFERENCES sales_orgs(id), opportunity_id TEXT REFERENCES sales_opportunities(id),
+          proposal_id TEXT REFERENCES sales_proposals(id), awaited_proposal_id TEXT, awaited_proposal_sha TEXT, consent_json TEXT,
+          status TEXT NOT NULL CHECK (status IN ('PLANNED','PREPARING','WAITING_OWNER','PACKAGING','READY','STALE','STOPPED','EXPIRED','CANCELLED','FAILED')),
+          stale_reason TEXT NOT NULL DEFAULT '', synthetic INTEGER NOT NULL DEFAULT 1 CHECK (synthetic = 1),
+          created_by TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, version INTEGER NOT NULL DEFAULT 1);
+        CREATE UNIQUE INDEX ux_sales_preparations_root ON sales_preparations(root_plan_id);
+        CREATE INDEX idx_sales_preparations_opp ON sales_preparations(opportunity_id, status);
+        CREATE TABLE sales_plan_ops (op_key TEXT PRIMARY KEY, root_plan_id TEXT NOT NULL, root_plan_hash TEXT NOT NULL, op TEXT NOT NULL,
+          params_json TEXT NOT NULL, status TEXT NOT NULL CHECK (status IN ('IN_PROGRESS','DONE','FAILED')), claim_token TEXT, result_json TEXT,
+          fixed_at TEXT NOT NULL, synthetic INTEGER NOT NULL DEFAULT 1 CHECK (synthetic = 1), created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
+        CREATE INDEX idx_sales_plan_ops_root ON sales_plan_ops(root_plan_id, op);
+        CREATE TABLE sales_dossiers (id TEXT PRIMARY KEY, preparation_id TEXT NOT NULL REFERENCES sales_preparations(id),
+          opportunity_id TEXT NOT NULL REFERENCES sales_opportunities(id), proposal_id TEXT NOT NULL REFERENCES sales_proposals(id), proposal_sha TEXT NOT NULL,
+          revision INTEGER NOT NULL, folder TEXT NOT NULL, files_json TEXT NOT NULL DEFAULT '[]', manifest_sha256 TEXT, verification_json TEXT NOT NULL DEFAULT '{}',
+          status TEXT NOT NULL CHECK (status IN ('WRITING','READY','STALE','SUPERSEDED','INCOMPLETE')), status_reason TEXT NOT NULL DEFAULT '',
+          op_key TEXT NOT NULL UNIQUE, synthetic INTEGER NOT NULL DEFAULT 1 CHECK (synthetic = 1),
+          created_by TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, UNIQUE (opportunity_id, revision));
+        CREATE INDEX idx_sales_dossiers_opp ON sales_dossiers(opportunity_id, status);
+      `);
+    },
+  },
 ];

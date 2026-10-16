@@ -1,5 +1,6 @@
 import { HubError } from "../core/errors.mjs";
-import { IMPORT_FIELDS, EVIDENCE_LABELS, SOURCE_KINDS } from "./sales.mjs";
+import { IMPORT_FIELDS, EVIDENCE_LABELS, SOURCE_KINDS, DATA_KINDS } from "./sales.mjs";
+import { QUALIFICATION_FORMULA, QUALIFICATION_FORMULAS } from "./qualify.mjs";
 
 const UI = ["ui", "test"];
 /** Protective commands (stop contacting someone) may also come from voice, like Stop; nothing that adds effects does. */
@@ -56,13 +57,18 @@ export function registerSalesCommands(register, hub, { createMission }) {
   reg("sales.evidence.add", { describe: "Adaugă o dovadă (afirmație + sursă + etichetă)",
     schema: { subjectType: { enum: ["org", "opportunity"], required: true }, subjectId: { required: true, max: 80 }, claim: { required: true, max: 300 }, value: { type: "any", max: 4000 },
       label: { enum: EVIDENCE_LABELS, required: true }, sourceKind: { enum: SOURCE_KINDS, required: true }, sourceRef: { required: true, max: 500 },
-      excerpt: { max: 400, default: "" }, method: { max: 200, default: "" }, verifiedAt: { max: 40 }, recheckAfter: { max: 40 } },
+      excerpt: { max: 400, default: "" }, method: { max: 200, default: "" }, verifiedAt: { max: 40 }, recheckAfter: { max: 40 },
+      // M12 C-03, additive (a call without dataKind is the M04 call, unchanged): the kind of the datum, and for an inference its basis
+      // and reasoning. FIXTURE is refused here: only the fixture adapter and the synthetic generator produce fixture data.
+      dataKind: { enum: DATA_KINDS }, basis: { type: "array", max: 20, items: "string", itemMax: 200 }, reasoning: { max: 400 } },
     execute: (input, ctx) => sales.addEvidence(input.subjectType, input.subjectId, input, ctx.actor) });
   reg("sales.org.audit", { describe: "Audit de site (doar fixture-uri .test în M04; colectarea live e dezactivată)", async: true,
     schema: { orgId: { required: true, max: 80 }, sourceKind: { enum: ["fixture", "live"], default: "fixture" } },
     execute: (input, ctx) => sales.auditOrg(input.orgId, { sourceKind: input.sourceKind }, ctx.actor) });
-  reg("sales.org.qualify", { describe: "Calificare deterministă și explicabilă (fără model)", schema: { orgId: { required: true, max: 80 }, filters: { type: "object", default: {} } },
-    execute: (input, ctx) => sales.qualifyOrg(input.orgId, { filters: input.filters }, ctx.actor) });
+  // `formula` is additive (M12): q-v1 stays the default; the M12 preparation asks for q-v2 (inferences listed, never scored).
+  reg("sales.org.qualify", { describe: "Calificare deterministă și explicabilă (fără model)",
+    schema: { orgId: { required: true, max: 80 }, filters: { type: "object", default: {} }, formula: { enum: Object.keys(QUALIFICATION_FORMULAS), default: QUALIFICATION_FORMULA.version } },
+    execute: (input, ctx) => sales.qualifyOrg(input.orgId, { filters: input.filters, formula: input.formula }, ctx.actor) });
   reg("sales.qualification.override", { describe: "Suprascrie prioritatea cu motiv (istoric păstrat)", channels: ["owner", "test"],
     schema: { orgId: { required: true, max: 80 }, displayedQualificationId: { max: 80, pattern: /^squ_[A-Za-z0-9_]+$/ }, priority: { type: "number", required: true, min: 0, max: 100 }, reason: { required: true, min: 5, max: 300 } },
     execute: (input, ctx) => sales.overrideQualification(input.orgId, input, ctx.actor, {

@@ -304,3 +304,35 @@ export function generateSyntheticDataset(n, { seed = 42, duplicateRate = 0, inva
 export function generateSyntheticOrgs(n, options = {}) {
   return generateSyntheticDataset(n, options).rows;
 }
+
+export const SYNTHETIC_ORG_GENERATOR = "synthetic-org-v1";
+
+/**
+ * M12: the fictitious identity of the client a brief describes (S-02), for one confirmed preparation. Additive: the generator
+ * above and its seeds are untouched. Same vocabulary and rules — invented name words, a `.test` domain that never resolves, a
+ * fiscal code of 10 digits starting with "99" with a valid control digit, a generic `.test` mailbox (the contact draft needs an
+ * e-mail; nothing is ever sent) — on its own seed namespace, so it never repeats a row of `generateSyntheticDataset`.
+ * Deterministic: the same brief and seed (the confirmed plan) give the same identity; two plans give two identities.
+ *
+ * Only FIXTURE identity is returned. What the brief says or infers about the client (sector, CAEN, place, city, county) is not a
+ * field of the generated record: it is kept as STATEMENT / INFERENCE evidence by the caller. The sector word of the brief may
+ * appear inside the invented name, only to make the fictitious label readable.
+ * @returns {{ generator: string, seed: string, synthetic: true, name: string, legalForm: "SRL", fiscalCode: string,
+ *   fiscalCodeValid: true, domain: string, website: string, email: string, kinds: Record<string, "FIXTURE"> }}
+ */
+export function syntheticOrgFor(brief, seed) {
+  const seedText = typeof seed === "number" && Number.isFinite(seed) ? String(seed) : typeof seed === "string" ? seed.trim() : "";
+  if (!seedText || seedText.length > 200) throw new HubError("validation", "Identitatea sintetică are nevoie de o sămânță (planul confirmat)");
+  const t = makeTools(createRng(`${SYNTHETIC_ORG_GENERATOR}|${seedText}`));
+  const caen = String(brief?.fields?.caen?.value ?? "");
+  const sector = SECTORS.find(([, code]) => code === caen)?.[0] || "";
+  const base = [t.pick(ROOTS), sector, t.pick(WORDS)].filter(Boolean).join(" ");
+  const body = `99${t.digits(7)}`;
+  const domain = `${normalizeName(base).tokens.join("-")}.test`;
+  return {
+    generator: SYNTHETIC_ORG_GENERATOR, seed: seedText, synthetic: true,
+    name: `${base} SRL`, legalForm: "SRL", fiscalCode: `${body}${cuiControlDigit(body)}`, fiscalCodeValid: true,
+    domain, website: `https://${domain}`, email: `office@${domain}`,
+    kinds: { name: "FIXTURE", fiscalCode: "FIXTURE", domain: "FIXTURE", website: "FIXTURE", email: "FIXTURE" },
+  };
+}
