@@ -137,3 +137,26 @@ test("M12-UI-06 (review F8) a decision refused for good asks for no Windows Hell
   for (const status of ["pending", "approved", "consumed", "rejected"]) assert.equal(salesApprovalStateText({ ...reserved, status }), null, status);
   assert.equal(salesApprovalStateText({ actionKind: "sales.draft_content", status: "invalidated" }), null);
 });
+
+test("M12-UI-07 (final review F20) a decided reserved approval shows the authority RECORDED on the decision, never the viewer's current session; a pending one the session it will be decided in", async () => {
+  const { salesApprovalAuthorityText, salesDecidedAuthorityLabel } = await import("../web/src/lib/salesAuthorityLogic.js");
+  const webauthn = { authority: "webauthn" };
+  const dev = { authority: "local_dev_profile" };
+  for (const status of ["approved", "consumed", "rejected"]) {
+    const decidedDev = { actionKind: "sales.proposal_approve", status, authority: "local_dev_profile" };
+    const text = salesApprovalAuthorityText(decidedDev, webauthn);
+    assert.doesNotMatch(text, /Windows Hello/, `${status}: a dev-profile decision is never shown as Windows Hello`);
+    assert.match(text, /sesiune locală de dezvoltare/, status);
+    assert.match(text, /a fost înregistrată/, `${status}: said in the past tense`);
+    assert.match(salesApprovalAuthorityText({ ...decidedDev, authority: "webauthn" }, dev), /Windows Hello/, `${status}: a WebAuthn decision stays WebAuthn under a dev session`);
+    assert.match(salesApprovalAuthorityText({ ...decidedDev, authority: undefined }, webauthn), /nu e înregistrată/, `${status}: no recorded authority is said, not borrowed`);
+    assert.doesNotMatch(salesApprovalAuthorityText(decidedDev, null), /Decizia cere sesiunea ta/, `${status}: a decided card does not ask for a session`);
+  }
+  const pending = { actionKind: "sales.proposal_approve", status: "pending" };
+  assert.equal(salesApprovalAuthorityText(pending, webauthn), salesAuthorityLabel(webauthn), "a pending card: the session it will be decided in");
+  assert.equal(salesApprovalAuthorityText(pending, dev), salesAuthorityLabel(dev));
+  assert.match(salesDecidedAuthorityLabel("test"), /canalul de test/);
+  const card = source("web/src/screens/Approvals.jsx");
+  assert.match(card, /salesApprovalAuthorityText\(approval, owner\.data\?\.session\)/);
+  assert.doesNotMatch(card, /\{salesAuthorityLabel\(owner\.data\?\.session\)\}/, "the viewer's session is no longer printed for every reserved card");
+});

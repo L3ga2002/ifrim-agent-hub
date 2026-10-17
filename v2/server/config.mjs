@@ -43,6 +43,15 @@ export const HUB_VERSION = "2.15.0-m12"; // M12 Sales (in this code: the owner's
 // rows inputsSha / orgId; the offer basis qualificationInputsSha / org; brief problem.stated / problem.rule (rules R-TYPO@1, R-NEED-CUT@1);
 // sales.preparation.continue may answer GATE_REARM_REQUIRED (category gate); new codes SALES_SYNTHETIC_TAKEN, SALES_DOSSIER_FORBIDDEN_ROOT,
 // SALES_PROPOSAL_STALE.
+// 15 (final review, group B, additive): POST /api/sales/preparations/:id/continue (new; owner dispatcher: 401 needSession without the owner
+// session, agent / cli refused; answers { plan, preparation, decisionsLeft, never } — ONE PROPOSED sales.prepare card the owner confirms through
+// POST /api/ops/plans/:id/confirm — or 409 GATE_REARM_REQUIRED / SALES_PREPARATION_STATE); GET dossiers preparations[].awaitedCurrent; the
+// preparation transition PREPARING → STOPPED; POST /api/ops/plans/:id/resume (and ops.plan.reconfirm) of a Sales preparation's plan may answer
+// GATE_REARM_REQUIRED while a Stop All since its last confirmation still holds the gate; GET /api/decisions/inbox items of kind sales_offer
+// (target { proposalId, version, proposalSha }, preparationId, opportunityId, activateBy, remainingMin, synthetic, acceptLabel / rejectLabel);
+// GET /api/sales/overview split.detail { real, synthetic } (company statuses, audits, follow-ups, missing site / contact, active do-not-contact);
+// the board's Sales item: real-only figures plus totals / syntheticFigures while synthetic data exists; the work-request intent "sales" (an
+// offer request kept for SALES_DOSSIER_NO_EXPORTS_DIR, re-proposed once the exports folder exists).
 export const API_CONTRACT = 15;
 export const DEFAULT_PORT = 8011;
 export const DEFAULT_HOST = "127.0.0.1";

@@ -6,6 +6,21 @@ export const salesAuthorityLabel = (session) => session?.authority === "webauthn
   : session?.authority === "local_dev_profile"
     ? "Decizia se înregistrează ca sesiune locală de dezvoltare."
     : "Decizia cere sesiunea ta de proprietar.";
+/** The authority RECORDED on a decided reserved approval (approvals.decideByOwner → approval.authority), said in the past tense. */
+export const salesDecidedAuthorityLabel = (authority) => authority === "webauthn"
+  ? "Decizia a fost înregistrată în sesiunea verificată cu Windows Hello / cheia ta."
+  : authority === "local_dev_profile"
+    ? "Decizia a fost înregistrată ca sesiune locală de dezvoltare (încredere în acest calculator, nu dovada prezenței tale)."
+    : authority === "test"
+      ? "Decizia a fost înregistrată pe canalul de test."
+      : "Autoritatea deciziei nu e înregistrată pe această aprobare.";
+/**
+ * Review F20: what the card says about the authority. A pending reserved approval: the session it WILL be decided in (the viewer's,
+ * now). A decided one (approved / consumed / rejected): the authority recorded on the decision — never the viewer's current session.
+ */
+export const salesApprovalAuthorityText = (approval, session) => (["approved", "consumed", "rejected"].includes(approval?.status)
+  ? salesDecidedAuthorityLabel(approval?.authority)
+  : salesAuthorityLabel(session));
 export const salesApprovalCardText = (approval) => ownerSalesKind(approval)
   ? "Aprob intern — doar conținutul ofertei. Nu trimite nimic și nu marchează CONTACTED sau WON."
   : "Aprobă exact această acțiune";

@@ -1787,7 +1787,25 @@ export function createSales({ db, bus, clock, config, settings }) {
     grouped("drafts", "SELECT o.synthetic AS s, d.status AS k, COUNT(*) AS n FROM sales_drafts d JOIN sales_orgs o ON o.id = d.org_id GROUP BY 1, 2");
     for (const r of db.prepare("SELECT status AS k, COUNT(*) AS n FROM sales_preparations GROUP BY status").all()) out.synthetic.preparations[r.k] = r.n;
     for (const r of db.prepare("SELECT status AS k, COUNT(*) AS n FROM sales_dossiers GROUP BY status").all()) out.synthetic.dossiers[r.k] = r.n;
-    return { ...out, note: "Rândurile sintetice (marcate „sintetic”) nu intră niciodată în cifrele reale." };
+    return { ...out, detail: splitDetail(side), note: "Rândurile sintetice (marcate „sintetic”) nu intră niciodată în cifrele reale." };
+  }
+  /**
+   * M12 final review (F8), additive (a key of its own, so `real` / `synthetic` keep their shape): the rest of the figures the owner reads on
+   * the Sales overview, per side — the company statuses, audits, follow-ups, companies without a site or an active contact, active
+   * do-not-contact entries (one with no company is a real one) — so no synthetic row ever inflates a real figure on any screen.
+   */
+  function splitDetail(side) {
+    const empty = () => ({ byStatus: {}, audits: 0, followups: {}, missingWebsite: 0, missingContact: 0, suppressions: 0 });
+    const out = { real: empty(), synthetic: empty() };
+    const add = (key, sql) => { for (const r of db.prepare(sql).all()) { const s = out[side(r.s)]; if (r.k === undefined) s[key] += r.n; else s[key][r.k] = (s[key][r.k] || 0) + r.n; } };
+    add("byStatus", "SELECT synthetic AS s, status AS k, COUNT(*) AS n FROM sales_orgs WHERE archived_at IS NULL AND merged_into IS NULL GROUP BY 1, 2");
+    add("audits", "SELECT (a.synthetic = 1 OR o.synthetic = 1) AS s, COUNT(*) AS n FROM sales_audits a JOIN sales_orgs o ON o.id = a.org_id GROUP BY 1");
+    add("followups", "SELECT o.synthetic AS s, f.status AS k, COUNT(*) AS n FROM sales_followups f JOIN sales_orgs o ON o.id = f.org_id GROUP BY 1, 2");
+    add("missingWebsite", "SELECT synthetic AS s, COUNT(*) AS n FROM sales_orgs WHERE website = '' AND archived_at IS NULL AND merged_into IS NULL GROUP BY 1");
+    add("missingContact", `SELECT o.synthetic AS s, COUNT(*) AS n FROM sales_orgs o WHERE archived_at IS NULL AND merged_into IS NULL
+      AND NOT EXISTS (SELECT 1 FROM sales_contacts c WHERE c.org_id = o.id AND c.status = 'ACTIVE') GROUP BY 1`);
+    add("suppressions", "SELECT COALESCE(o.synthetic, 0) AS s, COUNT(*) AS n FROM sales_suppressions x LEFT JOIN sales_orgs o ON o.id = x.org_id WHERE x.lifted_at IS NULL GROUP BY 1");
+    return out;
   }
 
   function exportOrgsCsv(filters = {}) {
@@ -1810,7 +1828,32 @@ export function createSales({ db, bus, clock, config, settings }) {
     return { orgs: o.counts.orgs, byStatus: o.counts.byStatus, opportunities: o.counts.opportunities, needsReview: o.counts.needsReview, drafts: o.counts.drafts,
       followupsDue: o.counts.followups.DUE || 0, synthetic: o.synthetic, outreach: o.outreach,
       topPriority: top.map((r) => ({ id: r.id, name: r.display_name, status: r.status, priority: r.priority, synthetic: Boolean(r.synthetic) })),
-      split: { real: { orgs: o.split.real.orgs }, synthetic: { orgs: o.split.synthetic.orgs } } };
+      split: { real: { orgs: o.split.real.orgs }, synthetic: { orgs: o.split.synthetic.orgs } },
+      // M12 final review (F8), additive: every figure Lega says, per side — a synthetic row never inflates a real one.
+      sides: Object.fromEntries(["real", "synthetic"].map((k) => [k, { orgs: o.split[k].orgs, byStatus: o.split.detail[k].byStatus, opportunities: o.split[k].opportunities,
+        drafts: o.split[k].drafts, followupsDue: o.split.detail[k].followups.DUE || 0, ...(k === "synthetic" ? { preparations: o.split.synthetic.preparations } : {}) }])) };
+  }
+  /**
+   * What Lega says for „cum stă pipeline-ul?” (its sales_overview read). Without synthetic data: the M04 sentence, unchanged. With
+   * synthetic data (M12 final review F8): the real figures alone, then the synthetic ones apart and labelled — a synthetic row never
+   * inflates a figure the owner hears as real. Every company named carries its own synthetic mark; never a contact value.
+   */
+  function legaPipelineText() {
+    const o = legaPipelineSummary();
+    const counts = (m, none) => Object.entries(m || {}).map(([k, v]) => `${k} ${v}`).join(", ") || none;
+    const split = o.split ? ` (reale: ${o.split.real.orgs}, sintetice: ${o.split.synthetic.orgs})` : "";
+    const outreach = `trimiterea: ${o.outreach === "DISABLED" ? "dezactivată (doar ciorne)" : o.outreach}`;
+    const r = o.sides.real;
+    const s = o.sides.synthetic;
+    const parts = o.synthetic
+      ? [`${o.orgs} firme în pipeline${split}`,
+        `date REALE: ${r.orgs} firme; statusuri: ${counts(r.byStatus, "—")}; oportunități: ${counts(r.opportunities, "niciuna")}; ciorne: ${counts(r.drafts, "niciuna")}; follow-up-uri scadente: ${r.followupsDue}`,
+        `date SINTETICE de test, separat (nu intră în cifrele reale): ${s.orgs} firme; oportunități: ${counts(s.opportunities, "niciuna")}; ciorne: ${counts(s.drafts, "niciuna")}; pregătiri de ofertă: ${counts(s.preparations, "niciuna")}`,
+        `rânduri care așteaptă decizia ta de identitate: ${o.needsReview}`, outreach]
+      : [`${o.orgs} firme în pipeline${split}`, `statusuri: ${counts(o.byStatus, "—")}`, `oportunități: ${counts(o.opportunities, "niciuna")}`,
+        `rânduri care așteaptă decizia ta de identitate: ${o.needsReview}`, `ciorne: ${counts(o.drafts, "niciuna")}`, `follow-up-uri scadente: ${o.followupsDue}`, outreach];
+    if (o.topPriority.length) parts.push(`prioritate internă (nu e șansă de vânzare): ${o.topPriority.map((t) => `${clip(t.name, 50)}${t.synthetic ? " (sintetic)" : ""} ${Math.round(t.priority)}`).join(", ")}`);
+    return parts.join("; ") + ".";
   }
   function legaLeadDetail(idOrName) {
     let org = getOrgRow(String(idOrName || ""));
@@ -1842,7 +1885,7 @@ export function createSales({ db, bus, clock, config, settings }) {
     createProposal, approveProposal, createDraft, reviseDraft, approveDraftContent, sendDraft, recordContactEvent, recordClientAcceptance,
     buildHandoffPackage, recordHandoff,
     scheduleFollowup, followupAction, listFollowups, getFollowup, currentHandoff, tick,
-    overview, exportOrgsCsv, legaPipelineSummary, legaLeadDetail, legaDrafts,
+    overview, exportOrgsCsv, legaPipelineSummary, legaPipelineText, legaLeadDetail, legaDrafts,
     latestProposal, latestDraft,
     // M12 preparation (written only by the confirmed plan's steps; no command reaches these directly).
     createPreparationOrg, fixturePage, recordResearch, preparationBasis, boundStale, isPreparationBound, onInvalidated, latestQualification,

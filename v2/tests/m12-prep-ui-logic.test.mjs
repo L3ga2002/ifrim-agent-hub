@@ -7,7 +7,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import { PREPARATION_STATUS_META, DOSSIER_STATUS_META, preparationStatusMeta, dossierStatusMeta, consentAuthorityText, preparationView, dossierView, appVerificationText,
-  preparationPanel, qualificationNotes, PREPARATION_CONTINUABLE } from "../web/src/lib/salesPrepLogic.js";
+  preparationPanel, qualificationNotes, PREPARATION_CONTINUABLE, continuationOffer, continuationPath, activationWindowText, awaitedOfferLabel, COCKPIT_HREF } from "../web/src/lib/salesPrepLogic.js";
 import { SALES_TABS, MOBILE_TAB_ORDER } from "../web/src/lib/salesLogic.js";
 import { PREPARATION_STATUSES, DOSSIER_STATUSES } from "../server/sales/sales.mjs";
 import { CONTINUABLE } from "../server/sales/preparation.mjs";
@@ -36,8 +36,10 @@ test("M12-PREPUI-02 who confirmed the plan is said truthfully: Windows Hello onl
   assert.equal(p.authority, null, "an authority the server does not name is not shown as one");
   assert.equal(p.awaitedComplete, true);
   for (const sha of ["", " ", SHA("a").slice(0, 12), SHA("A"), `${SHA("a")} `]) assert.equal(preparationView({ awaited: { proposalId: "spr_a_1", proposalSha: sha } }).awaitedComplete, false, JSON.stringify(sha));
-  assert.equal(preparationView({ status: "STOPPED" }).continuable, true);
-  assert.equal(preparationView({ status: "WAITING_OWNER" }).continuable, false);
+  // Final review F10 (adapted: this asserted the status-only rule the review found to be the defect): continuable is the server's flag.
+  assert.equal(preparationView({ status: "STOPPED", continuable: true }).continuable, true);
+  assert.equal(preparationView({ status: "STOPPED" }).continuable, false, "without the server's flag nothing is offered");
+  assert.equal(preparationView({ status: "WAITING_OWNER", continuable: true }).continuable, false);
 });
 
 test("M12-PREPUI-03 the Word check is said truthfully: APP_VERIFIED only when Word opened it; APP_NOT_RUN is a file check, never „verified in Word”; APP_FAILED is a failure", () => {
@@ -119,4 +121,73 @@ test("M12-PREPUI-07 static: the new components are read-only, never wired to sen
   assert.deepEqual([...MOBILE_TAB_ORDER], ["orgs", "org", "opp", "pipeline", "overview", "followups", "imports", "services"]);
   // The cockpit follows a Sales answer's navigation (the offer's opportunity), like the Studio's.
   assert.match(source("web/src/screens/Lega.jsx"), /if \(r\.navigate\?\.startsWith\("\/sales"\)\) go\(r\.navigate\);/);
+});
+
+// ---------------------------------------------------------------- final review (F1/F3/F10, F21)
+test("M12-PREPUI-08 (F10) the panel follows the SERVER's flags: the continuation button only when continuable and not held; „Oprește tot” still holding → the rearm first (cockpit link); never confirmed → a new request", () => {
+  const p = (x) => preparationView({ id: "spp_1", ...x });
+  assert.deepEqual(continuationOffer(p({ status: "STALE", continuable: true, waitsForRearm: false })).kind, "continue");
+  const held = continuationOffer(p({ status: "STOPPED", continuable: true, waitsForRearm: true }));
+  assert.equal(held.kind, "rearm", "a held preparation gets no button the server would refuse");
+  assert.match(held.text, /Redeschide poarta/);
+  assert.match(held.text, /cockpit/);
+  assert.equal(COCKPIT_HREF, "#/lega");
+  // R18: an EXPIRED card that was never confirmed — the server says not continuable; the panel says so instead of promising a card.
+  const never = continuationOffer(p({ status: "EXPIRED", continuable: false, waitsForRearm: false }));
+  assert.equal(never.kind, "new");
+  assert.match(never.text, /nu a fost confirmat niciodată/);
+  for (const status of ["PLANNED", "PREPARING", "WAITING_OWNER", "PACKAGING", "READY", "CANCELLED"]) assert.equal(continuationOffer(p({ status, continuable: true })).kind, null, status);
+  for (const x of [held, continuationOffer(p({ status: "STALE", continuable: true }))]) assert.doesNotMatch(x.text, /din cockpit\)/, "no „din cockpit” promise without a path");
+  assert.equal(preparationView({ status: "STOPPED", continuable: true, waitsForRearm: true }).waitsForRearm, true);
+  assert.equal(preparationView({ status: "STOPPED", continuable: true, waitsForRearm: "true" }).waitsForRearm, false, "only the server's own boolean");
+  assert.equal(continuationPath("spp_a/b"), "/api/sales/preparations/spp_a%2Fb/continue");
+});
+
+test("M12-PREPUI-09 (F1) while it waits for the owner: until when the draft and dossier follow by themselves (activateBy), said in words; nothing for another status", () => {
+  const now = Date.parse("2026-10-17T10:00:00Z");
+  const v = preparationView({ status: "WAITING_OWNER", activateBy: "2026-10-17T14:30:00Z" });
+  assert.equal(v.activateBy, "2026-10-17T14:30:00Z");
+  assert.match(activationWindowText(v, now), /în următoarele 4 h 30 min, ciorna și dosarul se fac singure/);
+  assert.match(activationWindowText(v, Date.parse("2026-10-17T14:40:00Z")), /Fereastra planului confirmat a trecut/);
+  assert.equal(activationWindowText(preparationView({ status: "STALE", activateBy: "2026-10-17T14:30:00Z" }), now), "");
+  assert.equal(activationWindowText(preparationView({ status: "WAITING_OWNER" }), now), "");
+});
+
+test("M12-PREPUI-10 (F21) the awaited offer is named for what it is (never „Oferta așteptată” for a stale or stopped target); a non-current READY dossier is not the green „Gata”; a STALE offer has a Romanian label", async () => {
+  const awaited = { proposalId: "spr_a_1", proposalSha: SHA("a") };
+  assert.match(preparationView({ status: "WAITING_OWNER", awaited, awaitedCurrent: true }).awaitedLabel, /^Oferta așteptată/);
+  for (const status of ["STALE", "STOPPED", "EXPIRED", "FAILED", "CANCELLED", "PREPARING"]) {
+    const label = preparationView({ status, awaited, awaitedCurrent: false }).awaitedLabel;
+    assert.doesNotMatch(label, /^Oferta așteptată/, status);
+    assert.match(label, /depășită/, status);
+  }
+  assert.match(preparationView({ status: "STOPPED", awaited, awaitedCurrent: true }).awaitedLabel, /încă versiunea curentă/);
+  assert.match(preparationView({ status: "WAITING_OWNER", awaited, awaitedCurrent: false }).awaitedLabel, /depășită/);
+  assert.match(awaitedOfferLabel("READY", true), /aprobată/);
+  assert.equal(preparationView({ status: "STALE" }).awaitedLabel, "");
+  const ready = { status: "READY", manifestSha256: SHA("b"), labels: ["DRAFT_ONLY"], inputsCurrent: true };
+  assert.deepEqual(dossierView(ready).display, { label: "Gata (local)", tone: "ok" });
+  const stale = dossierView({ ...ready, inputsCurrent: false }).display;
+  assert.notEqual(stale.tone, "ok");
+  assert.match(stale.label, /Neactual/);
+  assert.match(dossierView({ ...ready, status: "SUPERSEDED" }).display.label, /Înlocuit/);
+  const { statusMeta, proposalApprovalReadiness } = await import("../web/src/lib/salesLogic.js");
+  assert.deepEqual(statusMeta("proposal", "STALE"), { label: "Depășită: intrările s-au schimbat", tone: "warn" });
+  const r = proposalApprovalReadiness({ status: "PROPOSAL_DRAFT" }, { id: "spr_a_1", version: 1, status: "STALE", sha: SHA("a"), approvedSha: null }, [{ id: "spr_a_1", version: 1, status: "STALE" }]);
+  assert.match(r.reason, /depășită/);
+  assert.doesNotMatch(r.reason, /stale/);
+});
+
+test("M12-PREPUI-11 (F1) static: the continuation action is its own component — one owner route through withReauth, the card confirmed on the existing plan card; the panel itself still only reads; no send, no origin", () => {
+  const text = source("web/src/screens/sales/PreparationContinue.jsx");
+  assert.match(text, /withReauth\(\(\) => api\(continuationPath\(p\.id\), \{ method: "POST", body: \{\} \}\)\)/);
+  assert.equal(text.match(/api\(/g).length, 1, "one request: the continuation card");
+  assert.match(text, /<OpsPlanCard plan=\{card\}/);
+  assert.match(text, /rearmRequiredOf\(e\)/);
+  assert.doesNotMatch(text, /\/send["`]|dangerouslySetInnerHTML|localhost|127\.0\.0\.1|https?:\/\//);
+  assert.doesNotMatch(text, /\/approve|owner_decide/, "it never approves the offer");
+  const panel = source("web/src/screens/sales/Preparation.jsx");
+  assert.equal(panel.match(/<PreparationContinue /g)?.length, 1);
+  assert.doesNotMatch(panel, /din cockpit\)/, "the old „(din cockpit)” promise is gone");
+  assert.match(source("web/src/screens/sales/Dossier.jsx"), /d\.display \|\| dossierStatusMeta/);
 });

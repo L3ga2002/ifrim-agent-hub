@@ -34,15 +34,68 @@ export function consentAuthorityText(authority) {
   return "Planul nu e confirmat încă.";
 }
 
-/** One preparation as the screen shows it (from the read route; unknown fields stay empty, never invented). */
+/**
+ * One preparation as the screen shows it (from the read route; unknown fields stay empty, never invented). Review F10: whether it can be
+ * continued and whether it waits for the rearm are the SERVER's flags (`continuable`: a continuable status AND a root the owner confirmed,
+ * R18; `waitsForRearm`: the Stop All that stopped it still holds the gate, C2 / F9) — never recomputed from the status alone.
+ */
 export function preparationView(raw = {}) {
   const r = obj(raw);
   const awaited = r.awaited && typeof r.awaited === "object" ? { proposalId: str(r.awaited.proposalId), proposalSha: str(r.awaited.proposalSha) } : null;
-  return { id: str(r.id), status: str(r.status), statusReason: str(r.statusReason), staleReason: str(r.staleReason), request: str(r.request),
+  const status = str(r.status);
+  return { id: str(r.id), status, statusReason: str(r.statusReason), staleReason: str(r.staleReason), request: str(r.request),
     authority: r.authority === "webauthn" || r.authority === "local_dev_profile" ? r.authority : null, confirmedAt: str(r.confirmedAt),
     awaited, awaitedComplete: Boolean(awaited && /^spr_[A-Za-z0-9_]+$/.test(awaited.proposalId) && FULL_SHA.test(awaited.proposalSha)),
-    decisionsLeft: arr(r.decisionsLeft).map(str).filter(Boolean), continuable: PREPARATION_CONTINUABLE.includes(r.status), synthetic: r.synthetic !== false,
-    createdAt: str(r.createdAt), updatedAt: str(r.updatedAt) };
+    awaitedLabel: awaited ? awaitedOfferLabel(status, r.awaitedCurrent === true) : "",
+    decisionsLeft: arr(r.decisionsLeft).map(str).filter(Boolean),
+    continuable: r.continuable === true && PREPARATION_CONTINUABLE.includes(status), waitsForRearm: r.waitsForRearm === true,
+    activateBy: str(r.activateBy), synthetic: r.synthetic !== false, createdAt: str(r.createdAt), updatedAt: str(r.updatedAt) };
+}
+
+/**
+ * Review F21: what the offer id + SHA the preparation recorded is, said truthfully: the target it waits for (only while it waits or
+ * packages and that version is still the current one), the approved offer of a ready dossier, or the offer it USED to wait for (outdated,
+ * or still current but no longer awaited automatically) — never „Oferta așteptată” for a stale or stopped target.
+ */
+export function awaitedOfferLabel(status, current) {
+  if (["WAITING_OWNER", "PACKAGING"].includes(status)) return current ? "Oferta așteptată (ținta exactă a aprobării tale)" : "Oferta pe care o aștepta (depășită: nu mai e ținta)";
+  if (status === "READY") return current ? "Oferta aprobată din care s-a făcut dosarul" : "Oferta din care s-a făcut dosarul (depășită)";
+  return current ? "Oferta pe care o aștepta (încă versiunea curentă; nu mai e așteptată automat)" : "Oferta pe care o aștepta (depășită: nu mai e ținta)";
+}
+
+/**
+ * Review F1/F3/F10: what the panel offers for continuing a stopped preparation. → { kind, text }
+ *   "continue"  the server says it is continuable and nothing holds it: the „Pregătește continuarea” button (ONE new card, confirmed once);
+ *   "rearm"     „Oprește tot” stopped it and still holds the gate: the rearm comes first, in the cockpit (no button that would be refused);
+ *   "new"       a status a continuation would resume, but the server refuses it (e.g. a card never confirmed, R18): a new request instead;
+ *   null        nothing to continue (it runs, waits for you, is ready or cancelled).
+ */
+export function continuationOffer(p) {
+  const v = obj(p);
+  if (!PREPARATION_CONTINUABLE.includes(v.status)) return { kind: null, text: "" };
+  if (v.waitsForRearm) return { kind: "rearm", text: "„Oprește tot” a oprit această pregătire și poarta e încă oprită: întâi redeschizi poarta în cockpit, pe cardul „Redeschide poarta” (Windows Hello); apoi revii aici și pregătești continuarea." };
+  if (v.continuable) return { kind: "continue", text: "Continuarea e un card nou, pe care îl confirmi o dată; ce s-a făcut deja nu se repetă (aceeași firmă sintetică, aceeași ofertă dacă nu s-a schimbat nimic)." };
+  return { kind: "new", text: "Pregătirea aceasta nu se poate continua (cardul ei inițial nu a fost confirmat niciodată): cere din nou oferta, ca o cerere nouă." };
+}
+
+/** The owner route that proposes the continuation card (POST, owner session; the card is then confirmed like any plan card). */
+export const continuationPath = (preparationId) => `/api/sales/preparations/${encodeURIComponent(str(preparationId))}/continue`;
+/** Where the rearm card lives (the cockpit's start screen shows it while the gate is stopped). */
+export const COCKPIT_HREF = "#/lega";
+
+/**
+ * While the preparation waits for the owner's approval: until when the draft and the dossier still follow by themselves (the confirmed
+ * plan's window, from the confirmation). → "" when there is no window to say.
+ */
+export function activationWindowText(p, now = Date.now()) {
+  const v = obj(p);
+  if (v.status !== "WAITING_OWNER" || !v.activateBy) return "";
+  const at = Date.parse(v.activateBy);
+  if (!Number.isFinite(at)) return "";
+  const min = Math.round((at - now) / 60000);
+  if (min <= 0) return "Fereastra planului confirmat a trecut: după aprobarea ofertei, ciorna și dosarul nu mai pornesc singure; o continuare cere un card nou.";
+  const left = min >= 60 ? `${Math.floor(min / 60)} h ${min % 60} min` : `${min} min`;
+  return `Dacă aprobi oferta exactă în următoarele ${left}, ciorna și dosarul se fac singure; după aceea, o continuare cere un card nou.`;
 }
 
 /**
@@ -67,10 +120,13 @@ export function dossierView(raw = {}) {
   const r = obj(raw);
   const labels = arr(r.labels).map(str);
   const files = arr(r.files).map((f) => ({ path: str(obj(f).path), sha256: str(obj(f).sha256), bytes: Number(obj(f).bytes) || 0, reused: Boolean(obj(f).reusedFrom) }));
+  const inputsCurrent = r.status === "READY" ? r.inputsCurrent !== false : null;
   return { id: str(r.id), revision: Number(r.revision) || 0, status: str(r.status), statusReason: str(r.statusReason), folderName: str(r.folderName),
     manifestSha256: FULL_SHA.test(str(r.manifestSha256)) ? str(r.manifestSha256) : "", files, fileCount: files.length,
     draftOnly: labels.includes("DRAFT_ONLY"), localOnly: labels.includes("LOCAL_ONLY"), syntheticData: labels.includes("SYNTHETIC_DATA") || r.synthetic === true,
-    sent: r.sent === true, inputsCurrent: r.status === "READY" ? r.inputsCurrent !== false : null, verification: appVerificationText(r.verification),
+    sent: r.sent === true, inputsCurrent, verification: appVerificationText(r.verification),
+    // Review F21: a READY revision whose inputs changed since it was written is never the green „Gata”: it is said to be no longer current.
+    display: inputsCurrent === false ? { label: "Neactual: intrările s-au schimbat de la scriere", tone: "warn" } : dossierStatusMeta(str(r.status)),
     proposalId: str(r.proposalId), proposalSha: str(r.proposalSha), createdAt: str(r.createdAt) };
 }
 

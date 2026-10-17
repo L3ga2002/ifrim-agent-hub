@@ -40,7 +40,9 @@ export const SALES_NEVER = Object.freeze(["trimiterea ofertei sau a mesajului", 
 export const PREPARATION_TRANSITIONS = Object.freeze({
   PLANNED: ["PREPARING", "EXPIRED", "CANCELLED"],
   // Review R6: a phase-A plan whose window passed while it was paused / waiting for the owner can never resume: EXPIRED, continuable.
-  PREPARING: ["WAITING_OWNER", "STALE", "EXPIRED", "FAILED", "CANCELLED"],
+  // Review F11/F13: the offer step never promises the draft and dossier the activation would refuse (a Stop All since the owner's last
+  // confirmation of the plan, a revoked authority): STOPPED there, with that reason.
+  PREPARING: ["WAITING_OWNER", "STALE", "STOPPED", "EXPIRED", "FAILED", "CANCELLED"],
   WAITING_OWNER: ["PACKAGING", "STALE", "STOPPED", "EXPIRED", "CANCELLED"],
   PACKAGING: ["READY", "STALE", "STOPPED", "EXPIRED", "FAILED", "CANCELLED"],
   READY: ["STALE"],
@@ -66,6 +68,8 @@ const authorityOfCredential = (credential) => (String(credential || "").startsWi
 const STOP_KINDS = new Set(["stop_all", "shutdown", "security"]);
 const stopKindOf = (payload, source) => (STOP_KINDS.has(payload?.stopKind) ? payload.stopKind : source === "system" ? "shutdown" : "stop_all");
 const STOP_REASON = { stop_all: "„Oprește tot” a venit după confirmare", security: "o oprire de securitate a venit după confirmare" };
+const STOP_NAME = { stop_all: "„Oprește tot”", security: "o oprire de securitate" };
+const REARM_WHERE = "aici, în cockpit, pe cardul „Redeschide poarta”, cu Windows Hello";
 
 /** The four phase-A steps (the planner's card and a continuation card: the same kinds and parameters, only `continues` differs). */
 export function prepareSteps({ preparationId, briefSha, continues = null }) {
@@ -168,7 +172,7 @@ export function createSalesPreparations({ db, bus, clock, settings, sales, opsPl
     if (!rootConfirmed(p)) throw new HubError("conflict", NEVER_CONFIRMED, { code: "SALES_PREPARATION_STATE" });
     // Review C2 (D22): what the owner's „Oprește tot” stopped continues only after the rearm. The step waits for the owner (STOPPED →
     // the plan NEEDS_OWNER, nothing written); after the rearm „Continuă” runs it.
-    const hold = stopHold(p);
+    const hold = stopHold(p, { confirmedCard: true });
     if (hold) throw new HubError("policy", hold.reason, { code: "STOPPED", data: { rearm: true, cls: hold.cls } });
     const rootCredential = p.consent?.rootCredential || opsPlans.view(p.rootPlanId)?.consent?.credential || "";
     if (!rootCredential || rootCredential !== plan.consent?.credential) throw notBound("Continuarea a fost confirmată cu altă cheie decât planul inițial; cere pregătirea din nou.");
@@ -180,18 +184,79 @@ export function createSalesPreparations({ db, bus, clock, settings, sales, opsPl
   /** Statuses a continuation may resume AND a root the owner confirmed (the one rule the command and the read route share). */
   const isContinuable = (p) => Boolean(p) && CONTINUABLE.includes(p.status) && rootConfirmed(p);
   /**
-   * Review C2 (D22, the rearm rule): the preparation was STOPPED by a Stop All (or a security stop) whose suspension still holds the
-   * gate — the same suspension chain, no rearm since. → { cls, reason } | null. Read only, from the stop recorded in its status event.
+   * The gate is still held by `stop` (a Stop All or a security stop recorded as { suspensionId, at }): the current suspension is of a
+   * holding class and belongs to the same chain (no reopening since). → the suspension's class record | null. Read only.
    */
-  function stopHold(p) {
-    if (p?.status !== "STOPPED") return null;
-    const last = parse(db.prepare("SELECT payload_json FROM events WHERE scope_type = 'sales' AND scope_id = ? AND type = 'sales.preparation.status' ORDER BY seq DESC LIMIT 1").get(p.id)?.payload_json, {});
-    if (last.to !== "STOPPED" || !last.stop) return null;
+  function stillHolds(stop) {
+    if (!stop) return null;
     const c = classifySuspension(settings.get("executionGate") || {});
     if (!STOP_HOLD_CLASSES.has(c.cls)) return null;
-    const same = (last.stop.suspensionId && c.id && last.stop.suspensionId === c.id) || (last.stop.at && c.since && String(last.stop.at) >= String(c.since));
-    return same ? { cls: c.cls, reason: "„Oprește tot” a oprit această pregătire și poarta e încă oprită: o continuare pornește doar după ce redeschizi poarta aici, în cockpit, pe cardul „Redeschide poarta”, cu Windows Hello; apoi „Continuă”." } : null;
+    const same = (stop.suspensionId && c.id && stop.suspensionId === c.id) || (stop.at && c.since && String(stop.at) >= String(c.since));
+    return same ? c : null;
   }
+  /**
+   * Review C2 (D22, the rearm rule) and F9: the preparation was stopped by a Stop All (or a security stop) — STOPPED by it, or EXPIRED
+   * while its plan stood stopped under it — and that suspension still holds the gate (the same chain, no rearm since). → { cls, reason }
+   * | null. Read only, from the stop recorded in its status event. `confirmedCard`: the reason for the step of a continuation card the
+   * owner already confirmed (it resumes with „Continuă” after the rearm), else for asking for a continuation card.
+   */
+  function stopHold(p, { confirmedCard = false } = {}) {
+    if (!CONTINUABLE.includes(p?.status)) return null;
+    const last = parse(db.prepare("SELECT payload_json FROM events WHERE scope_type = 'sales' AND scope_id = ? AND type = 'sales.preparation.status' ORDER BY seq DESC LIMIT 1").get(p.id)?.payload_json, {});
+    if (last.to !== p.status || !last.stop) return null;
+    const c = stillHolds(last.stop);
+    if (!c) return null;
+    const by = STOP_NAME[last.stop.kind] || STOP_NAME.stop_all;
+    return { cls: c.cls, reason: confirmedCard
+      ? `${by} a oprit această pregătire și poarta e încă oprită: continuarea confirmată pornește doar după ce redeschizi poarta ${REARM_WHERE}; apoi o reiei cu „Continuă”.`
+      : `${by} a oprit această pregătire și poarta e încă oprită: o continuare se poate cere doar după ce redeschizi poarta ${REARM_WHERE}; apoi pregătești continuarea de pe pagina oportunității (butonul „Pregătește continuarea”).` };
+  }
+  /**
+   * Review F11/F13: the anchor of the automatic continuation — the owner's LATEST confirmation of `plan`: its consent (for a derived
+   * plan, its derivation), a delta re-confirmation in a new owner session (ops.plan.reconfirmed: same credential, e.g. after „Închide
+   * toate sesiunile”) or his own „Continuă” in the owner session (ops.plan.resumed, e.g. after the rearm). A Stop All and a revocation
+   * count from it. A resume or a re-confirmation while a Stop All since the anchor still holds the gate is refused before it happens
+   * (resumeGuard below; the engine's holdIfStopped for what that stop paused itself), so an anchor after a Stop All is always the owner's
+   * own confirmation after the rearm. Only the same credential moves it (an event whose session belongs to another key never does).
+   * → { planId, sessionId, at, seq, via } | null. Read only.
+   */
+  function anchorOf(plan) {
+    if (!plan?.id) return null;
+    const consent = plan.consent || {};
+    const base = db.prepare("SELECT seq, created_at FROM events WHERE scope_type = 'ops_plan' AND scope_id = ? AND type IN ('ops.plan.consent','ops.plan.derived') ORDER BY seq DESC LIMIT 1").get(plan.id);
+    const anchor = { planId: plan.id, sessionId: consent.sessionId || null, at: consent.confirmedAt || base?.created_at || null, seq: Number(base?.seq || 0), via: "consent" };
+    const credential = String(consent.credential || "");
+    if (!credential) return anchor;
+    for (const r of db.prepare("SELECT seq, type, created_at, payload_json FROM events WHERE scope_type = 'ops_plan' AND scope_id = ? AND type IN ('ops.plan.reconfirmed','ops.plan.resumed') AND seq > ? ORDER BY seq DESC LIMIT 20").all(plan.id, anchor.seq)) {
+      const sessionId = String(parse(r.payload_json, {}).session || "");
+      const s = sessionId ? db.prepare("SELECT credential_id FROM owner_sessions WHERE id = ?").get(sessionId) : null;
+      if (!s || String(s.credential_id || "").slice(0, 10) !== credential) continue;
+      return { planId: plan.id, sessionId, at: r.created_at, seq: Number(r.seq), via: r.type === "ops.plan.reconfirmed" ? "reconfirm" : "resume" };
+    }
+    return anchor;
+  }
+  const stoppedSinceAnchor = (anchor, { latest = false } = {}) => (anchor ? stoppedSince(anchor.at, anchor.planId, { afterSeq: anchor.seq, latest }) : null);
+  /** A phase plan of a preparation (sales.prepare or its derived sales.dossier) whose anchor a Stop All followed that still holds the gate. */
+  function planStopHold(plan) {
+    if (!plan || ![PREPARE_KIND, DOSSIER_KIND].includes(plan.kind)) return null;
+    const stop = stoppedSinceAnchor(anchorOf(plan), { latest: true });
+    const c = stillHolds(stop);
+    return c ? { cls: c.cls, stop } : null;
+  }
+  /**
+   * Review F11/F13 (registered on the operation plans for both phase kinds): „Continuă” (and the delta re-confirmation of a new session)
+   * of a preparation's plan is refused BEFORE anything moves while a Stop All since the owner's last confirmation of that plan still holds
+   * the gate — also when that stop did not pause the plan itself (it was already paused or waiting for the owner). The owner rearms the
+   * gate first; his „Continuă” after that is his confirmation, and the draft and the dossier can follow the offer's approval as promised.
+   */
+  function resumeGuard(plan) {
+    const h = planStopHold(plan);
+    if (!h) return;
+    const by = STOP_NAME[h.stop?.kind] || STOP_NAME.stop_all;
+    throw new HubError("gate", `${by} a venit după ce ai confirmat planul pregătirii ofertei și poarta e încă oprită de el: nu îl reiau acum. După ce redeschizi poarta ${REARM_WHERE}, îl reiei cu „Continuă” (reluarea de atunci e confirmarea ta).`,
+      { code: "GATE_REARM_REQUIRED", data: { code: "GATE_REARM_REQUIRED", rearm: true, kind: "ops", cls: h.cls } });
+  }
+  if (typeof opsPlans?.registerResumeGuard === "function") for (const kind of [PREPARE_KIND, DOSSIER_KIND]) opsPlans.registerResumeGuard(kind, resumeGuard);
   /** After step 1 (in its transaction): the preparation runs under THIS plan's consent; the window starts at its confirmation. */
   function enterPreparing(p, plan, ids) {
     const c = plan.consent || {};
@@ -210,10 +275,27 @@ export function createSalesPreparations({ db, bus, clock, settings, sales, opsPl
     if (!ok.includes(p.status)) throw new HubError("conflict", `Pregătirea e ${p.status}; pasul nu mai rulează.`, { code: "SALES_PREPARATION_STATE" });
     return p;
   }
-  /** After the offer step (in its transaction): the preparation waits for the owner's approval of exactly this version. */
+  /**
+   * After the offer step (in its transaction): the preparation waits for the owner's approval of exactly this version. Review F11/F13:
+   * it never promises the draft and the dossier when the activation would refuse them — a Stop All since the owner's last confirmation
+   * of the plan, or a revoked authority behind it: STOPPED here, with that reason (the offer stays the awaited one; a continuation card
+   * waits on it again, after the rearm when the stop still holds the gate).
+   */
   function toWaiting(p, proposal) {
+    const awaited = { proposal_id: proposal.id, awaited_proposal_id: proposal.id, awaited_proposal_sha: proposal.contentSha };
+    const anchor = anchorOf(opsPlans.view(p.planId));
+    const stopped = stoppedSinceAnchor(anchor);
+    if (stopped) {
+      return setStatus(p.id, "STOPPED", `Oferta v${proposal.version} e pregătită, dar ${STOP_REASON[stopped.kind] || STOP_REASON.stop_all}: ciorna și dosarul nu pornesc singure; o continuare (un card nou) cere o confirmare nouă, după ce redeschizi poarta`,
+        { from: ["PREPARING"], extra: awaited, meta: stopMeta(stopped) });
+    }
+    const held = anchor && trust.confirmedAuthority ? trust.confirmedAuthority(anchor.sessionId) : { ok: true };
+    if (!held.ok) {
+      return setStatus(p.id, "STOPPED", `Oferta v${proposal.version} e pregătită, dar autorizarea în care ai confirmat planul a fost revocată (${held.reason}): ciorna și dosarul nu pornesc; o continuare cere o confirmare nouă`,
+        { from: ["PREPARING"], extra: awaited });
+    }
     return setStatus(p.id, "WAITING_OWNER", `Oferta v${proposal.version} e gata de revizuirea ta: o aprobi tu, separat (id + SHA complet); apoi ciorna și dosarul se fac fără altă întrebare`, {
-      from: ["PREPARING"], extra: { proposal_id: proposal.id, awaited_proposal_id: proposal.id, awaited_proposal_sha: proposal.contentSha } });
+      from: ["PREPARING"], extra: awaited });
   }
 
   // ---------------------------------------------------------------- the awaited offer
@@ -244,23 +326,27 @@ export function createSalesPreparations({ db, bus, clock, settings, sales, opsPl
    * clock or the same millisecond cannot hide it): nothing continues by itself after it. → { kind, suspensionId, at, seq } | null. Review
    * R23: a Hub shutdown (stopKind „shutdown”) is not the owner's Stop All: what it interrupted follows the operation plans' rules.
    */
-  function stoppedSince(iso, planId = null) {
+  function stoppedSince(iso, planId = null, { afterSeq = null, latest = false } = {}) {
     if (!iso) return { kind: "stop_all", suspensionId: null, at: null, seq: null };
-    const consentSeq = planId ? Number(db.prepare("SELECT MAX(seq) AS seq FROM events WHERE scope_type = 'ops_plan' AND scope_id = ? AND type = 'ops.plan.consent'").get(String(planId))?.seq || 0) : 0;
+    // Review F11/F13: `afterSeq` — the owner's latest confirmation of the plan (anchorOf), when it is known; else the plan's consent event.
+    const consentSeq = afterSeq !== null && afterSeq !== undefined ? Number(afterSeq) || 0
+      : planId ? Number(db.prepare("SELECT MAX(seq) AS seq FROM events WHERE scope_type = 'ops_plan' AND scope_id = ? AND type = 'ops.plan.consent'").get(String(planId))?.seq || 0) : 0;
+    const g = settings.get("executionGate") || {};
+    const c = classifySuspension(g);
+    // The gate is written before the stop's own event: a stop still in progress is seen here first (its record, not the gate's last write,
+    // which a later shutdown would move). `latest`: the newest stop since then (the one that may still hold the gate), else the first.
+    const inProgress = g.status !== "open" && ["stop_all", "security"].includes(c.cls) && String(c.at || "") > String(iso) ? { kind: c.cls, suspensionId: c.id || null, at: c.at, seq: null } : null;
+    if (latest && inProgress) return inProgress;
+    const order = latest ? "DESC" : "";
     const rows = consentSeq
-      ? db.prepare("SELECT seq, created_at, source, payload_json FROM events WHERE scope_type = 'system' AND scope_id = 'hub' AND type = 'system.stop_all' AND seq > ? ORDER BY seq").all(consentSeq)
-      : db.prepare("SELECT seq, created_at, source, payload_json FROM events WHERE scope_type = 'system' AND scope_id = 'hub' AND type = 'system.stop_all' AND created_at > ? ORDER BY seq").all(String(iso));
+      ? db.prepare(`SELECT seq, created_at, source, payload_json FROM events WHERE scope_type = 'system' AND scope_id = 'hub' AND type = 'system.stop_all' AND seq > ? ORDER BY seq ${order}`).all(consentSeq)
+      : db.prepare(`SELECT seq, created_at, source, payload_json FROM events WHERE scope_type = 'system' AND scope_id = 'hub' AND type = 'system.stop_all' AND created_at > ? ORDER BY seq ${order}`).all(String(iso));
     for (const r of rows) {
       const payload = parse(r.payload_json, {});
       const kind = stopKindOf(payload, r.source);
       if (kind !== "shutdown") return { kind, suspensionId: payload.suspensionId || null, at: r.created_at, seq: Number(r.seq) };
     }
-    const g = settings.get("executionGate") || {};
-    const c = classifySuspension(g);
-    // The gate is written before the stop's own event: a stop still in progress is seen here first (its record, not the gate's last write,
-    // which a later shutdown would move).
-    if (g.status !== "open" && ["stop_all", "security"].includes(c.cls) && String(c.at || "") > String(iso)) return { kind: c.cls, suspensionId: c.id || null, at: c.at, seq: null };
-    return null;
+    return inProgress;
   }
   const stopMeta = (s) => (s ? { stop: { kind: s.kind, suspensionId: s.suspensionId || null, at: s.at || null, seq: s.seq || null } } : null);
 
@@ -299,9 +385,12 @@ export function createSalesPreparations({ db, bus, clock, settings, sales, opsPl
     if (p.activateBy && new Date(p.activateBy) < clock()) return fail("EXPIRED", "Fereastra planului confirmat a trecut; o continuare cere o confirmare nouă");
     const plan = opsPlans.view(consent.planId);
     if (!plan || plan.kind !== PREPARE_KIND || plan.hash !== consent.planHash || plan.status !== "DONE") return fail("FAILED", "Planul confirmat nu mai e cel terminat");
-    const stopped = stoppedSince(consent.confirmedAt, consent.planId);
+    // Review F11/F13: the Stop All and revocation checks count from the owner's latest confirmation of this plan (its consent, a delta
+    // re-confirmation in a new session after a revocation, or his „Continuă” after the rearm), with the same credential.
+    const anchor = anchorOf(plan);
+    const stopped = stoppedSinceAnchor(anchor);
     if (stopped) return fail("STOPPED", `${STOP_REASON[stopped.kind] || STOP_REASON.stop_all}; ciorna și dosarul nu pornesc singure`, stopMeta(stopped));
-    const held = trust.confirmedAuthority ? trust.confirmedAuthority(consent.sessionId) : { ok: false, reason: "necunoscută" };
+    const held = trust.confirmedAuthority ? trust.confirmedAuthority(anchor.sessionId) : { ok: false, reason: "necunoscută" };
     if (!held.ok) return fail("STOPPED", `Autorizarea în care ai confirmat planul a fost revocată (${held.reason}); ciorna și dosarul nu pornesc`);
     const check = approvedExactly(p);
     if (!check.ok) return fail(check.wait ? "STALE" : check.status, check.reason);
@@ -309,10 +398,10 @@ export function createSalesPreparations({ db, bus, clock, settings, sales, opsPl
     if (!thenSha) return fail("FAILED", "Planul confirmat nu are pașii ciornei și ai dosarului");
     try {
       const derived = await opsPlans.adoptDerived({ kind: DOSSIER_KIND, title: DOSSIER_PLAN_TITLE, steps: dossierSteps({ preparationId: id }), limits: phaseBLimits(),
-        parent: { kind: PREPARE_KIND, id: plan.id, hash: plan.hash, confirmedAt: consent.confirmedAt, deliveryId: null }, expectedBodySha: thenSha, sessionId: consent.sessionId, credential: consent.credential || "",
+        parent: { kind: PREPARE_KIND, id: plan.id, hash: plan.hash, confirmedAt: consent.confirmedAt, deliveryId: null }, expectedBodySha: thenSha, sessionId: anchor.sessionId, credential: consent.credential || "",
         onCreated: (planId) => {
           // In the plan's own transaction: a Stop All that landed while the steps were described stops it; one plan per preparation.
-          const late = stoppedSince(consent.confirmedAt, consent.planId);
+          const late = stoppedSinceAnchor(anchor);
           if (late) throw new HubError("policy", STOP_REASON[late.kind] || STOP_REASON.stop_all, { code: "STOPPED", data: stopMeta(late) });
           const n = db.prepare("UPDATE sales_preparations SET phase_b_plan_id = ?, updated_at = ?, version = version + 1 WHERE id = ? AND status = 'PACKAGING' AND phase_b_plan_id IS NULL").run(planId, now(), id).changes;
           if (n !== 1) throw new HubError("conflict", "Pregătirea s-a schimbat în timpul pornirii", { code: "SALES_PREPARATION_STATE" });
@@ -471,9 +560,10 @@ export function createSalesPreparations({ db, bus, clock, settings, sales, opsPl
   /** The read route: the opportunity's preparations and dossiers (GET only; contact values never appear here). */
   function forOpportunity(oppId) {
     const preparations = db.prepare("SELECT * FROM sales_preparations WHERE opportunity_id = ? ORDER BY created_at DESC").all(String(oppId || "")).map(view)
-      .map((p) => ({ p, continuable: isContinuable(p), held: Boolean(stopHold(p)) }))
-      .map(({ p: { brief, consent, ...rest }, continuable, held }) => ({ ...rest, request: brief?.request || "", authority: consent?.authority || null, confirmedAt: consent?.confirmedAt || null,
-        decisionsLeft: SALES_DECISIONS_LEFT, continuable, waitsForRearm: held }));
+      .map((p) => ({ p, continuable: isContinuable(p), held: Boolean(stopHold(p)), current: Boolean(p.awaited) && awaitedCurrent(p) }))
+      .map(({ p: { brief, consent, ...rest }, continuable, held, current }) => ({ ...rest, request: brief?.request || "", authority: consent?.authority || null, confirmedAt: consent?.confirmedAt || null,
+        // Review F21: whether the offer it waited for is still the current one (the latest version, the same sha, not STALE).
+        decisionsLeft: SALES_DECISIONS_LEFT, continuable, waitsForRearm: held, awaitedCurrent: current }));
     const dossiers = db.prepare("SELECT * FROM sales_dossiers WHERE opportunity_id = ? ORDER BY revision DESC").all(String(oppId || "")).map(dossierView)
       .map((d) => ({ ...d, inputsCurrent: d.status === "READY" ? dossierCurrent(d) : false }));
     return { opportunityId: String(oppId || ""), preparations, dossiers };
@@ -536,14 +626,25 @@ export function createSalesPreparations({ db, bus, clock, settings, sales, opsPl
         // Review R5/R11: a revocation ends the authority of the confirmation a waiting preparation would continue on (also when its session
         // had already ended): it stops now, with the reason, instead of at the owner's later approval.
         for (const r of db.prepare("SELECT id FROM sales_preparations WHERE status = 'WAITING_OWNER'").all()) {
-          const held = trust.confirmedAuthority ? trust.confirmedAuthority(get(r.id)?.consent?.sessionId) : { ok: true };
+          // Review F11: the owner's latest confirmation of the plan (a delta re-confirmation in a new session moves it).
+          const consent = get(r.id)?.consent || {};
+          const anchor = anchorOf(opsPlans.view(consent.planId));
+          const held = trust.confirmedAuthority ? trust.confirmedAuthority(anchor?.sessionId || consent.sessionId) : { ok: true };
           if (!held.ok) setStatus(r.id, "STOPPED", `Autorizarea în care ai confirmat planul a fost revocată (${held.reason}); ciorna și dosarul nu pornesc; o continuare cere o confirmare nouă`, { from: ["WAITING_OWNER"] });
         }
       } else if (e.type === "ops.plan.needs_owner" || e.type === "ops.plan.paused" || e.type === "ops.plan.running") {
         const r = one("SELECT id FROM sales_preparations WHERE (plan_id = ? AND status = 'PREPARING') OR (phase_b_plan_id = ? AND status = 'PACKAGING')", e.scopeId, e.scopeId);
         if (r && !expireDead(get(r.id))) noteGoverningPlan(get(r.id));
+      } else if (e.type === "gate.rearmed" || (e.type === "settings.changed" && p.key === "executionGate")) {
+        // Final review F9/F13: the gate changed — a Stop All suspended it (a phase plan that already stood paused gets no event of its own
+        // from that stop: the rearm comes first now), or it was reopened (the rearm it asked for is done): the reasons are said again.
+        noteStoppedPlans();
       }
     } catch { /* a listener never breaks the publisher; the tick re-checks */ }
+  }
+  /** The reason of every preparation whose phase plan stands paused / waiting for the owner, said again from the current state. */
+  function noteStoppedPlans() {
+    for (const r of db.prepare("SELECT id FROM sales_preparations WHERE status = 'PREPARING' OR (status = 'PACKAGING' AND phase_b_plan_id IS NOT NULL)").all()) noteGoverningPlan(get(r.id));
   }
   /**
    * Review R6: the phase plan of a PREPARING / PACKAGING preparation that can never resume — its window passed while it was paused or
@@ -556,8 +657,13 @@ export function createSalesPreparations({ db, bus, clock, settings, sales, opsPl
     const plan = opsPlans.view(planId);
     if (!plan || !["PAUSED", "NEEDS_OWNER"].includes(plan.status) || !plan.expiresAt || new Date(plan.expiresAt) > clock()) return false;
     const phase = p.status === "PREPARING" ? "pregătirii ofertei" : "ciornei și dosarului";
-    if (!setStatus(p.id, "EXPIRED", `Fereastra planului ${phase} a trecut cât era oprit (${plan.status === "PAUSED" ? "pauză" : "aștepta decizia ta"}): nu se mai poate relua; o continuare (un card nou) o reia de unde a rămas`,
-      { from: [p.status] })) return false;
+    // Review F9: a Stop All since the owner's last confirmation of the plan (it paused the plan, or came while it stood paused) stays on the
+    // EXPIRED record: the reason says so, and the continuation waits for the rearm while that stop still holds the gate (stopHold).
+    const stop = stoppedSinceAnchor(anchorOf(plan), { latest: true });
+    const reason = stop
+      ? `Fereastra planului ${phase} a trecut cât era oprit de ${STOP_NAME[stop.kind] || STOP_NAME.stop_all}: nu se mai poate relua; o continuare (un card nou) o reia de unde a rămas${stillHolds(stop) ? `, după ce redeschizi poarta ${REARM_WHERE}` : ""}`
+      : `Fereastra planului ${phase} a trecut cât era oprit (${plan.status === "PAUSED" ? "pauză" : "aștepta decizia ta"}): nu se mai poate relua; o continuare (un card nou) o reia de unde a rămas`;
+    if (!setStatus(p.id, "EXPIRED", reason, { from: [p.status], meta: stopMeta(stop) })) return false;
     try { opsPlans.cancel(planId, { reason: "Fereastra planului a trecut; pregătirea continuă doar printr-un card nou", actor: "hub" }); } catch { /* the plan is already closed */ }
     return true;
   }
@@ -574,7 +680,7 @@ export function createSalesPreparations({ db, bus, clock, settings, sales, opsPl
     let reason = null;
     if (["PAUSED", "NEEDS_OWNER"].includes(plan.status)) {
       let held = false;
-      try { held = Boolean(stopScope().heldByStop({ kind: "ops", id: planId })?.held); } catch { held = true; }
+      try { held = Boolean(stopScope().heldByStop({ kind: "ops", id: planId })?.held) || Boolean(planStopHold(plan)); } catch { held = true; }
       reason = `Planul ${phase} e oprit (${clip(plan.statusReason, 160)}): îl reiei cu „Continuă”${held ? " după ce redeschizi poarta (cardul „Redeschide poarta”)" : ""}, până la ${plan.expiresAt}; după aceea, o continuare (un card nou)`;
     } else if (plan.status === "RUNNING" && /^Planul .+ e oprit \(/.test(p.statusReason)) reason = p.status === "PREPARING" ? "Planul confirmat rulează (fără model; nimic nu pleacă din calculator)" : "Ciorna și dosarul se fac din planul confirmat (nimic nu pleacă din calculator)";
     if (!reason || reason === p.statusReason) return false;
@@ -614,7 +720,9 @@ export function createSalesPreparations({ db, bus, clock, settings, sales, opsPl
     dossierInputs, dossierTarget, dossierKeyParams, reserveDossier, recordDossierFiles, completeDossier, previousDossier, dossier: dossierOf, dossierCurrent, forOpportunity, markDossierStale,
     onInvalidated, onEvent, tick, boot, close, idle,
     // M12 review fixes (parts 2–3): who may be continued (R18), the Stop All rearm hold (C2), the expiry of a dead phase plan (R6).
-    isContinuable, stopHold, expireDead };
+    isContinuable, stopHold, expireDead,
+    // Final review (F9, F11/F13): the owner's latest confirmation of a phase plan, the stop that still holds it, the resume guard.
+    anchorOf, planStopHold, resumeGuard };
 }
 
 /** Exported for the dossier step: a folder name never reaches outside its exports root (also after links). */

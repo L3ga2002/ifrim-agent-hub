@@ -9,7 +9,8 @@ import { SyntheticTag, when } from "./common.jsx";
  * APP_NOT_RUN is not a Word verification). Read only: the dossier is written by the confirmed plan, never from this screen.
  */
 export function DossierRow({ d }) {
-  const meta = dossierStatusMeta(d.status);
+  // Review F21: a READY revision whose inputs changed is shown as no longer current (warn), never as the green „Gata”.
+  const meta = d.display || dossierStatusMeta(d.status);
   return (
     <li className="stack tight sales-dossier">
       <div className="row wrap">

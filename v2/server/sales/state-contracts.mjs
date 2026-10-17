@@ -72,9 +72,11 @@ const proposal = Object.freeze({
       { pre: ["o versiune mai nouă a aceleiași oportunități"], invalidates: ["aprobarea internă a versiunii vechi"], notImplied: NEVER_IMPLIED }),
     T("STALE", "SUPERSEDED", "sales.mjs:createProposal (o versiune nouă)", "sales.proposal.created", { pre: ["o versiune mai nouă a aceleiași oportunități"], notImplied: ["că oferta STALE redevine curentă"] }),
     T("DRAFT", "STALE", "sales.mjs:invalidateBound (scrierile care schimbă intrările ofertei legate: dovezi, audit, calificare, suprascriere, suprimare, unire)", "sales.proposal.stale",
-      { pre: ["oferta e legată de o pregătire (content.basis)", "intrările ei s-au schimbat (sau o suprimare / o unire)"], invalidates: ["ciornele ei (SUPERSEDED)", "pregătirea (STALE)", "dosarul (STALE)"], notImplied: ["că redevine curentă"] }),
-    T("APPROVED_INTERNAL", "STALE", "sales.mjs:invalidateBound", "sales.proposal.stale",
-      { pre: ["oferta e legată de o pregătire (content.basis)", "intrările ei s-au schimbat"], invalidates: ["aprobarea internă", "ciornele ei (SUPERSEDED)", "pregătirea (STALE)", "dosarul (STALE)"], notImplied: ["că redevine curentă"] }),
+      { pre: ["oferta e legată de o pregătire (content.basis)", "intrările ei s-au schimbat (sau o suprimare / o unire)"],
+        invalidates: ["ciornele ei (SUPERSEDED; la o suprimare DO_NOT_CONTACT ele sunt deja CANCELLED de sales.mjs:suppress)", "pregătirea (STALE)", "dosarul (STALE)"], notImplied: ["că redevine curentă"] }),
+    T("APPROVED_INTERNAL", "STALE", "sales.mjs:invalidateBound (aceleași scrieri; și sales.mjs:suppress, forțat)", "sales.proposal.stale",
+      { pre: ["oferta e legată de o pregătire (content.basis)", "intrările ei s-au schimbat (sau o suprimare / o unire)"],
+        invalidates: ["aprobarea internă", "ciornele ei (SUPERSEDED; la o suprimare DO_NOT_CONTACT ele sunt deja CANCELLED de sales.mjs:suppress)", "pregătirea (STALE)", "dosarul (STALE)"], notImplied: ["că redevine curentă"] }),
   ]),
 });
 
@@ -84,36 +86,42 @@ const preparation = Object.freeze({
   object: "preparation", table: "sales_preparations",
   statuses: Object.freeze(["PLANNED", "PREPARING", "WAITING_OWNER", "PACKAGING", "READY", "STALE", "STOPPED", "EXPIRED", "CANCELLED", "FAILED"]),
   transitions: Object.freeze([
-    T(null, "PLANNED", "owner/planners/sales.mjs:prepare (un singur card, nimic nu rulează)", "sales.preparation.planned", { notImplied: ["vreun efect în domeniu", "aprobarea ofertei"] }),
-    T("PLANNED", "PREPARING", "plan-executors.mjs:sales.synthetic (pasul 1, sub consimțământul cardului confirmat)", PREP_EVENT,
+    T(null, "PLANNED", "owner/planners/sales.mjs:prepare → preparation.mjs:createPlanned (un singur card, nimic nu rulează)", "sales.preparation.planned", { notImplied: ["vreun efect în domeniu", "aprobarea ofertei"] }),
+    T("PLANNED", "PREPARING", "plan-executors.mjs:sales.synthetic → preparation.mjs:enterPreparing (pasul 1, sub consimțământul cardului confirmat)", PREP_EVENT,
       { pre: ["cardul confirmat de proprietar (o confirmare)", "brieful are aceeași amprentă"], notImplied: ["aprobarea ofertei"] }),
     T("PLANNED", "EXPIRED", "preparation.mjs:onEvent ops.plan.expired (cardul neconfirmat la timp)", PREP_EVENT),
     T("PLANNED", "CANCELLED", "preparation.mjs:cancel / onEvent ops.plan.cancelled / ops.plan.superseded", PREP_EVENT),
-    T("PREPARING", "WAITING_OWNER", "plan-executors.mjs:sales.proposal.draft (pasul 4: oferta READY_FOR_OWNER_REVIEW, id + SHA așteptate)", PREP_EVENT,
-      { pre: ["oferta fără sume inventate și fără câmpuri necompletate"], notImplied: ["aprobarea ofertei", ...NEVER_IMPLIED] }),
+    T("PREPARING", "WAITING_OWNER", "plan-executors.mjs:sales.proposal.draft → preparation.mjs:toWaiting (pasul 4: oferta READY_FOR_OWNER_REVIEW, id + SHA așteptate)", PREP_EVENT,
+      { pre: ["oferta fără sume inventate și fără câmpuri necompletate", "niciun „Oprește tot” și nicio revocare de la ultima confirmare a planului (activarea le-ar refuza)"],
+        notImplied: ["aprobarea ofertei", ...NEVER_IMPLIED] }),
+    T("PREPARING", "STOPPED", "plan-executors.mjs:sales.proposal.draft → preparation.mjs:toWaiting (oferta e gata, dar un „Oprește tot” de la ultima confirmare a planului sau o autorizare revocată ar refuza activarea: nu se promit ciorna și dosarul)", PREP_EVENT,
+      { pre: ["un „Oprește tot” (sau o oprire de securitate) după ultima confirmare a proprietarului (consimțământ, reconfirmare, „Continuă” după redeschidere) sau autoritatea ei revocată"],
+        invalidates: ["continuarea automată"], notImplied: ["aprobarea ofertei"] }),
     T("PREPARING", "STALE", "preparation.mjs:onEvent ops.plan.failed (cod de intrări schimbate)", PREP_EVENT),
-    T("PREPARING", "EXPIRED", "preparation.mjs:expireDead (tick / pauză sau NEEDS_OWNER: fereastra planului de fază A a trecut cât era oprit; planul mort e anulat, continuarea se oferă)", PREP_EVENT,
+    T("PREPARING", "EXPIRED", "preparation.mjs:expireDead (tick / pauză sau NEEDS_OWNER: fereastra planului de fază A a trecut cât era oprit; planul mort e anulat, continuarea se oferă; un „Oprește tot” de la ultima confirmare rămâne înregistrat, iar continuarea așteaptă redeschiderea porții)", PREP_EVENT,
       { invalidates: ["continuarea automată"] }),
     T("PREPARING", "FAILED", "preparation.mjs:onEvent ops.plan.failed", PREP_EVENT),
     T("PREPARING", "CANCELLED", "preparation.mjs:cancel / onEvent ops.plan.cancelled", PREP_EVENT),
     T("WAITING_OWNER", "PACKAGING", "preparation.mjs:activate (CAS după aprobarea proprietarului a exact id + SHA, în sesiunea de proprietar; planul DONE)", PREP_EVENT,
-      { pre: ["aprobarea sales.proposal_approve decisă în sesiunea de proprietar, payload = id + SHA așteptate", "planul de pregătire DONE", "în fereastra planului confirmat"],
+      { pre: ["aprobarea sales.proposal_approve decisă în sesiunea de proprietar, payload = id + SHA așteptate", "planul de pregătire DONE", "în fereastra planului confirmat",
+        "niciun „Oprește tot” și nicio revocare de la ultima confirmare a planului (consimțământul, o reconfirmare în sesiune nouă cu aceeași cheie sau „Continuă” după redeschiderea porții)"],
         notImplied: NEVER_IMPLIED }),
     T("WAITING_OWNER", "STALE", "sales.mjs:invalidateBound → preparation.mjs:onInvalidated; activarea (altă versiune)", PREP_EVENT, { invalidates: ["continuarea automată"] }),
-    T("WAITING_OWNER", "STOPPED", "preparation.mjs:onEvent system.stop_all; activarea (aprobare nedecisă în sesiunea de proprietar)", PREP_EVENT, { invalidates: ["continuarea automată"] }),
+    T("WAITING_OWNER", "STOPPED", "preparation.mjs:onEvent system.stop_all / onEvent owner.sessions_revoked, owner.credential_revoked (autoritatea ultimei confirmări revocată); activate (aprobare nedecisă în sesiunea de proprietar)", PREP_EVENT, { invalidates: ["continuarea automată"] }),
     T("WAITING_OWNER", "EXPIRED", "preparation.mjs:activate / tick (fereastra planului confirmat a trecut)", PREP_EVENT, { invalidates: ["continuarea automată"] }),
     T("WAITING_OWNER", "CANCELLED", "preparation.mjs:cancel / onEvent ops.plan.cancelled", PREP_EVENT),
     T("PACKAGING", "READY", "preparation.mjs:completeDossier (tranzacția finală a pasului sales.dossier)", PREP_EVENT,
       { pre: ["planul derivat (sales.dossier) e al acestei pregătiri", "intrările dosarului neschimbate"], notImplied: NEVER_IMPLIED }),
     T("PACKAGING", "STALE", "preparation.mjs:activate / onInvalidated / onEvent ops.plan.failed (cod de intrări schimbate)", PREP_EVENT),
-    T("PACKAGING", "STOPPED", "preparation.mjs:activate („Oprește tot” după confirmare, autoritate revocată)", PREP_EVENT),
-    T("PACKAGING", "EXPIRED", "preparation.mjs:activate (fereastra a trecut)", PREP_EVENT),
+    T("PACKAGING", "STOPPED", "preparation.mjs:activate („Oprește tot” după ultima confirmare a planului, autoritatea ei revocată)", PREP_EVENT),
+    T("PACKAGING", "EXPIRED", "preparation.mjs:activate (fereastra a trecut) / expireDead (planul fazei B oprit, fereastra lui trecută; un „Oprește tot” rămâne înregistrat)", PREP_EVENT),
     T("PACKAGING", "FAILED", "preparation.mjs:activate / onEvent ops.plan.failed", PREP_EVENT),
     T("PACKAGING", "CANCELLED", "preparation.mjs:cancel / onEvent ops.plan.cancelled", PREP_EVENT),
     T("READY", "STALE", "preparation.mjs:onInvalidated (ultimul dosar nu mai e READY)", PREP_EVENT, { notImplied: ["că dosarul se rescrie singur"] }),
     ...["STALE", "STOPPED", "EXPIRED", "FAILED"].flatMap((from) => [
-      T(from, "PREPARING", "plan-executors.mjs:sales.synthetic sub un card de continuare (sales.preparation.continue) confirmat de proprietar, aceeași rădăcină, aceeași cheie", PREP_EVENT,
-        { pre: ["o confirmare nouă (cardul de continuare)", "aceeași credențială ca la confirmarea inițială"], notImplied: ["aprobarea ofertei"] }),
+      T(from, "PREPARING", "plan-executors.mjs:sales.synthetic → preparation.mjs:enterPlan / enterPreparing, sub un card de continuare (sales.preparation.continue, POST /api/sales/preparations/:id/continue) confirmat de proprietar, aceeași rădăcină, aceeași cheie", PREP_EVENT,
+        { pre: ["o confirmare nouă (cardul de continuare)", "aceeași credențială ca la confirmarea inițială", "cardul inițial a fost confirmat (R18)",
+          "niciun „Oprește tot” care ține încă poarta (stopHold: întâi redeschiderea porții)"], notImplied: ["aprobarea ofertei"] }),
       T(from, "CANCELLED", "preparation.mjs:cancel (sales.preparation.cancel)", PREP_EVENT),
     ]),
   ]),
@@ -127,7 +135,8 @@ const dossier = Object.freeze({
       { pre: ["pregătirea PACKAGING sub planul ei derivat", "oferta APPROVED_INTERNAL cu SHA-ul aprobat", "ciorna DRAFT_ONLY a ofertei", "firmă sintetică", "folder de exporturi aprobat"], notImplied: NEVER_IMPLIED }),
     T("WRITING", "READY", "preparation.mjs:completeDossier (manifestul scris ultimul)", "sales.dossier.written",
       { pre: ["fiecare fișier scris exclusiv și verificat", "intrările neschimbate în tranzacția finală"], invalidates: ["reviziile READY mai vechi (SUPERSEDED)"], notImplied: NEVER_IMPLIED }),
-    T("WRITING", "INCOMPLETE", "preparation.mjs:recordDossierFiles (o oprire sau o eroare; fișierele scrise declarate)", "sales.dossier.incomplete", { notImplied: ["că fișierele parțiale sunt dosarul"] }),
+    T("WRITING", "INCOMPLETE", "preparation.mjs:recordDossierFiles (o oprire sau o eroare a pasului) / declarePartial (pregătirea iese din PACKAGING fără dosar, prin setStatus, sau o revizie nouă se încheie, prin completeDossier; fișierele scrise declarate, parțial)",
+      "sales.dossier.incomplete", { invalidates: ["operația din registru (FAILED)"], notImplied: ["că fișierele parțiale sunt dosarul"] }),
     T("INCOMPLETE", "WRITING", "preparation.mjs:reserveDossier (reluarea aceleiași chei, în același folder)", null, { notImplied: ["copii „ (2)”"] }),
     T("READY", "STALE", "preparation.mjs:onInvalidated / markDossierStale (intrările s-au schimbat)", "sales.dossier.stale", { notImplied: ["că se rescrie singur"] }),
     T("READY", "SUPERSEDED", "preparation.mjs:completeDossier al unei revizii mai noi", "sales.dossier.superseded"),
@@ -142,24 +151,52 @@ const ledger = Object.freeze({
       { pre: ["aceeași cheie cu alți parametri → IDEMPOTENCY_CONFLICT"] }),
     T("IN_PROGRESS", "DONE", "plan-ledger.mjs:runSync (efect + eveniment + DONE într-o tranzacție) / complete (CAS pe token)", "evenimentul operației (de ex. sales.synthetic.created, sales.research.recorded)",
       { notImplied: ["o a doua execuție a efectului la reluare"] }),
-    T("IN_PROGRESS", "FAILED", "plan-ledger.mjs:release (eroare)", null),
+    T("IN_PROGRESS", "FAILED", "plan-ledger.mjs:release (eroare) / preparation.mjs:declarePartial (dosarul parțial al unei pregătiri oprite) / preparation.mjs:failOpenClaims (pregătire anulată)", null),
     T("FAILED", "IN_PROGRESS", "plan-ledger.mjs:claim (o reluare a aceleiași chei)", null),
     T("IN_PROGRESS", "IN_PROGRESS", "plan-ledger.mjs:claim (un rând rămas de la o oprire bruscă, preluat de procesul acesta)", null),
   ]),
 });
 
-/** The contact draft the flow writes (only DRAFT, DRAFT_ONLY; never sent by the flow). */
+/**
+ * The contact draft (sales_drafts.status). The flow itself writes only DRAFT (DRAFT_ONLY; never sent by the flow) and SUPERSEDED; the M04
+ * writers can move the same draft further (the owner approves its text, a suppression cancels it) and are named here too. SEND_AUTHORIZED
+ * is a status of the M04 schema that no code sets (noWriter).
+ */
+const DRAFT_NOT_SENT = Object.freeze(["trimis (sent)", "CONTACTED", "WON"]);
 const draft = Object.freeze({
-  object: "draft", table: "sales_drafts", statuses: Object.freeze(["DRAFT", "CONTENT_APPROVED", "SEND_AUTHORIZED", "SENT", "SUPERSEDED"]), m12Writes: Object.freeze(["DRAFT", "SUPERSEDED"]),
+  object: "draft", table: "sales_drafts", statuses: Object.freeze(["DRAFT", "CONTENT_APPROVED", "SEND_AUTHORIZED", "SENT", "SUPERSEDED", "CANCELLED"]),
+  m12Writes: Object.freeze(["DRAFT", "SUPERSEDED"]), noWriter: Object.freeze(["SEND_AUTHORIZED"]),
   transitions: Object.freeze([
     T(null, "DRAFT", "sales.mjs:createDraft (M12: pasul B1 al planului derivat)", "sales.draft.created",
-      { pre: ["oferta APPROVED_INTERNAL (precondiția M04 neschimbată)", "un contact generic activ"], notImplied: ["trimis (sent)", "CONTACTED", "WON"] }),
+      { pre: ["oferta APPROVED_INTERNAL (precondiția M04 neschimbată)", "un contact generic activ"], notImplied: DRAFT_NOT_SENT }),
     T("DRAFT", "SUPERSEDED", "sales.mjs:createProposal / createDraft / invalidateBound", null, { notImplied: ["trimis (sent)"] }),
+    T("DRAFT", "CONTENT_APPROVED", "sales.mjs:approveDraftContent (sales.draft.approve_content: tu aprobi textul afișat; M04, neschimbat)", "sales.draft.content_approved",
+      { pre: ["ciorna curentă e DRAFT", "SHA-ul textului afișat", "fără DO_NOT_CONTACT"], invalidates: ["dosarul care o descrie (STALE)"], notImplied: DRAFT_NOT_SENT, kind: "m04" }),
+    T("CONTENT_APPROVED", "SUPERSEDED", "sales.mjs:createProposal / createDraft / invalidateBound", null, { notImplied: ["trimis (sent)"] }),
+    T("CONTENT_APPROVED", "SENT", "sales.mjs:sendDraft (doar cu un transport de test, în modul test; altfel OUTREACH_DISABLED — fluxul M12 nu trimite nimic)", "sales.draft.send",
+      { pre: ["un transport de test configurat (niciodată pe Hub-ul real)", "conținutul aprobat", "fără DO_NOT_CONTACT"], notImplied: ["WON"], kind: "m04" }),
+    ...["DRAFT", "CONTENT_APPROVED", "SEND_AUTHORIZED"].map((from) => T(from, "CANCELLED", "sales.mjs:suppress (DO_NOT_CONTACT: ciornele deschise ale firmei, înainte de invalidateBound)", "sales.suppressed",
+      { pre: ["o suprimare DO_NOT_CONTACT a firmei (sau a familiei ei de uniri)"], invalidates: ["oferta legată (STALE)", "pregătirea și dosarul (STALE)"], notImplied: DRAFT_NOT_SENT, kind: "m04" })),
+  ]),
+});
+
+/**
+ * The company (sales_orgs.status): its life cycle is M04's, unchanged; the M12 flow only reaches these statuses through the M04 writers
+ * (the synthetic company is created NEW, gets OPPORTUNITY with its opportunity, AUDITED only from a fixture page read before that, and
+ * DO_NOT_CONTACT when you suppress it). Manual moves stay sales.mjs:transitionOrg (M04).
+ */
+const organisation = Object.freeze({
+  object: "organisation", table: "sales_orgs", statuses: Object.freeze(["NEW", "AUDITED", "OPPORTUNITY", "DO_NOT_CONTACT"]), scope: "M04 (neschimbat): doar stările atinse de fluxul M12",
+  transitions: Object.freeze([
+    T(null, "NEW", "sales.mjs:createPreparationOrg (pasul 1: firma sintetică, .test, CUI 99…)", "sales.synthetic.created", { notImplied: ["o firmă reală", "contact"], kind: "m04" }),
+    ...["NEW", "NEEDS_RESEARCH", "QUALIFIED"].map((from) => T(from, "AUDITED", "sales.mjs:recordAudit (auditOrg / recordResearch pe o pagină fixture)", "sales.audit.completed", { notImplied: ["colectare live"], kind: "m04" })),
+    ...["NEW", "NEEDS_RESEARCH", "QUALIFIED", "AUDITED"].map((from) => T(from, "OPPORTUNITY", "sales.mjs:createOpportunity (createPreparationOrg, pasul 1)", "sales.opportunity.created", { notImplied: ["ofertă", "contact"], kind: "m04" })),
+    T("*", "DO_NOT_CONTACT", "sales.mjs:suppress (sales.org.suppress)", "sales.suppressed", { invalidates: ["ciornele (CANCELLED)", "oferta legată, pregătirea și dosarul (STALE)"], kind: "m04" }),
   ]),
 });
 
 /** The table (C-05), in the order the stage report prints it. */
-export const STATE_CONTRACTS = Object.freeze({ opportunity, proposal, preparation, dossier, ledger, draft });
+export const STATE_CONTRACTS = Object.freeze({ opportunity, proposal, preparation, dossier, ledger, draft, organisation });
 
 /** The only code lines that may set CONTACTED or WON (S-08): the existing M04 writers, matched by their exact text. */
 export const CONTACTED_WON_WRITERS = Object.freeze([

@@ -568,6 +568,9 @@ export function registerRoutes(router, hub, { token }) {
   get("/api/sales/opportunities/:id", ({ params }) => sales.getOpportunity(params.id));
   // M12: the opportunity's preparations and „Dosarul ofertei” revisions (read only: the dossier is written only by the confirmed plan).
   get("/api/sales/opportunities/:id/dossiers", ({ params }) => { sales.getOpportunity(params.id); return hub.salesPreparations.forOpportunity(params.id); });
+  // M12 final review (F1/F3/F10): the continuation of a stopped preparation — ONE new card (sales.preparation.continue → continueCard), never
+  // a start: the owner confirms it like any plan card. Owner dispatcher: the owner session is required (401 needSession), agent / cli refused.
+  post("/api/sales/preparations/:id/continue", ({ req, params }) => owner.dispatch(req, "sales.preparation.continue", { preparationId: params.id }, { requireOwner: true }));
   post("/api/sales/opportunities/:id/transition", cmd("sales.opportunity.transition", ({ params, body }) => ({ ...body, opportunityId: params.id })));
   post("/api/sales/opportunities/:id/proposals", cmd("sales.proposal.create", ({ params, body }) => ({ opportunityId: params.id, ...(body?.edits ? { edits: body.edits } : {}) }), { created: true }));
   post("/api/sales/proposals/:id/approve", ({ req, params, body }) => owner.dispatch(req, "sales.proposal.approve", { proposalId: params.id, displayedSha: body?.displayedSha }, { requireOwner: true }));

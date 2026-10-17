@@ -197,3 +197,125 @@ test("M12-SC-04 S-08 structural: only the existing M04 writer lines set CONTACTE
     for (const re of [/\bsetOppStatus\b/, /\brecordContactEvent\s*\(/, /\brecordClientAcceptance\s*\(/, /\bsendDraft\s*\(/, /sales\.(?:draft\.send|contact_event\.record|acceptance\.record)/]) assert.equal(re.test(text), false, `${f}: ${re}`);
   }
 });
+
+// ---------------------------------------------------------------- final review (F18, F19)
+/** Comments removed, line numbers kept (a block comment becomes its own newlines), so a match maps back to its enclosing function. */
+const stripKeepLines = (text) => text.replace(/\/\*[\s\S]*?\*\//g, (m) => m.replace(/[^\n]/g, "")).split("\n").map((l) => l.replace(/(^|\s)\/\/.*$/, "")).join("\n");
+const lineAt = (text, index) => text.slice(0, index).split("\n").length - 1;
+/** The named function (`function NAME(`) whose body holds line `i` of `lines` (the nearest declaration above it). */
+function enclosingFn(lines, i) {
+  for (let k = i; k >= 0; k -= 1) { const m = lines[k].match(/^\s*(?:async\s+)?function\s+([A-Za-z0-9_]+)\s*\(/); if (m) return m[1]; }
+  return null;
+}
+/** Every literal status the code writes into `table` (UPDATE … SET status = 'X', INSERT … status column = 'X'), with file and writer. */
+function statusWrites(files, tables) {
+  const out = [];
+  for (const { file, text: raw } of files) {
+    const text = stripKeepLines(raw);
+    const lines = text.split("\n");
+    for (const m of text.matchAll(/UPDATE\s+(sales_[a-z_]+)\s+SET\s+status\s*=\s*'([A-Z_]+)'/g)) if (tables.includes(m[1])) out.push({ table: m[1], status: m[2], file, fn: enclosingFn(lines, lineAt(text, m.index)) });
+    for (const m of text.matchAll(/INSERT\s+INTO\s+(sales_[a-z_]+)\s*\(([^)]*)\)\s*VALUES\s*\(([^)]*)\)/g)) {
+      if (!tables.includes(m[1])) continue;
+      const cols = m[2].split(",").map((c) => c.trim());
+      const vals = m[3].split(",").map((v) => v.trim());
+      const idx = cols.indexOf("status");
+      if (idx < 0) continue;
+      const lit = /^'([A-Z_]+)'$/.exec(vals[idx] || "");
+      out.push({ table: m[1], status: lit ? lit[1] : `param:${vals[idx]}`, file, fn: enclosingFn(lines, lineAt(text, m.index)) });
+    }
+  }
+  return out;
+}
+const readServer = () => serverFiles().map((f) => ({ file: path.relative(SERVER, f).split(path.sep).join("/"), text: fs.readFileSync(f, "utf8") }));
+
+test("M12-SC-05 (final review F18) every status the code writes into an M12 table is declared, reached by a declared row that names its writer; a status declared without a writer is written nowhere", () => {
+  const tableOf = { sales_proposals: "proposal", sales_preparations: "preparation", sales_dossiers: "dossier", sales_plan_ops: "ledger", sales_drafts: "draft" };
+  const writes = statusWrites(readServer(), Object.keys(tableOf));
+  assert.ok(writes.length >= 20, `${writes.length} writes found`);
+  for (const w of writes) {
+    const c = STATE_CONTRACTS[tableOf[w.table]];
+    const where = `${w.file}:${w.fn} writes ${w.table}.status = ${w.status}`;
+    assert.ok(c.statuses.includes(w.status), `${where}: the status is declared`);
+    assert.ok(w.fn, `${where}: inside a named function`);
+    assert.ok(c.transitions.some((t) => t.to === w.status && t.setBy.includes(w.fn)), `${where}: a row reaching ${w.status} names ${w.fn}`);
+  }
+  // The rows the review found unnamed or missing (they must keep naming their writers).
+  const named = (object, from, to, fn) => STATE_CONTRACTS[object].transitions.some((t) => t.from === from && t.to === to && t.setBy.includes(fn));
+  assert.ok(named("draft", "DRAFT", "CANCELLED", "suppress"));
+  assert.ok(named("dossier", "WRITING", "INCOMPLETE", "declarePartial"));
+  assert.ok(named("preparation", "PACKAGING", "EXPIRED", "expireDead"));
+  assert.ok(named("ledger", "IN_PROGRESS", "FAILED", "declarePartial") && named("ledger", "IN_PROGRESS", "FAILED", "failOpenClaims"));
+  assert.ok(named("preparation", "PREPARING", "STOPPED", "toWaiting"));
+  // A suppression does not supersede the drafts: they are CANCELLED first (the offer rows say so).
+  for (const from of ["DRAFT", "APPROVED_INTERNAL"]) assert.match(STATE_CONTRACTS.proposal.transitions.find((t) => t.from === from && t.to === "STALE").invalidates.join(" "), /CANCELLED/);
+  // Every declared status has a writer row, except the ones declared as never written (and then nothing writes them).
+  for (const c of Object.values(STATE_CONTRACTS)) {
+    for (const s of c.statuses) if (!(c.noWriter || []).includes(s)) assert.ok(c.transitions.some((t) => t.to === s), `${c.object}: ${s} has a writer row`);
+    for (const s of c.noWriter || []) assert.equal(writes.some((w) => tableOf[w.table] === c.object && w.status === s), false, `${c.object}: ${s} is written nowhere`);
+  }
+  // The company's own life cycle is declared M04's, with the writers the M12 flow reaches.
+  assert.match(STATE_CONTRACTS.organisation.scope, /M04/);
+  for (const [to, fn] of [["NEW", "createPreparationOrg"], ["OPPORTUNITY", "createOpportunity"], ["DO_NOT_CONTACT", "suppress"]]) assert.ok(STATE_CONTRACTS.organisation.transitions.some((t) => t.to === to && t.setBy.includes(fn)), to);
+});
+
+/**
+ * F19: the structural S-08 checker. → the violations of `files` ([{ file, text }]): a write of sales_opportunities anywhere but the three
+ * M04 statements (the IDENTIFIED insert of createOpportunity, setOppStatus's parameterised update, approveProposal's APPROVED_INTERNAL CAS);
+ * a setOppStatus target that is neither a quoted literal nor transitionOpportunity's own `to`; a quoted CONTACTED / WON outside sales.mjs; in
+ * sales.mjs a quoted CONTACTED / WON bound to a statement, assigned or returned, or set by any line other than the declared M04 writers.
+ */
+function contactedWonViolations(files) {
+  const out = [];
+  const writers = new Set(CONTACTED_WON_WRITERS.map((w) => w.line));
+  for (const { file, text: raw } of files) {
+    if (file === "sales/state-contracts.mjs") continue; // data: the table quotes the writer lines
+    const text = stripKeepLines(raw);
+    const lines = text.split("\n");
+    for (const m of text.matchAll(/\b(UPDATE|INSERT\s+(?:OR\s+[A-Z]+\s+)?INTO|REPLACE\s+INTO|DELETE\s+FROM)\s+sales_opportunities\b([^`"]*)/gi)) {
+      const fn = enclosingFn(lines, lineAt(text, m.index));
+      const verb = m[1].toUpperCase().startsWith("UPDATE") ? "UPDATE" : m[1].toUpperCase().startsWith("INSERT") ? "INSERT" : "OTHER";
+      const tail = m[2];
+      const ok = file === "sales/sales.mjs" && ((verb === "INSERT" && fn === "createOpportunity" && /'IDENTIFIED'/.test(text.slice(m.index, m.index + 400).split(".run(")[0]))
+        || (verb === "UPDATE" && fn === "setOppStatus" && /^\s*SET status = \?,/.test(tail))
+        || (verb === "UPDATE" && fn === "approveProposal" && /^\s*SET status='APPROVED_INTERNAL'/.test(tail)));
+      if (!ok) out.push(`${file}:${lineAt(text, m.index) + 1} ${fn || "?"}: ${verb} sales_opportunities`);
+    }
+    lines.forEach((line, i) => {
+      for (const call of line.matchAll(/(?<!function )\bsetOppStatus\(\s*[A-Za-z0-9_.]+\s*,\s*([^,]+?)\s*,/g)) {
+        const target = call[1];
+        const literal = /^["'`][A-Z_]+["'`]$/.test(target);
+        if (file !== "sales/sales.mjs") out.push(`${file}:${i + 1}: setOppStatus outside sales.mjs`);
+        else if (!literal && !(target === "to" && enclosingFn(lines, i) === "transitionOpportunity")) out.push(`${file}:${i + 1}: setOppStatus with a computed target (${target})`);
+      }
+      if (!/["'`](?:CONTACTED|WON)["'`]/.test(line)) return;
+      if (file !== "sales/sales.mjs") { out.push(`${file}:${i + 1}: a quoted CONTACTED / WON outside sales.mjs`); return; }
+      if (writers.has(line.trim())) return;
+      if (/setOppStatus\([^)]*["'`](?:CONTACTED|WON)["'`]/.test(line)) out.push(`${file}:${i + 1}: an undeclared CONTACTED / WON writer`);
+      if (/\.run\([^)]*["'`](?:CONTACTED|WON)["'`]|[=:]\s*["'`](?:CONTACTED|WON)["'`]|\breturn\s+["'`](?:CONTACTED|WON)["'`]/.test(line.replace(/===?\s*["'`](?:CONTACTED|WON)["'`]/g, ""))) {
+        out.push(`${file}:${i + 1}: CONTACTED / WON bound, assigned or returned`);
+      }
+    });
+  }
+  return out;
+}
+
+test("M12-SC-06 (final review F19) S-08 structural, also for parameterised SQL and computed targets: the code is clean; each evasion the review found is caught", () => {
+  const files = readServer();
+  assert.deepEqual(contactedWonViolations(files), [], "the server code sets CONTACTED / WON only through the declared M04 writers");
+  const sales = files.find((f) => f.file === "sales/sales.mjs");
+  const prep = files.find((f) => f.file === "sales/preparation.mjs");
+  const inject = (base, snippet) => ({ file: base.file, text: base.text.replace(/\n\s*function stoppedSince\(|\n\s*function setOppStatus\(/, (m) => `\n  function injectedForTest(id, s, opp, actor) {\n${snippet}\n  }${m}`) });
+  const evasions = {
+    "parameterised UPDATE in an M12 module": [prep, `    db.prepare("UPDATE sales_opportunities SET status = ? WHERE id = ?").run("WON", id);`],
+    "template SQL in an M12 module": [prep, "    db.prepare(`UPDATE sales_opportunities SET status = '${s}' WHERE id = ?`).run(id);"],
+    "INSERT with WON in an M12 module": [prep, `    db.prepare("INSERT INTO sales_opportunities (id, status) VALUES (?, 'WON')").run(id);`],
+    "computed setOppStatus target in sales.mjs": [sales, `    const next = "WON";\n    setOppStatus(opp, next, actor, "x");`],
+    "parameterised UPDATE in sales.mjs": [sales, `    db.prepare("UPDATE sales_opportunities SET status = ? WHERE id = ?").run("CONTACTED", id);`],
+  };
+  for (const [name, [base, snippet]] of Object.entries(evasions)) {
+    const mutated = inject(base, snippet);
+    assert.notEqual(mutated.text, base.text, `${name}: injected`);
+    const found = contactedWonViolations(files.map((f) => (f.file === base.file ? mutated : f)));
+    assert.ok(found.length > 0, `${name}: caught`);
+  }
+});

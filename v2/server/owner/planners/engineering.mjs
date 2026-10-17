@@ -434,7 +434,9 @@ function requestShapeField(words) { return requestShape(words).field || null; }
  * and the full explanation is returned the first time per (request, blocker signature), the short line afterwards.
  */
 export function createBlockedRecorder(hub) {
-  const intentOf = (i) => (i === "studio_create" ? "studio" : ["engineering", "engineering_request", "start_mission", "resume_mission"].includes(i) ? "engineering" : ["run", "analysis_request"].includes(i) ? "run" : "other");
+  // M12 final review (F7): an offer request keeps its own kind ("sales"), so it is explained and re-planned by the Sales rules.
+  const intentOf = (i) => (i === "studio_create" ? "studio" : ["engineering", "engineering_request", "start_mission", "resume_mission"].includes(i) ? "engineering" : ["run", "analysis_request"].includes(i) ? "run"
+    : ["sales", "sales_prepare"].includes(i) ? "sales" : "other");
   return {
     recordBlocked({ text = "", source = "typed", channel = "ui", projectId = null, intent = "engineering", effectClass = "", blocker = {}, actor = "owner", request = null } = {}) {
       const wr = hub.workRequests;

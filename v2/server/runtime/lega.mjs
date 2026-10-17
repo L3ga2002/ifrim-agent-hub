@@ -1326,6 +1326,9 @@ export function createLega({ bus, live, clock, settings, gate, grants, projects,
     const s = readApi.sales;
     if (!s) return { ok: false, text: "Departamentul Sales nu e disponibil." };
     if (tool === "sales_overview") {
+      // M12 final review (F8): the Sales service says its own figures — with synthetic data present, the real ones alone and the
+      // synthetic ones apart (sales.mjs legaPipelineText); the lines below stay for a service without it.
+      if (typeof s.legaPipelineText === "function") return { ok: true, text: s.legaPipelineText() };
       const o = s.legaPipelineSummary();
       // M12 (T-S7): the split real / synthetic is said with the total, and every company named carries its own synthetic mark.
       const split = o.split ? ` (reale: ${o.split.real.orgs}, sintetice: ${o.split.synthetic.orgs})` : "";

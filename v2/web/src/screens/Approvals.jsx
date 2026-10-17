@@ -4,7 +4,7 @@ import { api, fmt } from "../api.js";
 import { useResource, useAction, pushToast } from "../store.js";
 import { Panel, Empty, Loading, ErrorNotice, StatusChip, DiffView, Notice } from "../components/ui.jsx";
 import { isCommandApproval, approvedNotStarted, LOCAL_TOOL_APPROVALS } from "../lib/uiLogic.js";
-import { ownerSalesKind, salesApprovalCardText, salesAuthorityLabel, salesApprovalStateText } from "../lib/salesAuthorityLogic.js";
+import { ownerSalesKind, salesApprovalCardText, salesApprovalAuthorityText, salesApprovalStateText } from "../lib/salesAuthorityLogic.js";
 import { approveSales } from "../lib/salesOwnerActions.js";
 
 /** Starts an approved command; a failure is also a toast, because the card may already have left the list (SSE reload). */
@@ -58,7 +58,7 @@ export function ApprovalCard({ approval, onDone }) {
         <ActionView approval={approval} />
         {reserved && (salesApprovalStateText(approval)
           ? <Notice tone="warn" title="Cere din nou aprobarea">{salesApprovalStateText(approval)}</Notice>
-          : <Notice tone="info" title={salesApprovalCardText(approval)}>{salesAuthorityLabel(owner.data?.session)}</Notice>)}
+          : <Notice tone="info" title={salesApprovalCardText(approval)}>{salesApprovalAuthorityText(approval, owner.data?.session)}</Notice>)}
         {approval.status === "pending" && !expired && (
           <>
             <label className="field"><span>Notă (obligatorie la respingere)</span><input className="input" value={note} onChange={(e) => setNote(e.target.value)} maxLength={500} /></label>

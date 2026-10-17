@@ -483,6 +483,18 @@ export function createOpsPlans({ db, bus, clock, settings, trust, voice = null, 
     }
     throw new HubError("conflict", "Între timp s-a schimbat starea porții, așa că nu am reluat planul; spune din nou „Continuă” ca să verific starea lui.", { code: "STOPPED_DURING_RESUME" });
   }
+  /**
+   * M12 review F11/F13: a plan kind may refuse a resume (and a delta re-confirmation) BEFORE anything moves, with its own truthful
+   * reason — e.g. a Sales preparation whose consent a Stop All followed while the gate is still held by it, even when that stop did not
+   * pause the plan itself (it was already paused). A guard only refuses; it never resumes, widens or confirms anything. Kinds without a
+   * guard keep the engine's rules unchanged.
+   */
+  const resumeGuards = new Map(); // kind → (plan view) => void (throws to refuse)
+  function registerResumeGuard(kind, guard) {
+    if (typeof guard !== "function") throw new Error("registerResumeGuard needs a function");
+    resumeGuards.set(String(kind), guard);
+  }
+  const resumeGuardOf = (p) => { const guard = resumeGuards.get(String(p?.kind || "")); if (guard) guard(p); };
 
   /**
    * „Continuă”: resumes the EXACT plan while its session, authority and limits still hold. An uncertain step is reconciled first by its
@@ -498,6 +510,7 @@ export function createOpsPlans({ db, bus, clock, settings, trust, voice = null, 
     if (new Date(p.expiresAt) <= clock()) throw new HubError("conflict", "Limita de timp a planului a trecut; cere planul din nou (confirmi doar diferența).", { code: "PLAN_EXPIRED" });
     // Before the session-delta card: a re-confirmation would only move the authority of a plan that still could not resume.
     holdIfStopped(planId);
+    resumeGuardOf(p);
     const mark = stopMark();
     if (p.authority?.sessionId !== s.id) {
       // M10.2 (U11): the session the plan was confirmed in closed (idle, logout). The SAME credential confirms only the difference —
@@ -556,6 +569,7 @@ export function createOpsPlans({ db, bus, clock, settings, trust, voice = null, 
     // 2.12.1 (D22): a plan the current Stop All itself paused waits for the rearm — checked BEFORE the authority moves to this session.
     // The card stays valid (its nonce is used only by a successful re-confirmation), so after the rearm the same card confirms it.
     holdIfStopped(planId);
+    resumeGuardOf(p);
     const mark = stopMark();
     if (p.body.decisions.length) trust.requireFresh(s, "planul care autorizează o aplicație sau un folder nou");
     // Nothing else may have changed since the plan was confirmed (apps, binaries, folders, policy): otherwise it is a new plan.
@@ -630,6 +644,6 @@ export function createOpsPlans({ db, bus, clock, settings, trust, voice = null, 
     return bus.transaction(() => ids.filter((id) => setStatus(id, "SUPERSEDED", reason || "Corectura a fost rezolvată în Studio", {}, ["PROPOSED"]) === 1));
   }
 
-  return { close, propose, confirm, authorize, pause, cancel, resume, reconfirm, view, list, active, recover, idle, buildBody, armForLega, confirmFromArmed, armedFor, registerParent, adoptDerived,
+  return { close, propose, confirm, authorize, pause, cancel, resume, reconfirm, view, list, active, recover, idle, buildBody, armForLega, confirmFromArmed, armedFor, registerParent, adoptDerived, registerResumeGuard,
     disarm: (planId, reason) => armedWindows.disarm(planId, reason), correctionPlans, supersedeCorrections, supersedeDeliveryCorrection };
 }

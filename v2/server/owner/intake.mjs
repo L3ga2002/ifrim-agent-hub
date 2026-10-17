@@ -29,6 +29,7 @@ import { createContentPlanner } from "./planners/content.mjs";
 import { collectFacts } from "./readiness-runner.mjs";
 import { explain } from "./blockers.mjs";
 import { ARMED_LIMITS } from "./armed-window.mjs";
+import { createSalesKeptRequests, SALES_KEPT_INTENT } from "./sales-kept.mjs";
 
 /** Content stages whose clip is no longer being edited (a correction or "the open clip" never targets them). */
 const STUDIO_CLOSED_STAGES = new Set(["ARCHIVED", "PUBLISHED", "ANALYTICS"]);
@@ -1790,6 +1791,9 @@ export function createIntake(hub) {
       if (out?.kind === "envelope" && out.proposal?.envelope) return { planRef: { kind: "envelope", id: out.proposal.envelope.id, missionId: null }, headline: out.proposal.summary?.headline || "", eligible: true };
       return { blocked: true };
     }
+
+    // M12 final review (F7): a kept offer request (no exports folder yet) → the same Sales planner once the folder exists (ONE card, a proposal).
+    if (r?.intent === SALES_KEPT_INTENT) return salesKept.replan(r);
     if (r?.intent !== "engineering" || !envelopes || !r.projectId) return null;
     const missionId = r.planRef?.missionId || null;
     const out = await envelopes.propose({ projectId: r.projectId, missionIds: missionId ? [missionId] : [], actor: `readiness:${r.id}`, via: "work_request" });
@@ -1806,7 +1810,10 @@ export function createIntake(hub) {
     if (!service || typeof service.attachPlanner !== "function") return false;
     if (bound === service) return true;
     service.attachPlanner((r) => replanRequest(r));
-    if (typeof service.attachExplainer === "function") service.attachExplainer(async (r) => (r?.intent === "studio" ? content.explainRequest() : hub.readiness?.explainRequest ? hub.readiness.explainRequest(r) : null));
+    if (typeof service.attachExplainer === "function") service.attachExplainer(async (r) => (r?.intent === "studio" ? content.explainRequest()
+      // M12 final review (F7): a kept offer request is explained by its own blocker (the exports folder), never by the model-run readiness.
+      : r?.intent === SALES_KEPT_INTENT ? salesKept.explain(r)
+        : hub.readiness?.explainRequest ? hub.readiness.explainRequest(r) : null));
     bound = service;
     return true;
   }
@@ -1827,6 +1834,9 @@ export function createIntake(hub) {
       setImmediate(attempt);
     }
   });
+  // M12 final review (F7): choosing the exports folder (media policy, a folder access, an import) re-plans the kept offer requests.
+  const salesKept = createSalesKeptRequests({ hub, plannerOf: () => planners.get("sales"), requestStore });
+  bus.subscribe?.((event) => { try { salesKept.onEvent(event); } catch { /* a listener never breaks the publisher */ } });
 
   return { handle, plan, registerPlanner, attachWorkRequests, verifyLegaAuthority, conversationOf: (key) => conversations.get(key) || null, conversationKey,
     planners: () => [...planners.keys()], replanRequest, bindWorkRequests,
