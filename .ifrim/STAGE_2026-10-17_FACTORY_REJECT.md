@@ -136,8 +136,13 @@ Nu a fost nevoie de o rundă de re-review, fiindcă nu s-a corectat nimic.
   Restaurarea completă se face din backupul pasului 3.
 
 ## 9. Ce rămâne
-- **Decizia proprietarului:** rularea scriptului de release.
-- **După upgrade:** misiunile live în DELIVERY_READY / NEEDS_OWNER_DECISION se pot respinge doar din sesiunea de proprietar, pe ținta
+- **Release făcut:** proprietarul a rulat scriptul la ~18:01 UTC.
+  - Backupul verificat: `bkp_mvcpdvsa_450d87ca39`.
+  - Fast-forward la `5b08866`, upgrade gestionat (boot `boot_mvcpeczj_834544baf3`, BUILD_SAFE).
+  - Verificarea GET: `2.15.1-m12` / 16 / schema 13, `factory.reject` pe `owner` și `test` cu `displayedVersion` obligatoriu.
+  - Push: `v2-milestone-01` = `claude/project-thread-esyt99` = `5b08866`.
+  - Misiunile live au rămas neschimbate (3 DELIVERY_READY, 4 NEEDS_OWNER_DECISION); nicio respingere.
+- **De acum:** misiunile live în DELIVERY_READY / NEEDS_OWNER_DECISION se pot respinge doar din sesiunea de proprietar, pe ținta
   afișată. Agentul nu respinge nimic live.
 - **Separate, neschimbate:**
   - aprobările M04 fără sesiune (`sales.draft_content`, `sales.suppression_lift`, `sales.import_rollback`, catalogul);

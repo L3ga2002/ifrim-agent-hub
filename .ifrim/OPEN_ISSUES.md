@@ -1,6 +1,6 @@
 # Open Issues - Ifrim Agent Hub
 
-## 2026-10-17 evening — factory.reject owner authority (code `2.15.1-m12`, API contract 16, schema 13, no migration; NOT live yet; detail: `.ifrim/STAGE_2026-10-17_FACTORY_REJECT.md`)
+## 2026-10-17 evening — factory.reject owner authority (code `2.15.1-m12`, API contract 16, schema 13, no migration; LIVE since 2026-10-17 ~18:01 UTC; detail: `.ifrim/STAGE_2026-10-17_FACTORY_REJECT.md`)
 
 This section takes precedence over every older one where they overlap. Closed in code (commit `6aa8575` on `claude/project-thread-esyt99`,
 dev clone C:\Users\mihai\hub-reject): `factory.reject` only on the owner channel (fresh session at the command, re-read before and after
@@ -13,10 +13,10 @@ written. Gate on 6aa8575 (fresh clone C:\Users\mihai\hub-reject-gate, logs C:\Us
 read-only review: 0 critical / 0 important (1 medium: the preview stops before the final check, as for accept).
 
 Open:
-1. Owner: run C:\Users\mihai\reject-stage\release\owner-release.cmd (checks 161fdf2, fetches the release from the dev clone, verified
-   backup through the live API, fast-forward of v2-milestone-01, upgrade --plan / --apply, GET verify 2.15.1-m12 / 16 / schema 13 /
-   factory.reject channels owner+test, push v2-milestone-01 + claude/project-thread-esyt99). Until then the live Hub (2.15.0-m12) still
-   accepts a sessionless factory.reject (GET catalog: channels ui, test; 3 DELIVERY_READY and 4 NEEDS_OWNER_DECISION missions live).
+1. Done: the owner ran C:\Users\mihai\reject-stage\release\owner-release.cmd (~18:01 UTC): verified backup bkp_mvcpdvsa_450d87ca39,
+   fast-forward of v2-milestone-01 to 5b08866, managed upgrade (boot boot_mvcpeczj_834544baf3, BUILD_SAFE), GET verify 2.15.1-m12 / 16 /
+   schema 13 / factory.reject channels owner + test with displayedVersion required, push v2-milestone-01 + claude/project-thread-esyt99
+   (both 5b08866). Live missions unchanged (3 DELIVERY_READY, 4 NEEDS_OWNER_DECISION, 0 factory.rejected events); nothing was rejected.
 2. Unchanged, separate: M04 sessionless approvals and the catalog, real prices / services, the local dev profile (a loopback process can
    open a session; a rejection made so is recorded local_dev_profile), RM-10 (passed in this gate), the 2 V1 real-registry tests, step-0
    author and minor display items.
