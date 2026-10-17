@@ -320,19 +320,28 @@ export const SYNTHETIC_ORG_GENERATOR = "synthetic-org-v1";
  * @returns {{ generator: string, seed: string, synthetic: true, name: string, legalForm: "SRL", fiscalCode: string,
  *   fiscalCodeValid: true, domain: string, website: string, email: string, kinds: Record<string, "FIXTURE"> }}
  */
-export function syntheticOrgFor(brief, seed) {
+export function syntheticOrgFor(brief, seed, { taken = null, maxAttempts = SYNTHETIC_ORG_ATTEMPTS } = {}) {
   const seedText = typeof seed === "number" && Number.isFinite(seed) ? String(seed) : typeof seed === "string" ? seed.trim() : "";
   if (!seedText || seedText.length > 200) throw new HubError("validation", "Identitatea sintetică are nevoie de o sămânță (planul confirmat)");
-  const t = makeTools(createRng(`${SYNTHETIC_ORG_GENERATOR}|${seedText}`));
   const caen = String(brief?.fields?.caen?.value ?? "");
   const sector = SECTORS.find(([, code]) => code === caen)?.[0] || "";
-  const base = [t.pick(ROOTS), sector, t.pick(WORDS)].filter(Boolean).join(" ");
-  const body = `99${t.digits(7)}`;
-  const domain = `${normalizeName(base).tokens.join("-")}.test`;
-  return {
-    generator: SYNTHETIC_ORG_GENERATOR, seed: seedText, synthetic: true,
-    name: `${base} SRL`, legalForm: "SRL", fiscalCode: `${body}${cuiControlDigit(body)}`, fiscalCodeValid: true,
-    domain, website: `https://${domain}`, email: `office@${domain}`,
-    kinds: { name: "FIXTURE", fiscalCode: "FIXTURE", domain: "FIXTURE", website: "FIXTURE", email: "FIXTURE" },
-  };
+  // M12 review R17: the vocabulary is small, so two plans (or an M04 synthetic import) can draw the same company. `taken` (the caller's
+  // check against the companies it already has: domain, fiscal code, e-mail) makes the generator draw again, deterministically: attempt
+  // n uses the seed „<seed>#n”, so the same plan and the same companies always give the same identity. Attempt 0 is the original draw.
+  for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
+    const t = makeTools(createRng(`${SYNTHETIC_ORG_GENERATOR}|${seedText}${attempt ? `#${attempt}` : ""}`));
+    const base = [t.pick(ROOTS), sector, t.pick(WORDS)].filter(Boolean).join(" ");
+    const body = `99${t.digits(7)}`;
+    const domain = `${normalizeName(base).tokens.join("-")}.test`;
+    const identity = {
+      generator: SYNTHETIC_ORG_GENERATOR, seed: seedText, ...(attempt ? { attempt } : {}), synthetic: true,
+      name: `${base} SRL`, legalForm: "SRL", fiscalCode: `${body}${cuiControlDigit(body)}`, fiscalCodeValid: true,
+      domain, website: `https://${domain}`, email: `office@${domain}`,
+      kinds: { name: "FIXTURE", fiscalCode: "FIXTURE", domain: "FIXTURE", website: "FIXTURE", email: "FIXTURE" },
+    };
+    if (typeof taken !== "function" || !taken(identity)) return identity;
+  }
+  throw new HubError("conflict", "Nu găsesc o identitate sintetică liberă (domeniu, CUI și e-mail nefolosite) pentru acest plan.", { code: "SALES_SYNTHETIC_TAKEN" });
 }
+/** How many deterministic draws syntheticOrgFor tries before it refuses (the vocabulary gives about 1 900 names per sector). */
+export const SYNTHETIC_ORG_ATTEMPTS = 64;

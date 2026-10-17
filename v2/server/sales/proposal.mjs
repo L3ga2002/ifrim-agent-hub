@@ -247,7 +247,11 @@ export function renderProposal({ org = null, opportunity = null, services = [], 
   if (request) {
     sections.splice(1, 0, request.section);
     if (request.evidenceId) usedEvidenceIds.push(request.evidenceId);
-  } else if (brief) warnings.push("Brieful nu are o nevoie spusă de tine: secțiunea „Ce s-a cerut” lipsește.");
+  } else if (brief) {
+    // M12 review C1: a need stated only with figures or commercial promises stays internal (brief R-NEED-CUT), never „not stated”.
+    warnings.push(brief.fields?.problem?.stated ? "Nevoia spusă are de la început cifre sau promisiuni comerciale: rămâne internă, iar secțiunea „Ce s-a cerut” lipsește."
+      : "Brieful nu are o nevoie spusă de tine: secțiunea „Ce s-a cerut” lipsește.");
+  }
   const presentation = materialLines(owner);
   if (presentation.length) sections.push({ id: "owner_materials", heading: "Materiale de prezentare", text: bullets(presentation) });
 

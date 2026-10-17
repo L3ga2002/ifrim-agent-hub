@@ -145,9 +145,10 @@ test("M12-FIG-06 the approval of a preparation-bound offer refuses invented figu
   const t = await salesAcceptanceHub(c, { listen: false });
   const b = await seedSalesReview(t);
   const row = t.hub.db.prepare("SELECT content_json FROM sales_proposals WHERE id = ?").get(b.proposalId);
-  // Test-only: make the seeded offer preparation-bound (the preparation step writes `basis`; part 3) with an injected figure.
+  // Test-only: make the seeded offer preparation-bound (the preparation step writes `basis`; part 3) with an injected figure. Review R7
+  // (adapted: the basis was a placeholder): the approval re-verifies the basis by sha, so it is the real one of the current inputs.
   const content = JSON.parse(row.content_json);
-  const bound = { ...content, basis: { preparationId: "spp_m12fig", briefSha: "0".repeat(64) },
+  const bound = { ...content, basis: t.hub.sales.preparationBasis(b.oppId, { briefSha: "0".repeat(64) }),
     sections: content.sections.map((s) => (s.id === "next_step" ? { ...s, text: `${s.text} Livrare în 15 zile, cu reducere de 10%.` } : s)) };
   bound.text = bound.sections.map((s) => `${s.heading}\n${s.text}`).join("\n\n");
   const setContent = (value) => { const sha = hashCanonical(value); t.hub.db.prepare("UPDATE sales_proposals SET content_json = ?, content_sha = ? WHERE id = ?").run(JSON.stringify(value), sha, b.proposalId); return sha; };

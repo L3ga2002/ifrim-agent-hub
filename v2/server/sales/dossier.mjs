@@ -83,14 +83,37 @@ function provenanceLines(p) {
     "APPROVED_INTERNAL: aprobarea ta internă, nu acceptarea clientului; nimic nu a fost trimis"];
 }
 
+/** The company sheet as rendered (identity fields, status, contacts without their values, what is unknown). */
+const orgRender = ({ org, contacts, unknowns }) => ({ org: { id: org.id, displayName: org.displayName, legalForm: org.legalForm, fiscalCode: org.fiscalCode, fiscalCodeValid: org.fiscalCodeValid,
+  website: org.website, domain: org.domain, city: org.city, county: org.county, caen: org.caen, status: org.status, synthetic: org.synthetic },
+  contacts: arr(contacts).map((x) => ({ id: x.id, kind: x.kind, generic: Boolean(x.generic), status: x.status })), unknowns: arr(unknowns) });
+/** The evidence as listed in dovezi.md / .json (label, kind, source, freshness — which moves with time — and its use in the offer). */
+const evidenceRows = ({ evidence, proposal }) => {
+  const used = new Set(arr(proposal?.content?.usedEvidenceIds));
+  return arr(evidence).map((e) => ({ id: e.id, claim: e.claim, value: e.value ?? null, label: e.label, dataKind: e.dataKind || null, sourceKind: e.sourceKind, sourceRef: e.sourceRef,
+    retrievedAt: e.retrievedAt || null, verifiedAt: e.verifiedAt || null, excerpt: line(e.excerpt, 400), freshness: e.freshness || "CURRENT", conflictsWith: arr(e.conflictsWith),
+    basis: arr(e.basis), reasoning: e.reasoning || "", usedInProposal: used.has(e.id) }));
+};
+/** The qualification as rendered: the exact row (its id, formula, result) and the rows before it. */
+const qualRender = ({ qualification, qualificationHistory }) => ({ id: qualification?.id || null, formulaVersion: qualification?.formulaVersion || null,
+  result: hashCanonical(qualification?.result || {}), history: arr(qualificationHistory).map((h) => h.id) });
+
+/**
+ * Review R20 / C3: the sha of every value the files render beyond the offer, the draft and the brief — the company sheet (status and
+ * contacts included), the evidence as listed, the exact qualification row. The dossier's inputs (and so its C-01 key) carry it: a change
+ * gives a new revision and makes a READY dossier STALE; a resume of the same key rebuilds exactly the same bytes.
+ */
+export function dossierRenderedInputs(facts) {
+  return hashCanonical({ org: orgRender(facts), evidence: evidenceRows(facts), qualification: qualRender(facts) });
+}
+
 /**
  * Every artifact of the dossier except README and the manifest: [{ path, buf, inputsSha, generator, clientText? }]. `facts` is the
  * synchronous read of the executor (offer, draft, company, evidence, qualification, brief). Refuses unresolved placeholders.
  */
 export function dossierArtifacts(facts) {
-  const { proposal, draft, org, contacts, evidence, qualification, qualificationHistory, brief, unknowns } = facts;
+  const { proposal, draft, org, qualification, brief } = facts;
   const v = proposal.version;
-  const used = new Set(arr(proposal.content?.usedEvidenceIds));
   const out = [];
   const add = (p, buf, generator, inputs, clientText = null) => out.push({ path: p, buf, generator, inputsSha: hashCanonical({ generator, inputs }), ...(clientText ? { clientText } : {}) });
 
@@ -109,9 +132,7 @@ export function dossierArtifacts(facts) {
   add(`oferta-v${v}.docx`, buildDocx(model, { created: new Date(proposal.createdAt) }), DOSSIER_GENERATORS.offerDocx, { ...offerInputs, model: hashCanonical(model) });
 
   // The synthetic company sheet: identity fields, never a contact value (those appear only in the draft).
-  const orgInputs = { org: { id: org.id, displayName: org.displayName, legalForm: org.legalForm, fiscalCode: org.fiscalCode, fiscalCodeValid: org.fiscalCodeValid, website: org.website,
-    domain: org.domain, city: org.city, county: org.county, caen: org.caen, status: org.status, synthetic: org.synthetic },
-    contacts: arr(contacts).map((x) => ({ id: x.id, kind: x.kind, generic: Boolean(x.generic), status: x.status })), unknowns: arr(unknowns), missing: arr(brief?.missing).map((m) => m.text) };
+  const orgInputs = { ...orgRender(facts), missing: arr(brief?.missing).map((m) => m.text) };
   add("fisa-firmei.md", md(["# Fișa firmei (sintetic)", "",
     "> DATE SINTETICE: firma nu există. Numele, domeniul .test și CUI-ul 99… sunt generate; ce a spus sau a dedus brieful e în dovezi.md, nu în fișă.", "",
     `- Denumire: ${line(org.displayName, 200)}`, `- Formă juridică: ${line(org.legalForm, 20) || "necunoscută"}`,
@@ -124,9 +145,7 @@ export function dossierArtifacts(facts) {
     DOSSIER_GENERATORS.org, orgInputs);
 
   // The evidence, with its confidence label and its C-03 kind, source, date and bounded extract.
-  const rows = arr(evidence).map((e) => ({ id: e.id, claim: e.claim, value: e.value ?? null, label: e.label, dataKind: e.dataKind || null, sourceKind: e.sourceKind, sourceRef: e.sourceRef,
-    retrievedAt: e.retrievedAt || null, verifiedAt: e.verifiedAt || null, excerpt: line(e.excerpt, 400), freshness: e.freshness || "CURRENT", conflictsWith: arr(e.conflictsWith),
-    basis: arr(e.basis), reasoning: e.reasoning || "", usedInProposal: used.has(e.id) }));
+  const rows = evidenceRows(facts);
   const evInputs = { evidence: rows };
   add("dovezi.json", js({ schema: DOSSIER_SCHEMA, kind: "sales-dossier-evidence", orgId: org.id, note: "dataKind null = nedeclarat (M04)", evidence: rows }), DOSSIER_GENERATORS.evidence, evInputs);
   add("dovezi.md", md(["# Dovezi (cu proveniență)", "", "> Felul datei (FIXTURE / STATEMENT / INFERENCE) e separat de eticheta de încredere; o inferență nu devine afirmație.", "",
@@ -138,7 +157,7 @@ export function dossierArtifacts(facts) {
   const q = qualification || null;
   const result = q?.result || {};
   const overrides = arr(result.overrides).map((o) => ({ priority: o.priority ?? null, reason: o.reason || "", at: o.at || null, authority: o.authority || null, basedOn: o.basedOn || null, by: "proprietar" }));
-  const qualInputs = { id: q?.id || null, formulaVersion: q?.formulaVersion || null, result: hashCanonical(result), history: arr(qualificationHistory).map((h) => h.id) };
+  const qualInputs = qualRender(facts);
   const doc = QUALIFICATION_FORMULA_DOCS[q?.formulaVersion] || [];
   add("calificare.json", js({ schema: DOSSIER_SCHEMA, kind: "sales-dossier-qualification", qualificationId: q?.id || null, formulaVersion: q?.formulaVersion || null, priority: q?.priority ?? null,
     computedPriority: result.computedPriority ?? null, components: result.components || {}, explanation: arr(result.explanation), unknowns: arr(result.unknowns), inferences: arr(result.inferences),

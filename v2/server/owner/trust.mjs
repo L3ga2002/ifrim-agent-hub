@@ -257,13 +257,26 @@ export function createTrust({ db, bus, clock, settings, config, devProfile = () 
    * opens anything new: new confirmations still need an open session (requireSession).
    */
   const ENDED_KEEPS_AUTHORITY = new Set(["idle", "expired", "logout", "rotated"]);
+  /**
+   * M12 review R5/R11 (DP-05 „a revoked authenticator or revoke-all end it”, one rule in one place): „Închide toate sesiunile” is a
+   * revocation also for a session that had ALREADY ended by idle, expiry, logout or rotation (its row is no longer active, so revoke-all
+   * cannot rewrite it). Such a session keeps no authority once an owner.sessions_revoked event (any count, written even with no session
+   * open) follows its opening. Event order (seq), never the clock: it holds with a fixed clock and in the same millisecond.
+   */
+  function revokedAfterOpening(sessionId) {
+    const opened = Number(db.prepare("SELECT MAX(seq) AS seq FROM events WHERE scope_type = 'owner' AND scope_id = ? AND type = 'owner.session_opened'").get(String(sessionId))?.seq || 0);
+    return Boolean(db.prepare("SELECT 1 FROM events WHERE scope_type = 'owner' AND scope_id = 'sessions' AND type = 'owner.sessions_revoked' AND seq > ? LIMIT 1").get(opened));
+  }
   function confirmedAuthority(sessionId) {
     const row = sessionId ? db.prepare("SELECT * FROM owner_sessions WHERE id = ?").get(String(sessionId)) : null;
     if (!row) return { ok: false, reason: "unknown-session" };
     const cred = credential(row.credential_id);
     if (!cred || cred.status !== "active") return { ok: false, reason: isDevCredential(row.credential_id) ? "dev-profile-off" : "credential-revoked" };
     if (row.status === "active" && new Date(row.expires_at) > now()) return { ok: true, sessionOpen: true };
-    if (row.status === "active" || ENDED_KEEPS_AUTHORITY.has(String(row.revoke_reason || ""))) return { ok: true, sessionOpen: false, endedBecause: row.status === "active" ? "expired" : row.revoke_reason };
+    if (row.status === "active" || ENDED_KEEPS_AUTHORITY.has(String(row.revoke_reason || ""))) {
+      if (revokedAfterOpening(row.id)) return { ok: false, reason: "revocare-toate-sesiunile", endedBecause: row.status === "active" ? "expired" : row.revoke_reason };
+      return { ok: true, sessionOpen: false, endedBecause: row.status === "active" ? "expired" : row.revoke_reason };
+    }
     return { ok: false, reason: String(row.revoke_reason || "revoked") };
   }
 

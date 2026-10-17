@@ -6,7 +6,7 @@ import { writeNew } from "../delivery/files.mjs";
 import { verifyPackageFolder } from "../delivery/office-executors.mjs";
 import { checkDocxFile, verifyDocxInWord, officeExe } from "../office/office.mjs";
 import { LIVE_COLLECTION_DISABLED } from "./research.mjs";
-import { syntheticOrgFor } from "./synthetic.mjs";
+import { syntheticOrgFor, SYNTHETIC_ORG_GENERATOR } from "./synthetic.mjs";
 import { allowedCatalogTexts, proposalFigures } from "./figures.mjs";
 import { findUnresolvedPlaceholders } from "./proposal.mjs";
 import { DOSSIER_KIND, DOSSIER_PLAN_TITLE, ACTIVATE_WITHIN_MIN, SALES_DECISIONS_LEFT, SALES_NEVER, dossierSteps, phaseBLimits, realInside } from "./preparation.mjs";
@@ -24,6 +24,8 @@ import { dossierArtifacts, dossierFigures, dossierArtifactReuse, dossierReadme, 
  */
 const OWNER_STOP = new Set(["STOPPED", "PAUSED", "PLAN_NOT_RUNNING", "SESSION_CLOSED", "PLAN_EXPIRED", "PLAN_BUDGET", "STEP_NOT_RUNNING", "HUB_SHUTDOWN"]);
 const PREP_ID = /^spp_[A-Za-z0-9_]+$/;
+/** A file that is not (or no longer) there: the next way of getting the PDF is tried; any other error (a stop, a foreign file) stops the step. */
+const FS_MISSING = new Set(["ENOENT", "ENOTDIR", "EISDIR"]);
 const arr = (v) => (Array.isArray(v) ? v : []);
 
 export function createSalesPlanExecutors({ sales, preparations, ledger, opsPlans, media, config, bus,
@@ -45,7 +47,19 @@ export function createSalesPlanExecutors({ sales, preparations, ledger, opsPlans
   // ---------------------------------------------------------------- A2 fixture research (S-03)
   const keyA2 = (p, org) => ({ preparationId: p.id, orgId: org.id, host: org.domain });
   // ---------------------------------------------------------------- A3 q-v2 qualification (S-04, C-04)
-  const keyA3 = (p, basis) => ({ preparationId: p.id, orgId: p.orgId, evidenceSha: basis.evidence, formula: "q-v2" });
+  // Review R3/R8: the key carries the qualification's current inputs and the row it replaces, so a continuation after another row (an
+  // M04 q-v1 recompute, a new reading) computes q-v2 again under a new key instead of reusing an old result.
+  const keyA3 = (p, q, inputsSha) => ({ preparationId: p.id, orgId: p.orgId, inputsSha, replaces: q?.id || null, formula: "q-v2" });
+  /**
+   * The exact q-v2 row this preparation's root bound or wrote (its ledger records it), while it is still the company's latest row and its
+   * inputs are unchanged → { q, row } | null. The offer is bound to it, the dossier reads it (never „the latest qualification”).
+   */
+  function boundQualification(p) {
+    const q = p?.orgId ? sales.latestQualification(p.orgId) : null;
+    if (!q || q.formulaVersion !== "q-v2" || q.inputsSha !== sales.qualificationInputsSha(p.orgId)) return null;
+    const row = ledger.ofRoot(p.rootPlanId).find((r) => r.op === "sales.qualify" && r.status === "DONE" && r.result?.qualificationId === q.id);
+    return row ? { q, row } : null;
+  }
 
   /** The dossier's facts in ONE synchronous read: refused (no folder, no row) unless the offer is exactly the one the owner approved. */
   function readFacts(p) {
@@ -62,16 +76,58 @@ export function createSalesPlanExecutors({ sales, preparations, ledger, opsPlans
       throw new HubError("conflict", "Ciorna nu e făcută din oferta aprobată (pasul ciornei).", { code: "SALES_DOSSIER_NOT_APPROVED" });
     }
     const sheet = sales.getOrg(view.org.id);
+    // Review R3/R8: the dossier reads the exact q-v2 row the offer is bound to (never „the latest qualification”).
+    const qualification = sales.qualificationById(proposal.content?.basis?.qualificationId);
+    if (!qualification || qualification.orgId !== view.org.id || qualification.formulaVersion !== "q-v2" || qualification.inputsSha !== proposal.content?.basis?.qualificationInputsSha) {
+      throw new HubError("conflict", "Calificarea de care e legată oferta nu e cea q-v2 a pregătirii.", { code: "SALES_DOSSIER_NOT_APPROVED" });
+    }
     const inputs = preparations.dossierInputs(p.opportunityId);
-    return { proposal, draft, org: view.org, opportunity: view.opportunity, contacts: sheet.contacts, evidence: sheet.evidence, unknowns: sheet.unknowns, qualification: sheet.qualification,
+    return { proposal, draft, org: view.org, opportunity: view.opportunity, contacts: sheet.contacts, evidence: sheet.evidence, unknowns: sheet.unknowns, qualification,
       qualificationHistory: sheet.qualificationHistory, brief: p.brief, services: catalogOf(proposal.content), inputs, inputsSha: hashCanonical(inputs) };
   }
+
+  /** Review R22: a path with its links resolved; for a folder not created yet, its nearest existing ancestor resolved, plus the rest. */
+  function realOrNearest(p) {
+    let cur = path.resolve(p);
+    const rest = [];
+    for (;;) {
+      try { return path.join(fs.realpathSync.native(cur), ...rest.reverse()); }
+      catch (error) {
+        const up = path.dirname(cur);
+        if (up === cur || !["ENOENT", "ENOTDIR"].includes(error?.code)) throw error;
+        rest.push(path.basename(cur));
+        cur = up;
+      }
+    }
+  }
+  const within = (base, p) => {
+    const n = (x) => (process.platform === "win32" ? x.toLowerCase() : x);
+    const b = n(base).replace(/[\\/]+$/, "");
+    const t = n(p);
+    return t === b || t.startsWith(`${b}${path.sep}`);
+  };
+  /**
+   * Review R22, before anything is created: the exports root and the dossier folder, links resolved, are never inside the Hub's own roots
+   * (repository, data, backups, media, work), and the folder stays inside the exports root. Fail closed: a refusal creates nothing.
+   */
+  function assertDossierPlace(exportsDir, folder) {
+    const realExports = realOrNearest(exportsDir);
+    const realFolder = realOrNearest(folder);
+    const roots = [config?.hubRoot, config?.dataDir, config?.dataLocation?.dataRoot, config?.backupDir, config?.preUpgradeDir, config?.mediaDir, config?.workDir].filter(Boolean).map(realOrNearest);
+    if (roots.some((r) => within(r, realExports) || within(r, realFolder))) {
+      throw new HubError("policy", "Folderul de exporturi (sau dosarul din el) duce în datele sau în folderul Hub-ului; nu scriu acolo.", { code: "SALES_DOSSIER_FORBIDDEN_ROOT" });
+    }
+    if (!within(realExports, realFolder)) throw new HubError("policy", "Folderul dosarului iese din folderul de exporturi aprobat.", { code: "SALES_DOSSIER_OUTSIDE" });
+  }
+  /** What the dossier reused from an earlier revision, derived from its file list (one source: a resume rebuilds the same list). */
+  const reusedOf = (files) => files.filter((f) => f.reusedFrom).map((f) => ({ file: f.path, sha256: f.sha256, source: { dossierId: f.reusedFrom.dossierId, revision: f.reusedFrom.revision },
+    inputsSha: f.inputsSha, reason: f.generator === DOSSIER_GENERATORS.pdf ? "documentul refolosit fusese verificat în Word; PDF-ul lui, copiat" : "aceleași intrări; regenerat = aceiași octeți",
+    copiedVerified: true }));
 
   /** The dossier write (claimed key): files created exclusively, Word checked (or APP_NOT_RUN declared), README, manifest last, self-check. */
   async function writeDossier({ p, facts, target, claim, planId, authorize, abort, exportsDir }) {
     const actor = actorOf(planId);
     const files = [];
-    const reused = [];
     let dossier = null;
     let verification = null;
     try {
@@ -79,7 +135,9 @@ export function createSalesPlanExecutors({ sales, preparations, ledger, opsPlans
       const artifacts = dossierArtifacts(facts);
       const figures = dossierFigures(artifacts, { allow: allowedCatalogTexts(facts.services) });
       if (figures.length) throw new HubError("policy", `Dosarul ar conține cifre comerciale neconfigurate (${figures.slice(0, 3).map((f) => `„${f.text}”`).join(", ")}); nu îl scriu.`, { code: "SALES_DOSSIER_FIGURES" });
-      // 2. The folder: the one this key reserved (a resume), or a new one created exclusively — never a folder the Hub did not create.
+      // 2. The folder: the one this key reserved (a resume), or a new one created exclusively — never a folder the Hub did not create, never
+      //    one that resolves into the Hub's own data (checked before any directory is created).
+      assertDossierPlace(exportsDir, target.folder);
       if (!target.existing && fs.existsSync(target.folder)) throw new HubError("conflict", `Folderul ${path.basename(target.folder)} există deja și nu e al acestui dosar; nu scriu în el.`, { code: "SALES_DOSSIER_FOLDER_TAKEN" });
       authorize({ op: "export.local", destination: path.join(target.folder, "README.md") });
       const reserved = preparations.reserveDossier({ p, target, facts, fixedAt: claim.fixedAt, planId, actor });
@@ -92,17 +150,20 @@ export function createSalesPlanExecutors({ sales, preparations, ledger, opsPlans
       }
       if (!realInside(exportsDir, target.folder)) throw new HubError("policy", "Folderul dosarului iese din folderul de exporturi aprobat.", { code: "SALES_DOSSIER_OUTSIDE" });
       const prior = reserved.resumed ? dossier : null;
+      // Review R20: a resume keeps what its own first attempt recorded for a file already written (the same bytes; a copy stays a copy),
+      // so README and the manifest are rebuilt byte for byte.
+      const priorFiles = new Map(arr(prior?.files).map((f) => [f.path, f]));
       // 3. The artifacts: the bytes of an earlier revision when the rebuild proves them identical (R-REV), copied here (R-PACK).
       const previous = preparations.previousDossier(p.opportunityId, dossier.id);
       for (const a of artifacts) {
         checkAbort(abort);
-        const proof = dossierArtifactReuse({ previous, artifact: a });
+        const had = priorFiles.get(a.path);
+        const kept = had && had.generator === a.generator && had.inputsSha === a.inputsSha && had.sha256 === sha256(a.buf) ? had : null;
+        const proof = kept ? null : dossierArtifactReuse({ previous, artifact: a });
         const buf = proof ? proof.buf : a.buf;
         authorize({ op: "export.local", destination: path.join(target.folder, a.path) });
         const w = writeNew(target.folder, a.path, buf, { root: exportsDir, exts: DOSSIER_EXTS, exclusive: true });
-        files.push({ path: a.path, bytes: buf.length, sha256: w.sha256, inputsSha: a.inputsSha, generator: a.generator, ...(proof ? { reusedFrom: proof.reusedFrom } : {}) });
-        if (proof) reused.push({ file: a.path, sha256: w.sha256, source: { dossierId: proof.reusedFrom.dossierId, revision: proof.reusedFrom.revision }, inputsSha: a.inputsSha,
-          reason: "aceleași intrări; regenerat = aceiași octeți", copiedVerified: true });
+        files.push(kept ? { ...kept } : { path: a.path, bytes: buf.length, sha256: w.sha256, inputsSha: a.inputsSha, generator: a.generator, ...(proof ? { reusedFrom: proof.reusedFrom } : {}) });
         preparations.recordDossierFiles(dossier.id, files);
       }
       // 4. The Word document: read back as a file, then in Word itself (own invisible instance, read-only) — or APP_NOT_RUN, declared.
@@ -111,7 +172,7 @@ export function createSalesPlanExecutors({ sales, preparations, ledger, opsPlans
       const shape = expectedDocxShape(proposalDocxModel({ proposal: facts.proposal }));
       const fileCheck = checkDocxFile(docxFile, shape);
       if (!fileCheck.ok) throw new HubError("tool", `Documentul Word salvat nu are structura ofertei: ${fileCheck.problems.join("; ")}`, { code: "OFFICE_VERIFY_FAILED" });
-      verification = await wordCheck({ dossier, prior, previous, docx, docxFile, shape, facts, target, files, reused, authorize, abort, exportsDir });
+      verification = await wordCheck({ dossier, prior, previous, docx, docxFile, shape, target, files, authorize, abort });
       preparations.recordDossierFiles(dossier.id, files, { verification });
       if (verification.proposalDocx.app === "APP_FAILED") throw new HubError("tool", `Word nu confirmă documentul: ${verification.proposalDocx.note}`, { code: "OFFICE_VERIFY_FAILED" });
       // 5. The inputs read again (they could change while Word ran): a change stops here, before README and the manifest.
@@ -120,6 +181,7 @@ export function createSalesPlanExecutors({ sales, preparations, ledger, opsPlans
       }
       // 6. README (listed and hashed in the manifest), then the manifest, written LAST.
       checkAbort(abort);
+      const reused = reusedOf(files);
       const readme = dossierReadme({ dossierId: dossier.id, revision: dossier.revision, createdAt: dossier.createdAt, opportunityId: p.opportunityId, proposal: facts.proposal, draft: facts.draft,
         files, verification, reused });
       authorize({ op: "export.local", destination: path.join(target.folder, "README.md") });
@@ -152,8 +214,8 @@ export function createSalesPlanExecutors({ sales, preparations, ledger, opsPlans
     }
   }
 
-  /** The Word level of the offer document: carried from a proven reuse, kept from this dossier's own earlier attempt, or checked now. */
-  async function wordCheck({ dossier, prior, previous, docx, docxFile, shape, facts, target, files, reused, authorize, abort, exportsDir }) {
+  /** The Word level of the offer document: kept from this dossier's own earlier attempt, carried from a proven reuse, or checked now. */
+  async function wordCheck({ dossier, prior, previous, docx, docxFile, shape, target, files, authorize, abort }) {
     const base = { file: "FILE_CHECKED", headings: shape.headings.length, tables: shape.tables.length };
     const pdfName = docx.path.replace(/\.docx$/i, ".pdf");
     /**
@@ -174,11 +236,20 @@ export function createSalesPlanExecutors({ sales, preparations, ledger, opsPlans
       files.push({ path: pdfName, bytes: bytes.length, sha256: copied, inputsSha: hashCanonical({ generator: DOSSIER_GENERATORS.pdf, docx: docx.sha256 }), generator: DOSSIER_GENERATORS.pdf, ...(from ? { reusedFrom: from } : {}) });
       return copied;
     };
-    // This dossier's own earlier attempt already verified this exact document in Word (a resume): its PDF is in the folder already.
+    const work = workDir();
+    // Word exports the PDF in the Hub's own work folder (it would write over a path itself); the bytes are then copied exclusively.
+    const pdfOut = path.join(work, `${dossier.id}-${path.basename(pdfName)}`);
+    // Review R20: this dossier's own earlier attempt recorded a verification of this exact document — it is kept as recorded (the README
+    // and the manifest are then rebuilt byte for byte): APP_NOT_RUN as it was declared; APP_VERIFIED with its PDF — the copy already in
+    // the folder (a copied reuse stays a reuse), or the work copy Word exported (a stop between the record and the copy) — never by
+    // opening Word again (its PDF bytes would differ).
     const own = prior?.verification?.proposalDocx;
-    if (own?.app === "APP_VERIFIED" && own.docxSha256 === docx.sha256 && own.pdf) {
-      const pdfFile = path.join(target.folder, own.pdf);
-      try { if (sha256(fs.readFileSync(pdfFile)) === own.pdfSha256 && keepPdf(pdfFile, null) === own.pdfSha256) return { proposalDocx: { ...own } }; } catch { /* checked again below */ }
+    if (own?.docxSha256 === docx.sha256 && own.app === "APP_NOT_RUN") return { proposalDocx: { ...own } };
+    if (own?.docxSha256 === docx.sha256 && own.app === "APP_VERIFIED" && own.pdf === pdfName && own.pdfSha256) {
+      const from = arr(prior.files).find((f) => f.path === pdfName)?.reusedFrom || null;
+      for (const source of [path.join(target.folder, pdfName), pdfOut]) {
+        try { if (sha256(fs.readFileSync(source)) === own.pdfSha256 && keepPdf(source, from) === own.pdfSha256) return { proposalDocx: { ...own } }; } catch (error) { if (!FS_MISSING.has(error?.code)) throw error; }
+      }
     }
     // A document reused by proof from the previous revision carries its Word check when its PDF is still the recorded one (R-PACK).
     const prev = previous?.verification?.proposalDocx;
@@ -187,25 +258,27 @@ export function createSalesPlanExecutors({ sales, preparations, ledger, opsPlans
         const source = path.join(previous.folder, prev.pdf);
         if (sha256(fs.readFileSync(source)) === prev.pdfSha256) {
           const pdfSha = keepPdf(source, { dossierId: previous.id, revision: previous.revision, file: prev.pdf, sha256: prev.pdfSha256 });
-          reused.push({ file: pdfName, sha256: pdfSha, source: { dossierId: previous.id, revision: previous.revision }, inputsSha: hashCanonical({ generator: DOSSIER_GENERATORS.pdf, docx: docx.sha256 }),
-            reason: "documentul refolosit fusese verificat în Word; PDF-ul lui, copiat", copiedVerified: true });
           return { proposalDocx: { ...prev, docxSha256: docx.sha256, pdf: pdfName, pdfSha256: pdfSha, reusedFrom: { dossierId: previous.id, revision: previous.revision } } };
         }
-      } catch { /* checked again below */ }
+      } catch (error) { if (!FS_MISSING.has(error?.code)) throw error; /* the file is gone: checked again below */ }
     }
     checkAbort(abort);
     authorize({ op: "office.verify" });
     if (appCheck !== "com") return { proposalDocx: { ...base, app: "APP_NOT_RUN", docxSha256: docx.sha256, note: "Verificarea în Word nu rulează în acest mediu (fără Office): documentul e verificat doar ca fișier." } };
     if (!officeAvailable()) return { proposalDocx: { ...base, app: "APP_NOT_RUN", docxSha256: docx.sha256, note: "Microsoft Word nu e instalat pe acest calculator: documentul e verificat doar ca fișier." } };
-    const work = workDir();
     fs.mkdirSync(work, { recursive: true });
-    // Word exports the PDF in the Hub's own work folder (it would write over a path itself); the bytes are then copied exclusively.
-    const pdfOut = path.join(work, `${dossier.id}-${path.basename(pdfName)}`);
-    const r = await verifyDocx(docxFile, shape, { pdfOut, workDir: work });
-    if (!r.ok) return { proposalDocx: { ...base, app: "APP_FAILED", level: r.level || "APP_FAILED", docxSha256: docx.sha256, note: String(r.error || arr(r.problems).join("; ") || r.level).slice(0, 300) } };
-    const pdfSha = keepPdf(r.pdf || pdfOut, null);
-    return { proposalDocx: { ...base, app: "APP_VERIFIED", appName: r.app || "Microsoft Word", appVersion: r.version || null, pages: r.pages ?? null, docxSha256: docx.sha256, pdf: pdfName, pdfSha256: pdfSha,
-      note: "Deschis în Word (instanță proprie, invizibilă, doar citire): titluri și liste verificate, PDF exportat." } };
+    // A Word that refuses the document, differs from it or fails (throws) is APP_FAILED, recorded as such: never APP_VERIFIED, never READY.
+    let r;
+    try { r = await verifyDocx(docxFile, shape, { pdfOut, workDir: work }); }
+    catch (error) { r = { ok: false, level: "APP_FAILED", error: `Word nu a putut verifica documentul: ${String(error?.message || error)}` }; }
+    if (!r?.ok) return { proposalDocx: { ...base, app: "APP_FAILED", level: r?.level || "APP_FAILED", docxSha256: docx.sha256, note: String(r?.error || arr(r?.problems).join("; ") || r?.level || "APP_FAILED").slice(0, 300) } };
+    const exported = r.pdf || pdfOut;
+    const verified = { proposalDocx: { ...base, app: "APP_VERIFIED", appName: r.app || "Microsoft Word", appVersion: r.version || null, pages: r.pages ?? null, docxSha256: docx.sha256, pdf: pdfName,
+      pdfSha256: sha256(fs.readFileSync(exported)), note: "Deschis în Word (instanță proprie, invizibilă, doar citire): titluri și liste verificate, PDF exportat." } };
+    // Review R20: the verification (with the PDF's sha) is recorded BEFORE the PDF is copied: a stop or a crash in between resumes from it.
+    preparations.recordDossierFiles(dossier.id, files, { verification: verified });
+    if (keepPdf(exported, null) !== verified.proposalDocx.pdfSha256) throw new HubError("tool", "Copia PDF-ului nu are aceiași octeți.", { code: "DELIVERY_FILE_VERIFY" });
+    return verified;
   }
 
   const executors = {
@@ -222,10 +295,11 @@ export function createSalesPlanExecutors({ sales, preparations, ledger, opsPlans
         checkAbort(abort);
         const p = preparations.enterPlan(params.preparationId, plan);
         if (p.briefSha !== params.briefSha || hashCanonical(p.brief) !== p.briefSha) throw new HubError("conflict", "Brieful s-a schimbat față de planul confirmat.", { code: "SALES_INPUTS_CHANGED" });
-        const identity = syntheticOrgFor(p.brief, p.rootPlanId);
         authorize({ op: "sales.synthetic" });
-        const out = ledger.runSync({ root: preparations.rootOf(p), op: "sales.synthetic", keyParams: keyA1(p), params: { seed: p.rootPlanId, generator: identity.generator },
+        const out = ledger.runSync({ root: preparations.rootOf(p), op: "sales.synthetic", keyParams: keyA1(p), params: { seed: p.rootPlanId, generator: SYNTHETIC_ORG_GENERATOR },
           effect: ({ key }) => {
+            // Review R17: drawn inside the operation's transaction, never an identity a company already has (deterministic for the root).
+            const identity = syntheticOrgFor(p.brief, p.rootPlanId, { taken: sales.syntheticIdentityTaken });
             const r = sales.createPreparationOrg({ identity, brief: p.brief, preparationId: p.id, actor: actorOf(planId) });
             emit("sales.synthetic.created", p.id, { preparationId: p.id, orgId: r.orgId, opportunityId: r.opportunityId, opKey: key.slice(0, 16) }, actorOf(planId));
             return { orgId: r.orgId, opportunityId: r.opportunityId, problemEvidenceId: r.problemEvidenceId, domain: identity.domain };
@@ -292,20 +366,27 @@ export function createSalesPlanExecutors({ sales, preparations, ledger, opsPlans
       run: async ({ planId, params, authorize, abort }) => {
         checkAbort(abort);
         const p = preparations.bound(params.preparationId, planId);
-        const basis = sales.preparationBasis(p.opportunityId, { briefSha: p.briefSha });
+        // A resume (or a continuation with nothing changed): the row this root bound is still the latest, from the same inputs.
+        const own = boundQualification(p);
+        if (own) return { result: { ...own.row.result, duplicate: true, opKey: own.row.opKey } };
+        const q = sales.latestQualification(p.orgId);
+        const inputsSha = sales.qualificationInputsSha(p.orgId);
         authorize({ op: "sales.qualify" });
-        const out = ledger.runSync({ root: preparations.rootOf(p), op: "sales.qualify", keyParams: keyA3(p, basis), effect: () => {
+        const out = ledger.runSync({ root: preparations.rootOf(p), op: "sales.qualify", keyParams: keyA3(p, q, inputsSha), effect: () => {
           preparations.bound(p.id, planId);
-          const q = sales.qualifyOrg(p.orgId, { formula: "q-v2" }, actorOf(planId));
-          return { qualificationId: q.id, priority: q.priority, formulaVersion: q.formulaVersion };
+          // A q-v2 row computed from exactly these inputs (the owner's override of it included) is bound as it is; else q-v2 is computed now.
+          const cur = sales.latestQualification(p.orgId);
+          const usable = Boolean(cur && cur.formulaVersion === "q-v2" && cur.inputsSha === inputsSha);
+          const row = usable ? cur : sales.qualifyOrg(p.orgId, { formula: "q-v2" }, actorOf(planId));
+          return { qualificationId: row.id, inputsSha: row.inputsSha, priority: row.priority, formulaVersion: row.formulaVersion, bound: usable ? "existing" : "computed" };
         } });
         return { result: { ...out.result, duplicate: out.duplicate, opKey: out.key } };
       },
       reconcile: reconcileWith(({ planId, params }) => {
         const p = preparations.get(params.preparationId);
         if (!p || p.planId !== planId || !p.opportunityId) return null;
-        const s = ledger.status({ root: preparations.rootOf(p), op: "sales.qualify", keyParams: keyA3(p, sales.preparationBasis(p.opportunityId, { briefSha: p.briefSha })) });
-        return s.status === "DONE" ? { outcome: "done", result: s.result, detail: "registrul planului: făcut" } : null;
+        const own = boundQualification(p);
+        return own ? { outcome: "done", result: own.row.result, detail: "registrul planului: făcut" } : null;
       }),
     },
 
@@ -338,6 +419,12 @@ export function createSalesPlanExecutors({ sales, preparations, ledger, opsPlans
         const basis = sales.preparationBasis(p.opportunityId, { briefSha: p.briefSha });
         if (!basis.workable) throw new HubError("policy", "Firma nu mai poate fi lucrată (DO_NOT_CONTACT, unită sau arhivată).", { code: "SALES_STALE" });
         if (!basis.qualificationId) throw new HubError("conflict", "Calificarea lipsește (pasul de calificare).", { code: "STEP_REF_MISSING" });
+        // Review R3/R8: the offer is bound to the exact q-v2 row the qualification step of THIS root bound (id + inputs sha), never to
+        // whatever row is the latest (an M04 q-v1 recompute in between is an input change: a continuation qualifies again).
+        const own = boundQualification(p);
+        if (!own || own.q.id !== basis.qualificationId || own.q.inputsSha !== basis.qualificationInputsSha) {
+          throw new HubError("conflict", "Calificarea q-v2 a pregătirii nu mai e cea curentă (o calificare nouă sau alte intrări); o continuare o face din nou.", { code: "SALES_STALE" });
+        }
         const problemEvidenceId = sales.getOrg(p.orgId).evidence.find((e) => e.claim === "brief:problem" && e.sourceRef === `brief:${p.id}#problem`)?.id || null;
         const fields = p.brief?.fields || {};
         const brief = { ...p.brief, id: p.id, fields: { ...fields, ...(fields.problem ? { problem: { ...fields.problem, ...(problemEvidenceId ? { evidenceId: problemEvidenceId } : {}) } } : {}) } };

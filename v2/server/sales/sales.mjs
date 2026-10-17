@@ -323,7 +323,7 @@ export function createSales({ db, bus, clock, config, settings }) {
    *   is refused). The inference row stays INFERENCE: a copy or a summary never turns an inference into a statement.
    * Returns the normalised basis.
    */
-  function checkDataKind({ dataKind, label, sourceKind, sourceRef, synthetic, basis, reasoning }, origin) {
+  function checkDataKind({ dataKind, label, sourceKind, sourceRef, synthetic, basis, reasoning }, origin, { orgId = null, preparationId = null } = {}) {
     if (!DATA_KINDS.includes(dataKind)) throw new HubError("validation", `Fel de dată necunoscut: ${dataKind}`);
     if (!DATA_KIND_LABELS[dataKind].includes(label)) {
       throw new HubError("validation", `O dată ${dataKind} nu poate avea eticheta ${label} (permise: ${DATA_KIND_LABELS[dataKind].join(", ")})`, { code: "DATA_KIND_LABEL_MISMATCH" });
@@ -332,9 +332,29 @@ export function createSales({ db, bus, clock, config, settings }) {
     if (!refs || refs.length > 20 || refs.some((ref) => !BASIS_REF.test(ref))) {
       throw new HubError("validation", "Baza se dă prin id-uri de dovezi (sev_…), câmpuri din brief (brief:<id>#<câmp>) sau verificări de audit (audit:sad_…#<verificare>)");
     }
+    // M12 review C4: every basis item exists AND is about this company — an evidence row of the same company, a field the brief really has
+    // (of a preparation of this company, or of the one creating it), a check the stored audit of this company really made.
+    const foreign = (ref) => new HubError("validation", `Baza ${ref} nu e despre această firmă`, { code: "INFERENCE_BASIS" });
     for (const ref of refs) {
-      if (ref.startsWith("sev_") && !db.prepare("SELECT 1 FROM sales_evidence WHERE id = ?").get(ref)) throw new HubError("not_found", `Dovada ${ref} din bază nu există`);
-      if (ref.startsWith("audit:") && !db.prepare("SELECT 1 FROM sales_audits WHERE id = ?").get(ref.slice(6, ref.indexOf("#")))) throw new HubError("not_found", `Auditul din ${ref} nu există`);
+      if (ref.startsWith("sev_")) {
+        const row = db.prepare("SELECT subject_type, subject_id FROM sales_evidence WHERE id = ?").get(ref);
+        if (!row) throw new HubError("not_found", `Dovada ${ref} din bază nu există`);
+        const of = row.subject_type === "org" ? row.subject_id : row.subject_type === "opportunity" ? db.prepare("SELECT org_id FROM sales_opportunities WHERE id = ?").get(row.subject_id)?.org_id : null;
+        if (!orgId || of !== orgId) throw foreign(ref);
+      } else if (ref.startsWith("audit:")) {
+        const audit = db.prepare("SELECT org_id, result_json FROM sales_audits WHERE id = ?").get(ref.slice(6, ref.indexOf("#")));
+        if (!audit) throw new HubError("not_found", `Auditul din ${ref} nu există`);
+        if (!orgId || audit.org_id !== orgId) throw foreign(ref);
+        const check = ref.slice(ref.indexOf("#") + 1);
+        if (!(parse(audit.result_json, {})?.checks || []).some((c) => String(c?.id) === check)) throw new HubError("not_found", `Auditul din ${ref} nu are verificarea ${check}`, { code: "INFERENCE_BASIS" });
+      } else if (ref.startsWith("brief:")) {
+        const [id, field] = ref.slice(6).split("#");
+        const prep = db.prepare("SELECT id, org_id, brief_json FROM sales_preparations WHERE id = ?").get(id);
+        if (!prep) throw new HubError("not_found", `Brieful din ${ref} nu există`, { code: "INFERENCE_BASIS" });
+        const brief = parse(prep.brief_json, {});
+        if (!(field === "request" ? String(brief?.request || "").trim() : brief?.fields?.[field])) throw new HubError("not_found", `Brieful din ${ref} nu are câmpul ${field}`, { code: "INFERENCE_BASIS" });
+        if (!orgId || (prep.org_id ? prep.org_id !== orgId : prep.id !== preparationId)) throw foreign(ref);
+      }
     }
     if (dataKind === "FIXTURE") {
       if (!["fixture", "synthetic"].includes(origin)) {
@@ -363,13 +383,14 @@ export function createSales({ db, bus, clock, config, settings }) {
   }
 
   function addEvidenceRow({ subjectType, subjectId, subjectVersion = 1, claim, value = null, label, sourceKind, sourceRef, retrievedAt = null, excerpt = "", method = "",
-    verifiedAt = null, recheckAfter = null, contradicts = [], synthetic = false, batchId = null, actor, dataKind = null, basis = [], reasoning = "" }, { origin = "" } = {}) {
+    verifiedAt = null, recheckAfter = null, contradicts = [], synthetic = false, batchId = null, actor, dataKind = null, basis = [], reasoning = "" }, { origin = "", preparationId = null } = {}) {
     if (!EVIDENCE_LABELS.includes(label)) throw new HubError("validation", `Etichetă de dovadă necunoscută: ${label}`);
     if (!SOURCE_KINDS.includes(sourceKind)) throw new HubError("validation", `Tip de sursă necunoscut: ${sourceKind}`);
     if (!String(claim || "").trim()) throw new HubError("validation", "Dovada are nevoie de o afirmație");
     if (!String(sourceRef || "").trim()) throw new HubError("validation", "Dovada are nevoie de sursă (fișier, URL sau înregistrare manuală)");
     const declared = dataKind !== null && dataKind !== undefined;
-    const refs = declared ? checkDataKind({ dataKind, label, sourceKind, sourceRef, synthetic, basis, reasoning }, origin) : null;
+    const orgOfSubject = subjectType === "org" ? subjectId : subjectType === "opportunity" ? db.prepare("SELECT org_id FROM sales_opportunities WHERE id = ?").get(subjectId)?.org_id : null;
+    const refs = declared ? checkDataKind({ dataKind, label, sourceKind, sourceRef, synthetic, basis, reasoning }, origin, { orgId: orgOfSubject || null, preparationId }) : null;
     const id = newId("sev");
     db.prepare(`INSERT INTO sales_evidence (id, subject_type, subject_id, subject_version, claim, value_json, label, source_kind, source_ref, retrieved_at, excerpt,
       method, verified_at, recheck_after, contradicts_json, synthetic, batch_id, created_by, created_at, data_kind, basis_json, reasoning)
@@ -378,7 +399,6 @@ export function createSales({ db, bus, clock, config, settings }) {
         clip(method, 200), verifiedAt, recheckAfter, json(contradicts), synthetic ? 1 : 0, batchId, actor, now(),
         declared ? dataKind : null, declared ? json(refs) : null, declared ? clip(reasoning, 400) : null);
     // M12 (D7): new evidence for a company changes the inputs of an offer prepared for it (only preparation-bound offers react).
-    const orgOfSubject = subjectType === "org" ? subjectId : subjectType === "opportunity" ? db.prepare("SELECT org_id FROM sales_opportunities WHERE id = ?").get(subjectId)?.org_id : null;
     if (orgOfSubject) invalidateBound([orgOfSubject], "o dovadă nouă pentru firmă");
     return id;
   }
@@ -395,8 +415,12 @@ export function createSales({ db, bus, clock, config, settings }) {
     const ids = (type, id) => evidenceOf(type, id).filter(usable).map((e) => e.id).sort();
     const audit = db.prepare("SELECT id FROM sales_audits WHERE org_id = ? ORDER BY created_at DESC, rowid DESC LIMIT 1").get(org.id)?.id || null;
     const svc = opp.serviceId ? rowToService(db.prepare("SELECT * FROM sales_services WHERE id = ?").get(opp.serviceId)) : null;
+    const q = latestQualification(org.id);
+    // Review R3/R8 / R7: the exact qualification row (id + its inputs sha) and the company fields the offer renders are inputs too.
     return { v: 1, briefSha: briefSha || null, orgId: org.id, opportunityId: opp.id, evidence: hashCanonical(ids("org", org.id)), opportunityEvidence: hashCanonical(ids("opportunity", opp.id)),
-      qualificationId: latestQualification(org.id)?.id || null, auditId: audit, service: svc ? `${svc.id}@${svc.version}` : null, owner: hashCanonical(ownerProfile()),
+      qualificationId: q?.id || null, qualificationInputsSha: q?.inputsSha || null, auditId: audit, service: svc ? `${svc.id}@${svc.version}` : null, owner: hashCanonical(ownerProfile()),
+      org: hashCanonical({ displayName: org.displayName, legalForm: org.legalForm, fiscalCode: org.fiscalCode, fiscalCodeValid: org.fiscalCodeValid, website: org.website, domain: org.domain,
+        city: org.city, synthetic: org.synthetic }),
       workable: !org.mergedInto && !org.archivedAt && org.status !== "DO_NOT_CONTACT" && !contactSuppression(org.id) };
   }
   /** A bound offer whose recorded inputs are no longer the current ones (M04 offers have no basis: never stale). */
@@ -825,10 +849,13 @@ export function createSales({ db, bus, clock, config, settings }) {
 
   // ---------- organizations ----------
   const clampLimit = (limit) => Math.min(Math.max(Number(limit) || 50, 1), 200);
+  const rowToQualification = (r) => r && { id: r.id, formulaVersion: r.formula_version, result: parse(r.result_json, {}), priority: r.priority, override: parse(r.override_json, null),
+    createdBy: r.created_by, createdAt: r.created_at, inputsSha: r.inputs_sha || "", orgId: r.org_id };
   function latestQualification(orgId) {
-    const r = db.prepare("SELECT * FROM sales_qualifications WHERE org_id = ? ORDER BY created_at DESC, rowid DESC LIMIT 1").get(orgId);
-    return r && { id: r.id, formulaVersion: r.formula_version, result: parse(r.result_json, {}), priority: r.priority, override: parse(r.override_json, null), createdBy: r.created_by, createdAt: r.created_at };
+    return rowToQualification(db.prepare("SELECT * FROM sales_qualifications WHERE org_id = ? ORDER BY created_at DESC, rowid DESC LIMIT 1").get(orgId));
   }
+  /** M12 review R3/R8: one exact qualification row (the one a preparation-bound offer is bound to), never „the latest”. */
+  const qualificationById = (id) => rowToQualification(db.prepare("SELECT * FROM sales_qualifications WHERE id = ?").get(String(id || "")));
 
   function listOrgs({ q = "", status = "", city = "", synthetic = "", needsReview = false, offset = 0, limit = 50, sort = "updated" } = {}) {
     const where = ["o.archived_at IS NULL", "o.merged_into IS NULL"];
@@ -905,6 +932,8 @@ export function createSales({ db, bus, clock, config, settings }) {
       db.prepare("UPDATE sales_orgs SET status = ?, version = version + 1, edited_after_import = 1, updated_at = ? WHERE id = ?").run(to, now(), id);
       transition("org", id, org.status, to, actor, reason);
       emit("sales.org.transition", id, { from: org.status, to }, actor);
+      // M12 review C3: the company sheet of „Dosarul ofertei” shows the status: a READY dossier of this company is re-checked (STALE).
+      invalidateBound([id], `statusul firmei s-a schimbat (${org.status} → ${to})`);
       return getOrg(id);
     });
   }
@@ -1036,7 +1065,20 @@ export function createSales({ db, bus, clock, config, settings }) {
   }
 
   // ---------- M12: what the confirmed preparation plan writes (its executors call these; none of them is a command) ----------
-  const BRIEF_SOURCE_FIELD = Object.freeze({ "R-SECTOR@1": "clientType", "R-PLACE@1": "place", "R-SERVICE@1": "problem" });
+  // A value read through a typo (R-TYPO, review R13) is inferred from the request itself (`brief:<id>#request`), never from a statement.
+  const BRIEF_SOURCE_FIELD = Object.freeze({ "R-SECTOR@1": "clientType", "R-PLACE@1": "place", "R-SERVICE@1": "problem", "R-TYPO@1": "request" });
+  /**
+   * M12 review R17: a synthetic identity is never one a company already has — its domain, fiscal code or e-mail in sales_orgs /
+   * sales_contacts (synthetic or not), or on the DO_NOT_CONTACT list. The generator re-draws (deterministically) while this holds.
+   */
+  function syntheticIdentityTaken(identity) {
+    const domain = normalizeDomain(String(identity?.domain || ""));
+    const email = String(identity?.email || "").toLowerCase();
+    const fiscal = String(identity?.fiscalCode || "");
+    return Boolean(db.prepare("SELECT 1 FROM sales_orgs WHERE domain = ? OR fiscal_code = ? LIMIT 1").get(domain, fiscal)
+      || db.prepare("SELECT 1 FROM sales_contacts WHERE lower(value) = ? LIMIT 1").get(email)
+      || db.prepare("SELECT 1 FROM sales_suppressions WHERE (kind = 'domain' AND value = ?) OR (kind = 'email' AND value = ?) OR (kind = 'fiscal_code' AND value = ?) LIMIT 1").get(domain, email, fiscal));
+  }
   /**
    * The synthetic client of a brief (S-02), in the caller's transaction: the company (synthetic = 1, `.test` domain, fiscal code 99…,
    * no record field taken from the brief), its identity as FIXTURE evidence (name, fiscal code, site, e-mail — so q-v2 scores only what a
@@ -1050,6 +1092,8 @@ export function createSales({ db, bus, clock, config, settings }) {
     }
     if (!/^spp_[A-Za-z0-9_]+$/.test(String(preparationId || ""))) throw new HubError("validation", "Pregătirea nu are un id valid");
     return bus.transaction(() => {
+      // R17: never a second company with the same domain, fiscal code or e-mail (the plan step re-draws before it comes here).
+      if (syntheticIdentityTaken(identity)) throw new HubError("conflict", "Identitatea sintetică (domeniu, CUI sau e-mail) există deja la o firmă; nu o refolosesc.", { code: "SALES_SYNTHETIC_TAKEN" });
       const t = now();
       const n = normalizeName(identity.name);
       const orgId = newId("org");
@@ -1072,15 +1116,16 @@ export function createSales({ db, bus, clock, config, settings }) {
         if (!f || typeof f !== "object") continue;
         const value = Array.isArray(f.value) ? f.value.map((v) => clip(v, 200)) : clip(f.value, 300);
         if (f.provenance === "USER_PROVIDED") {
-          evidence[`brief:${field}`] = addEvidenceRow({ subjectType: "org", subjectId: orgId, claim: `brief:${field}`, value: { field, value, span: clip(f.span ?? "", 300) },
+          // A need cut before its figures (brief R-NEED-CUT) keeps here, internally, the whole need the owner stated (`stated`).
+          evidence[`brief:${field}`] = addEvidenceRow({ subjectType: "org", subjectId: orgId, claim: `brief:${field}`, value: { field, value, span: clip(f.span ?? "", 300), ...(f.stated ? { stated: clip(f.stated, 600) } : {}) },
             label: "USER_PROVIDED", sourceKind: "manual", sourceRef: `brief:${preparationId}#${field}`, retrievedAt: t, method: `brief ${brief.version}`, synthetic: true, actor,
-            dataKind: "STATEMENT" }, { origin: "manual" });
+            dataKind: "STATEMENT" }, { origin: "manual", preparationId });
         } else if (f.provenance === "INFERRED") {
           const from = Object.entries(brief.fields).find(([k, g]) => k !== field && g?.provenance === "USER_PROVIDED" && clip(g.value, 300) === clip(f.from, 300))?.[0] || BRIEF_SOURCE_FIELD[f.rule];
-          if (!from || !brief.fields[from]) continue;
+          if (!from || !(from === "request" ? String(brief.request || "").trim() : brief.fields[from])) continue;
           evidence[`brief:${field}`] = addEvidenceRow({ subjectType: "org", subjectId: orgId, claim: `brief:${field}`, value: { field, value, rule: f.rule || "" },
             label: "INFERRED", sourceKind: "manual", sourceRef: `rule:${f.rule || "brief"}`, retrievedAt: t, method: `brief ${brief.version}`, synthetic: true, actor,
-            dataKind: "INFERENCE", basis: [`brief:${preparationId}#${from}`], reasoning: clip(f.reasoning || `dedus din „${f.from}”`, 400) }, { origin: "manual" });
+            dataKind: "INFERENCE", basis: [`brief:${preparationId}#${from}`], reasoning: clip(f.reasoning || `dedus din „${f.from}”`, 400) }, { origin: "manual", preparationId });
         }
       }
       const said = (k) => (brief?.fields?.[k]?.provenance === "USER_PROVIDED" ? clip(brief.fields[k].value, 120) : "");
@@ -1125,6 +1170,11 @@ export function createSales({ db, bus, clock, config, settings }) {
       .map((e) => ({ ...(e.value || {}), sourceRef: e.sourceRef, verifiedAt: e.verifiedAt || e.retrievedAt, evidenceId: e.id, freshness: e.freshness, conflictsWith: e.conflictsWith }));
   }
 
+  /** What a qualification is computed from (its stored inputs_sha): the company's evidence ids, its latest audit, the active catalog. */
+  function qualificationInputsSha(id, sheet = getOrg(id)) {
+    const latestAudit = sheet.audits[0] || null;
+    return hashCanonical({ ev: sheet.evidence.map((e) => e.id), audit: latestAudit?.id || null, catalog: services().map((s) => `${s.id}@${s.version}`) });
+  }
   /** `formula` defaults to q-v1 (M04); the M12 plan asks for q-v2 explicitly. A stored row keeps the version it was computed with. */
   function qualifyOrg(id, { filters = {}, formula = QUALIFICATION_FORMULA.version } = {}, actor) {
     const org = needOrg(id);
@@ -1136,7 +1186,7 @@ export function createSales({ db, bus, clock, config, settings }) {
     return bus.transaction(() => {
       const qid = newId("squ");
       db.prepare("INSERT INTO sales_qualifications (id, org_id, formula_version, result_json, priority, inputs_sha, created_by, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)")
-        .run(qid, id, result.version || QUALIFICATION_FORMULA.version, json(result), result.priority, hashCanonical({ ev: sheet.evidence.map((e) => e.id), audit: latestAudit?.id || null, catalog: input.catalog.map((s) => `${s.id}@${s.version}`) }), actor, now());
+        .run(qid, id, result.version || QUALIFICATION_FORMULA.version, json(result), result.priority, qualificationInputsSha(id, sheet), actor, now());
       invalidateBound([id], "o calificare nouă");
       emit("sales.qualified", id, { qualificationId: qid, priority: result.priority }, actor);
       return latestQualification(id);
@@ -1231,6 +1281,10 @@ export function createSales({ db, bus, clock, config, settings }) {
     if (!(OPPORTUNITY_TRANSITIONS[opp.status] || []).includes(to)) throw new HubError("conflict", `Tranziție nepermisă: ${opp.status} → ${to}`);
     if (String(reason || "").trim().length < 3) throw new HubError("validation", "Spune pe scurt motivul (minimum 3 caractere)");
     if (to === "READY_FOR_OWNER_REVIEW" && !latestProposal(id)) throw new HubError("conflict", "Nu există o propunere de revizuit");
+    // M12 review C5: an offer prepared by a plan whose inputs changed (STALE) can never be approved: the opportunity is not „ready for review”.
+    if (to === "READY_FOR_OWNER_REVIEW" && latestProposal(id).status === "STALE") {
+      throw new HubError("conflict", "Oferta pregătită nu mai corespunde datelor din care a fost făcută (STALE): nu poate fi revizuită; continuă pregătirea sau fă o versiune nouă", { code: "SALES_PROPOSAL_STALE" });
+    }
     if (to === "IN_DISCUSSION" && !realContact(id)) throw new HubError("conflict", "IN_DISCUSSION cere un contact real înregistrat (trimis sau înregistrat manual)");
     return bus.transaction(() => { setOppStatus(opp, to, actor, reason); return getOpportunity(id); });
   }
@@ -1274,6 +1328,19 @@ export function createSales({ db, bus, clock, config, settings }) {
   function ownerProfile() {
     const s = settings.get("salesOwner") || {};
     return { companyName: s.companyName || "Ifrim Digital", signatureName: s.signatureName || "", materials: Array.isArray(s.materials) ? s.materials : [] };
+  }
+  /**
+   * The owner's proposal profile (name, signature, confirmed materials): rendered into every offer, so — M12 review R7 — saving it is an
+   * input change for the offers prepared by a plan (STALE hook, in the same transaction). M04 offers (no basis) are untouched.
+   */
+  function saveOwnerProfile({ companyName, signatureName = "", materials = [] }, actor) {
+    return bus.transaction(() => {
+      settings.set("salesOwner", { companyName, signatureName, materials }, actor, "Profil Sales actualizat");
+      const orgs = db.prepare(`SELECT DISTINCT o.org_id AS id FROM sales_opportunities o JOIN sales_proposals p ON p.opportunity_id = o.id
+        WHERE p.status IN ('DRAFT','APPROVED_INTERNAL') AND json_extract(p.content_json, '$.basis') IS NOT NULL`).all().map((r) => r.id);
+      invalidateBound(orgs, "profilul tău Sales (numele firmei, semnătura sau materialele) s-a schimbat");
+      return settings.get("salesOwner");
+    });
   }
 
   /**
@@ -1354,8 +1421,9 @@ export function createSales({ db, bus, clock, config, settings }) {
         status: proposalStatus, approvedAt: at, approvalId: aid, opportunity: { id: p.opportunityId, status: oppStatus } });
       if (p.status === "APPROVED_INTERNAL" && p.approvedSha === displayedSha) return result(true, p.approvedAt, p.approvalId, p.status, needOpp(p.opportunityId).status);
       // M12 (D7): a preparation-bound offer whose inputs changed is STALE (set by the invalidating writes) and is never approved; the
-      // preparation's activation and its dossier re-check the inputs by sha before anything continues.
-      if (p.status === "STALE") {
+      // preparation's activation and its dossier re-check the inputs by sha before anything continues. Review R7: the input shas are
+      // recomputed here too, in this final transaction (a write with no hook can never get a stale offer approved).
+      if (p.status === "STALE" || (isPreparationBound(p.content) && boundStale(p))) {
         throw new HubError("conflict", "Oferta nu mai corespunde datelor din care a fost pregătită (STALE); cere o versiune nouă", { code: "SALES_PROPOSAL_STALE" });
       }
       const opp = needOpp(p.opportunityId);
@@ -1455,6 +1523,8 @@ export function createSales({ db, bus, clock, config, settings }) {
     return bus.transaction(() => {
       db.prepare("UPDATE sales_drafts SET status = 'CONTENT_APPROVED', approved_sha = ?, approved_at = ?, updated_at = ? WHERE id = ?").run(d.contentSha, now(), now(), d.id);
       emit("sales.draft.content_approved", d.opportunityId, { draftId: d.id }, actor);
+      // M12 review C3: a dossier states its draft's status; a READY dossier written from this draft is re-checked (STALE).
+      notifyInvalidated(d.orgId, d.opportunityId, "statusul ciornei s-a schimbat (conținut aprobat)");
       return rowToDraft(db.prepare("SELECT * FROM sales_drafts WHERE id = ?").get(d.id));
     });
   }
@@ -1776,5 +1846,7 @@ export function createSales({ db, bus, clock, config, settings }) {
     latestProposal, latestDraft,
     // M12 preparation (written only by the confirmed plan's steps; no command reaches these directly).
     createPreparationOrg, fixturePage, recordResearch, preparationBasis, boundStale, isPreparationBound, onInvalidated, latestQualification,
+    // M12 review fixes (parts 2–3): the exact bound qualification row, its inputs, synthetic identity uniqueness, the owner profile hook.
+    qualificationById, qualificationInputsSha, syntheticIdentityTaken, saveOwnerProfile,
   };
 }

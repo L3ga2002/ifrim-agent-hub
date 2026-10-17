@@ -34,6 +34,15 @@ const nothingSent = (t, oppId) => {
   if (oppId) assert.equal(t.hub.sales.getOpportunity(oppId).opportunity.status, "APPROVED_INTERNAL");
 };
 const stopAll = (t) => t.hub.commands.dispatch({ type: "system.stop_all", payload: { reason: "Oprește tot (test)" }, channel: "test", actor: "test" });
+/** The owner's rearm in the cockpit (owner session, fresh Windows Hello, the card's nonce and hash): the gate reopens. */
+async function rearmGate(t) {
+  const card = await t.request("/api/owner/gate/rearm/card");
+  assert.equal(card.status, 200, JSON.stringify(card.json));
+  await t.authenticate({ reauth: true });
+  const done = await t.request("/api/owner/gate/rearm", { body: { nonce: card.json.nonce, hash: card.json.hash, modality: "click" } });
+  assert.equal(done.status, 200, JSON.stringify(done.json));
+  assert.equal(t.hub.settings.get("executionGate").status, "open");
+}
 
 test("M12-CONT-01 the owner's approval of exactly id + sha → phase B DERIVED from the same consent, no other confirmation; draft DRAFT, dossier READY (APP_NOT_RUN); nothing sent (S-08)", async (c) => {
   const { t, card, preparationId, prep } = await waiting(c);
@@ -127,6 +136,12 @@ test("M12-CONT-04 T-S12 Stop All while waiting → STOPPED and no phase B after 
   const after = await settlePreparation(t, preparationId);
   assert.equal(after.status, "STOPPED");
   noPhaseB(t, prep.opportunityId);
+  // Review C2 (D22, adapted: this test continued without the rearm): while that Stop All still holds the gate there is no continuation
+  // card (it could not run either); the owner rearms the gate in the cockpit first.
+  await assert.rejects(salesCommand(t, "sales.preparation.continue", { preparationId }, { channel: "test" }), (e) => e.code === "GATE_REARM_REQUIRED");
+  assert.equal(t.hub.salesPreparations.forOpportunity(prep.opportunityId).preparations[0].waitsForRearm, true);
+  await rearmGate(t);
+  assert.equal(t.hub.salesPreparations.forOpportunity(prep.opportunityId).preparations[0].waitsForRearm, false);
   // The continuation: one new card, confirmed by the owner; the ledger reuses everything already done (no new company, offer or event).
   const rows = ["sales_orgs", "sales_opportunities", "sales_proposals", "sales_qualifications", "sales_evidence"].map((x) => countRows(t, `SELECT COUNT(*) AS n FROM ${x}`));
   const out = (await salesCommand(t, "sales.preparation.continue", { preparationId }, { channel: "test" })).result;
