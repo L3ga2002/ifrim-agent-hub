@@ -19,7 +19,7 @@ import { OpsPlanCard } from "./lega/OpsPlanCard.jsx";
 import { presentedPlan, planNeedsObsPassword } from "../lib/opsLogic.js";
 import { ProjectSummary, NextStepCard, DecisionCard, MissionPlan, AgentGraph, EnvironmentCard, DiffPanel, TestPanel, ReviewPanel, Replay, Preview, Briefing, Explain, CompanyMap, BlockerActions, WorkRequestsCard } from "./lega/cards.jsx";
 import { RearmCard } from "./lega/RearmCard.jsx";
-import { rearmSlotFrom, rearmOutcome, gateRearmHint } from "../lib/rearmLogic.js";
+import { rearmSlotFrom, rearmBeforeNavigation, rearmOutcome, gateRearmHint } from "../lib/rearmLogic.js";
 import { salesNavigation } from "../lib/salesCockpit.js";
 
 /**
@@ -257,12 +257,15 @@ function Cockpit({ projectId, go }) {
 
   // M12 final review X1: the rearm slot of the latest answer, applied after the conversation shows that answer (never before it).
   const pendingRearm = useRef(null);
+  const applyRearmFx = (fx) => {
+    if (fx.action === "set") setRearmSlot({ id: ++rearmSlotCounter, ...fx.slot, trigger: 0, handled: 0 });
+    else if (fx.action === "clear") setRearmSlot(null);
+  };
   useEffect(() => {
     const fx = pendingRearm.current;
     if (!fx) return;
     pendingRearm.current = null;
-    if (fx.action === "set") setRearmSlot({ id: ++rearmSlotCounter, ...fx.slot, trigger: 0, handled: 0 });
-    else if (fx.action === "clear") setRearmSlot(null);
+    applyRearmFx(fx);
   }, [conversation]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // M10.2: a clarification button sends `choice` (the option id the Hub offered), never a synthesized sentence.
@@ -293,6 +296,9 @@ function Cockpit({ projectId, go }) {
       // its „Arată cardul de redeschidere” option.
       const rearmFx = rearmSlotFrom(res.results);
       pendingRearm.current = rearmFx.action === "set" || rearmFx.action === "clear" ? rearmFx : null;
+      // Last review round RR13: an answer that opens another project's cockpit replaces this screen (and its conversation, whose effect
+      // may never run here): its rearm slot goes to the app store now, before the navigation, so the cockpit that opens shows the card.
+      if (pendingRearm.current && rearmBeforeNavigation(res.results, pid)) { const fx = pendingRearm.current; pendingRearm.current = null; applyRearmFx(fx); }
       for (const r of res.results) {
         if (r.navigate?.startsWith("/cockpit/")) { const next = r.navigate.split("/")[2]; setCurrentProject(next); go(`/lega/${next}`); }
         // M09: "deschide studioul", "arată-mi clipul X", a proposed correction (opens the clip at that second with the proposal).

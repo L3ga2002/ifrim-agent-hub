@@ -17,18 +17,51 @@ export const PREPARATION_STATUS_RO = Object.freeze({
 });
 const PROPOSAL_STATUS_RO = Object.freeze({ DRAFT: "ciornă, neaprobată", APPROVED_INTERNAL: "aprobată intern de tine (nu e trimisă)", SUPERSEDED: "înlocuită de o versiune mai nouă",
   STALE: "depășită: intrările ei s-au schimbat" });
-const CONTINUE_HINT = "O continuare cere un card nou, pe care îl confirmi o dată.";
+const CONTINUE_HINT = "O continuare cere un card nou, pe care îl confirmi o dată („Continuă pregătirea ofertei”).";
+/** Last review round (RR7 / RR12, R18): a card the owner never confirmed has nothing to continue — a new request is the way. */
+export const NEVER_CONFIRMED_HINT = "Cardul ei inițial nu a fost confirmat niciodată, deci nu are ce continua: o cerere nouă („pregătește o ofertă pentru …”) e calea.";
+/** RR7 / RR12 (C2): the Stop All that stopped it still holds the gate — the rearm comes first, in the cockpit. */
+export const REARM_FIRST_HINT = "„Oprește tot” a oprit-o și poarta e încă oprită: întâi redeschizi poarta din cockpit (cardul „Redeschide poarta”, cu Windows Hello); abia apoi o continuare („Continuă pregătirea ofertei”) cere un card nou, pe care îl confirmi o dată.";
+const CONTINUABLE_STATUSES = ["STALE", "STOPPED", "EXPIRED", "FAILED"];
 
-export function createSalesAnswers({ sales, preparations }) {
+export function createSalesAnswers({ sales, preparations, opsPlans = null }) {
   /**
-   * The preparation the answers are about (M12 final review C3): the NEWEST one — a card just proposed (PLANNED, no offer yet) included —
-   * never an older offer instead of it. Only a card that never started and is gone (cancelled or expired before any step: no company, no
-   * offer) is skipped. With its opportunity view; null when none exists.
+   * What the owner can do next with a preparation, from the server's own flags (RR7 / RR12: isContinuable — R18 — and stopHold — C2; RC3:
+   * a running preparation whose phase plan is paused or waits for him) — never a continuation the server would refuse.
+   * → { text, waitsForRearm, paused, planId? } | null
    */
-  function latest() {
+  function nextOf(p) {
+    if (!p) return null;
+    if (CONTINUABLE_STATUSES.includes(p.status)) {
+      if (preparations.isContinuable && !preparations.isContinuable(p)) return { text: NEVER_CONFIRMED_HINT, waitsForRearm: false, paused: false };
+      const hold = preparations.stopHold ? preparations.stopHold(p) : null;
+      if (hold) return { text: REARM_FIRST_HINT, waitsForRearm: true, paused: false };
+      return { text: CONTINUE_HINT, waitsForRearm: false, paused: false };
+    }
+    const planId = p.status === "PACKAGING" && p.phaseBPlanId ? p.phaseBPlanId : p.planId;
+    let plan = null;
+    try { plan = planId && opsPlans?.view ? opsPlans.view(planId) : null; } catch { plan = null; }
+    if (plan && ["PAUSED", "NEEDS_OWNER"].includes(plan.status)) {
+      const held = preparations.planStopHold ? preparations.planStopHold(plan) : null;
+      return { text: held ? "Planul pregătirii e oprit și poarta e încă oprită de „Oprește tot”: întâi o redeschizi din cockpit (cardul „Redeschide poarta”), apoi îl reiei cu „Continuă”."
+        : `Planul pregătirii e oprit (${plan.status === "PAUSED" ? "pus pe pauză" : "așteaptă decizia ta"}): îl reiei cu „Continuă”; nimic nu se reia singur.`, waitsForRearm: Boolean(held), paused: true, planId: plan.id };
+    }
+    return null;
+  }
+  /**
+   * The preparation the answers are about (M12 final review C3; last review round RR8): the one the owner is working on — the conversation's
+   * last Sales target (`preparationId`: the card or the continuation card just shown or confirmed) — else the most recently changed one (a
+   * card just proposed — PLANNED, no offer yet — or an older preparation just continued), never a newer unrelated offer. Only a card that
+   * never started and is gone (cancelled or expired before any step: no company, no offer) is skipped. With its opportunity view; null when none exists.
+   */
+  function latest({ preparationId = null } = {}) {
     if (!preparations?.list) return null;
     const list = preparations.list();
-    const p = list.find((x) => x.opportunityId || !["CANCELLED", "EXPIRED"].includes(x.status)) || null;
+    const live = (x) => x.opportunityId || !["CANCELLED", "EXPIRED"].includes(x.status);
+    const named = preparationId ? list.find((x) => x.id === preparationId && live(x)) : null;
+    const changed = (x) => String(x.updatedAt || x.createdAt || "");
+    const byChange = [...list].sort((a, b) => changed(b).localeCompare(changed(a)) || String(b.createdAt || "").localeCompare(String(a.createdAt || "")));
+    const p = named || byChange.find(live) || null;
     if (!p) return null;
     let view = null;
     try { view = p.opportunityId ? sales.getOpportunity(p.opportunityId) : null; } catch { view = null; }
@@ -38,29 +71,35 @@ export function createSalesAnswers({ sales, preparations }) {
   }
   /** The facts every answer carries (ids, version, the FULL sha, statuses; never a contact value). */
   const factsOf = ({ p, view, proposal, dossier }) => ({ preparationId: p.id, preparationStatus: p.status, opportunityId: p.opportunityId || null,
+    // RR7 / RR12: the server's own flags (additive, contract 15).
+    continuable: Boolean(preparations.isContinuable?.(p)), waitsForRearm: Boolean(nextOf(p)?.waitsForRearm),
     opportunityStatus: view?.opportunity?.status || null, synthetic: true,
     proposal: proposal ? { id: proposal.id, version: proposal.version, sha: proposal.contentSha, status: proposal.status, approvedSha: proposal.approvedSha || null } : null,
     dossier: dossier ? { id: dossier.id, revision: dossier.revision, status: dossier.status, manifestSha256: dossier.manifestSha256 || null, app: dossier.verification?.proposalDocx?.app || null } : null });
   const none = () => ({ message: "Nu am încă o ofertă pregătită. Spune „pregătește o ofertă pentru …” (de exemplu: pregătește o ofertă pentru un service auto din Cluj care vrea programări online) și îți arăt un singur plan.", sales: null });
-  const planned = (l) => ({ message: `Pregătirea ofertei: ${PREPARATION_STATUS_RO[l.p.status] || l.p.status}. Oferta nu există încă.`, sales: factsOf(l) });
+  const planned = (l) => {
+    const next = nextOf(l.p);
+    return { message: `Pregătirea ofertei: ${PREPARATION_STATUS_RO[l.p.status] || l.p.status}. Oferta nu există încă.${next ? ` ${next.text}` : ""}`, sales: factsOf(l), ...(next?.waitsForRearm ? { waitsForRearm: true } : {}) };
+  };
 
   /** „Arată-mi oferta”: the latest offer (id, version, full SHA, status), where it is, and what its preparation is doing. */
-  function show() {
-    const l = latest();
+  function show(opts = {}) {
+    const l = latest(opts);
     if (!l) return none();
     if (!l.proposal) return planned(l);
     const { p, proposal, dossier } = l;
     const parts = [`Oferta sintetică v${proposal.version} (${proposal.id}), SHA ${proposal.contentSha}: ${PROPOSAL_STATUS_RO[proposal.status] || proposal.status}.`,
       `Pregătirea: ${PREPARATION_STATUS_RO[p.status] || p.status}.`];
     if (dossier) parts.push(`Dosarul ofertei, revizia ${dossier.revision}: ${dossier.status}${dossier.manifestSha256 ? ` (manifest SHA ${dossier.manifestSha256})` : ""}; ciorna e DRAFT_ONLY, netrimisă.`);
-    if (["STALE", "STOPPED", "EXPIRED", "FAILED"].includes(p.status)) parts.push(CONTINUE_HINT);
+    const next = nextOf(p);
+    if (next) parts.push(next.text);
     parts.push("Ți-o deschid în Vânzări → Oportunitate.");
-    return { message: parts.join(" "), navigate: salesOpportunityPath(p.opportunityId), sales: factsOf(l) };
+    return { message: parts.join(" "), navigate: salesOpportunityPath(p.opportunityId), sales: factsOf(l), ...(next?.waitsForRearm ? { waitsForRearm: true } : {}) };
   }
 
   /** „Ce lipsește?”: what the brief did not say, what q-v2 could not score, the unknown prices and the owner's pending decision. */
-  function missing() {
-    const l = latest();
+  function missing(opts = {}) {
+    const l = latest(opts);
     if (!l) return none();
     const { p, view, proposal } = l;
     const parts = [];
@@ -75,14 +114,17 @@ export function createSalesAnswers({ sales, preparations }) {
     if (p.status === "WAITING_OWNER" && proposal?.status === "DRAFT") {
       parts.push(`Aprobarea ta internă a ofertei v${proposal.version} (${proposal.id}, SHA ${proposal.contentSha}): o dai tu, în Vânzări → Oportunitate, cu „Aprob intern”; eu nu o pot da.`);
     } else if (p.status === "PLANNED") parts.push("Confirmarea planului de pregătire (cardul din cockpit).");
-    else if (["STALE", "STOPPED", "EXPIRED", "FAILED"].includes(p.status)) parts.push(`Pregătirea e ${PREPARATION_STATUS_RO[p.status]}. ${CONTINUE_HINT}`);
+    const next = nextOf(p);
+    if (CONTINUABLE_STATUSES.includes(p.status)) parts.push(`Pregătirea e ${PREPARATION_STATUS_RO[p.status]}. ${next?.text || CONTINUE_HINT}`);
+    else if (next?.paused) parts.push(next.text);
     if (!parts.length) parts.push("Nu lipsește nimic din ce pot verifica eu; prețurile rămân „De stabilit” până configurezi catalogul.");
-    return { message: parts.join(" ").slice(0, 1500), navigate: p.opportunityId ? salesOpportunityPath(p.opportunityId) : null, sales: { ...factsOf(l), missing: { brief, qualification: qMissing, unknownPrices: unknown.length } } };
+    return { message: parts.join(" ").slice(0, 1500), navigate: p.opportunityId ? salesOpportunityPath(p.opportunityId) : null, sales: { ...factsOf(l), missing: { brief, qualification: qMissing, unknownPrices: unknown.length } },
+      ...(next?.waitsForRearm ? { waitsForRearm: true } : {}) };
   }
 
   /** „Aprobă oferta”: never an approval — where the owner gives it, on the exact id + full SHA. Nothing is requested or created. */
-  function approveTalk() {
-    const l = latest();
+  function approveTalk(opts = {}) {
+    const l = latest(opts);
     const never = "Eu nu aprob oferta și nu am creat nicio aprobare: aprobarea internă e decizia ta.";
     if (!l) return { message: `${never} ${none().message}`, sales: null };
     // C3: the newest preparation has no offer yet; an OLDER one may still wait for the owner's approval — named as the older one.
@@ -113,5 +155,5 @@ export function createSalesAnswers({ sales, preparations }) {
     return `${a.message.replace(/ Ți-o deschid în Vânzări → Oportunitate\.$/, "")} ${missing().message} Trimiterea, contactarea și publicarea sunt dezactivate (OUTREACH_DISABLED).`.slice(0, 2400);
   }
 
-  return { latest, show, missing, approveTalk, legaText };
+  return { latest, show, missing, approveTalk, legaText, nextOf };
 }

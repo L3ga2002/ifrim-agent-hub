@@ -57,6 +57,12 @@ export const HUB_VERSION = "2.15.0-m12"; // M12 Sales (in this code: the owner's
 // intake.plan() may return outreach { partial, refused[{kind, text}], reason }, quotedOutreach, outreachNote; event intake.outreach_refused
 // may carry partial: true; knowledge answer(topic, {about}), locations.offers, locations.screens.vanzari, blocked.offers[]; conversation
 // entries may carry links[].
+// 15 (last review round RR/RC, additive): the Sales answers' `sales` facts carry continuable / waitsForRearm, and a sales_show /
+// sales_missing / sales_approve_talk step result may carry gateRearm / gateStopped (the rearm comes first); knowledge blocked.offers[]
+// entries carry continuable / waitsForRearm (a never-confirmed card is not listed); an ops_continue step refused by a plan's resume guard
+// carries stopHold { code: GATE_REARM_REQUIRED, kind, id, reason } and the rearm card; intake.plan() may answer only `message` for the
+// owner's own statement („Contactez eu firma”: nothing planned, nothing refused); questions about an existing offer („Oferta pentru X e
+// gata?”) resolve to sales_show.
 export const API_CONTRACT = 15;
 export const DEFAULT_PORT = 8011;
 export const DEFAULT_HOST = "127.0.0.1";

@@ -340,7 +340,7 @@ export function createHub(config, { providerOverrides = {}, homeDir, browserLaun
   opsPlans.registerParent(PREPARE_KIND, { allowedOps: PREPARATION_PHASE_B_OPS, verify: (parent) => salesPreparations.verifyParent(parent) });
   sales.onInvalidated((event) => salesPreparations.onInvalidated(event));
   // M12 (S-07): the Hub's own answers to „Arată-mi oferta” / „Ce lipsește?” / „Aprobă oferta” (reads only; the intake and Lega's read tool).
-  const salesAnswers = createSalesAnswers({ sales, preparations: salesPreparations });
+  const salesAnswers = createSalesAnswers({ sales, preparations: salesPreparations, opsPlans });
   legaRead.salesAnswers = salesAnswers;
 
   // M10.2 U13: Lega arms a plan it has just SPOKEN (its bridge or its plan tool); the plan's service re-checks everything. A plan already

@@ -35,6 +35,25 @@ test("M12-FA-BRIEF-01 (F12) a number word is a quantity only before its unit: th
   assert.equal(value(amount, "problem"), "programări online");
   const term = parseBrief(`${P}un site cu reamintire cu o zi înainte`);
   assert.equal(value(term, "problem"), "un site cu reamintire");
+  // Last review round RC2: amounts and results in words without their unit are cut from the client-facing need, and the scanner catches them;
+  // a count of things stays in the need.
+  for (const [need, kept] of [["programări online cu plata în rate de cincizeci", "programări online"], ["programări online și să plătească cincizeci pe lună", "programări online"],
+    ["programări online și să câștige douăzeci de clienți noi pe lună", "programări online"], ["programări online ca să crească vânzările cu treizeci", "programări online"],
+    ["programări online cu treizeci", "programări online"], ["programări online de trei ori mai multe", "programări online"], ["programări online și un abonament de cincizeci pe lună", "programări online"],
+    ["programări online ca să aibă clienți dublu", "programări online ca să aibă clienți"], ["programări online pentru douăzeci de mecanici", "programări online pentru douăzeci de mecanici"],
+    ["un site cu nouă pagini", "un site cu nouă pagini"], ["un site în trei limbi", "un site în trei limbi"], ["un site cu o pagină nouă", "un site cu o pagină nouă"]]) {
+    const b = parseBrief(`${P}${need}`);
+    assert.equal(value(b, "problem"), kept, need);
+    assert.deepEqual(proposalFigures(offer(b)), [], `${need}: the client text carries no figure`);
+  }
+  for (const [t, category] of [["programări online ca să crească vânzările cu treizeci", "roi"], ["să câștige douăzeci de clienți noi pe lună", "roi"], ["de trei ori mai multe programări", "roi"],
+    ["vânzări dublu", "roi"], ["cu plata în rate de cincizeci", "price"]]) assert.ok(findCommercialFigures(t).some((f) => f.category === category), `${category}: ${t}`);
+  // RC4: after a price word a number word in words is a price also without its unit; the adjective „nouă”, an ordinal and a count stay allowed.
+  for (const t of ["Prețul este de cincizeci.", "Costul ar fi de nouăzeci pe lună.", "Tariful e cincisprezece pe oră.", "Abonamentul costă zece pe lună.", "Costă cinci.",
+    "Bugetul estimat: douăzeci și cinci.", "Prețul de pornire e doi.", "Mentenanță: abonamentul costă cincizeci pe lună"]) assert.ok(findCommercialFigures(t).some((f) => f.category === "price"), t);
+  for (const t of ["Investiția într-o pagină nouă.", "Costul etapei a doua.", "Livrare în a doua lună.", "Lansare în al doilea an.", "un buton cu dublu click", "o cameră dublă"]) {
+    assert.deepEqual(findCommercialFigures(t), [], t);
+  }
 });
 
 test("M12-FA-BRIEF-02 (F22) an ordinary word is never a USER_PROVIDED client type through an inflection; a client-type noun with its endings still is", () => {
@@ -45,7 +64,11 @@ test("M12-FA-BRIEF-02 (F22) an ordinary word is never a USER_PROVIDED client typ
     assert.ok(b.missing.some((m) => m.field === "clientType"), `${request}: the client type is still asked`);
   }
   for (const [request, clientType] of [["pregătește o ofertă pentru o firmă care vrea un site pentru restaurantul ei", "restaurantul"], ["pregătește o ofertă pentru fotografi din Cluj", "fotografi"],
-    ["pregătește o ofertă pentru proprietarul farmaciei din Cluj care vrea un site", "farmaciei"]]) {
+    ["pregătește o ofertă pentru proprietarul farmaciei din Cluj care vrea un site", "farmaciei"],
+    // Last review round RC5: a numeral or a quantifier between „pentru” and the client type keeps it; a plural after a hyphen too.
+    ["Pregătește o ofertă pentru doi fotografi din Iași care vor programări online", "fotografi"], ["Pregătește o ofertă pentru niște fotografi din Iași", "fotografi"],
+    ["Pregătește o ofertă pentru doi stomatologi din Iași care vor programări online", "stomatologi"], ["Pregătește o ofertă pentru mai mulți stomatologi din Iași", "stomatologi"],
+    ["Pregătește o ofertă pentru două service-uri auto din Cluj", "service-uri auto"]]) {
     const b = parseBrief(request);
     assert.deepEqual([value(b, "clientType"), b.fields.clientType?.provenance], [clientType, "USER_PROVIDED"], request);
   }
@@ -55,7 +78,14 @@ const AGREE = ["Propune o ofertă pentru un service auto și trimite-o", "Aș do
   "Poți să-mi pregătești o ofertă pentru o florărie?", "Te rog, pregătește o ofertă pentru o cafenea", "O ofertă pentru un service auto din Cluj care vrea programări online",
   "Am nevoie de o ofertă pentru o farmacie", "Pregătește-mi rapid o ofertă pentru un dentist", "contactez eu firma, tu pregătește o ofertă pentru un service auto",
   "Vreau să văd oferta", "Arată-mi oferta pentru service", "nu pregăti încă oferta pentru service auto", "Fă o propunere de corectură pentru clip", "trimite oferta la service auto din Cluj",
-  "Scrie-le oferta", "Pregătește demo-ul de detailing pentru prezentare"];
+  "Scrie-le oferta", "Pregătește demo-ul de detailing pentru prezentare",
+  // Last review round RC1: a question or a statement about an existing offer is no request for a new one; RR1: a mixed ask keeps the card.
+  "Oferta pentru service-ul auto din Cluj a fost aprobată?", "Oferta pentru cabinetul dentar e prea scumpă?", "Ofertele pentru restaurante sunt gata?", "Propunerea pentru restaurant e gata?",
+  "Ce ofertă ai pregătit pentru service-ul auto?", "Oferta pentru service-ul din Cluj trimite-o mâine", "Ofertă nouă pentru un service auto din Cluj",
+  "Pregătește o ofertă pentru un service auto din Cluj și vreau să o trimiți clientului", "Pregătește o ofertă pentru un service auto din Cluj, poți trimite oferta direct clientului"];
+/** RC1: questions about an existing offer are the read of the latest preparation (sales_show), never a new card. */
+const OFFER_QUESTIONS = ["Oferta pentru service-ul auto din Cluj a fost aprobată?", "Oferta pentru cabinetul dentar e prea scumpă?", "Ofertele pentru restaurante sunt gata?",
+  "Propunerea pentru restaurant e gata?", "Ce ofertă ai pregătit pentru service-ul auto?", "Oferta pentru service-ul auto din Cluj e gata?"];
 
 test("M12-FA-BRIEF-03 (F15) one rule: every sentence the brief reads as an offer request is a sales_prepare, and the reverse — also after the outreach clause is cut out", () => {
   for (const s of AGREE) {
@@ -67,13 +97,22 @@ test("M12-FA-BRIEF-03 (F15) one rule: every sentence the brief reads as an offer
   // The brief's intent span never includes a refused word; a „propunere” of something else is no offer.
   assert.equal(parseBrief("Pregătește și trimite oferta pentru un service auto").intent.span, "Pregătește");
   assert.equal(parseBrief("Propune o ofertă pentru un service auto și trimite-o").intent.span, "Propune o ofertă");
+  for (const s of OFFER_QUESTIONS) {
+    assert.deepEqual(resolveIntent(s, { projects: [] }).steps.map((x) => x.intent), ["sales_show"], s);
+    assert.equal(parseBrief(s).intent, null, s);
+  }
+  // A correction proposal's question keeps its earlier meaning.
+  assert.deepEqual(resolveIntent("Propunerea de corectură e gata?", { projects: [] }).steps.map((x) => x.intent), ["unknown"]);
 });
 
 test("M12-FA-BRIEF-04 (F15) typed and through Lega's planner entry, the reviewer's forms give exactly ONE card and no other question; the send is refused on its own", async (c) => {
   const t = await prepHub(c);
   await t.authenticate();
   for (const s of ["Propune o ofertă pentru un service auto și trimite-o", "Pregătește și trimite oferta pentru un service auto din Cluj care vrea programări online",
-    "Aș dori o ofertă pentru un service auto din Cluj și trimite-o clientului"]) {
+    "Aș dori o ofertă pentru un service auto din Cluj și trimite-o clientului",
+    // Last review round RR1: the instruction introduced by an ask / a modal after „și” — the card stays, the instruction is refused.
+    "Pregătește o ofertă pentru o pizzerie din Iași care vrea comenzi online și vreau să o trimiți clientului", "Pregătește o ofertă pentru un service auto din Cluj și te rog să trimiți oferta clientului",
+    "Pregătește o ofertă pentru un service auto din Cluj care vrea programări online și mâine trimite-o clientului"]) {
     const r = await t.request("/api/owner/intent", { body: { text: s, source: "typed" } });
     assert.equal(r.status, 200, JSON.stringify(r.json));
     const cards = r.json.results.filter((x) => x.opsPlan);
@@ -103,6 +142,15 @@ test("M12-FA-BRIEF-05 (F6) a client's need with a send / contact verb is the nee
     assert.deepEqual(b.refused, [], request);
     assert.deepEqual([value(b, "problem"), b.fields.problem.provenance], [need, "USER_PROVIDED"], request);
     assert.ok(!b.missing.some((m) => m.field === "problem"), `${request}: the stated need is never „missing”`);
+  }
+  // Last review round RR3: the client's wish in the 1st person plural, also after a sentence break, is the need — never „le”, never a refusal.
+  for (const [request, need] of [["Pregătește o ofertă pentru un service auto din Cluj. Vrea să le trimitem clienților remindere prin SMS.", "să le trimitem clienților remindere prin SMS"],
+    ["Pregătește o ofertă pentru un service auto din Cluj; vrea să-i contactăm pe clienții care nu au venit la revizie", "să-i contactăm pe clienții care nu au venit la revizie"],
+    ["Pregătește o ofertă pentru un service auto din Cluj care vrea să le trimitem remindere clienților", "să le trimitem remindere clienților"],
+    ["Pregătește o ofertă pentru un service auto din Cluj, vrea să trimitem automat oferte de revizie clienților lui", "trimitem automat oferte de revizie clienților lui"]]) {
+    const b = parseBrief(request);
+    assert.deepEqual(b.refused, [], request);
+    assert.deepEqual([value(b, "problem"), b.fields.problem.provenance], [need, "USER_PROVIDED"], request);
   }
   // The owner's own instruction in the same sentence is still refused (and only it).
   assert.deepEqual(parseBrief("pregătește o ofertă pentru un service auto din Cluj care vrea să-și contacteze clienții prin SMS și trimite-o clientului").refused.map((r) => r.text), ["trimite-o"]);

@@ -110,7 +110,14 @@ export function createKnowledge(hub) {
     return { root: exportsDir ? path.join(exportsDir, "vanzari") : null,
       latest: dossier ? { folder: dossier.folder, status: dossier.status, revision: dossier.revision, manifestSha256: dossier.manifest_sha256 || null, exists: fs.existsSync(dossier.folder),
         screen: `#/sales?tab=opp&id=${encodeURIComponent(dossier.opportunity_id)}` } : null,
-      blocked: blockedPreps.map((p) => ({ id: p.id, status: p.status, reason: p.status_reason || "" })), waitingForOwner: waiting.length, sent: false };
+      // Last review round RR7 / RR12: the server's own flags — a card the owner never confirmed is not listed (it has nothing to continue);
+      // one a Stop All still holds says the rearm comes first.
+      blocked: blockedPreps.map((p) => {
+        const v = safe(() => hub.salesPreparations?.get?.(p.id), null);
+        const continuable = v && hub.salesPreparations?.isContinuable ? Boolean(hub.salesPreparations.isContinuable(v)) : true;
+        const waitsForRearm = v && hub.salesPreparations?.stopHold ? Boolean(safe(() => hub.salesPreparations.stopHold(v), null)) : false;
+        return { id: p.id, status: p.status, reason: p.status_reason || "", continuable, waitsForRearm };
+      }).filter((p) => p.continuable), waitingForOwner: waiting.length, sent: false };
   }
 
   function locations() {
@@ -214,7 +221,11 @@ export function createKnowledge(hub) {
       if (g && g.status !== "open") lines.push(`poarta e ${g.status}${g.reason ? ` (${String(g.reason).slice(0, 100)})` : ""}`);
       if (ex?.text) lines.push(String(ex.text).slice(0, 200));
       for (const d of s.blocked.deliveries) lines.push(`„${d.title}”: ${d.status}${d.reason ? ` — ${String(d.reason).slice(0, 100)}` : ""}`);
-      for (const p of s.blocked.offers || []) lines.push(`pregătirea ofertei ${p.id}: ${p.status}${p.reason ? ` — ${String(p.reason).slice(0, 100)}` : ""} (o continuare e un card nou: „Continuă pregătirea ofertei”)`);
+      for (const p of s.blocked.offers || []) {
+        const next = p.waitsForRearm ? "întâi redeschizi poarta din cockpit (cardul „Redeschide poarta”, cu Windows Hello), apoi o continuare e un card nou: „Continuă pregătirea ofertei”"
+          : "o continuare e un card nou: „Continuă pregătirea ofertei”";
+        lines.push(`pregătirea ofertei ${p.id}: ${p.status}${p.reason && !p.waitsForRearm ? ` — ${String(p.reason).slice(0, 100)}` : ""} (${next})`);
+      }
       return { text: lines.length ? `Blocat: ${lines.join("; ")}.` : "Nimic nu e blocat acum.", screen: "#/lega", data: s };
     }
     if (s.topic === "capabilities") return { text: `Pot face: ${s.capabilities.flows.map((f) => f.name).join("; ")}.`, screen: "#/system", data: s };

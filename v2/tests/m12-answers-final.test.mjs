@@ -16,6 +16,8 @@ import { settle } from "./accept-helpers.mjs";
 import { prepHub, proposePreparation, confirmCard, approveAwaited, prepStatus, countRows, settlePreparation, salesCommand, SALES_REQUEST } from "./sales-helpers.mjs";
 import { PREPARE_KIND } from "../server/sales/preparation.mjs";
 import { salesNavigation, SALES_OPEN_LABEL } from "../web/src/lib/salesCockpit.js";
+import { rearmBeforeNavigation } from "../web/src/lib/rearmLogic.js";
+import { REARM_FIRST_HINT, NEVER_CONFIRMED_HINT } from "../server/sales/sales-answers.mjs";
 
 const V2 = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const source = (rel) => fs.readFileSync(path.join(V2, rel), "utf8");
@@ -41,6 +43,12 @@ test("M12-FA-ANS-01 (F17, C4) the resolver: acknowledged Sales reads; non-Sales 
   for (const [s, intent] of [["Ce lipsește din brief?", "sales_missing"], ["Aprobă propunerea", "sales_approve_talk"], ["Continuă pregătirea", "sales_continue"], ["Pregătește continuarea", "sales_continue"],
     ["Ce lipsește?", "sales_missing"]]) assert.deepEqual(intents(s, { salesContext: true }), [intent], `${s} (Sales conversation)`);
   assert.deepEqual(intents("Ce lipsește din brieful clipului?", { salesContext: true }), ["unknown"], "a clip's brief stays a clip's");
+  // Last review round RR9: a leading acknowledgement is dropped before the Sales-context reads too — still a read, never a confirmation.
+  for (const [s, intent] of [["Ok, ce lipsește?", "sales_missing"], ["Ok, ce lipsește din brief?", "sales_missing"], ["Ok, continuă pregătirea", "sales_continue"],
+    ["Da, aprobă propunerea", "sales_approve_talk"], ["Sigur, ce lipsește?", "sales_missing"]]) assert.deepEqual(intents(s, { salesContext: true }), [intent], `${s} (Sales conversation)`);
+  assert.deepEqual(resolveIntent("Da, aprobă propunerea", { ...CTX, salesContext: true, pendingEnvelopes: [{ id: "env_x", title: "x" }], awaiting: "envelope_confirmation" }).steps.map((x) => x.intent),
+    ["sales_approve_talk"], "never a confirmation");
+  assert.deepEqual(intents("Ok, ce lipsește?"), ["unknown"], "outside a Sales conversation it keeps its meaning");
   // The continuation: the offer named (or the Sales conversation); a bare „Continuă” keeps resuming a stopped plan; a new request is a new card.
   for (const s of ["Continuă pregătirea ofertei", "Reia oferta", "Reia lucrul la ofertă", "Pregătește continuarea ofertei", "Pregătește din nou oferta", "Continuă cu oferta"]) assert.deepEqual(intents(s), ["sales_continue"], s);
   assert.deepEqual(intents("Continuă"), ["ops_continue"]);
@@ -171,4 +179,138 @@ test("M12-FA-ANS-05 (C2, X1) the cockpit: only „Arată-mi oferta” navigates;
   assert.match(cockpit, /pendingRearm\.current = rearmFx\.action === "set" \|\| rearmFx\.action === "clear" \? rearmFx : null;/);
   assert.match(cockpit, /useEffect\(\(\) => \{\n\s*const fx = pendingRearm\.current;[\s\S]{0,400}\}, \[conversation\]\);/);
   assert.doesNotMatch(cockpit, /if \(rearmFx\.action === "set"\) setRearmSlot/, "never set straight from the answer handler");
+});
+
+// ---------------------------------------------------------------- M12 last review round (RR7, RR8, RR12, RR13, RC3, RC6)
+/** Holds the research step of a confirmed card until released (the plan can then be paused while its preparation is PREPARING). */
+function holdResearch(t) {
+  let release;
+  const gate = new Promise((r) => { release = r; });
+  const state = { called: false, release: () => release() };
+  const original = t.hub.sales.fixturePage;
+  t.hub.sales.fixturePage = async (...args) => { state.called = true; await gate; return original(...args); };
+  state.restore = () => { t.hub.sales.fixturePage = original; };
+  return state;
+}
+
+test("M12-FA-ANS-06 (RR7, RR12) the Sales answers and Lega's knowledge honour the server's flags: a preparation a Stop All still holds says the rearm comes first (with the card); a card never confirmed is never offered a continuation", async (c) => {
+  let now = Date.now();
+  const t = await prepHub(c, { clock: () => new Date(now) });
+  await t.authenticate();
+  const say = async (text) => { const r = await t.request("/api/owner/intent", { body: { text, source: "typed" } }); assert.equal(r.status, 200, JSON.stringify(r.json)); return r.json.results; };
+  const { card, preparationId } = await proposePreparation(t);
+  await confirmCard(t, card);
+  await t.hub.commands.dispatch({ type: "system.stop_all", payload: { reason: "Oprește tot (test)" }, channel: "test", actor: "test" });
+  await settle(); await settle();
+  assert.equal(prepStatus(t, preparationId), "STOPPED");
+  assert.ok(t.hub.salesPreparations.stopHold(t.hub.salesPreparations.get(preparationId)), "the Stop All still holds it");
+  for (const text of ["Arată-mi oferta", "Ce lipsește?"]) {
+    const r = (await say(text))[0];
+    assert.equal(r.sales.preparationId, preparationId, text);
+    assert.ok(r.message.includes(REARM_FIRST_HINT), `${text}: the rearm comes first — ${r.message}`);
+    assert.equal(r.sales.waitsForRearm, true, text);
+    assert.ok(r.gateRearm || r.gateStopped, `${text}: the cockpit's rearm card (or why not yet) comes with the answer`);
+  }
+  assert.ok(t.hub.salesAnswers.legaText().includes(REARM_FIRST_HINT), "Lega's read says the rearm comes first");
+  const blocked = await t.hub.knowledge.answer("blocked");
+  assert.ok(blocked.text.includes(preparationId) && /întâi redeschizi poarta din cockpit/.test(blocked.text), blocked.text);
+  // A card proposed and never confirmed, expired: never offered a continuation (answers), never listed as continuable (knowledge).
+  const never = await proposePreparation(t, "pregătește o ofertă pentru o florărie din Sibiu care vrea un magazin online");
+  now += 16 * 60000;
+  for (let i = 0; i < 3; i += 1) { t.hub.salesPreparations.tick?.(); await settle(); }
+  if (prepStatus(t, never.preparationId) !== "EXPIRED") {
+    await t.authenticate({ reauth: true });
+    await t.request(`/api/ops/plans/${never.card.id}/confirm`, { body: { nonce: never.card.nonce, displayedHash: never.card.hash } });
+    for (let i = 0; i < 3; i += 1) await settle();
+  }
+  assert.equal(prepStatus(t, never.preparationId), "EXPIRED");
+  const neverView = t.hub.salesPreparations.get(never.preparationId);
+  assert.equal(t.hub.salesPreparations.isContinuable(neverView), false, "R18: never confirmed");
+  assert.equal(t.hub.salesAnswers.nextOf(neverView).text, NEVER_CONFIRMED_HINT);
+  const blocked2 = await t.hub.knowledge.answer("blocked");
+  assert.ok(!blocked2.text.includes(never.preparationId), `a never-confirmed card is not listed as blocked / continuable: ${blocked2.text}`);
+  assert.ok(!(blocked2.data.blocked.offers || []).some((x) => x.id === never.preparationId));
+  assert.equal(countRows(t, "SELECT COUNT(*) AS n FROM sales_sends"), 0);
+});
+
+test("M12-FA-ANS-07 (RR8) after the owner continues an OLDER preparation, „Ce lipsește?” / „Arată-mi oferta” / „Aprobă oferta” are about it, not about a newer unrelated offer", async (c) => {
+  const t = await prepHub(c);
+  await t.authenticate();
+  const say = async (text) => { const r = await t.request("/api/owner/intent", { body: { text, source: "typed" } }); assert.equal(r.status, 200, JSON.stringify(r.json)); return r.json.results; };
+  const a = await proposePreparation(t);
+  await confirmCard(t, a.card);
+  const prepA = t.hub.salesPreparations.get(a.preparationId);
+  await salesCommand(t, "sales.evidence.add", { subjectType: "org", subjectId: prepA.orgId, claim: "telefon", value: "0700000000", label: "USER_PROVIDED", sourceKind: "manual", sourceRef: "proprietar", dataKind: "STATEMENT" });
+  assert.equal(prepStatus(t, a.preparationId), "STALE");
+  // B: a newer, unrelated offer (confirmed, waiting for the owner).
+  const b = await proposePreparation(t, "pregătește o ofertă pentru un cabinet dentar din Iași care vrea programări online");
+  await confirmCard(t, b.card);
+  assert.equal(prepStatus(t, b.preparationId), "WAITING_OWNER");
+  // The owner continues A: the answers that follow are about A.
+  const cont = (await say("Continuă pregătirea ofertei"))[0];
+  assert.equal(cont.opsPlan?.preparationId, a.preparationId, JSON.stringify(cont).slice(0, 300));
+  const missing = (await say("Ce lipsește?"))[0];
+  assert.equal(missing.sales.preparationId, a.preparationId, "about the preparation the owner is working on");
+  await confirmCard(t, { ...cont.opsPlan });
+  const done = await settlePreparation(t, a.preparationId);
+  assert.equal(done.status, "WAITING_OWNER", done.statusReason);
+  for (const text of ["Arată-mi oferta", "Aprobă oferta"]) {
+    const r = (await say(text))[0];
+    assert.equal(r.sales.preparationId, a.preparationId, `${text}: ${r.message}`);
+    assert.ok(r.message.includes(t.hub.salesPreparations.get(a.preparationId).awaited.proposalSha), `${text}: A's exact offer`);
+  }
+  assert.ok(t.hub.salesAnswers.legaText().includes(t.hub.salesPreparations.get(a.preparationId).awaited.proposalId), "Lega's read: the most recently changed preparation (A)");
+});
+
+test("M12-FA-ANS-08 (RC3, RC6) a preparation whose plan is paused: „Continuă pregătirea ofertei” says how it resumes (no new card, never „nu am ce continua”); after „Oprește tot” the plan's „Continuă” answers with the rearm hold and the card, never a bare error", async (c) => {
+  const t = await prepHub(c);
+  await t.authenticate();
+  const say = async (text) => { const r = await t.request("/api/owner/intent", { body: { text, source: "typed" } }); assert.equal(r.status, 200, JSON.stringify(r.json)); return r.json.results; };
+  const { card, preparationId } = await proposePreparation(t);
+  const hold = holdResearch(t);
+  c.after(() => hold.restore());
+  assert.equal((await t.request(`/api/ops/plans/${card.id}/confirm`, { body: { nonce: card.nonce, displayedHash: card.hash } })).status, 200);
+  for (let i = 0; i < 200 && !hold.called; i += 1) await settle();
+  assert.ok(hold.called, "the research step runs");
+  t.hub.opsPlans.pause(card.id, { reason: "Pauză", actor: "owner" });
+  hold.release();
+  await t.hub.opsPlans.idle(card.id);
+  await settle(); await settle();
+  assert.equal(prepStatus(t, preparationId), "PREPARING");
+  assert.equal(t.hub.opsPlans.view(card.id).status, "PAUSED");
+  const plans = countRows(t, "SELECT COUNT(*) AS n FROM ops_plans");
+  const r1 = (await say("Continuă pregătirea ofertei"))[0];
+  assert.equal(r1.intent, "sales_continue");
+  assert.doesNotMatch(r1.message, /Nu am ce continua/);
+  assert.match(r1.message, /nu are nevoie de un card nou.*îl reiei cu „Continuă”/, r1.message);
+  assert.equal(countRows(t, "SELECT COUNT(*) AS n FROM ops_plans"), plans, "no new card");
+  assert.match((await say("Ce lipsește din ofertă?"))[0].message, /îl reiei cu „Continuă”/, "the Sales read says it too");
+  // „Oprește tot” while it stands paused: the plan's own „Continuă” is refused by its resume guard → the existing rearm hold with the card.
+  await t.hub.commands.dispatch({ type: "system.stop_all", payload: { reason: "Oprește tot (test)" }, channel: "test", actor: "test" });
+  await settle(); await settle();
+  const r2 = await say("Continuă");
+  const res = r2.find((x) => x.intent === "ops_continue");
+  assert.ok(res, JSON.stringify(r2).slice(0, 400));
+  assert.equal(res.error, undefined, `never a bare step error: ${JSON.stringify(res.error)}`);
+  assert.equal(res.stopHold?.code, "GATE_REARM_REQUIRED", JSON.stringify(res).slice(0, 400));
+  assert.match(res.message, /redeschizi poarta/);
+  assert.ok(res.gateRearm || res.gateStopped, "the rearm card (or why not yet) comes with it");
+  assert.equal(t.hub.opsPlans.view(card.id).status, "PAUSED", "nothing resumed");
+  // „Continuă pregătirea ofertei” now: the rearm first (the card), still no new card.
+  const r3 = (await say("Continuă pregătirea ofertei"))[0];
+  assert.match(r3.message, /poarta e încă oprită/);
+  assert.ok(r3.gateRearm || r3.gateStopped);
+  assert.equal(countRows(t, "SELECT COUNT(*) AS n FROM ops_plans"), plans);
+});
+
+test("M12-FA-ANS-09 (RR13) an answer that opens another project's cockpit puts its rearm slot in the app store before the navigation; the same screen keeps X1's order", () => {
+  assert.equal(rearmBeforeNavigation([{ intent: "open_project", navigate: "/cockpit/prj_b" }, { intent: "gate_rearm", gateRearm: { kind: "gate_rearm" } }], null), true, "from the start cockpit");
+  assert.equal(rearmBeforeNavigation([{ navigate: "/cockpit/prj_b" }], "prj_a"), true, "to another project");
+  assert.equal(rearmBeforeNavigation([{ navigate: "/cockpit/prj_a" }], "prj_a"), false, "the same cockpit: X1's order");
+  assert.equal(rearmBeforeNavigation([{ navigate: "/sales?tab=opp&id=x" }, { gateRearm: {} }], "prj_a"), false);
+  assert.equal(rearmBeforeNavigation([], null), false);
+  assert.deepEqual(resolveIntent("Deschide ProDelivery. Redeschide poarta.", CTX).steps.map((x) => x.intent), ["open_project", "gate_rearm"]);
+  const cockpit = source("web/src/screens/Lega.jsx");
+  // Before the navigation loop, the pending slot is applied when the answer leaves this cockpit; X1's effect stays for the same screen.
+  assert.match(cockpit, /pendingRearm\.current = rearmFx\.action === "set" \|\| rearmFx\.action === "clear" \? rearmFx : null;\n[\s\S]{0,400}if \(pendingRearm\.current && rearmBeforeNavigation\(res\.results, pid\)\) \{ const fx = pendingRearm\.current; pendingRearm\.current = null; applyRearmFx\(fx\); \}\n\s*for \(const r of res\.results\) \{/);
 });

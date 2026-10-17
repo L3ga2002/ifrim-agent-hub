@@ -41,6 +41,12 @@ const MAGNITUDE = alt(MAGNITUDE_WORDS.filter((w) => w !== "k"));
 export const QUANTITY_SOURCE = `(?:\\d+(?:[.,]\\d+)*(?:\\s*k\\b)?|\\b${NUM_WORD}\\b)(?:\\s+(?:si\\s+)?(?:${NUM_WORD}|(?:de\\s+)?${MAGNITUDE})\\b)*`;
 /** M12 final review F12: an ordinal („a doua zi”, „etapa a doua”) is no quantity. */
 const ORDINAL_GUARD = "(?<!\\b(?:a|al)\\s)";
+/** RC4: the words after which a number word is a price („costă”, „abonament”, „plata în rate de”). */
+const PRICE_WORD = "pret|preturi|pretul|cost|costuri|costul|costa|tarif|tarife|tariful|buget|bugetul|investitie|investitia|abonament|abonamentul|onorariu|onorariul|plata|plati|plateasca|plateste|platim|rata|rate|ratele|achita|achite";
+/** RC2: the words after which a number word is a promised result („să crească vânzările cu treizeci”, „să câștige douăzeci de clienți”). */
+const RESULT_WORD = "creasca|creste|cresc|crestere|cresterea|castige|castiga|castigam|castigi|atraga|atrage|obtina|obtine|dubleze|tripleze";
+/** F12: „nouă” with no unit after it is the adjective („o pagină nouă”), never an amount. */
+const NOT_ADJECTIVE_NOUA = `(?!noua\\b(?!\\s+(?:de\\s+)?(?:${MAGNITUDE}|${CURRENCY}|${UNIT}|la suta|procente|procent)\\b))`;
 /** Every pattern runs on the folded text (lower case, no diacritics, same length as the original). */
 const PATTERNS = Object.freeze([
   ["currency", new RegExp(`\\d+(?:[., ]\\d+)*\\s*(?:de\\s+)?${CURRENCY}\\b`, "g")],
@@ -51,9 +57,14 @@ const PATTERNS = Object.freeze([
   ["currency", new RegExp(`\\b${MAGNITUDE}\\s+(?:de\\s+)?${CURRENCY}\\b`, "g")],
   ["currency", /\b\d+(?:[.,]\d+)?\s*k\b/g],
   ["price", /\b(?:pret|preturi|pretul|cost|costuri|costul|costa|tarif|tarife|tariful|buget|bugetul|investitie|investitia|abonament|abonamentul|onorariu|onorariul)\b[^\n.;]{0,25}\d/g],
-  // M12 final review F12: after a price word, a number word is a price only as an amount („prețul de două mii”, „costul de trei sute de
-  // lei”), never the adjective („investiția într-o pagină nouă”) or an ordinal („costul etapei a doua”).
-  ["price", new RegExp(`\\b(?:pret|preturi|pretul|cost|costuri|costul|costa|tarif|tarife|tariful|buget|bugetul|investitie|investitia|abonament|abonamentul|onorariu|onorariul)\\b[^\\n.;\\d]{0,25}?${ORDINAL_GUARD}\\b(?:${alt(NUMBER_WORDS_BIG)}(?:\\s+(?:si|de|${NUM_WORD}))*\\s+(?:${MAGNITUDE}|${CURRENCY}|${UNIT}|la suta|procente|procent)|${MAGNITUDE})\\b`, "g")],
+  // M12 final review F12, last review round RC4: after a price word (a payment and an instalment too), a number word is a price — also
+  // without its unit („Abonamentul costă cincizeci pe lună”, „cu plata în rate de cincizeci”) — except the adjective („investiția într-o
+  // pagină nouă”: „nouă” with no unit after it) and an ordinal („costul etapei a doua”).
+  ["price", new RegExp(`\\b(?:${PRICE_WORD})\\b[^\\n.;\\d]{0,25}?${ORDINAL_GUARD}\\b(?:${alt(NUMBER_WORDS_BIG)}(?:\\s+(?:si|de|${NUM_WORD}))*\\s+(?:${MAGNITUDE}|${CURRENCY}|${UNIT}|la suta|procente|procent)|${NOT_ADJECTIVE_NOUA}${alt(NUMBER_WORDS_BIG)}(?:\\s+(?:si\\s+)?${NUM_WORD})*(?=\\s*(?:$|[.,;:!?)\\n]|pe\\b))|${MAGNITUDE})\\b`, "g")],
+  // RC2: a result promised in words („să crească vânzările cu treizeci”, „să câștige douăzeci de clienți noi”) and a multiplier („dublu”,
+  // „de trei ori mai multe programări”) are a return-on-investment promise.
+  ["roi", new RegExp(`\\b(?:${RESULT_WORD})\\b[^\\n.;\\d]{0,25}?${ORDINAL_GUARD}\\b${NOT_ADJECTIVE_NOUA}${alt(NUMBER_WORDS_BIG)}\\b`, "g")],
+  ["roi", new RegExp(`\\b(?:${alt(NUMBER_WORDS_BIG)}|\\d+)\\s+ori\\s+mai\\s+(?:mult|multe|multi|mare|mari|bine|repede)\\b|\\b(?:dublu|dublul|triplu|triplul)\\b(?!\\s+click)`, "g")],
   ["duration", new RegExp(`\\b\\d+(?:[.,]\\d+)?(?:\\s*(?:-|–|—|la|sau)\\s*\\d+(?:[.,]\\d+)?)?\\s*(?:de\\s+)?${UNIT}\\b`, "g")],
   ["duration", new RegExp(`${ORDINAL_GUARD}\\b${NUMBER_WORD}\\s+${UNIT}\\b`, "g")],
   // „douăzeci de zile”, „cincisprezece zile”, „jumătate de an”, „48h” (never an ordinal: „a doua zi”).

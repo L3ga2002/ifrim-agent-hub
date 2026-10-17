@@ -62,6 +62,10 @@ const inflectionOf = (fold, word) => {
  */
 const INFLECTION_COLLISIONS = new Set(["fotografii", "fotografile", "optici", "opticii", "opticul", "opticile", "opticilor", "opticului"]);
 const PLURAL_ENDINGS = new Set(["uri", "urile", "urilor", "i", "ii", "ile", "ilor"]);
+/** RC5: endings written after a hyphen („service-uri”, „service-ul”). */
+const HYPHEN_ENDINGS = new Set(["uri", "urile", "urilor", "ul", "ului"]);
+/** RC5: numerals and quantifiers that may stand between the client-introducing word and a plural client type. */
+const CLIENT_QUANTIFIERS = new Set([...NUMBER_WORDS_BIG, "niste", "cativa", "cateva", "mai", "multi", "multe", "cei", "cele", "unii", "unele", "toti", "toate", "diversi", "diverse", "cativa"]);
 const CLIENT_CONTEXT = new Set(["pentru", "la", "al", "ale", "unor", "celor", "unui", "unei", "firma", "firmei", "firmele"]);
 
 /** Sector phrases → the canonical sector and its CAEN rev. 2 code (the synthetic generator's sector table where it has one). */
@@ -118,6 +122,8 @@ const NEED_MARKERS = [
   [["are", "nevoie", "de"], 0], [["au", "nevoie", "de"], 0], [["isi", "doreste"], 0], [["vrea"], 0], [["vor"], 0], [["doreste"], 0], [["cauta"], 0], [["nu", "are"], 2],
 ].map(([w, keep]) => ({ words: w, keep, care: ["care", "ce", "cu"].includes(w[0]) })).sort((a, b) => b.words.length - a.words.length);
 const NEED_LEAD_VERBS = new Set(["aiba", "aibe", "faca", "ofere", "primeasca", "poata", "foloseasca", "introduca", "implementeze"]);
+/** RR3: a pronoun right after „să” in the need („să le trimitem …”, „să-i contactăm …”): the „să” stays with it. */
+const NEED_SA_PRONOUN = new Set(["le", "i", "ii", "o", "il", "l", "ne", "va"]);
 const TRAILING_GLUE = new Set(["de", "cu", "in", "la", "si", "pentru", "pe", "sau", "ca", "a", "al", "o", "un", "care", "sa", "nu"]);
 // R1: a cost verb („care să coste…”, „cât costă”, „să plătească”) and „gata” („gata în douăzeci de zile”) end the need: an amount or a term follows.
 const CLAUSE_STOP = new Set(["buget", "bugetul", "pana", "termen", "termenul", "urgent", "urgenta", "fara", "dar", "insa", "iar", "deadline", "costa", "coste", "costat", "costeaza",
@@ -196,7 +202,7 @@ const DEADLINE_PATTERNS = [
 /* ------------------------------------------------------------------ helpers */
 
 function tokenize(text) {
-  return [...text.matchAll(/[\p{L}\p{N}]+/gu)].map((m) => ({ raw: m[0], fold: foldDiacritics(m[0]).toLowerCase(), start: m.index, end: m.index + m[0].length }));
+  return [...text.matchAll(/[\p{L}\p{N}]+/gu)].map((m) => ({ raw: m[0], fold: foldDiacritics(m[0]).toLowerCase(), start: m.index, end: m.index + m[0].length, glued: m.index > 0 && text[m.index - 1] === "-" }));
 }
 
 /**
@@ -216,15 +222,19 @@ function same(tok, word, typo, minLen = 5) {
 function matchAt(tokens, i, phrase, typo, minLen = 5) {
   const typos = [];
   const endings = [];
+  let skip = 0;
   for (let k = 0; k < phrase.length; k += 1) {
-    const tok = tokens[i + k];
+    const tok = tokens[i + k + skip];
     if (!tok) return null;
     const r = same(tok, phrase[k], typo, minLen);
     if (!r.ok) return null;
     if (r.typo) typos.push({ from: tok.raw, to: phrase[k] });
     if (r.ending) endings.push(r.ending);
+    // RC5: a plural or an article written after a hyphen („service-uri auto”, „service-ul”) belongs to the word.
+    const glued = tokens[i + k + skip + 1];
+    if (glued?.glued && HYPHEN_ENDINGS.has(glued.fold)) { skip += 1; endings.push(glued.fold); }
   }
-  return { i, j: i + phrase.length - 1, typos, endings };
+  return { i, j: i + phrase.length - 1 + skip, typos, endings };
 }
 
 /** The better of two phrase matches at the same position: more words first, then fewer typos (an exact form beats a near one). */
@@ -279,9 +289,12 @@ export function parseBrief(request) {
     if (negation >= 0) negatedRefusals.push({ ...h, negation });
   }
   for (const h of outreach.hits) {
-    refusedRanges.push({ start: h.start, end: h.end });
+    // RR2 / RR6: the whole outreach clause („și mâine trimite-o clientului”) stays out of the need and every other field, not only its verb.
+    refusedRanges.push({ start: Math.min(h.start, h.clauseStart ?? h.start), end: Math.max(h.end, h.clauseEnd ?? h.end) });
     refused.push({ text: text.slice(h.start, h.end), kind: h.kind, code: OUTREACH, reason: REFUSAL_REASON[h.kind], ...(h.typo ? { typo: true } : {}) });
   }
+  // RR10: the owner's own statement („contactez eu firma”, „o trimit eu clientului”) is neither refused nor part of the client's need.
+  for (const o of outreach.own || []) refusedRanges.push({ start: o.start, end: o.end });
   const blocked = (tok) => inside(tok, refusedRanges) || refusedRanges.some((r) => tok.start < r.end && tok.end > r.start);
 
   // 2. Budget and deadline (USER_PROVIDED, internal only: they never enter a client text).
@@ -343,6 +356,7 @@ export function parseBrief(request) {
   }
 
   // 4. Client type and sector (R-SECTOR): the phrase as said, its canonical sector and CAEN code inferred.
+  const clientContextBefore = (i) => { let k = i - 1; while (k >= 0 && k >= i - 4 && CLIENT_QUANTIFIERS.has(tokens[k].fold)) k -= 1; return CLIENT_CONTEXT.has(tokens[k]?.fold); };
   let sectorHit = null;
   for (let i = 0; i < tokens.length && !sectorHit; i += 1) {
     if (blocked(tokens[i])) continue;
@@ -351,7 +365,8 @@ export function parseBrief(request) {
       for (const phrase of s.phrases) {
         const m = matchAt(tokens, i, phrase, true, TYPO_MIN_NAME);
         // F22: a plural inflection names the client type only right after a word that introduces the client („pentru fotografi”).
-        if (m && m.endings.some((e) => PLURAL_ENDINGS.has(e)) && !CLIENT_CONTEXT.has(tokens[i - 1]?.fold)) continue;
+        // RC5: a numeral or a quantifier may stand between („pentru doi stomatologi”, „pentru mai mulți fotografi”).
+        if (m && m.endings.some((e) => PLURAL_ENDINGS.has(e)) && !clientContextBefore(i)) continue;
         if (m && better(m, best?.m)) best = { s, m, phrase };
       }
     }
@@ -424,7 +439,8 @@ export function parseBrief(request) {
     let start = needHit.m.j + 1 - needHit.marker.keep;
     if (needHit.marker.keep === 0) {
       // Final review F6: „să-și contacteze clienții …” keeps its „să-și” (the need is the client's own action, said whole).
-      if (tokens[start]?.fold === "sa" && !(tokens[start + 1] && gapBefore(start + 1) === "-")) start += 1;
+      // RR3: „să le trimitem clienților remindere” keeps its „să” too (a pronoun after it is the action's object, never the need itself).
+      if (tokens[start]?.fold === "sa" && !(tokens[start + 1] && gapBefore(start + 1) === "-") && !NEED_SA_PRONOUN.has(tokens[start + 1]?.fold)) start += 1;
       if (NEED_LEAD_VERBS.has(tokens[start]?.fold)) start += 1;
     }
     const end = start < tokens.length ? clauseEnd(start, 12) : -1;
@@ -439,15 +455,20 @@ export function parseBrief(request) {
       const stated = text.slice(tokens[start].start, statedEnd);
       let cut = -1;
       // F12: a number word is an amount or a term only before its unit (a short run of number words, „și”, „de” may stand between).
+      // RC2: a number word with no unit that ends the need's clause or is said „pe lună / pe oră” („… cu treizeci”, „… cincizeci pe lună”)
+      // is an amount too (fail closed); the adjective „nouă” after its noun, an ordinal and a count of things („în două limbi”) are not.
       const amountAt = (k) => {
         if (!BIG_NUMBER_WORDS.has(tokens[k].fold) || ["a", "al"].includes(tokens[k - 1]?.fold)) return false;
-        for (let n = k + 1; n < tokens.length && n <= k + 6; n += 1) {
-          if (/[.,;:!?\n()]/.test(gapBefore(n))) return false;
+        let n = k + 1;
+        for (; n < tokens.length && n <= k + 6; n += 1) {
+          if (/[.,;:!?\n()]/.test(gapBefore(n))) break;
           const g = tokens[n].fold;
           if (QTY_UNIT.has(g) || (g === "la" && tokens[n + 1]?.fold === "suta")) return true;
-          if (!NUMBER_WORDS.has(g) && g !== "si" && g !== "de") return false;
+          if (!NUMBER_WORDS.has(g) && g !== "si" && g !== "de") break;
         }
-        return false;
+        const adjective = tokens[k].fold === "noua" && !["cu", "de", "la"].includes(tokens[k - 1]?.fold);
+        const bare = n > end || n >= tokens.length || /[.,;:!?\n()]/.test(gapBefore(n)) || tokens[n].fold === "pe";
+        return bare && !adjective && !(n > k + 1 && tokens[n - 1].fold === "de");
       };
       for (let k = start; k <= end && cut < 0; k += 1) {
         const f = tokens[k].fold;

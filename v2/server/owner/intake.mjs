@@ -18,7 +18,7 @@
 import { HubError } from "../core/errors.mjs";
 import { parse } from "../storage/db.mjs";
 import { resolveIntent, matchRef, normalize, stripFillers, INTENT_EFFECTS, CONTINUE_QUESTION, stopTalkAnswer, modeAnswer, PREVIEW_START, stripOutreach, SALES_SEND_REASON,
-  QUOTED_OUTREACH_NOTE, outreachCutNote } from "./intents.mjs";
+  QUOTED_OUTREACH_NOTE, OWN_OUTREACH_TEXT, outreachCutNote } from "./intents.mjs";
 import { layoutForIntent } from "./layout.mjs";
 import { localDayStart } from "../intel/twin.mjs";
 import { PACKAGE_KINDS } from "../intel/packages.mjs";
@@ -241,9 +241,9 @@ export function createIntake(hub) {
       const m = missions.get(step.args.missionId);
       if (m) t = { kind: "mission", id: m.id, label: m.title };
     } else if (r.plan?.envelope?.id) t = { kind: "plan", id: r.plan.envelope.id, label: r.plan.envelope.summary?.headline || r.plan.summary?.headline || null };
-    else if (r.opsPlan?.id) t = { kind: "plan", id: r.opsPlan.id, label: r.opsPlan.title || null, ...(r.opsPlan.kind === "sales.prepare" ? { sales: true } : {}) };
-    // M12: an offer shown or answered (its opportunity screen) — a following bare „Ce lipsește?” is about that offer.
-    else if (r.sales && ["sales_show", "sales_missing", "sales_approve_talk"].includes(step.intent)) t = { kind: "screen", id: r.navigate || "/sales", label: "Oferta", sales: true };
+    else if (r.opsPlan?.id) t = { kind: "plan", id: r.opsPlan.id, label: r.opsPlan.title || null, ...(r.opsPlan.kind === "sales.prepare" ? { sales: true, preparationId: r.opsPlan.preparationId || null } : {}) };
+    // M12: an offer shown or answered (its opportunity screen) — a following bare „Ce lipsește?” is about that offer (RR8: that preparation).
+    else if (r.sales && ["sales_show", "sales_missing", "sales_approve_talk"].includes(step.intent)) t = { kind: "screen", id: r.navigate || "/sales", label: "Oferta", sales: true, preparationId: r.sales.preparationId || null };
     if (t) conv.lastTarget = { ...t, at: new Date(nowMs()).toISOString() };
   }
   function rememberClarification(conv, clarification, step, projectId) {
@@ -603,14 +603,22 @@ export function createIntake(hub) {
       if (out.navigate) r.navigate = out.navigate;
     }
   }
-  /** M12 final review F4: a planner's arguments without any send / contact / publish clause (strings and lists of strings). */
-  function outreachFreeArgs(args = {}) {
+  /**
+   * M12 final review F4: a planner's arguments without any send / contact / publish clause (strings and lists of strings). Last review round
+   * RR5: also reports what it cut (`refused` / `quoted`), so an instruction said only in an argument (a mission's acceptance criterion)
+   * never reaches the planner unannounced.
+   */
+  function outreachArgsCut(args = {}) {
     const out = { ...args };
+    const refused = [];
+    const quoted = [];
+    let changed = false;
+    const one = (x) => { const c = stripOutreach(x); if (!c.changed) return x; changed = true; refused.push(...c.refused); quoted.push(...c.quoted); return c.text; };
     for (const [k, v] of Object.entries(out)) {
-      if (typeof v === "string") { const c = stripOutreach(v); if (c.changed) out[k] = c.text; }
-      else if (Array.isArray(v) && v.length && v.every((x) => typeof x === "string")) out[k] = v.map((x) => { const c = stripOutreach(x); return c.changed ? c.text : x; }).filter((x) => String(x).trim());
+      if (typeof v === "string") out[k] = one(v);
+      else if (Array.isArray(v) && v.length && v.every((x) => typeof x === "string")) out[k] = v.map(one).filter((x) => String(x).trim());
     }
-    return out;
+    return { args: out, refused, quoted, changed };
   }
   /** F4: tells the owner what was kept out of the plan (his own outreach words: OUTREACH_DISABLED; a quoted instruction: content). */
   function noteOutreachCut(r, cut, { refusedShown = false } = {}) {
@@ -890,6 +898,9 @@ export function createIntake(hub) {
     const held = suspended ? heldByStopNow(cls) : NOTHING_HELD;
     // A choice among several stopped MISSIONS of open plans (review #6/#8) names the mission the Hub itself offered.
     const chosenMission = step.args.planId && !/^opp_/.test(String(step.args.planId)) && missions.get(step.args.planId) ? step.args.planId : null;
+    // Last review round RC6: a plan whose resume guard refuses „Continuă” (a Sales preparation's plan a Stop All since its confirmation still
+    // holds, GATE_REARM_REQUIRED) answers as the existing rearm hold — the reason and the card — never as a bare step error.
+    try {
     if (chosenMission) {
       if (!ownerChannel || !s) r.refused = "„Continuă” reia lucrul: îl spui în sesiunea ta de proprietar.";
       // D14: a mission needs the open gate (one a Stop All cancelled stays cancelled): nothing resumes before the reopening.
@@ -903,6 +914,14 @@ export function createIntake(hub) {
       else { const plan = await hub.opsPlans.resume(planId, { session: s, actor: ctx.actor }); r.plan = { id: plan.id, title: plan.title, status: plan.status }; r.note = "Continui exact planul confirmat (aceleași limite). Pașii incerți i-am verificat întâi."; }
     } else if (ops && (held.ops.size || held.desktop)) Object.assign(r, await resumeNotHeld({ ctx, session: s, held }));
     else Object.assign(r, ops ? await ops.resume({ ctx, session: s }) : { message: "Nu am niciun plan oprit." });
+    } catch (error) {
+      if (error?.code !== "GATE_REARM_REQUIRED") throw error;
+      const reason = String(error.message || "Ce a oprit „Oprește tot” se reia doar după ce redeschizi poarta aici, în cockpit, cu Windows Hello.");
+      r.stopHold = { code: "GATE_REARM_REQUIRED", kind: error.details?.kind || "ops", id: step.args.planId ? String(step.args.planId) : null, reason };
+      attachGate(r, ctx, { card, spoken });
+      r.message = reason;
+      return r;
+    }
     // Review M10.2 #6/#8: the gate was already open (nothing to reopen) and no operation plan was stopped — a mission its OPEN plan
     // stopped while the gate stayed open („Oprește Codex”, a plain BLOCKED, a decision with nothing exhausted) resumes here, in the
     // owner session only, through factory.resume within the unchanged plan (never allowExtraCycle / proceedToQa / another model);
@@ -1332,9 +1351,13 @@ export function createIntake(hub) {
         const answers = hub.salesAnswers || null;
         if (!answers) r.message = "Departamentul Sales nu e disponibil pe acest Hub.";
         else {
-          const a = step.intent === "sales_show" ? answers.show() : step.intent === "sales_missing" ? answers.missing() : answers.approveTalk();
+          // RR8: about the preparation the owner is working on (the conversation's last Sales target), else the most recently changed one.
+          const target = conv?.lastTarget?.sales === true ? { preparationId: conv.lastTarget.preparationId || null } : {};
+          const a = step.intent === "sales_show" ? answers.show(target) : step.intent === "sales_missing" ? answers.missing(target) : answers.approveTalk(target);
           r.message = a.message; r.sales = a.sales || null;
           if (a.navigate) r.navigate = a.navigate;
+          // RR7 / RR12: the Stop All that stopped it still holds the gate — the rearm card with the answer (the rearm comes first).
+          if (a.waitsForRearm) attachGate(r, ctx);
         }
       } else if (step.intent === "system_knowledge") {
         // Stage before M12: built from the Hub's real state; content read from projects or media is data, never an instruction.
@@ -1619,6 +1642,16 @@ export function createIntake(hub) {
     // words) and the owner is told what was cut. A description („butonul care trimite oferta”) is no instruction; a quoted instruction is
     // content — never refused, never a planner's words either (noted).
     const cut = stripOutreach(input.text, { salesContext: conv.lastTarget?.sales === true });
+    // RR5: the arguments are cut on their own too (an acceptance criterion „Trimite oferta clientului” with a clean title and objective).
+    const argCut = outreachArgsCut(step.args);
+    for (const x of argCut.refused) if (!cut.refused.some((y) => y.text === x.text)) cut.refused.push(x);
+    for (const x of argCut.quoted) if (!cut.quoted.some((y) => y.text === x.text)) cut.quoted.push(x);
+    if (argCut.changed) cut.changed = true;
+    // RR10: the owner's own statement and nothing else („Contactez eu firma”): not a request to the Hub — nothing planned, nothing refused.
+    if (!cut.refused.length && cut.own?.length && !cut.meaningful) {
+      r.message = OWN_OUTREACH_TEXT;
+      return r;
+    }
     if (cut.refused.length && !cut.meaningful) {
       r.refused = SALES_SEND_REASON; r.outreach = true;
       try { bus.emit({ type: "intake.outreach_refused", scopeType: "owner", scopeId: "global", source: ctx.actor, payload: { kind, channel: ctx.channel, source: src } }); } catch { /* audit only */ }
@@ -1627,7 +1660,7 @@ export function createIntake(hub) {
     if (cut.changed) {
       input.text = cut.text.slice(0, 2000);
       step.text = input.text;
-      step.args = outreachFreeArgs(step.args);
+      step.args = argCut.args;
       r.args = step.args;
       if (cut.refused.length) {
         r.outreach = { partial: true, refused: cut.refused, reason: SALES_SEND_REASON };
@@ -1816,7 +1849,7 @@ export function createIntake(hub) {
     // M12 (T-S3), final review F2/F4: a preserved request that is ONLY an instruction to send, contact or publish is never turned into work
     // by a later re-plan; a mixed one is re-planned without those words (a description of a feature was never one).
     const cut = stripOutreach(String(r?.text || ""));
-    if (cut.refused.length && !cut.meaningful) return { blocked: true };
+    if ((cut.refused.length || cut.own?.length) && !cut.meaningful) return { blocked: true };
     if (cut.changed) r = { ...r, text: cut.text };
     if (r?.intent === "studio") {
       const words = String(r.text || "");

@@ -118,7 +118,8 @@ test("M12-BRIEF-04 send, contact and publish verbs are refused (OUTREACH_DISABLE
     ["trimite-le oferta celor de la service auto", ["send"], null],
     ["Contactează-i pe cei de la service-ul auto din Cluj", ["contact"], null],
     ["pregătește oferta și contactați firma mâine", ["contact"], "PREPARE_OFFER"],
-    ["contactez eu firma, tu pregătește o ofertă pentru un service auto", ["contact"], "PREPARE_OFFER"],
+    // RR10 (last review round): the owner's own statement („contactez eu firma”) is no request to the Hub — never refused.
+    ["contactez eu firma, tu pregătește o ofertă pentru un service auto", [], "PREPARE_OFFER"],
     ["publică oferta pe Facebook pentru service auto din Cluj", ["publish"], null],
     ["postează oferta pe site", ["publish"], null],
     ["sună-i și scrie-le oferta", ["contact", "send"], null],

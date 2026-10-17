@@ -25,6 +25,15 @@ export function registerSalesPlanner(hub, intake) {
   async function continuation({ ctx }) {
     const preps = hub.salesPreparations;
     const list = preps?.list ? preps.list() : [];
+    // Last review round RC3: the preparation the owner is working on first — when its plan is paused or waits for him (his „Pauză”, a Hub
+    // restart, a revocation), it needs no new card: the truthful answer is that plan's own „Continuă” (with the rearm first while a Stop All
+    // still holds it), never „nu am ce continua” and never a card for an older offer.
+    const current = hub.salesAnswers?.latest ? hub.salesAnswers.latest()?.p || null : null;
+    const paused = current && hub.salesAnswers?.nextOf ? hub.salesAnswers.nextOf(current) : null;
+    if (paused?.paused) {
+      return { kind: "message", ...(paused.waitsForRearm ? { gate: true, code: "GATE_REARM_REQUIRED" } : {}),
+        text: `Pregătirea ofertei ${current.id} nu are nevoie de un card nou. ${paused.text}` };
+    }
     const p = list.find((x) => (preps.isContinuable ? preps.isContinuable(x) : CONTINUABLE.includes(x.status))) || null;
     if (!p) {
       const newest = list[0] || null;

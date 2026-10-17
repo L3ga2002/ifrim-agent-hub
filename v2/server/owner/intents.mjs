@@ -150,6 +150,7 @@ const OUTREACH_HEAD_SETS = Object.fromEntries(Object.entries(OUTREACH_HEADS).map
  *    what a planner receives (stripOutreach), with a note.
  */
 const OUT_PUNCT = /^[,;:.!?]$/;
+const OUT_SENTENCE_END = /^[.;!?]$/;
 const OUT_JOINS = new Set(["si", "apoi", "iar", "dar", "insa", "ci", "sau", "atunci", "deci"]);
 /** Words that may stand in front of an imperative at the head of a clause. */
 const OUT_LEAD = new Set(["lega", "hei", "hey", "buna", "ok", "okay", "hai", "haide", "bine", "acum", "imediat", "te", "rog", "va", "frumos", "tu", "voi", "eu", "mai", "da", "sigur",
@@ -158,9 +159,32 @@ const OUT_LEAD = new Set(["lega", "hei", "hey", "buna", "ok", "okay", "hai", "ha
 const OUT_SA = /^(?:sa|s)(?:-(?:i|l|o|le|mi|ti|ne|si|il|va|ma|te))?$/;
 /** Pronouns that may stand between „să” and the verb („să o trimiți”). */
 const OUT_PROCLITIC = new Set(["o", "il", "l", "le", "i", "ii", "ne", "mi", "ti", "va", "ma", "te", "le-o", "i-o", "mi-o"]);
-/** Verbs that ask the Hub to do what follows „să” („vreau să trimiți”, „te rog să”, „poți să”, „nu uita să”). */
+/** Verbs that ask the Hub to do what follows „să” („vreau să trimiți”, „te rog să”, „poți să”, „nu uita să”). (The offer-request rule.) */
 const OUT_ASK = new Set(["vreau", "vrem", "vrea", "vreti", "doresc", "dorim", "dori", "rog", "poti", "puteti", "putea", "trebuie", "hai", "haide", "uita", "incearca", "incercati"]);
 const OUT_AUX = new Set(["as", "ai", "ati", "am", "ar"]);
+/*
+ * M12 last review round (RR1–RR6, RR10, RR11) — the outreach rule's words, as data. An ask word leads into „să <verb>” (or, for a modal, into
+ * the infinitive); the auxiliaries it needs in front say WHO asks: „aș vrea / ai vrea să trimiți” is the owner's ask, a bare „vrea să le
+ * trimitem” is the client's own wish (RR3), „ar trebui / am nevoie să trimiți” ask the Hub (RR2).
+ */
+const OUT_ASK_WORDS = new Map([["vreau", null], ["vrem", null], ["vreti", null], ["doresc", null], ["dorim", null], ["rog", null], ["poti", null], ["puteti", null],
+  ["trebuie", null], ["hai", null], ["haide", null], ["uita", null], ["incearca", null], ["incercati", null], ["vrea", ["as", "ai", "ati", "am"]], ["dori", ["as", "ai", "ati", "am"]],
+  ["putea", ["ai", "ati"]], ["trebui", ["ar"]], ["nevoie", ["am", "avem"]]]);
+/** Modals followed by the infinitive („Poți trimite oferta?”, „Ați putea contacta clientul?”): an ask, like „poți să trimiți” (RR2). */
+const OUT_MODALS = new Set(["poti", "puteti", "putea"]);
+/** Time and sequence adverbs that may stand before an imperative at the head of a clause („Mâine trimite oferta”, RR2 / RR6). */
+const OUT_ADVERBS = new Set(["maine", "poimaine", "azi", "astazi", "diseara", "eventual", "ulterior", "intai", "neaparat", "odata"]);
+/** Two-word adverbials („pe urmă”, „la final”, „după aceea”, „după aprobare”): the first word → the second words („*”: any word). */
+const OUT_ADVERB_PAIRS = new Map([["pe", new Set(["urma"])], ["la", new Set(["final", "sfarsit", "urma"])], ["in", new Set(["final", "sfarsit"])], ["de", new Set(["asemenea"])], ["dupa", "*"]]);
+/** Verbs that name the fix of a problem: a sentence after „Repară …:” or before „Repară asta.” describes the problem (RR4). */
+const OUT_FIX_VERB = /^(?:repara|rezolva|corecteaza|investigheaza|verifica|analizeaza|testeaza|depaneaza)(?:-l|-o|-le|-i)?$/;
+const OUT_DEMONSTRATIVE = new Set(["asta", "aia", "aceasta", "acesta", "acea", "acel"]);
+/** The names of the Hub itself: „Vreau ca Hub-ul să trimită oferta” asks the Hub. */
+const OUT_HUB_NAMES = new Set(["hub", "hub-ul", "hubul", "lega"]);
+/** Words that open a condition in front of an instruction („Dacă e gata, trimite oferta”): cut with it. */
+const OUT_CONDITION = new Set(["daca", "cand", "odata"]);
+/** Sequence words a cut leaves dangling at the start of the next request („… și după aceea repară bug-ul” → „repară bug-ul”, RR11). */
+const OUT_SEQUENCE_LEAD = /^(?:(?:dupa (?:aceea|aia|care)|pe urma|la final|la sfarsit|in final|apoi|eventual|ulterior)\s+)+/;
 /** Markers of a description: a verb after them is the subject's own activity, never an instruction to the Hub. */
 const OUT_RELATIVE = new Set(["care", "ce", "cum", "unde", "cand", "daca", "ca", "cat"]);
 /** Pronouns after a hyphen that make the verb an instruction towards someone („trimite-o”, „contactează-i”); „-ne / -mi / -ți” are not (a label, „to me”). */
@@ -182,9 +206,10 @@ const OUT_NEXT_VERB = /^(?:arata|deschide|porneste|continua|opreste|fa|pregatest
 /** Each verb form → { kind, moods } (imp: imperative; first: I / we; second: you after „să”; third: never). A slip of a main form keeps its moods. */
 const OUT_FORMS = (() => {
   const moods = {
-    send: { trimite: ["imp"], trimiteti: ["imp", "second"], trimitem: ["first"], trimiti: ["second"], trimit: ["first"], expediaza: ["imp"], expediati: ["imp", "second"], expediem: ["first"], expediez: ["first"] },
-    contact: { contacteaza: ["imp"], contactati: ["imp", "second"], contactam: ["first"], contactez: ["first"], contactezi: ["second"], contacteze: ["third"], contacta: ["imp"] },
-    publish: { publica: ["imp"], publicati: ["imp", "second"], publicam: ["first"], posteaza: ["imp"], postati: ["imp", "second"], postam: ["first"] },
+    // RR10: the 1st person singular („trimit eu”, „contactez eu firma”) is the owner's own statement („self”): never an instruction to the Hub.
+    send: { trimite: ["imp"], trimiteti: ["imp", "second"], trimitem: ["first"], trimiti: ["second"], trimit: ["self"], expediaza: ["imp"], expediati: ["imp", "second"], expediem: ["first"], expediez: ["self"], trimita: ["third"], expedieze: ["third"] },
+    contact: { contacteaza: ["imp"], contactati: ["imp", "second"], contactam: ["first"], contactez: ["self"], contactezi: ["second"], contacteze: ["third"], contacta: ["imp"] },
+    publish: { publica: ["imp"], publicati: ["imp", "second"], publicam: ["first"], posteaza: ["imp"], postati: ["imp", "second"], postam: ["first"], publice: ["third"], posteze: ["third"] },
   };
   const out = new Map();
   for (const [kind, forms] of Object.entries(moods)) for (const [w, m] of Object.entries(forms)) out.set(w, { kind, moods: new Set(m), typo: false });
@@ -248,6 +273,7 @@ function outVerb(f) {
 function scanOutreachTokens(seq, { scope = false, offerScope = false, studio = false, salesContext = false } = {}) {
   const hits = [];
   const negated = [];
+  const selves = [];
   const at = (k) => seq[k]?.f;
   const negatedAt = (i) => {
     for (let k = i - 1, steps = 0; k >= 0 && steps < 5; k -= 1, steps += 1) {
@@ -258,49 +284,126 @@ function scanOutreachTokens(seq, { scope = false, offerScope = false, studio = f
     }
     return -1;
   };
-  /** Whether index k heads a clause: only lead words before it, back to the start, a punctuation mark or a joining word. */
+  /** The adverbial that ends at j („mâine”, „pe urmă”, „după aprobare”) → the index of its first word, or -1. */
+  const adverbialAt = (j) => {
+    const t = at(j);
+    if (OUT_ADVERBS.has(t)) return j;
+    const pair = OUT_ADVERB_PAIRS.get(at(j - 1));
+    if (pair && (pair === "*" ? !OUT_PUNCT.test(t) && !OUT_JOINS.has(t) && !outVerb(t) : pair.has(t))) return j - 1;
+    return -1;
+  };
+  /** RR4: whether the comma at c continues an open description („o aplicație care, după comandă, trimite …”): a relative marker right before it or before an earlier comma of the same sentence. */
+  const openRelativeBefore = (c) => {
+    for (let n = 0; n < 4 && c > 0; n += 1) {
+      if (OUT_RELATIVE.has(at(c - 1))) return true;
+      let k = c - 1;
+      while (k >= 0 && !OUT_PUNCT.test(at(k))) k -= 1;
+      if (k < 0 || at(k) !== ",") return false;
+      c = k;
+    }
+    return false;
+  };
+  /** Whether index k heads a clause: only lead words and adverbials before it, back to the start, a punctuation mark or a joining word. */
   const clauseHeadAt = (k, { aux = false, allowNegatedAsk = false } = {}) => {
-    for (let j = k - 1; j >= 0 && j >= k - 6; j -= 1) {
+    let j = k - 1;
+    for (let n = 0; j >= 0 && n < 8; j -= 1, n += 1) {
       const t = at(j);
-      if (OUT_PUNCT.test(t)) return "start";
+      if (OUT_PUNCT.test(t)) return t === "," && openRelativeBefore(j) ? null : "start";
       if (OUT_JOINS.has(t)) return "join";
       if (OUT_LEAD.has(t) || (aux && OUT_AUX.has(t)) || (allowNegatedAsk && t === "nu")) continue;
+      const adv = adverbialAt(j);
+      if (adv >= 0) { j = adv; continue; }
       return null;
     }
-    return k - 6 > 0 ? null : "start";
+    return j < 0 ? "start" : null;
+  };
+  /** The clause head of the ask word at a („vreau”, „te rog”, „ai putea”, „ar trebui”, „am nevoie”) with the auxiliaries it needs, or null. */
+  const askHead = (a) => {
+    const t = at(a);
+    if (!OUT_ASK_WORDS.has(t)) return null;
+    const aux = OUT_ASK_WORDS.get(t);
+    if (aux) return aux.includes(at(a - 1)) ? clauseHeadAt(a - 1, { aux: true }) : null;
+    return clauseHeadAt(a, { aux: true, allowNegatedAsk: t === "uita" });
+  };
+  /** RR4: a sentence that describes a problem — after „Repară …:” or followed by „Repară asta.” — holds no instruction to the Hub. */
+  const describedProblem = (i) => {
+    let s = i;
+    while (s > 0 && !OUT_SENTENCE_END.test(at(s - 1))) s -= 1;
+    for (let k = i - 1; k >= s; k -= 1) {
+      if (at(k) !== ":") continue;
+      let h = s;
+      while (h < k && OUT_LEAD.has(at(h))) h += 1;
+      if (OUT_FIX_VERB.test(at(h) || "")) return true;
+      break;
+    }
+    let e = i;
+    while (e < seq.length && !OUT_SENTENCE_END.test(at(e))) e += 1;
+    let h = e + 1;
+    while (h < seq.length && OUT_LEAD.has(at(h))) h += 1;
+    const fix = at(h) || "";
+    if (!OUT_FIX_VERB.test(fix)) return false;
+    if (/-(?:l|o)$/.test(fix)) return true;
+    for (let d = 1; d <= 3 && h + d < seq.length && !OUT_PUNCT.test(at(h + d)); d += 1) if (OUT_DEMONSTRATIVE.has(at(h + d))) return true;
+    return false;
   };
   let proclitic = false;
+  /** Where the verb at i stands: { pos: "start"|"join" (heads a clause), "sa" (after an ask + „să”, or a „să” heading a clause), "modal", head } or null. */
   const headOf = (i) => {
     let j = i - 1;
     proclitic = false;
     while (j >= 0 && OUT_PROCLITIC.has(at(j)) && j >= i - 2) j -= 1;
     if (j >= 0 && OUT_SA.test(at(j))) {
-      // „vreau / te rog / poți / nu uita … să <verb>”: the Hub is asked to do it; a pronoun between („să o trimiți”, „să-i trimiți”) is
-      // the verb's object, like one after a hyphen.
+      // „vreau / te rog / poți / nu uita … să <verb>”: the Hub is asked to do it (RR1: the clause keeps where the ask began); a „să <you>”
+      // heading a clause on its own („Să trimiți oferta”, „… și să trimiți …”, RR2) asks too. A pronoun between („să o trimiți”, „să-i
+      // trimiți”) is the verb's object, like one after a hyphen.
       proclitic = j < i - 1 ? !["mi", "ti", "ne", "va", "ma", "te"].includes(at(i - 1)) : /^(?:sa|s)-(?:i|l|o|le|il)$/.test(at(j));
-      const a = j - 1;
-      if (a >= 0 && OUT_ASK.has(at(a))) return clauseHeadAt(a, { aux: true, allowNegatedAsk: at(a) === "uita" }) ? "sa" : null;
-      return null;
+      // A bare „Să-mi trimiți oferta” sends to the owner himself (like „Trimite-mi oferta”): no instruction towards a client.
+      const toOwner = /-(?:mi|ne)$/.test(at(j)) || (j < i - 1 && ["mi", "ne"].includes(at(i - 1)));
+      const head = askHead(j - 1) || (toOwner ? null : clauseHeadAt(j));
+      return head ? { pos: "sa", head } : null;
     }
     // „O trimiți clientului?”, „Le trimiți oferta”: a pronoun in front of a verb that heads the clause is its object.
     if (j < i - 1) {
       const h = clauseHeadAt(j + 1);
       proclitic = Boolean(h) && !["mi", "ti", "ne", "va", "ma", "te"].includes(at(i - 1));
-      return h;
+      return h ? { pos: h, head: h } : null;
     }
-    return clauseHeadAt(i);
+    // RR2: a modal before the infinitive („Poți trimite oferta?”, „Ați putea contacta clientul?”).
+    if (OUT_MODALS.has(at(i - 1))) {
+      const head = askHead(i - 1);
+      if (head) return { pos: "modal", head };
+    }
+    const h = clauseHeadAt(i);
+    return h ? { pos: h, head: h } : null;
+  };
+  /** The Hub (or Lega) right before „să” in front of a 3rd-person verb („ca Hub-ul să trimită”). */
+  const hubSubjectAt = (i) => {
+    let j = i - 1;
+    while (j >= 0 && OUT_PROCLITIC.has(at(j)) && j >= i - 2) j -= 1;
+    return j >= 1 && OUT_SA.test(at(j)) && OUT_HUB_NAMES.has(at(j - 1));
   };
   const segmentStart = (i) => { let k = i - 1; while (k >= 0 && !OUT_PUNCT.test(at(k))) k -= 1; return k + 1; };
   const describes = (i) => { for (let k = segmentStart(i); k < i; k += 1) if (OUT_RELATIVE.has(at(k)) || OUT_SA.test(at(k))) return true; return false; };
   for (let i = 0; i < seq.length; i += 1) {
     const v = outVerb(at(i));
-    if (!v || v.moods.has("third") && v.moods.size === 1) continue;
+    if (!v) continue;
+    // „Vreau ca Hub-ul / Lega să trimită oferta”: the Hub named as the one who sends is the owner's instruction to it.
+    const toHub = v.moods.has("third") && v.moods.size === 1 && hubSubjectAt(i);
+    if (v.moods.has("third") && v.moods.size === 1 && !toHub) continue;
     const neg = negatedAt(i);
     if (neg >= 0) { negated.push({ kind: v.kind, i, neg }); continue; }
-    const pos = headOf(i);
-    if (!pos) continue;
-    if (pos === "sa" && !v.moods.has("second") && !v.moods.has("first")) continue;
-    if (pos !== "sa" && !v.moods.has("imp") && !v.moods.has("first") && !v.moods.has("second")) continue;
+    const clitic = v.clitic;
+    if (clitic && !OUT_CLITICS.has(clitic)) continue; // „Contactează-ne” (a label), „Trimite-mi oferta” (to the owner himself)
+    let where = toHub ? { pos: "sa", head: "start" } : headOf(i);
+    // RR2 / RR6: a verb with its pronoun after a hyphen („trimite-o”, „contactează-l”) is only ever an imperative — also after a fronted
+    // object („Oferta trimite-o …”, „Pe client contactează-l”), an adverbial or a „când …” clause.
+    if (!where && clitic && v.moods.has("imp")) where = { pos: "free", head: null };
+    if (!where) continue;
+    const pos = where.pos;
+    const self = v.moods.has("self") && v.moods.size === 1;
+    if (pos === "sa" && !v.moods.has("second") && !v.moods.has("first") && !toHub) continue;
+    if (pos === "modal" && !v.moods.has("imp")) continue;
+    if ((pos === "start" || pos === "join") && !v.moods.has("imp") && !v.moods.has("first") && !v.moods.has("second") && !self) continue;
     // The object (or addressee) of the verb: the words of its clause, up to a punctuation mark, a joining word or a description.
     let offer = false, addressee = false, other = false, end = i;
     for (let k = i + 1; k < seq.length && k <= i + 8; k += 1) {
@@ -311,42 +414,58 @@ function scanOutreachTokens(seq, { scope = false, offerScope = false, studio = f
       else if (SALES_ADDRESSEE.test(t)) addressee = true;
       else if (!OUT_BARE_TAIL.has(t)) other = true;
     }
-    const clitic = v.clitic;
-    if (clitic && !OUT_CLITICS.has(clitic)) continue; // „Contactează-ne” (a label), „Trimite-mi oferta” (to the owner himself)
+    // A fronted object („Oferta trimite-o”, „Clientului trimite-i oferta”) is the verb's object too.
+    if (pos === "free") for (let k = i - 1; k >= 0 && !OUT_PUNCT.test(at(k)) && !OUT_JOINS.has(at(k)); k -= 1) { if (OFFER_OBJECT.has(at(k))) offer = true; else if (SALES_ADDRESSEE.test(at(k))) addressee = true; }
     const toSomeone = (Boolean(clitic) && OUT_CLITICS.has(clitic)) || proclitic;
     // Coordinated with a description („… care primește comenzi și trimite notificări clienților”): the same subject's activity.
     if (pos === "join" && !toSomeone && !offer && describes(i)) continue;
+    if ((pos === "start" || pos === "join") && !clitic && describedProblem(i)) continue;
     let hit = false;
     if (v.call === "give") hit = OUT_MESSAGE.has(at(i + 1)) || (["un", "o"].includes(at(i + 1)) && OUT_MESSAGE.has(at(i + 2)));
     else if (v.call === "call" || v.kind === "contact") hit = true;
     else if (v.kind === "send") hit = offer || addressee || (toSomeone && (scope || salesContext)) || (salesContext && !other && !studio);
     else if (v.kind === "publish") hit = offer || (toSomeone && (offerScope || (salesContext && !studio))) || (salesContext && !other && !studio);
-    if (hit) hits.push({ kind: v.kind, i, end, pos, typo: v.typo, offer });
+    // RR10: the owner's own first-person statement („Contactez eu firma”, „o trimit eu clientului”) is no request to the Hub: never refused,
+    // only kept out of a planner's words.
+    if (hit) (self ? selves : hits).push({ kind: v.kind, i, end, pos, head: where.head, typo: v.typo, offer });
   }
-  return { hits, negated };
+  return { hits, negated, selves };
+}
+/** Whether a joining word at k starts the owner's next request („… și după aceea / și te rog / și la ProDelivery repară …”, RR11). */
+function nextRequestAt(seq, k) {
+  for (let n = k + 1; n < seq.length && n <= k + 4; n += 1) {
+    const t = seq[n].f;
+    if (OUT_PUNCT.test(t) || OUT_JOINS.has(t) || OUT_RELATIVE.has(t)) return false;
+    if (OUT_NEXT_VERB.test(t) || outVerb(t)) return true;
+  }
+  return false;
 }
 /** Where the clause of a hit starts and ends (token indexes) — what is cut out of a planner's words. */
 function outreachClause(seq, h) {
   const at = (k) => seq[k]?.f;
-  let start = h.i;
-  if (h.pos === "join") {
-    let j = h.i - 1;
-    while (j >= 0 && !OUT_JOINS.has(at(j))) j -= 1;
-    start = Math.max(0, j);
+  // RR1: the clause starts at the joining word or the punctuation mark nearest before the verb — also when an ask („și te rog să …”), a
+  // modal, an adverbial or a fronted object leads into it — never at the start of a sentence that holds another request.
+  let j = h.i - 1;
+  while (j >= 0 && !OUT_JOINS.has(at(j)) && !OUT_PUNCT.test(at(j))) j -= 1;
+  let start = j + 1;
+  if (j >= 0 && OUT_JOINS.has(at(j))) {
+    start = j;
     if (start > 0 && OUT_PUNCT.test(at(start - 1)) && at(start - 1) !== ".") start -= 1;
     // „Pregătește și trimite oferta …”: the two verbs share the object — only „și trimite” is cut.
     const left = start - 1;
-    if (left >= 0 && (left === 0 || OUT_PUNCT.test(at(left - 1))) && h.offer && h.end > h.i) return { start, end: h.i, shared: true };
-  } else {
-    let j = h.i - 1;
-    while (j >= 0 && !OUT_PUNCT.test(at(j))) j -= 1;
-    start = j + 1;
+    if (h.pos === "join" && left >= 0 && (left === 0 || OUT_PUNCT.test(at(left - 1))) && h.offer && h.end > h.i) return { start, end: h.i, shared: true };
+  } else if (j >= 0 && at(j) === ",") {
+    // „Dacă e gata, trimite oferta”: the condition in front belongs to the instruction (nothing of it is left for a planner).
+    let c = j - 1;
+    while (c >= 0 && !OUT_PUNCT.test(at(c)) && !OUT_JOINS.has(at(c))) c -= 1;
+    const first = at(c + 1);
+    if ((c < 0 || OUT_SENTENCE_END.test(at(c)) || OUT_JOINS.has(at(c))) && (OUT_CONDITION.has(first) || (["dupa", "imediat", "indata"].includes(first) && at(c + 2) === "ce"))) start = c >= 0 && OUT_JOINS.has(at(c)) ? c : c + 1;
   }
   let end = h.i;
   for (let k = h.i + 1; k < seq.length; k += 1) {
     const t = at(k);
     if (OUT_PUNCT.test(t)) break;
-    if (OUT_JOINS.has(t) && (OUT_NEXT_VERB.test(at(k + 1) || "") || outVerb(at(k + 1) || ""))) break;
+    if (OUT_JOINS.has(t) && nextRequestAt(seq, k)) break;
     end = k;
   }
   return { start, end };
@@ -377,9 +496,11 @@ function outreachScan(text, { normalized = false, salesContext = false, scopeTex
     if (qs.hits.length && !label) quoted.push({ start: toks[k].start, end: (toks[e] || inner.at(-1) || toks[k]).end, kind: qs.hits[0].kind });
     k = e;
   }
-  return { hits: scan.hits.map((h) => ({ ...h, word: main[h.i].f.slice(0, 40), start: main[h.i].start, endChar: main[h.i].end, clause: outreachClause(main, h) })),
+  const located = (h) => ({ ...h, word: main[h.i].f.slice(0, 40), start: main[h.i].start, endChar: main[h.i].end, clause: outreachClause(main, h) });
+  return { hits: scan.hits.map(located),
     negated: scan.negated.map((n) => ({ kind: n.kind, word: main[n.i].f.slice(0, 40), start: main[n.i].start, end: main[n.i].end, negStart: main[n.neg].start })),
-    quoted, scoped: SALES_SCOPE.test(plain), seq: main };
+    // RR10: the owner's own statements („contactez eu firma”): never refused, only kept out of a planner's words.
+    selves: scan.selves.map(located), quoted, scoped: SALES_SCOPE.test(plain), seq: main };
 }
 /**
  * Every outreach instruction a sentence holds (typed or spoken, any clause), with its negation honoured: „Trimite oferta”, „Pregătește oferta și
@@ -394,28 +515,39 @@ export function salesOutreach(text, { normalized = false, salesContext = false }
 }
 /**
  * The same rule with offsets in `text` (the Sales brief marks the refused words and reads the negated ones as restrictions):
- * → { hits: [{ kind, start, end, typo }], negated: [{ kind, start, end, negStart }] }. Pure.
+ * → { hits: [{ kind, start, end, typo, clauseStart, clauseEnd }], negated: [{ kind, start, end, negStart }], own: [{ kind, start, end }] }.
+ * `clauseStart` / `clauseEnd`: the whole outreach clause (RR2 / RR6: the brief keeps none of its words in the client's need); `own`: the
+ * owner's own statements' clauses (RR10: never refused, never part of the need). Pure.
  */
 export function outreachSpans(text, { salesContext = false } = {}) {
   const s = outreachScan(text, { salesContext });
-  return { hits: s.hits.map((h) => ({ kind: h.kind, start: h.start, end: h.endChar, typo: h.typo })), negated: s.negated.map((n) => ({ kind: n.kind, start: n.start, end: n.end, negStart: n.negStart })) };
+  const clauseOf = (h) => ({ clauseStart: s.seq[h.clause.start].start, clauseEnd: s.seq[h.clause.end].end });
+  return { hits: s.hits.map((h) => ({ kind: h.kind, start: h.start, end: h.endChar, typo: h.typo, ...clauseOf(h) })),
+    negated: s.negated.map((n) => ({ kind: n.kind, start: n.start, end: n.end, negStart: n.negStart })),
+    own: s.selves.map((h) => { const c = clauseOf(h); return { kind: h.kind, start: c.clauseStart, end: c.clauseEnd }; }) };
 }
 /** Whether what is left of a request still asks for something (more than lead words, joining words and punctuation). */
 const meaningfulRest = (text) => outTokens(text, false).toks.some((t) => !t.quote && !OUT_PUNCT.test(t.f) && !OUT_JOINS.has(t.f) && !OUT_LEAD.has(t.f) && t.f.length >= 3);
 /** Tidies the words left after a cut (spaces, a dangling joining word or punctuation at either end). */
 function tidyRest(text) {
-  let s = String(text || "").replace(/\s+/g, " ").replace(/\s+([,;:.!?])/g, "$1").replace(/([,;:])(?:\s*[,;:])+/g, "$1").replace(/([.!?;])(?:\s*[.!?;,:])+/g, "$1").trim();
+  let s = String(text || "").replace(/\s+/g, " ").replace(/\s+([,;:.!?])/g, "$1").replace(/([,;:])(?:\s*[,;:])+/g, "$1").replace(/([.!?;])(?:\s*[.!?;,:])+/g, "$1")
+    // RR2: „Repară X, poți trimite oferta?” — the question mark belonged to the cut question.
+    .replace(/[,;:]\s*\?/g, "").trim();
   for (let i = 0; i < 4; i += 1) {
     const next = s.replace(/^(?:[,;:.!?\s]+|(?:și|si|apoi|iar|dar|însă|insa|ci|sau)\s+)/i, "").replace(/(?:[\s,;:]+|\s+(?:și|si|apoi|iar|dar|însă|insa|ci|sau))$/i, "").trim();
     if (next === s) break;
     s = next;
   }
+  // RR11: a sequence word left in front of the next request by the cut („… și după aceea repară bug-ul” → „repară bug-ul”).
+  const lead = normalize(s).match(OUT_SEQUENCE_LEAD);
+  if (lead) { const words = lead[0].trim().split(/\s+/).length; s = s.split(/\s+/).slice(words).join(" "); }
   return s;
 }
 /**
  * F4: the words a planner may receive. Every owner instruction to send / contact / publish (with its clause) and every quoted instruction is
- * cut out of `text`; what is left keeps its own words. → { text, refused: [{ kind, text }], quoted: [{ kind, text }], changed, meaningful }.
- * `refused` are the owner's instructions (the caller shows OUTREACH_DISABLED); `quoted` are content (noted, never refused). Pure.
+ * cut out of `text`; what is left keeps its own words. → { text, refused: [{ kind, text }], quoted: [{ kind, text }], own: [{ kind, text }], changed, meaningful }.
+ * `refused` are the owner's instructions (the caller shows OUTREACH_DISABLED); `quoted` are content (noted, never refused); `own` are the
+ * owner's own statements („contactez eu firma”, RR10): cut out of the planner's words, never refused and never noted as refused. Pure.
  */
 export function stripOutreach(text, { salesContext = false } = {}) {
   const raw = String(text ?? "");
@@ -426,7 +558,8 @@ export function stripOutreach(text, { salesContext = false } = {}) {
     ranges.push({ start: s.seq[c.start].start, end: s.seq[c.end].end, kind: h.kind, quoted: false });
   }
   for (const q of s.quoted) ranges.push({ start: q.start, end: q.end, kind: q.kind, quoted: true });
-  if (!ranges.length) return { text: raw, refused: [], quoted: [], changed: false, meaningful: meaningfulRest(raw) };
+  for (const h of s.selves) ranges.push({ start: s.seq[h.clause.start].start, end: s.seq[h.clause.end].end, kind: h.kind, quoted: false, own: true });
+  if (!ranges.length) return { text: raw, refused: [], quoted: [], own: [], changed: false, meaningful: meaningfulRest(raw) };
   ranges.sort((a, b) => a.start - b.start);
   const merged = [];
   for (const r of ranges) { const last = merged.at(-1); if (last && r.start <= last.end) { last.end = Math.max(last.end, r.end); last.quoted = last.quoted && r.quoted; } else merged.push({ ...r }); }
@@ -435,13 +568,16 @@ export function stripOutreach(text, { salesContext = false } = {}) {
   for (const r of merged) { out += `${raw.slice(from, r.start)} `; from = r.end; }
   out += raw.slice(from);
   const rest = tidyRest(out);
-  return { text: rest, refused: ranges.filter((r) => !r.quoted).map((r) => ({ kind: r.kind, text: raw.slice(r.start, r.end).trim().slice(0, 200) })),
-    quoted: ranges.filter((r) => r.quoted).map((r) => ({ kind: r.kind, text: raw.slice(r.start, r.end).trim().slice(0, 200) })), changed: true, meaningful: meaningfulRest(rest) };
+  const said = (r) => ({ kind: r.kind, text: raw.slice(r.start, r.end).trim().slice(0, 200) });
+  return { text: rest, refused: ranges.filter((r) => !r.quoted && !r.own).map(said), quoted: ranges.filter((r) => r.quoted).map(said), own: ranges.filter((r) => r.own).map(said),
+    changed: true, meaningful: meaningfulRest(rest) };
 }
 /** F4: what the owner is told when the send / contact / publish part of a request was cut out and only the rest was planned. */
 export const outreachCutNote = (refused = []) => `Partea „${refused.map((x) => String(x.text || "").slice(0, 80)).join("”, „")}” nu intră în plan: în M12 nu trimit, nu contactez și nu public nimic (OUTREACH_DISABLED); restul cererii l-am pregătit.`;
 /** The note shown when a quoted instruction was kept out of a planner's words (it is content, never refused). */
 export const QUOTED_OUTREACH_NOTE = "Textul dintre ghilimele cere o trimitere, o contactare sau o publicare: e un citat, nu o cerere către mine, așa că nu intră în plan (nimic nu se trimite, OUTREACH_DISABLED).";
+/** RR10: what the owner hears when he only says what HE will do („Contactez eu firma”): no request to the Hub, nothing refused, nothing planned. */
+export const OWN_OUTREACH_TEXT = "Bine: contactul îl faci tu, în afara Hub-ului (îl poți înregistra apoi manual în Vânzări). Eu nu trimit și nu contactez nimic; dacă vrei, pregătesc oferta („pregătește o ofertă pentru …”).";
 
 // Stage before M12: questions about the system itself (owner/knowledge.mjs answers them from the Hub's real state).
 /** The questions about the system the intent resolver routes to `system_knowledge` (normalized text; the topic is knowledgeTopic's). */
@@ -1139,6 +1275,18 @@ const offerNounAt = (seq, k) => {
   const after = String(seq[k + 2]?.f || "");
   return !((next === "de" || next === "pentru" || next === "a" || next === "la") && OTHER_PROPOSAL.test(after)) && !OTHER_PROPOSAL.test(next);
 };
+/** RC1: words after „Oferta pentru X …” that make it a question or a statement about an existing offer, never a request for a new one. */
+const OFFER_STATUS_WORDS = new Set(["e", "este", "sunt", "era", "erau", "fost", "gata", "aprobata", "aprobate", "aprobat", "trimisa", "trimise", "pregatita", "pregatite", "facuta",
+  "facute", "terminata", "terminate", "scumpa", "scumpe", "ieftina", "buna", "bune", "corecta", "valabila", "arata", "costa", "contine", "are", "au", "s-a", "s-au"]);
+function offerStatementAfter(seq, from) {
+  for (let k = from; k < seq.length && k < from + 14; k += 1) {
+    const t = String(seq[k]?.f ?? "");
+    if (t === "?") return true;
+    if (/^[,;:.!]$/.test(t)) return false;
+    if (OFFER_STATUS_WORDS.has(t) || outVerb(t)) return true;
+  }
+  return false;
+}
 /**
  * The first offer request in `seq` ([{ f }]: folded words, hyphenated forms may be one token, punctuation as its own token; a typo already
  * read as the verb / noun by the caller). `anchored`: only at the first token (a prepared clause). → { verb: [i, j] | null, noun, negated } | null
@@ -1173,12 +1321,13 @@ export function offerRequestIn(seq, { anchored = false } = {}) {
         break;
       }
     }
-    // „O ofertă pentru …”, „Ofertă nouă pentru …”: the noun itself heading a clause, with its client.
+    // „O ofertă pentru …”, „Ofertă nouă pentru …”: the noun itself heading a clause, with its client. RC1: never a question or a statement
+    // about an offer that exists („Oferta pentru X e gata?”, „… a fost aprobată?”, „Oferta pentru X trimite-o mâine”).
     let k = i;
     if (["o", "un", "niste", "alta", "alt"].includes(at(k))) k += 1;
     if (offerNounAt(seq, k)) {
       const n = at(k + 1) === "noua" || at(k + 1) === "nou" ? k + 2 : k + 1;
-      if (at(n) === "pentru" && !/^(?:clip|video|plan|misiun|proiect)/.test(at(n + 1))) return { verb: null, noun: k, negated: false };
+      if (at(n) === "pentru" && !/^(?:clip|video|plan|misiun|proiect)/.test(at(n + 1)) && !offerStatementAfter(seq, n + 1)) return { verb: null, noun: k, negated: false };
     }
   }
   return null;
@@ -1199,6 +1348,11 @@ const SALES_PREPARE = {
     return m;
   },
 };
+/**
+ * RC1: a question about an offer that exists („Ce ofertă ai pregătit pentru …?”, „Oferta pentru X e gata?”, „Ofertele … sunt gata?”) is the
+ * read of the latest preparation (sales_show), never a new preparation card.
+ */
+const SALES_OFFER_QUESTION = /^(?:(?:ce|care|cate) (?:oferta|oferte|ofertele|propunere comerciala|propuneri comerciale)\b.*\b(?:ai|ati|a|au|s-a|s-au|am|e|este|sunt) (?:pregatit|facut|scris|gata|trimis|primit|aprobat|creat)\b|(?:oferta|ofertele|propunerea|propunerile) pentru(?! (?:clip|video|plan|misiun|proiect|corect))(?: (?!si\b)[a-z0-9-]+){1,8} (?:e|este|sunt|era|erau|a fost|au fost|s-a|s-au)\b|(?:oferta|ofertele)(?: (?!si\b)[a-z0-9-]+){0,8} (?:e|este|sunt|a fost|au fost|s-a|s-au) (?:deja )?(?:gata|aprobat\w*|trimis\w*|pregatit\w*|facut\w*|terminat\w*)\b)/;
 /** „Arată-mi oferta”, „Deschide dosarul ofertei”: the latest prepared offer (navigation + a read; nothing changes). */
 const SALES_SHOW = new RegExp(String.raw`^(?:(?:arata|deschide|afiseaza|vreau sa vad|adu|pune)(?:-mi|-ne)?|da-mi|da-ne)(?: si)?(?: (?:ultima|noua|cea mai noua|din nou))? (?:${OFFER_NOUN}|dosarul ofertei|dosarele ofertei)\b`);
 /**
@@ -1305,6 +1459,7 @@ const P = [
   // REFUSED with OUTREACH_DISABLED; preparing an offer is ONE plan card; showing it navigates; „aprobă oferta” and „ce lipsește din ofertă”
   // are reads the Hub answers (it never approves, it never creates an approval).
   ["sales_send", SALES_SEND, salesSendArgs],
+  ["sales_show", SALES_OFFER_QUESTION],
   ["sales_prepare", SALES_PREPARE],
   ["sales_approve_talk", SALES_APPROVE_TALK],
   ["sales_show", SALES_SHOW],
@@ -1726,7 +1881,7 @@ export function resolveIntent(text, context = {}) {
   }
   // PF-08: each part keeps whether it was itself a question (it ended with „?”), so the D20 hold below can say which part asked. The
   // parts are the same as before; only that flag is added.
-  const pieces = norm.split(/(;|\. |!|\? | (?:si )?apoi | dupa aceea | dupa care | iar apoi )/);
+  const pieces = norm.split(/(;|\. |!|\? | (?:si )?apoi | (?:si )?dupa aceea | (?:si )?dupa aia | (?:si )?dupa care | iar apoi )/);
   const clauses = [];
   for (let i = 0; i < pieces.length; i += 2) {
     const asks = pieces[i + 1] === "? " || /\?[.!?\s]*$/.test(pieces[i]);
@@ -1761,10 +1916,13 @@ export function resolveIntent(text, context = {}) {
     if (!found && (((prep.refIt || prep.again) && REOPEN.test(t)) || (prep.again && !t))) found = { intent: "reopen_last", args: { ref: "it" } };
     // M12 final review C4: in a Sales conversation (the server's last target was the offer or its card) the words that name the offer only
     // by context — „Ce lipsește din brief?”, „Aprobă propunerea”, „Continuă pregătirea” — are the offer's; elsewhere they keep their meaning.
+    // RR9: a leading acknowledgement („Ok, ce lipsește?”, „Da, aprobă propunerea”) is dropped before these reads too — never a confirmation.
+    const tAck = context.salesContext === true && t ? t.replace(SALES_ACK_LEAD, "").trim() : t;
     if (!found && t && context.salesContext === true) {
-      if (SALES_CONTINUE_CTX.test(t)) found = { intent: "sales_continue", args: {} };
-      else if (SALES_APPROVE_TALK_CTX.test(t)) found = { intent: "sales_approve_talk", args: {} };
-      else if (SALES_MISSING_CTX.test(t)) found = { intent: "sales_missing", args: { bare: true } };
+      if (SALES_CONTINUE_CTX.test(t) || SALES_CONTINUE_CTX.test(tAck)) found = { intent: "sales_continue", args: {} };
+      else if (SALES_APPROVE_TALK_CTX.test(t) || SALES_APPROVE_TALK_CTX.test(tAck)) found = { intent: "sales_approve_talk", args: {} };
+      else if (SALES_MISSING_CTX.test(t) || SALES_MISSING_CTX.test(tAck)) found = { intent: "sales_missing", args: { bare: true } };
+      else if (tAck !== t && SALES_MISSING_BARE.test(tAck)) found = { intent: "sales_missing", args: { bare: true } };
     }
     if (!found && t) { const m = matchScoped(t, norm, null, context.salesContext === true); if (m) found = { intent: m.intent, args: m.args }; }
     // C4: „Deschide devizul din ProDelivery” is that project's estimate (a project named after the noun), not the synthetic offer.
@@ -1833,19 +1991,46 @@ export function resolveIntent(text, context = {}) {
   // Final review F4: the outreach clause also leaves the words of every other step (a planner never receives „și trimite oferta
   // clientului”); a planner step left with nothing else to ask is dropped (the refusal answers it).
   const outreach = outreachScan(norm, { normalized: true, salesContext: context.salesContext === true });
-  if (outreach.hits.length) {
-    if (!steps.some((s) => s.intent === "sales_send")) {
+  // RR4: the normalized words lose the colon of „Repară X: la checkout, trimite …” (a problem described, no instruction): a hit the scan of
+  // the owner's own words does not hold (the same verb, counted in order) is no instruction either.
+  if (outreach.hits.length && /:/.test(raw)) {
+    const own = outreachScan(raw, { salesContext: context.salesContext === true });
+    const nth = (seq, i) => seq.slice(0, i).filter((t) => t.f === seq[i].f).length;
+    outreach.hits = outreach.hits.filter((h) => {
+      const k = nth(outreach.seq, h.i);
+      const ri = own.seq.findIndex((t, j) => t.f === outreach.seq[h.i].f && nth(own.seq, j) === k);
+      return ri < 0 || own.hits.some((x) => x.i === ri);
+    });
+  }
+  // RR10: the owner's own statement („contactez eu firma”) is never refused; it only leaves the words of every other step.
+  const ownCuts = outreach.selves.map((h) => norm.slice(outreach.seq[h.clause.start].start, outreach.seq[h.clause.end].end).trim()).filter(Boolean);
+  if (outreach.hits.length || ownCuts.length) {
+    if (outreach.hits.length && !steps.some((s) => s.intent === "sales_send")) {
       const words = new Set(outreach.hits.map((h) => h.word));
       const args = { reason: SALES_SEND_REASON, kind: outreach.hits[0].kind, word: outreach.hits[0].word, embedded: true };
       const at = steps.findIndex((s) => s.intent === "unknown" && !s.args?.refusedConfirmation && !s.args?.continueQuestion && String(s.text || "").split(/\s+/).some((w) => words.has(w)));
       if (at >= 0) steps[at] = { intent: "sales_send", args: { ...args, embedded: false }, constraints: steps[at].constraints || {}, effect: INTENT_EFFECTS.sales_send, text: steps[at].text };
       else steps.push({ intent: "sales_send", args, constraints: {}, effect: INTENT_EFFECTS.sales_send, text: outreach.hits[0].word });
     }
-    const cuts = outreach.hits.map((h) => norm.slice(outreach.seq[h.clause.start].start, outreach.seq[h.clause.end].end).trim()).filter(Boolean).sort((x, y) => y.length - x.length);
+    const cuts = [...outreach.hits.map((h) => norm.slice(outreach.seq[h.clause.start].start, outreach.seq[h.clause.end].end).trim()), ...ownCuts].filter(Boolean).sort((x, y) => y.length - x.length);
     const cut = (v) => { let out = String(v); let hit = false; for (const c of cuts) if (out.includes(c)) { out = out.split(c).join(" "); hit = true; } return hit ? tidyRest(out) : String(v); };
     for (let k = steps.length - 1; k >= 0; k -= 1) {
       const step = steps[k];
-      if (step.intent === "sales_send") continue;
+      if (step.intent === "sales_send") {
+        // RR11: „Trimite oferta clientului și te rog repară bug-ul de login” — the refused clause took the whole clause; the request after
+        // it is the owner's own and is kept as its own step(s) (never a confirmation or an authority, which a split never manufactures).
+        const rest = !context.outreachRest && !step.args?.embedded && typeof step.text === "string" ? cut(step.text) : "";
+        if (rest && rest !== step.text && meaningfulRest(rest)) {
+          const known = (words) => resolveIntent(words, { ...context, source, outreachRest: true }).steps.filter((s) => !["unknown", "sales_send"].includes(s.intent) && !NEVER_A_HALF.has(s.intent));
+          let more = known(rest);
+          // „… și mâine fă un clip”, „… și la ProDelivery repară bug-ul”: the request's verb leads, the words before it follow.
+          const words = rest.split(" ");
+          const verb = words.findIndex((w, n) => n > 0 && OUT_NEXT_VERB.test(w));
+          if (!more.length && verb > 0) more = known([...words.slice(verb), ...words.slice(0, verb)].join(" "));
+          if (more.length) steps.splice(k + 1, 0, ...more);
+        }
+        continue;
+      }
       const before = JSON.stringify([step.text, step.args?.request, step.args?.task, step.args?.details]);
       if (typeof step.text === "string") step.text = cut(step.text);
       if (step.args && typeof step.args.request === "string") step.args = { ...step.args, request: cut(step.args.request) };
