@@ -61,6 +61,8 @@ export const ACTIVE_STAGES = Object.freeze(new Set(["TEST_AUTHORING", "TEST_PROV
 /** M11 L5 (§3): the stages of step 0 (the Hub-written acceptance test, before it is protected). */
 export const STAGE_ZERO = Object.freeze(new Set(["TEST_AUTHORING", "TEST_PROVING", "TEST_REVIEW"]));
 const FINAL_STAGES = new Set(["ACCEPTED", "REJECTED", "CANCELLED"]);
+/** 2.15.1: the stages in which the owner may reject a mission (the exact target is checked by reject()). */
+const REJECTABLE_STAGES = new Set(["DELIVERY_READY", "NEEDS_OWNER_DECISION"]);
 const RESUMABLE = new Set(["PAUSED", "BLOCKED", "NEEDS_OWNER_DECISION"]);
 const E2E_STEP_TIMEOUT_MS = 10000;
 /**
@@ -2327,21 +2329,89 @@ export function createFactory(deps) {
     return result;
   }
 
-  async function reject(missionId, { note, actor = "user" } = {}) {
-    if (String(note || "").trim().length < 3) throw new HubError("validation", "Spune pe scurt de ce respingi");
-    return serial(missionId, async () => {
-      const f = need(fm(missionId));
-      if (f.stage !== "DELIVERY_READY" && f.stage !== "NEEDS_OWNER_DECISION") throw new HubError("conflict", `Misiunea e în ${f.stage}`);
+  /**
+   * 2.15.1: what a rejection decides on, as the page shows it — the mission's factory version (bumped by every stage change) and the
+   * one bundle waiting for the owner (or none). Null when nothing can be rejected: another stage, a stop already requested, or more than
+   * one waiting bundle (never guessed).
+   */
+  function rejectTarget(missionId) {
+    const f = fm(missionId);
+    if (!f || !REJECTABLE_STAGES.has(f.stage) || f.cancelRequestedAt) return null;
+    const ready = db.prepare("SELECT id, sha256 FROM factory_bundles WHERE mission_id = ? AND status = 'READY_FOR_OWNER_ACCEPTANCE'").all(missionId);
+    if (ready.length > 1) return null;
+    return { missionId, stage: f.stage, displayedVersion: f.version, bundleId: ready[0]?.id || null, bundleSha: ready[0]?.sha256 || null };
+  }
+  /** The owner's recorded rejection of a mission (its factory.rejected event), or null (none, or one recorded before 2.15.1). */
+  function rejectionOf(missionId) {
+    const row = db.prepare("SELECT payload_json FROM events WHERE type = 'factory.rejected' AND scope_type = 'mission' AND scope_id = ? ORDER BY seq DESC LIMIT 1").get(missionId);
+    return row ? parse(row.payload_json, null) : null;
+  }
+  const publicRejection = (d) => d && { decidedAt: d.decidedAt, note: d.note, authority: d.authority, channel: d.channel, displayedVersion: d.displayedVersion, stage: d.stage,
+    bundleId: d.bundleId, bundleSha: d.bundleSha };
+
+  /**
+   * The owner's rejection (2.15.1): only on the owner channel with a session re-read from the database (or the bounded test channel in
+   * test mode), only on the exact target the page showed (mission version + the waiting bundle's id and full sha, or explicitly none),
+   * checked before the preview stops, again after it and once more inside the final transaction (compare-and-swap on the mission version
+   * and the bundle row). A repeat of the same request on the same target with the same reason returns the recorded decision unchanged;
+   * any other request against a decided mission is refused. Nothing is written by a refusal.
+   */
+  async function reject(missionId, { note, displayedVersion, bundleId = null, bundleSha = null, actor = "user", channel = config.testMode ? "test" : null,
+    sessionCheck = null, commandId = null, correlationId = null } = {}) {
+    const refuse = (code, message, data) => { throw new HubError("conflict", message, { code, data }); };
+    if (!["owner", "test"].includes(channel) || (channel === "test" && !config.testMode) || (channel === "owner" && !sessionCheck)) throw new HubError("authentication", "Respingerea cere sesiunea proprietarului", { data: { needSession: true } });
+    const text = String(note ?? "").trim().slice(0, 500);
+    if (text.length < 3) throw new HubError("validation", "Spune pe scurt de ce respingi");
+    if (!Number.isInteger(displayedVersion) || displayedVersion < 1) throw new HubError("validation", "Respingerea cere versiunea afișată a misiunii");
+    if ((bundleId === null) !== (bundleSha === null) || (bundleId !== null && (!/^bnd_[A-Za-z0-9_-]+$/.test(bundleId) || !/^[0-9a-f]{64}$/.test(bundleSha)))) throw new HubError("validation", "Respingerea cere ID-ul și SHA-ul complet al pachetului afișat (sau niciun pachet)");
+    const sameTarget = (t) => Boolean(t) && t.displayedVersion === displayedVersion && (t.bundleId || null) === bundleId && (t.bundleSha || null) === bundleSha;
+    const check = () => {
+      const session = sessionCheck?.() || null;
+      if (closed) refuse("FACTORY_CLOSED", "Fabrica se închide; respingerea nu s-a aplicat");
+      const f = fm(missionId);
+      if (!f) throw new HubError("not_found", "Misiunea nu există");
+      if (FINAL_STAGES.has(f.stage)) {
+        const prior = f.stage === "REJECTED" ? rejectionOf(missionId) : null;
+        if (prior && sameTarget(prior)) {
+          if (prior.note !== text) refuse("REJECT_ALREADY_DECIDED", "Misiunea a fost deja respinsă cu alt motiv; decizia inițială rămâne neschimbată", { decision: publicRejection(prior) });
+          return { duplicate: { ...view(missionId), rejected: true, duplicate: true, decidedAt: prior.decidedAt, note: prior.note, decision: publicRejection(prior) } };
+        }
+        refuse("MISSION_DECIDED", `Misiunea e deja ${f.stage}; respingerea nu s-a aplicat`);
+      }
+      const target = rejectTarget(missionId);
+      if (!target) refuse("REJECT_STATE", `Misiunea e în ${f.stage}${f.cancelRequestedAt ? " (oprire cerută)" : ""}; nu așteaptă decizia ta`);
+      if (!sameTarget(target)) refuse("REJECT_TARGET_STALE", "Misiunea sau pachetul afișat s-a schimbat; reîncarcă pagina");
+      return { session };
+    };
+    const result = await serial(missionId, async () => {
+      const first = check();
+      if (first.duplicate) return first.duplicate;
       await runner.stop(`factory-preview-${missionId}`).catch(() => {});
-      { const now2 = fm(missionId); if (now2.stage !== f.stage || now2.cancelRequestedAt) throw new HubError("conflict", `Misiunea a trecut în ${now2.stage} între timp; respingerea nu s-a aplicat`); }
+      const final = check();
+      if (final.duplicate) return final.duplicate;
+      const { session } = final, decidedAt = now();
+      const decision = { missionId, displayedVersion, stage: null, bundleId, bundleSha, note: text, decidedAt, sessionId: session?.id || null, authority: session?.authority || "test",
+        channel, commandId, correlationId };
       bus.transaction(() => {
-        for (const b of db.prepare("SELECT id FROM factory_bundles WHERE mission_id = ? AND status = 'READY_FOR_OWNER_ACCEPTANCE'").all(missionId)) bundleStatusEvent(missionId, b.id, "REJECTED", "respins de proprietar");
-        db.prepare("UPDATE factory_bundles SET status = 'REJECTED', decided_at = ?, decision_note = ? WHERE mission_id = ? AND status = 'READY_FOR_OWNER_ACCEPTANCE'").run(now(), String(note).slice(0, 500), missionId);
-        cancelTasks(missionId, `respins: ${note}`);
-        setStage(missionId, "REJECTED", { reason: `Respins de proprietar: ${String(note).slice(0, 300)}`, actor });
+        // Compare-and-swap: the mission row and the bundle row must still be exactly the displayed target when the decision commits.
+        const row = db.prepare("SELECT stage, version, cancel_requested_at FROM factory_missions WHERE mission_id = ?").get(missionId);
+        if (!row || row.version !== displayedVersion || !REJECTABLE_STAGES.has(row.stage) || row.cancel_requested_at) refuse("REJECT_TARGET_STALE", "Misiunea s-a schimbat înainte de decizie");
+        decision.stage = row.stage;
+        if (bundleId) {
+          const changed = db.prepare("UPDATE factory_bundles SET status = 'REJECTED', decided_at = ?, decision_note = ? WHERE id = ? AND mission_id = ? AND status = 'READY_FOR_OWNER_ACCEPTANCE' AND sha256 = ? AND decided_at IS NULL")
+            .run(decidedAt, text, bundleId, missionId, bundleSha);
+          if (changed.changes !== 1) refuse("REJECT_TARGET_STALE", "Pachetul s-a schimbat înainte de decizie");
+        }
+        if (db.prepare("SELECT 1 FROM factory_bundles WHERE mission_id = ? AND status = 'READY_FOR_OWNER_ACCEPTANCE' LIMIT 1").get(missionId)) refuse("REJECT_TARGET_STALE", "Un alt pachet așteaptă decizia ta; reîncarcă pagina");
+        if (bundleId) bundleStatusEvent(missionId, bundleId, "REJECTED", "respins de proprietar", decision, actor);
+        bus.append({ type: "factory.rejected", scopeType: "mission", scopeId: missionId, source: actor, payload: decision });
+        cancelTasks(missionId, `respins: ${text}`);
+        setStage(missionId, "REJECTED", { reason: `Respins de proprietar: ${text.slice(0, 300)}`, actor });
       });
-      return view(missionId);
+      return { ...view(missionId), rejected: true, duplicate: false, decidedAt, note: text, decision: publicRejection(decision) };
     });
+    if (!result) refuse("FACTORY_CLOSED", "Fabrica se închide; respingerea nu s-a aplicat");
+    return result;
   }
 
   // ---------- M11 delivery hooks (read-only: no status write, no process started) ----------
@@ -2827,6 +2897,8 @@ export function createFactory(deps) {
     return {
       mission: { ...mission, progress: missions.progress(missionId) }, project: project ? { id: project.id, name: project.name, source: project.source } : null,
       factory: { ...f, waitReason: waitingApproval ? "approval" : f.waitReason },
+      // 2.15.1: the exact target a rejection from this page sends back (null when nothing can be rejected), and the recorded rejection.
+      rejectTarget: rejectTarget(missionId), rejection: publicRejection(rejectionOf(missionId)),
       spec, specs: specs(missionId).map((s) => ({ version: s.version, status: s.status, sha256: s.sha256, createdAt: s.createdAt, approvedAt: s.approvedAt, problems: s.protected?.problems || [] })),
       scope: draft.scope, scopeProblems: draft.problems,
       // What the mission's model steps run with: the approved bindings after the start, the draft's resolution before it.
@@ -2982,7 +3054,7 @@ export function createFactory(deps) {
     await Promise.race([Promise.allSettled([...chains.values()]), new Promise((r) => setTimeout(r, 5000).unref?.())]);
   }
 
-  return { initialize, reviseSpec, setLimits, scopeFor, assertStartable, startApproved, onRunFinished, stop, pause, resume, accept, reject, stopAll, recover, tick, idle, close,
+  return { initialize, reviseSpec, setLimits, scopeFor, assertStartable, startApproved, onRunFinished, stop, pause, resume, accept, reject, rejectTarget, stopAll, recover, tick, idle, close,
     // M11 delivery hooks (read-only).
     integrityFacts, bundleIntegrity, snapshotCheck, writerStarted, compensateRetirement, driftProvenance, deliveryBinding, claimFacts, previewStatus, e2eShotPath,
     continuationScope, rebindForPlan, raiseLimits, exhaustedStep: (missionId) => exhaustedStep(missionId),

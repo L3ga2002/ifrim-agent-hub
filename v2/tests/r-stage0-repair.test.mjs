@@ -290,7 +290,7 @@ for (const action of ["stop", "reject"]) test(`S0R-10 ${action} before writer re
   try {
     recordStarted(t, { protectedTest: true });
     if (action === "stop") await t.hub.factory.stop(t.child.id);
-    else if (action === "reject") await t.hub.factory.reject(t.child.id, { note: "Respins de proprietar" });
+    else if (action === "reject") await t.hub.factory.reject(t.child.id, { ...t.hub.factory.rejectTarget(t.child.id), note: "Respins de proprietar" });
     assert.equal(fs.readFileSync(path.join(t.dir, oldRef), "utf8"), oldText);
     assert.equal(readRetireJournal(t.project, t.child.id).status, "RESTORED");
     assert.equal(t.hub.factory.compensateRetirement(t.child.id, action).state, "already_restored");
@@ -866,7 +866,7 @@ test("S0R-39 reject after the writer withdraws the protected test at its sha and
     t.hub.db.prepare("INSERT INTO factory_change_sets (id, mission_id, seq, snapshot_id, changes_json, sha256, status, created_at) VALUES ('s0r-written', ?, 1, 's0r-snap', '[]', 'sha', 'CURRENT', '2026')").run(t.child.id);
     assert.equal(t.hub.factory.writerStarted(t.child.id), true);
     const journal = readRetireJournal(t.project, t.child.id);
-    const rejected = (await cmd(t, "factory.reject", { missionId: t.child.id, note: "Nu vreau schimbarea asta" })).result;
+    const rejected = (await cmd(t, "factory.reject", { ...t.hub.factory.rejectTarget(t.child.id), note: "Nu vreau schimbarea asta" })).result;
     const a = stored(t, t.child.id).prot.authoring;
     assert.equal(rejected.factory.stage, "REJECTED");
     assert.deepEqual([a.status, a.abandoned.why, a.abandoned.withdrawnFrom, a.abandoned.problem], ["ABANDONED", "reject", a.testRef, null]);

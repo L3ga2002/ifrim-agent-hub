@@ -233,8 +233,18 @@ export function registerCommands(commands, hub) {
       return hub.factory.accept(input.missionId, { ...input, ...ctx,
         sessionCheck: authenticated ? () => hub.trust.requireSession(ctx.ownerSession, "acceptarea software-ului") : null });
     } });
-  reg("factory.reject", { describe: "Respingi rezultatul (cu motiv)", async: true,
-    schema: { missionId: { required: true, max: 80 }, note: { required: true, min: 3, max: 500 } }, execute: (input, ctx) => hub.factory.reject(input.missionId, { note: input.note, actor: ctx.actor }) });
+  // 2.15.1: a rejection is the owner's terminal decision like the acceptance: the owner channel with a fresh session (re-read again by the
+  // factory after the preview stops and right before the decision commits) or the bounded test channel, on the exact displayed target.
+  reg("factory.reject", { describe: "Respingi rezultatul afișat (cu motiv): versiunea misiunii și pachetul exact", async: true, channels: ["owner", "test"],
+    schema: { missionId: { required: true, max: 80 }, note: { required: true, min: 3, max: 500 }, displayedVersion: { type: "integer", required: true, min: 1 },
+      bundleId: { max: 80, pattern: /^bnd_[A-Za-z0-9_-]+$/ }, bundleSha: { pattern: /^[0-9a-f]{64}$/, trim: false } },
+    execute: (input, ctx) => {
+      const authenticated = ctx.channel === "owner" || Boolean(ctx.ownerSession);
+      if (authenticated) hub.trust.requireFresh(ctx.ownerSession, "respingerea rezultatului");
+      return hub.factory.reject(input.missionId, { note: input.note, displayedVersion: input.displayedVersion, bundleId: input.bundleId ?? null, bundleSha: input.bundleSha ?? null,
+        actor: ctx.actor, channel: ctx.channel, commandId: ctx.commandId, correlationId: ctx.correlationId,
+        sessionCheck: authenticated ? () => hub.trust.requireSession(ctx.ownerSession, "respingerea rezultatului") : null });
+    } });
   reg("factory.finding", { describe: "Marchezi un finding (fals pozitiv, contestat, acceptat ca atare) cu motiv",
     schema: { missionId: { required: true, max: 80 }, code: { required: true, max: 20 }, status: { enum: ["FALSE_POSITIVE", "DISPUTED", "OPEN", "WONTFIX"], required: true }, note: { required: true, min: 5, max: 500 } },
     execute: (input, ctx) => hub.factory.setFindingStatus(input.missionId, input.code, { status: input.status, note: input.note, actor: ctx.actor }) });

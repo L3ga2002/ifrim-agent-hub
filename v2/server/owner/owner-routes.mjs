@@ -32,7 +32,7 @@ export function registerOwnerRoutes(router, hub) {
     const session = sessionOf(req);
     if (requireOwner && !session) throw new HubError("authentication", "Deschide sesiunea de proprietar (Windows Hello / cheia ta) pentru această acțiune", { data: { needSession: true } });
     const result = await commands.dispatch({ type, payload, actor: session ? `owner:${session.id}` : "user", channel: session ? "owner" : "ui", ownerSession: session,
-      idempotencyKey: type === "factory.accept" ? null : req.headers["idempotency-key"] || null, intentText: type === "owner.intent" ? String(payload.text || "").slice(0, 500) : "" });
+      idempotencyKey: type === "factory.accept" || type === "factory.reject" ? null : req.headers["idempotency-key"] || null, intentText: type === "owner.intent" ? String(payload.text || "").slice(0, 500) : "" });
     if (result.approvalRequired) return { __status: 202, body: { approvalRequired: true, approval: result.approval, commandId: result.command.id } };
     return created ? { __status: 201, body: result.result } : result.result;
   }
@@ -40,6 +40,11 @@ export function registerOwnerRoutes(router, hub) {
   // ---------- trusted session ----------
   post("/api/factory/:id/accept", ({ req, params, body }) => dispatch(req, "factory.accept", {
     missionId: params.id, bundleId: body?.bundleId, bundleSha: body?.bundleSha, via: "factory_panel", note: body?.note || "",
+  }, { requireOwner: true }));
+  // 2.15.1: the rejection names the exact target the page showed (view.rejectTarget): the mission version and the waiting bundle, or none.
+  // No idempotency-key replay (above): a repeat re-checks the session and returns the recorded decision from the factory.
+  post("/api/factory/:id/reject", ({ req, params, body }) => dispatch(req, "factory.reject", {
+    missionId: params.id, note: body?.note, displayedVersion: body?.displayedVersion, bundleId: body?.bundleId ?? null, bundleSha: body?.bundleSha ?? null,
   }, { requireOwner: true }));
   get("/api/owner/status", ({ req }) => ({ ...trust.status(sessionOf(req, false)), origin: originOf(req), webauthnOrigin: `http://localhost:${config.port}`,
     autonomyLevels: AUTONOMY_LEVELS.map((l) => ({ level: l, label: AUTONOMY_LABELS[l] })), deniedEffects: DENIED_EFFECTS, projectStates: PROJECT_STATES }));

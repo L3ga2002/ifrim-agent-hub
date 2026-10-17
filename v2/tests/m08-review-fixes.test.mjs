@@ -61,7 +61,7 @@ test("M08-RF-01 rejecting a delivered task while the next one runs closes the pl
     await waitFor(() => !["SPEC_DRAFT"].includes(t.hub.factory.view(m2).factory.stage), 30000, 100);
     assert.equal(t.hub.autopilot.view(o.id).status, "RUNNING");
     await assert.rejects(dispatch(t.hub, "autopilot.amend", { objectiveId: o.id, changes: { title: "x y z" } }), /rulează/);
-    await dispatch(t.hub, "factory.reject", { missionId: m1, note: "nu e bun" });
+    await dispatch(t.hub, "factory.reject", { ...t.hub.factory.rejectTarget(m1), note: "nu e bun" });
     const closed = await waitFor(() => (t.hub.envelopes.get(plan.envelope.id).status === "CANCELLED" ? t.hub.envelopes.view(plan.envelope.id) : null), 30000, 50);
     assert.match(closed.closeReason, /sarcină anterioară/);
     assert.ok(t.hub.grants.ofEnvelope(plan.envelope.id).every((g) => g.status !== "active"));
@@ -325,7 +325,7 @@ test("M08-RF-11 rejecting an earlier task that the running one does NOT depend o
     await dispatch(t.hub, "envelope.confirm", { envelopeId: plan.envelope.id, nonce: plan.envelope.nonce, displayedHash: plan.envelope.envelopeHash }, { ownerSession: t.owner.session });
     await waitFor(() => t.hub.factory.view(m1).factory.stage === "DELIVERY_READY", 120000, 100);
     await waitFor(() => t.hub.factory.view(m2).factory.stage !== "SPEC_DRAFT", 30000, 100);
-    await dispatch(t.hub, "factory.reject", { missionId: m1, note: "respins în test" });
+    await dispatch(t.hub, "factory.reject", { ...t.hub.factory.rejectTarget(m1), note: "respins în test" });
     await new Promise((r) => setTimeout(r, 1500));
     assert.equal(t.hub.envelopes.get(plan.envelope.id).status, "ACTIVE", "an independent task keeps its plan");
     assert.notEqual(t.hub.factory.view(m2).factory.stage, "PAUSED");

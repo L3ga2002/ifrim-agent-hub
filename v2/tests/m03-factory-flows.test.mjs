@@ -78,7 +78,7 @@ test("M03-FAC-02 Demo B (FEATURE): failing checks → bounded repair → review 
     assert.ok(withSteps(done.mission.conversationId) >= 2, "both writer briefs (implementation and repair) carry the E2E steps");
     assert.ok(withSteps(done.factory.reviewConversationId) >= 1, "the review brief carries the E2E steps");
     assert.ok(t.hub.supervisor.list().some((p) => p.key === `factory-preview-${mission.id}`), "preview process is tracked");
-    const rejected = (await dispatch(t.hub, "factory.reject", { missionId: mission.id, note: "Vreau alt text pe buton" })).result;
+    const rejected = (await dispatch(t.hub, "factory.reject", { ...t.hub.factory.rejectTarget(mission.id), note: "Vreau alt text pe buton" })).result;
     assert.equal(rejected.factory.stage, "REJECTED");
     assert.ok(!t.hub.supervisor.list().some((p) => p.key === `factory-preview-${mission.id}`), "preview stopped");
   } finally { await t.cleanup(); }

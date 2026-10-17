@@ -6,6 +6,7 @@ import { FACTORY_STAGE_RO, factoryPathOf, factoryWaitLabel, factoryProgress, for
 import { Panel, Empty, Loading, ErrorNotice, StatusChip, Notice, Chip, DiffView, Dialog } from "../../components/ui.jsx";
 import { boundaryOf } from "../../lib/environmentLogic.js";
 import { withReauth } from "../../lib/ownerSession.js";
+import { rejectBody, rejectionAuthorityText } from "../../lib/factoryRejectLogic.js";
 
 const SEVERITY_TONE = { critical: "error", high: "error", medium: "warn", low: "neutral", info: "neutral" };
 const EVIDENCE_TONE = { PASS: "ok", FAIL: "error", INCONCLUSIVE: "warn", BLOCKED: "error", NOT_RUN: "neutral", NEEDS_INSTALL_APPROVAL: "warn" };
@@ -213,7 +214,7 @@ export function FactoryPanel({ missionId }) {
   const [showDiff, setShowDiff] = useState(false);
   const act = useAction(async (path, body = {}) => {
     const send = () => api(`/api/factory/${missionId}/${path}`, { method: "POST", body });
-    if (path === "accept") await withReauth(send); else await send();
+    if (path === "accept" || path === "reject") await withReauth(send); else await send();
     reload();
   });
   const [reviewerModel, setReviewerModel] = useState(""); // the owner may pick an allowed reviewer model when resuming
@@ -334,9 +335,10 @@ export function FactoryPanel({ missionId }) {
               <div className="row wrap">
                 <input className="input" value={note} onChange={(e) => setNote(e.target.value)} placeholder="Notă (opțional la acceptare, obligatorie la respingere)" />
                 <button className="btn primary" disabled={act.pending || latestBundle.status !== "READY_FOR_OWNER_ACCEPTANCE"} onClick={() => act.run("accept", { bundleId: latestBundle.id, bundleSha: latestBundle.sha256, note })} data-lega-target="factory-accept"><CheckCircle2 size={14} />Accept local</button>
-                <button className="btn" disabled={act.pending || note.trim().length < 3} onClick={() => act.run("reject", { note })}><XCircle size={14} />Resping</button>
+                <button className="btn" disabled={act.pending || note.trim().length < 3 || !rejectBody(view, note)} onClick={() => act.run("reject", rejectBody(view, note))}><XCircle size={14} />Resping</button>
               </div>
             )}
+            {f.stage === "REJECTED" && view.rejection && <Notice tone="info">{rejectionAuthorityText(view.rejection)} Motiv: {view.rejection.note}</Notice>}
           </div>
         </Panel>
       )}

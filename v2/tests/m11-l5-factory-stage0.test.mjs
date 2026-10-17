@@ -1155,7 +1155,7 @@ test("repair 3: a reviewed test left under test/hub by a crash before the protec
     await approveAndStart(s, mission.id);
     const ready = await untilStage(s, mission.id, SETTLED, 180000);
     assert.equal(ready.factory.stage, "DELIVERY_READY", ready.factory.stageReason);
-    const rejected = (await dispatch(s.hub, "factory.reject", { missionId: mission.id, note: "Nu vreau schimbarea asta" })).result;
+    const rejected = (await dispatch(s.hub, "factory.reject", { ...s.hub.factory.rejectTarget(mission.id), note: "Nu vreau schimbarea asta" })).result;
     const a = rejected.authoring;
     assert.equal(rejected.factory.stage, "REJECTED");
     assert.equal(s.hub.factory.writerStarted(mission.id), true);

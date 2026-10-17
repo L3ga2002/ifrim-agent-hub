@@ -336,7 +336,7 @@ export function registerRoutes(router, hub, { token }) {
   post("/api/factory/:id/stop", cmd("factory.stop", ({ params, body }) => ({ missionId: params.id, reason: body?.reason })));
   post("/api/factory/:id/pause", cmd("factory.pause", ({ params }) => ({ missionId: params.id })));
   post("/api/factory/:id/resume", cmd("factory.resume", ({ params, body }) => ({ missionId: params.id, allowExtraCycle: Boolean(body?.allowExtraCycle), proceedToQa: Boolean(body?.proceedToQa), reviewerModel: String(body?.reviewerModel || "") })));
-  post("/api/factory/:id/reject", cmd("factory.reject", ({ params, body }) => ({ missionId: params.id, note: body?.note })));
+  // POST /api/factory/:id/reject is an owner-session route (v2/server/owner/owner-routes.mjs, 2.15.1).
   post("/api/factory/:id/findings/:code", cmd("factory.finding", ({ params, body }) => ({ missionId: params.id, code: params.code, status: body?.status, note: body?.note })));
   post("/api/isolation/r2/:projectId/accept", cmd("isolation.r2_accept", ({ params, body }) => ({ projectId: params.projectId, confirmText: body?.confirmText, days: body?.days })));
   post("/api/isolation/r2/:projectId/revoke", cmd("isolation.r2_revoke", ({ params }) => ({ projectId: params.projectId })));
