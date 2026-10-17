@@ -1698,7 +1698,26 @@ export function createSales({ db, bus, clock, config, settings }) {
       confirmations: { manualContact: MANUAL_CONTACT_TEXT, clientAcceptance: CLIENT_ACCEPTANCE_TEXT },
       catalog: { services: count("SELECT COUNT(*) AS n FROM sales_services WHERE active = 1"), configuredPrices: count("SELECT COUNT(*) AS n FROM sales_services WHERE active = 1 AND price_json LIKE '%\"CONFIGURED\"%'") },
       metricsNote: "Activități numărate din date; ratele de răspuns, conversie și veniturile cer evenimente reale (nu se calculează din date sintetice).",
+      split: splitCounts(),
     };
+  }
+  /**
+   * M12 (T-S7), additive to overview(): the same activity split into real and synthetic rows. A row is synthetic when its company is (or
+   * the row itself says so), so synthetic data never enters a real figure; the M12 preparations and dossiers (synthetic by CHECK) appear
+   * only on the synthetic side. Counts only: no name, no contact value.
+   */
+  function splitCounts() {
+    const side = (s) => (Number(s) ? "synthetic" : "real");
+    const out = { real: { orgs: 0, qualified: 0, opportunities: {}, proposals: {}, drafts: {} }, synthetic: { orgs: 0, qualified: 0, opportunities: {}, proposals: {}, drafts: {}, preparations: {}, dossiers: {} } };
+    for (const r of db.prepare("SELECT synthetic AS s, COUNT(*) AS n FROM sales_orgs WHERE archived_at IS NULL AND merged_into IS NULL GROUP BY synthetic").all()) out[side(r.s)].orgs += r.n;
+    for (const r of db.prepare("SELECT o.synthetic AS s, COUNT(DISTINCT q.org_id) AS n FROM sales_qualifications q JOIN sales_orgs o ON o.id = q.org_id GROUP BY o.synthetic").all()) out[side(r.s)].qualified += r.n;
+    const grouped = (key, sql) => { for (const r of db.prepare(sql).all()) { const g = out[side(r.s)][key]; g[r.k] = (g[r.k] || 0) + r.n; } };
+    grouped("opportunities", "SELECT (op.synthetic = 1 OR o.synthetic = 1) AS s, op.status AS k, COUNT(*) AS n FROM sales_opportunities op JOIN sales_orgs o ON o.id = op.org_id GROUP BY 1, 2");
+    grouped("proposals", "SELECT (op.synthetic = 1 OR o.synthetic = 1) AS s, p.status AS k, COUNT(*) AS n FROM sales_proposals p JOIN sales_opportunities op ON op.id = p.opportunity_id JOIN sales_orgs o ON o.id = op.org_id GROUP BY 1, 2");
+    grouped("drafts", "SELECT o.synthetic AS s, d.status AS k, COUNT(*) AS n FROM sales_drafts d JOIN sales_orgs o ON o.id = d.org_id GROUP BY 1, 2");
+    for (const r of db.prepare("SELECT status AS k, COUNT(*) AS n FROM sales_preparations GROUP BY status").all()) out.synthetic.preparations[r.k] = r.n;
+    for (const r of db.prepare("SELECT status AS k, COUNT(*) AS n FROM sales_dossiers GROUP BY status").all()) out.synthetic.dossiers[r.k] = r.n;
+    return { ...out, note: "Rândurile sintetice (marcate „sintetic”) nu intră niciodată în cifrele reale." };
   }
 
   function exportOrgsCsv(filters = {}) {
@@ -1715,10 +1734,13 @@ export function createSales({ db, bus, clock, config, settings }) {
   /** Short, bounded summaries for Lega (never the CRM, never contact values). */
   function legaPipelineSummary() {
     const o = overview();
-    const top = db.prepare(`SELECT o.id, o.display_name, o.status, q.priority FROM sales_orgs o JOIN sales_qualifications q ON q.org_id = o.id
+    const top = db.prepare(`SELECT o.id, o.display_name, o.status, o.synthetic, q.priority FROM sales_orgs o JOIN sales_qualifications q ON q.org_id = o.id
       WHERE o.archived_at IS NULL AND o.merged_into IS NULL AND q.priority IS NOT NULL ORDER BY q.priority DESC LIMIT 5`).all();
+    // M12 (T-S7): every item says whether it is synthetic, and the split real / synthetic travels with the totals (additive).
     return { orgs: o.counts.orgs, byStatus: o.counts.byStatus, opportunities: o.counts.opportunities, needsReview: o.counts.needsReview, drafts: o.counts.drafts,
-      followupsDue: o.counts.followups.DUE || 0, synthetic: o.synthetic, outreach: o.outreach, topPriority: top.map((r) => ({ id: r.id, name: r.display_name, status: r.status, priority: r.priority })) };
+      followupsDue: o.counts.followups.DUE || 0, synthetic: o.synthetic, outreach: o.outreach,
+      topPriority: top.map((r) => ({ id: r.id, name: r.display_name, status: r.status, priority: r.priority, synthetic: Boolean(r.synthetic) })),
+      split: { real: { orgs: o.split.real.orgs }, synthetic: { orgs: o.split.synthetic.orgs } } };
   }
   function legaLeadDetail(idOrName) {
     let org = getOrgRow(String(idOrName || ""));
@@ -1736,8 +1758,8 @@ export function createSales({ db, bus, clock, config, settings }) {
       doNotContact: Boolean(sheet.suppression) };
   }
   function legaDrafts() {
-    return db.prepare(`SELECT d.id, d.status, d.version, d.subject, o.display_name FROM sales_drafts d JOIN sales_orgs o ON o.id = d.org_id WHERE d.status IN ('DRAFT','CONTENT_APPROVED') ORDER BY d.updated_at DESC LIMIT 10`).all()
-      .map((r) => ({ id: r.id, org: r.display_name, status: r.status, version: r.version, subject: r.subject, sent: false }));
+    return db.prepare(`SELECT d.id, d.status, d.version, d.subject, o.display_name, o.synthetic FROM sales_drafts d JOIN sales_orgs o ON o.id = d.org_id WHERE d.status IN ('DRAFT','CONTENT_APPROVED') ORDER BY d.updated_at DESC LIMIT 10`).all()
+      .map((r) => ({ id: r.id, org: r.display_name, status: r.status, version: r.version, subject: r.subject, sent: false, synthetic: Boolean(r.synthetic) }));
   }
 
   return {

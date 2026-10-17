@@ -80,7 +80,91 @@ export const INTENT_EFFECTS = Object.freeze({
   // Stage before M12: a question about the system itself (installed apps, accounts, what the Hub can do, where results are, what Codex
   // produced, what Claude found, what is blocked) — answered from the Hub's real state (owner/knowledge.mjs); nothing runs.
   system_knowledge: "read",
+  // M12 Sales (S-07, T-S3): preparing an offer is ONE plan card (owner/planners/sales.mjs); showing it navigates to the opportunity; „ce
+  // lipsește?” and „aprobă oferta” are reads the Hub answers (the approval stays the owner's own decision, in Vânzări); sending,
+  // contacting or publishing is never done from a sentence (REFUSED with OUTREACH_DISABLED, policy/effect-class.mjs).
+  sales_prepare: "plan", sales_show: "navigate", sales_missing: "read", sales_approve_talk: "read", sales_send: "none",
 });
+
+// ---------------------------------------------------------------- M12 Sales: sending, contacting and publishing are refused
+/**
+ * What the Hub says to „trimite oferta”, „contactează-i”, „publică oferta” (any source: typed, spoken, Lega's tools, a plan). The token
+ * OUTREACH_DISABLED is the same code the Sales service refuses a send with (sales.mjs); nothing leaves the computer in M12.
+ */
+export const SALES_SEND_REASON = "OUTREACH_DISABLED: în M12 nu trimit nimic, nu contactez pe nimeni și nu public nimic. Trimiterea reală e dezactivată (pregătesc doar ciorne locale); activarea ei ar cere configurarea canalului și o autorizare separată a ta. Pot pregăti oferta și ciorna netrimisă („pregătește o ofertă pentru …”); contactul îl faci tu, în afara Hub-ului, și îl înregistrezi manual în Vânzări.";
+/**
+ * The Sales vocabulary that scopes a send / publish verb („trimite oferta”, „trimite-o clientului”, „publică oferta”). A send verb with none
+ * of these words in the sentence keeps its earlier meaning („Trimite un mesaj de probă” still reaches the planner, P0R5-04). Normalized.
+ */
+export const SALES_SCOPE = /\b(?:ofert(?:a|e|ele|ei|elor)|propuner(?:e|ea|i|ile|ii)|ciorn(?:a|e|ele|ei)|deviz(?:ul)?|cotati(?:a|e|ile)|client(?:ul|ului|a|ei|ii|i|ilor)?|firm(?:a|ei|ele|elor)|service(?:-ul|ul|-ului|ului)?|prospect(?:ul|ului|i|ii|ilor)?|lead(?:-ul|ul|-uri|uri|-urile|urile|-urilor|urilor)?|oportunitat(?:ea|ii|ile)|vanzari)\b/;
+/** A publish verb is the Sales one only with the offer itself („publică oferta”); a clip for a client keeps the Studio's own rule (MEDIA_C). */
+const OFFER_SCOPE = /\b(?:ofert(?:a|e|ele|ei|elor)|propuner(?:e|ea|i|ile|ii)|ciorn(?:a|e|ele|ei)|deviz(?:ul)?|cotati(?:a|e|ile))\b/;
+/** One slip of a word: a letter dropped, two neighbours swapped or a letter doubled (never a substitution: too close to other words). */
+function slipsOf(word) {
+  const out = new Set();
+  for (let i = 0; i < word.length; i += 1) {
+    out.add(word.slice(0, i) + word.slice(i + 1));
+    out.add(word.slice(0, i) + word[i] + word.slice(i));
+    if (i + 1 < word.length) out.add(word.slice(0, i) + word[i + 1] + word[i] + word.slice(i + 2));
+  }
+  out.delete(word);
+  return [...out];
+}
+/** Real words one slip away from an outreach verb: never read as that verb („public țintă”, „trimis”). */
+const OUTREACH_BENIGN = new Set(["public", "publice", "publicat", "publicul", "trimis", "trimise", "trimisa", "contact", "contacte", "contactat", "contactate", "postat", "postare", "poster"]);
+const withSlips = (bases, slipBases) => [...new Set([...bases, ...slipBases.flatMap(slipsOf)])].filter((w) => w.length >= 5 && !OUTREACH_BENIGN.has(w)).sort((a, b) => b.length - a.length);
+/** The verb forms (normalized, no diacritics), with one slip of the main ones: a misspelt send verb is refused, never corrected. */
+const OUTREACH_HEADS = Object.freeze({
+  send: withSlips(["trimite", "trimiteti", "trimitem", "trimiti", "trimit", "expediaza", "expediati", "expediem", "expediez"], ["trimite", "trimiteti", "expediaza"]),
+  contact: withSlips(["contacteaza", "contactati", "contactam", "contactez", "contactezi", "contacteze", "contacta"], ["contacteaza", "contactati"]),
+  publish: withSlips(["publica", "publicati", "publicam", "posteaza", "postati", "postam"], ["publica", "posteaza"]),
+});
+/** „Sună-i”, „Scrie-le”, „Dă-le un mail”: contacting a person (only with the pronoun of a person; „scrie-o” writes a text). */
+const CALL_FORMS = String.raw`(?:suna|sunati)-(?:i|l|le|o)|(?:scrie|scrieti)-(?:i|le|l)|(?:da|dati)-(?:i|le) (?:un |o )?(?:mail|e-?mail|mesaj|sms|telefon)`;
+const OUTREACH_CLITIC = String.raw`(?:-(?:o|i|l|le|ne))?`;
+/** A clause that STARTS with an outreach verb (after fillers): the step sales_send. Send / publish also need the Sales scope (below). */
+const SALES_SEND = new RegExp(String.raw`^(?:(?<send>${OUTREACH_HEADS.send.join("|")})|(?<contact>${OUTREACH_HEADS.contact.join("|")})|(?<publish>${OUTREACH_HEADS.publish.join("|")}))${OUTREACH_CLITIC}(?=[\s,.;!?]|$)|^(?<call>${CALL_FORMS})\b`);
+const salesSendArgs = (m) => ({ reason: SALES_SEND_REASON, kind: m.groups.send ? "send" : m.groups.publish ? "publish" : "contact", word: m[0].slice(0, 40) });
+/** A send / publish verb counts only inside Sales vocabulary; a contact verb always does (the Hub contacts nobody). */
+const outreachScoped = (kind, sentence) => kind === "contact" || (kind === "publish" ? OFFER_SCOPE : SALES_SCOPE).test(String(sentence || ""));
+/** Words that may stand between a negation and its verb („nu vreau să-i trimiți”, „fără să trimiți”). Anything else ends the look-back. */
+const OUTREACH_NEG_GLUE = new Set(["sa", "s", "o", "il", "l", "le", "i", "ii", "mai", "inca", "a", "ne", "vreau", "vrem", "doresc", "dorim", "trebuie", "te", "rog", "va", "se", "poti", "puteti", "cumva", "niciodata"]);
+const OUTREACH_NEGATIONS = new Set(["nu", "fara", "nici", "niciodata"]);
+const OUTREACH_HEAD_SETS = Object.fromEntries(Object.entries(OUTREACH_HEADS).map(([k, v]) => [k, new Set(v)]));
+const OK_CLITICS = new Set(["o", "i", "l", "le", "ne"]);
+/**
+ * Every outreach verb a sentence holds (typed or spoken, any clause), with its negation honoured: „Trimite oferta”, „Pregătește oferta și
+ * trimite-o clientului”, „Contactează-i” → hits; „Nu trimite oferta”, „Pregătește oferta, fără să trimiți nimic”, „formularul de contact”,
+ * „Trimite un mesaj de probă” (no Sales word) → none. Pure. `normalized`: the text is already normalize()d and unquoted.
+ * → { hits: [{ kind: "send"|"contact"|"publish", word }], scoped }
+ */
+export function salesOutreach(text, { normalized = false } = {}) {
+  const norm = normalized ? String(text || "").replace(/\u0001/g, " ") : unquote(normalize(String(text || "").slice(0, 4000)));
+  const scoped = SALES_SCOPE.test(norm);
+  const toks = norm.match(/[a-z0-9]+(?:-[a-z0-9]+)*|[,;:.!?]/g) || [];
+  const hits = [];
+  const negated = (i) => {
+    for (let k = i - 1, steps = 0; k >= 0 && steps < 4; k -= 1, steps += 1) {
+      if (OUTREACH_NEGATIONS.has(toks[k]) || /^n-/.test(toks[k])) return true;
+      if (!OUTREACH_NEG_GLUE.has(toks[k])) return false;
+    }
+    return false;
+  };
+  for (let i = 0; i < toks.length; i += 1) {
+    const w = toks[i];
+    const dash = w.indexOf("-");
+    const head = dash < 0 ? w : w.slice(0, dash);
+    const clitic = dash < 0 ? "" : w.slice(dash + 1);
+    let kind = Object.keys(OUTREACH_HEAD_SETS).find((k) => OUTREACH_HEAD_SETS[k].has(head)) || null;
+    if (kind && clitic && !OK_CLITICS.has(clitic)) kind = null;
+    if (!kind && (/^(?:suna|sunati)-(?:i|l|le|o)$/.test(w) || /^(?:scrie|scrieti)-(?:i|le|l)$/.test(w))) kind = "contact";
+    if (!kind && /^(?:da|dati)-(?:i|le)$/.test(w) && /^(?:(?:un|o) )?(?:mail|e-?mail|mesaj|sms|telefon)\b/.test(toks.slice(i + 1, i + 3).join(" "))) kind = "contact";
+    if (!kind) continue;
+    if (!outreachScoped(kind, norm) || negated(i)) continue;
+    hits.push({ kind, word: w.slice(0, 40) });
+  }
+  return { hits, scoped };
+}
 
 // Stage before M12: questions about the system itself (owner/knowledge.mjs answers them from the Hub's real state).
 /** The questions about the system the intent resolver routes to `system_knowledge` (normalized text; the topic is knowledgeTopic's). */
@@ -214,7 +298,7 @@ const AGAIN_VERBS = "deschide|porneste|arata|fa|lanseaza|ruleaza|adu|pune|reia|c
 const ACK_LEAD = /^(?:(?:ok|okay|hai|haide|bine)(?:[\s,!.:;]+|$)|(?:(?:hei|hey|buna) )?lega(?:[\s,!.:;]+|$))+/;
 /** A clause that is only an acknowledgement („Ok.” written by a transcript as its own sentence). */
 const ACK_ONLY = /^(?:(?:ok|okay|hai|haide|bine|(?:(?:hei|hey|buna) )?lega)(?:[\s,!.:;]+|$))+$/;
-const ACK_REQUESTS = new Set(["studio_create", "engineering_request", "analysis_request", "start_mission", "resume_mission", "explain_mode"]);
+const ACK_REQUESTS = new Set(["studio_create", "engineering_request", "analysis_request", "start_mission", "resume_mission", "explain_mode", "sales_prepare", "sales_send"]);
 
 /**
  * One clause → { text, again, refIt }: fillers removed, "din nou / încă o dată / o dată" and a leading "mai / iar" before a verb
@@ -735,6 +819,19 @@ export function modeAnswer({ question = false } = {}, { mode = null, spoken = tr
 /** D3: a clause that asks to run or start the preview („Rulează / Pornește / Da drumul la preview-ul …”), on the prepared clause. */
 export const PREVIEW_START = /^(?:ruleaza|porneste|lanseaza|reporneste|activeaza|da drumul la)\b/;
 
+// ---------------------------------------------------------------- M12 Sales: the owner's offer words (normalized, anchored on the verb)
+const OFFER_NOUN = String.raw`(?:oferta|oferte|ofertele|propunere(?:a)? comerciala|propunere(?:a)? de colaborare|propunere(?:a)? de pret|cotatie|cotatia|deviz|devizul)`;
+/** „Pregătește / Fă / Scrie o ofertă pentru …”, „Vreau o ofertă pentru …”: ONE preparation card (the planner reads the owner's own words). */
+const SALES_PREPARE = new RegExp(String.raw`^(?:(?:pregateste|pregatiti|pregatim|fa|faceti|facem|creeaza|genereaza|redacteaza|scrie|elaboreaza|construieste|propune)(?:-mi|-ne)?|vreau|vrem|as vrea|as dori|am nevoie de)(?: si)?(?: (?:o|un|niste|cateva|acea|aceasta|acest))?(?: (?:noua|alta|prima))? ${OFFER_NOUN}\b`);
+/** „Arată-mi oferta”, „Deschide dosarul ofertei”: the latest prepared offer (navigation + a read; nothing changes). */
+const SALES_SHOW = new RegExp(String.raw`^(?:(?:arata|deschide|afiseaza|vreau sa vad|adu|pune)(?:-mi|-ne)?|da-mi|da-ne)(?: si)?(?: (?:ultima|noua|cea mai noua|din nou))? (?:${OFFER_NOUN}|dosarul ofertei|dosarele ofertei)\b`);
+/** „Aprobă oferta”, „Aprob intern oferta”, „Poți să aprobi oferta?”: the Hub says WHERE the owner approves it; it never approves. */
+const SALES_APPROVE_TALK = /^(?:aproba|aprob|aprobati|aprobam|aprobi)(?:-o|-l)?(?: (?:si|tu|eu|acum|intern))* (?:(?:ultima|noua|aceasta|asta) )?(?:oferta|ofertele|oferte|propunerea|propunerile)\b/;
+/** „Ce lipsește din ofertă?”: the read answer from the latest preparation. A bare „Ce lipsește?” counts only in a Sales conversation. */
+const SALES_MISSING = /^(?:(?:si|dar|deci) )?ce (?:mai )?lipseste\b.*\b(?:oferta|ofertei|ofertele|propunere|propunerea|propunerii|brief|briefului|brieful|pregatirea|pregatirii|dosarul ofertei|dosarului)\b/;
+const SALES_MISSING_BARE = /^(?:(?:si|dar|deci) )?ce (?:mai )?lipseste(?: acum| inca)?$/;
+const SALES_SEND_SKIP = new Set(["sales_send"]);
+
 // Pattern table: [intent, regex on the normalized clause, (match, clause) => args]. First match wins per clause.
 // M10.2.1 (D21): a free reference may hold a dot INSIDE a word ("factory demo m10.2", "v2.1"): `\.(?=[a-z0-9])`, never as its first
 // character and never at its end (a sentence-final period is cut with the clause and stripped before matching).
@@ -805,6 +902,15 @@ const P = [
   ["fullscreen", /\becran(ul)? complet\b|\bpe tot ecranul\b|\bfullscreen\b|\bmod(ul)? lega\b/],
   ["cockpit_view", /^(cockpit(ul)?|arata(-mi)? cockpit(ul)?|iesi din ecran(ul)? complet|ecran normal)$/],
   ["details", /^(detalii|arata(-mi)? detaliile|mai multe detalii|vreau detalii)$/],
+  // M12 Sales (S-07, T-S3) — before the delivery, clip, plan and project patterns („Arată-mi oferta” was a project named „oferta”).
+  // Sending, contacting or publishing (the verb STARTS the clause; send / publish only within the Sales scope, checked in resolveIntent) is
+  // REFUSED with OUTREACH_DISABLED; preparing an offer is ONE plan card; showing it navigates; „aprobă oferta” and „ce lipsește din ofertă”
+  // are reads the Hub answers (it never approves, it never creates an approval).
+  ["sales_send", SALES_SEND, salesSendArgs],
+  ["sales_prepare", SALES_PREPARE],
+  ["sales_approve_talk", SALES_APPROVE_TALK],
+  ["sales_show", SALES_SHOW],
+  ["sales_missing", SALES_MISSING],
   // M10 Desktop Operator — BEFORE studio_open ("deschide OBS Studio" is the app, not the Studio page) and open_project ("deschide
   // CapCut" is not a project). Only known app names match; "importă din folderul acesta" reads the Explorer window in front.
   // M11 „Ifrim Delivery” — before the capture / clip / Studio patterns: a sentence that asks for the demo prepared for a presentation
@@ -992,6 +1098,8 @@ function constraintsOf(clause) {
   if (/\bfara (deploy|publicare|productie)\b/.test(clause)) c.noDeploy = true;
   if (/\bfara (commit|push)\b/.test(clause)) c.noGit = true;
   if (/\bfara (mesaje|email|trimitere)\b/.test(clause)) c.noMessages = true;
+  // M12 (T-S3): „Nu trimite oferta”, „nu contacta pe nimeni”, „fără să trimiți / contactezi nimic” only narrow the request (never a refusal).
+  if (/\b(?:nu|sa nu|fara sa|fara a) (?:(?:o|il|le|i|ii|mai) )?(?:trimite|trimiteti|trimiti|trimitem|contacta|contactati|contacteaza|contactezi|contactam|publica|publicati|posta|posteaza)\b|\bfara (?:contact|contactare|contactarea|trimiterea)\b/.test(clause)) c.noMessages = true;
   if (/\bnu (porni|pornesti|incepe|incepi|rula|rulezi|executa|executi|lansa|lansezi|confirma|confirmi)\b|\bnu (acum|inca)\b|\bsa nu (pornesti|incepi|rulezi|executi|lansezi|confirmi|pornim|incepem|executam|faci nimic)\b|\bdoar (arata|spune|explica|planul)\b|\bfara sa (pornesti|incepi|rulezi|executi|pornim)\b/.test(clause)) c.noStart = true;
   // Review M10.2 #24: with the unanchored hold now below the code requests, "Repară bug-ul de la login mai târziu" resolves to the
   // request — the delay must still remove the start (a preview-only plan, never an armed one). "care / ce / se așteaptă" describes.
@@ -1015,6 +1123,16 @@ function matchPattern(text, skip = null) {
     }
   }
   return null;
+}
+
+/**
+ * M12 (T-S3): matchPattern with the Sales scope of an outreach verb: „Trimite un mesaj de probă” (no Sales word in `sentence`) is not a
+ * sales_send and keeps whatever it meant before; a contact verb always is one.
+ */
+function matchScoped(text, sentence, skip = null) {
+  const m = matchPattern(text, skip);
+  if (m?.intent !== "sales_send" || outreachScoped(m.args.kind, sentence)) return m;
+  return matchPattern(text, skip ? new Set([...skip, ...SALES_SEND_SKIP]) : SALES_SEND_SKIP);
 }
 
 /** D4 review: what may stay outside an intent's own match when that intent still covers the whole clause („Deschide-mi Notepad-ul acum”). */
@@ -1051,7 +1169,7 @@ const COND_LEAD = new RegExp(String.raw`^(?<word>${COND_WORDS}) (?<cond>[^,]+), 
 // Review M10.2 #21: a code change or an analysis is a start too ("Repară bug-ul de login doar dacă trec testele" read the tests and
 // dropped both the request and the condition; "… după review" planned with the condition only in free text).
 const START_LIKE = new Set(["confirm", "show_plan", "continue_work", "start_mission", "resume_mission", "ops_continue", "objective_plan", "studio_create", "studio_variant", "ops_capture_vertical", "studio_import_here",
-  "engineering_request", "analysis_request", "delivery_prepare"]);
+  "engineering_request", "analysis_request", "delivery_prepare", "sales_prepare"]);
 const START_VERB = /^(?:(?:ok|okay|hai|sigur|bine|da),? )*(?:executa|porneste|incepe|lanseaza|ruleaza|confirma|continua|reia|fa-l|fa-o|da drumul|repara|rezolva|corecteaza|implementeaza|refactorizeaza|adauga|scrie|analizeaza|revizuieste|evalueaza|investigheaza)\b/;
 /** Review M10.2 #19: a clause that STARTS with a plan-start verb (after acknowledgements) — the same list show_plan's catch-all excludes. */
 const PLAN_START = /^(?:(?:ok|okay|hai|sigur|bine|da),? )*(?:executa|porneste|incepe|lanseaza|ruleaza|confirma|confirm|fa-l|fa-o|da drumul)\b/;
@@ -1064,6 +1182,8 @@ const PLAN_START = /^(?:(?:ok|okay|hai|sigur|bine|da),? )*(?:executa|porneste|in
  */
 const CLIP_INTENTS = new Set(["studio_create", "studio_variant"]);
 const CODE_INTENTS = new Set(["engineering_request", "analysis_request"]);
+/** M12: an offer request describes its client („pentru un service care vrea programări când sună clienții”): only an explicit condition holds it. */
+const SALES_INTENTS = new Set(["sales_prepare"]);
 const TOPIC_MARK = /\b(?:despre|pentru|cu tema|pe tema|cu subiectul)\b/;
 const RELATIVE_MARK = /\b(?:care|ce|unde|cum|atunci)\b/;
 const EXPLICIT_COND = { clip: /^(?<head>.+?)[\s,]+(?<word>doar daca|numai daca|doar dupa|numai dupa|dupa ce) (?<cond>.+)$/, code: /^(?<head>.+?)[\s,]+(?<word>doar daca|numai daca|doar dupa|numai dupa|doar cand|numai cand) (?<cond>.+)$/ };
@@ -1072,6 +1192,7 @@ function descriptiveCondition(intent, head, word) {
   if (strong) return null;
   if (CLIP_INTENTS.has(intent) && word !== "dupa ce" && (TOPIC_MARK.test(head) || /\bde$/.test(head))) return "clip";
   if (CODE_INTENTS.has(intent) && (RELATIVE_MARK.test(head) || /\bde$/.test(head))) return "code";
+  if (SALES_INTENTS.has(intent) && (RELATIVE_MARK.test(head) || TOPIC_MARK.test(head) || /\bde$/.test(head))) return "code";
   return null;
 }
 function conditionOf(text) {
@@ -1107,7 +1228,9 @@ function conditionOf(text) {
 // 2.12.1 round 2: gate_rearm is anchored on the whole clause, so „După Stop All, deschide poarta” is ONE rearm request (split at the
 // comma, its left half would be read as a Stop All).
 const NEVER_SPLIT = new Set(["ops_capture_vertical", "studio_edit", "simulate", "reorder", "confirm", "not_yet", "reject_plan", "refuse_execute", "studio_publish", "quiet",
-  "twin_impact", "twin_why", "objective_plan", "incident_open", "teach", "forget", "start_mission", "resume_mission", "studio_create", "gate_rearm", "delivery_prepare", "delivery_revise"]);
+  "twin_impact", "twin_why", "objective_plan", "incident_open", "teach", "forget", "start_mission", "resume_mission", "studio_create", "gate_rearm", "delivery_prepare", "delivery_revise",
+  // M12: an offer request is the owner's whole sentence (its brief); a send verb inside it is refused as a step of its own (resolveIntent).
+  "sales_prepare"]);
 /** A split never MANUFACTURES consent or authority: "Da, pornește misiunea" must not become "da" + a mission start. */
 const NEVER_A_HALF = new Set(["confirm", "lega_start", "autonomy", "unfreeze_project", "ops_continue"]);
 const RIGHT_VERB = /^(?:arata|deschide|porneste|continua|opreste|fa|pregateste|importa|treci|du-ma|mergi|adu|comuta|inregistreaza|spune|explica|reia|lanseaza|ruleaza|creeaza|genereaza|hai)\b/;
@@ -1129,9 +1252,9 @@ function splitClause(clause, context, depth = 0) {
     const r = prepClause(right).text;
     if (!RIGHT_VERB.test(r)) continue;
     const l = prepClause(left).text;
-    const rm = matchPattern(r);
+    const rm = matchScoped(r, clause);
     // Review F1: words that only talk about the stop („Nu opri tot, oprește doar Codex”) are a half of their own next to an interruption.
-    const lm = matchPattern(l) || (rm && INTERRUPT_INTENTS.has(rm.intent) && STOP_MENTION.test(l) ? { intent: "explain_stop", args: {} } : null);
+    const lm = matchScoped(l, clause) || (rm && INTERRUPT_INTENTS.has(rm.intent) && STOP_MENTION.test(l) ? { intent: "explain_stop", args: {} } : null);
     // 2.12.2 (P0-R2): an interruption is never split away from the condition, the report or the question that leads into it („Dacă pică
     // testele, oprește tot” was two clauses, the second a bare Stop All); the whole clause is judged by interruptMood.
     if (rm && INTERRUPT_INTENTS.has(rm.intent) && leadsIntoTalk(left)) continue;
@@ -1235,7 +1358,9 @@ export function resolveIntent(text, context = {}) {
     }
     // "Deschide-l", "Mai deschide-l o dată", "Încă o dată": the last target (resolved from the server's lastTarget in resolveRefs).
     if (!found && (((prep.refIt || prep.again) && REOPEN.test(t)) || (prep.again && !t))) found = { intent: "reopen_last", args: { ref: "it" } };
-    if (!found && t) { const m = matchPattern(t); if (m) found = { intent: m.intent, args: m.args }; }
+    if (!found && t) { const m = matchScoped(t, norm); if (m) found = { intent: m.intent, args: m.args }; }
+    // M12: a bare „Ce lipsește?” is the offer's read only in a Sales conversation (the server's last target was the offer or its card).
+    if (!found && context.salesContext === true && SALES_MISSING_BARE.test(t)) found = { intent: "sales_missing", args: { bare: true } };
     // P0-R6 (L11): „Treci pe live” names a project when one is called exactly so; otherwise it is the mode, answered (explain_mode).
     if (found?.intent === "explain_mode" && (context.projects || []).some((p) => flatName(p.name) === flatName(found.args.target) || flatName(p.slug) === flatName(found.args.target))) {
       found = { intent: "open_project", args: { projectRef: found.args.target } };
@@ -1285,6 +1410,19 @@ export function resolveIntent(text, context = {}) {
     if (steps[i].intent === "delivery_revise" && ["delivery_revise", "unknown"].includes(steps[i - 1].intent)) {
       const [later] = steps.splice(i, 1);
       steps[i - 1] = { ...steps[i - 1], intent: "delivery_revise", effect: INTENT_EFFECTS.delivery_revise, args: { ...steps[i - 1].args, request: `${steps[i - 1].text || steps[i - 1].args?.request || ""} ${later.args?.request || later.text || ""}`.trim() }, constraints: { ...steps[i - 1].constraints, ...later.constraints } };
+    }
+  }
+  // M12 (T-S3): a send / contact / publish verb said INSIDE another request („Pregătește oferta pentru … și trimite-o clientului”, „Deschide
+  // ProDelivery și contactează-i”) is refused as a step of its own (OUTREACH_DISABLED): the rest of the sentence keeps its meaning and the
+  // outreach never becomes work. An unknown clause that is only that verb („…. Trimite-o.”) becomes the refusal; a negated one never does.
+  if (!steps.some((s) => s.intent === "sales_send")) {
+    const outreach = salesOutreach(norm, { normalized: true });
+    if (outreach.hits.length) {
+      const words = new Set(outreach.hits.map((h) => h.word));
+      const args = { reason: SALES_SEND_REASON, kind: outreach.hits[0].kind, word: outreach.hits[0].word, embedded: true };
+      const at = steps.findIndex((s) => s.intent === "unknown" && !s.args?.refusedConfirmation && !s.args?.continueQuestion && String(s.text || "").split(/\s+/).some((w) => words.has(w)));
+      if (at >= 0) steps[at] = { intent: "sales_send", args: { ...args, embedded: false }, constraints: steps[at].constraints || {}, effect: INTENT_EFFECTS.sales_send, text: steps[at].text };
+      else steps.push({ intent: "sales_send", args, constraints: {}, effect: INTENT_EFFECTS.sales_send, text: outreach.hits[0].word });
     }
   }
   if (!steps.length) steps.push({ intent: "unknown", args: {}, constraints: {}, effect: "none", text: "" });
@@ -1365,9 +1503,13 @@ export function resolveIntent(text, context = {}) {
     out.steps.push(step);
   }
   // Stage before M12 (§5): a slip of a word Lega never corrects (a stop, a confirmation, a publication) is ONE question, never the act.
-  if (typo.suspects.length && !out.clarification && out.steps.every((s) => s.intent === "unknown" || s.effect === "read" || s.effect === "none")) {
+  // M12: a sentence already refused for outreach is not asked about again; a slip of a send / contact / publish verb is answered with the
+  // refusal's reason (nothing is sent, whatever the spelling), never with „scrie-o din nou”.
+  if (typo.suspects.length && !out.clarification && !out.steps.some((s) => s.intent === "sales_send") && out.steps.every((s) => s.intent === "unknown" || s.effect === "read" || s.effect === "none")) {
     const s = typo.suspects[0];
-    out.clarification = { question: `Ai vrut să spui „${s.to}”? Nu execut o comandă scrisă greșit; scrie-o din nou exact dacă asta vrei.`, options: [], forIntent: "unknown", suspect: s };
+    const outreachVerb = Object.values(OUTREACH_HEAD_SETS).some((set) => set.has(s.to));
+    out.clarification = { question: outreachVerb ? `Ai vrut să spui „${s.to}”? Trimiterea, contactarea și publicarea sunt dezactivate (OUTREACH_DISABLED): nu trimit, nu contactez și nu public nimic.`
+      : `Ai vrut să spui „${s.to}”? Nu execut o comandă scrisă greșit; scrie-o din nou exact dacă asta vrei.`, options: [], forIntent: "unknown", suspect: s };
   }
   return out;
 }

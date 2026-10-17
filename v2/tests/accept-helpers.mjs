@@ -6,7 +6,7 @@ import http from "node:http";
 import { fileURLToPath } from "node:url";
 import { syncBuiltinESMExports } from "node:module";
 import { DatabaseSync } from "node:sqlite";
-import { TEST_TMP, freePort } from "./helpers.mjs";
+import { TEST_TMP, FIXTURES, freePort } from "./helpers.mjs";
 import { loadConfig } from "../server/config.mjs";
 import { createHub } from "../server/hub.mjs";
 import { createHttpServer } from "../server/http/server.mjs";
@@ -91,7 +91,11 @@ export function assertStoredPaths(config, root) {
   } finally { db.close(); }
 }
 
-export async function acceptanceHub({ devProfile, clock, listen = true, seedProject = true, salesTransport } = {}) {
+/**
+ * `fakeProviders` (M12, optional; absent = unchanged): the fixture Codex / Claude clients (no network, no model) with their logs and scenario
+ * queues INSIDE the test root, for suites that start a Lega session (fake app-server) on an acceptance hub. → t.readLog(name), t.queue(name, ...lines).
+ */
+export async function acceptanceHub({ devProfile, clock, listen = true, seedProject = true, salesTransport, fakeProviders = null } = {}) {
   fs.mkdirSync(TEST_TMP, { recursive: true });
   const root = fs.mkdtempSync(path.join(TEST_TMP, "accept-"));
   try { assertInside(TEST_TMP, root); } catch (error) { fs.rmdirSync(root); throw error; }
@@ -114,9 +118,15 @@ export async function acceptanceHub({ devProfile, clock, listen = true, seedProj
     assert.notEqual(process.env.HUB_V2_OFFICE_COM, "1");
     const homeDir = path.join(root, "home"), hubRoot = path.join(root, "hub"), projectDir = path.join(root, "project");
     for (const dir of [homeDir, hubRoot]) fs.mkdirSync(dir);
+    const fake = fakeProviders ? { logs: { codex: path.join(root, "codex.log"), claude: path.join(root, "claude.log") }, queues: { codex: path.join(root, "codex.queue"), claude: path.join(root, "claude.queue") } } : null;
+    if (fake) for (const dir of [".codex", ".claude"]) fs.mkdirSync(path.join(homeDir, dir));
+    const providerBinaries = fake ? {
+      codex: { executable: process.execPath, prefixArgs: [path.join(FIXTURES, "fake-codex.mjs"), `--scenario=${fakeProviders.codex || "ok"}`, `--log=${fake.logs.codex}`, `--scenario-queue=${fake.queues.codex}`] },
+      claude: { executable: process.execPath, prefixArgs: [path.join(FIXTURES, "fake-claude.mjs"), `--fake-scenario=${fakeProviders.claude || "ok"}`, `--fake-log=${fake.logs.claude}`, `--fake-scenario-queue=${fake.queues.claude}`] },
+    } : null;
     const config = loadConfig({ testMode: true, dataDir: path.join(root, "data"), hubRoot, browserRoot: hubRoot, projectsRoot: root,
       registryPath: path.join(root, "registry.md"), roleRegistryPath: path.join(root, "roles.json"), legacyDbPath: path.join(root, "legacy.sqlite"), voiceRoot: path.join(root, "voice"),
-      port: listen ? await freePort() : 18971, ...(clock ? { now: clock } : {}), devProfile, salesTransport });
+      port: listen ? await freePort() : 18971, ...(clock ? { now: clock } : {}), devProfile, salesTransport, ...(providerBinaries ? { providerBinaries } : {}) });
     assert.equal(config.testMode, true); assert.equal(config.dataLocation.source, "override");
     for (const key of ROOT_KEYS) assertInside(root, config[key]);
     for (const value of [homeDir, process.env.TEMP, process.env.TMP]) assertInside(root, value);
@@ -162,6 +172,10 @@ export async function acceptanceHub({ devProfile, clock, listen = true, seedProj
       return result.json;
     };
     const t = { root, hub, config, project, projectDir, homeDir, request, authenticate, cleanup, assertPaths: () => assertStoredPaths(config, root) };
+    if (fake) {
+      t.readLog = (name) => (fs.existsSync(fake.logs[name]) ? fs.readFileSync(fake.logs[name], "utf8").split("\n").filter(Boolean).map((l) => JSON.parse(l)) : []);
+      t.queue = (name, ...lines) => fs.appendFileSync(fake.queues[name], `${lines.join("\n")}\n`);
+    }
     t.assertPaths();
     return t;
   } catch (error) { await cleanup(); throw error; }

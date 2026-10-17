@@ -11,7 +11,7 @@ import { catalogEntry } from "../policy/approval-policy.mjs";
 import { factoryWaitText } from "../policy/factory-wait.mjs";
 import { normalizeBindingRequest } from "../policy/model-binding.mjs";
 import { readProjectNotes } from "../domain/project-notes.mjs";
-import { resolveIntent, clauseCovered } from "../owner/intents.mjs";
+import { resolveIntent, clauseCovered, salesOutreach, SALES_SEND_REASON } from "../owner/intents.mjs";
 // Review M10.2 #5: the intake's own map of resolver intents → planner kinds (one source for what "bounded work" is).
 // 2.12.2 (L6): the intake's clarification window is also how long a repeated request_work after the Hub's question is refused.
 import { PLANNER_FOR_INTENT, INTAKE_LIMITS } from "../owner/intake.mjs";
@@ -79,12 +79,16 @@ const WORK_QUESTIONS_MAX = 10;
 /** An answer to the Hub's question carries a test file path (the engineering planner's question) or one of the question's choices. */
 const TEST_PATH_IN_WORDS = /(?:^|[\s„"'(])(?:\.\/)?[\w-]+(?:\/[\w.-]+)*\.(?:test|spec)\.(?:mjs|cjs|js|ts)(?=$|[\s.,;:!?”"')])/i;
 /** Intake planner kind per lega.request_work hint (studio → the Content Studio planner; mission → start/resume decided by the words). */
-const WORK_KIND = Object.freeze({ engineering: "engineering", studio: "studio_create", run: "run", mission: "start_mission" });
-const PLANNER_OF_INTENT = new Set(["studio_create", "start_mission", "resume_mission", "engineering", "run"]);
+const WORK_KIND = Object.freeze({ engineering: "engineering", studio: "studio_create", run: "run", mission: "start_mission",
+  // M12: an offer request („pregătește o ofertă pentru …”) → the Sales planner (ONE card; the approval stays the owner's).
+  sales: "sales" });
+const PLANNER_OF_INTENT = new Set(["studio_create", "start_mission", "resume_mission", "engineering", "run", "sales_prepare"]);
+/** The intake planner kind of a resolver intent (the Sales request's intent is not its planner's name). */
+const plannerKindOf = (intent) => (intent === "sales_prepare" ? "sales" : intent);
 const ANALYSIS_WORDS = /^\s*(?:analizeaza|citeste|rezuma|revizuieste|evalueaza|explica)\b/;
 const STUDIO_WORDS = /\b(clip|clipul|clipuri|video|videoclip|videoclipul|promo|promovare|reel|short|shorts|montaj|teaser|trailer)\b/;
 /** Screens the browser can open from a path the intake returned (the cockpit path becomes the Lega screen of that project). */
-const NAVIGABLE = /^\/(lega|studio|intel|missions|approvals|projects|system|integrations|conversations)(\/|\?|$)/;
+const NAVIGABLE = /^\/(lega|studio|intel|missions|approvals|projects|system|integrations|conversations|sales)(\/|\?|$)/;
 /**
  * M10 zero-form start: at most this many starts with derived authority per owner session in a rolling window. Counted from the
  * audit events (lega.authority_derived), so a Hub restart does not reset it; it bounds a loop that would spend plan quota.
@@ -1323,12 +1327,14 @@ export function createLega({ bus, live, clock, settings, gate, grants, projects,
     if (!s) return { ok: false, text: "Departamentul Sales nu e disponibil." };
     if (tool === "sales_overview") {
       const o = s.legaPipelineSummary();
-      const parts = [`${o.orgs} firme în pipeline${o.synthetic ? " (inclusiv date SINTETICE de test)" : ""}`,
+      // M12 (T-S7): the split real / synthetic is said with the total, and every company named carries its own synthetic mark.
+      const split = o.split ? ` (reale: ${o.split.real.orgs}, sintetice: ${o.split.synthetic.orgs})` : "";
+      const parts = [`${o.orgs} firme în pipeline${split}${o.synthetic ? " (inclusiv date SINTETICE de test)" : ""}`,
         `statusuri: ${Object.entries(o.byStatus).map(([k, v]) => `${k} ${v}`).join(", ") || "—"}`,
         `oportunități: ${Object.entries(o.opportunities).map(([k, v]) => `${k} ${v}`).join(", ") || "niciuna"}`,
         `rânduri care așteaptă decizia ta de identitate: ${o.needsReview}`, `ciorne: ${Object.entries(o.drafts).map(([k, v]) => `${k} ${v}`).join(", ") || "niciuna"}`,
         `follow-up-uri scadente: ${o.followupsDue}`, `trimiterea: ${o.outreach === "DISABLED" ? "dezactivată (doar ciorne)" : o.outreach}`];
-      if (o.topPriority.length) parts.push(`prioritate internă (nu e șansă de vânzare): ${o.topPriority.map((t) => `${clip(t.name, 50)} ${Math.round(t.priority)}`).join(", ")}`);
+      if (o.topPriority.length) parts.push(`prioritate internă (nu e șansă de vânzare): ${o.topPriority.map((t) => `${clip(t.name, 50)}${t.synthetic ? " (sintetic)" : ""} ${Math.round(t.priority)}`).join(", ")}`);
       return { ok: true, text: parts.join("; ") + "." };
     }
     if (tool === "sales_lead") {
@@ -1342,7 +1348,7 @@ export function createLega({ bus, live, clock, settings, gate, grants, projects,
         d.opportunities.length ? `oportunități: ${d.opportunities.map((p) => `${clip(p.title, 60)} (${p.status})`).join("; ")}` : "fără oportunități"].filter(Boolean).join("; ") + "." };
     }
     const drafts = s.legaDrafts();
-    return { ok: true, text: drafts.length ? `Ciorne care te așteaptă (nimic nu a fost trimis): ${drafts.map((d) => `${clip(d.org, 50)}: „${clip(d.subject, 70)}” (${d.status}, v${d.version})`).join("; ")}.` : "Nu există ciorne care să te aștepte." };
+    return { ok: true, text: drafts.length ? `Ciorne care te așteaptă (nimic nu a fost trimis): ${drafts.map((d) => `${clip(d.org, 50)}${d.synthetic ? " (sintetic)" : ""}: „${clip(d.subject, 70)}” (${d.status}, v${d.version})`).join("; ")}.` : "Nu există ciorne care să te aștepte." };
   }
 
   function missionDetail(args) {
@@ -1585,15 +1591,34 @@ export function createLega({ bus, live, clock, settings, gate, grants, projects,
     const durationOf = () => { const m = normalizeWords(request).match(/\b(\d{1,3})\s*(s|sec|secunde|de secunde)\b/); return m ? Number(m[1]) : null; };
     let kind = hint && Object.hasOwn(WORK_KIND, hint) ? WORK_KIND[hint] : null;
     if (kind === "start_mission" && step && (step.intent === "start_mission" || step.intent === "resume_mission")) kind = step.intent;
+    // M12: an offer request is the Sales planner's whatever hint the model chose (an offer is never code, a clip or an analysis).
+    if (step?.intent === "sales_prepare") kind = "sales";
     // Reading / analysis verbs ask for one bounded read-only model step (run plan), not a code change.
-    if (!kind) kind = step ? step.intent : STUDIO_WORDS.test(normalizeWords(request)) ? "studio_create" : ANALYSIS_WORDS.test(normalizeWords(request)) ? "run" : "engineering";
+    if (!kind) kind = step ? plannerKindOf(step.intent) : STUDIO_WORDS.test(normalizeWords(request)) ? "studio_create" : ANALYSIS_WORDS.test(normalizeWords(request)) ? "run" : "engineering";
     let args = { request };
-    if (step && step.intent === kind) args = { ...step.args, request };
+    if (step && plannerKindOf(step.intent) === kind) args = { ...step.args, request };
     else if (kind === "studio_create") args = { durationSec: durationOf(), topic: request.slice(0, 200), request };
     const projectId = project?.id || step?.args?.projectId || null;
     return { kind, args, projectId };
   }
   const normalizeWords = (t) => String(t || "").toLowerCase().normalize("NFD").replace(/[̀-ͯ]/g, "").replace(/[^a-z0-9 ]+/g, " ");
+
+  /**
+   * M12 (T-S3): words that send, contact or publish an offer (Sales vocabulary; any contact verb) never become work through Lega — refused
+   * here, before any planner, explainer or work request (nothing kept, so no later re-plan can turn them into work). allowPrepare: the
+   * owner's own offer request („Pregătește oferta … și trimite-o”) still reaches the Sales planner, which refuses those words inside it.
+   */
+  function outreachRefused(current, texts, { allowPrepare = false, kind = "outreach" } = {}) {
+    const words = texts.map((t) => String(t || "")).filter(Boolean).join(". ").slice(0, 4000);
+    if (!words || !salesOutreach(words).hits.length) return null;
+    if (allowPrepare) {
+      let prepares = false;
+      try { prepares = resolveIntent(words, { projects: [], missions: [], departments: [], source: "voice-provider" }).steps.some((s) => s.intent === "sales_prepare"); } catch { prepares = false; }
+      if (prepares) return null;
+    }
+    bus.emit({ type: "lega.work_request", scopeType: "system", scopeId: current.id, source: "lega", payload: { kind, projectId: null, outcome: "refused", planId: null, workRequestId: null, code: "OUTREACH_DISABLED" } });
+    return refusedWork({ text: SALES_SEND_REASON });
+  }
 
   async function requestWork(current, args) {
     const request = String(args?.request || "").replace(/\s+/g, " ").trim();
@@ -1603,6 +1628,8 @@ export function createLega({ bus, live, clock, settings, gate, grants, projects,
     if (hasSecret(request)) return refusedWork({ text: "Cererea conține ceva ce pare un secret; scrie-o tu în cockpit." });
     const hint = args?.kind_hint ? String(args.kind_hint) : null;
     if (hint && !LEGA_WORK_KINDS.includes(hint)) return refusedWork({ text: `Tip de lucrare necunoscut. Tipuri: ${LEGA_WORK_KINDS.join(", ")}.` });
+    const outreach = outreachRefused(current, [request], { allowPrepare: true, kind: hint || "outreach" });
+    if (outreach) return outreach;
     // The Hub heard the owner too: a plan / kept request it made from his words moments ago is reported, not planned again.
     const recent = recentBridgeWork(current);
     if (recent) return recentWorkReply(recent);
@@ -1712,6 +1739,8 @@ export function createLega({ bus, live, clock, settings, gate, grants, projects,
     if (objective.length < 5 || objective.length > LEGA_TASK_MAX) return { ok: false, text: `Obiectivul trebuie să aibă 5–${LEGA_TASK_MAX} caractere.` };
     const acceptance = (Array.isArray(args?.acceptance) ? args.acceptance : []).slice(0, 10).map((a) => String(a ?? "").replace(/\s+/g, " ").trim().slice(0, 300)).filter(Boolean);
     if ([title, objective, ...acceptance].some(hasSecret)) return { ok: false, text: "Misiunea conține ceva ce pare un secret; scrie-o tu în cockpit." };
+    const outreach = outreachRefused(current, [title, objective, ...acceptance], { kind: "mission" });
+    if (outreach) return outreach;
     const previewed = recentPreviewAnswer(current, project.id); // D3 review
     if (previewed) return previewWorkReply(current, previewed);
     if (!/^eng_/.test(kind)) return { ok: false, text: `Misiunile „${kind}” nu au încă un plan automat (doar lucrările de engineering devin un plan); nu am creat nimic. Dacă vrei, o creezi tu în Misiuni → Misiune nouă.` };
@@ -1733,6 +1762,8 @@ export function createLega({ bus, live, clock, settings, gate, grants, projects,
     if (task.length < 3) return { ok: false, text: "Sarcina este prea scurtă." };
     if (task.length > LEGA_TASK_MAX) return { ok: false, text: `Sarcina are peste ${LEGA_TASK_MAX} caractere; formuleaz-o mai scurt.` };
     if (redactText(task) !== task) return { ok: false, text: "Sarcina conține ceva ce pare un secret; scrie-o tu în cockpit." };
+    const outreach = outreachRefused(current, [task], { kind: "run" });
+    if (outreach) return outreach;
     const provider = args?.provider === "claude" ? "claude" : "codex";
     const access = args?.access === "workspace-write" ? "workspace-write" : "read-only";
     const requested = normalizeBindingRequest({ role: "run", provider, model: typeof args?.model === "string" ? args.model : "", effort: typeof args?.effort === "string" ? args.effort : "" });
@@ -1763,6 +1794,9 @@ export function createLega({ bus, live, clock, settings, gate, grants, projects,
     const acceptance = (Array.isArray(args?.acceptance) ? args.acceptance : []).slice(0, 10).map((a) => String(a ?? "").replace(/\s+/g, " ").trim().slice(0, 300)).filter(Boolean);
     // What the owner approves is exactly what is created: nothing the redactor would hide on the card.
     if ([title, objective, ...acceptance].some(hasSecret)) return { ok: false, text: "Misiunea conține ceva ce pare un secret; creeaz-o tu în Misiuni." };
+    // M12 (T-S3): a mission card never carries a send, a contact or a publication (the outreach template prepares, it never sends).
+    const outreach = outreachRefused(current, [title, objective, ...acceptance], { kind: "mission" });
+    if (outreach) return outreach;
     const result = await commandsApi.dispatch({ type: "lega.propose_mission", channel: "voice", actor: "lega", intentText: title,
       payload: { projectId: project.id, kind, title, objective, acceptance, legaSessionId: current.id } });
     if (!result.approvalRequired) return { ok: false, text: "Propunerea nu a putut fi pregătită." };
@@ -1794,8 +1828,10 @@ export function createLega({ bus, live, clock, settings, gate, grants, projects,
       return { ok: true, text: `Am deschis cockpitul pentru ${project.name} (doar context; nimic nu pornește). ${brief.text}` };
     }
     // M10.2 voice-first tools (absent from the legacy tool list: a legacy session gets "unknown tool", exactly as before).
-    if (["request_work", "studio_overview", "last_delivery", "hub_actions", "system_knowledge"].includes(tool)) {
+    if (["request_work", "studio_overview", "last_delivery", "hub_actions", "system_knowledge", "sales_preparation"].includes(tool)) {
       if (!isVoiceFirst(current)) return { ok: false, text: "Unealtă necunoscută." };
+      // M12: the latest synthetic offer and what it still needs (a read; the approval stays the owner's, in Vânzări).
+      if (tool === "sales_preparation") return readApi.salesAnswers ? { ok: true, text: readApi.salesAnswers.legaText() } : { ok: false, text: "Departamentul Sales nu e disponibil." };
       // Stage before M12: the same read the typed question gets (owner/knowledge.mjs), from the Hub's real state.
       if (tool === "system_knowledge") { if (!knowledgeRef) return { ok: false, text: "Registrul sistemului nu e disponibil." }; const a = await knowledgeRef.answer(String(args?.topic || "overview")); return { ok: true, text: `${a.text}${a.screen ? ` (ecran: ${a.screen})` : ""}` }; }
       if (tool === "request_work") return requestWork(current, args);
@@ -1847,6 +1883,8 @@ export function createLega({ bus, live, clock, settings, gate, grants, projects,
       // What the owner sees must be exactly what is approved: no longer than the card shows, and nothing the redactor would hide.
       if (task.length > LEGA_TASK_MAX) return { ok: false, text: `Sarcina are peste ${LEGA_TASK_MAX} caractere; formuleaz-o mai scurt sau scrie-o în Focus.` };
       if (redactText(task) !== task) return { ok: false, text: "Sarcina conține ceva ce pare un secret; scrie-o tu în Focus." };
+      const outreach = outreachRefused(current, [task], { kind: "run" });
+      if (outreach) return outreach;
       const provider = args?.provider === "claude" ? "claude" : "codex";
       const access = args?.access === "workspace-write" ? "workspace-write" : "read-only";
       // M09: the model is part of the proposal the owner approves. Claude never runs on the account default (an explicit alias is

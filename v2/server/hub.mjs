@@ -86,6 +86,7 @@ import { createPlanLedger } from "./sales/plan-ledger.mjs";
 import { createSalesPreparations, PREPARE_KIND, PREPARATION_PHASE_B_OPS } from "./sales/preparation.mjs";
 import { createSalesPlanExecutors } from "./sales/plan-executors.mjs";
 import { registerSalesPlanner } from "./owner/planners/sales.mjs";
+import { createSalesAnswers } from "./sales/sales-answers.mjs";
 import { createKnowledge } from "./owner/knowledge.mjs";
 import { createDevProfileReader } from "./owner/dev-profile.mjs";
 import { setExtraCommands } from "./factory/spec.mjs";
@@ -338,6 +339,9 @@ export function createHub(config, { providerOverrides = {}, homeDir, browserLaun
   Object.assign(executors, createSalesPlanExecutors({ sales, preparations: salesPreparations, ledger: salesLedger, opsPlans, media, config, bus }));
   opsPlans.registerParent(PREPARE_KIND, { allowedOps: PREPARATION_PHASE_B_OPS, verify: (parent) => salesPreparations.verifyParent(parent) });
   sales.onInvalidated((event) => salesPreparations.onInvalidated(event));
+  // M12 (S-07): the Hub's own answers to „Arată-mi oferta” / „Ce lipsește?” / „Aprobă oferta” (reads only; the intake and Lega's read tool).
+  const salesAnswers = createSalesAnswers({ sales, preparations: salesPreparations });
+  legaRead.salesAnswers = salesAnswers;
 
   // M10.2 U13: Lega arms a plan it has just SPOKEN (its bridge or its plan tool); the plan's service re-checks everything. A plan already
   // armed in this Lega session keeps its window (re-arming would make a "Da" said in between count as said before the window).
@@ -354,7 +358,7 @@ export function createHub(config, { providerOverrides = {}, homeDir, browserLaun
     company, chiefOfStaff, surfaces, schedules, computer, skills, artifacts, integrations, nativeSessions, telemetry, router, commands, checkpoints,
     breakers, supervisor, backups, providers, gate, runs, handoffs, tools, roleConfig, skillConfig, capabilityConfig, codexIsolation, lega, refreshCodexConfig, factory, factoryRunner,
     environments, wslRunner, trust, envelopes, armedWindows, cockpit, interrupts, advisor, voice, voiceEngine,
-    twin, warroom, autopilot, simulations, league, skillEvolution, teach, packages, board, devices, media, desktop, opsPlans, executors, deliveries, salesPreparations, salesLedger };
+    twin, warroom, autopilot, simulations, league, skillEvolution, teach, packages, board, devices, media, desktop, opsPlans, executors, deliveries, salesPreparations, salesLedger, salesAnswers };
   registerCommands(commands, hub);
   // Stage before M12: what Lega knows about the system (read-only, from the real registries and tables).
   hub.knowledge = createKnowledge(hub);

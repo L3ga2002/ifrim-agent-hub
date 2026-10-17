@@ -284,6 +284,8 @@ function Cockpit({ projectId, go }) {
         if (r.navigate?.startsWith("/cockpit/")) { const next = r.navigate.split("/")[2]; setCurrentProject(next); go(`/lega/${next}`); }
         // M09: "deschide studioul", "arată-mi clipul X", a proposed correction (opens the clip at that second with the proposal).
         if (r.navigate?.startsWith("/studio")) go(r.navigate);
+        // M12: „Arată-mi oferta” / „Ce lipsește?” / „Aprobă oferta” open the offer in Vânzări → Oportunitate (a read; the decision stays there).
+        if (r.navigate?.startsWith("/sales")) go(r.navigate);
         if (r.plan?.envelope || r.plan?.summary) setPlan(r.plan);
         // Review #40: a card shape without the derived secrets list is read back in full (the guard above needs it); no focus here.
         if (r.opsPlan) { setOpsPlan(r.opsPlan); if (!Array.isArray(r.opsPlan.needsSecrets) && r.opsPlan.status === "PROPOSED") loadOpsPlan(r.opsPlan.id); }

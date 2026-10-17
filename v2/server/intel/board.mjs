@@ -49,8 +49,12 @@ export function createBoard({ db, bus, clock, settings, sales, factory, approval
     if (objectives.length) add("engineering", "info", `Obiective Autopilot: ${objectives.length}`, { items: objectives.slice(0, 10).map((o) => ({ objectiveId: o.id, title: o.title, status: o.status, progress: o.progress })) });
     // --- Sales ---
     const ov = sales.overview();
-    add("sales", "info", "Pipeline de vânzări (activitate numărată din date)", { orgs: ov.counts.orgs, opportunities: ov.counts.opportunities, proposals: ov.counts.proposals, followups: ov.counts.followups,
-      synthetic: ov.synthetic, outreach: ov.outreach, note: `${ov.metricsNote} Un preț de ofertă nu e venit; un lead calificat nu e un client câștigat.`, source: "sales.overview()" });
+    // M12 (T-S7): the line says when synthetic data is in it, and the real / synthetic split travels with it (additive; real figures
+    // never include a synthetic row).
+    const syntheticOrgs = ov.split?.synthetic?.orgs || 0;
+    add("sales", "info", `Pipeline de vânzări (activitate numărată din date)${ov.synthetic ? ` (sintetic: ${syntheticOrgs} ${syntheticOrgs === 1 ? "firmă sintetică" : "firme sintetice"}, ${ov.split?.real?.orgs ?? 0} reale)` : ""}`, { orgs: ov.counts.orgs, opportunities: ov.counts.opportunities, proposals: ov.counts.proposals, followups: ov.counts.followups,
+      synthetic: ov.synthetic, outreach: ov.outreach, note: `${ov.metricsNote} Un preț de ofertă nu e venit; un lead calificat nu e un client câștigat.`, source: "sales.overview()",
+      split: ov.split ? { real: ov.split.real, synthetic: ov.split.synthetic } : null });
     // --- Operations ---
     const lastBackup = db.prepare("SELECT id, status, created_at FROM backups WHERE status = 'verified' ORDER BY created_at DESC LIMIT 1").get();
     const failedSchedules = db.prepare("SELECT COUNT(*) AS n FROM schedules WHERE status = 'ACTIVE' AND last_result LIKE 'fail%'").get().n;

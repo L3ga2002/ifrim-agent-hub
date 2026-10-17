@@ -9,6 +9,7 @@ import {
   orgManualTargets, auditReadiness, salesHref, approvalFrom, textExcerpt, formatPrice, REASON_MIN,
 } from "../../lib/salesLogic.js";
 import { SalesChip, SyntheticTag, useSalesResource, useSalesCommand, ApprovalGate, SalesError, Excerpt, when } from "./common.jsx";
+import { QualificationNotes } from "./QualificationNotes.jsx";
 
 const QUALIFICATION_WEIGHTS = { serviceFit: 50, evidence: 30, completeness: 20 }; // q-v1 (contract §2.4), shown for transparency
 
@@ -341,6 +342,7 @@ export function OrgSheet({ id, go, backHref }) {
           <Identity org={org} aliases={aliases} unknowns={unknowns} lastVerifiedAt={typeof d.lastVerifiedAt === "string" ? d.lastVerifiedAt : ""} />
           <Audit audit={audit} readiness={readiness} busy={running === "audit"} locked={running !== null} onRun={() => runAction("audit", `${base}/audit`, { sourceKind: "fixture" })} />
           <Qualification q={qualification} orgId={org.id || id} busy={running === "qualify"} locked={running !== null} onRun={() => runAction("qualify", `${base}/qualify`, {})} onChanged={reload} />
+          <QualificationNotes raw={d.qualification ?? newestFirst(listOf(d, "qualifications"))[0] ?? null} />
           <Evidence evidence={evidence} status={evidenceStatus} />
         </div>
         <div className="stack">

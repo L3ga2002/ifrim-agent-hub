@@ -1,0 +1,102 @@
+// M12 Sales (S-07): the Hub's own answers to the owner's offer questions — „Arată-mi oferta”, „Ce lipsește?”, „Aprobă oferta” — read from
+// the latest synthetic preparation and its offer (sales/preparation.mjs, sales/sales.mjs). Reads only: nothing is written, approved,
+// requested, sent or started here. The same answers serve the typed cockpit, the owner's voice (intake) and Lega's read tool
+// (lega.sales_preparation, voice-first only). The approval of the offer stays the owner's own decision, in Vânzări → Oportunitate, on the
+// exact id + full SHA; this module only says where and what.
+
+const clip = (v, n = 300) => String(v ?? "").replace(/\s+/g, " ").trim().slice(0, n);
+/** Where the opportunity of an offer is shown (the Sales screen, its opportunity tab). */
+export const salesOpportunityPath = (opportunityId) => `/sales?tab=opp&id=${encodeURIComponent(String(opportunityId || ""))}`;
+
+/** A preparation's status, said to the owner (Romanian, short). */
+export const PREPARATION_STATUS_RO = Object.freeze({
+  PLANNED: "planul așteaptă confirmarea ta (nimic nu a pornit)", PREPARING: "se pregătește (fără model; nimic nu pleacă din calculator)",
+  WAITING_OWNER: "oferta e gata de revizuirea ta și așteaptă aprobarea ta internă", PACKAGING: "ai aprobat oferta; se fac ciorna netrimisă și dosarul ofertei",
+  READY: "dosarul ofertei e gata, local; nimic trimis", STALE: "oprită: oferta sau intrările ei s-au schimbat", STOPPED: "oprită (de exemplu după „Oprește tot”)",
+  EXPIRED: "expirată (fereastra planului confirmat a trecut)", CANCELLED: "anulată", FAILED: "oprită de o eroare",
+});
+const PROPOSAL_STATUS_RO = Object.freeze({ DRAFT: "ciornă, neaprobată", APPROVED_INTERNAL: "aprobată intern de tine (nu e trimisă)", SUPERSEDED: "înlocuită de o versiune mai nouă",
+  STALE: "depășită: intrările ei s-au schimbat" });
+const CONTINUE_HINT = "O continuare cere un card nou, pe care îl confirmi o dată.";
+
+export function createSalesAnswers({ sales, preparations }) {
+  /** The newest preparation that has an offer (else the newest at all), with its opportunity view; null when none exists. */
+  function latest() {
+    if (!preparations?.list) return null;
+    const list = preparations.list();
+    const p = list.find((x) => x.opportunityId) || list[0] || null;
+    if (!p) return null;
+    let view = null;
+    try { view = p.opportunityId ? sales.getOpportunity(p.opportunityId) : null; } catch { view = null; }
+    const proposal = view?.proposals?.[0] || null;
+    const dossier = p.opportunityId && preparations.forOpportunity ? preparations.forOpportunity(p.opportunityId).dossiers[0] || null : null;
+    return { p, view, proposal, dossier };
+  }
+  /** The facts every answer carries (ids, version, the FULL sha, statuses; never a contact value). */
+  const factsOf = ({ p, view, proposal, dossier }) => ({ preparationId: p.id, preparationStatus: p.status, opportunityId: p.opportunityId || null,
+    opportunityStatus: view?.opportunity?.status || null, synthetic: true,
+    proposal: proposal ? { id: proposal.id, version: proposal.version, sha: proposal.contentSha, status: proposal.status, approvedSha: proposal.approvedSha || null } : null,
+    dossier: dossier ? { id: dossier.id, revision: dossier.revision, status: dossier.status, manifestSha256: dossier.manifestSha256 || null, app: dossier.verification?.proposalDocx?.app || null } : null });
+  const none = () => ({ message: "Nu am încă o ofertă pregătită. Spune „pregătește o ofertă pentru …” (de exemplu: pregătește o ofertă pentru un service auto din Cluj care vrea programări online) și îți arăt un singur plan.", sales: null });
+  const planned = (l) => ({ message: `Pregătirea ofertei: ${PREPARATION_STATUS_RO[l.p.status] || l.p.status}. Oferta nu există încă.`, sales: factsOf(l) });
+
+  /** „Arată-mi oferta”: the latest offer (id, version, full SHA, status), where it is, and what its preparation is doing. */
+  function show() {
+    const l = latest();
+    if (!l) return none();
+    if (!l.proposal) return planned(l);
+    const { p, proposal, dossier } = l;
+    const parts = [`Oferta sintetică v${proposal.version} (${proposal.id}), SHA ${proposal.contentSha}: ${PROPOSAL_STATUS_RO[proposal.status] || proposal.status}.`,
+      `Pregătirea: ${PREPARATION_STATUS_RO[p.status] || p.status}.`];
+    if (dossier) parts.push(`Dosarul ofertei, revizia ${dossier.revision}: ${dossier.status}${dossier.manifestSha256 ? ` (manifest SHA ${dossier.manifestSha256})` : ""}; ciorna e DRAFT_ONLY, netrimisă.`);
+    if (["STALE", "STOPPED", "EXPIRED", "FAILED"].includes(p.status)) parts.push(CONTINUE_HINT);
+    parts.push("Ți-o deschid în Vânzări → Oportunitate.");
+    return { message: parts.join(" "), navigate: salesOpportunityPath(p.opportunityId), sales: factsOf(l) };
+  }
+
+  /** „Ce lipsește?”: what the brief did not say, what q-v2 could not score, the unknown prices and the owner's pending decision. */
+  function missing() {
+    const l = latest();
+    if (!l) return none();
+    const { p, view, proposal } = l;
+    const parts = [];
+    const brief = (p.brief?.missing || []).filter((m) => m && m.field !== "catalog" && m.field !== "intent").map((m) => clip(m.text, 80)).filter(Boolean);
+    if (brief.length) parts.push(`Din cererea ta lipsesc: ${brief.join(", ")}.`);
+    const q = view?.org?.id && sales.latestQualification ? sales.latestQualification(view.org.id) : null;
+    const qMissing = (q?.result?.missing || []).map((x) => clip(typeof x === "string" ? x : x?.text || x?.claim || "", 100)).filter(Boolean);
+    if (qMissing.length) parts.push(`Calificarea ${q.formulaVersion || "q-v2"} (inferențele nu primesc puncte): ${qMissing.slice(0, 8).join("; ")}.`);
+    const unknown = (proposal?.content?.pricing || []).filter((x) => x?.status === "UNKNOWN");
+    if (unknown.length || proposal) parts.push(unknown.length ? "Prețul și termenul: De stabilit (neconfigurat) — catalogul de servicii nu e configurat, deci nu pun nicio sumă."
+      : "Prețurile vin doar din catalogul configurat.");
+    if (p.status === "WAITING_OWNER" && proposal?.status === "DRAFT") {
+      parts.push(`Aprobarea ta internă a ofertei v${proposal.version} (${proposal.id}, SHA ${proposal.contentSha}): o dai tu, în Vânzări → Oportunitate, cu „Aprob intern”; eu nu o pot da.`);
+    } else if (p.status === "PLANNED") parts.push("Confirmarea planului de pregătire (cardul din cockpit).");
+    else if (["STALE", "STOPPED", "EXPIRED", "FAILED"].includes(p.status)) parts.push(`Pregătirea e ${PREPARATION_STATUS_RO[p.status]}. ${CONTINUE_HINT}`);
+    if (!parts.length) parts.push("Nu lipsește nimic din ce pot verifica eu; prețurile rămân „De stabilit” până configurezi catalogul.");
+    return { message: parts.join(" ").slice(0, 1500), navigate: p.opportunityId ? salesOpportunityPath(p.opportunityId) : null, sales: { ...factsOf(l), missing: { brief, qualification: qMissing, unknownPrices: unknown.length } } };
+  }
+
+  /** „Aprobă oferta”: never an approval — where the owner gives it, on the exact id + full SHA. Nothing is requested or created. */
+  function approveTalk() {
+    const l = latest();
+    const never = "Eu nu aprob oferta și nu am creat nicio aprobare: aprobarea internă e decizia ta.";
+    if (!l) return { message: `${never} ${none().message}`, sales: null };
+    if (!l.proposal) return { message: `${never} ${planned(l).message}`, sales: factsOf(l) };
+    const { p, proposal, view } = l;
+    const waiting = proposal.status === "DRAFT" && view?.opportunity?.status === "READY_FOR_OWNER_REVIEW";
+    const where = waiting
+      ? `O dai în Vânzări → Oportunitate, pe ținta exactă — oferta v${proposal.version}, id ${proposal.id}, SHA ${proposal.contentSha} — cu butonul „Aprob intern”, în sesiunea ta de proprietar. Aprobarea nu trimite nimic și nu marchează CONTACTED sau WON.`
+      : proposal.status === "APPROVED_INTERNAL" ? `Oferta v${proposal.version} (${proposal.id}) e deja aprobată intern de tine; nu e trimisă.`
+        : `Oferta v${proposal.version} nu așteaptă acum aprobarea (${PROPOSAL_STATUS_RO[proposal.status] || proposal.status}; pregătirea: ${PREPARATION_STATUS_RO[p.status] || p.status}).`;
+    return { message: `${never} ${where}`, navigate: salesOpportunityPath(p.opportunityId), sales: factsOf(l) };
+  }
+
+  /** Lega's voice-first read (lega.sales_preparation): the offer and what is missing, in one bounded text. */
+  function legaText() {
+    const a = show();
+    if (!a.sales?.proposal) return `${a.message} Trimiterea, contactarea și publicarea sunt dezactivate (OUTREACH_DISABLED).`;
+    return `${a.message.replace(/ Ți-o deschid în Vânzări → Oportunitate\.$/, "")} ${missing().message} Trimiterea, contactarea și publicarea sunt dezactivate (OUTREACH_DISABLED).`.slice(0, 2400);
+  }
+
+  return { latest, show, missing, approveTalk, legaText };
+}

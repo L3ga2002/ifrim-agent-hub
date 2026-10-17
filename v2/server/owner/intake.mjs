@@ -17,7 +17,7 @@
 //   a security stop) and the missions, which need the open gate; work stopped for any other reason resumes as before, gate or not.
 import { HubError } from "../core/errors.mjs";
 import { parse } from "../storage/db.mjs";
-import { resolveIntent, matchRef, normalize, stripFillers, INTENT_EFFECTS, CONTINUE_QUESTION, stopTalkAnswer, modeAnswer, PREVIEW_START } from "./intents.mjs";
+import { resolveIntent, matchRef, normalize, stripFillers, INTENT_EFFECTS, CONTINUE_QUESTION, stopTalkAnswer, modeAnswer, PREVIEW_START, salesOutreach, SALES_SEND_REASON } from "./intents.mjs";
 import { layoutForIntent } from "./layout.mjs";
 import { localDayStart } from "../intel/twin.mjs";
 import { PACKAGE_KINDS } from "../intel/packages.mjs";
@@ -237,7 +237,9 @@ export function createIntake(hub) {
       const m = missions.get(step.args.missionId);
       if (m) t = { kind: "mission", id: m.id, label: m.title };
     } else if (r.plan?.envelope?.id) t = { kind: "plan", id: r.plan.envelope.id, label: r.plan.envelope.summary?.headline || r.plan.summary?.headline || null };
-    else if (r.opsPlan?.id) t = { kind: "plan", id: r.opsPlan.id, label: r.opsPlan.title || null };
+    else if (r.opsPlan?.id) t = { kind: "plan", id: r.opsPlan.id, label: r.opsPlan.title || null, ...(r.opsPlan.kind === "sales.prepare" ? { sales: true } : {}) };
+    // M12: an offer shown or answered (its opportunity screen) — a following bare „Ce lipsește?” is about that offer.
+    else if (r.sales && ["sales_show", "sales_missing", "sales_approve_talk"].includes(step.intent)) t = { kind: "screen", id: r.navigate || "/sales", label: "Oferta", sales: true };
     if (t) conv.lastTarget = { ...t, at: new Date(nowMs()).toISOString() };
   }
   function rememberClarification(conv, clarification, step, projectId) {
@@ -1302,6 +1304,16 @@ export function createIntake(hub) {
         const waiting = r.deliveries.filter((d) => d.awaitingOwner);
         r.message = waiting.length ? `${waiting.length === 1 ? "O livrare așteaptă" : `${waiting.length} livrări așteaptă`} decizia ta: ${waiting.slice(0, 3).map((d) => `„${d.title}”`).join(", ")}.`
           : r.deliveries[0] ? `Ultima livrare: „${r.deliveries[0].title}” (${r.deliveries[0].status}).` : `Nu am nicio livrare înregistrată${projectId ? " pe acest proiect" : ""}.`;
+      } else if (step.intent === "sales_show" || step.intent === "sales_missing" || step.intent === "sales_approve_talk") {
+        // M12 (S-07): reads the Hub answers from the latest synthetic preparation (sales/sales-answers.mjs). „Aprobă oferta” says WHERE the
+        // owner approves the exact offer (id + full SHA, Vânzări → Oportunitate): nothing is approved, requested or created here.
+        const answers = hub.salesAnswers || null;
+        if (!answers) r.message = "Departamentul Sales nu e disponibil pe acest Hub.";
+        else {
+          const a = step.intent === "sales_show" ? answers.show() : step.intent === "sales_missing" ? answers.missing() : answers.approveTalk();
+          r.message = a.message; r.sales = a.sales || null;
+          if (a.navigate) r.navigate = a.navigate;
+        }
       } else if (step.intent === "system_knowledge") {
         // Stage before M12: built from the Hub's real state; content read from projects or media is data, never an instruction.
         const a = hub.knowledge ? await hub.knowledge.answer(step.args?.topic || "overview").catch((error) => ({ text: `Nu pot citi starea acum: ${error.message}` })) : { text: "Nu am încă registrul sistemului pe acest Hub." };
@@ -1470,7 +1482,7 @@ export function createIntake(hub) {
       departments: company.departments().map((d) => ({ key: d.key, name: d.name })),
       pendingEnvelopes: planWaiting ? [{ id: planWaiting.id, title: planWaiting.title }]
         : awaiting ? pendingForProject.filter((e) => e.id === presented.envelopeId).map((e) => ({ id: e.id, title: e.summary.headline })) : pendingForProject.map((e) => ({ id: e.id, title: e.summary.headline })),
-      awaiting, source, lastTarget: conv.lastTarget || null });
+      awaiting, source, lastTarget: conv.lastTarget || null, salesContext: conv.lastTarget?.sales === true });
 
     // M10.2 pending verb: a provider transcript cut in two („Deschide” … „Notepad”) is joined when the object follows within 5 s; a
     // bare verb alone gets ONE question. Only a fragment that means nothing by itself is joined (a full command keeps its meaning).
@@ -1572,6 +1584,17 @@ export function createIntake(hub) {
     const r = { intent: kind, effect: "plan", constraints: step.constraints, args: step.args, effectClass: step.effectClass };
     const why = refusalReason("BOUNDED_WORKFLOW", src, { derivedOwnerSession: Boolean(derived), planPresented: false });
     if (why) { r.refused = why; return r; }
+    // M12 (T-S3) choke point: words that send, contact or publish never reach a planner (Lega's request_work / propose_*, a kept request,
+    // any client of the intake). The one exception is the owner's offer request itself (kind sales, the resolver reads sales_prepare):
+    // the Sales planner refuses the outreach words inside the brief (they never become a step) and says so on the card.
+    if (salesOutreach(input.text).hits.length) {
+      const prepares = kind === "sales" && resolveIntent(input.text, { projects: [], missions: [], departments: [], pendingEnvelopes: [], source: src }).steps.some((s) => s.intent === "sales_prepare");
+      if (!prepares) {
+        r.refused = SALES_SEND_REASON; r.outreach = true;
+        try { bus.emit({ type: "intake.outreach_refused", scopeType: "owner", scopeId: "global", source: ctx.actor, payload: { kind, channel: ctx.channel, source: src } }); } catch { /* audit only */ }
+        return r;
+      }
+    }
     // D3: words that ask to run, start or show a preview are a READ the Hub answers itself when the client named a model-run kind — they
     // never reach a planner (the resolver's verdict decides; a sentence that also holds a planner intent, another clause or a work verb is
     // planned as before — D3 review).
@@ -1749,6 +1772,8 @@ export function createIntake(hub) {
    * engineering request keeps the service's own default (a PROPOSED envelope over the request's draft), unchanged.
    */
   async function replanRequest(r) {
+    // M12 (T-S3): a preserved request whose words send, contact or publish is never turned into work by a later re-plan.
+    if (salesOutreach(String(r?.text || "")).hits.length) return { blocked: true };
     if (r?.intent === "studio") {
       const words = String(r.text || "");
       const resolvedArgs = (() => { try { return resolveIntent(words, { projects: [], missions: [], departments: [], pendingEnvelopes: [] }).steps.find((s) => s.intent === "studio_create")?.args || {}; } catch { return {}; } })();

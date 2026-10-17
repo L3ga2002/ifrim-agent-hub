@@ -20,11 +20,20 @@ const NOUNS = ["prezentarea", "prezentare", "prezentarii", "demo-ul", "demoul", 
   "campanie", "campaniei", "pachet", "pachetul", "dosar", "dosarul", "clipul", "videoclip", "videoclipul", "vertical", "verticala",
   "rezumatul", "rezumat", "proiectul", "proiect", "planul", "misiunea", "site-ul", "siteul", "programarile", "programare", "programarea",
   "detailing", "excel", "excelul", "wordul", "demonstrative", "demonstrativ", "singur", "totul", "comercial", "variante", "varianta",
-  "telefon", "telefonul", "butonul", "formularul", "camera", "aplicatia", "aplicatiile", "modelele", "conturile"];
-/** Words that stay exactly as said: they are never a correction's target, so a typo cannot turn into them. */
+  "telefon", "telefonul", "butonul", "formularul", "camera", "aplicatia", "aplicatiile", "modelele", "conturile",
+  // M12 Sales: the offer nouns only (never a send, contact or publish verb: those are NEVER_TARGET below).
+  "oferta", "oferte", "ofertele", "ofertei", "propunerea"];
+/**
+ * Words that stay exactly as said: they are never a correction's target, so a typo cannot turn into them. M12: every send, contact and
+ * publish verb form too (the resolver refuses them with OUTREACH_DISABLED; a slip is never corrected toward them).
+ */
 export const NEVER_TARGET = Object.freeze(new Set(["confirma", "confirm", "executa", "opreste", "oprim", "stop", "publica", "posteaza",
-  "trimite", "sterge", "plateste", "accepta", "revoca", "aproba", "anuleaza", "nu", "fara", "dezactiveaza", "elimina", "goleste"]));
+  "trimite", "sterge", "plateste", "accepta", "revoca", "aproba", "anuleaza", "nu", "fara", "dezactiveaza", "elimina", "goleste",
+  "trimiteti", "trimitem", "expediaza", "expediati", "contacteaza", "contactati", "contactam", "contactez", "contactezi", "contacteze", "contacta",
+  "publicati", "publicam", "postati", "postam", "emaileaza"]));
 const VOCAB = [...new Set([...VERBS, ...NOUNS])].filter((w) => !NEVER_TARGET.has(w));
+/** The correction vocabulary, read-only (the M12 table test proves no entry lies near a send, contact or publish verb). */
+export const TYPO_VOCAB = Object.freeze([...VOCAB]);
 const KNOWN = new Set([...VOCAB, ...NEVER_TARGET, "pregateste-mi", "fa-mi", "fa", "si", "cu", "un", "o", "de", "la", "pe", "din", "tot", "ce",
   "urmeaza", "dupa", "inainte", "inca", "porni", "porneasca", "arata-mi", "nimic", "publicat", "planul", "doar", "date", "datele", "pentru",
   // Participles and other forms close to a vocabulary verb that mean something else („e deschis?” is not „deschid”).

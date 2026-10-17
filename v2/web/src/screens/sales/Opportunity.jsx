@@ -13,6 +13,7 @@ import {
 import { SalesChip, SyntheticTag, useSalesResource, useSalesCommand, ApprovalGate, SalesError, when, localNowInput, inputToIso } from "./common.jsx";
 
 import { ProposalDecision } from "./ProposalDecision.jsx";
+import { Preparation } from "./Preparation.jsx";
 
 const opPath = (id) => `/api/sales/opportunities/${encodeURIComponent(id)}`;
 
@@ -443,6 +444,7 @@ export function Opportunity({ id, overview }) {
         {d.service?.name && <div className="faint small break">Serviciu: {d.service.name}</div>}
         {opp.need && <p className="muted small prewrap" style={{ margin: 0 }}>{opp.need}</p>}
       </div>
+      <Preparation oppId={opp.id || id} />
       {phone ? (
         <div className="stack">{draftsPanel}{proposalsPanel}{side}</div>
       ) : (
