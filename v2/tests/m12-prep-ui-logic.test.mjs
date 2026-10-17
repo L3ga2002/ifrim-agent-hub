@@ -117,6 +117,8 @@ test("M12-PREPUI-07 static: the new components are read-only, never wired to sen
   assert.equal(org.match(/<QualificationNotes /g)?.length, 1);
   assert.equal(SALES_TABS.length, 8);
   assert.deepEqual([...MOBILE_TAB_ORDER], ["orgs", "org", "opp", "pipeline", "overview", "followups", "imports", "services"]);
-  // The cockpit follows a Sales answer's navigation (the offer's opportunity), like the Studio's.
-  assert.match(source("web/src/screens/Lega.jsx"), /if \(r\.navigate\?\.startsWith\("\/sales"\)\) go\(r\.navigate\);/);
+  // The cockpit follows „Arată-mi oferta” to the offer's opportunity; final review C2 (this line used to pin a navigation for EVERY Sales
+  // answer, which took „Ce lipsește?” away): the other answers stay in the conversation with the offer's screen as a button (M12-FA-C2).
+  assert.match(source("web/src/screens/Lega.jsx"), /const salesNav = salesNavigation\(res\.results\);/);
+  assert.doesNotMatch(source("web/src/screens/Lega.jsx"), /if \(r\.navigate\?\.startsWith\("\/sales"\)\) go\(r\.navigate\);/);
 });

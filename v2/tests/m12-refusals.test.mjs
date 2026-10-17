@@ -123,7 +123,10 @@ test("M12-REF-04 intake (S3-INT, typed in the owner session over HTTP and the ot
   const card = mixed.json.results.find((x) => x.opsPlan)?.opsPlan;
   assert.ok(card, JSON.stringify(mixed.json.results));
   assert.equal(card.kind, PREPARE_KIND);
-  assert.ok(card.brief.refused.some((x) => x.code === "OUTREACH_DISABLED"));
+  // Final review F4 (this line used to expect the send words INSIDE the brief): the Sales planner never receives them — the brief holds the
+  // offer request only; the refusal is the sentence's own sales_send step (below).
+  assert.deepEqual(card.brief.refused, []);
+  assert.doesNotMatch(card.brief.request, /trimite/i);
   assert.deepEqual(t.hub.opsPlans.view(card.id).body.steps.map((s) => s.kind), ["sales.synthetic", "sales.research", "sales.qualify", "sales.proposal.draft"]);
   assert.equal(mixed.json.results.find((x) => x.intent === "sales_send").refused, SALES_SEND_REASON);
   t.assertPaths();
@@ -137,13 +140,23 @@ test("M12-REF-05 the intake's planner entry (choke point) and kept requests: an 
   c.after(() => undo.forEach((u) => u()));
   const before = nothingCreated(t);
   for (const [kind, text] of [["engineering", "Trimite oferta către Atelierul Verde"], ["run", "Contactează-i pe cei de la service"], ["studio_create", "Publică oferta pe Facebook"],
-    ["sales", "Trimite oferta"], ["sales", "Contactează clientul"], ["engineering", "Pregătește oferta și trimite-o clientului"]]) {
+    ["sales", "Trimite oferta"], ["sales", "Contactează clientul"]]) {
     for (const ctx of [{ channel: "voice", actor: "lega" }, { channel: "test", actor: "test" }]) {
       const r = await t.hub.intake.plan({ kind, text, source: ctx.channel === "voice" ? "voice-provider" : "typed" }, ctx);
       assert.equal(r.refused, SALES_SEND_REASON, `${kind}: ${text} → ${JSON.stringify(r)}`);
     }
   }
   assert.deepEqual(called, [], "no planner was called");
+  // Final review F4 (this sentence used to be refused whole on this path while the typed path planned it WITH the send words): the request
+  // is planned without its outreach clause — the planner never receives „trimite-o clientului” — and the owner is told what was cut.
+  for (const ctx of [{ channel: "voice", actor: "lega" }, { channel: "test", actor: "test" }]) {
+    const r = await t.hub.intake.plan({ kind: "engineering", text: "Pregătește oferta și trimite-o clientului", source: ctx.channel === "voice" ? "voice-provider" : "typed" }, ctx);
+    assert.equal(r.refused, undefined, JSON.stringify(r));
+    assert.equal(r.outreach?.partial, true);
+    assert.match(r.outreachNote, /OUTREACH_DISABLED/);
+  }
+  assert.deepEqual(called.map((x) => x.text), ["Pregătește oferta", "Pregătește oferta"], "the planner got the request without the send words");
+  called.length = 0;
   assert.equal(countRows(t, "SELECT COUNT(*) AS n FROM events WHERE type = 'intake.outreach_refused'"), 12);
   assert.deepEqual(nothingCreated(t), before);
   // A send without the Sales vocabulary keeps its meaning (P0R5-04): it reaches the planner.

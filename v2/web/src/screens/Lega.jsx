@@ -20,6 +20,7 @@ import { presentedPlan, planNeedsObsPassword } from "../lib/opsLogic.js";
 import { ProjectSummary, NextStepCard, DecisionCard, MissionPlan, AgentGraph, EnvironmentCard, DiffPanel, TestPanel, ReviewPanel, Replay, Preview, Briefing, Explain, CompanyMap, BlockerActions, WorkRequestsCard } from "./lega/cards.jsx";
 import { RearmCard } from "./lega/RearmCard.jsx";
 import { rearmSlotFrom, rearmOutcome, gateRearmHint } from "../lib/rearmLogic.js";
+import { salesNavigation } from "../lib/salesCockpit.js";
 
 /**
  * Lega 2.0 — the cockpit you drive by intent (M06 §06, §12, §13). One sentence ("Hai să lucrăm la ProDelivery") opens the
@@ -254,6 +255,16 @@ function Cockpit({ projectId, go }) {
     api("/api/ops/plans?status=PROPOSED&limit=1").then((r) => { const p = (r?.plans || [])[0]; if (p && new Date(p.confirmBy) > new Date()) loadOpsPlan(p.id); }).catch(() => {});
   }, [pid, loadOpsPlan]);
 
+  // M12 final review X1: the rearm slot of the latest answer, applied after the conversation shows that answer (never before it).
+  const pendingRearm = useRef(null);
+  useEffect(() => {
+    const fx = pendingRearm.current;
+    if (!fx) return;
+    pendingRearm.current = null;
+    if (fx.action === "set") setRearmSlot({ id: ++rearmSlotCounter, ...fx.slot, trigger: 0, handled: 0 });
+    else if (fx.action === "clear") setRearmSlot(null);
+  }, [conversation]); // eslint-disable-line react-hooks/exhaustive-deps
+
   // M10.2: a clarification button sends `choice` (the option id the Hub offered), never a synthesized sentence.
   const send = useCallback(async (sentence, source = "typed", extra = {}) => {
     const value = String(sentence || "").trim();
@@ -277,15 +288,15 @@ function Cockpit({ projectId, go }) {
       const blockedResult = res.results.find((r) => r.blockedBy) || null;
       const blocker = blockedResult ? { ...blockedResult.blockedBy, requestId: blockedResult.workRequest?.id || null } : null;
       // M10.2.1 (D14): the stopped gate answered in context — the Hub's rearm card (or why not yet) goes to the ONE rearm slot.
+      // M12 final review X1: applied only once this answer is in the conversation (pendingRearm, below): the slot lives in the app store,
+      // whose update renders at once, while the conversation is this screen's state — the card could be on screen before the answer and
+      // its „Arată cardul de redeschidere” option.
       const rearmFx = rearmSlotFrom(res.results);
-      if (rearmFx.action === "set") setRearmSlot({ id: ++rearmSlotCounter, ...rearmFx.slot, trigger: 0, handled: 0 });
-      else if (rearmFx.action === "clear") setRearmSlot(null);
+      pendingRearm.current = rearmFx.action === "set" || rearmFx.action === "clear" ? rearmFx : null;
       for (const r of res.results) {
         if (r.navigate?.startsWith("/cockpit/")) { const next = r.navigate.split("/")[2]; setCurrentProject(next); go(`/lega/${next}`); }
         // M09: "deschide studioul", "arată-mi clipul X", a proposed correction (opens the clip at that second with the proposal).
         if (r.navigate?.startsWith("/studio")) go(r.navigate);
-        // M12: „Arată-mi oferta” / „Ce lipsește?” / „Aprobă oferta” open the offer in Vânzări → Oportunitate (a read; the decision stays there).
-        if (r.navigate?.startsWith("/sales")) go(r.navigate);
         if (r.plan?.envelope || r.plan?.summary) setPlan(r.plan);
         // Review #40: a card shape without the derived secrets list is read back in full (the guard above needs it); no focus here.
         if (r.opsPlan) { setOpsPlan(r.opsPlan); if (!Array.isArray(r.opsPlan.needsSecrets) && r.opsPlan.status === "PROPOSED") loadOpsPlan(r.opsPlan.id); }
@@ -320,8 +331,12 @@ function Cockpit({ projectId, go }) {
         else window.history.back();
       }
       if (res.resolved.steps.some((s) => s.intent === "live")) setReplayMission(null);
+      // M12 final review C2: „Arată-mi oferta” opens the offer in Vânzări → Oportunitate; „Ce lipsește?” / „Aprobă oferta” keep the Hub's
+      // answer here, with the offer's screen as a button next to it (a navigation would take the answer away).
+      const salesNav = salesNavigation(res.results);
       // Review F2 (L4): a planner's question with choices (the run planner's, for example) gets its buttons too, not only the resolver's.
-      setConversation((c) => [...c, { role: "lega", text: replyFor(res), at: Date.now(), clarification: clarificationOf(res), blocker }]);
+      setConversation((c) => [...c, { role: "lega", text: replyFor(res), at: Date.now(), clarification: clarificationOf(res), blocker, links: salesNav.links }]);
+      if (salesNav.go) go(salesNav.go);
       refresh(); cockpit.reload();
     } catch (e) { setError(e); setConversation((c) => [...c, { role: "lega", text: `Nu am putut: ${e.message}`, at: Date.now() }]); }
     finally {
@@ -448,6 +463,7 @@ function Cockpit({ projectId, go }) {
             {conversation.map((m, i) => (
               <li key={i} className={`lc-${m.role}`}><span className="who">{m.role === "user" ? "Tu" : "Lega"}</span><span className="lc-text">{m.text}</span>
                 {m.clarification?.options?.length > 0 && <span className="row wrap">{m.clarification.options.map((o) => <button key={o.id} className="btn sm" onClick={() => send(o.label, "typed", { choice: { forIntent: m.clarification.forIntent, id: o.id } })}>{o.label}</button>)}</span>}
+                {m.links?.length > 0 && <span className="row wrap">{m.links.map((l) => <button key={l.path} className="btn sm" onClick={() => go(l.path)}>{l.label}</button>)}</span>}
                 {m.blocker?.options?.length > 0 && <BlockerActions options={m.blocker.options} projectId={pid || null} projectLevel={c?.autonomy?.level || null} requestId={m.blocker.requestId || null} onSay={(t) => send(t)} onDone={() => cockpit.reload()} onRearm={openRearm} />}</li>
             ))}
           </ol>

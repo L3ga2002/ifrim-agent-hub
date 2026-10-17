@@ -20,11 +20,15 @@ const PROPOSAL_STATUS_RO = Object.freeze({ DRAFT: "ciornă, neaprobată", APPROV
 const CONTINUE_HINT = "O continuare cere un card nou, pe care îl confirmi o dată.";
 
 export function createSalesAnswers({ sales, preparations }) {
-  /** The newest preparation that has an offer (else the newest at all), with its opportunity view; null when none exists. */
+  /**
+   * The preparation the answers are about (M12 final review C3): the NEWEST one — a card just proposed (PLANNED, no offer yet) included —
+   * never an older offer instead of it. Only a card that never started and is gone (cancelled or expired before any step: no company, no
+   * offer) is skipped. With its opportunity view; null when none exists.
+   */
   function latest() {
     if (!preparations?.list) return null;
     const list = preparations.list();
-    const p = list.find((x) => x.opportunityId) || list[0] || null;
+    const p = list.find((x) => x.opportunityId || !["CANCELLED", "EXPIRED"].includes(x.status)) || null;
     if (!p) return null;
     let view = null;
     try { view = p.opportunityId ? sales.getOpportunity(p.opportunityId) : null; } catch { view = null; }
@@ -81,7 +85,8 @@ export function createSalesAnswers({ sales, preparations }) {
     const l = latest();
     const never = "Eu nu aprob oferta și nu am creat nicio aprobare: aprobarea internă e decizia ta.";
     if (!l) return { message: `${never} ${none().message}`, sales: null };
-    if (!l.proposal) return { message: `${never} ${planned(l).message}`, sales: factsOf(l) };
+    // C3: the newest preparation has no offer yet; an OLDER one may still wait for the owner's approval — named as the older one.
+    if (!l.proposal) return { message: `${never} ${planned(l).message}${olderWaiting(l.p)}`, sales: factsOf(l) };
     const { p, proposal, view } = l;
     const waiting = proposal.status === "DRAFT" && view?.opportunity?.status === "READY_FOR_OWNER_REVIEW";
     const where = waiting
@@ -89,6 +94,16 @@ export function createSalesAnswers({ sales, preparations }) {
       : proposal.status === "APPROVED_INTERNAL" ? `Oferta v${proposal.version} (${proposal.id}) e deja aprobată intern de tine; nu e trimisă.`
         : `Oferta v${proposal.version} nu așteaptă acum aprobarea (${PROPOSAL_STATUS_RO[proposal.status] || proposal.status}; pregătirea: ${PREPARATION_STATUS_RO[p.status] || p.status}).`;
     return { message: `${never} ${where}`, navigate: salesOpportunityPath(p.opportunityId), sales: factsOf(l) };
+  }
+
+  /** An older preparation still waiting for the owner's approval of its exact offer (named as the older one), or "". */
+  function olderWaiting(newest) {
+    const other = preparations.list().find((x) => x.id !== newest?.id && x.status === "WAITING_OWNER" && x.opportunityId);
+    if (!other) return "";
+    let proposal = null;
+    try { proposal = sales.getOpportunity(other.opportunityId)?.proposals?.[0] || null; } catch { proposal = null; }
+    if (!proposal || proposal.status !== "DRAFT") return "";
+    return ` O ofertă mai veche (pregătirea ${other.id}) așteaptă aprobarea ta: v${proposal.version} (${proposal.id}, SHA ${proposal.contentSha}); o aprobi în Vânzări → Oportunitate, pe ținta ei exactă.`;
   }
 
   /** Lega's voice-first read (lega.sales_preparation): the offer and what is missing, in one bounded text. */

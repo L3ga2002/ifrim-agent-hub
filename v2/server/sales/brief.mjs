@@ -4,6 +4,8 @@ import { redactText } from "../security/redact.mjs";
 import { foldDiacritics } from "./identity.mjs";
 import { foldAligned, findCommercialFigures, QUANTITY_SOURCE, NUMBER_WORDS_BIG, NUMBER_WORDS_SMALL, MAGNITUDE_WORDS, CURRENCY_WORDS, TIME_UNIT_WORDS, PERCENT_WORDS } from "./figures.mjs";
 import { osaDistance, NEVER_TARGET } from "../owner/typos.mjs";
+// M12 final review (F6, F15): the ONE outreach rule and the ONE offer-request rule — the same the resolver, the intake and Lega apply.
+import { outreachSpans, offerRequestIn, foldedTokens, OFFER_PREPARE_VERBS, OFFER_REQUEST_NOUNS } from "../owner/intents.mjs";
 
 /**
  * The structured brief of a natural Sales request (M12, S-01), e.g. „pregătește o ofertă pentru un service auto din Cluj care vrea
@@ -32,11 +34,11 @@ const OUTREACH = "OUTREACH_DISABLED";
 
 /* ------------------------------------------------------------------ vocabulary (folded: lower case, no diacritics) */
 
-const PREPARE_VERBS = [["pregateste"], ["pregatesti"], ["pregatiti"], ["pregatim"], ["pregatesc"], ["pregateasca"], ["fa"], ["faceti"], ["faci"], ["facem"],
-  ["construieste"], ["redacteaza"], ["genereaza"], ["creeaza"], ["elaboreaza"], ["scrie"], ["scrieti"], ["vreau"], ["vrem"], ["as", "vrea"], ["am", "nevoie", "de"]];
-const OFFER_NOUNS = ["oferta", "oferte", "ofertei", "ofertele", "propunere", "propunerea", "propuneri", "propunerii", "deviz", "devizul", "cotatie", "cotatia"];
-/** „Want” verbs say what the owner wants only when an offer noun follows them closely („vreau o ofertă”). */
-const WANT_VERBS = new Set(["vreau", "vrem", "as", "am"]);
+/** The preparation verbs and the offer nouns: the shared offer-request rule's (owner/intents.mjs, final review F15). */
+const PREPARE_VERBS = OFFER_PREPARE_VERBS;
+const OFFER_NOUNS = OFFER_REQUEST_NOUNS;
+/** The single-word preparation verbs a typo may name („pregatște”). */
+const PREPARE_WORDS = PREPARE_VERBS.filter((p) => p.length === 1).map((p) => p[0]);
 /** Real words one or two letters away from the vocabulary: never read as a typo of it. */
 const NOT_A_TYPO = new Set(["ofera", "ofere", "oferim", "oferi", "propune", "propun", "propunem", "propui", "propus", "propusa", "propuse", "creeze", "scrise",
   // M12 review R13: real words one letter away from a client type or a place („o ofertă optimă”, „are o cabină”, „contabila ei”, „din Arieș”).
@@ -45,8 +47,22 @@ const NOT_A_TYPO = new Set(["ofera", "ofere", "oferim", "oferi", "propune", "pro
 const TYPO_MIN_NAME = 6;
 /** The article and case endings of a noun („restaurant” → „restaurantul”, „farmacie” → „farmacia”, „farmaciei”). */
 const NOUN_ENDINGS = new Set(["ul", "ului", "uri", "urile", "urilor", "l", "lui", "le", "lor", "i", "ii", "ile", "ilor", "a", "ua", "ei", "lei"]);
-const inflectionOf = (fold, word) => fold.length > word.length && word.length >= 4
-  && ((fold.startsWith(word) && NOUN_ENDINGS.has(fold.slice(word.length))) || (/[ea]$/.test(word) && fold.startsWith(word.slice(0, -1)) && NOUN_ENDINGS.has(fold.slice(word.length - 1))));
+/** → the ending when `fold` is `word` with an article / case ending, else null. */
+const inflectionOf = (fold, word) => {
+  if (!(fold.length > word.length && word.length >= 4)) return null;
+  // A noun ending in a vowel takes its endings after that vowel („farmaci-ei”, singular; never „farmacie-i”, a plural reading).
+  if (/[ea]$/.test(word) && fold.startsWith(word.slice(0, -1)) && NOUN_ENDINGS.has(fold.slice(word.length - 1))) return fold.slice(word.length - 1);
+  if (fold.startsWith(word) && NOUN_ENDINGS.has(fold.slice(word.length))) return fold.slice(word.length);
+  return null;
+};
+/**
+ * M12 final review F22: an „inflection” that is another word („fotografii” — photos, not the photographers; „optici”, „opticul” — the
+ * adjective) is never the owner's client type; a plural form names a client type only after a word that introduces the client („pentru
+ * fotografi din Cluj”), never inside the need („un site cu fotografii”, „o galerie de fotografii”).
+ */
+const INFLECTION_COLLISIONS = new Set(["fotografii", "fotografile", "optici", "opticii", "opticul", "opticile", "opticilor", "opticului"]);
+const PLURAL_ENDINGS = new Set(["uri", "urile", "urilor", "i", "ii", "ile", "ilor"]);
+const CLIENT_CONTEXT = new Set(["pentru", "la", "al", "ale", "unor", "celor", "unui", "unei", "firma", "firmei", "firmele"]);
 
 /** Sector phrases → the canonical sector and its CAEN rev. 2 code (the synthetic generator's sector table where it has one). */
 const SECTORS = [
@@ -108,8 +124,15 @@ const CLAUSE_STOP = new Set(["buget", "bugetul", "pana", "termen", "termenul", "
   "costand", "plateasca", "plateste", "plati", "gata"]);
 const UNITS = new Set(TIME_UNIT_WORDS);
 const NUMBER_WORDS = new Set([...NUMBER_WORDS_SMALL, ...NUMBER_WORDS_BIG]);
-/** R-NEED-CUT (fail closed): what carries a quantity in a need — a number, a number word, a currency, a magnitude, a percent. */
-const QTY_BIG = new Set([...NUMBER_WORDS_BIG, ...MAGNITUDE_WORDS, ...CURRENCY_WORDS, ...PERCENT_WORDS]);
+/**
+ * R-NEED-CUT (fail closed): what carries a quantity in a need — a number, a currency, a magnitude, a percent, and a number word ONLY as
+ * an amount or a term (final review F12): followed, after other number words, „și” or „de”, by a unit of time / money / percent /
+ * magnitude („două mii de lei”, „douăzeci de zile”, „jumătate de an”) — never the adjective („o pagină nouă”), an ordinal („a doua
+ * locație”) or a plain count („în două limbi”). Digits always count.
+ */
+const QTY_ALWAYS = new Set([...MAGNITUDE_WORDS.filter((w) => w !== "k"), ...CURRENCY_WORDS, ...PERCENT_WORDS]);
+const QTY_UNIT = new Set([...TIME_UNIT_WORDS, ...MAGNITUDE_WORDS, ...CURRENCY_WORDS, ...PERCENT_WORDS]);
+const BIG_NUMBER_WORDS = new Set(NUMBER_WORDS_BIG);
 const QTY_SMALL = new Set(NUMBER_WORDS_SMALL);
 const QTY_AFTER_SMALL = new Set([...TIME_UNIT_WORDS, ...MAGNITUDE_WORDS, ...CURRENCY_WORDS]);
 /** Price words cut the need as well (the amount may follow in other words): „un site cu un cost de…”, „cu prețuri…”. */
@@ -128,25 +151,11 @@ const SERVICES = [
   { value: "prezență pe rețele sociale", patterns: [/\bfacebook\b/, /\binstagram\b/, /\bretele sociale\b/, /\bsocial media\b/, /\btiktok\b/] },
 ];
 
-/** Send / contact / publish: verb forms only (never the noun „contact”, „publicitate”, „pagina publică”). */
-const REFUSALS = [
-  ["send", /\btrimit(?:e|eti|em|i|a)?(?:-(?:o|i|l|le|ne|mi))?\b/g],
-  ["send", /\bexpedi(?:aza|ati|ez)(?:-(?:o|i|l|le))?\b/g],
-  ["send", /\bscrie(?:ti)?-(?:le|i)\b/g],
-  ["send", /\bda(?:ti)?-(?:le|i)\s+(?:un\s+)?(?:e-?mail|mail|mesaj|sms|telefon)\b/g],
-  ["send", /\b(?:send|email them|e-mail them|mail them)\b/g],
-  ["contact", /\bcontact(?:eaza|ati|ezi|ez|am|eze)(?:-(?:o|i|l|le))?\b/g],
-  ["contact", /\bcontacta-(?:o|i|l|le)\b/g],
-  ["contact", /\bsuna(?:ti)?-(?:i|l|o|le)\b/g],
-  ["contact", /\bcontact (?:them|him|her|the client)\b/g],
-  ["publish", /\bpublic(?:a|ati|am)(?:-(?:o|l|le))?\s+(?:oferta|propunerea|anuntul|postarea|articolul|pe)\b/g],
-  ["publish", /\bpublica-(?:o|l|le)\b/g],
-  ["publish", /\bpost(?:eaza|ati|am|ez|eze)(?:-(?:o|l|le))?\b/g],
-  ["publish", /\b(?:publish|post it)\b/g],
-];
-/** A misspelt send / contact / publish verb is refused (never corrected into a step). Real words near them are not. */
-const REFUSAL_TYPOS = [["send", "trimite"], ["send", "trimiteti"], ["contact", "contacteaza"], ["contact", "contactati"], ["contact", "contactez"],
-  ["contact", "contactam"], ["publish", "posteaza"], ["publish", "postati"]];
+/**
+ * Send / contact / publish: only an INSTRUCTION TO THE HUB is refused — the shared outreach rule (owner/intents.mjs outreachSpans, final
+ * review F6): a client's own need („care vrea să-și contacteze clienții prin SMS”, „un sistem care trimite remindere”) is part of the need,
+ * never a refusal; the noun („contact”, „publicitate”, „pagina publică”) never is. Real words one slip from a send verb are no typo of it.
+ */
 const REFUSAL_BENIGN = new Set(["trimitere", "trimiterea", "trimiteri", "trimiterii", "trimis", "trimisa", "trimise", "trimisi", "contact", "contactul",
   "contacte", "contactele", "contactului", "contactat", "contactata", "contactate", "contactare", "contactarea", "postare", "postarea", "postari",
   "postarile", "postat", "postata", "postul", "poster", "postas", "posta",
@@ -159,8 +168,6 @@ const REFUSAL_REASON = {
   publish: "Publicarea e dezactivată (OUTREACH_DISABLED): nimic nu se publică.",
 };
 const NEGATIONS = new Set(["nu", "fara", "nici"]);
-/** Words that may stand between a negation and its verb („nu vreau să-i trimiți”). Anything else ends the look-back. */
-const NEGATION_GLUE = new Set(["sa", "s", "o", "il", "l", "le", "i", "ii", "mai", "inca", "a", "ne", "vreau", "vrem", "doresc", "dorim", "trebuie"]);
 const EXCLUSION_STARTS = [["fara"], ["nu", "si"], ["dar", "nu"], ["insa", "nu"], ["nu", "vrea"], ["nu", "vor"], ["nu", "doreste"], ["nu", "doresc"], ["nici"]];
 
 const CUR = `(?:${CURRENCY_WORDS.join("|")})`;
@@ -199,21 +206,25 @@ function tokenize(text) {
 function same(tok, word, typo, minLen = 5) {
   if (tok.fold === word) return { ok: true, typo: false };
   // A client type or a place said with its article or case („restaurantul”, „farmaciei”) is the owner's word, not a typo.
-  if (minLen >= TYPO_MIN_NAME && !NOT_A_TYPO.has(tok.fold) && inflectionOf(tok.fold, word)) return { ok: true, typo: false };
-  if (!typo || word.length < minLen || tok.fold.length < minLen || /\d/.test(tok.fold) || NEVER_TARGET.has(tok.fold) || NOT_A_TYPO.has(tok.fold) || REFUSAL_BENIGN.has(tok.fold)) return { ok: false };
+  const ending = minLen >= TYPO_MIN_NAME && !NOT_A_TYPO.has(tok.fold) && !INFLECTION_COLLISIONS.has(tok.fold) ? inflectionOf(tok.fold, word) : null;
+  if (ending) return { ok: true, typo: false, ending };
+  if (!typo || word.length < minLen || tok.fold.length < minLen || /\d/.test(tok.fold) || NEVER_TARGET.has(tok.fold) || NOT_A_TYPO.has(tok.fold) || REFUSAL_BENIGN.has(tok.fold)
+    || INFLECTION_COLLISIONS.has(tok.fold)) return { ok: false };
   return osaDistance(tok.fold, word) <= (word.length >= minLen + 4 ? 2 : 1) ? { ok: true, typo: true } : { ok: false };
 }
 
 function matchAt(tokens, i, phrase, typo, minLen = 5) {
   const typos = [];
+  const endings = [];
   for (let k = 0; k < phrase.length; k += 1) {
     const tok = tokens[i + k];
     if (!tok) return null;
     const r = same(tok, phrase[k], typo, minLen);
     if (!r.ok) return null;
     if (r.typo) typos.push({ from: tok.raw, to: phrase[k] });
+    if (r.ending) endings.push(r.ending);
   }
-  return { i, j: i + phrase.length - 1, typos };
+  return { i, j: i + phrase.length - 1, typos, endings };
 }
 
 /** The better of two phrase matches at the same position: more words first, then fewer typos (an exact form beats a near one). */
@@ -257,35 +268,17 @@ export function parseBrief(request) {
   const span = (i, j) => text.slice(tokens[i].start, tokens[j].end);
   const gapBefore = (k) => (k > 0 ? text.slice(tokens[k - 1].end, tokens[k].start) : "");
 
-  // 1. Refusals first (R-REFUSE). A negated one is a constraint („fără să trimiți nimic”), not a request.
-  const negatedAt = (start) => {
-    const at = tokens.findIndex((t) => t.start >= start);
-    let k = (at < 0 ? tokens.length : at) - 1;
-    for (let steps = 0; k >= 0 && steps < 4; k -= 1, steps += 1) {
-      // R15: punctuation between the negation and the verb ends the look-back („Nu, trimite oferta” asks to send).
-      if (/[.,;:!?\n()]/.test(text.slice(tokens[k].end, tokens[k + 1] ? Math.min(tokens[k + 1].start, start) : start))) return -1;
-      if (NEGATIONS.has(tokens[k].fold)) return k;
-      if (!NEGATION_GLUE.has(tokens[k].fold)) return -1;
-    }
-    return -1;
-  };
-  const refusalHits = [];
-  for (const [kind, pattern] of REFUSALS) {
-    pattern.lastIndex = 0;
-    for (const m of folded.matchAll(pattern)) refusalHits.push({ kind, start: m.index, end: m.index + m[0].length, typo: false });
-  }
-  for (const tok of tokens) {
-    if (tok.fold.length < 5 || REFUSAL_BENIGN.has(tok.fold) || refusalHits.some((h) => tok.start >= h.start && tok.start < h.end)) continue;
-    const hit = REFUSAL_TYPOS.find(([, verb]) => tok.fold !== verb && osaDistance(tok.fold, verb) <= 1);
-    if (hit) refusalHits.push({ kind: hit[0], start: tok.start, end: tok.end, typo: true });
-  }
-  refusalHits.sort((a, b) => a.start - b.start);
+  // 1. Refusals first (R-REFUSE): the shared outreach rule (final review F6) — only an instruction to the Hub to send, contact or publish.
+  // A negated one is a constraint („fără să trimiți nimic”, „nu-i trimite nimic”), not a request; a client's own need is neither.
+  const outreach = outreachSpans(text);
   const refused = [];
   const refusedRanges = [];
   const negatedRefusals = [];
-  for (const h of refusalHits) {
-    const neg = negatedAt(h.start);
-    if (neg >= 0) { negatedRefusals.push({ ...h, negation: neg }); continue; }
+  for (const h of outreach.negated) {
+    const negation = tokens.findIndex((t) => t.start >= h.negStart);
+    if (negation >= 0) negatedRefusals.push({ ...h, negation });
+  }
+  for (const h of outreach.hits) {
     refusedRanges.push({ start: h.start, end: h.end });
     refused.push({ text: text.slice(h.start, h.end), kind: h.kind, code: OUTREACH, reason: REFUSAL_REASON[h.kind], ...(h.typo ? { typo: true } : {}) });
   }
@@ -319,39 +312,34 @@ export function parseBrief(request) {
     return j;
   };
 
-  // 3. Intent (R-INTENT): a non-negated preparation verb with an offer noun, or the bare noun when nothing is refused.
-  let verb = null;
-  let negatedIntent = false;
-  for (let i = 0; i < tokens.length && !verb; i += 1) {
-    if (blocked(tokens[i])) continue;
-    for (const phrase of PREPARE_VERBS) {
-      const m = matchAt(tokens, i, phrase, true);
-      if (!m) continue;
-      // „vreau”, „aș vrea”, „am nevoie de” name the owner's wish only right before an offer noun („nu vreau să trimiți” is not one).
-      if (WANT_VERBS.has(phrase[0]) && !tokens.slice(m.j + 1, m.j + 4).some((t) => OFFER_NOUNS.some((w) => same(t, w, true).ok))) continue;
-      if (negatedAt(tokens[i].start) >= 0) { negatedIntent = true; break; }
-      verb = m;
-      break;
+  // 3. Intent (R-INTENT, final review F15): the shared offer-request rule (owner/intents.mjs offerRequestIn) — the one the resolver's
+  // sales_prepare applies — on the words, a slip of a preparation verb or an offer noun read as that word („pregatște o oferat”).
+  const seq = foldedTokens(text).map((t) => {
+    if (/^[,;:.!?]$/.test(t.f)) return t;
+    const [head, ...rest] = t.f.split("-");
+    const raw = text.slice(t.start, t.start + head.length);
+    if (PREPARE_WORDS.includes(head) || OFFER_NOUNS.includes(head)) return t;
+    // A slip is read as the CLOSEST word (an offer noun first on a tie): „propunere” is never a slip of „propuneți”.
+    let best = null;
+    for (const w of [...OFFER_NOUNS, ...PREPARE_WORDS]) {
+      if (!same({ fold: head, raw }, w, true).ok) continue;
+      const d = osaDistance(head, w);
+      if (!best || d < best.d) best = { w, d };
     }
-  }
-  let noun = null;
-  for (let i = 0; i < tokens.length && !noun; i += 1) {
-    if (blocked(tokens[i])) continue;
-    for (const word of OFFER_NOUNS) {
-      const m = matchAt(tokens, i, [word], true);
-      if (m) { noun = m; break; }
-    }
-  }
+    return best ? { ...t, f: [best.w, ...rest].join("-"), typo: { from: raw, to: best.w } } : t;
+  });
+  const offerRequest = offerRequestIn(seq);
+  const negatedIntent = Boolean(offerRequest?.negated);
   let intent = null;
-  if (verb && noun) {
-    correct([...verb.typos, ...noun.typos]);
+  if (offerRequest && !offerRequest.negated) {
+    const r = offerRequest;
+    const at = r.verb ? [...Array(r.verb[1] - r.verb[0] + 1).keys()].map((n) => r.verb[0] + n).concat(r.noun) : [r.noun];
+    correct(at.map((k) => seq[k].typo).filter(Boolean));
     // The verb and its noun as one span, unless a refused word stands between them („pregătește și trimite oferta”).
-    const between = tokens.slice(verb.j + 1, noun.i);
-    const joined = noun.i > verb.j && noun.i - verb.j <= 4 && !between.some(blocked) ? span(verb.i, noun.j) : span(verb.i, verb.j);
-    intent = { value: "PREPARE_OFFER", provenance: BRIEF_PROVENANCE.USER_PROVIDED, span: joined };
-  } else if (!verb && noun && !refused.length && !negatedIntent) {
-    correct(noun.typos);
-    intent = { value: "PREPARE_OFFER", provenance: BRIEF_PROVENANCE.USER_PROVIDED, span: span(noun.i, noun.j) };
+    const refusedBetween = Boolean(r.verb) && seq.slice(r.verb[1] + 1, r.noun).some((t) => refusedRanges.some((x) => t.start < x.end && t.end > x.start));
+    const from = seq[r.verb ? r.verb[0] : r.noun].start;
+    const to = r.verb && refusedBetween ? seq[r.verb[1]].end : seq[r.noun].end;
+    intent = { value: "PREPARE_OFFER", provenance: BRIEF_PROVENANCE.USER_PROVIDED, span: text.slice(from, to) };
   }
 
   // 4. Client type and sector (R-SECTOR): the phrase as said, its canonical sector and CAEN code inferred.
@@ -362,6 +350,8 @@ export function parseBrief(request) {
     for (const s of SECTORS) {
       for (const phrase of s.phrases) {
         const m = matchAt(tokens, i, phrase, true, TYPO_MIN_NAME);
+        // F22: a plural inflection names the client type only right after a word that introduces the client („pentru fotografi”).
+        if (m && m.endings.some((e) => PLURAL_ENDINGS.has(e)) && !CLIENT_CONTEXT.has(tokens[i - 1]?.fold)) continue;
         if (m && better(m, best?.m)) best = { s, m, phrase };
       }
     }
@@ -433,7 +423,8 @@ export function parseBrief(request) {
   if (needHit) {
     let start = needHit.m.j + 1 - needHit.marker.keep;
     if (needHit.marker.keep === 0) {
-      if (tokens[start]?.fold === "sa") start += 1;
+      // Final review F6: „să-și contacteze clienții …” keeps its „să-și” (the need is the client's own action, said whole).
+      if (tokens[start]?.fold === "sa" && !(tokens[start + 1] && gapBefore(start + 1) === "-")) start += 1;
       if (NEED_LEAD_VERBS.has(tokens[start]?.fold)) start += 1;
     }
     const end = start < tokens.length ? clauseEnd(start, 12) : -1;
@@ -447,11 +438,22 @@ export function parseBrief(request) {
       if (trailing) statedEnd += trailing[0].length;
       const stated = text.slice(tokens[start].start, statedEnd);
       let cut = -1;
+      // F12: a number word is an amount or a term only before its unit (a short run of number words, „și”, „de” may stand between).
+      const amountAt = (k) => {
+        if (!BIG_NUMBER_WORDS.has(tokens[k].fold) || ["a", "al"].includes(tokens[k - 1]?.fold)) return false;
+        for (let n = k + 1; n < tokens.length && n <= k + 6; n += 1) {
+          if (/[.,;:!?\n()]/.test(gapBefore(n))) return false;
+          const g = tokens[n].fold;
+          if (QTY_UNIT.has(g) || (g === "la" && tokens[n + 1]?.fold === "suta")) return true;
+          if (!NUMBER_WORDS.has(g) && g !== "si" && g !== "de") return false;
+        }
+        return false;
+      };
       for (let k = start; k <= end && cut < 0; k += 1) {
         const f = tokens[k].fold;
         const next = tokens[k + 1]?.fold;
         const after = next === "de" ? tokens[k + 2]?.fold : next;
-        if (/\d/.test(f) || QTY_BIG.has(f) || PRICE_WORDS.has(f) || (f === "la" && next === "suta") || (QTY_SMALL.has(f) && QTY_AFTER_SMALL.has(after || ""))
+        if (/\d/.test(f) || QTY_ALWAYS.has(f) || amountAt(k) || PRICE_WORDS.has(f) || (f === "la" && next === "suta") || (QTY_SMALL.has(f) && QTY_AFTER_SMALL.has(after || ""))
           || (k > start && /[%€$£~]/.test(gapBefore(k)))) cut = k;
       }
       const figure = findCommercialFigures(stated)[0];

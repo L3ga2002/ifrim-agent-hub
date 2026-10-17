@@ -55,7 +55,6 @@ test("M12-BQ-02 (R1/R14/C1) the need is cut, fail closed, before a quantity or a
     [`${P}programări online și 20% mai mulți clienți`, "programări online", "programări online și 20% mai mulți clienți"],
     [`${P}programări online cu reamintire cu o zi înainte`, "programări online cu reamintire", "programări online cu reamintire cu o zi înainte"],
     [`${P}programări online și promoții pe site`, "programări online", "programări online și promoții pe site"],
-    [`${P}un site în două limbi`, "un site", "un site în două limbi"],
     [`${P}programări online cu un cost de 2 mii lei`, "programări online", "programări online cu un cost"],
     ["pregătește o ofertă pentru o florărie din Iași care vrea un magazin online cu reduceri pentru clienții fideli", "un magazin online", "un magazin online cu reduceri pentru clienții fideli"],
     ["pregătește o ofertă pentru un restaurant din Arad care vrea un site profesionist și profitabil", "un site profesionist", "un site profesionist și profitabil"],
@@ -85,6 +84,8 @@ test("M12-BQ-02 (R1/R14/C1) the need is cut, fail closed, before a quantity or a
     assert.ok(offer(b).warnings.some((w) => w.includes("rămâne internă")), "the warning says why, truthfully");
     assert.deepEqual(proposalFigures(offer(b)), []);
   }
+  // Final review F12 (this row used to expect the over-cut „un site”): a plain count is no commercial quantity — the need stays whole.
+  assert.deepEqual(parseBrief(`${P}un site în două limbi`).fields.problem, { value: "un site în două limbi", provenance: "USER_PROVIDED", span: "care vrea un site în două limbi" });
   // Without anything to cut, the need is exactly as before (no extra fields).
   const plain = parseBrief(`${P}programări online`);
   assert.deepEqual(plain.fields.problem, { value: "programări online", provenance: "USER_PROVIDED", span: "care vrea programări online" });
