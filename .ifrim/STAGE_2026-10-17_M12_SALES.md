@@ -153,3 +153,7 @@ Probleme separate, deschise:
 - `sales.preparation.cancel` nu are rută sau buton pentru proprietar.
 - RM-10 (captură reală): eșec intermitent sub încărcare, de urmărit separat.
 - Cele două teste V1 dependente de registrul real; media, autorul pasului 0 și afișările minore (secțiunile precedente).
+
+## 10. Live
+
+LIVE since 2026-10-17 13:29 UTC: the owner ran owner-release.cmd (managed upgrade, boot boot_mvcfoc6g_ecc68eea7c, BUILD_SAFE; storage.pre_migration_backup event 8710; GET /api/health 2.15.0-m12 / contract 15, /api/diagnostics schemaVersion 13; pushed v2-milestone-01 = 5a6082e and claude/project-thread-azwsjr = d311980). Boot events: only the 6 known delivery.stale_reconcile_refused, no sales.* event; live Sales: 0 orgs, 0 services, outreach and live research DISABLED.

@@ -1,13 +1,13 @@
 # Open Issues - Ifrim Agent Hub
 
-## 2026-10-17 — M12 Sales implemented, merged, NOT live (code `2.15.0-m12`, API contract 15, schema 13; live still `2.14.19-m11`; detail: `.ifrim/STAGE_2026-10-17_M12_SALES.md`)
+## 2026-10-17 — M12 Sales LIVE (code and live `2.15.0-m12`, API contract 15, schema 13; detail: `.ifrim/STAGE_2026-10-17_M12_SALES.md`)
 
 This section takes precedence over every older one where they overlap. The owner activated `.ifrim/M12_PROMPT.md` (2fa81a9) with
 clarifications 1–6 on 2026-10-16 20:21 UTC. Part 1 by Codex; Codex usage limit at 21:41 UTC (reset 2026-10-22); the owner moved parts 2–4
 to Claude at 21:45 UTC. Merge `dc4500f` on `v2-milestone-01` (tree = gated `d311980`); verified backup `bkp_mvcejgzd_fb1915d20d`.
 Final gate on `d311980` (fresh clone C:\Users\mihai\hub-m12-gate, logs C:\Users\mihai\m12-sales\gate\run-final2): test:v2
 2512 = 2510 pass, **1 fail (RM-10, real capture, outside M12; passes alone 11/11)**, 1 skip (T25); V1 549/552 (the 2 real-registry tests).
-A reboot before the owner's upgrade keeps the Hub down (boot guard, pending migration 13).
+LIVE since 2026-10-17 13:29 UTC: the owner ran owner-release.cmd (managed upgrade, boot boot_mvcfoc6g_ecc68eea7c, BUILD_SAFE; storage.pre_migration_backup event 8710; GET /api/health 2.15.0-m12 / contract 15, /api/diagnostics schemaVersion 13; pushed v2-milestone-01 = 5a6082e and claude/project-thread-azwsjr = d311980). Boot events: only the 6 known delivery.stale_reconcile_refused, no sales.* event; live Sales: 0 orgs, 0 services, outreach and live research DISABLED.
 
 Open:
 1. Owner: run C:\Users\mihai\m12-sales\owner-release.cmd (plan → apply upgrade → GET verify 2.15.0-m12 / 15 / schema 13 → push
