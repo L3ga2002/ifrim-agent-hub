@@ -79,6 +79,16 @@ export function rearmSlotFrom(results = []) {
   return { action: "clear" };
 }
 
+/**
+ * M12 last review round (RR13): whether an answer opens ANOTHER project's cockpit (`navigate: "/cockpit/<id>"`, a different id than the
+ * cockpit on screen, `pid`; none on screen counts as different) — then the cockpit on screen goes away with its conversation, so the
+ * answer's rearm slot is applied before the navigation (the app store keeps it for the cockpit that opens). Pure.
+ */
+export function rearmBeforeNavigation(results = [], pid = null) {
+  const list = Array.isArray(results) ? results : [];
+  return list.some((r) => typeof r?.navigate === "string" && r.navigate.startsWith("/cockpit/") && (r.navigate.split("/")[2] || "") !== String(pid || ""));
+}
+
 /** True for the blocker option the Hub offers when the rearm card can reopen the gate (owner/blockers.mjs, kind "rearm"). */
 export const isRearmOption = (option) => option?.kind === "rearm" && option?.code === "GATE_SUSPENDED";
 

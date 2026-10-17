@@ -27,10 +27,12 @@ test("M11-MG-01 migration 12 on schema 11: four new tables, no other table chang
   db11.prepare("INSERT INTO settings (key, value_json, updated_at) VALUES ('m11-probe', '\"kept\"', ?)").run(new Date().toISOString());
   const before = Object.fromEntries(db11.prepare("SELECT name, sql FROM sqlite_master WHERE type IN ('table','index') AND sql IS NOT NULL").all().map((r) => [r.name, r.sql]));
   db11.close();
-  const r = await dryRunMigration({ dbPath: file, tmpDir: path.join(dir, "tmp") });
+  // M12 added migration 13 (it alters sales_evidence): this test applies the migrations up to 12 only, so it keeps checking 12 alone.
+  const upTo12 = MIGRATIONS.filter((m) => m.version <= 12);
+  const r = await dryRunMigration({ dbPath: file, tmpDir: path.join(dir, "tmp"), migrations: upTo12 });
   assert.deepEqual([r.schemaBefore, r.schemaAfter, r.integrity, r.rowCountsUnchanged], [11, 12, "ok", true]);
   assert.deepEqual(r.pending, ["12:m11-deliveries"]);
-  const db = openDatabase(file);
+  const db = openDatabase(file, { migrations: upTo12 });
   try {
     const after = Object.fromEntries(db.prepare("SELECT name, sql FROM sqlite_master WHERE type IN ('table','index') AND sql IS NOT NULL").all().map((r) => [r.name, r.sql]));
     for (const [name, sql] of Object.entries(before)) assert.equal(after[name], sql, `${name} unchanged`);

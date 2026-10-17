@@ -25,8 +25,18 @@
 // silence is not an answer (D1 review). The link is the outcome's {legaSessionId, transcriptId} (ids only), or for older rows the
 // owner.intent command row the event is correlated with. Read after the fact (ids, roles, origins, flags and lengths, never words); such
 // sentences are listed apart (breakdown.unknownAnsweredByLega), never in UNKNOWN_INTENTS.
+//
+// M12 (D15): the owner's decisions are also counted per AUTHORITY (breakdown.decisionsByAuthority, additive): every approval.owner_decide
+// (the approval event the owner session wrote, decided_via owner_session) and every ops.plan.consent (the owner session that confirmed the
+// card, read back from owner_sessions) as webauthn or local_dev_profile. A local development session is a local trust the owner chose for
+// this machine, never proof that he was present: it is never added to the webauthn figures.
 import crypto from "node:crypto";
 import { HubError } from "../core/errors.mjs";
+/**
+ * M12 (D15): a local development session's credential id starts with this prefix (owner/dev-profile.mjs DEV_CREDENTIAL_PREFIX; kept as a
+ * literal so probe.mjs keeps its single relative import — D1-06 loads mutated copies of this file from a temporary folder).
+ */
+const DEV_CREDENTIAL_PREFIX = "devprofile:";
 
 /** The screens owner.nav may name. A fixed enum: the payload can never carry an id, a path or free text. */
 export const NAV_SCREENS = Object.freeze(["integrations.live", "integrations.isolation", "approvals", "system.environments", "missions.factory", "focus.composer"]);
@@ -57,7 +67,11 @@ export const OWNER_PROBE_LIST = Object.freeze([
 // The event types the counters read (one indexed range scan over the window, filtered by type).
 const COUNTED_EVENTS = Object.freeze(["owner.intent", "intake.question", "lega.pointed", "lega.grant_prepared", "envelope.confirmed", "ops.plan.consent",
   "envelope.delta_confirmed", "owner.session_opened", "owner.session_reauthenticated", "gate.rearmed",
-  "ops.plan.reconfirmed", "lega.owner_pause", "owner.interrupt", "owner.continue_voice", "system.stop_all"]);
+  "ops.plan.reconfirmed", "lega.owner_pause", "owner.interrupt", "owner.continue_voice", "system.stop_all",
+  // M12 (D15): the owner-session approvals (approval.owner_decide writes approval.approved / approval.rejected with its authority).
+  "approval.approved", "approval.rejected"]);
+/** M12 (D15): the authorities a decision is counted under (anything else is "other"; the test channel is "test"). */
+const DECISION_AUTHORITIES = Object.freeze(["webauthn", "local_dev_profile"]);
 const SCOPE_CONFIRMATION_EVENTS = new Set(["envelope.confirmed", "ops.plan.consent", "envelope.delta_confirmed"]);
 /** The one confirmation of a plan (an envelope or an operation plan); envelope.delta_confirmed is always a further one. */
 const PLAN_CONFIRMATION_EVENTS = Object.freeze(["envelope.confirmed", "ops.plan.consent"]);
@@ -331,13 +345,31 @@ export function createProbe({ db, bus, config }) {
       unknownIntents: { bySource: {}, estimated: 0 },
       // D1: provider transcripts the Hub left to Lega and Lega answered (an agent turn that spoke, or her own speech): not in UNKNOWN_INTENTS.
       unknownAnsweredByLega: { sentences: 0, turn: 0, speech: 0, items: [] },
+      // M12 (D15): the owner's decisions per authority (counts only). local_dev_profile is never presented as the owner's presence.
+      decisionsByAuthority: { ownerDecide: { webauthn: 0, local_dev_profile: 0, test: 0, other: 0 }, planConsent: { webauthn: 0, local_dev_profile: 0, other: 0 },
+        note: "local_dev_profile = sesiune locală de dezvoltare (încredere în acest calculator), nu dovada prezenței proprietarului." },
     };
+    const sessionAuthority = (id) => {
+      if (!id) return "other";
+      let row = null;
+      try { row = db.prepare("SELECT credential_id FROM owner_sessions WHERE id = ?").get(String(id)); } catch { row = null; }
+      return !row ? "other" : String(row.credential_id || "").startsWith(DEV_CREDENTIAL_PREFIX) ? "local_dev_profile" : "webauthn";
+    };
+    const authorityKey = (a) => (DECISION_AUTHORITIES.includes(a) ? a : "other");
     const extraConfirmation = (e, reason, detail = {}) => { add("extraScopeConfirmations", ev(e, { reason, ...detail })); breakdown.extraScopeConfirmations[reason] += 1; };
     const voicePause = (item, owner) => { add("voicePause", item); breakdown.voicePause[owner ? "owner" : "other"] += 1; };
     const ownerPauses = new Map(); // Lega session id → its lega.owner_pause events not yet matched with the pause they announced
 
     let firstOpenSkipped = null;
     for (const e of events) {
+      // M12 (D15): decisions per authority, beside the existing counters (which they never change).
+      if (e.type === "ops.plan.consent") breakdown.decisionsByAuthority.planConsent[authorityKey(sessionAuthority(e.payload.session))] += 1;
+      if ((e.type === "approval.approved" || e.type === "approval.rejected") && !e.payload.envelopeId && Object.hasOwn(e.payload, "authority") && ["owner_session", "test"].includes(e.payload.via)) {
+        const a = e.payload.via === "test" ? "test" : authorityKey(e.payload.authority);
+        breakdown.decisionsByAuthority.ownerDecide[a] += 1;
+        continue;
+      }
+      if (e.type === "approval.approved" || e.type === "approval.rejected") continue;
       if (e.type === "lega.pointed") {
         const target = pointedTarget(e);
         if (GRANT_FORM_TARGETS.has(target)) add("grantFormsOpened", ev(e, { target }));

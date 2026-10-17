@@ -27,7 +27,9 @@ import { readinessOnlyDelta } from "./blockers.mjs";
 export const WORK_REQUEST_STATUSES = Object.freeze(["OPEN", "BLOCKED", "PLANNED", "CONFIRMED", "DONE", "CANCELLED", "EXPIRED"]);
 export const WORK_REQUEST_TTL_DAYS = 7;
 const LIVE = new Set(["OPEN", "BLOCKED", "PLANNED", "CONFIRMED"]);
-const INTENTS = new Set(["engineering", "studio", "operation", "run", "other"]); // run = one bounded analysis step (run plan), re-proposed by the intake
+// run = one bounded analysis step (run plan), re-proposed by the intake; sales (M12 final review F7) = an offer request kept until the exports
+// folder exists, explained and re-proposed by the intake's Sales rules (owner/sales-kept.mjs).
+const INTENTS = new Set(["engineering", "studio", "operation", "run", "sales", "other"]);
 /** Event types after which a preserved request is explained again (and re-proposed when nothing blocks). */
 export const CLEARING_EVENTS = Object.freeze(new Set(["environment.attested", "environment.probed", "environment.reviewer_probed", "environment.inspected", "provider.probed",
   "billing.declared", "media.asset.imported", "skill.reconciled", "readiness.completed"]));

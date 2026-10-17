@@ -62,6 +62,12 @@ export function createEventBus(db, clock = () => new Date()) {
     const id = newId("evt");
     const createdAt = clock().toISOString();
     const safePayload = redactDeep(payload);
+    // M12 decision provenance names a public authenticator id, never a credential secret. Resolve it from the stored
+    // session on these events only; the general redactor remains fail-closed for all caller-supplied credential fields.
+    if (type === "sales.proposal.approved" || type === "sales.qualification.override" || (["approval.approved", "approval.rejected"].includes(type) && payload.actionKind === "sales.proposal_approve")) {
+      const session = payload.sessionId ? db.prepare("SELECT credential_id FROM owner_sessions WHERE id=?").get(payload.sessionId) : null;
+      if (session && session.credential_id === payload.credentialId) safePayload.credentialId = session.credential_id;
+    }
     const result = insert.run(id, type, EVENT_SCHEMA_VERSION, scopeType, scopeId, ctx.projectId, source, runId, json(safePayload), dedupeKey, createdAt,
       ctx.companyId, ctx.departmentId, ctx.missionId, ctx.taskId, ctx.correlationId, rawRef);
     const out = { seq: Number(result.lastInsertRowid), id, type, schemaVersion: EVENT_SCHEMA_VERSION, scopeType, scopeId, projectId: ctx.projectId, source, runId,

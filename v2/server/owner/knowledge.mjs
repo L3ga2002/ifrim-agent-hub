@@ -88,7 +88,9 @@ export function createKnowledge(hub) {
         { name: "Software Factory (cod, teste, review, QA, preview)", route: "Codex scrie, Claude verifică doar citind, Hub-ul rulează testele", screen: "#/lega" },
         { name: "Livrare demo (capturi, clip 16:9 + 9:16, QA, export, rezumat)", route: "Chromium + ffmpeg, fără model", screen: "#/livrare" },
         { name: "Document Word / registru Excel", route: "generate de Hub, verificate în Word / Excel prin COM", screen: "#/livrare" },
-        { name: "Pachet de campanie (local, nepublicat)", route: "fișiere în dosarul livrării; publicarea vine în M12", screen: "#/livrare" },
+        { name: "Pachet de campanie (local, nepublicat)", route: "fișiere în dosarul livrării; publicarea nu e activă: nimic nu se publică", screen: "#/livrare" },
+        // M12 final review C5: the offer preparation (Vânzări): local, synthetic, never sent.
+        { name: "Pregătirea ofertelor (Vânzări, firme sintetice): brief, calificare, oferta până la aprobarea ta, apoi ciorna netrimisă și „Dosarul ofertei”", route: "local, fără model; nimic nu se trimite, nu se contactează și nu se publică (OUTREACH_DISABLED)", screen: "#/sales" },
         { name: "Studio video (import, montaj, corecții, variante, QA, export)", route: "ffmpeg local", screen: "#/studio" },
         { name: "Operator desktop (deschide, citește, tastează verificat, salvează)", route: "UI Automation, un singur controller, Stop / Preiau eu", screen: "#/system" },
       ],
@@ -96,13 +98,35 @@ export function createKnowledge(hub) {
     };
   }
 
+  /**
+   * M12 final review C5: where the offers' dossiers are (<exports>\vanzari\oferta-…\revizia-N), the newest one and its state. Local only:
+   * an offer is prepared here and never sent.
+   */
+  function offers() {
+    const exportsDir = safe(() => media.exportsDir(), null);
+    const dossier = safe(() => db.prepare("SELECT d.folder, d.status, d.revision, d.manifest_sha256, d.opportunity_id FROM sales_dossiers d ORDER BY d.created_at DESC LIMIT 1").get(), null);
+    const blockedPreps = safe(() => db.prepare("SELECT id, status, status_reason FROM sales_preparations WHERE status IN ('STALE','STOPPED','EXPIRED','FAILED') ORDER BY updated_at DESC LIMIT 5").all(), []);
+    const waiting = safe(() => db.prepare("SELECT id FROM sales_preparations WHERE status = 'WAITING_OWNER' ORDER BY updated_at DESC LIMIT 5").all(), []);
+    return { root: exportsDir ? path.join(exportsDir, "vanzari") : null,
+      latest: dossier ? { folder: dossier.folder, status: dossier.status, revision: dossier.revision, manifestSha256: dossier.manifest_sha256 || null, exists: fs.existsSync(dossier.folder),
+        screen: `#/sales?tab=opp&id=${encodeURIComponent(dossier.opportunity_id)}` } : null,
+      // Last review round RR7 / RR12: the server's own flags — a card the owner never confirmed is not listed (it has nothing to continue);
+      // one a Stop All still holds says the rearm comes first.
+      blocked: blockedPreps.map((p) => {
+        const v = safe(() => hub.salesPreparations?.get?.(p.id), null);
+        const continuable = v && hub.salesPreparations?.isContinuable ? Boolean(hub.salesPreparations.isContinuable(v)) : true;
+        const waitsForRearm = v && hub.salesPreparations?.stopHold ? Boolean(safe(() => hub.salesPreparations.stopHold(v), null)) : false;
+        return { id: p.id, status: p.status, reason: p.status_reason || "", continuable, waitsForRearm };
+      }).filter((p) => p.continuable), waitingForOwner: waiting.length, sent: false };
+  }
+
   function locations() {
     const exportsDir = safe(() => media.exportsDir(), null);
     const recent = safe(() => deliveries.list().slice(0, 5), []).map((d) => ({ title: d.title, status: d.status, folder: d.template?.exports ? path.join(d.template.exports.dir, d.template.exports.folder) : null, screen: `#/livrare/${d.id}` }));
     return {
       projects: safe(() => projects.list(), []).map((p) => ({ name: p.name, path: p.path, test: p.source === "hub-test", screen: `#/lega/${p.id}` })),
-      exportsDir, deliveries: recent.map((r) => ({ ...r, exists: r.folder ? fs.existsSync(r.folder) : false })),
-      screens: { lega: "#/lega", livrare: "#/livrare", decizii: "#/livrare/decizii", studio: "#/studio", sistem: "#/system", telefon: "#/m" },
+      exportsDir, deliveries: recent.map((r) => ({ ...r, exists: r.folder ? fs.existsSync(r.folder) : false })), offers: offers(),
+      screens: { lega: "#/lega", livrare: "#/livrare", decizii: "#/livrare/decizii", studio: "#/studio", sistem: "#/system", telefon: "#/m", vanzari: "#/sales" },
     };
   }
 
@@ -131,7 +155,15 @@ export function createKnowledge(hub) {
   async function blocked() {
     const why = await Promise.resolve(safe(() => cockpit.whyBlocked({}), null)).catch(() => null);
     const waiting = safe(() => db.prepare("SELECT title, status, status_reason FROM deliveries WHERE status IN ('NEEDS_OWNER','STALE') ORDER BY updated_at DESC LIMIT 5").all(), []);
-    return { gate: safe(() => settings.get("executionGate"), null), explanation: why, deliveries: waiting.map((d) => ({ title: d.title, status: d.status, reason: d.status_reason })) };
+    return { gate: safe(() => settings.get("executionGate"), null), explanation: why, deliveries: waiting.map((d) => ({ title: d.title, status: d.status, reason: d.status_reason })),
+      // C5: an offer's preparation stopped by a change, a Stop All, an expiry or an error (it continues with ONE new card).
+      offers: offers().blocked };
+  }
+
+  /** The offers' dossier answer (C5): where it is, its state, and that nothing was sent. */
+  function offersText(o) {
+    if (o.latest) return `Ultimul dosar al ofertei (revizia ${o.latest.revision}, ${o.latest.status}${o.latest.exists ? "" : ", folderul nu mai e pe disc"}) e în ${o.latest.folder}. Ofertele se pregătesc local și nu se trimit: ciorna rămâne netrimisă.`;
+    return o.root ? `Dosarele ofertelor merg în ${o.root} (încă nu am niciunul). Ofertele se pregătesc local și nu se trimit.` : "Dosarele ofertelor merg în folderul de exporturi, sub „vanzari” (folderul de exporturi nu e ales încă). Ofertele se pregătesc local și nu se trimit.";
   }
 
   async function snapshot(topic = "overview") {
@@ -148,8 +180,10 @@ export function createKnowledge(hub) {
   }
 
   /** The same facts as one or two spoken sentences (Romanian), with the screen to open. */
-  async function answer(topic) {
+  async function answer(topic, { about = null } = {}) {
     const s = await snapshot(topic);
+    // C5: „Unde e dosarul ofertei?” — the offers' dossier, not the last delivery folder.
+    if (s.topic === "locations" && about === "offers") return { text: offersText(s.locations.offers), screen: s.locations.offers.latest?.screen || "#/sales", data: s };
     if (s.topic === "apps") {
       const ops = s.apps.operable.map((a) => `${a.name}${a.status === "NOT_FOUND" ? " (negăsit)" : a.authorized ? "" : " (neautorizat încă)"}`).join(", ");
       const office = s.apps.office.map((o) => o.name).join(" și ");
@@ -158,7 +192,9 @@ export function createKnowledge(hub) {
     if (s.topic === "accounts") return { text: `${s.accounts.providers.map((p) => `${p.provider === "codex" ? "Codex" : "Claude"}: ${p.status}`).join("; ")}. Folosesc doar abonamentele.${s.accounts.projectModels.length ? ` Modele pe proiecte: ${s.accounts.projectModels.slice(0, 2).map((m) => `${m.project} (scrie ${m.writer || "implicit"}, verifică ${m.reviewer || "implicit"})`).join("; ")}.` : ""}`, screen: s.accounts.screen, data: s };
     if (s.topic === "locations") {
       const d = s.locations.deliveries.find((x) => x.exists);
-      return { text: d ? `Ultimul dosar de livrare („${d.title}”, ${d.status}) e în ${d.folder}. Îl vezi și în camera de livrare.` : `Exporturile merg în ${s.locations.exportsDir || "folderul de exporturi (neales încă)"}.`, screen: d?.screen || "#/livrare", data: s };
+      // C5: the offers' newest dossier is named too (a separate place: <exports>\vanzari\…).
+      const o = s.locations.offers?.latest ? ` ${offersText(s.locations.offers)}` : "";
+      return { text: `${d ? `Ultimul dosar de livrare („${d.title}”, ${d.status}) e în ${d.folder}. Îl vezi și în camera de livrare.` : `Exporturile merg în ${s.locations.exportsDir || "folderul de exporturi (neales încă)"}.`}${o}`, screen: d?.screen || "#/livrare", data: s };
     }
     if (s.topic === "active") {
       const a = s.active;
@@ -185,11 +221,16 @@ export function createKnowledge(hub) {
       if (g && g.status !== "open") lines.push(`poarta e ${g.status}${g.reason ? ` (${String(g.reason).slice(0, 100)})` : ""}`);
       if (ex?.text) lines.push(String(ex.text).slice(0, 200));
       for (const d of s.blocked.deliveries) lines.push(`„${d.title}”: ${d.status}${d.reason ? ` — ${String(d.reason).slice(0, 100)}` : ""}`);
+      for (const p of s.blocked.offers || []) {
+        const next = p.waitsForRearm ? "întâi redeschizi poarta din cockpit (cardul „Redeschide poarta”, cu Windows Hello), apoi o continuare e un card nou: „Continuă pregătirea ofertei”"
+          : "o continuare e un card nou: „Continuă pregătirea ofertei”";
+        lines.push(`pregătirea ofertei ${p.id}: ${p.status}${p.reason && !p.waitsForRearm ? ` — ${String(p.reason).slice(0, 100)}` : ""} (${next})`);
+      }
       return { text: lines.length ? `Blocat: ${lines.join("; ")}.` : "Nimic nu e blocat acum.", screen: "#/lega", data: s };
     }
     if (s.topic === "capabilities") return { text: `Pot face: ${s.capabilities.flows.map((f) => f.name).join("; ")}.`, screen: "#/system", data: s };
     const a = s.active;
-    return { text: `${a.missions.length ? `Lucrez la ${a.missions.length} ${a.missions.length === 1 ? "misiune" : "misiuni"}.` : "Nu rulează nicio misiune."} Pot lucra cu software, livrări demo, Word, Excel, campanii locale, video și aplicațiile autorizate.`, screen: "#/lega", data: s };
+    return { text: `${a.missions.length ? `Lucrez la ${a.missions.length} ${a.missions.length === 1 ? "misiune" : "misiuni"}.` : "Nu rulează nicio misiune."} Pot lucra cu software, livrări demo, Word, Excel, campanii locale, video, oferte pregătite local (netrimise) și aplicațiile autorizate.`, screen: "#/lega", data: s };
   }
 
   // Warm the inventory once in the background on a real Hub (never in tests: no registry walk there).

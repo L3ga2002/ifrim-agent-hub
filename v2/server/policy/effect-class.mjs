@@ -31,6 +31,8 @@ const EFFECT_TO_CLASS = Object.freeze({
 const INTENT_OVERRIDES = Object.freeze({
   start_view: "SIMPLE_LOCAL_ACTION", quiet: "SIMPLE_LOCAL_ACTION", notify_normal: "SIMPLE_LOCAL_ACTION",
   studio_publish: "REFUSED", refuse_execute: "REFUSED",
+  // M12 (T-S3): sending an offer, contacting a company or publishing is never done from a sentence (OUTREACH_DISABLED), from any source.
+  sales_send: "REFUSED",
 });
 
 /**

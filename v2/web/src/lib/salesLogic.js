@@ -69,7 +69,7 @@ const STATUS_META = {
   },
   proposal: {
     DRAFT: ["Ciornă", "neutral"], PENDING_APPROVAL: ["Așteaptă aprobare", "approval"], APPROVED_INTERNAL: ["Aprobată intern", "ok"], APPROVED: ["Aprobată", "ok"],
-    SUPERSEDED: ["Înlocuită", "neutral"], REJECTED: ["Respinsă", "error"], CANCELLED: ["Anulată", "neutral"],
+    SUPERSEDED: ["Înlocuită", "neutral"], REJECTED: ["Respinsă", "error"], CANCELLED: ["Anulată", "neutral"], STALE: ["Depășită: intrările s-au schimbat", "warn"],
   },
   batch: {
     UPLOADED: ["Încărcat", "neutral"], MAPPED: ["Mapat", "info"], PREVIEWED: ["Previzualizat", "info"], IMPORTING: ["Import întrerupt (se reia)", "warn"],

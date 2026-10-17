@@ -22,6 +22,8 @@ import { proposalWindowMin } from "../policy/proposal-window.mjs";
 export const PLAN_LIMITS = Object.freeze({ confirmWindowMin: 15, slackMin: 30, maxSteps: 16, defaultMaxDurationMin: 30, maxDurationMin: 240, maxActionsPerStep: 200 });
 export const NEVER_IN_PLANS = Object.freeze(["publicare pe platforme", "încărcare (upload)", "trimiterea de mesaje", "plăți sau cumpărături", "ștergeri externe", "schimbarea setărilor de securitate"]);
 const ACTIVE = new Set(["CONFIRMED", "RUNNING"]);
+/** Plan kinds whose newer card supersedes only the older cards of the same object (the step parameter naming it); every other kind is kind-wide. */
+const SUPERSEDE_SCOPE = Object.freeze({ "delivery.correct": "deliveryId", "sales.prepare": "preparationId" });
 /**
  * M10.2 review #40: the secrets a step needs at confirmation (typed in the plan card, memory only, never in the body, hash, DB or a log),
  * derived from the step kinds — the same list for the plan view, the card shape and confirm(), so a typed, spoken or armed-window
@@ -160,10 +162,13 @@ export function createOpsPlans({ db, bus, clock, settings, trust, voice = null, 
     const nonce = crypto.randomBytes(12).toString("hex");
     const t = clock();
     bus.transaction(() => {
-      // Only the latest proposal can be confirmed (an older card of the same kind is superseded).
-      const deliveryIds = new Set(body.steps.map(s => s.params?.deliveryId).filter(Boolean));
+      // Only the latest proposal can be confirmed (an older card of the same kind is superseded). A kind whose cards belong to one object
+      // supersedes only the older cards of THAT object: a delivery's correction, a Sales preparation (M12 review R12: a new Sales card, or
+      // a continuation of preparation A, never cancels the pending card of preparation B).
+      const scopeKey = SUPERSEDE_SCOPE[kind] || null;
+      const scopeIds = scopeKey ? new Set(body.steps.map(s => s.params?.[scopeKey]).filter(Boolean)) : null;
       for (const old of db.prepare("SELECT id FROM ops_plans WHERE status = 'PROPOSED' AND kind = ?").all(kind)) {
-        if (kind === 'delivery.correct' && !view(old.id).steps.some(s => deliveryIds.has(s.params?.deliveryId))) continue;
+        if (scopeKey && !view(old.id).steps.some(s => scopeIds.has(s.params?.[scopeKey]))) continue;
         setStatus(old.id, "SUPERSEDED", "Un plan mai nou a fost prezentat", {}, ["PROPOSED"]);
       }
       db.prepare(`INSERT INTO ops_plans (id, kind, title, status, body_json, summary_json, plan_hash, nonce, proposed_by, proposed_via, confirm_by, expires_at, created_at, updated_at)
@@ -211,10 +216,14 @@ export function createOpsPlans({ db, bus, clock, settings, trust, voice = null, 
     }
     const consent = { channel: "owner_session", modality, sessionId: s.id, credential: String(s.credentialId || "").slice(0, 10), planHash: p.hash, confirmedAt: now(),
       idempotencyKey: idempotencyKey ? String(idempotencyKey).slice(0, 120) : null, voice: spoken ? spoken.evidence : null, decisions: p.body.decisions.map((d) => d.label) };
-    const authority = authorityOf(p, s.id);
+    // M12 D11 (declared shared-engine fix): the authority's time limit starts at the CONFIRMATION, as policy/proposal-window.mjs states
+    // and as the envelopes do (M10.2 U11). It was computed at the proposal, so a card confirmed late in its display window (24 h under
+    // the local development profile) was born expired and the owner's one confirmation was lost.
+    const expiresAt = new Date(clock().getTime() + (p.body.limits.maxDurationMin + PLAN_LIMITS.slackMin) * 60000).toISOString();
+    const authority = authorityOf({ ...p, expiresAt }, s.id);
     bus.transaction(() => {
       if (spoken && spoken.consume(planId) !== 1) throw new HubError("conflict", "Fraza vocală a fost deja folosită pentru o confirmare");
-      const n = setStatus(planId, "CONFIRMED", `Confirmat (${modality}) în sesiunea ${s.id}`, { consent_json: json(consent), authority_json: json(authority), owner_session_id: s.id }, ["PROPOSED"]);
+      const n = setStatus(planId, "CONFIRMED", `Confirmat (${modality}) în sesiunea ${s.id}`, { consent_json: json(consent), authority_json: json(authority), owner_session_id: s.id, expires_at: expiresAt }, ["PROPOSED"]);
       if (n !== 1) throw new HubError("conflict", "Planul a fost deja confirmat (altă filă sau o confirmare dublă)");
       for (const d of p.body.decisions) if (d.kind === "app.authorize") apps.authorize([d.appId], { sessionId: s.id, via: `plan:${planId}`, actor: "owner" });
       bus.append({ type: "ops.plan.consent", scopeType: "ops_plan", scopeId: planId, source: "owner", payload: { modality, session: s.id, decisions: consent.decisions.length, hash: p.hash.slice(0, 16) } });
@@ -474,6 +483,18 @@ export function createOpsPlans({ db, bus, clock, settings, trust, voice = null, 
     }
     throw new HubError("conflict", "Între timp s-a schimbat starea porții, așa că nu am reluat planul; spune din nou „Continuă” ca să verific starea lui.", { code: "STOPPED_DURING_RESUME" });
   }
+  /**
+   * M12 review F11/F13: a plan kind may refuse a resume (and a delta re-confirmation) BEFORE anything moves, with its own truthful
+   * reason — e.g. a Sales preparation whose consent a Stop All followed while the gate is still held by it, even when that stop did not
+   * pause the plan itself (it was already paused). A guard only refuses; it never resumes, widens or confirms anything. Kinds without a
+   * guard keep the engine's rules unchanged.
+   */
+  const resumeGuards = new Map(); // kind → (plan view) => void (throws to refuse)
+  function registerResumeGuard(kind, guard) {
+    if (typeof guard !== "function") throw new Error("registerResumeGuard needs a function");
+    resumeGuards.set(String(kind), guard);
+  }
+  const resumeGuardOf = (p) => { const guard = resumeGuards.get(String(p?.kind || "")); if (guard) guard(p); };
 
   /**
    * „Continuă”: resumes the EXACT plan while its session, authority and limits still hold. An uncertain step is reconciled first by its
@@ -489,6 +510,7 @@ export function createOpsPlans({ db, bus, clock, settings, trust, voice = null, 
     if (new Date(p.expiresAt) <= clock()) throw new HubError("conflict", "Limita de timp a planului a trecut; cere planul din nou (confirmi doar diferența).", { code: "PLAN_EXPIRED" });
     // Before the session-delta card: a re-confirmation would only move the authority of a plan that still could not resume.
     holdIfStopped(planId);
+    resumeGuardOf(p);
     const mark = stopMark();
     if (p.authority?.sessionId !== s.id) {
       // M10.2 (U11): the session the plan was confirmed in closed (idle, logout). The SAME credential confirms only the difference —
@@ -547,6 +569,7 @@ export function createOpsPlans({ db, bus, clock, settings, trust, voice = null, 
     // 2.12.1 (D22): a plan the current Stop All itself paused waits for the rearm — checked BEFORE the authority moves to this session.
     // The card stays valid (its nonce is used only by a successful re-confirmation), so after the rearm the same card confirms it.
     holdIfStopped(planId);
+    resumeGuardOf(p);
     const mark = stopMark();
     if (p.body.decisions.length) trust.requireFresh(s, "planul care autorizează o aplicație sau un folder nou");
     // Nothing else may have changed since the plan was confirmed (apps, binaries, folders, policy): otherwise it is a new plan.
@@ -621,6 +644,6 @@ export function createOpsPlans({ db, bus, clock, settings, trust, voice = null, 
     return bus.transaction(() => ids.filter((id) => setStatus(id, "SUPERSEDED", reason || "Corectura a fost rezolvată în Studio", {}, ["PROPOSED"]) === 1));
   }
 
-  return { close, propose, confirm, authorize, pause, cancel, resume, reconfirm, view, list, active, recover, idle, buildBody, armForLega, confirmFromArmed, armedFor, registerParent, adoptDerived,
+  return { close, propose, confirm, authorize, pause, cancel, resume, reconfirm, view, list, active, recover, idle, buildBody, armForLega, confirmFromArmed, armedFor, registerParent, adoptDerived, registerResumeGuard,
     disarm: (planId, reason) => armedWindows.disarm(planId, reason), correctionPlans, supersedeCorrections, supersedeDeliveryCorrection };
 }

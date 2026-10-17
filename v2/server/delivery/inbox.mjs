@@ -5,6 +5,43 @@
 import { parse } from "../storage/db.mjs";
 
 const lineOf = (c) => `${c.id}: ${String(c.status || "")}`;
+const minutesLeft = (min) => (min >= 60 ? `${Math.floor(min / 60)} h ${min % 60} min` : `${min} min`);
+
+/**
+ * M12 final review (C1): the owner's one Sales decision — the internal approval of EXACTLY the offer a WAITING_OWNER preparation waits for
+ * (id, version, full SHA) — while it is still that decision: the offer is the current version, DRAFT, not STALE, the opportunity waits for
+ * his review, and the confirmed plan's window has not passed. Decided (APPROVED_INTERNAL), STALE, stopped, expired or cancelled → gone.
+ * Read only: the row links to the Opportunity screen, where „Aprob intern” runs in the owner session.
+ */
+export function salesOfferDecisions(hub, now = new Date()) {
+  const { salesPreparations: preparations, sales } = hub;
+  if (!preparations?.list || !sales?.latestProposal) return [];
+  const items = [];
+  for (const p of preparations.list({ status: "WAITING_OWNER" })) {
+    if (!p.awaited || !p.opportunityId || !preparations.awaitedCurrent(p)) continue;
+    const at = p.activateBy ? Date.parse(p.activateBy) : NaN;
+    if (Number.isFinite(at) && at <= now.getTime()) continue;
+    const latest = sales.latestProposal(p.opportunityId);
+    if (!latest || latest.status !== "DRAFT") continue;
+    let view = null;
+    try { view = sales.getOpportunity(p.opportunityId); } catch { view = null; }
+    if (view?.opportunity?.status !== "READY_FOR_OWNER_REVIEW") continue;
+    const remainingMin = Number.isFinite(at) ? Math.max(0, Math.floor((at - now.getTime()) / 60000)) : null;
+    const client = String(p.brief?.fields?.clientType?.value || view.org?.displayName || "cerere de ofertă").slice(0, 80);
+    const window = remainingMin === null ? "" : ` Dacă o aprobi până la ${p.activateBy} (încă ${minutesLeft(remainingMin)}), ciorna și dosarul se fac singure; după aceea, o continuare cere un card nou.`;
+    items.push({ kind: "sales_offer", id: latest.id, preparationId: p.id, opportunityId: p.opportunityId, projectId: null, projectName: "Vânzări (date sintetice)", real: false, synthetic: true,
+      title: `Oferta v${latest.version} (sintetic): ${client}`, waitingSince: p.updatedAt,
+      target: { proposalId: latest.id, version: latest.version, proposalSha: latest.contentSha }, activateBy: p.activateBy || null, remainingMin,
+      what: `Oferta sintetică pregătită de planul confirmat de tine (${client}), versiunea ${latest.version}; ținta exactă a aprobării e mai jos (id, versiune, SHA complet).`,
+      why: `Așteaptă aprobarea ta internă („Aprob intern”, în sesiunea de proprietar, pe pagina oportunității).${window}`,
+      acceptLabel: "Dacă o aprobi:", rejectLabel: "Dacă nu o aprobi:",
+      ifAccept: "Oferta devine aprobată intern, legată de exact acest SHA; apoi ciorna de contact (netrimisă, DRAFT_ONLY) și „Dosarul ofertei” se fac local, fără altă întrebare. Nu se trimite nimic și nu înseamnă CONTACTED sau WON.",
+      ifReject: "Nimic nu pornește; după fereastra planului pregătirea expiră, iar o continuare cere un card nou. Oferta rămâne ciornă.",
+      effects: ["date sintetice (domeniu .test, CUI fictiv)", "după aprobare: o ciornă netrimisă și un dosar local în folderul de exporturi", "nimic trimis, publicat sau cheltuit"],
+      link: `/sales?tab=opp&id=${encodeURIComponent(p.opportunityId)}` });
+  }
+  return items;
+}
 
 export function decisionsInbox(hub) {
   const { db, factory, deliveries, projects } = hub;
@@ -54,6 +91,7 @@ export function decisionsInbox(hub) {
       ifAccept: "Fiecare decizie e separată: acceptarea software-ului nu aprobă clipul, iar aprobarea clipului nu publică nimic.",
       ifReject: "O poți lăsa așa sau o închizi; nimic nu se șterge.", effects: ["fișiere locale în folderul de exporturi; nimic publicat"], link: `/livrare/${d.id}` });
   }
+  items.push(...salesOfferDecisions(hub, typeof hub.config?.now === "function" ? hub.config.now() : new Date()));
   items.sort((a, b) => String(b.waitingSince || "").localeCompare(String(a.waitingSince || "")));
   return { items, total: items.length, note: "Doar citire: deciziile se iau din locul fiecăruia, în sesiunea ta de proprietar. Hub-ul nu acceptă nimic în locul tău." };
 }

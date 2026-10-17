@@ -6,7 +6,7 @@ import http from "node:http";
 import { fileURLToPath } from "node:url";
 import { syncBuiltinESMExports } from "node:module";
 import { DatabaseSync } from "node:sqlite";
-import { TEST_TMP, freePort } from "./helpers.mjs";
+import { TEST_TMP, FIXTURES, freePort } from "./helpers.mjs";
 import { loadConfig } from "../server/config.mjs";
 import { createHub } from "../server/hub.mjs";
 import { createHttpServer } from "../server/http/server.mjs";
@@ -79,13 +79,23 @@ export function assertStoredPaths(config, root) {
         else visit(item);
       }
     };
-    for (const [table, column] of [["deliveries", "template_json"], ["delivery_items", "meta_json"], ["delivery_documents", "export_json"], ["ops_plan_steps", "result_json"]])
+    for (const [table, column] of [["deliveries", "template_json"], ["delivery_items", "meta_json"], ["delivery_documents", "export_json"], ["ops_plan_steps", "result_json"],
+      ["sales_dossiers", "files_json"], ["sales_dossiers", "verification_json"], ["sales_plan_ops", "result_json"]])
       for (const row of db.prepare(`SELECT ${column} value FROM ${table}`).all()) visit(JSON.parse(row.value || "{}"));
     for (const row of db.prepare("SELECT ref_id FROM delivery_items WHERE ref_table = 'file'").all()) assertInside(root, row.ref_id);
+    // M12: the Sales dossier folders and the approved exports root they live in: inside the test root, never in root/data or root/hub.
+    const exportsDir = JSON.parse(db.prepare("SELECT value_json FROM settings WHERE key = 'mediaPolicy'").get()?.value_json || "{}")?.exportsDir || null;
+    const outsideHubData = (p) => { for (const sub of ["data", "hub"]) { const rel = path.relative(path.join(root, sub), path.resolve(p)); assert.ok(rel.startsWith("..") || path.isAbsolute(rel), `inside root/${sub}: ${p}`); } };
+    if (exportsDir) { assertInside(root, exportsDir); outsideHubData(exportsDir); }
+    for (const row of db.prepare("SELECT folder FROM sales_dossiers").all()) { assertInside(root, row.folder); outsideHubData(row.folder); }
   } finally { db.close(); }
 }
 
-export async function acceptanceHub({ devProfile, clock } = {}) {
+/**
+ * `fakeProviders` (M12, optional; absent = unchanged): the fixture Codex / Claude clients (no network, no model) with their logs and scenario
+ * queues INSIDE the test root, for suites that start a Lega session (fake app-server) on an acceptance hub. → t.readLog(name), t.queue(name, ...lines).
+ */
+export async function acceptanceHub({ devProfile, clock, listen = true, seedProject = true, salesTransport, fakeProviders = null } = {}) {
   fs.mkdirSync(TEST_TMP, { recursive: true });
   const root = fs.mkdtempSync(path.join(TEST_TMP, "accept-"));
   try { assertInside(TEST_TMP, root); } catch (error) { fs.rmdirSync(root); throw error; }
@@ -108,9 +118,15 @@ export async function acceptanceHub({ devProfile, clock } = {}) {
     assert.notEqual(process.env.HUB_V2_OFFICE_COM, "1");
     const homeDir = path.join(root, "home"), hubRoot = path.join(root, "hub"), projectDir = path.join(root, "project");
     for (const dir of [homeDir, hubRoot]) fs.mkdirSync(dir);
+    const fake = fakeProviders ? { logs: { codex: path.join(root, "codex.log"), claude: path.join(root, "claude.log") }, queues: { codex: path.join(root, "codex.queue"), claude: path.join(root, "claude.queue") } } : null;
+    if (fake) for (const dir of [".codex", ".claude"]) fs.mkdirSync(path.join(homeDir, dir));
+    const providerBinaries = fake ? {
+      codex: { executable: process.execPath, prefixArgs: [path.join(FIXTURES, "fake-codex.mjs"), `--scenario=${fakeProviders.codex || "ok"}`, `--log=${fake.logs.codex}`, `--scenario-queue=${fake.queues.codex}`] },
+      claude: { executable: process.execPath, prefixArgs: [path.join(FIXTURES, "fake-claude.mjs"), `--fake-scenario=${fakeProviders.claude || "ok"}`, `--fake-log=${fake.logs.claude}`, `--fake-scenario-queue=${fake.queues.claude}`] },
+    } : null;
     const config = loadConfig({ testMode: true, dataDir: path.join(root, "data"), hubRoot, browserRoot: hubRoot, projectsRoot: root,
       registryPath: path.join(root, "registry.md"), roleRegistryPath: path.join(root, "roles.json"), legacyDbPath: path.join(root, "legacy.sqlite"), voiceRoot: path.join(root, "voice"),
-      port: await freePort(), ...(clock ? { now: clock } : {}), devProfile });
+      port: listen ? await freePort() : 18971, ...(clock ? { now: clock } : {}), devProfile, salesTransport, ...(providerBinaries ? { providerBinaries } : {}) });
     assert.equal(config.testMode, true); assert.equal(config.dataLocation.source, "override");
     for (const key of ROOT_KEYS) assertInside(root, config[key]);
     for (const value of [homeDir, process.env.TEMP, process.env.TMP]) assertInside(root, value);
@@ -118,10 +134,15 @@ export async function acceptanceHub({ devProfile, clock } = {}) {
     assert.notEqual(config.port, 8011);
     hub = createHub(config, { homeDir });
     await hub.boot();
-    materializeFixture("bug-demo", projectDir);
-    const project = hub.projects.registerTest({ path: projectDir, name: "Accept synthetic" }, "test");
-    ({ server } = createHttpServer(hub));
-    await new Promise((resolve, reject) => { server.once("error", reject); server.listen(config.port, "127.0.0.1", resolve); });
+    let project;
+    if (seedProject) {
+      materializeFixture("bug-demo", projectDir);
+      project = hub.projects.registerTest({ path: projectDir, name: "Accept synthetic" }, "test");
+    }
+    if (listen) {
+      ({ server } = createHttpServer(hub));
+      await new Promise((resolve, reject) => { server.once("error", reject); server.listen(config.port, "127.0.0.1", resolve); });
+    }
     let token, cookie = "", auth;
     const request = (url, { method = "POST", body = {}, headers = {}, sessionCookie = cookie } = {}) => new Promise((resolve, reject) => {
       const req = http.request({ host: "127.0.0.1", port: config.port, path: url, method, headers: { Host: `localhost:${config.port}`, Origin: config.canonicalOrigin,
@@ -130,7 +151,7 @@ export async function acceptanceHub({ devProfile, clock } = {}) {
       });
       req.on("error", reject); req.end(method === "GET" ? undefined : JSON.stringify(body));
     });
-    token = (await request("/api/session", { method: "GET" })).json.token;
+    if (listen) token = (await request("/api/session", { method: "GET" })).json.token;
     const authenticate = async ({ dev = false, reauth = false } = {}) => {
       let result;
       if (dev) result = await request("/api/owner/dev-session");
@@ -151,6 +172,10 @@ export async function acceptanceHub({ devProfile, clock } = {}) {
       return result.json;
     };
     const t = { root, hub, config, project, projectDir, homeDir, request, authenticate, cleanup, assertPaths: () => assertStoredPaths(config, root) };
+    if (fake) {
+      t.readLog = (name) => (fs.existsSync(fake.logs[name]) ? fs.readFileSync(fake.logs[name], "utf8").split("\n").filter(Boolean).map((l) => JSON.parse(l)) : []);
+      t.queue = (name, ...lines) => fs.appendFileSync(fake.queues[name], `${lines.join("\n")}\n`);
+    }
     t.assertPaths();
     return t;
   } catch (error) { await cleanup(); throw error; }

@@ -82,6 +82,11 @@ import { createOpsPlans } from "./ops/plans.mjs";
 import { createDeliveries, DELIVERY_PHASE_OPS } from "./delivery/delivery.mjs";
 import { createDeliveryExecutors } from "./delivery/executors.mjs";
 import { createOfficeExecutors } from "./delivery/office-executors.mjs";
+import { createPlanLedger } from "./sales/plan-ledger.mjs";
+import { createSalesPreparations, PREPARE_KIND, PREPARATION_PHASE_B_OPS } from "./sales/preparation.mjs";
+import { createSalesPlanExecutors } from "./sales/plan-executors.mjs";
+import { registerSalesPlanner } from "./owner/planners/sales.mjs";
+import { createSalesAnswers } from "./sales/sales-answers.mjs";
 import { createKnowledge } from "./owner/knowledge.mjs";
 import { createDevProfileReader } from "./owner/dev-profile.mjs";
 import { setExtraCommands } from "./factory/spec.mjs";
@@ -124,7 +129,7 @@ export function createHub(config, { providerOverrides = {}, homeDir, browserLaun
   const projects = createProjects({ db, bus, config, clock });
   const conversations = createConversations({ db, bus, config, clock });
   const missions = createMissions({ db, bus, clock });
-  const approvals = createApprovals(db, bus, clock);
+  const approvals = createApprovals(db, bus, clock, config);
   const policy = createApprovalPolicy({ db, bus, clock });
   const leases = createLeases(db, bus, clock);
   const grants = createGrants({ db, bus, clock });
@@ -198,7 +203,7 @@ export function createHub(config, { providerOverrides = {}, homeDir, browserLaun
   const tools = createTools({ db, bus, clock, projects, approvals, supervisor, config });
   const integrations = createIntegrations({ db, bus, clock, config, toolDefinitions: tools.definitions });
   const router = createRouter({ db, bus, clock, config, settings, surfaces, providerState, usage, projects, telemetry, computer, company, roleConfig });
-  const commands = createCommandBus({ db, bus, clock, policy, approvals });
+  const commands = createCommandBus({ db, bus, clock, policy, approvals, config });
   // Lega (voice): a separate Codex app-server with GPT-Live; admitted by gate.evaluateVoice, stopped by Stop All.
   const refreshCodexConfig = () => {
     try { const current = providerState.get("codex") || {}; if (providers.codex.inspectConfig) providerState.set("codex", { ...current, config: providers.codex.inspectConfig() }); } catch { /* reported by the gate */ }
@@ -326,6 +331,17 @@ export function createHub(config, { providerOverrides = {}, homeDir, browserLaun
   });
   envelopes.attachDelivery(deliveries);
   deliveries.attachEnvelopes(envelopes);
+  // M12 Sales: the preparation of a synthetic offer as ONE confirmed operation plan (phase A), the contact draft and „Dosarul ofertei”
+  // DERIVED from that consent after the owner's own approval of the exact offer (phase B, registerParent below), the C-01 ledger of
+  // their operations, and the invalidation hooks of the Sales writers (a changed input makes a prepared offer / dossier STALE).
+  const salesLedger = createPlanLedger({ db, bus, clock });
+  const salesPreparations = createSalesPreparations({ db, bus, clock, settings, sales, opsPlans, trust, ledger: salesLedger, media });
+  Object.assign(executors, createSalesPlanExecutors({ sales, preparations: salesPreparations, ledger: salesLedger, opsPlans, media, config, bus }));
+  opsPlans.registerParent(PREPARE_KIND, { allowedOps: PREPARATION_PHASE_B_OPS, verify: (parent) => salesPreparations.verifyParent(parent) });
+  sales.onInvalidated((event) => salesPreparations.onInvalidated(event));
+  // M12 (S-07): the Hub's own answers to „Arată-mi oferta” / „Ce lipsește?” / „Aprobă oferta” (reads only; the intake and Lega's read tool).
+  const salesAnswers = createSalesAnswers({ sales, preparations: salesPreparations, opsPlans });
+  legaRead.salesAnswers = salesAnswers;
 
   // M10.2 U13: Lega arms a plan it has just SPOKEN (its bridge or its plan tool); the plan's service re-checks everything. A plan already
   // armed in this Lega session keeps its window (re-arming would make a "Da" said in between count as said before the window).
@@ -342,7 +358,7 @@ export function createHub(config, { providerOverrides = {}, homeDir, browserLaun
     company, chiefOfStaff, surfaces, schedules, computer, skills, artifacts, integrations, nativeSessions, telemetry, router, commands, checkpoints,
     breakers, supervisor, backups, providers, gate, runs, handoffs, tools, roleConfig, skillConfig, capabilityConfig, codexIsolation, lega, refreshCodexConfig, factory, factoryRunner,
     environments, wslRunner, trust, envelopes, armedWindows, cockpit, interrupts, advisor, voice, voiceEngine,
-    twin, warroom, autopilot, simulations, league, skillEvolution, teach, packages, board, devices, media, desktop, opsPlans, executors, deliveries };
+    twin, warroom, autopilot, simulations, league, skillEvolution, teach, packages, board, devices, media, desktop, opsPlans, executors, deliveries, salesPreparations, salesLedger, salesAnswers };
   registerCommands(commands, hub);
   // Stage before M12: what Lega knows about the system (read-only, from the real registries and tables).
   hub.knowledge = createKnowledge(hub);
@@ -351,6 +367,8 @@ export function createHub(config, { providerOverrides = {}, homeDir, browserLaun
   if (hub.intake) hub.runPlanner = registerRunPlanner(hub, hub.intake);
   // M11: the delivery planner (prepare / revise / open), next to the run planner.
   if (hub.intake) hub.deliveryPlanner = registerDeliveryPlanner(hub, hub.intake);
+  // M12: the Sales planner (a natural offer request → ONE preparation card; no model).
+  if (hub.intake) hub.salesPlanner = registerSalesPlanner(hub, hub.intake);
   // Stage before M12 (§25 closure): the bounded recovery of a revision stopped at step 0 (planners/delivery.mjs refineTest). A technical
   // action of the Hub (or of the agent on the cli/agent channel), recorded as such; the new card still needs its own confirmation.
   commands.register("factory.refine_test", { describe: "Rafinează o singură dată testul unei revizii oprite la pasul 0 (aceleași cuvinte, aceleași efecte, doar verificările noi; cardul nou cere confirmare)",
@@ -432,7 +450,8 @@ export function createHub(config, { providerOverrides = {}, homeDir, browserLaun
   const scheduler = createScheduler({ db, bus, clock, approvals, leases, runs,
     extraTick: () => Promise.all([schedules.tick((cmd) => commands.dispatch({ ...cmd, channel: "schedule", actor: "scheduler" }).then((r) => r.result)), factory.tick(), Promise.resolve().then(() => sales.tick()),
       Promise.resolve().then(() => envelopes.tick()), Promise.resolve().then(() => voice.tick()), Promise.resolve().then(() => media.tick()),
-      Promise.resolve().then(() => lega.tick()), Promise.resolve().then(() => hub.workRequests.tick()), Promise.resolve().then(() => deliveries.tick())]) });
+      Promise.resolve().then(() => lega.tick()), Promise.resolve().then(() => hub.workRequests.tick()), Promise.resolve().then(() => deliveries.tick()),
+      Promise.resolve().then(() => salesPreparations.tick())]) });
   hub.scheduler = scheduler;
   // ---------------------------------------------------------------- 2.12.2 (P0-R1): retained-lease reconciliation
   // A workspace lease kept after an unconfirmed stop (runs.finalize) or a restart (recovery) is released once its run is finished and its
@@ -555,6 +574,8 @@ export function createHub(config, { providerOverrides = {}, homeDir, browserLaun
     try { bootReport.lega = lega.recover(); } catch (error) { bootReport.lega = { error: String(error?.message || error).slice(0, 300) }; }
     bootReport.billing = convertLegacyBilling();
     try { deliveries.boot(); } catch (error) { bootReport.deliveries = { error: String(error?.message || error).slice(0, 300) }; }
+    // M12: a Sales preparation's listeners (the owner's approval, the plan's end, Stop All); a deferred, silent reconciliation pass.
+    try { salesPreparations.boot(); } catch (error) { bootReport.salesPreparations = { error: String(error?.message || error).slice(0, 300) }; }
     bootReport.factory = factory.recover();
     // M09: interrupted renders / captures / transcriptions / distribution attempts are marked, never resumed.
     try { bootReport.media = media.boot(); } catch (error) { bootReport.media = { error: String(error?.message || error).slice(0, 300) }; }
@@ -593,6 +614,7 @@ export function createHub(config, { providerOverrides = {}, homeDir, browserLaun
     sync("scheduler.stop", () => scheduler.stop());
     sync("envelopes.close", () => envelopes.close());
     sync("deliveries.close", () => deliveries.close_());
+    sync("salesPreparations.close", () => salesPreparations.close());
     sync("opsPlans.close", () => opsPlans.close());
     closePromise = (async () => {
       const step = async (name, fn) => {

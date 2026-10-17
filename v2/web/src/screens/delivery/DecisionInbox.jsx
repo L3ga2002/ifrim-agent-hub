@@ -3,7 +3,7 @@ import { Inbox, RefreshCw } from "lucide-react";
 import { api, fmt } from "../../api.js";
 import { Chip, Empty, ErrorNotice, Loading, Notice } from "../../components/ui.jsx";
 
-const KIND = { software_bundle: "Pachet software", mission_decision: "Misiune oprită", delivery: "Livrare" };
+const KIND = { software_bundle: "Pachet software", mission_decision: "Misiune oprită", delivery: "Livrare", sales_offer: "Ofertă de aprobat" };
 
 /**
  * „Deciziile mele” (M11): every result that waits for the owner, one row each — what it is, why it waits, what accepting / rejecting
@@ -29,7 +29,7 @@ export function DecisionInbox({ go }) {
                 <h3>{it.title}</h3>
                 <div className="row wrap">
                   <Chip tone="info">{KIND[it.kind] || it.kind}</Chip>
-                  <Chip tone={it.real ? "warn" : "neutral"}>{it.real ? "proiect real" : "proiect de test"}</Chip>
+                  <Chip tone={it.real ? "warn" : "neutral"}>{it.real ? "proiect real" : it.synthetic ? "date sintetice" : "proiect de test"}</Chip>
                   <span className="faint small">{it.projectName}{it.waitingSince ? ` · din ${fmt.dateTime(it.waitingSince)}` : ""}</span>
                 </div>
               </div>
@@ -37,8 +37,9 @@ export function DecisionInbox({ go }) {
                 <p><strong>Ce este:</strong> {it.what}</p>
                 <p><strong>De ce așteaptă:</strong> {it.why}</p>
                 {it.facts?.length > 0 && <p>{it.facts.join(" · ")}</p>}
-                <p><strong>{it.kind === "mission_decision" ? "Dacă o închizi:" : "Dacă accepți:"}</strong> {it.ifAccept.replace(/^Dacă o închizi: /, "")}</p>
-                <p><strong>{it.kind === "mission_decision" ? "Dacă o lași:" : "Dacă respingi:"}</strong> {it.ifReject.replace(/^Dacă o lași: /, "")}</p>
+                {it.target && <p className="break">Ținta exactă: <code className="mono break" style={{ overflowWrap: "anywhere" }}>{it.target.proposalId}</code> · versiunea {it.target.version} · SHA <code className="mono break" style={{ overflowWrap: "anywhere" }}>{it.target.proposalSha}</code>{it.activateBy ? ` · fereastra automată până la ${fmt.dateTime(it.activateBy)}` : ""}</p>}
+                <p><strong>{it.acceptLabel || (it.kind === "mission_decision" ? "Dacă o închizi:" : "Dacă accepți:")}</strong> {it.ifAccept.replace(/^Dacă o închizi: /, "")}</p>
+                <p><strong>{it.rejectLabel || (it.kind === "mission_decision" ? "Dacă o lași:" : "Dacă respingi:")}</strong> {it.ifReject.replace(/^Dacă o lași: /, "")}</p>
                 <details><summary>Fișiere și efecte ({it.effects.length})</summary><ul className="plain-list">{it.effects.slice(0, 30).map((e) => <li key={e}>{e}</li>)}</ul></details>
                 {it.criteria?.length > 0 && <details><summary>Criterii</summary><ul className="plain-list">{it.criteria.map((c) => <li key={c}>{c}</li>)}</ul></details>}
                 <div className="row"><button className="btn sm" onClick={() => go(it.link)}>Deschide locul deciziei</button></div>
