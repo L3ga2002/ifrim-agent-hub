@@ -112,70 +112,105 @@ function slipsOf(word) {
   out.delete(word);
   return [...out];
 }
-/** Real words one slip away from an outreach verb: never read as that verb („public țintă”, „trimis”). */
-const OUTREACH_BENIGN = new Set(["public", "publice", "publicat", "publicul", "trimis", "trimise", "trimisa", "contact", "contacte", "contactat", "contactate", "postat", "postare", "poster"]);
-const withSlips = (bases, slipBases) => [...new Set([...bases, ...slipBases.flatMap(slipsOf)])].filter((w) => w.length >= 5 && !OUTREACH_BENIGN.has(w)).sort((a, b) => b.length - a.length);
-/** The verb forms (normalized, no diacritics), with one slip of the main ones: a misspelt send verb is refused, never corrected. */
-const OUTREACH_HEADS = Object.freeze({
-  send: withSlips(["trimite", "trimiteti", "trimitem", "trimiti", "trimit", "expediaza", "expediati", "expediem", "expediez"], ["trimite", "trimiteti", "expediaza"]),
-  contact: withSlips(["contacteaza", "contactati", "contactam", "contactez", "contactezi", "contacteze", "contacta"], ["contacteaza", "contactati"]),
-  publish: withSlips(["publica", "publicati", "publicam", "posteaza", "postati", "postam"], ["publica", "posteaza"]),
-});
+/** Real words one slip away from an outreach verb (nouns, adjectives, participles): never read as that verb („public țintă”, „trimis”). */
+const OUTREACH_BENIGN = new Set(["public", "publice", "publicat", "publicul", "trimis", "trimise", "trimisa", "contact", "contacte", "contactat", "contactate", "postat", "postare", "poster",
+  "transmis", "transmisa", "transmise", "postari", "posta", "postez", "trimit", "publici"]);
+/*
+ * M12 last fix round (FIXES_LAST, L1–L4) — the outreach verbs by STEM: every person, mood and tense of a stem is read (a list of single forms
+ * never converged), with one slip of the main forms. Each ending says what the form can be: „imp” (2nd person imperative — also the 3rd
+ * person singular and the infinitive), „second” (you), „first” (we), „self” (I — the owner's own statement), „third” (a 3rd person
+ * subjunctive). A family says which object makes the verb an outreach: send (an offer, a client, a message with the Sales vocabulary),
+ * contact (always), call („sună” — a person), write („scrie” — only TO someone), put („pune pe site / online” — the offer), publish.
+ * Participles, past tenses, gerunds and nouns of the stems („trimis”, „trimitea”, „trimițând”, „trimiterea”, „contactul”, „expedierea”)
+ * are descriptions of what happened or of a thing: they are no forms here.
+ */
+const EAZA_END = { eaza: ["imp"], ati: ["imp", "second"], am: ["first"], ez: ["self"], ezi: ["second"], eze: ["third"], a: ["imp"] };
+const OUT_STEMS = [
+  ["send", "send", ["trimit", "transmit", "retrimit", "retransmit"], { "": ["self"], e: ["imp"], i: ["second"], em: ["first"], eti: ["imp", "second"], a: ["third"] }],
+  ["send", "send", ["expedi"], { aza: ["imp"], ez: ["self"], ezi: ["second"], em: ["first"], ati: ["imp", "second"], eze: ["third"], a: ["imp"] }],
+  ["send", "send", ["forward"], EAZA_END],
+  ["contact", "contact", ["contact"], EAZA_END],
+  ["publish", "publish", ["public"], { a: ["imp"], i: ["second"], am: ["first"], ati: ["imp", "second"], e: ["third"] }],
+  ["publish", "publish", ["post"], { eaza: ["imp"], ez: ["self"], ezi: ["second"], am: ["first"], ati: ["imp", "second"], eze: ["third"] }],
+  ["publish", "publish", ["distribui"], { e: ["imp"], ti: ["imp", "second"], m: ["first"], "": ["second"] }],
+  ["contact", "call", ["sun"], { a: ["imp"], ati: ["imp", "second"], i: ["second"], am: ["first"], e: ["third"], "": ["self"] }],
+  ["send", "write", ["scri"], { e: ["imp"], eti: ["imp", "second"], i: ["second"], em: ["first"], u: ["self"] }],
+  ["publish", "put", ["pun"], { e: ["imp"], eti: ["imp", "second"], em: ["first"], a: ["third"] }],
+  ["publish", "put", ["pu"], { i: ["second"] }],
+];
+/** The main forms whose one slip is read as the form (a misspelt send verb is refused, never corrected toward it). */
+const OUT_SLIP_BASES = ["trimite", "trimiteti", "trimiti", "transmite", "retrimite", "expediaza", "contacteaza", "contactati", "contactezi", "publica", "publicati", "publici", "posteaza",
+  "postezi"];
+/** Each verb form → { kind, family, moods, typo }. */
+const OUT_FORMS = (() => {
+  const out = new Map();
+  for (const [kind, family, stems, endings] of OUT_STEMS) {
+    for (const stem of stems) for (const [end, moods] of Object.entries(endings)) out.set(stem + end, { kind, family, moods: new Set(moods), typo: false });
+  }
+  for (const base of OUT_SLIP_BASES) {
+    const form = out.get(base);
+    for (const w of slipsOf(base)) if (w.length >= 5 && !OUTREACH_BENIGN.has(w) && !out.has(w)) out.set(w, { ...form, typo: true });
+  }
+  return out;
+})();
+/** The verb forms per kind (normalized, no diacritics), longest first: a clause that STARTS with one of them may be the step sales_send. */
+const OUTREACH_HEADS = Object.freeze(Object.fromEntries(["send", "contact", "publish"].map((kind) => [kind, [...OUT_FORMS].filter(([, v]) => v.kind === kind && ["send", "contact", "publish", "call"].includes(v.family)
+  && !(v.moods.size === 1 && v.moods.has("third"))).map(([w]) => w).sort((a, b) => b.length - a.length)])));
 /** „Sună-i”, „Scrie-le”, „Dă-le un mail”: contacting a person (only with the pronoun of a person; „scrie-o” writes a text). */
 const CALL_FORMS = String.raw`(?:suna|sunati)-(?:i|l|le|o)|(?:scrie|scrieti)-(?:i|le|l)|(?:da|dati)-(?:i|le) (?:un |o )?(?:mail|e-?mail|mesaj|sms|telefon)`;
 const OUTREACH_CLITIC = String.raw`(?:-(?:o|i|l|le|ne))?`;
-/** A clause that STARTS with an outreach verb (after fillers): the step sales_send. Send / publish also need the Sales scope (below). */
+/** A clause that STARTS with an outreach verb (after fillers): the step sales_send — when the scan below reads it as an instruction. */
 const SALES_SEND = new RegExp(String.raw`^(?:(?<send>${OUTREACH_HEADS.send.join("|")})|(?<contact>${OUTREACH_HEADS.contact.join("|")})|(?<publish>${OUTREACH_HEADS.publish.join("|")}))${OUTREACH_CLITIC}(?=[\s,.;!?]|$)|^(?<call>${CALL_FORMS})\b`);
 const salesSendArgs = (m) => ({ reason: SALES_SEND_REASON, kind: m.groups.send ? "send" : m.groups.publish ? "publish" : "contact", word: m[0].slice(0, 40) });
 /** Words that may stand between a negation and its verb („nu vreau să-i trimiți”, „fără să trimiți”). Anything else ends the look-back. */
-const OUTREACH_NEG_GLUE = new Set(["sa", "s", "o", "il", "l", "le", "i", "ii", "mai", "inca", "a", "ne", "vreau", "vrem", "doresc", "dorim", "trebuie", "te", "rog", "va", "se", "poti", "puteti", "cumva", "niciodata"]);
+const OUTREACH_NEG_GLUE = new Set(["sa", "s", "o", "il", "l", "le", "i", "ii", "mai", "inca", "a", "ne", "vreau", "vrem", "doresc", "dorim", "trebuie", "te", "rog", "va", "se", "poti", "puteti", "cumva", "niciodata",
+  "tu", "ai", "grija", "fi", "bine", "ar", "as", "te-as", "ruga", "lui"]);
 const OUTREACH_NEGATIONS = new Set(["nu", "fara", "nici", "niciodata"]);
 const OUTREACH_HEAD_SETS = Object.fromEntries(Object.entries(OUTREACH_HEADS).map(([k, v]) => [k, new Set(v)]));
 
 /*
- * M12 final review (F2, F4, F5, F6, F14, F16) — the ONE outreach rule, shared by the resolver, the intake (its plan() entry, every planner's
- * input, kept requests), Lega's tools and the Sales brief (sales/brief.mjs). A sentence is refused only for an INSTRUCTION TO THE HUB to send,
- * contact or publish towards a client or prospect:
- *  - the verb heads a clause: it starts the sentence or a clause (after punctuation, „și / apoi / dar …”, „Lega,”, „ok”, „te rog”), or it
- *    is a 2nd-person (or „we”) form after „vreau / te rog / poți / trebuie / nu uita … să”; a verb after „care / cum / ce / să poată /
- *    pentru a”, after a noun („butonul Trimite”, „aplicația contactează”) or a 3rd-person subjunctive („să-și contacteze”) DESCRIBES and is
- *    never refused; a verb coordinated with a description („… care primește comenzi și trimite notificări”) describes too (unless it has
- *    a pronoun after a hyphen — „trimite-o” is only ever an imperative — or the offer itself as its object);
- *  - a send / publish verb needs a Sales object: the offer (ofertă / propunere / ciornă / deviz / cotație) or, for send, a client / company /
- *    prospect addressee; a pronoun („trimite-o”, „publică-l”) counts with the Sales vocabulary in the sentence or right after a Sales step
- *    (salesContext, F14 — then a bare „Trimite” / „Publică” counts too). A contact verb heading a clause always counts („Contactează-ne” is
- *    a label: never);
- *  - a negation in front (also fused: „Nu-i trimite”, „Nu-l contacta”, „n-o trimite”, F16) makes it a restriction, never a refusal;
- *  - words between quotes are content: never refused; a quoted INSTRUCTION (not a label after „butonul / pagina …”) is still kept out of
- *    what a planner receives (stripOutreach), with a note.
+ * M12 last fix round (FIXES_LAST) — the ONE outreach rule, FAIL-SAFE, shared by the resolver, the intake (its plan() entry, every planner's
+ * input, kept requests), Lega's tools and the Sales brief (sales/brief.mjs). A form of an outreach stem (any person, mood, tense, clitic, a
+ * slip) is an INSTRUCTION TO THE HUB when its clause (crossing comma asides: „, te rog,”, „, Lega,”) holds an outreach object or addressee —
+ * the offer (ofertă / propunere / ciornă / deviz / cotație), a client / company / prospect, a person's pronoun, a message with the Sales
+ * vocabulary — or a Sales step just happened; WHATEVER ask, modal, adverb, politeness or condition precedes it. Only these describe and are
+ * never refused:
+ *  - a relative clause (care / ce / cum / unde / când / dacă / cine …, also opened before a comma), a purpose clause (pentru a, ca să,
+ *    să poată), a verb coordinated with a description („… care primește comenzi și trimite notificări clienților”) unless the offer, the
+ *    one client or a person's pronoun is its object;
+ *  - a 3rd person with its subject before it (aplicația, site-ul, sistemul, butonul, clientul, firma, ei …; „se trimite”), a 3rd person
+ *    subjunctive of the client's own wish („vrea să trimită”, „vrea să le trimitem”), a UI label right after its noun („butonul Trimite
+ *    oferta”), the adjective „publică” after its noun, a participle („au fost contactați”), a problem described („Repară X: …”);
+ *  - the owner's own first-person statement („contactez eu”, „o trimit eu”): never refused, still never handed to a planner as work;
+ *  - a negation in front (also fused: „Nu-i trimite”, „n-o trimite”) is a restriction; words between quotes are content (a quoted
+ *    INSTRUCTION — not a label — is still kept out of what a planner receives, with a note); „Trimite-mi” / „Contactează-ne” go to the owner.
+ * The Hub named as the one who sends („ca Hub-ul / Lega să trimită”) is the owner's instruction to it.
  */
 const OUT_PUNCT = /^[,;:.!?]$/;
 const OUT_SENTENCE_END = /^[.;!?]$/;
 const OUT_JOINS = new Set(["si", "apoi", "iar", "dar", "insa", "ci", "sau", "atunci", "deci"]);
-/** Words that may stand in front of an imperative at the head of a clause. */
+/** Words that may stand in front of a request at the head of a clause (politeness, acknowledgements, a call of Lega). */
 const OUT_LEAD = new Set(["lega", "hei", "hey", "buna", "ok", "okay", "hai", "haide", "bine", "acum", "imediat", "te", "rog", "va", "frumos", "tu", "voi", "eu", "mai", "da", "sigur",
-  "cumva", "repede", "chiar", "totusi", "acuma", "please"]);
+  "cumva", "repede", "chiar", "totusi", "acuma", "please", "bun", "super", "perfect", "mersi", "multumesc", "gata", "excelent", "oricum"]);
+/** Words of a comma aside („Trimite, te rog, oferta”, „Ai putea, Lega, să …”): the clause continues across it. */
+const OUT_ASIDE = new Set(["te", "rog", "va", "lega", "frumos", "please", "apoi", "acum", "acuma", "deci", "totusi", "imediat", "ok", "okay", "hai", "mersi", "repede", "cumva", "eventual",
+  "atunci", "te-as", "ruga", "bine", "oricum", "chiar", "sigur", "hei", "hey"]);
 /** „să” and its fused forms („să-i”, „s-o”). */
 const OUT_SA = /^(?:sa|s)(?:-(?:i|l|o|le|mi|ti|ne|si|il|va|ma|te))?$/;
 /** Pronouns that may stand between „să” and the verb („să o trimiți”). */
-const OUT_PROCLITIC = new Set(["o", "il", "l", "le", "i", "ii", "ne", "mi", "ti", "va", "ma", "te", "le-o", "i-o", "mi-o"]);
+const OUT_PROCLITIC = new Set(["o", "il", "l", "le", "i", "ii", "ne", "mi", "ti", "va", "ma", "te", "le-o", "i-o", "mi-o", "imi", "iti", "i-am", "le-am"]);
 /** Verbs that ask the Hub to do what follows „să” („vreau să trimiți”, „te rog să”, „poți să”, „nu uita să”). (The offer-request rule.) */
 const OUT_ASK = new Set(["vreau", "vrem", "vrea", "vreti", "doresc", "dorim", "dori", "rog", "poti", "puteti", "putea", "trebuie", "hai", "haide", "uita", "incearca", "incercati"]);
 const OUT_AUX = new Set(["as", "ai", "ati", "am", "ar"]);
-/*
- * M12 last review round (RR1–RR6, RR10, RR11) — the outreach rule's words, as data. An ask word leads into „să <verb>” (or, for a modal, into
- * the infinitive); the auxiliaries it needs in front say WHO asks: „aș vrea / ai vrea să trimiți” is the owner's ask, a bare „vrea să le
- * trimitem” is the client's own wish (RR3), „ar trebui / am nevoie să trimiți” ask the Hub (RR2).
- */
-const OUT_ASK_WORDS = new Map([["vreau", null], ["vrem", null], ["vreti", null], ["doresc", null], ["dorim", null], ["rog", null], ["poti", null], ["puteti", null],
-  ["trebuie", null], ["hai", null], ["haide", null], ["uita", null], ["incearca", null], ["incercati", null], ["vrea", ["as", "ai", "ati", "am"]], ["dori", ["as", "ai", "ati", "am"]],
-  ["putea", ["ai", "ati"]], ["trebui", ["ar"]], ["nevoie", ["am", "avem"]]]);
-/** Modals followed by the infinitive („Poți trimite oferta?”, „Ați putea contacta clientul?”): an ask, like „poți să trimiți” (RR2). */
+/** A 3rd person's own wish before „să” („clientul vrea să trimită”, „vrea să le trimitem”): the client's need, never the owner's ask. */
+const OUT_CLIENT_WISH = new Set(["vrea", "vor", "doreste"]);
+/** Asks for help with the owner's own sending („Mă ajuți să trimit oferta?”): the Hub is asked to send. */
+const OUT_HELP = /^(?:ajuti|ajutati|ajuta-ma|ajutati-ma|ajuta-ne|ajutati-ne)$/;
+/** Modals followed by the infinitive („Poți trimite oferta?”, „Ați putea contacta clientul?”). */
 const OUT_MODALS = new Set(["poti", "puteti", "putea"]);
-/** Time and sequence adverbs that may stand before an imperative at the head of a clause („Mâine trimite oferta”, RR2 / RR6). */
-const OUT_ADVERBS = new Set(["maine", "poimaine", "azi", "astazi", "diseara", "eventual", "ulterior", "intai", "neaparat", "odata"]);
-/** Two-word adverbials („pe urmă”, „la final”, „după aceea”, „după aprobare”): the first word → the second words („*”: any word). */
-const OUT_ADVERB_PAIRS = new Map([["pe", new Set(["urma"])], ["la", new Set(["final", "sfarsit", "urma"])], ["in", new Set(["final", "sfarsit"])], ["de", new Set(["asemenea"])], ["dupa", "*"]]);
+/** Time and sequence adverbs: in front of „publică” they mark the verb, never the adjective („Mâine publică oferta”). */
+const OUT_ADVERBS = new Set(["maine", "poimaine", "azi", "astazi", "diseara", "eventual", "ulterior", "intai", "neaparat", "odata", "luni", "marti", "miercuri", "joi", "vineri", "sambata",
+  "duminica", "oricum"]);
 /** Verbs that name the fix of a problem: a sentence after „Repară …:” or before „Repară asta.” describes the problem (RR4). */
 const OUT_FIX_VERB = /^(?:repara|rezolva|corecteaza|investigheaza|verifica|analizeaza|testeaza|depaneaza)(?:-l|-o|-le|-i)?$/;
 const OUT_DEMONSTRATIVE = new Set(["asta", "aia", "aceasta", "acesta", "acea", "acel"]);
@@ -186,45 +221,42 @@ const OUT_CONDITION = new Set(["daca", "cand", "odata"]);
 /** Sequence words a cut leaves dangling at the start of the next request („… și după aceea repară bug-ul” → „repară bug-ul”, RR11). */
 const OUT_SEQUENCE_LEAD = /^(?:(?:dupa (?:aceea|aia|care)|pe urma|la final|la sfarsit|in final|apoi|eventual|ulterior)\s+)+/;
 /** Markers of a description: a verb after them is the subject's own activity, never an instruction to the Hub. */
-const OUT_RELATIVE = new Set(["care", "ce", "cum", "unde", "cand", "daca", "ca", "cat"]);
+const OUT_RELATIVE = new Set(["care", "ce", "cum", "unde", "cand", "daca", "ca", "cat", "cine"]);
 /** Pronouns after a hyphen that make the verb an instruction towards someone („trimite-o”, „contactează-i”); „-ne / -mi / -ți” are not (a label, „to me”). */
 const OUT_CLITICS = new Set(["o", "i", "l", "le", "i-o", "le-o", "l-o", "li"]);
+/** The person's pronouns of „scrie-i / scrie-le” and „îi / le scrii” (TO someone; „scrie-o” writes a text). */
+const OUT_DATIVE_CLITICS = new Set(["i", "le", "i-o", "le-o", "ii", "li"]);
 const OFFER_OBJECT = new Set(["oferta", "oferte", "ofertele", "ofertei", "ofertelor", "propunere", "propunerea", "propuneri", "propunerile", "propunerii", "ciorna", "ciorne",
   "ciornele", "ciornei", "deviz", "devizul", "devizele", "devizului", "cotatie", "cotatia", "cotatii", "cotatiile", "cotatiei"]);
 const SALES_ADDRESSEE = /^(?:client(?:ul|ului|a|ei|ii|i|ilor|ele|elor)?|firm(?:a|ei|ele|elor)|companie|compania|companiei|companiile|companiilor|prospect(?:ul|ului|i|ii|ilor)?|lead(?:-ul|ul|-uri|uri|-urile|urile|-urilor|urilor)?|cumparator(?:ul|ului|ii|ilor)?)$/;
+/** The ONE client or company of an offer (not a business's customers in general): coordinated with a description, it still makes an instruction. */
+const ONE_ADDRESSEE = /^(?:client|clientul|clientului|clienta|clientei|firma|firmei|compania|companiei|prospect|prospectul|prospectului|lead-ul|leadul|lead-ului|leadului)$/;
+/** An addressee in the dative („scrie clientului / firmei”, „lui Andrei”). */
+const DATIVE_ADDRESSEE = /^(?:client(?:ului|ilor|ei|elor)|firm(?:ei|elor)|companiei|companiilor|prospect(?:ului|ilor)|lead-?ului|lead-?urilor|cumparator(?:ului|ilor))$/;
+/** People a call is made to („Sună curierul”). */
+const OUT_PERSON = /^(?:curier(?:ul|ii)?|furnizor(?:ul|ii)?|pacient(?:ul|ii|a)?|omul|oamenii|persoana|contabil(?:ul|a)|manager(?:ul|ul)?|director(?:ul|ul)?|patron(?:ul|ii)?|proprietar(?:ul|ii)?|mecanic(?:ul|ii)?|medic(?:ul|ii)?|doctor(?:ul|ii)?|colaborator(?:ul|ii)?|partener(?:ul|ii)?|reprezentant(?:ul|ii)?)$/;
+/** Where a „pune” publishes („pune oferta pe site / pe Facebook / online”). */
+const OUT_PUT_TARGET = new Set(["site", "site-ul", "siteul", "facebook", "instagram", "linkedin", "tiktok", "internet", "net", "web", "blog", "blogul", "youtube"]);
 /** A clip, a video: a pronoun said after them names the clip (Studio's own publish rule, MEDIA_C), never the offer. */
 const STUDIO_OBJECT = /\b(?:clip|clipul|clipuri|clipurile|videoclip|videoclipul|video|video-ul|videoul|montaj|montajul|filmulet|filmuletul|reel|reels)\b/;
 /** What may follow a bare „Trimite” / „Publică” in a Sales conversation („Trimite acum”, „Publică pe Facebook”). */
 const OUT_BARE_TAIL = new Set(["acum", "imediat", "te", "rog", "va", "frumos", "pe", "facebook", "instagram", "linkedin", "tiktok", "site", "site-ul", "siteul", "email", "e-mail", "mail",
-  "mailul", "din", "nou", "iar", "gata", "repede", "azi", "astazi", "maine"]);
+  "mailul", "din", "nou", "iar", "gata", "repede", "azi", "astazi", "maine", "online", "tu", "o", "data", "mai", "la", "lega"]);
 /** Words naming a label: a quoted text right after them is the label's text („butonul „Trimite oferta””), never an instruction. */
 const OUT_LABEL = new Set(["butonul", "buton", "butonului", "butoanele", "pagina", "paginii", "paginile", "link-ul", "linkul", "link", "textul", "text", "eticheta", "titlul", "titlu",
   "mesajul", "optiunea", "meniul", "sectiunea", "campul", "formularul", "tab-ul", "tabul", "cta", "cta-ul", "ecranul", "fereastra", "notificarea", "sablonul", "template-ul",
   "numit", "numita", "numite", "intitulat", "intitulata", "scris"]);
-/** Verbs that start another request after „și / apoi” (the outreach clause ends there: „Trimite oferta și repară bug-ul”). */
-const OUT_NEXT_VERB = /^(?:arata|deschide|porneste|continua|opreste|fa|pregateste|importa|treci|du-ma|mergi|adu|comuta|inregistreaza|spune|explica|reia|lanseaza|ruleaza|creeaza|genereaza|hai|repara|rezolva|corecteaza|implementeaza|refactorizeaza|adauga|scrie|analizeaza|revizuieste|evalueaza|investigheaza|verifica|testeaza|construieste|actualizeaza|citeste|rezuma|monteaza|randeaza|exporta|salveaza|noteaza|pune|caut|cauta|calculeaza)(?:-[a-z]+)?$/;
-/** Each verb form → { kind, moods } (imp: imperative; first: I / we; second: you after „să”; third: never). A slip of a main form keeps its moods. */
-const OUT_FORMS = (() => {
-  const moods = {
-    // RR10: the 1st person singular („trimit eu”, „contactez eu firma”) is the owner's own statement („self”): never an instruction to the Hub.
-    send: { trimite: ["imp"], trimiteti: ["imp", "second"], trimitem: ["first"], trimiti: ["second"], trimit: ["self"], expediaza: ["imp"], expediati: ["imp", "second"], expediem: ["first"], expediez: ["self"], trimita: ["third"], expedieze: ["third"] },
-    contact: { contacteaza: ["imp"], contactati: ["imp", "second"], contactam: ["first"], contactez: ["self"], contactezi: ["second"], contacteze: ["third"], contacta: ["imp"] },
-    publish: { publica: ["imp"], publicati: ["imp", "second"], publicam: ["first"], posteaza: ["imp"], postati: ["imp", "second"], postam: ["first"], publice: ["third"], posteze: ["third"] },
-  };
-  const out = new Map();
-  for (const [kind, forms] of Object.entries(moods)) for (const [w, m] of Object.entries(forms)) out.set(w, { kind, moods: new Set(m), typo: false });
-  for (const [kind, list] of Object.entries(OUTREACH_HEADS)) {
-    for (const w of list) {
-      if (out.has(w)) continue;
-      const base = Object.keys(moods[kind]).find((b) => slipsOf(b).includes(w));
-      if (base) out.set(w, { kind, moods: new Set(moods[kind][base]), typo: true });
-    }
-  }
-  return out;
-})();
-const OUT_MESSAGE = new Set(["mail", "e-mail", "email", "mesaj", "sms", "telefon"]);
-/** The call forms („Sună-i”, „Scrie-le”, „Dă-le un mail”): imperatives towards a person. */
-const OUT_CALL = /^(?:(?<contact>suna|sunati)-(?:i|l|le|o)|(?<send>scrie|scrieti)-(?:i|le|l)|(?<give>da|dati)-(?:i|le))$/;
+/** Subjects before a 3rd person verb („aplicația trimite”, „clientul vrea să trimită”, „ei vor să trimită”): the subject's own activity. */
+const OUT_SUBJECTS = new Set(["aplicatia", "aplicatiile", "platforma", "pagina", "functia", "functionalitatea", "echipa", "campania", "automatizarea", "notificarea", "componenta",
+  "firma", "firmele", "compania", "companiile", "clienta", "clientele", "clientii", "lumea", "pizzeria", "clinica", "agentia", "persoana", "secretara", "receptia", "masina",
+  "ei", "ea", "el", "ele", "dansul", "dansa", "dansii", "dansele", "cineva", "fiecare", "toti", "toata", "utilizatorii", "pacientii", "oamenii", "angajatii", "colegii",
+  "aplicatie", "sistem", "bot", "robot", "chatbot", "program", "script", "modul", "formular", "site", "crm", "functie", "serviciu", "newsletter", "server"]);
+const OUT_PREPOSITIONS = new Set(["pentru", "pe", "la", "din", "de", "cu", "catre", "spre", "in", "prin", "despre", "dupa", "fara", "intre", "sub", "peste", "langa", "lui", "al", "a", "ale", "ai"]);
+const OUT_MESSAGE = new Set(["mail", "e-mail", "email", "emailul", "e-mailul", "mailul", "mesaj", "mesajul", "sms", "sms-ul", "telefon", "apel", "whatsapp"]);
+/** The participle of an ambiguous form („au fost contactați”, „au fost publicați”). */
+const OUT_PARTICIPLE_AUX = new Set(["fost", "au", "sunt", "fi", "fie", "era", "erau", "este", "e", "vor"]);
+/** Forms that are also adjectives („pagina publică”, „date publice”, „bani publici”). */
+const OUT_ADJECTIVE_FORMS = new Set(["publica", "publice", "publici"]);
 const OUT_STRIP = new Map(Object.entries({ "ă": "a", "â": "a", "î": "i", "ș": "s", "ş": "s", "ț": "t", "ţ": "t", "Ă": "a", "Â": "a", "Î": "i", "Ș": "s", "Ş": "s", "Ț": "t", "Ţ": "t" }));
 /** The text folded ONE character per character (lower case, no diacritics; quotes → \u0001; anything else → a space): offsets stay those of the text. */
 function foldKeep(text) {
@@ -256,19 +288,37 @@ function outTokens(text, normalized) {
 }
 /** The folded words (and punctuation marks) of a text with their offsets in it — the Sales brief reads the same rules on them. */
 export const foldedTokens = (text) => outTokens(text, false).toks.filter((t) => !t.quote);
-/** The verb (and its pronoun after a hyphen) a token is, or null. */
+/** The verb (and its pronoun after a hyphen, or fused: „trimiteo”, „trimitei”) a token is, or null. */
 function outVerb(f) {
-  const call = f.match(OUT_CALL);
-  if (call) return { kind: call.groups.contact ? "contact" : "send", moods: new Set(["imp"]), typo: false, clitic: f.slice(f.indexOf("-") + 1), call: call.groups.give ? "give" : "call" };
-  const dash = f.indexOf("-");
-  const head = dash < 0 ? f : f.slice(0, dash);
+  const t = String(f || "");
+  const dash = t.indexOf("-");
+  const head = dash < 0 ? t : t.slice(0, dash);
+  const clitic = dash < 0 ? "" : t.slice(dash + 1);
+  // „Dă-i / Dă-le un mail”, „Dă un telefon clientului”: the message decides (below).
+  if (head === "da" || head === "dati") return { kind: "send", family: "give", moods: new Set(["imp"]), typo: false, clitic };
+  // „Dă share la ofertă”, „Share-uiește oferta”.
+  if (/^share(?:-?ui(?:este|esti|ti|m))?$/.test(head) || /^share-ui(?:este|esti|ti|m)(?:-(?:o|l|le|i))?$/.test(t)) {
+    const c = t.match(/-(o|l|le|i)$/);
+    return { kind: "publish", family: head === "share" && !/ui/.test(t) ? "share" : "publish", moods: new Set(["imp"]), typo: false, clitic: c ? c[1] : "" };
+  }
   const form = OUT_FORMS.get(head);
-  if (!form) return null;
-  return { ...form, clitic: dash < 0 ? "" : f.slice(dash + 1) };
+  if (form) return { ...form, clitic };
+  // A pronoun fused without its hyphen („trimiteo clientului”, „te rog trimitei oferta”): read as the imperative with that pronoun.
+  if (!clitic) {
+    for (const suf of ["le", "o", "i", "l"]) {
+      if (!head.endsWith(suf)) continue;
+      const base = OUT_FORMS.get(head.slice(0, -suf.length));
+      if (base && base.moods.has("imp") && !base.typo) return { ...base, clitic: suf, typo: true };
+    }
+  }
+  return null;
 }
+/** Whether a folded token is a form of an outreach stem (any person, mood, slip): the brief's fail-closed cut uses it. Pure. */
+export const outreachVerbForm = (f) => Boolean(outVerb(f));
 /**
- * The scan: every outreach instruction (`hits`) and every negated one (`negated`, a restriction) in `seq`, with token indexes into it.
- * `scope`: the Sales vocabulary is present (or a Sales step just happened); `salesContext`: a Sales step just happened (F14).
+ * The scan: every outreach instruction (`hits`), every negated one (`negated`, a restriction) and every owner's own statement (`selves`) in
+ * `seq`, with token indexes into it. `scope`: the Sales vocabulary is present (or a Sales step just happened); `offerScope`: the offer
+ * itself is named; `studio`: a clip is named; `salesContext`: a Sales step just happened (F14).
  */
 function scanOutreachTokens(seq, { scope = false, offerScope = false, studio = false, salesContext = false } = {}) {
   const hits = [];
@@ -276,7 +326,7 @@ function scanOutreachTokens(seq, { scope = false, offerScope = false, studio = f
   const selves = [];
   const at = (k) => seq[k]?.f;
   const negatedAt = (i) => {
-    for (let k = i - 1, steps = 0; k >= 0 && steps < 5; k -= 1, steps += 1) {
+    for (let k = i - 1, steps = 0; k >= 0 && steps < 6; k -= 1, steps += 1) {
       const t = at(k);
       if (OUT_PUNCT.test(t)) return -1;
       if (OUTREACH_NEGATIONS.has(t) || /^(?:nu|n)-[a-z]+$/.test(t)) return k;
@@ -284,15 +334,22 @@ function scanOutreachTokens(seq, { scope = false, offerScope = false, studio = f
     }
     return -1;
   };
-  /** The adverbial that ends at j („mâine”, „pe urmă”, „după aprobare”) → the index of its first word, or -1. */
-  const adverbialAt = (j) => {
-    const t = at(j);
-    if (OUT_ADVERBS.has(t)) return j;
-    const pair = OUT_ADVERB_PAIRS.get(at(j - 1));
-    if (pair && (pair === "*" ? !OUT_PUNCT.test(t) && !OUT_JOINS.has(t) && !outVerb(t) : pair.has(t))) return j - 1;
-    return -1;
+  /** The comma at c closes an aside („…, te rog, …”, „Te rog, …”)? → the index before the aside (a comma, a sentence end, or -1), else null. */
+  const asideBack = (c) => {
+    let k = c - 1;
+    while (k >= 0 && OUT_ASIDE.has(at(k))) k -= 1;
+    if (k === c - 1) return null;
+    return k < 0 || at(k) === "," || OUT_SENTENCE_END.test(at(k)) || OUT_JOINS.has(at(k)) ? k : null;
   };
-  /** RR4: whether the comma at c continues an open description („o aplicație care, după comandă, trimite …”): a relative marker right before it or before an earlier comma of the same sentence. */
+  /** The comma at c opens an aside? → the index of the comma closing it (or of its last word at the end), else null. */
+  const asideFwd = (c) => {
+    let k = c + 1;
+    while (k < seq.length && OUT_ASIDE.has(at(k))) k += 1;
+    if (k === c + 1) return null;
+    if (at(k) === ",") return k;
+    return k >= seq.length || OUT_SENTENCE_END.test(at(k)) ? k - 1 : null;
+  };
+  /** RR4: whether the comma at c continues an open description („o aplicație care, după comandă, trimite …”). */
   const openRelativeBefore = (c) => {
     for (let n = 0; n < 4 && c > 0; n += 1) {
       if (OUT_RELATIVE.has(at(c - 1))) return true;
@@ -303,27 +360,20 @@ function scanOutreachTokens(seq, { scope = false, offerScope = false, studio = f
     }
     return false;
   };
-  /** Whether index k heads a clause: only lead words and adverbials before it, back to the start, a punctuation mark or a joining word. */
-  const clauseHeadAt = (k, { aux = false, allowNegatedAsk = false } = {}) => {
-    let j = k - 1;
-    for (let n = 0; j >= 0 && n < 8; j -= 1, n += 1) {
-      const t = at(j);
-      if (OUT_PUNCT.test(t)) return t === "," && openRelativeBefore(j) ? null : "start";
-      if (OUT_JOINS.has(t)) return "join";
-      if (OUT_LEAD.has(t) || (aux && OUT_AUX.has(t)) || (allowNegatedAsk && t === "nu")) continue;
-      const adv = adverbialAt(j);
-      if (adv >= 0) { j = adv; continue; }
-      return null;
+  /** Where the clause of the verb at i starts: back to a joining word or a punctuation mark, across comma asides. → { start, by } */
+  const clauseOf = (i) => {
+    for (let k = i - 1; k >= 0; k -= 1) {
+      const t = at(k);
+      if (OUT_JOINS.has(t)) return { start: k + 1, by: "join" };
+      if (!OUT_PUNCT.test(t)) continue;
+      if (t === ",") {
+        const r = asideBack(k);
+        if (r !== null && r >= 0 && at(r) === ",") { k = r; continue; }
+        if (r !== null) return { start: r + 1, by: r >= 0 && OUT_JOINS.has(at(r)) ? "join" : "start" };
+      }
+      return { start: k + 1, by: t === "," ? "comma" : "start" };
     }
-    return j < 0 ? "start" : null;
-  };
-  /** The clause head of the ask word at a („vreau”, „te rog”, „ai putea”, „ar trebui”, „am nevoie”) with the auxiliaries it needs, or null. */
-  const askHead = (a) => {
-    const t = at(a);
-    if (!OUT_ASK_WORDS.has(t)) return null;
-    const aux = OUT_ASK_WORDS.get(t);
-    if (aux) return aux.includes(at(a - 1)) ? clauseHeadAt(a - 1, { aux: true }) : null;
-    return clauseHeadAt(a, { aux: true, allowNegatedAsk: t === "uita" });
+    return { start: 0, by: "start" };
   };
   /** RR4: a sentence that describes a problem — after „Repară …:” or followed by „Repară asta.” — holds no instruction to the Hub. */
   const describedProblem = (i) => {
@@ -346,88 +396,128 @@ function scanOutreachTokens(seq, { scope = false, offerScope = false, studio = f
     for (let d = 1; d <= 3 && h + d < seq.length && !OUT_PUNCT.test(at(h + d)); d += 1) if (OUT_DEMONSTRATIVE.has(at(h + d))) return true;
     return false;
   };
-  let proclitic = false;
-  /** Where the verb at i stands: { pos: "start"|"join" (heads a clause), "sa" (after an ask + „să”, or a „să” heading a clause), "modal", head } or null. */
-  const headOf = (i) => {
-    let j = i - 1;
-    proclitic = false;
-    while (j >= 0 && OUT_PROCLITIC.has(at(j)) && j >= i - 2) j -= 1;
-    if (j >= 0 && OUT_SA.test(at(j))) {
-      // „vreau / te rog / poți / nu uita … să <verb>”: the Hub is asked to do it (RR1: the clause keeps where the ask began); a „să <you>”
-      // heading a clause on its own („Să trimiți oferta”, „… și să trimiți …”, RR2) asks too. A pronoun between („să o trimiți”, „să-i
-      // trimiți”) is the verb's object, like one after a hyphen.
-      proclitic = j < i - 1 ? !["mi", "ti", "ne", "va", "ma", "te"].includes(at(i - 1)) : /^(?:sa|s)-(?:i|l|o|le|il)$/.test(at(j));
-      // A bare „Să-mi trimiți oferta” sends to the owner himself (like „Trimite-mi oferta”): no instruction towards a client.
-      const toOwner = /-(?:mi|ne)$/.test(at(j)) || (j < i - 1 && ["mi", "ne"].includes(at(i - 1)));
-      const head = askHead(j - 1) || (toOwner ? null : clauseHeadAt(j));
-      return head ? { pos: "sa", head } : null;
-    }
-    // „O trimiți clientului?”, „Le trimiți oferta”: a pronoun in front of a verb that heads the clause is its object.
-    if (j < i - 1) {
-      const h = clauseHeadAt(j + 1);
-      proclitic = Boolean(h) && !["mi", "ti", "ne", "va", "ma", "te"].includes(at(i - 1));
-      return h ? { pos: h, head: h } : null;
-    }
-    // RR2: a modal before the infinitive („Poți trimite oferta?”, „Ați putea contacta clientul?”).
-    if (OUT_MODALS.has(at(i - 1))) {
-      const head = askHead(i - 1);
-      if (head) return { pos: "modal", head };
-    }
-    const h = clauseHeadAt(i);
-    return h ? { pos: h, head: h } : null;
+  /** A subject noun at k (not after a preposition, not the offer, not a Hub name): „aplicația”, „butonul”, „clientul”, „ei”. */
+  const subjectAt = (k) => {
+    const t = at(k) || "";
+    if (OFFER_OBJECT.has(t) || OUT_HUB_NAMES.has(t) || OUT_PREPOSITIONS.has(at(k - 1)) || outVerb(t)) return false;
+    if (OUT_SUBJECTS.has(t)) return true;
+    if (/(?:ului|ilor|elor)$/.test(t)) return false;
+    return (/^[a-z0-9]+(?:-ul|ul)$/.test(t) && t.length >= 5) || (/^[a-z]{4,}ii$/.test(t) && t !== "scrii");
   };
-  /** The Hub (or Lega) right before „să” in front of a 3rd-person verb („ca Hub-ul să trimită”). */
-  const hubSubjectAt = (i) => {
-    let j = i - 1;
-    while (j >= 0 && OUT_PROCLITIC.has(at(j)) && j >= i - 2) j -= 1;
-    return j >= 1 && OUT_SA.test(at(j)) && OUT_HUB_NAMES.has(at(j - 1));
-  };
-  const segmentStart = (i) => { let k = i - 1; while (k >= 0 && !OUT_PUNCT.test(at(k))) k -= 1; return k + 1; };
-  const describes = (i) => { for (let k = segmentStart(i); k < i; k += 1) if (OUT_RELATIVE.has(at(k)) || OUT_SA.test(at(k))) return true; return false; };
   for (let i = 0; i < seq.length; i += 1) {
-    const v = outVerb(at(i));
+    let v = outVerb(at(i));
+    if (!v && at(i) === "posta" && OUT_MODALS.has(at(i - 1))) v = { kind: "publish", family: "publish", moods: new Set(["imp"]), typo: false, clitic: "" };
     if (!v) continue;
-    // „Vreau ca Hub-ul / Lega să trimită oferta”: the Hub named as the one who sends is the owner's instruction to it.
-    const toHub = v.moods.has("third") && v.moods.size === 1 && hubSubjectAt(i);
-    if (v.moods.has("third") && v.moods.size === 1 && !toHub) continue;
+    const prev = at(i - 1) || "";
+    if (v.family === "share" && !["da", "dati", "fa", "faceti"].includes(prev)) continue;
+    if (v.family === "give" && !/^(?:un|o)$/.test(at(i + 1) || "") && !OUT_MESSAGE.has(at(i + 1) || "")) continue;
     const neg = negatedAt(i);
     if (neg >= 0) { negated.push({ kind: v.kind, i, neg }); continue; }
     const clitic = v.clitic;
     if (clitic && !OUT_CLITICS.has(clitic)) continue; // „Contactează-ne” (a label), „Trimite-mi oferta” (to the owner himself)
-    let where = toHub ? { pos: "sa", head: "start" } : headOf(i);
-    // RR2 / RR6: a verb with its pronoun after a hyphen („trimite-o”, „contactează-l”) is only ever an imperative — also after a fronted
-    // object („Oferta trimite-o …”, „Pe client contactează-l”), an adverbial or a „când …” clause.
-    if (!where && clitic && v.moods.has("imp")) where = { pos: "free", head: null };
-    if (!where) continue;
-    const pos = where.pos;
-    const self = v.moods.has("self") && v.moods.size === 1;
-    if (pos === "sa" && !v.moods.has("second") && !v.moods.has("first") && !toHub) continue;
-    if (pos === "modal" && !v.moods.has("imp")) continue;
-    if ((pos === "start" || pos === "join") && !v.moods.has("imp") && !v.moods.has("first") && !v.moods.has("second") && !self) continue;
-    // The object (or addressee) of the verb: the words of its clause, up to a punctuation mark, a joining word or a description.
-    let offer = false, addressee = false, other = false, end = i;
-    for (let k = i + 1; k < seq.length && k <= i + 8; k += 1) {
+    const personClitic = Boolean(clitic) && v.moods.has("imp");
+    // The pronouns and „să” in front of the verb („să o trimiți”, „s-o trimiți”, „îi trimiți”, „să-mi trimiți”).
+    let j = i - 1;
+    while (j >= 0 && OUT_PROCLITIC.has(at(j)) && j >= i - 2) j -= 1;
+    const sa = j >= 0 && OUT_SA.test(at(j)) ? j : -1;
+    const procl = [];
+    for (let k = j + 1; k < i; k += 1) procl.push(at(k));
+    if (sa >= 0) { const c = at(sa).split("-")[1]; if (c) procl.push(c); }
+    const toOwner = procl.some((p) => ["mi", "ne", "imi", "mi-o"].includes(p));
+    const proclitic = procl.some((p) => !["mi", "ne", "ti", "va", "ma", "te", "imi", "iti", "si", "mi-o"].includes(p));
+    const { start, by } = clauseOf(i);
+    // The clause's words before the verb (its ask, adverbs, a fronted object or a subject) and after it (its object).
+    const before = [];
+    for (let k = start; k < i; k += 1) if (!OUT_PUNCT.test(at(k))) before.push(k);
+    const after = [];
+    let end = i;
+    for (let k = i + 1; k < seq.length && k <= i + 12; k += 1) {
       const t = at(k);
+      if (t === ",") { const r = asideFwd(k); if (r !== null) { k = r; continue; } break; }
       if (OUT_PUNCT.test(t) || OUT_JOINS.has(t) || OUT_RELATIVE.has(t)) break;
+      after.push(k);
       end = k;
-      if (OFFER_OBJECT.has(t)) offer = true;
-      else if (SALES_ADDRESSEE.test(t)) addressee = true;
-      else if (!OUT_BARE_TAIL.has(t)) other = true;
     }
-    // A fronted object („Oferta trimite-o”, „Clientului trimite-i oferta”) is the verb's object too.
-    if (pos === "free") for (let k = i - 1; k >= 0 && !OUT_PUNCT.test(at(k)) && !OUT_JOINS.has(at(k)); k -= 1) { if (OFFER_OBJECT.has(at(k))) offer = true; else if (SALES_ADDRESSEE.test(at(k))) addressee = true; }
+    const third = v.moods.has("imp") || v.moods.has("third") || v.moods.has("self");
+    const onlyThird = v.moods.size === 1 && v.moods.has("third");
+    const onlySelf = v.moods.size === 1 && v.moods.has("self");
+    const firstOrSecond = v.moods.has("second") || v.moods.has("first");
+    // „Vreau ca Hub-ul / Lega să trimită oferta”: the Hub named as the one who sends is the owner's instruction to it.
+    const toHub = sa >= 1 && OUT_HUB_NAMES.has(at(sa - 1));
+    // --- Descriptions (never refused) ---
+    if (!toHub && !personClitic) {
+      // A relative or purpose clause („care trimite”, „cum trimiți”, „dacă formularul trimite”, „ca firma să poată trimite”), also opened
+      // before a comma („o aplicație care, după comandă, trimite …”). „Ce-ar fi să …” asks.
+      const relative = before.some((k) => OUT_RELATIVE.has(at(k)) && !(at(k) === "ce" && at(k + 1) === "ar") && !(at(k) === "cat" && ["mai", "de"].includes(at(k + 1))) && !(at(k) === "ca" && firstOrSecond && !OUT_SA.test(at(k + 1) || "")))
+        || (by === "comma" && start > 0 && openRelativeBefore(start - 1));
+      if (relative) continue;
+      const purpose = (prev === "a" && ["pentru", "de", "spre", "ca", "fara"].includes(at(i - 2))) || (["poata", "poate", "puteau", "puteam"].includes(prev) && OUT_SA.test(at(i - 2) || ""));
+      if (purpose) continue;
+      // A UI label right after its noun („butonul Trimite oferta”, „un buton Contactează”), „se trimite” (impersonal), a participle.
+      if (OUT_LABEL.has(prev) || prev === "se" || prev === "s-a" || prev === "s-au") continue;
+      if (/(?:ati|iti)$/.test(at(i)) && OUT_PARTICIPLE_AUX.has(prev)) continue;
+      // „pagina publică”, „date publice”: the adjective after its noun.
+      if (OUT_ADJECTIVE_FORMS.has(at(i).split("-")[0]) && !clitic && !OFFER_OBJECT.has(at(i + 1) || "") && prev && !OUT_PUNCT.test(prev) && !OUT_JOINS.has(prev) && !OUT_LEAD.has(prev) && !OUT_ASIDE.has(prev)
+        && !OUT_ASK.has(prev) && !OUT_AUX.has(prev) && !OUT_SA.test(prev) && !OUT_PROCLITIC.has(prev) && !OUT_MODALS.has(prev) && !OUT_ADVERBS.has(prev) && !OFFER_OBJECT.has(prev)
+        && !["tu", "voi", "mai", "nu", "pe", "urma", "final", "aceea", "aia", "viitoare", "viitor", "asta", "curand", "devreme"].includes(prev)) continue;
+      // A 3rd person with its subject before it („aplicația trimite”, „clientul vrea să trimită”, „ei vor să trimită”).
+      if (third && !firstOrSecond && before.some((k) => subjectAt(k) && !(at(k + 1) === "," && OUT_HUB_NAMES.has(at(k))))) continue;
+      // The client's own wish before „să” („vrea să trimită”, „vrea să le trimitem”) — „aș / ai vrea” is the owner's ask.
+      if ((onlyThird || v.moods.has("first")) && !v.moods.has("second") && sa >= 1 && OUT_CLIENT_WISH.has(at(sa - 1)) && !OUT_AUX.has(at(sa - 2))) continue;
+      // A 3rd person subjunctive is never the owner's imperative: coordinated with the client's description or wish („… care vrea programări
+      // online și să le trimită pacienților remindere”, „Clientul vrea programări și să le trimită SMS”), it is the same subject's.
+      if (onlyThird) {
+        let described = false;
+        for (let k = start - 1; k >= 0 && !OUT_PUNCT.test(at(k)); k -= 1) {
+          if (OUT_RELATIVE.has(at(k)) || subjectAt(k) || (OUT_CLIENT_WISH.has(at(k)) && !OUT_AUX.has(at(k - 1)))) { described = true; break; }
+        }
+        if (described) continue;
+      }
+      // Future / conditional of a 3rd person („va trimite”, „ar trimite”, „o să trimită”) without the Hub named: a description.
+      if (v.moods.has("imp") && ["va", "vor", "ar"].includes(prev)) continue;
+      if (!clitic && describedProblem(i)) continue;
+    }
+    // --- The objects of the verb (its whole clause, across comma asides; a fronted object too) ---
+    let offer = false, addressee = false, one = false, dative = false, message = false, person = false, target = false, other = false;
+    const objectAt = (k, side) => {
+      const t = at(k);
+      if (OFFER_OBJECT.has(t)) { offer = true; return; }
+      if (SALES_ADDRESSEE.test(t)) { addressee = true; person = true; if (ONE_ADDRESSEE.test(t)) one = true; if (DATIVE_ADDRESSEE.test(t)) dative = true; return; }
+      if (OUT_PERSON.test(t)) { person = true; return; }
+      if (OUT_MESSAGE.has(t)) { message = true; return; }
+      if (t === "lui" && side === "after" && at(k + 1)) { dative = true; person = true; return; }
+      if (t === "pe" && side === "after" && at(k + 1) && !OUT_PUT_TARGET.has(at(k + 1))) person = true;
+      if (OUT_PUT_TARGET.has(t) || t === "online") target = true;
+      if (side === "after" && !OUT_BARE_TAIL.has(t)) other = true;
+    };
+    for (const k of after) objectAt(k, "after");
+    for (const k of before) objectAt(k, "before");
     const toSomeone = (Boolean(clitic) && OUT_CLITICS.has(clitic)) || proclitic;
-    // Coordinated with a description („… care primește comenzi și trimite notificări clienților”): the same subject's activity.
-    if (pos === "join" && !toSomeone && !offer && describes(i)) continue;
-    if ((pos === "start" || pos === "join") && !clitic && describedProblem(i)) continue;
+    const datClitic = OUT_DATIVE_CLITICS.has(clitic) || procl.some((p) => OUT_DATIVE_CLITICS.has(p));
+    // A verb coordinated with a description („… care primește comenzi și trimite notificări clienților”): the same subject's activity — unless
+    // the offer, the one client or a person's pronoun is its object („… care vrea programări online și sună clientul”).
+    if (by === "join" && third && !firstOrSecond && !toSomeone && !offer && !one && !toHub) {
+      let described = false;
+      for (let k = start - 2; k >= 0 && !OUT_PUNCT.test(at(k)); k -= 1) if (OUT_RELATIVE.has(at(k)) || OUT_SA.test(at(k))) { described = true; break; }
+      if (described) continue;
+    }
+    // „Să-mi trimiți oferta”, „Îmi trimiți oferta?”: to the owner himself, unless the client is named too.
+    if (toOwner && !addressee) continue;
     let hit = false;
-    if (v.call === "give") hit = OUT_MESSAGE.has(at(i + 1)) || (["un", "o"].includes(at(i + 1)) && OUT_MESSAGE.has(at(i + 2)));
-    else if (v.call === "call" || v.kind === "contact") hit = true;
-    else if (v.kind === "send") hit = offer || addressee || (toSomeone && (scope || salesContext)) || (salesContext && !other && !studio);
+    if (v.family === "give") hit = message && (datClitic || dative || addressee);
+    // „Scrie clientului / -le / lui Andrei”, „Scrie un mail clientului”: TO someone; „Scrie raportul clientului” (whose report) is no outreach.
+    else if (v.family === "write") hit = datClitic || DATIVE_ADDRESSEE.test(at(i + 1) || "") || (at(i + 1) === "lui" && Boolean(at(i + 2))) || (message && (dative || addressee));
+    else if (v.family === "call") hit = toSomeone || person;
+    else if (v.family === "contact") hit = true;
+    else if (v.family === "put") hit = target && (offer || (toSomeone && (offerScope || (salesContext && !studio))));
+    else if (v.kind === "send") hit = offer || addressee || (message && scope) || (toSomeone && (scope || salesContext)) || (salesContext && !other && !studio);
     else if (v.kind === "publish") hit = offer || (toSomeone && (offerScope || (salesContext && !studio))) || (salesContext && !other && !studio);
-    // RR10: the owner's own first-person statement („Contactez eu firma”, „o trimit eu clientului”) is no request to the Hub: never refused,
-    // only kept out of a planner's words.
-    if (hit) (self ? selves : hits).push({ kind: v.kind, i, end, pos, head: where.head, typo: v.typo, offer });
+    if (!hit) continue;
+    // The owner's own first-person statement („Contactez eu firma”, „o trimit eu clientului”) is no request to the Hub: never refused, only
+    // kept out of a planner's words — unless he asks for help with it („Mă ajuți să trimit oferta?”).
+    const help = sa >= 1 && (OUT_HELP.test(at(sa - 1)) || (at(sa - 1) === "ajuti" || at(sa - 1) === "ajutati"));
+    const self = onlySelf && !help && !toHub;
+    (self ? selves : hits).push({ kind: v.kind, i, end, pos: by === "join" ? "join" : "start", typo: v.typo, offer });
   }
   return { hits, negated, selves };
 }
@@ -440,13 +530,30 @@ function nextRequestAt(seq, k) {
   }
   return false;
 }
+/** Verbs that start another request after „și / apoi” (the outreach clause ends there: „Trimite oferta și repară bug-ul”). */
+const OUT_NEXT_VERB = /^(?:arata|deschide|porneste|continua|opreste|fa|pregateste|importa|treci|du-ma|mergi|adu|comuta|inregistreaza|spune|explica|reia|lanseaza|ruleaza|creeaza|genereaza|hai|repara|rezolva|corecteaza|implementeaza|refactorizeaza|adauga|scrie|analizeaza|revizuieste|evalueaza|investigheaza|verifica|testeaza|construieste|actualizeaza|citeste|rezuma|monteaza|randeaza|exporta|salveaza|noteaza|pune|caut|cauta|calculeaza)(?:-[a-z]+)?$/;
+/** The words of a comma aside, read from the outside of the scan (the clause boundaries of a cut). */
+const asideRun = (seq, from, step) => { let k = from; while (k >= 0 && k < seq.length && OUT_ASIDE.has(seq[k].f)) k += step; return k; };
 /** Where the clause of a hit starts and ends (token indexes) — what is cut out of a planner's words. */
 function outreachClause(seq, h) {
   const at = (k) => seq[k]?.f;
   // RR1: the clause starts at the joining word or the punctuation mark nearest before the verb — also when an ask („și te rog să …”), a
-  // modal, an adverbial or a fronted object leads into it — never at the start of a sentence that holds another request.
+  // modal, an adverbial, a fronted object or a comma aside („Ai putea, te rog, să …”) leads into it — never at the start of a sentence that
+  // holds another request.
   let j = h.i - 1;
-  while (j >= 0 && !OUT_JOINS.has(at(j)) && !OUT_PUNCT.test(at(j))) j -= 1;
+  for (; j >= 0; j -= 1) {
+    if (OUT_JOINS.has(at(j))) break;
+    if (!OUT_PUNCT.test(at(j))) continue;
+    if (at(j) === ",") {
+      const k = asideRun(seq, j - 1, -1);
+      if (k < j - 1) {
+        if (k < 0) { j = -1; break; }
+        if (OUT_SENTENCE_END.test(at(k)) || OUT_JOINS.has(at(k))) { j = k; break; }
+        if (at(k) === ",") { j = k; continue; }
+      }
+    }
+    break;
+  }
   let start = j + 1;
   if (j >= 0 && OUT_JOINS.has(at(j))) {
     start = j;
@@ -455,15 +562,24 @@ function outreachClause(seq, h) {
     const left = start - 1;
     if (h.pos === "join" && left >= 0 && (left === 0 || OUT_PUNCT.test(at(left - 1))) && h.offer && h.end > h.i) return { start, end: h.i, shared: true };
   } else if (j >= 0 && at(j) === ",") {
-    // „Dacă e gata, trimite oferta”: the condition in front belongs to the instruction (nothing of it is left for a planner).
+    // „Dacă e gata, trimite oferta”, „În caz că e gata, …”: the condition in front belongs to the instruction (nothing of it is left for a planner).
     let c = j - 1;
     while (c >= 0 && !OUT_PUNCT.test(at(c)) && !OUT_JOINS.has(at(c))) c -= 1;
     const first = at(c + 1);
-    if ((c < 0 || OUT_SENTENCE_END.test(at(c)) || OUT_JOINS.has(at(c))) && (OUT_CONDITION.has(first) || (["dupa", "imediat", "indata"].includes(first) && at(c + 2) === "ce"))) start = c >= 0 && OUT_JOINS.has(at(c)) ? c : c + 1;
+    const cond = OUT_CONDITION.has(first) || (["dupa", "imediat", "indata"].includes(first) && at(c + 2) === "ce") || (first === "in" && at(c + 2) === "caz")
+      || (OUT_ASIDE.has(first) && OUT_CONDITION.has(at(c + 2)));
+    if ((c < 0 || OUT_SENTENCE_END.test(at(c)) || OUT_JOINS.has(at(c)) || at(c) === ",") && cond) start = c >= 0 && OUT_JOINS.has(at(c)) ? c : c + 1;
   }
   let end = h.i;
   for (let k = h.i + 1; k < seq.length; k += 1) {
     const t = at(k);
+    if (t === ",") {
+      // „Trimite, te rog, oferta clientului”, „…, te rog”: the aside belongs to the instruction.
+      const r = asideRun(seq, k + 1, 1);
+      if (r > k + 1 && at(r) === ",") { end = r; k = r; continue; }
+      if (r > k + 1 && (r >= seq.length || OUT_SENTENCE_END.test(at(r)))) { end = r - 1; k = r - 1; continue; }
+      break;
+    }
     if (OUT_PUNCT.test(t)) break;
     if (OUT_JOINS.has(t) && nextRequestAt(seq, k)) break;
     end = k;
@@ -1278,11 +1394,18 @@ const offerNounAt = (seq, k) => {
 /** RC1: words after „Oferta pentru X …” that make it a question or a statement about an existing offer, never a request for a new one. */
 const OFFER_STATUS_WORDS = new Set(["e", "este", "sunt", "era", "erau", "fost", "gata", "aprobata", "aprobate", "aprobat", "trimisa", "trimise", "pregatita", "pregatite", "facuta",
   "facute", "terminata", "terminate", "scumpa", "scumpe", "ieftina", "buna", "bune", "corecta", "valabila", "arata", "costa", "contine", "are", "au", "s-a", "s-au"]);
+/** Words that open the client's need after „O ofertă pentru <client>” („… cu nevoie de”, „… interesat de”). */
+const OFFER_NEED_WORDS = new Set(["nevoie", "vrea", "vor", "doreste", "cauta", "interesat", "interesata", "interesati", "cu"]);
 function offerStatementAfter(seq, from) {
+  let described = false;
   for (let k = from; k < seq.length && k < from + 14; k += 1) {
     const t = String(seq[k]?.f ?? "");
     if (t === "?") return true;
     if (/^[,;:.!]$/.test(t)) return false;
+    // FIXES_LAST L5: the client's own description („… care are nevoie de …”, „… care e în Cluj …”, „un CRM care trimite remindere”) says
+    // nothing about the offer: after a relative word or a need marker only a question mark still makes it a question.
+    if (OUT_RELATIVE.has(t) || OFFER_NEED_WORDS.has(t)) described = true;
+    if (described) continue;
     if (OFFER_STATUS_WORDS.has(t) || outVerb(t)) return true;
   }
   return false;
@@ -1653,14 +1776,14 @@ function constraintsOf(clause) {
   if (/\bfara (mesaje|email|trimitere)\b/.test(clause)) c.noMessages = true;
   // M12 (T-S3): „Nu trimite oferta”, „nu contacta pe nimeni”, „fără să trimiți / contactezi nimic” only narrow the request (never a refusal).
   // Final review F16: the fused forms too („Nu-i trimite oferta”, „Nu-l contacta”, „n-o trimite”, „să nu-i trimiți”, „fără s-o trimiți”).
-  if (/\b(?:(?:sa )?nu(?:-(?:i|l|le|o|ii|il))?|n-o|fara sa(?:-(?:i|l|le))?|fara s-o|fara a) (?:(?:o|il|le|i|ii|mai) )?(?:trimite|trimiteti|trimiti|trimitem|contacta|contactati|contacteaza|contactezi|contactam|publica|publicati|posta|posteaza)\b|\bfara (?:contact|contactare|contactarea|trimiterea)\b/.test(clause)) c.noMessages = true;
+  if (/\b(?:(?:sa )?nu(?:-(?:i|l|le|o|ii|il))?|n-o|fara sa(?:-(?:i|l|le))?|fara s-o|fara a) (?:(?:o|il|le|i|ii|mai) )?(?:trimite|trimiteti|trimiti|trimitem|contacta|contactati|contacteaza|contactezi|contactam|publica|publicati|posta|posteaza|transmite|transmiti|transmiteti|retrimite|retrimiti|expedia|expediaza|expediezi|suna|suni|sunati|publici|postezi|distribui|distribuie|distribuiti|forwardeaza)\b|\bfara (?:contact|contactare|contactarea|trimiterea)\b/.test(clause)) c.noMessages = true;
   if (/\bnu (porni|pornesti|incepe|incepi|rula|rulezi|executa|executi|lansa|lansezi|confirma|confirmi)\b|\bnu (acum|inca)\b|\bsa nu (pornesti|incepi|rulezi|executi|lansezi|confirmi|pornim|incepem|executam|faci nimic)\b|\bdoar (arata|spune|explica|planul)\b|\bfara sa (pornesti|incepi|rulezi|executi|pornim)\b/.test(clause)) c.noStart = true;
   // Review M10.2 #24: with the unanchored hold now below the code requests, "Repară bug-ul de la login mai târziu" resolves to the
   // request — the delay must still remove the start (a preview-only plan, never an armed one). "care / ce / se așteaptă" describes.
   if (/\bmai tarziu\b|(?<!\b(?:care|ce|se|il|o|te|ma|ne|va|le) )\basteapta\b|\bnu inca\b/.test(clause)) c.noStart = true;
   if (/\bdoar (citire|citeste)\b|\bfara modificari\b/.test(clause)) c.readOnly = true;
   // M11: „Nu publica nimic” is a constraint of the request (attached, hashed in the plan), not an unknown sentence; publishing is denied anyway.
-  if (/\bnu (publica|posta|urca|incarca)\b|\bfara (publicare|postare|upload|incarcare)\b/.test(clause)) c.noPublish = true;
+  if (/\bnu (publica|publici|posta|posteaza|postezi|distribui|distribuie|urca|incarca)\b|\bfara (publicare|postare|upload|incarcare)\b/.test(clause)) c.noPublish = true;
   return c;
 }
 

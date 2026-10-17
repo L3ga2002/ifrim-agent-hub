@@ -386,3 +386,223 @@ test("M12-FA-OUT-04 Lega voice-first: request_work and propose_run with a DESCRI
   for (const x of called.slice(3, 4)) assert.doesNotMatch(x.text, OUTREACH_WORDS);
   assert.equal(countRows(t, "SELECT COUNT(*) AS n FROM events WHERE type = 'lega.work_request' AND json_extract(payload_json, '$.code') = 'OUTREACH_DISABLED'"), 1);
 });
+
+// ---------------------------------------------------------------------------------------------------------------------------------------
+// M12 last fix round (FIXES_LAST, REVIEW_LAST L1–L5): the outreach verbs are read by STEM (any person, mood, tense, clitic, a slip) and a
+// stem with an outreach object or addressee in its clause — across comma asides — is an instruction to the Hub, whatever ask, modal,
+// adverb or politeness leads into it; only the listed descriptions are allowed. „O ofertă pentru … care are nevoie de …” is again ONE card.
+/** Any outreach word left in a planner's or a client's text. */
+const LAST_WORDS = /trimi[tț]|transmi[tț]|contact(?:eaz|ați|ati|ez)|public[aăi](?![\wț])|postea|poste[zț]|sun[aăi]\b|sun[aă]-|scri[ei]-?[il]\b|expedi|distribui|forward|telefon|share/i;
+/** L1–L4 (the reviewers' probes) and the reviewers' instruction table: refused on their own. */
+const LAST_REFUSE = [
+  // L1: 2nd person publish forms.
+  "Vreau să publici oferta pe site", "Poți să publici oferta?", "Te rog să postezi oferta pe Facebook",
+  // L2: a comma aside after the verb.
+  "Trimite, te rog, oferta clientului", "Publică, te rog, oferta pe site", "Contactează, te rog, clientul",
+  // L3: asks, modals and adverbs, a fronted object with its pronoun.
+  "Ai grijă să trimiți oferta clientului", "Ar fi bine să trimiți oferta clientului", "Te-aș ruga să trimiți oferta clientului", "Ce-ar fi să trimiți oferta clientului?",
+  "Asigură-te că trimiți oferta clientului", "Poți te rog să trimiți oferta?", "Oare poți trimite oferta clientului?", "Oricum trimite oferta clientului", "Luni trimite oferta clientului",
+  "Până mâine trimite oferta clientului", "Cât mai repede trimite oferta clientului", "Săptămâna viitoare contactează clientul", "Oferta o trimiți tu clientului",
+  "Clientului îi trimiți oferta mâine",
+  // L4: send and call synonyms.
+  "Sună clientul", "Transmite oferta clientului", "Retrimite oferta clientului",
+  // The reviewers' instruction table (REVIEW_LAST probes).
+  "Te rog frumos să-i trimiți oferta clientului", "Fii drăguț și trimite oferta clientului", "Vă rog să trimiteți oferta clientului", "Dacă poți, trimite oferta clientului",
+  "Ai putea, te rog, să trimiți oferta?", "Trimiteţi oferta clientului", "trimiteo clientului", "Trimite-o la client", "Expediază-i oferta", "Dă-i un mail clientului", "Sună-l pe client",
+  "Fă-mi o favoare și trimite oferta clientului", "Mai trimite o dată oferta clientului", "Te rog să contactezi clientul", "Vreau să contactezi firma", "Vreau să-l contactezi pe client",
+  "Poţi să-i trimiţi oferta?", "poti sa i trimiti oferta clientului", "te rog trimitei oferta clientului", "Trimitee oferta clientului", "trimte-o clientului", "contacteaz clientul",
+  "Publica oferta pe site", "Posteaza oferta pe Facebook", "Te rog publică oferta pe LinkedIn", "Lega, contactează firma din Cluj", "Hai, trimite oferta clientului", "Bun, acum trimite oferta",
+  "Super, trimite-o clientului", "Perfect, trimite oferta clientului", "Mersi, acum trimite oferta clientului", "Gata, trimite oferta clientului", "Deci trimite oferta clientului",
+  "Totuși trimite oferta clientului", "Te rog, dacă e gata, trimite oferta clientului", "În caz că e gata, trimite oferta clientului", "Vreau să trimiți tu oferta clientului",
+  "Vreau să trimiți mâine oferta clientului", "Ai putea să o trimiți clientului?", "Ați putea să contactați clientul?", "Mă ajuți să trimit oferta clientului?",
+  "Ajută-mă să trimit oferta clientului", "Te rog să ne trimiți oferta clientului", "Trimiteți-i oferta", "Contactați-l pe client", "Ia și trimite oferta clientului",
+  // The residual of the previous round: the Hub named as the one who sends.
+  "Lega să trimită oferta clientului"];
+/** L1–L4 mixed with another request: the request is kept (its words without the instruction), the instruction is refused. */
+const LAST_MIXED = [
+  ["Repară bug-ul de login și poți să publici oferta pe site?", "engineering_request", "repara bug-ul de login"],
+  ["Repară bug-ul de login și trimite, te rog, oferta clientului", "engineering_request", "repara bug-ul de login"],
+  ["Repară bug-ul de login și te-aș ruga să trimiți oferta clientului", "engineering_request", "repara bug-ul de login"],
+  ["Repară bug-ul de login și poți te rog să trimiți oferta clientului", "engineering_request", "repara bug-ul de login"],
+  ["Repară bug-ul de la formular și transmite oferta clientului", "engineering_request", "repara bug-ul de la formular"],
+  ["Fă un clip de promovare și vreau să publici oferta pe site", "studio_create", null],
+];
+/** L1–L4 inside an offer request: ONE card, the refusal noted, the client's need without a word of the instruction. */
+const LAST_PREP = [
+  "Pregătește o ofertă pentru un service auto din Cluj și trimite, te rog, oferta clientului", "Pregătește o ofertă pentru un service auto din Cluj și vreau să publici oferta pe site",
+  "Pregătește o ofertă pentru un service auto din Cluj și ai grijă să trimiți oferta clientului", "Pregătește o ofertă pentru un service auto din Cluj și ar fi bine să trimiți oferta clientului",
+  "Pregătește o ofertă pentru un service auto din Cluj, iar luni trimite oferta clientului", "Pregătește o ofertă pentru un service auto din Cluj și oricum trimite oferta clientului",
+  "Pregătește o ofertă pentru un service auto din Cluj și te-aș ruga s-o trimiți clientului", "Pregătește o ofertă pentru un service auto din Cluj și oferta o trimiți tu clientului",
+  "Pregătește o ofertă pentru un service auto din Cluj și până mâine trimite oferta clientului", "Pregătește o ofertă pentru un service auto din Cluj și asigură-te că o trimiți clientului",
+  "Pregătește o ofertă pentru un service auto din Cluj și retrimite-o clientului", "Pregătește o ofertă pentru un service auto din Cluj și transmite-o clientului",
+  "Pregătește o ofertă pentru un service auto din Cluj și sună clientul", "Pregătește o ofertă pentru un service auto din Cluj și ce-ar fi să o trimiți clientului",
+  "Pregătește o ofertă pentru un service auto din Cluj, trimite, te rog, oferta clientului",
+  "Pregătește o ofertă pentru un service auto din Cluj care vrea programări online, vreau să publici oferta",
+  "Pregătește o ofertă pentru un service auto din Cluj care vrea programări online și poți să publici oferta",
+  "Pregătește o ofertă pentru un service auto din Cluj care vrea programări online și ar fi bine să trimiți oferta clientului",
+  "Pregătește o ofertă pentru un service auto din Cluj care vrea programări online și vreau să publici oferta pe site",
+  "Pregătește o ofertă pentru un service auto din Cluj care vrea programări online și ai grijă să trimiți oferta clientului",
+  "Pregătește o ofertă pentru un service auto din Cluj care vrea programări online și te-aș ruga s-o trimiți clientului",
+  "Pregătește o ofertă pentru un service auto din Cluj care vrea programări online și luni trimite-o clientului",
+  "Pregătește o ofertă pentru un service auto din Cluj care vrea programări online și oricum trimite oferta clientului",
+  "Pregătește o ofertă pentru un service auto din Cluj care vrea programări online și transmite oferta clientului",
+  "Pregătește o ofertă pentru un service auto din Cluj care vrea programări online și sună clientul"];
+/** Descriptions the reviewers and the earlier rounds protect (F2 / F5 / RR3 / RR4 / RR10) plus new stems in descriptions: never refused, never cut. */
+const LAST_ALLOW = ["Butonul trimite oferta clientului de două ori", "Formularul de contact nu funcționează", "Repară pagina de contact", "Datele de contact ale clientului sunt greșite",
+  "Cum trimit oferta clientului?", "Cum se trimite oferta?", "Ce ofertă ai pregătit pentru service-ul din Cluj?", "Oferta pentru service-ul din Cluj e gata?", "Am trimis oferta clientului ieri",
+  "Clientul a fost contactat ieri", "Firma ne contactează mâine", "Pregătește o ofertă pentru o pizzerie din Iași care vrea să le trimită clienților SMS",
+  "Pregătește o ofertă pentru un cabinet stomatologic din Cluj care vrea să-și contacteze pacienții", "Pregătește o ofertă pentru un salon din Iași, care vrea să posteze pe Instagram",
+  "Pregătește o ofertă pentru o firmă de curierat din Cluj care trimite colete zilnic", "Pregătește o ofertă pentru un magazin din Iași care vrea un newsletter care trimite promoții clienților",
+  "Pregătește o ofertă pentru un service auto din Cluj care vrea ca aplicația să trimită remindere clienților",
+  "Pregătește o ofertă pentru un service auto din Cluj care vrea programări online; clienții să poată trimite poze cu mașina", "Repară bug-ul din ProDelivery în care aplicația trimite oferta de două ori",
+  "Repară bug-ul din ProDelivery: trimite oferta de două ori", "Pregătește o ofertă pentru un cabinet stomatologic din Cluj care vrea ca pacienții să fie contactați automat",
+  "Pregătește o ofertă pentru un service auto din Cluj care vrea un sistem; sistemul trimite SMS clienților", "Pregătește o ofertă pentru un service auto din Cluj care vrea un formular de contact",
+  "Pregătește o ofertă pentru un salon din Iași care vrea să trimitem noi remindere clienților", "Pregătește o ofertă pentru o pizzerie din Iași; ei vor să trimită oferte pe WhatsApp",
+  "Fă un clip despre cum contactăm clienții", "Clientul trimite cereri de ofertă prin formular", "Aplicația ar trebui să trimită oferta clientului automat", "Site-ul publică oferta zilei",
+  "Sistemul de facturare trimite factura clientului", "Când clientul sună, aplicația trebuie să-i trimită oferta", "Pregătește o ofertă pentru un dentist care vrea ca pacienții să fie sunați automat",
+  "Pune un buton pe site care trimite oferta", "Publicul țintă sunt firmele din Cluj", "Pagina publică a ofertei", "Fă un clip pe care să-l postăm pe Instagram", "Fă un clip și postează-l pe TikTok",
+  "Distribuie sarcinile pe echipă", "Scrie documentația clientului", "Sună-mă când e gata", "Sună bine", "Postează clipul pe YouTube", "Fă o pagină publică pentru firmă", "Telefonul sună încontinuu",
+  "Pregătește o ofertă pentru o firmă care postează zilnic pe Facebook", "Adaugă un formular prin care clientul trimite oferta", "Cine trimite oferta clientului?",
+  "Oferta se trimite automat după aprobare", "Aplicația scrie clienților după fiecare comandă", "Construiește o funcție pentru a posta oferte pe site", "Fă un buton Distribuie oferta",
+  "Clientul vrea programări online și să le trimită SMS clienților"];
+/** The owner's own statements (RR10): never refused, never a planner's words. */
+const LAST_OWN = ["Trimit eu oferta clientului mâine", "O să trimit eu oferta", "Îl sun eu pe client mâine"];
+/** The stem table × leads (asks, modals, adverbs, comma asides) — alone, after a code request and inside an offer request (≥ 40 new variants). */
+const STEM_IMPERATIVES = ["trimite oferta clientului", "transmite oferta clientului", "retrimite oferta clientului", "expediază oferta clientului", "contactează clientul", "sună clientul",
+  "scrie-i clientului un mail", "publică oferta pe site", "postează oferta pe Facebook", "distribuie oferta pe LinkedIn", "pune oferta pe site", "dă-i un telefon clientului",
+  "forwardează oferta clientului", "trimite-o clientului"];
+const STEM_SECOND = ["să trimiți oferta clientului", "să transmiți oferta clientului", "să publici oferta pe site", "să postezi oferta pe Facebook", "să contactezi clientul", "să suni clientul",
+  "să-i scrii clientului un mail", "să retrimiți oferta clientului"];
+const STEM_LEADS = ["", "te rog, ", "Lega, ", "oricum ", "luni ", "cât mai repede ", "până mâine ", "săptămâna viitoare ", "apoi "];
+const STEM_ASKS = ["vreau ", "te rog ", "poți ", "ai grijă ", "ar fi bine ", "te-aș ruga ", "ce-ar fi ", "ai putea, te rog, ", "nu uita ", "asigură-te că "];
+const cap = (s) => s[0].toUpperCase() + s.slice(1);
+function stemVariants() {
+  const out = [];
+  STEM_IMPERATIVES.forEach((v, n) => out.push(cap(STEM_LEADS[n % STEM_LEADS.length] + v)));
+  STEM_SECOND.forEach((v, n) => {
+    out.push(cap(STEM_ASKS[n % STEM_ASKS.length] + v));
+    const ask = STEM_ASKS[(n + 5) % STEM_ASKS.length];
+    out.push(cap(ask + (ask.startsWith("asigur") ? v.replace(/^să /, "") : v)));
+  });
+  for (const [v, o] of [["trimite", "oferta clientului"], ["transmite", "oferta clientului"], ["publică", "oferta pe site"], ["postează", "oferta pe site"], ["contactează", "clientul"]]) out.push(`${cap(v)}, te rog, ${o}`);
+  return [...new Set(out)];
+}
+const refusedHere = (s, extra = {}) => {
+  const r = resolveIntent(s, { ...CTX, ...extra });
+  const send = r.steps.find((x) => x.intent === "sales_send");
+  assert.ok(send, `${s}: refused → ${JSON.stringify(r.steps.map((x) => x.intent))}`);
+  assert.equal(send.effectClass, "REFUSED", s);
+  assert.equal(send.args.reason, SALES_SEND_REASON, s);
+  for (const x of r.steps.filter((y) => y.intent !== "sales_send")) {
+    assert.doesNotMatch(String(x.text || ""), LAST_WORDS, `${s}: the words of ${x.intent}`);
+    assert.doesNotMatch(String(x.args?.request || ""), LAST_WORDS, `${s}: the request of ${x.intent}`);
+  }
+  const cut = stripOutreach(s);
+  assert.ok(cut.refused.length >= 1, `${s}: cut and refused for the planners`);
+  assert.doesNotMatch(cut.text, LAST_WORDS, `${s}: a planner's words`);
+  assert.ok(salesOutreach(s).hits.length >= 1, s);
+  return r;
+};
+
+test("M12-LAST-OUT-01 the fail-safe stem rule: L1–L4 and ≥ 40 stem × lead variants refused (alone, after a code request, inside an offer request); descriptions and own statements unchanged", () => {
+  for (const s of LAST_REFUSE) refusedHere(s);
+  for (const [s, intent, request] of LAST_MIXED) {
+    const r = refusedHere(s);
+    const kept = r.steps.filter((x) => x.intent === intent);
+    assert.equal(kept.length, 1, `${s}: the request is kept`);
+    if (request !== null) assert.equal(kept[0].args.request, request, s);
+  }
+  for (const s of LAST_PREP) {
+    const r = refusedHere(s);
+    assert.equal(r.steps.filter((x) => x.intent === "sales_prepare").length, 1, `${s}: ONE card`);
+    const b = parseBrief(s);
+    assert.ok(b.intent, `${s}: the offer request`);
+    assert.ok(b.refused.length >= 1 && b.refused.every((x) => x.code === "OUTREACH_DISABLED"), `${s}: the refusal noted`);
+    assert.doesNotMatch(String(b.fields.problem?.value || ""), LAST_WORDS, `${s}: the client's need`);
+    if (/care vrea programări online/.test(s)) assert.equal(b.fields.problem.value, "programări online", s);
+  }
+  const variants = stemVariants();
+  assert.ok(variants.length >= 30);
+  let n = 0;
+  for (const v of variants) {
+    const low = v[0].toLowerCase() + v.slice(1);
+    refusedHere(v);
+    const eng = refusedHere(`Repară bug-ul de login și ${low}`);
+    assert.deepEqual(eng.steps.filter((x) => x.intent === "engineering_request").map((x) => x.args.request), ["repara bug-ul de login"], low);
+    const p = `Pregătește o ofertă pentru un service auto din Cluj care vrea programări online și ${low}`;
+    const prep = refusedHere(p);
+    assert.equal(prep.steps.filter((x) => x.intent === "sales_prepare").length, 1, p);
+    const b = parseBrief(p);
+    assert.equal(b.fields.problem.value, "programări online", p);
+    assert.ok(b.refused.length >= 1, p);
+    n += 3;
+  }
+  assert.ok(n >= 40, `${n} variants`);
+  // Descriptions: never refused, never cut, never noted.
+  for (const s of LAST_ALLOW) {
+    assert.ok(!intents(s).includes("sales_send"), `${s}: ${JSON.stringify(intents(s))}`);
+    assert.equal(salesOutreach(s).hits.length, 0, s);
+    const cut = stripOutreach(s);
+    assert.deepEqual([cut.changed, cut.text], [false, s], s);
+    if (/^Pregătește o ofertă/.test(s)) assert.deepEqual(parseBrief(s).refused, [], s);
+  }
+  // The owner's own statements: never refused; still never a planner's words.
+  for (const s of LAST_OWN) {
+    assert.ok(!intents(s).includes("sales_send"), s);
+    assert.equal(salesOutreach(s).hits.length, 0, s);
+    const cut = stripOutreach(s);
+    assert.deepEqual([cut.refused.length, cut.own.length, cut.meaningful], [0, 1, false], s);
+  }
+  // Negations of the new stems restrict, never refuse.
+  for (const s of ["Nu suna clientul", "Nu transmite oferta", "Nu publici oferta pe site", "Să nu-i retrimiți oferta"]) {
+    assert.ok(!intents(s).includes("sales_send"), s);
+    assert.deepEqual([salesOutreach(s).hits.length, salesOutreach(s).negated.length], [0, 1], s);
+  }
+});
+
+test("M12-LAST-OUT-02 (L5) „O ofertă pentru … care are nevoie de …” and the other noun-led requests are ONE card again; questions and instructions about an existing offer are not", () => {
+  for (const s of ["O ofertă pentru un service auto din Cluj care are nevoie de programări online", "Ofertă nouă pentru un cabinet dentar care are nevoie de un site",
+    "Ofertă pentru o clinică dentară care are nevoie de programări online", "O ofertă pentru un restaurant care are nevoie de un site de rezervări",
+    "Lega, o ofertă pentru un service auto care are nevoie de programări online", "O ofertă pentru o firmă de curățenie care e în Cluj și vrea un site",
+    "O ofertă pentru un CRM care trimite remindere clienților", "O ofertă pentru un service auto din Cluj care vrea programări online"]) {
+    assert.deepEqual(resolveIntent(s, { projects: [] }).steps.map((x) => x.intent), ["sales_prepare"], s);
+    assert.ok(parseBrief(s).intent, `${s}: the brief reads the same request`);
+    assert.deepEqual(parseBrief(s).refused, [], s);
+  }
+  for (const [s, expected] of [["Oferta pentru service-ul din Cluj e gata?", ["sales_show"]], ["Oferta pentru service-ul din Cluj a fost aprobată?", ["sales_show"]],
+    ["Ce ofertă ai pregătit pentru service-ul din Cluj?", ["sales_show"]], ["Oferta pentru service-ul din Cluj trimite-o mâine", ["sales_send"]],
+    ["Oferta pentru service-ul din Cluj care vrea programări e gata?", ["sales_show"]]]) {
+    assert.deepEqual(resolveIntent(s, { projects: [] }).steps.map((x) => x.intent), expected, s);
+    assert.equal(parseBrief(s).intent, null, s);
+  }
+});
+
+test("M12-LAST-OUT-03 typed over HTTP: an L1–L4 instruction next to a code request reaches the planner without its words; inside an offer request the card's brief holds none of it and the refusal is its own step; L5 gives ONE card", async (c) => {
+  const t = await prepHub(c);
+  await t.authenticate();
+  const called = [];
+  const undo = ["engineering", "run", "studio_create"].map((kind) => t.hub.intake.registerPlanner(kind, async ({ step, text }) => { called.push({ kind, text, request: step?.args?.request ?? null }); return { kind: "message", text: "planificator de test" }; }));
+  c.after(() => undo.forEach((u) => u()));
+  const say = async (text) => { const r = await t.request("/api/owner/intent", { body: { text, source: "typed" } }); assert.equal(r.status, 200, JSON.stringify(r.json)); return r.json; };
+  for (const s of ["Repară bug-ul de login și trimite, te rog, oferta clientului", "Repară bug-ul de login și poți să publici oferta pe site?",
+    "Repară bug-ul de login și te-aș ruga să trimiți oferta clientului", "Repară bug-ul de la formular și transmite oferta clientului", "Repară bug-ul de login și sună clientul"]) {
+    called.length = 0;
+    const out = await say(s);
+    assert.equal(out.results.find((x) => x.intent === "sales_send")?.refused, SALES_SEND_REASON, s);
+    assert.equal(called.length, 1, `${s}: one planner call`);
+    assert.match(called[0].text, /repar/i, s);
+    assert.doesNotMatch(called[0].text, LAST_WORDS, `${s}: the planner's text`);
+    assert.doesNotMatch(String(called[0].request ?? ""), LAST_WORDS, `${s}: the step's request`);
+  }
+  const prep = await say("Pregătește o ofertă pentru un service auto din Cluj care vrea programări online și te-aș ruga s-o trimiți clientului");
+  const card = prep.results.find((x) => x.opsPlan)?.opsPlan;
+  assert.ok(card?.id, JSON.stringify(prep.results.map((x) => x.intent)));
+  assert.equal(card.brief.fields.problem.value, "programări online");
+  // The card is planned from the request without the instruction (its brief holds none of it); the refusal is its own step.
+  assert.doesNotMatch(String(card.brief.request), LAST_WORDS);
+  assert.equal(prep.results.find((x) => x.intent === "sales_send")?.refused, SALES_SEND_REASON);
+  const l5 = await say("O ofertă pentru un service auto din Cluj care are nevoie de programări online");
+  assert.equal(l5.results.filter((x) => x.opsPlan).length, 1, JSON.stringify(l5.results.map((x) => x.intent)));
+  assert.equal(countRows(t, "SELECT COUNT(*) AS n FROM sales_sends"), 0);
+  t.assertPaths();
+});
