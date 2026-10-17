@@ -1,6 +1,10 @@
 # IfrimDigital Ifrim Agent Hub - Claude Code Context
 
-## Current state - 2026-10-16 night (read first)
+## Current state - 2026-10-17 (read first)
+
+Read `.ifrim/STAGE_2026-10-17_M12_SALES.md` and the first section of `.ifrim/OPEN_ISSUES.md` first; they take precedence over everything below. M12 Sales is implemented as code `2.15.0-m12` (API contract 15, schema 13 `m12-sales-prep`, additive) and merged into `v2-milestone-01` as `dc4500f` (tree = gated `d311980`, branch `claude/project-thread-azwsjr`), NOT live: the live Hub still runs `2.14.19-m11`, and a reboot before the owner's managed upgrade keeps the Hub down (boot guard). Final gate: test:v2 2510/2512 (1 fail RM-10 real capture, outside M12, passes alone; 1 skip T25), V1 549/552 (real-registry tests). The owner runs C:\Users\mihai\m12-sales\owner-release.cmd (upgrade + push are refused to the agent). Codex hit its usage limit (reset 2026-10-22); parts 2-4 were implemented by Claude at the owner's request. Effort rule (owner, 2026-10-17): coordinator extra, thread high, every agent a thread starts medium. Offers stay synthetic, unsent, unpriced ("De stabilit (neconfigurat)").
+
+## State - 2026-10-16 night (history)
 
 Read `.ifrim/STAGE_2026-10-16_STABILITATE_M12.md` and the first section of `.ifrim/OPEN_ISSUES.md` first; they take precedence over everything below. No code change: code and live Hub `2.14.19-m11` (contract 14, schema 12); `origin/v2-milestone-01` was `ee6c93a` at the start, plus this stage's docs commit. One coherent full regression on a fresh synthetic clone (`C:\Users\mihai\hub-gate` at `ee6c93a`, code = `7074ab5`, Studio built for the test with `HUB_V2_STUDIO_DIST`; logs `C:\Users\mihai\hub-gate-logs\run-20261016T1809Z\`): `npm run test:v2` exit 0, 2311 = 2310 pass, 0 fail, 0 cancelled, 1 skip (T25), 0 processes left, so the V2 gate is met; the earlier 7074ab5 gate stays recorded as 2306/2311 (4 fail). V1 in the same clone: 549/552, 2 fail, because `conversation-api` and `workflow-refresh-api` read the owner's real `..\PROJECTS.md` (not synthetic; separate stage). `.ifrim/M12_PROMPT.md` was updated to the real state and stays DRAFT; `factory.reject` without a session is a separate fix with priority before new Factory projects. Opus + ultracode for every stage.
 

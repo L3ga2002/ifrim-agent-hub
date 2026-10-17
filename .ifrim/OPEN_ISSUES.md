@@ -1,5 +1,28 @@
 # Open Issues - Ifrim Agent Hub
 
+## 2026-10-17 — M12 Sales implemented, merged, NOT live (code `2.15.0-m12`, API contract 15, schema 13; live still `2.14.19-m11`; detail: `.ifrim/STAGE_2026-10-17_M12_SALES.md`)
+
+This section takes precedence over every older one where they overlap. The owner activated `.ifrim/M12_PROMPT.md` (2fa81a9) with
+clarifications 1–6 on 2026-10-16 20:21 UTC. Part 1 by Codex; Codex usage limit at 21:41 UTC (reset 2026-10-22); the owner moved parts 2–4
+to Claude at 21:45 UTC. Merge `dc4500f` on `v2-milestone-01` (tree = gated `d311980`); verified backup `bkp_mvcejgzd_fb1915d20d`.
+Final gate on `d311980` (fresh clone C:\Users\mihai\hub-m12-gate, logs C:\Users\mihai\m12-sales\gate\run-final2): test:v2
+2512 = 2510 pass, **1 fail (RM-10, real capture, outside M12; passes alone 11/11)**, 1 skip (T25); V1 549/552 (the 2 real-registry tests).
+A reboot before the owner's upgrade keeps the Hub down (boot guard, pending migration 13).
+
+Open:
+1. Owner: run C:\Users\mihai\m12-sales\owner-release.cmd (plan → apply upgrade → GET verify 2.15.0-m12 / 15 / schema 13 → push
+   v2-milestone-01 + claude/project-thread-azwsjr), or ask for a new full gate first because of RM-10.
+2. Catalog and real prices: BLOCKED BY EVIDENCE (offers say "De stabilit (neconfigurat)").
+3. factory.reject without an owner session — still the priority fix before any new Factory project (M12 never calls the Factory).
+4. M04 approvals not used by M12 still sessionless on ui: sales.draft_content (also accepts a whitespace-only sha),
+   sales.suppression_lift, sales.import_rollback, catalog writes.
+5. Local dev profile: any loopback process can open an owner session (approved; not redesigned). New consequence: such a process can
+   retire an owner's WebAuthn Sales decision (no authority gained).
+6. Outreach refusal rule: known residual phrasings (C:\Users\mihai\m12-sales\impl\last-report.md); sending stays impossible
+   (OUTREACH_DISABLED transport).
+7. No owner route / button for sales.preparation.cancel; RM-10 intermittent under load; the 2 V1 real-registry tests; media, step-0
+   author and minor display items as in the sections below.
+
 ## 2026-10-16 night — one coherent full regression on the final code; M12 prompt updated, still DRAFT (live `2.14.19-m11`, contract 14, schema 12; detail: `.ifrim/STAGE_2026-10-16_STABILITATE_M12.md`)
 
 This section takes precedence over every older one where they overlap. No code change, no live upgrade. One run on a fresh synthetic
