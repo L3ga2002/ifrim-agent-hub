@@ -7,13 +7,15 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import path from "node:path";
 import { createRequire } from "node:module";
-import { makeTestHub, waitFor, prepareLiveWithoutGrants, HUB_ROOT, tempDir } from "./helpers.mjs";
+import { makeTestHub, waitFor, prepareLiveWithoutGrants, HUB_ROOT, tempDir, WEB_DIST } from "./helpers.mjs";
 import { materializeFixture, demoSpec } from "../server/factory/fixtures.mjs";
+// M09: every factory mission names its models explicitly (without them it is a draft whose scope is incomplete).
+const M09_MODELS = { writerModel: "gpt-fake-sol", reviewerModel: "sonnet" };
 import { createHttpServer } from "../server/http/server.mjs";
 import { browserStatus, browserLaunchOptions } from "../server/tools/browser.mjs";
 
 const status = browserStatus({ hubRoot: HUB_ROOT });
-const built = fs.existsSync(path.join(HUB_ROOT, "v2", "web", "dist", "index.html"));
+const built = fs.existsSync(path.join(WEB_DIST, "index.html"));
 const skip = !status.installed || !status.cachedBrowsers.length || !built ? "Playwright/Chromium or the built UI is missing" : false;
 
 test("M06-UI-E2E-01 register (virtual authenticator) → policy → plan → ONE confirmation → loop → ready for review, in the real UI", { skip, timeout: 240000 }, async () => {
@@ -29,7 +31,7 @@ test("M06-UI-E2E-01 register (virtual authenticator) → policy → plan → ONE
     const dir = path.join(t.dataDir, "factory-bug-demo");
     materializeFixture("bug-demo", dir);
     const project = (await t.hub.commands.dispatch({ type: "project.register_test", channel: "test", actor: "test", payload: { path: dir } })).result;
-    await t.hub.commands.dispatch({ type: "factory.prepare", channel: "test", actor: "test", payload: { projectId: project.id, ...demoSpec("bug-demo") } });
+    await t.hub.commands.dispatch({ type: "factory.prepare", channel: "test", actor: "test", payload: { projectId: project.id, ...demoSpec("bug-demo"), limits: M09_MODELS } });
     const context = await browser.newContext({ viewport: { width: 1440, height: 900 } });
     const page = await context.newPage();
     const cdp = await context.newCDPSession(page);

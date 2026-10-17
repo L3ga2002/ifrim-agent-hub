@@ -1,5 +1,6 @@
 import { HubError } from "../core/errors.mjs";
-import { IMPORT_FIELDS, EVIDENCE_LABELS, SOURCE_KINDS } from "./sales.mjs";
+import { IMPORT_FIELDS, EVIDENCE_LABELS, SOURCE_KINDS, DATA_KINDS } from "./sales.mjs";
+import { QUALIFICATION_FORMULA, QUALIFICATION_FORMULAS } from "./qualify.mjs";
 
 const UI = ["ui", "test"];
 /** Protective commands (stop contacting someone) may also come from voice, like Stop; nothing that adds effects does. */
@@ -24,6 +25,11 @@ const brief = (r) => {
 export function registerSalesCommands(register, hub, { createMission }) {
   const { sales, projects } = hub;
   const reg = (type, handler) => register(type, { logResult: brief, ...handler });
+  const ownerCheck = (ctx, what, fresh = false) => {
+    if (ctx.channel === "test" && hub.config.testMode) return null;
+    if (ctx.channel !== "owner") throw new HubError("policy", "Decizia cere canalul proprietarului");
+    return fresh ? hub.trust.requireFresh(ctx.ownerSession, what) : hub.trust.requireSession(ctx.ownerSession, what);
+  };
 
   reg("sales.import.create", { describe: "Încarcă un fișier CSV/XLSX de firme (lot nou; nimic nu se importă încă)", async: false,
     schema: { fileName: { required: true, max: 200 }, contentBase64: { required: true, max: 28 * 1024 * 1024 }, synthetic: { type: "boolean", default: false } },
@@ -51,16 +57,22 @@ export function registerSalesCommands(register, hub, { createMission }) {
   reg("sales.evidence.add", { describe: "Adaugă o dovadă (afirmație + sursă + etichetă)",
     schema: { subjectType: { enum: ["org", "opportunity"], required: true }, subjectId: { required: true, max: 80 }, claim: { required: true, max: 300 }, value: { type: "any", max: 4000 },
       label: { enum: EVIDENCE_LABELS, required: true }, sourceKind: { enum: SOURCE_KINDS, required: true }, sourceRef: { required: true, max: 500 },
-      excerpt: { max: 400, default: "" }, method: { max: 200, default: "" }, verifiedAt: { max: 40 }, recheckAfter: { max: 40 } },
+      excerpt: { max: 400, default: "" }, method: { max: 200, default: "" }, verifiedAt: { max: 40 }, recheckAfter: { max: 40 },
+      // M12 C-03, additive (a call without dataKind is the M04 call, unchanged): the kind of the datum, and for an inference its basis
+      // and reasoning. FIXTURE is refused here: only the fixture adapter and the synthetic generator produce fixture data.
+      dataKind: { enum: DATA_KINDS }, basis: { type: "array", max: 20, items: "string", itemMax: 200 }, reasoning: { max: 400 } },
     execute: (input, ctx) => sales.addEvidence(input.subjectType, input.subjectId, input, ctx.actor) });
   reg("sales.org.audit", { describe: "Audit de site (doar fixture-uri .test în M04; colectarea live e dezactivată)", async: true,
     schema: { orgId: { required: true, max: 80 }, sourceKind: { enum: ["fixture", "live"], default: "fixture" } },
     execute: (input, ctx) => sales.auditOrg(input.orgId, { sourceKind: input.sourceKind }, ctx.actor) });
-  reg("sales.org.qualify", { describe: "Calificare deterministă și explicabilă (fără model)", schema: { orgId: { required: true, max: 80 }, filters: { type: "object", default: {} } },
-    execute: (input, ctx) => sales.qualifyOrg(input.orgId, { filters: input.filters }, ctx.actor) });
-  reg("sales.qualification.override", { describe: "Suprascrie prioritatea cu motiv (istoric păstrat)",
-    schema: { orgId: { required: true, max: 80 }, priority: { type: "number", required: true, min: 0, max: 100 }, reason: { required: true, min: 5, max: 300 } },
-    execute: (input, ctx) => sales.overrideQualification(input.orgId, input, ctx.actor) });
+  // `formula` is additive (M12): q-v1 stays the default; the M12 preparation asks for q-v2 (inferences listed, never scored).
+  reg("sales.org.qualify", { describe: "Calificare deterministă și explicabilă (fără model)",
+    schema: { orgId: { required: true, max: 80 }, filters: { type: "object", default: {} }, formula: { enum: Object.keys(QUALIFICATION_FORMULAS), default: QUALIFICATION_FORMULA.version } },
+    execute: (input, ctx) => sales.qualifyOrg(input.orgId, { filters: input.filters, formula: input.formula }, ctx.actor) });
+  reg("sales.qualification.override", { describe: "Suprascrie prioritatea cu motiv (istoric păstrat)", channels: ["owner", "test"],
+    schema: { orgId: { required: true, max: 80 }, displayedQualificationId: { max: 80, pattern: /^squ_[A-Za-z0-9_]+$/ }, priority: { type: "number", required: true, min: 0, max: 100 }, reason: { required: true, min: 5, max: 300 } },
+    execute: (input, ctx) => sales.overrideQualification(input.orgId, input, ctx.actor, {
+      channel: ctx.channel, sessionCheck: () => ownerCheck(ctx, "suprascrierea calificării") }) });
   reg("sales.org.suppress", { describe: "DO_NOT_CONTACT: oprește orice pregătire de contact pentru firmă (și la reimport)", channels: UI_AND_VOICE,
     schema: { orgId: { required: true, max: 80 }, reason: { required: true, min: 3, max: 300 } },
     execute: (input, ctx) => sales.suppress(input.orgId, { reason: input.reason, source: ctx.channel === "voice" ? "voice" : "owner" }, ctx.actor) });
@@ -87,9 +99,33 @@ export function registerSalesCommands(register, hub, { createMission }) {
     schema: { opportunityId: { required: true, max: 80 }, edits: { type: "object" } },
     execute: (input, ctx) => sales.createProposal(input.opportunityId, { edits: input.edits || null }, ctx.actor) });
   reg("sales.proposal.approve", { describe: "Aprobarea internă a propunerii (legată de conținutul exact; nu e acceptarea clientului)",
-    schema: { proposalId: { required: true, max: 80 }, displayedSha: { required: true, max: 64 } },
-    action: (input) => ({ actionKind: "sales.proposal_approve", target: `${input.proposalId}@${String(input.displayedSha).slice(0, 12)}`, projectId: "*" }),
-    execute: (input, ctx) => sales.approveProposal(input.proposalId, input, ctx.actor) });
+    channels: ["owner", "test"], ownerDecision: true, logResult: (r) => r,
+    schema: { proposalId: { required: true, max: 80, pattern: /^spr_[A-Za-z0-9_]+$/ }, displayedSha: { required: true, pattern: /^[0-9a-f]{64}$/, trim: false } },
+    action: (input, ctx) => {
+      ownerCheck(ctx, "aprobarea internă a ofertei");
+      return { actionKind: "sales.proposal_approve", target: `${input.proposalId}@${String(input.displayedSha).slice(0, 12)}`, projectId: "*" };
+    },
+    authorizeApproved: (_input, ctx, approval) => {
+      // A missing or stale EXECUTING session is the only refusal that can still succeed (401, the page unlocks and retries).
+      const session = ownerCheck(ctx, "aprobarea internă a ofertei", true);
+      if (ctx.channel === "test" && hub.config.testMode) return;
+      // Only a decided approval has a decider to compare: a pending, rejected, expired or invalidated one gets the bus's own
+      // status answer ("Approval is pending", …), never a misleading credential mismatch (review C1).
+      if (!approval || !["approved", "consumed"].includes(approval.status)) return;
+      // The refusals below are final: no session can ever make this decision executable again, so they are not authentication
+      // errors (the page would ask for Windows Hello for nothing); the bus retires the decision and the owner requests it again.
+      if (approval.decidedVia !== "owner_session" || approval.credentialId !== session.credentialId) throw new HubError("conflict", "Aprobarea aparține altei credențiale; cere din nou aprobarea", { code: "OWNER_CREDENTIAL_MISMATCH" });
+      if (!hub.trust.confirmedAuthority(approval.sessionId).ok) throw new HubError("conflict", "Autoritatea aprobării a fost revocată; cere din nou aprobarea", { code: "OWNER_DECISION_REVOKED" });
+      // Revoke-all ends active sessions. A decider already rotated/logged out must not carry an unexecuted decision
+      // across that security boundary either; the boundary is recorded even when no session was open at that moment
+      // (trust.revokeAllSessions). Event order works even with a fixed clock or decisions in the same millisecond.
+      const revoked = hub.db.prepare(`SELECT 1 FROM events WHERE type='owner.sessions_revoked' AND seq >
+        (SELECT MAX(seq) FROM events WHERE type='approval.approved' AND json_extract(payload_json, '$.approvalId')=?) LIMIT 1`).get(approval.id);
+      if (revoked) throw new HubError("conflict", "Autoritatea aprobării a fost revocată; cere din nou aprobarea", { code: "OWNER_DECISION_REVOKED" });
+    },
+    execute: (input, ctx) => sales.approveProposal(input.proposalId, input, ctx.actor, {
+      channel: ctx.channel, approvalId: hub.commands.get(ctx.commandId)?.approvalId,
+      sessionCheck: () => ownerCheck(ctx, "aprobarea internă a ofertei") }) });
   reg("sales.draft.create", { describe: "Ciornă de contact (nu se trimite nimic)", schema: { opportunityId: { required: true, max: 80 }, contactId: { max: 80 }, proposalId: { max: 80 } },
     execute: (input, ctx) => sales.createDraft(input.opportunityId, input, ctx.actor) });
   reg("sales.draft.revise", { describe: "Editezi ciorna (versiune nouă; aprobările vechi nu se mai aplică)",
@@ -152,12 +188,27 @@ export function registerSalesCommands(register, hub, { createMission }) {
       if (!["DUE", "SCHEDULED"].includes(f.status)) throw new HubError("conflict", `Follow-up-ul e ${f.status}`);
       return sales.createDraft(f.opportunityId, { followupId: f.id }, ctx.actor);
     } });
+  // M12 preparation: what only REDUCES activity (cancel) is accepted from every owner-facing channel (fail-safe, like ops.plan.cancel);
+  // a continuation only PROPOSES a new card, which still needs the owner's own confirmation in the owner session (ops.plan.confirm).
+  reg("sales.preparation.cancel", { describe: "Anulează pregătirea ofertei (fail-safe; ce s-a făcut rămâne, sintetic)", channels: ["ui", "owner", "voice", "companion", "test"],
+    schema: { preparationId: { required: true, max: 80, pattern: /^spp_[A-Za-z0-9_]+$/ }, reason: { max: 200, default: "Anulată de tine" } },
+    execute: (input, ctx) => {
+      if (!hub.salesPreparations) throw new HubError("internal", "Pregătirea Sales nu e disponibilă");
+      return hub.salesPreparations.cancel(input.preparationId, { reason: input.reason, actor: ctx.actor });
+    } });
+  reg("sales.preparation.continue", { describe: "Propune un card nou care continuă o pregătire oprită (aceeași, cu o confirmare nouă; nimic nu pornește până confirmi)",
+    async: true, channels: ["ui", "owner", "test"], logResult: (r) => ({ planId: r?.plan?.id || null, status: r?.plan?.status || null, preparationId: r?.preparation?.id || null }),
+    schema: { preparationId: { required: true, max: 80, pattern: /^spp_[A-Za-z0-9_]+$/ } },
+    execute: (input, ctx) => {
+      if (!hub.salesPreparations) throw new HubError("internal", "Pregătirea Sales nu e disponibilă");
+      return hub.salesPreparations.continueCard(input.preparationId, { actor: ctx.actor, via: ctx.channel });
+    } });
   reg("sales.owner.save", { describe: "Profilul firmei tale pentru propuneri (nume, semnătură, materiale confirmate)",
     schema: { companyName: { required: true, max: 120 }, signatureName: { max: 120, default: "" }, materials: { type: "array", max: 20, items: "string", itemMax: 300 } },
     execute: (input, ctx) => {
       const materials = (Array.isArray(input.materials) ? input.materials : []).map((m) => String(m).slice(0, 300)).filter(Boolean).slice(0, 20);
-      hub.settings.set("salesOwner", { companyName: input.companyName, signatureName: input.signatureName, materials }, ctx.actor, "Profil Sales actualizat");
-      return hub.settings.get("salesOwner");
+      // M12 review R7: the profile is rendered into every offer, so saving it makes the offers prepared by a plan STALE (same transaction).
+      return sales.saveOwnerProfile({ companyName: input.companyName, signatureName: input.signatureName, materials }, ctx.actor);
     } });
   return { fields: IMPORT_FIELDS };
 }

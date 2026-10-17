@@ -1,0 +1,126 @@
+{
+  "testSlot": "306a7fe92fc7",
+  "needs": [
+    "node:path",
+    "node:os",
+    "node:fs",
+    "node:sqlite",
+    "node:http"
+  ],
+  "api": "GET /api/bookings?date=YYYY-MM-DD returnează lista de programări a zilei; POST /api/bookings creează o programare cu câmpul phone obligatoriu",
+  "cases": [
+    {
+      "name": "AC-1: lista publica a zilei nu contine campul phone sau vreo valoare a lui",
+      "criterion": "AC-1",
+      "kind": "check",
+      "today": "fail"
+    },
+    {
+      "name": "AC-2: lista publica nu expune telefonul la niciun parametru anonim",
+      "criterion": "AC-2",
+      "kind": "check",
+      "today": "fail"
+    },
+    {
+      "name": "AC-3 control: programarile fara telefon, cu telefon gol sau numai spatii sunt refuzate iar stocarea ramane neschimbata",
+      "criterion": "AC-3",
+      "kind": "control",
+      "today": "pass"
+    },
+    {
+      "name": "AC-4 control: telefonul din programarea valida e salvat exact in stocarea interna",
+      "criterion": "AC-4",
+      "kind": "control",
+      "today": "pass"
+    },
+    {
+      "name": "AC-5 control: o programare cu date valide si telefon completat este acceptata",
+      "criterion": "AC-5",
+      "kind": "control",
+      "today": "pass"
+    }
+  ],
+  "newApi": [],
+  "removed": [],
+  "amends": "682a820d4e179d933340e9cf7923a42ecd2d94f2042e386576a85b3f3336c85e",
+  "completes": [
+    {
+      "ref": "F1",
+      "by": "AC-3 control: dupa fiecare refuz, assert.deepEqual pe snapshot complet SELECT * ORDER BY id detecteaza orice modificare de date existente"
+    },
+    {
+      "ref": "P211",
+      "by": "AC-3 control: dbSnapshot dupa refuz fara telefon comparat cu snap0 prin deepEqual"
+    },
+    {
+      "ref": "P220",
+      "by": "AC-3 control: dbSnapshot dupa refuz telefon gol comparat cu snap0 prin deepEqual"
+    },
+    {
+      "ref": "P229",
+      "by": "AC-3 control: dbSnapshot dupa refuz telefon spatii comparat cu snap0 prin deepEqual"
+    },
+    {
+      "ref": "F2",
+      "by": "AC-1 si AC-2: bucla for/of pe rows verifica explicit ca fiecare telefon nevid are trim().length >= 3, garantand ca niciun telefon nu e exclus silentios din values"
+    },
+    {
+      "ref": "P140",
+      "by": "AC-1: assert adaugat ca fiecare row.phone nevid are cel putin 3 caractere, deci phones nu exclude niciun telefon relevant"
+    },
+    {
+      "ref": "P175",
+      "by": "AC-2: acelasi assert per rand garanteaza ca phones acopera toate telefoanele relevante pentru fiecare parametru anonim"
+    },
+    {
+      "ref": "F3",
+      "by": "buildState captureaza id1 din raspunsul POST sesiunea 1; AC-1 si AC-2 verifica assert.equal(rowP1.id, id1) confirmand pastrarea identitatii dupa repornire"
+    },
+    {
+      "ref": "P120",
+      "by": "AC-1: assert.equal(rowP1.id, id1) langa P120 leaga randul gasit dupa telefon de id-ul original din sesiunea 1"
+    },
+    {
+      "ref": "P154",
+      "by": "AC-2: assert.equal(rowP1.id, id1) langa P154 confirma ca randul gasit dupa telefon pastreaza id-ul din sesiunea anterioara"
+    },
+    {
+      "ref": "F4",
+      "by": "buildState: GET /api/slots verifica T09:00 free inainte de booking1, apoi T09:30 free dupa booking1, conform contractului aplicatiei"
+    }
+  ],
+  "completesNotes": [],
+  "needsDeclared": [],
+  "needsCompleted": [
+    {
+      "module": "node:path",
+      "binding": "path",
+      "line": 50,
+      "reason": "„path” e folosit liber în corp (linia 50), fără declarație în needs"
+    },
+    {
+      "module": "node:os",
+      "binding": "os",
+      "line": 50,
+      "reason": "„os” e folosit liber în corp (linia 50), fără declarație în needs"
+    },
+    {
+      "module": "node:fs",
+      "binding": "fs",
+      "line": 50,
+      "reason": "„fs” e folosit liber în corp (linia 50), fără declarație în needs"
+    },
+    {
+      "module": "node:sqlite",
+      "binding": "sqlite",
+      "line": 42,
+      "reason": "„sqlite” e folosit liber în corp (linia 42), fără declarație în needs"
+    },
+    {
+      "module": "node:http",
+      "binding": "http",
+      "line": 3,
+      "reason": "„http” e folosit liber în corp (linia 3), fără declarație în needs"
+    }
+  ]
+}

@@ -1,0 +1,17 @@
+{
+  "verdict": "PASS",
+  "summary": "Testul verifică exact cerința proprietarului și pică azi pe o aserțiune.",
+  "criteria": "ALL",
+  "criterion": {
+    "covered": true,
+    "failsForRightReason": true,
+    "canEverPass": true,
+    "contradictsOwner": false,
+    "trivialPassRisk": "low",
+    "plain": "Verifică exact ce ai cerut: cazul greșit e refuzat, iar unul corect rămâne acceptat."
+  },
+  "findings": [],
+  "missingContext": [],
+  "previousFindings": "ALL_RESOLVED",
+  "previousChecks": "ALL_KEPT_CONTEXT"
+}

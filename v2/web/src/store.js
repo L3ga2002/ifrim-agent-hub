@@ -1,5 +1,5 @@
 import { useSyncExternalStore, useEffect, useState, useCallback, useRef } from "react";
-import { streamStartSeq } from "./lib/uiLogic.js";
+import { streamStartSeq, approvalToastTarget } from "./lib/uiLogic.js";
 import { api, openStream } from "./api.js";
 
 // Global Hub state: the /api/state projection, refreshed on relevant events (debounced).
@@ -66,7 +66,9 @@ function connect(after) {
       const toast = TOAST_TYPES[event.type];
       // M06: an approval requested by your own confirmed plan (owner session) is decided by it at once; no "approval needed" alarm.
       const ownPlan = event.type === "approval.requested" && String(event.source || "").startsWith("owner:");
-      if (toast && !ownPlan) pushToast(event.type, toast.level, toast.text, event);
+      // M10.2 (U15): a Lega proposal's card is in the Lega panel; its toast says so and opens the panel (Shell → Toasts), not Approvals.
+      const legaProposal = event.type === "approval.requested" && approvalToastTarget(event) === "lega";
+      if (toast && !ownPlan) pushToast(legaProposal ? "lega.proposal" : event.type, toast.level, legaProposal ? "Propunere Lega: o vezi în panoul Lega" : toast.text, event);
     },
     onLive(event) { for (const fn of liveListeners) fn(event); },
     onStatus(connection) { setState({ connection }); if (connection === "live") scheduleRefresh(); },

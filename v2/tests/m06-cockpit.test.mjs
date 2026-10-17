@@ -5,6 +5,8 @@ import assert from "node:assert/strict";
 import path from "node:path";
 import { makeTestHub, waitFor, enrolOwner, prepareLiveWithoutGrants, enableLive } from "./helpers.mjs";
 import { materializeFixture, demoSpec } from "../server/factory/fixtures.mjs";
+// M09: every factory mission names its models explicitly (without them it is a draft whose scope is incomplete).
+const M09_MODELS = { writerModel: "gpt-fake-sol", reviewerModel: "sonnet" };
 import { validateLayout, layoutForIntent, defaultLayout } from "../server/owner/layout.mjs";
 import { classifyEvent } from "../server/owner/advisor.mjs";
 
@@ -31,7 +33,7 @@ test("M06-CK-01 the cockpit follows the real states: context → plan ready → 
     assert.deepEqual(c.done, [], "no done item without evidence");
     assert.equal(c.running.runs.length, 0);
     assert.equal(c.project.kind, "test");
-    const { mission } = (await dispatch(t.hub, "factory.prepare", { projectId: t.project.id, ...demoSpec("bug-demo") })).result;
+    const { mission } = (await dispatch(t.hub, "factory.prepare", { projectId: t.project.id, ...demoSpec("bug-demo"), limits: M09_MODELS })).result;
     c = await t.hub.cockpit.projectCockpit(t.project.id);
     assert.equal(c.state.code, "PLAN_READY");
     assert.equal(c.next.recommended.kind, "confirm_plan");
@@ -57,7 +59,7 @@ test("M06-CK-01 the cockpit follows the real states: context → plan ready → 
 test("M06-CK-02 replay is READ_ONLY and HISTORICAL: frames from the record, nothing re-executed or granted", async () => {
   const t = await cockpitHub();
   try {
-    const { mission } = (await dispatch(t.hub, "factory.prepare", { projectId: t.project.id, ...demoSpec("bug-demo") })).result;
+    const { mission } = (await dispatch(t.hub, "factory.prepare", { projectId: t.project.id, ...demoSpec("bug-demo"), limits: M09_MODELS })).result;
     const { envelope } = (await dispatch(t.hub, "envelope.propose", { projectId: t.project.id })).result;
     t.queue("codex", "factory-write:bug-fix"); t.queue("claude", "review:pass");
     await dispatch(t.hub, "envelope.confirm", { envelopeId: envelope.id, nonce: envelope.nonce, displayedHash: envelope.envelopeHash }, { ownerSession: t.owner.session });
@@ -80,7 +82,8 @@ test("M06-CK-03 explanations come from telemetry and records; no estimate withou
     assert.equal(idle.idle, true);
     t.hub.bus.transaction(() => t.hub.settings.set("executionGate", { status: "suspended", reason: "test", changedAt: new Date().toISOString(), changedBy: "test" }, "test"));
     const why = t.hub.cockpit.whyBlocked({ projectId: t.project.id });
-    assert.ok(why.items.some((i) => /Poarta/.test(i.what) && /OPEN GATE/.test(i.action)));
+    // M10.2.1 (D14): a suspended gate is reopened in the cockpit (rearm card, Windows Hello), never by a typed OPEN GATE pointer.
+    assert.ok(why.items.some((i) => /Poarta/.test(i.what) && /Windows Hello/.test(i.action) && !/OPEN GATE/.test(i.action)), JSON.stringify(why.items));
     const route = t.hub.cockpit.whyRoute({ worker: "claude" });
     assert.equal(route.role, "reviewer"); assert.match(route.reason, /independent/);
     const est = t.hub.cockpit.estimate({ stage: "coding", provider: "codex" });
@@ -95,7 +98,7 @@ test("M06-CK-04 delta since the last visit counts only what happened after it", 
     assert.equal(first.firstVisit, true);
     await dispatch(t.hub, "owner.visit", { projectId: t.project.id });
     assert.equal(t.hub.cockpit.delta(t.project.id).events, 0);
-    await dispatch(t.hub, "factory.prepare", { projectId: t.project.id, ...demoSpec("bug-demo") });
+    await dispatch(t.hub, "factory.prepare", { projectId: t.project.id, ...demoSpec("bug-demo"), limits: M09_MODELS });
     const after = t.hub.cockpit.delta(t.project.id);
     assert.ok(after.events > 0); assert.equal(after.firstVisit, false); assert.match(after.timezoneNote, /UTC/);
   } finally { await t.cleanup(); }
@@ -104,7 +107,7 @@ test("M06-CK-04 delta since the last visit counts only what happened after it", 
 test("M06-CK-05 layout: only catalog components and references to this project's data; intents change it deterministically", async () => {
   const t = await cockpitHub();
   try {
-    const { mission } = (await dispatch(t.hub, "factory.prepare", { projectId: t.project.id, ...demoSpec("bug-demo") })).result;
+    const { mission } = (await dispatch(t.hub, "factory.prepare", { projectId: t.project.id, ...demoSpec("bug-demo"), limits: M09_MODELS })).result;
     const exists = (kind, id) => (kind === "mission" ? t.hub.missions.get(id)?.projectId === t.project.id : kind === "project" ? id === t.project.id : false);
     const ok = validateLayout({ cards: [{ type: "TestPanel", ref: { kind: "mission", id: mission.id } }, { type: "ProjectSummary" }] }, { projectId: t.project.id, exists });
     assert.equal(ok.cards.length, 2);
@@ -137,7 +140,7 @@ test("M06-CK-06 company map: configured roles are not active workers; executions
 test("M06-CK-07 interruptions: freeze blocks new steps (gate), voice cannot unfreeze, takeover releases only after a confirmed stop", async () => {
   const t = await cockpitHub();
   try {
-    await dispatch(t.hub, "factory.prepare", { projectId: t.project.id, ...demoSpec("bug-demo") });
+    await dispatch(t.hub, "factory.prepare", { projectId: t.project.id, ...demoSpec("bug-demo"), limits: M09_MODELS });
     const frozen = (await dispatch(t.hub, "owner.interrupt", { kind: "freeze", projectId: t.project.id }, { channel: "voice" })).result;
     assert.match(frozen.summary, /înghețat/);
     const gate = t.hub.gate.evaluate({ provider: "codex", projectId: t.project.id, access: "workspace-write" });
@@ -202,7 +205,7 @@ test("M06-CK-10 Shadow Mode needs an authorization; its verdict is stored apart 
       t.hub.grants.create({ provider: "codex", projectId: project.id, access: "workspace-write", maxAttempts: 3, maxDurationS: 900, ttlMinutes: 60 }, "test");
       t.hub.grants.create({ provider: "claude", projectId: project.id, access: "read-only", maxAttempts: 1, maxDurationS: 900, ttlMinutes: 60 }, "test");
     });
-    const { mission } = (await dispatch(t.hub, "factory.prepare", { projectId: project.id, ...demoSpec("bug-demo") })).result;
+    const { mission } = (await dispatch(t.hub, "factory.prepare", { projectId: project.id, ...demoSpec("bug-demo"), limits: M09_MODELS })).result;
     t.queue("codex", "factory-write:bug-fix"); t.queue("claude", "review:pass");
     const scope = t.hub.factory.view(mission.id).scope;
     const requested = await dispatch(t.hub, "factory.start", scope);
@@ -211,10 +214,11 @@ test("M06-CK-10 Shadow Mode needs an authorization; its verdict is stored apart 
     await waitFor(() => SETTLED.includes(t.hub.factory.view(mission.id).factory.stage), 90000, 100);
     const stageBefore = t.hub.factory.view(mission.id).factory.stage;
     // The reviewer's only attempt is spent: shadow is refused without a new authorization.
-    await assert.rejects(dispatch(t.hub, "shadow.review", { missionId: mission.id, provider: "claude" }), /grant/);
+    // M09: a shadow review names its Claude model explicitly (the account default is never used).
+    await assert.rejects(dispatch(t.hub, "shadow.review", { missionId: mission.id, provider: "claude", model: "sonnet" }), /grant/);
     t.hub.bus.transaction(() => t.hub.grants.create({ provider: "claude", projectId: project.id, access: "read-only", maxAttempts: 1, maxDurationS: 900, ttlMinutes: 30 }, "test"));
     t.queue("claude", "review:pass");
-    const shadow = (await dispatch(t.hub, "shadow.review", { missionId: mission.id, provider: "claude" })).result;
+    const shadow = (await dispatch(t.hub, "shadow.review", { missionId: mission.id, provider: "claude", model: "sonnet" })).result;
     assert.equal(shadow.status, "RUNNING");
     const done = await waitFor(() => { const s = t.hub.advisor.shadowsOf(mission.id)[0]; return s && s.status !== "RUNNING" ? s : null; }, 30000, 100);
     assert.equal(done.status, "DONE", JSON.stringify(done.metrics));

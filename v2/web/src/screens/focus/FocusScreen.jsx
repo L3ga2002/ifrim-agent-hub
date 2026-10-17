@@ -9,7 +9,7 @@ import { Core3D } from "../../components/core/Core3D.jsx";
 import { deriveCoreState, CORE_VISUALS } from "../../lib/coreState.js";
 import { fitLayout, DEFAULT_LAYOUT, errorStage } from "../../lib/uiLogic.js";
 import { NewConversationDialog } from "../Conversations.jsx";
-import { Composer } from "./Composer.jsx";
+import { Composer, GateRefusal, useVoiceFirst } from "./Composer.jsx";
 import { Inspector } from "./Inspector.jsx";
 
 function useLiveText(conversationId) {
@@ -113,6 +113,7 @@ function Thread({ data, reload, layoutControls, go }) {
   const { conversation, project, runs, handoffs, sessions } = data;
   const live = useLiveText(conversation.id);
   const hub = useHub((s) => s.hub);
+  const voiceFirst = useVoiceFirst();
   const [q, setQ] = useState("");
   const [showSearch, setShowSearch] = useState(false);
   const [confirmRetry, setConfirmRetry] = useState(null);
@@ -184,7 +185,8 @@ function Thread({ data, reload, layoutControls, go }) {
           <div className="row" style={{ marginTop: 8 }}><button className="btn sm primary" disabled={retry.pending} onClick={retry.run}>Confirmă reîncercarea</button><button className="btn sm ghost" onClick={() => setConfirmRetry(null)}>Renunță</button></div>
         </Notice>
       )}
-      {retryRefusal && <Notice tone="warn" title={hub?.mode === "BUILD_SAFE" ? "BUILD_SAFE: execuția necesită autorizare" : "Poarta a refuzat reîncercarea"}><Checks checks={retryRefusal} /></Notice>}
+      {/* M10.2 (U15): a refusal made only of what a plan arranges itself says „pregătește un plan”, not raw checks. */}
+      {retryRefusal && <GateRefusal checks={retryRefusal} project={project} voiceFirst={voiceFirst} title={hub?.mode === "BUILD_SAFE" ? "BUILD_SAFE: execuția necesită autorizare" : "Poarta a refuzat reîncercarea"} />}
       <ErrorNotice error={retry.error} />
       {project?.executionAllowed === false && <Notice tone="info">Proiect doar pentru context: execuția V2 este activată numai pentru proiectele aprobate.</Notice>}
       <Composer conversation={conversation} project={project} handoffReady={openHandoff?.status === "ready"} onSent={reload} go={go} />

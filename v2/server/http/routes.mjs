@@ -4,12 +4,14 @@ import path from "node:path";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { HubError } from "../core/errors.mjs";
+import { OWNER_DECIDED } from "../policy/approvals.mjs";
 import { validate } from "../core/validate.mjs";
 import { redactDeep, redactText } from "../security/redact.mjs";
 import { evaluateRoute, scanEnvironment, ATTESTATION_TEXT, BILLING_POLICY } from "../policy/billing.mjs";
 import { TASK_STATES } from "../runtime/state-machine.mjs";
 import { describeLifecycles } from "../runtime/lifecycles.mjs";
 import { inspectionFromState } from "../policy/gate.mjs";
+import { billingInputs, evidenceSummary, shortIdentity } from "../policy/billing-evidence.mjs";
 import { resolveRunPlan } from "../policy/run-plan.mjs";
 import { evaluateIsolation, evaluateHostIsolation, CODEX_ACL_CONSENT_TEXT, CODEX_PROFILE_BY_ACCESS, R2_ACCEPT_TEXT, R2_MAX_ACCEPT_DAYS } from "../policy/isolation.mjs";
 import { LEGA_CONSENT_TEXT, LEGA_CONSENT_VERSION, LEGA_VOICES, LEGA_COST_PER_MINUTE_USD, LEGA_DEFAULTS } from "../policy/lega-policy.mjs";
@@ -24,6 +26,11 @@ import { planImport, readLegacyTable } from "../storage/v1-import.mjs";
 import { gitState } from "../tools/git.mjs";
 import { HUB_VERSION, API_CONTRACT } from "../config.mjs";
 import { registerOwnerRoutes } from "../owner/owner-routes.mjs";
+import { registerIntelRoutes } from "../intel/intel-routes.mjs";
+import { registerMediaRoutes } from "../media/media-routes.mjs";
+import { registerOpsRoutes } from "../ops/ops-routes.mjs";
+import { registerDeliveryRoutes } from "../delivery/delivery-routes.mjs";
+import { registerProbeRoutes } from "../owner/probe-routes.mjs";
 import { COMMAND_CHANNELS, AGENT_COMMANDS, decodeDelegation, checkDelegation } from "../runtime/commands.mjs";
 
 /** The channel a request declares: a local script ("cli"), a delegated agent ("agent", M07) or the owner's UI (default). */
@@ -67,7 +74,15 @@ export function registerRoutes(router, hub, { token }) {
   }
   const cmd = (type, map = ({ body }) => body, options) => (ctx) => dispatch(ctx.req, type, map(ctx), options);
   // M06: owner session, cockpit, envelopes, interruptions, voice profile, layout (v2/server/owner/owner-routes.mjs).
-  registerOwnerRoutes(router, hub);
+  const owner = registerOwnerRoutes(router, hub);
+  registerIntelRoutes(router, hub);
+  // M09 Content Studio (media + content routes; streaming media files and uploads).
+  registerMediaRoutes(router, hub);
+  // M10 Desktop Operator, operation plans, Studio project import / folders / capture scope / local export.
+  registerOpsRoutes(router, hub);
+  if (hub.deliveries) registerDeliveryRoutes(router, hub);
+  // M10.2 probe counters (GET, read-only) and the owner.nav screen telemetry (v2/server/owner/probe-routes.mjs).
+  registerProbeRoutes(router, hub);
 
   // ---------- session, health, state ----------
   get("/api/health", () => ({ ok: true, version: HUB_VERSION, apiContract: API_CONTRACT, canonicalOrigin: config.canonicalOrigin, bootId: hub.bootId, mode: settings.get("mode"), gate: settings.get("executionGate").status, time: clock().toISOString(), simulation: Boolean(config.simulation) }));
@@ -96,6 +111,8 @@ export function registerRoutes(router, hub, { token }) {
     const surfaceList = surfaces.list();
     return {
       version: HUB_VERSION, bootId: hub.bootId, mode: settings.get("mode"), executionGate: settings.get("executionGate"),
+      // M10.2 (read-only): the confirmed plans whose own steps may run live while the Hub stays in its mode ("BUILD_SAFE + 1 plan activ").
+      liveScopes: hub.envelopes?.liveScopes ? hub.envelopes.liveScopes() : [],
       activeRuns: runs.activeRuns(), pendingApprovals: pending.length, approvals: pending.slice(0, 6),
       missions: activeMissions, blockedTasks, leases: leases.list(),
       providers: ["codex", "claude"].map((id) => providerSummary(id)),
@@ -131,11 +148,25 @@ export function registerRoutes(router, hub, { token }) {
 
   function providerSummary(id) {
     const state = providerState.get(id);
-    const inspection = inspectionFromState(state, clock());
-    const route = evaluateRoute(id, inspection, { attestations: settings.get("billingAttestations"), now: clock(), usage: inspection?.usage || null, reservePercent: settings.get("usageReservePercent") });
-    return { id, displayName: providers[id].displayName, installation: state?.installation || null, auth: state?.auth || null, probedAt: state?.probedAt || null,
-      probeOk: state?.ok ?? null, probeError: state?.error || null, models: Array.isArray(state?.models) ? state.models : null, route };
+    const now = clock();
+    const inspection = inspectionFromState(state, now);
+    const inputs = billingInputs(settings, inspection, now);
+    const route = evaluateRoute(id, inspection, inputs);
+    // M09-A2: the evidence behind provider_side_overage_setting (pseudonyms only; the account identity shown is the one the
+    // owner's declaration must name — displayedIdentity — and only while the probe is fresh).
+    const billing = { ...evidenceSummary(id, { evidence: inputs.evidence, identity: inputs.identity, now, currentText: ATTESTATION_TEXT[id] }), declarationText: ATTESTATION_TEXT[id],
+      probeFresh: Boolean(inspection?.auth), ownerRoute: "/api/owner/billing/declare", withdrawRoute: "/api/owner/billing/withdraw" };
+    return { id, displayName: providers[id].displayName, installation: state?.installation || null, auth: publicAuth(state?.auth), probedAt: state?.probedAt || null,
+      probeOk: state?.ok ?? null, probeError: state?.error || null, models: Array.isArray(state?.models) ? state.models : null, route, billing };
   }
+  /** The auth facts the UI shows: plan facts and the short pseudonym (the full 16-hex value travels only in `billing.currentIdentity`). */
+  function publicAuth(auth) {
+    if (!auth) return null;
+    const { accountIdentity, ...facts } = auth;
+    return accountIdentity ? { ...facts, account: `${shortIdentity(accountIdentity)} (${accountIdentity.basis === "email" ? "pseudonim" : "pseudonim slab: plan"})` } : facts;
+  }
+  /** Settings as the UI reads them: the identity salt never leaves the server. */
+  const publicSettings = (all) => { const { billingIdentitySecret, ...rest } = all || {}; return rest; };
 
   // ---------- events: replay + SSE ----------
   get("/api/events", ({ query }) => ({ events: bus.since(Number(query.after) || 0, Math.min(1000, Number(query.limit) || 300)), lastSeq: bus.lastSeq() }));
@@ -204,15 +235,16 @@ export function registerRoutes(router, hub, { token }) {
       if (!command) throw new HubError("not_found", "Command not found");
       if (!AGENT_COMMANDS.has(command.type)) throw new HubError("policy", `Command ${command.type} cannot be executed through agent (not delegated)`);
     }
-    return commands.executeApproved(params.id, channel === "agent" ? "agent" : "user", { delegation });
+    const ownerSession = channel === "agent" ? null : owner.sessionOf(req);
+    return commands.executeApproved(params.id, channel === "agent" ? "agent" : ownerSession ? `owner:${ownerSession.id}` : "user", { delegation, ownerSession });
   });
 
   // ---------- settings, mode, gate, stop ----------
-  get("/api/settings", () => ({ settings: settings.all(), billingPolicy: BILLING_POLICY, attestationText: ATTESTATION_TEXT, environment: scanEnvironment() }));
+  get("/api/settings", () => ({ settings: publicSettings(settings.all()), billingPolicy: BILLING_POLICY, attestationText: ATTESTATION_TEXT, environment: scanEnvironment() }));
   patch("/api/settings", async ({ req, body }) => {
     const allowed = ["voice", "usageReservePercent", "ui", "maxConcurrentAiRuns", "routingPreferences", "lega"];
     for (const key of Object.keys(body || {})) if (!allowed.includes(key)) throw new HubError("policy", `${key} cannot be changed here`);
-    return { settings: await dispatch(req, "settings.update", body) };
+    return { settings: publicSettings(await dispatch(req, "settings.update", body)) };
   });
   post("/api/mode", cmd("mode.set"));
   post("/api/gate", cmd("gate.set"));
@@ -304,8 +336,7 @@ export function registerRoutes(router, hub, { token }) {
   post("/api/factory/:id/stop", cmd("factory.stop", ({ params, body }) => ({ missionId: params.id, reason: body?.reason })));
   post("/api/factory/:id/pause", cmd("factory.pause", ({ params }) => ({ missionId: params.id })));
   post("/api/factory/:id/resume", cmd("factory.resume", ({ params, body }) => ({ missionId: params.id, allowExtraCycle: Boolean(body?.allowExtraCycle), proceedToQa: Boolean(body?.proceedToQa), reviewerModel: String(body?.reviewerModel || "") })));
-  post("/api/factory/:id/accept", cmd("factory.accept", ({ params, body }) => ({ missionId: params.id, note: body?.note || "" })));
-  post("/api/factory/:id/reject", cmd("factory.reject", ({ params, body }) => ({ missionId: params.id, note: body?.note })));
+  // POST /api/factory/:id/reject is an owner-session route (v2/server/owner/owner-routes.mjs, 2.15.1).
   post("/api/factory/:id/findings/:code", cmd("factory.finding", ({ params, body }) => ({ missionId: params.id, code: params.code, status: body?.status, note: body?.note })));
   post("/api/isolation/r2/:projectId/accept", cmd("isolation.r2_accept", ({ params, body }) => ({ projectId: params.projectId, confirmText: body?.confirmText, days: body?.days })));
   post("/api/isolation/r2/:projectId/revoke", cmd("isolation.r2_revoke", ({ params }) => ({ projectId: params.projectId })));
@@ -354,7 +385,10 @@ export function registerRoutes(router, hub, { token }) {
 
   // ---------- approvals & policies ----------
   get("/api/approvals", ({ query }) => ({ approvals: approvals.list(query.status || null) }));
-  post("/api/approvals/:id/decide", cmd("approval.decide", ({ params, body }) => ({ ...body, approvalId: params.id })));
+  post("/api/approvals/:id/decide", ({ req, params, body }) => OWNER_DECIDED.has(approvals.get(params.id)?.actionKind)
+    ? owner.dispatch(req, "approval.owner_decide", { ...body, approvalId: params.id }, { requireOwner: true })
+    : dispatch(req, "approval.decide", { ...body, approvalId: params.id }));
+  post("/api/approvals/:id/owner_decide", ({ req, params, body }) => owner.dispatch(req, "approval.owner_decide", { ...body, approvalId: params.id }, { requireOwner: true }));
   // Executes an approved local action; the command is chosen by the approval's action kind (script or browser check).
   post("/api/approvals/:id/execute", ({ req, params }) => {
     const approval = approvals.get(params.id);
@@ -374,7 +408,12 @@ export function registerRoutes(router, hub, { token }) {
   post("/api/providers/:id/inspect", async ({ req, params }) => { await dispatch(req, "provider.inspect", { provider: params.id }); return providerSummary(params.id); });
   // model/list is inference-free and the run plan needs it (explicit model/effort): asked for unless the caller opts out.
   post("/api/providers/:id/probe", async ({ req, params, body }) => { await dispatch(req, "provider.probe", { provider: params.id, withModels: body?.withModels !== false }); return providerSummary(params.id); });
-  post("/api/billing/attest", cmd("billing.attest"));
+  // M09-A2: the UI no longer records the billing declaration on the legacy trust level: it is made in the owner session, bound
+  // to the verified account (billing.declare). The old route answers with a policy error that names the owner route.
+  post("/api/billing/attest", () => {
+    throw new HubError("policy", "Declarația de facturare se face acum în sesiunea ta de proprietar (Windows Hello), legată de contul verificat: Integrări → „Declară din nou” (POST /api/owner/billing/declare)",
+      { data: { ownerRoute: "/api/owner/billing/declare" } });
+  });
   // Workspace isolation (M02 §05): what each provider's model tools are denied, and the Codex ACL consent state.
   get("/api/isolation", () => {
     const codex = hub.codexIsolation();
@@ -406,14 +445,20 @@ export function registerRoutes(router, hub, { token }) {
   post("/api/projects/:id/environment", cmd("project.environment.set", ({ params, body }) => ({ projectId: params.id, environment: body?.environment })));
   // ---------- Lega (voice assistant) ----------
   // Status + gate preview for the Lega panel (the Codex config is re-read locally, key names only).
-  get("/api/lega", () => {
+  // M10: with the owner session (cookie, resolved without touching its idle timer) the preview shows the one-click path (authority
+  // derived at start); without it, the old path. Nothing is written by a preview.
+  get("/api/lega", ({ req }) => {
     hub.refreshCodexConfig();
     const consent = settings.get("legaConsent") || {};
+    const ownerSession = owner.sessionOf(req, false);
+    const preview = hub.lega.preview({ ownerSessionId: ownerSession?.id || null });
     return { session: hub.lega.state(), consent: { recorded: consent.version === LEGA_CONSENT_VERSION, confirmedAt: consent.confirmedAt || null, version: LEGA_CONSENT_VERSION },
       consentText: LEGA_CONSENT_TEXT, settings: { ...LEGA_DEFAULTS, ...(settings.get("lega") || {}) }, voices: LEGA_VOICES, costPerMinuteUsd: LEGA_COST_PER_MINUTE_USD,
-      preview: gate.evaluateVoice({ voiceActive: hub.lega.active() }) };
+      preview, owner: { session: Boolean(ownerSession), policyActive: preview.policyActive } };
   });
-  post("/api/lega/sessions", cmd("lega.session.start", ({ body }) => body, { created: true }), { maxBytes: 80 * 1024 });
+  // The start goes through the owner dispatcher: with the cookie → owner channel (derived authority); without → ui (old path);
+  // a declared agent/cli channel is refused.
+  post("/api/lega/sessions", ({ req, body }) => owner.dispatch(req, "lega.session.start", body, { created: true }), { maxBytes: 80 * 1024 });
   post("/api/lega/sessions/:id/connected", cmd("lega.session.connected", ({ params }) => ({ sessionId: params.id })));
   post("/api/lega/sessions/:id/stop", cmd("lega.session.stop", ({ params, body }) => ({ sessionId: params.id, reason: body?.reason || "user" })));
   post("/api/lega/consent", cmd("lega.consent"));
@@ -510,7 +555,7 @@ export function registerRoutes(router, hub, { token }) {
   post("/api/sales/orgs/:id/evidence", cmd("sales.evidence.add", ({ params, body }) => ({ ...body, subjectType: "org", subjectId: params.id })));
   post("/api/sales/orgs/:id/audit", cmd("sales.org.audit", ({ params, body }) => ({ orgId: params.id, sourceKind: body?.sourceKind || "fixture" })));
   post("/api/sales/orgs/:id/qualify", cmd("sales.org.qualify", ({ params, body }) => ({ orgId: params.id, filters: body?.filters || {} })));
-  post("/api/sales/orgs/:id/qualification/override", cmd("sales.qualification.override", ({ params, body }) => ({ ...body, orgId: params.id })));
+  post("/api/sales/orgs/:id/qualification/override", ({ req, params, body }) => owner.dispatch(req, "sales.qualification.override", { ...body, orgId: params.id }, { requireOwner: true }));
   post("/api/sales/orgs/:id/suppress", cmd("sales.org.suppress", ({ params, body }) => ({ orgId: params.id, reason: body?.reason })));
   post("/api/sales/orgs/:id/suppression/lift", cmd("sales.suppression.lift", ({ params, body }) => ({ orgId: params.id, reason: body?.reason })));
   post("/api/sales/orgs/:id/merge", cmd("sales.org.merge", ({ params, body }) => ({ ...body, orgId: params.id })));
@@ -521,9 +566,14 @@ export function registerRoutes(router, hub, { token }) {
   get("/api/sales/opportunities", ({ query }) => sales.listOpportunities({ status: query.status || "", offset: query.offset, limit: query.limit }));
   post("/api/sales/opportunities", cmd("sales.opportunity.create", ({ body }) => body, { created: true }));
   get("/api/sales/opportunities/:id", ({ params }) => sales.getOpportunity(params.id));
+  // M12: the opportunity's preparations and „Dosarul ofertei” revisions (read only: the dossier is written only by the confirmed plan).
+  get("/api/sales/opportunities/:id/dossiers", ({ params }) => { sales.getOpportunity(params.id); return hub.salesPreparations.forOpportunity(params.id); });
+  // M12 final review (F1/F3/F10): the continuation of a stopped preparation — ONE new card (sales.preparation.continue → continueCard), never
+  // a start: the owner confirms it like any plan card. Owner dispatcher: the owner session is required (401 needSession), agent / cli refused.
+  post("/api/sales/preparations/:id/continue", ({ req, params }) => owner.dispatch(req, "sales.preparation.continue", { preparationId: params.id }, { requireOwner: true }));
   post("/api/sales/opportunities/:id/transition", cmd("sales.opportunity.transition", ({ params, body }) => ({ ...body, opportunityId: params.id })));
   post("/api/sales/opportunities/:id/proposals", cmd("sales.proposal.create", ({ params, body }) => ({ opportunityId: params.id, ...(body?.edits ? { edits: body.edits } : {}) }), { created: true }));
-  post("/api/sales/proposals/:id/approve", cmd("sales.proposal.approve", ({ params, body }) => ({ proposalId: params.id, displayedSha: body?.displayedSha || body?.contentSha || body?.sha })));
+  post("/api/sales/proposals/:id/approve", ({ req, params, body }) => owner.dispatch(req, "sales.proposal.approve", { proposalId: params.id, displayedSha: body?.displayedSha }, { requireOwner: true }));
   post("/api/sales/opportunities/:id/drafts", cmd("sales.draft.create", ({ params, body }) => ({ ...body, opportunityId: params.id }), { created: true }));
   post("/api/sales/drafts/:id/revise", cmd("sales.draft.revise", ({ params, body }) => ({ ...body, draftId: params.id })));
   post("/api/sales/drafts/:id/approve-content", cmd("sales.draft.approve_content", ({ params, body }) => ({ draftId: params.id, displayedSha: body?.displayedSha || body?.contentSha || body?.sha })));

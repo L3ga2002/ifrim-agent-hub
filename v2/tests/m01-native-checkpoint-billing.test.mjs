@@ -268,7 +268,7 @@ test("M01-CK1 checkpoint.create stores hub state, native references and the late
     const mission = (await dispatch(hub, "mission.create", { projectId: project.id, kind: "development", title: "Checkpoint mission", objective: "Exercise the checkpoint capture" })).result;
     const conversationId = mission.conversationId;
     await dispatch(hub, "conversation.message", { conversationId, content: "Please review the repository" });
-    const claudeRun = (await dispatch(hub, "run.start", { conversationId, provider: "claude" })).result.run;
+    const claudeRun = (await dispatch(hub, "run.start", { conversationId, provider: "claude", model: "sonnet" })).result.run;
     assert.equal((await finished(hub, claudeRun.id)).status, "completed");
     const claudeSession = hub.conversations.providerSessions(conversationId).find((s) => s.provider === "claude").nativeSessionId;
     const call = claudeTurns(t)[0];
@@ -434,7 +434,7 @@ test("M01-HO1 handoff Codex → Claude → Codex records execution surfaces, nat
     assert.ok(pkg.untracked_manifest.find((u) => u.path === "notes.txt")?.sha256, "untracked work travels in the manifest");
     assert.equal(claudeTurns(t).length, 0, "beginning a handoff never starts the target model");
 
-    const claudeRun = (await dispatch(hub, "run.start", { conversationId: conv.id, provider: "claude" })).result.run;
+    const claudeRun = (await dispatch(hub, "run.start", { conversationId: conv.id, provider: "claude", model: "sonnet" })).result.run;
     assert.equal((await finished(hub, claudeRun.id)).status, "completed");
     assert.equal((await waitFor(() => { const x = hub.handoffs.get(h.id); return x.status === "completed" ? x : null; })).step, "continued");
     assert.equal(hub.db.prepare("SELECT surface_id FROM agent_runs WHERE id = ?").get(claudeRun.id).surface_id, CLAUDE_SURFACE);
@@ -591,7 +591,8 @@ test("M01-NI1 BUILD_SAFE: run.start through the command bus fails at the gate an
     assert.equal(hub.settings.get("mode"), "BUILD_SAFE");
     const conv = await conversationWithMessage(hub, hub.projects.hub().id, "Please change the code");
     for (const provider of ["codex", "claude"]) {
-      const error = await failureOf(dispatch(hub, "run.start", { conversationId: conv.id, provider }));
+      // M09: Claude needs an explicit model (an empty one would add a run_plan refusal of its own).
+      const error = await failureOf(dispatch(hub, "run.start", { conversationId: conv.id, provider, ...(provider === "claude" ? { model: "sonnet" } : {}) }));
       assert.equal(error?.category, "gate", provider);
       const mode = error.details.checks.find((c) => c.id === "mode");
       assert.equal(mode.ok, false);
@@ -621,7 +622,8 @@ test("M01-NI2 BUILD_SAFE blocks inference even when every other gate check passe
     await dispatch(hub, "mode.set", { mode: "BUILD_SAFE" });
     const conv = await conversationWithMessage(hub, project.id, "Please change the code");
     for (const provider of ["codex", "claude"]) {
-      const error = await failureOf(dispatch(hub, "run.start", { conversationId: conv.id, provider }));
+      // M09: Claude needs an explicit model (an empty one would add a run_plan refusal of its own).
+      const error = await failureOf(dispatch(hub, "run.start", { conversationId: conv.id, provider, ...(provider === "claude" ? { model: "sonnet" } : {}) }));
       assert.equal(error?.category, "gate", provider);
       assert.deepEqual(error.details.checks.filter((c) => !c.ok).map((c) => c.id), ["mode"], `${provider}: only BUILD_SAFE blocks`);
     }
@@ -671,7 +673,15 @@ test("M01-NG1 static scan: v2/server never spawns git with commit/push/tag/reset
   assert.deepEqual(gitSpawners, ["tools/git.mjs"], "only tools/git.mjs names the git executable");
   // M07: the Claude adapter spawns what its launcher resolved (spec.executable): the Claude binary on Windows, or wsl.exe for
   // claude@wsl-runner. Both launchers are pinned below, so the set still means "provider binaries or node".
-  assert.deepEqual([...supervisorExecutables].sort(), ["binary.executable", "process.execPath", "spec.executable"], "supervised processes are provider binaries or node");
+  // M09: the media tools (ffmpeg/ffprobe, launcher.executable) and the media transcription (whisper-cli, launch.executable) are
+  // pinned below too: production resolves only those named binaries; test mode uses the fixture launchers from the config.
+  assert.deepEqual([...supervisorExecutables].sort(), ["binary.executable", "launch.executable", "launcher.executable", "process.execPath", "spec.executable"], "supervised processes are provider binaries, pinned media tools or node");
+  const mediaToolsSrc = fs.readFileSync(path.join(SERVER_DIR, "media", "tools.mjs"), "utf8");
+  assert.match(mediaToolsSrc, /MEDIA_TOOL_NAMES = Object\.freeze\(\["ffmpeg", "ffprobe"\]\)/, "media tools are only ffmpeg and ffprobe");
+  assert.match(mediaToolsSrc, /return file \? \{ executable: file, prefixArgs: \[\], env: \{\}, identityFile: file \} : null;/, "production spawns the resolved (pinned) tool binary itself");
+  const transcribeSrc = fs.readFileSync(path.join(SERVER_DIR, "media", "transcribe.mjs"), "utf8");
+  assert.match(transcribeSrc, /path\.basename\(exe\)\.toLowerCase\(\) !== VOICE_COMPONENTS\.whisper\.cli\.toLowerCase\(\)/, "media transcription spawns only whisper-cli");
+  assert.match(transcribeSrc, /isInside\(enginePaths\.release, exe\)/, "from the integrity-checked whisper.cpp folder");
   const claudeSrc = fs.readFileSync(path.join(SERVER_DIR, "providers", "claude.mjs"), "utf8");
   assert.match(claudeSrc, /spawn: \(\{ binary, args, cwd \}\) => \(\{ executable: binary\.executable,/, "the Windows launcher returns the resolved Claude binary");
   const claudeWslSrc = fs.readFileSync(path.join(SERVER_DIR, "providers", "claude-wsl.mjs"), "utf8");

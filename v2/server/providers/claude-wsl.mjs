@@ -1,16 +1,16 @@
 import { PRE_INFERENCE_CATEGORIES } from "../core/errors.mjs";
-import { createClaudeAdapter, inspectWorkspaceStartup, CLAUDE_REFUSED_MODELS, refusedModelReason } from "./claude.mjs";
+import { createClaudeAdapter, inspectWorkspaceStartup, CLAUDE_REFUSED_MODELS, CLAUDE_MODEL_ALLOWLIST, refusedModelReason } from "./claude.mjs";
 import { claudeLinuxDeniedReads } from "../policy/isolation.mjs";
 import { resolveWsl, wslArgs } from "../environments/wsl.mjs";
 import { BWRAP, reviewerArgs, CLAUDE_IN_SANDBOX } from "../environments/sandbox-profiles.mjs";
 import { reviewerConfigFacts } from "../environments/wsl-runner.mjs";
 
 /**
- * A model the reviewer in the environment may be asked for explicitly: an alias or a dated id of Sonnet, Opus or Haiku (the
- * same allowlist the factory applies to the owner's choice). An empty model leaves the choice to the CLI, whose model is then
- * checked at init exactly as on Windows (Fable / [1m] refused before the model).
+ * A model the reviewer in the environment may be asked for: an alias or a dated id of Sonnet, Opus or Haiku — the shared
+ * allowlist (providers/claude.mjs) the factory, the envelopes and manual runs apply. M09: an empty model is refused (it would
+ * leave the choice to the CLI's account default); the model reported at init is compared with the bound one by the run manager.
  */
-export const REVIEWER_MODEL_ALLOWLIST = /^(?:sonnet|opus|haiku|claude-(?:sonnet|opus|haiku)-[0-9][0-9a-z.-]{0,40})$/i;
+export const REVIEWER_MODEL_ALLOWLIST = CLAUDE_MODEL_ALLOWLIST;
 
 /**
  * Claude Code launcher for the wsl-runner environment (M07): the same argv as the Windows reviewer (claudeTurnArgs), started
@@ -81,7 +81,8 @@ export function createWslClaudeAdapter({ environment, config, supervisor }) {
       try {
         // 1. Only the read-only reviewer runs here; a model outside the allowlist never reaches the CLI.
         if (access !== "read-only") return refuse("policy", `În ${env.id} Claude rulează doar ca reviewer, doar în citire (cerut: ${access}); oprit înainte de model`);
-        if (model && (CLAUDE_REFUSED_MODELS.test(model) || !REVIEWER_MODEL_ALLOWLIST.test(model))) {
+        if (!String(model || "").trim()) return refuse("policy", `Reviewer-ul din ${env.id} pornește doar cu un model explicit (sonnet, opus, haiku sau un id claude-…); modelul implicit al contului nu se folosește; oprit înainte de model`);
+        if (CLAUDE_REFUSED_MODELS.test(model) || !REVIEWER_MODEL_ALLOWLIST.test(model)) {
           return refuse("billing", `Modelul ${String(model).slice(0, 60)} nu e permis reviewer-ului din ${env.id}${CLAUDE_REFUSED_MODELS.test(model) ? `: ${refusedModelReason(model)}` : " (permise: sonnet, opus, haiku sau un id claude-sonnet/opus/haiku-…)"}`);
         }
         const startup = inspectWorkspaceStartup(projectRoot);
@@ -111,6 +112,9 @@ export function createWslClaudeAdapter({ environment, config, supervisor }) {
         if (inner.pid) { try { onEvent({ type: "pid", pid: inner.pid }); } catch { /* the record never breaks a run */ } }
         const result = await inner.done;
         innerDone = true;
+        // 2.12.2 (review R3-F5): the reviewer's turn has settled — the run manager ends the turn's deadline here (the reap and the session
+        // cleanup below are not the turn and are never cut as a timeout).
+        try { onEvent({ type: "turn_settled" }); } catch { /* the deadline then falls back to the supervisor record */ }
         // 5. Nothing of the run may outlive it: the client is gone (supervisor), then every process of this workspace.
         report.reap = await environment.reap(wsId, { marker: wsId, all: environment.inUse().length <= 1 }).catch((error) => ({ ok: false, error: error.message }));
         // 6. The session's files (transcript, per-session state) hold excerpts of the reviewed code: deleted from the config dir.

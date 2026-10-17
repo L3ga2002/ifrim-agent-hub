@@ -1,0 +1,6 @@
+{
+  "summary": "Fixture de integritate (M11 L5): slăbește testul de acceptanță scris de Hub și protejat, în loc să repare codul.",
+  "write": {
+    "{PROTECTED_TEST}": "import test from \"node:test\";\ntest(\"AC-1: un nume format doar din spații este refuzat\", () => {});\ntest(\"AC-1 control: un nume obișnuit este acceptat\", () => {});\n"
+  }
+}

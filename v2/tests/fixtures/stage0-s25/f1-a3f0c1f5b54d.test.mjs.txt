@@ -1,0 +1,331 @@
+// Test de acceptanță scris de Ifrim Agent Hub din criteriile proprietarului (misiunea mis_rehearsal_s25, spec v1 2816c40b136b).
+// Protejat după review: se repară implementarea, nu testul. Nu îl modifica manual.
+import test from "node:test";
+import assert from "node:assert/strict";
+import path from "node:path";
+import os from "node:os";
+import fs from "node:fs";
+import * as sqlite from "node:sqlite";
+import http from "node:http";
+const load = async (rel) => { try { return await import(new URL(rel, import.meta.url)); } catch (e) { assert.fail(`HUB_LOAD ${rel}: ${e?.code || e?.name || "eroare"}`); } };
+const need = (m, name) => { if (typeof m[name] === "function") return m[name]; assert.fail(`HUB_SETUP export ${name}: ${name in m ? typeof m[name] : "lipsește"}`); };
+// Antet Hub v2: resursele întoarse de setup() se înregistrează pe cazul curent și sunt închise de Hub la sfârșitul lui, la succes și la eșec (raport HUB_CLEANUP în TAP).
+const hubTimer = setTimeout, hubClear = clearTimeout;
+const registry = { current: null, file: [] }; const hubAdd = (label, value) => { if (value && (typeof value === "object" || typeof value === "function") && typeof value.close === "function") (registry.current?.items || registry.file).push({ label: String(label).replace(/\s+/g, " ").slice(0, 60), target: value }); return value; };
+const setup = async (label, fn) => { let value; try { value = await fn(); } catch (e) { assert.fail(`HUB_SETUP ${label}: ${e?.code || e?.name || "eroare"}`); } return hubAdd(label, value); };
+const hubClose = ({ target }) => new Promise((resolve) => { let settled = false; const finish = (ok, status) => { if (!settled) { settled = true; hubClear(timer); resolve({ ok, status }); } }; const timer = hubTimer(() => { try { target.closeAllConnections?.(); } catch {} try { target.unref?.(); } catch {} finish(false, "blocat"); }, 5000); timer.unref(); (async () => { try { if (target.listening === false || target.isOpen === false) { finish(true, "deja închis"); return; } if (typeof target.listening === "boolean") await new Promise((done, fail) => target.close((e) => e ? fail(e) : done())); else await target.close(); finish(true, "închis"); } catch (e) { if (e?.code === "ERR_SERVER_NOT_RUNNING" || e?.code === "ERR_INVALID_STATE") finish(true, "deja închis"); else finish(false, `eroare ${String(e?.code || e?.name || "necunoscută").replace(/\s+/g, " ").slice(0, 60)}`); } })(); });
+const hubCleanup = async (t, items) => { const details = [], bad = []; for (const item of [...items].reverse()) { const { ok, status } = await hubClose(item), detail = `${item.label}: ${status}`; details.push(detail); if (!ok) bad.push(detail); } t.diagnostic(`HUB_CLEANUP ${bad.length ? "fail" : "ok"} ${items.length}${details.length ? ` ${details.join("; ")}` : ""}`); if (bad.length) throw new Error(`HUB_CLEANUP ${bad.join("; ")}`); };
+test.beforeEach(() => { registry.current = { items: [] }; });
+test.afterEach(async (t) => { const items = registry.current?.items || []; registry.current = null; await hubCleanup(t, items); });
+test.after(async (t) => { await hubCleanup(t, registry.file.splice(0)); });
+// json-exposure v1 sha256 984e7cf2876d: checks only the given response; not a general personal-data certification.
+function exposes(text, config) {
+  const fail = (why) => assert.fail(`HUB_SETUP exposes: ${why}`);
+  if (typeof text !== "string") fail("corpul răspunsului nu este text");
+  const { keys, values } = config || {};
+  if (!Array.isArray(keys) || !Array.isArray(values)) fail("cheile și valorile trebuie să fie liste");
+  if (!keys.length || !values.length) fail("listele de chei și valori nu pot fi goale");
+  if ([...keys].some((k) => typeof k !== "string" || !k.trim())) fail("o cheie nu este text nevid");
+  if ([...values].some((v) => typeof v !== "string" || v.trim().length < 3)) fail("o valoare nu este text cu minimum trei caractere");
+  let data; try { data = JSON.parse(text); } catch { fail("corpul răspunsului nu este JSON valid"); }
+  const found = [], add = (p, kind, i) => { if (found.length < 50) found.push(`${p}: ${kind}${i === undefined ? "" : `, valoarea #${i + 1}`}`); };
+  const contains = (s, v) => s.includes(v) || s.includes(v.trim());
+  const matches = (s, p, kind) => values.forEach((v, i) => { if (contains(s, v)) add(p, kind, i); });
+  const walk = (v, p) => { if (typeof v === "string" || typeof v === "number") matches(String(v), p, "valoare"); else if (v && typeof v === "object") { for (const [i, [k, child]] of Object.entries(v).entries()) { const segment = Array.isArray(v) ? `[${i}]` : values.some((s) => contains(k, s)) || k.length > 40 ? "[*]" : `[${JSON.stringify(k)}]`; const next = `${p.length > 120 ? "$.." : p}${segment}`; if (keys.includes(k)) add(next, "cheie"); matches(k, next, "cheie-valoare"); walk(child, next); } } };
+  try { walk(data, "$"); } catch { fail("răspunsul nu poate fi parcurs în siguranță"); }
+  return found;
+}
+// ---- corpul testului ----
+function httpGet(port, pathname) {
+  return new Promise((resolve, reject) => {
+    const req = http.request(
+      { host: "127.0.0.1", port, path: pathname, method: "GET" },
+      (res) => {
+        let data = "";
+        res.on("data", (chunk) => { data += chunk; });
+        res.on("end", () => resolve({ status: res.statusCode, body: data }));
+      }
+    );
+    req.on("error", reject);
+    req.end();
+  });
+}
+
+function httpPost(port, pathname, payload) {
+  const body = JSON.stringify(payload);
+  return new Promise((resolve, reject) => {
+    const req = http.request(
+      {
+        host: "127.0.0.1", port, path: pathname, method: "POST",
+        headers: { "Content-Type": "application/json", "Content-Length": Buffer.byteLength(body) },
+      },
+      (res) => {
+        let data = "";
+        res.on("data", (chunk) => { data += chunk; });
+        res.on("end", () => resolve({ status: res.statusCode, body: data }));
+      }
+    );
+    req.on("error", reject);
+    req.write(body);
+    req.end();
+  });
+}
+
+const TEST_DAY = "2026-10-13";
+const FIXED_NOW = () => new Date(2026, 9, 13, 8, 0, 0);
+const PHONE1 = "0721 001 002";
+const PHONE2 = "0731 003 004";
+
+async function dbSnapshot(dbPath) {
+  const db = new sqlite.DatabaseSync(dbPath);
+  const rows = db.prepare("SELECT * FROM bookings ORDER BY id").all();
+  db.close();
+  return rows;
+}
+
+async function buildState(startServerFn) {
+  const tmpDir = await new Promise((ok, fail) =>
+    fs.mkdtemp(path.join(os.tmpdir(), "s25hub-"), (e, d) => (e ? fail(e) : ok(d)))
+  );
+  const dbPath = path.join(tmpDir, "bk.db");
+  const srv1 = await setup("sesiune-1", () => startServerFn({ port: 0, dbPath, now: FIXED_NOW }));
+
+  const sr1 = await httpGet(srv1.port, "/api/slots?date=" + TEST_DAY + "&service=spalare-exterior");
+  assert.equal(sr1.status, 200, "buildState: API sloturilor trebuie sa raspunda 200");
+  const slotList1 = JSON.parse(sr1.body).slots;
+  const s0900 = slotList1.find((s) => s.start === TEST_DAY + "T09:00");
+  assert.ok(s0900 && s0900.status === "free", "buildState: slotul T09:00 trebuie sa fie liber conform contractului aplicatiei");
+
+  const p1 = await httpPost(srv1.port, "/api/bookings", {
+    serviceId: "spalare-exterior",
+    start: TEST_DAY + "T09:00",
+    name: "Test Alpha",
+    vehicle: "Dacia Test",
+    phone: PHONE1,
+  });
+  assert.equal(p1.status, 201, "buildState: programarea 1 trebuie acceptata");
+  const id1 = JSON.parse(p1.body).booking.id;
+  assert.ok(typeof id1 === "string" && id1.length > 0, "buildState: id-ul programarii 1 trebuie sa fie nevid");
+
+  const sr2 = await httpGet(srv1.port, "/api/slots?date=" + TEST_DAY + "&service=spalare-exterior");
+  const slotList2 = JSON.parse(sr2.body).slots;
+  const s0930 = slotList2.find((s) => s.start === TEST_DAY + "T09:30");
+  assert.ok(s0930 && s0930.status === "free", "buildState: slotul T09:30 trebuie sa fie liber conform contractului aplicatiei");
+
+  await srv1.close();
+  const srv2 = await setup("sesiune-2", () => startServerFn({ port: 0, dbPath, now: FIXED_NOW }));
+  const p2 = await httpPost(srv2.port, "/api/bookings", {
+    serviceId: "spalare-exterior",
+    start: TEST_DAY + "T09:30",
+    name: "Test Beta",
+    vehicle: "Dacia Test",
+    phone: PHONE2,
+  });
+  assert.equal(p2.status, 201, "buildState: programarea 2 trebuie acceptata");
+
+  const readDb = new sqlite.DatabaseSync(dbPath);
+  const rows = readDb.prepare("SELECT id, day, phone FROM bookings WHERE day = ?").all(TEST_DAY);
+  readDb.close();
+
+  const rowById1 = rows.find((r) => r.id === id1);
+  assert.ok(rowById1, "buildState: programarea 1 trebuie sa existe cu id-ul original dupa repornire");
+  assert.equal(rowById1.phone, PHONE1, "buildState: programarea 1 trebuie sa aiba telefonul corect dupa repornire");
+
+  return { srv2, rows, id1 };
+}
+
+test("AC-1: lista publica a zilei nu contine campul phone sau vreo valoare a lui", async () => {
+  const m = await load("../../src/server-app.js");
+  const startServer = need(m, "startServer");
+  const { srv2, rows, id1 } = await buildState(startServer);
+
+  assert.ok(rows.length >= 5, "Ziua testata trebuie sa aiba cel putin 5 inregistrari");
+  for (const row of rows) {
+    assert.equal(row.day, TEST_DAY, "Fiecare rand trebuie sa fie din ziua testata");
+    assert.ok(typeof row.id === "string" && row.id.length > 0, "Fiecare rand trebuie sa aiba id nevid");
+  }
+  const rowP1 = rows.find((r) => r.phone === PHONE1);
+  assert.ok(rowP1, "Programarea 1 trebuie salvata cu telefonul corect");
+  assert.equal(rowP1.day, TEST_DAY);
+  assert.equal(rowP1.id, id1, "Programarea 1 trebuie sa aiba id-ul din sesiunea anterioara");
+  const rowP2 = rows.find((r) => r.phone === PHONE2);
+  assert.ok(rowP2, "Programarea 2 trebuie salvata cu telefonul corect");
+  assert.equal(rowP2.day, TEST_DAY);
+
+  for (const row of rows) {
+    if (typeof row.phone === "string" && row.phone.trim().length > 0) {
+      assert.ok(row.phone.trim().length >= 3, "Fiecare telefon nevid din BD trebuie sa aiba cel putin 3 caractere");
+    }
+  }
+
+  const phones = rows
+    .filter((r) => typeof r.phone === "string" && r.phone.trim().length >= 3)
+    .map((r) => r.phone);
+  const ids = rows.map((r) => r.id);
+
+  const res = await httpGet(srv2.port, "/api/bookings?date=" + TEST_DAY);
+  assert.equal(res.status, 200, "Lista publica trebuie sa returneze 200");
+  const parsed = JSON.parse(res.body);
+  assert.ok(Array.isArray(parsed.bookings) && parsed.bookings.length > 0, "Lista publica nu trebuie sa fie goala");
+  assert.equal(parsed.bookings.length, ids.length, "Lista publica trebuie sa aiba exact atatea inregistrari cate exista in ziua testata");
+  const listIds = parsed.bookings.map((b) => b.id);
+  for (const id of ids) {
+    assert.ok(listIds.includes(id), "ID-ul " + id + " trebuie sa apara in lista publica");
+  }
+  assert.deepEqual(exposes(res.body, { keys: ["phone"], values: phones }), [], "Lista publica nu trebuie sa contina phone sau vreun telefon");
+});
+
+test("AC-2: lista publica nu expune telefonul la niciun parametru anonim", async () => {
+  const m = await load("../../src/server-app.js");
+  const startServer = need(m, "startServer");
+  const { srv2, rows, id1 } = await buildState(startServer);
+
+  assert.ok(rows.length >= 5);
+  for (const row of rows) {
+    assert.equal(row.day, TEST_DAY);
+    assert.ok(row.id.length > 0);
+  }
+  const rowP1 = rows.find((r) => r.phone === PHONE1);
+  assert.ok(rowP1);
+  assert.equal(rowP1.day, TEST_DAY);
+  assert.equal(rowP1.id, id1, "Programarea 1 trebuie sa aiba id-ul din sesiunea anterioara");
+  const rowP2 = rows.find((r) => r.phone === PHONE2);
+  assert.ok(rowP2);
+  assert.equal(rowP2.day, TEST_DAY);
+
+  for (const row of rows) {
+    if (typeof row.phone === "string" && row.phone.trim().length > 0) {
+      assert.ok(row.phone.trim().length >= 3, "Fiecare telefon nevid din BD trebuie sa aiba cel putin 3 caractere");
+    }
+  }
+
+  const phones = rows
+    .filter((r) => typeof r.phone === "string" && r.phone.trim().length >= 3)
+    .map((r) => r.phone);
+  const ids = rows.map((r) => r.id);
+
+  for (const param of ["includePhone=1", "phone=1", "fields=phone", "debug=1", "all=1"]) {
+    const res = await httpGet(srv2.port, "/api/bookings?date=" + TEST_DAY + "&" + param);
+    assert.equal(res.status, 200, "Param " + param + ": status 200 asteptat");
+    const parsed = JSON.parse(res.body);
+    assert.ok(Array.isArray(parsed.bookings) && parsed.bookings.length > 0, "Param " + param + ": lista nu trebuie sa fie goala");
+    assert.equal(parsed.bookings.length, ids.length, "Param " + param + ": numarul de inregistrari trebuie sa fie corect");
+    const listIds = parsed.bookings.map((b) => b.id);
+    for (const id of ids) {
+      assert.ok(listIds.includes(id), "Param " + param + ": id-ul " + id + " trebuie sa fie in lista");
+    }
+    assert.deepEqual(exposes(res.body, { keys: ["phone"], values: phones }), [], "Param " + param + ": lista nu trebuie sa expuna telefonul");
+  }
+});
+
+test("AC-3 control: programarile fara telefon, cu telefon gol sau numai spatii sunt refuzate iar stocarea ramane neschimbata", async () => {
+  const tmpDir = await new Promise((ok, fail) =>
+    fs.mkdtemp(path.join(os.tmpdir(), "s25hub-"), (e, d) => (e ? fail(e) : ok(d)))
+  );
+  const dbPath = path.join(tmpDir, "bk.db");
+  const m = await load("../../src/server-app.js");
+  const startServer = need(m, "startServer");
+  const srv = await setup("server-ac3", () => startServer({ port: 0, dbPath, now: FIXED_NOW }));
+
+  const validBase = {
+    serviceId: "spalare-exterior",
+    start: TEST_DAY + "T09:00",
+    name: "Test Persoana",
+    vehicle: "Dacia Test",
+  };
+
+  async function rowCount() {
+    const db = new sqlite.DatabaseSync(dbPath);
+    const result = db.prepare("SELECT COUNT(*) AS cnt FROM bookings").get();
+    db.close();
+    return result.cnt;
+  }
+
+  const cnt0 = await rowCount();
+  const snap0 = await dbSnapshot(dbPath);
+
+  const r1 = await httpPost(srv.port, "/api/bookings", { ...validBase });
+  assert.equal(r1.status, 400, "Fara telefon: trebuie refuzat cu 400");
+  const e1 = JSON.parse(r1.body);
+  assert.ok(
+    e1.errors && typeof e1.errors.phone === "string" && e1.errors.phone.length > 0,
+    "Fara telefon: trebuie eroare pentru campul phone"
+  );
+  assert.equal(await rowCount(), cnt0, "Fara telefon: stocarea trebuie neschimbata");
+  assert.deepEqual(await dbSnapshot(dbPath), snap0, "Fara telefon: continutul complet al stocarii trebuie neschimbat");
+
+  const r2 = await httpPost(srv.port, "/api/bookings", { ...validBase, phone: "" });
+  assert.equal(r2.status, 400, "Telefon gol: trebuie refuzat cu 400");
+  const e2 = JSON.parse(r2.body);
+  assert.ok(
+    e2.errors && typeof e2.errors.phone === "string" && e2.errors.phone.length > 0,
+    "Telefon gol: trebuie eroare pentru campul phone"
+  );
+  assert.equal(await rowCount(), cnt0, "Telefon gol: stocarea trebuie neschimbata");
+  assert.deepEqual(await dbSnapshot(dbPath), snap0, "Telefon gol: continutul complet al stocarii trebuie neschimbat");
+
+  const r3 = await httpPost(srv.port, "/api/bookings", { ...validBase, phone: "   " });
+  assert.equal(r3.status, 400, "Telefon spatii: trebuie refuzat cu 400");
+  const e3 = JSON.parse(r3.body);
+  assert.ok(
+    e3.errors && typeof e3.errors.phone === "string" && e3.errors.phone.length > 0,
+    "Telefon spatii: trebuie eroare pentru campul phone"
+  );
+  assert.equal(await rowCount(), cnt0, "Telefon spatii: stocarea trebuie neschimbata");
+  assert.deepEqual(await dbSnapshot(dbPath), snap0, "Telefon spatii: continutul complet al stocarii trebuie neschimbat");
+});
+
+test("AC-4 control: telefonul din programarea valida e salvat exact in stocarea interna", async () => {
+  const tmpDir = await new Promise((ok, fail) =>
+    fs.mkdtemp(path.join(os.tmpdir(), "s25hub-"), (e, d) => (e ? fail(e) : ok(d)))
+  );
+  const dbPath = path.join(tmpDir, "bk.db");
+  const m = await load("../../src/server-app.js");
+  const startServer = need(m, "startServer");
+  const srv = await setup("server-ac4", () => startServer({ port: 0, dbPath, now: FIXED_NOW }));
+
+  const sentPhone = "0755 111 222";
+  const postRes = await httpPost(srv.port, "/api/bookings", {
+    serviceId: "spalare-exterior",
+    start: TEST_DAY + "T09:00",
+    name: "Test Persoana",
+    vehicle: "Dacia Test",
+    phone: sentPhone,
+  });
+  assert.equal(postRes.status, 201, "Programarea valida trebuie acceptata");
+  const bookingId = JSON.parse(postRes.body).booking.id;
+  assert.ok(typeof bookingId === "string" && bookingId.length > 0, "Id-ul programarii trebuie sa fie nevid");
+
+  const db = new sqlite.DatabaseSync(dbPath);
+  const row = db.prepare("SELECT id, day, phone FROM bookings WHERE id = ?").get(bookingId);
+  db.close();
+
+  assert.ok(row, "Inregistrarea trebuie sa existe in BD");
+  assert.equal(row.id, bookingId, "ID-ul din BD trebuie sa corespunda");
+  assert.equal(row.day, TEST_DAY, "Ziua din BD trebuie sa corespunda");
+  assert.equal(row.phone, sentPhone, "Telefonul din BD trebuie sa fie exact cel trimis");
+});
+
+test("AC-5 control: o programare cu date valide si telefon completat este acceptata", async () => {
+  const tmpDir = await new Promise((ok, fail) =>
+    fs.mkdtemp(path.join(os.tmpdir(), "s25hub-"), (e, d) => (e ? fail(e) : ok(d)))
+  );
+  const dbPath = path.join(tmpDir, "bk.db");
+  const m = await load("../../src/server-app.js");
+  const startServer = need(m, "startServer");
+  const srv = await setup("server-ac5", () => startServer({ port: 0, dbPath, now: FIXED_NOW }));
+
+  const postRes = await httpPost(srv.port, "/api/bookings", {
+    serviceId: "spalare-exterior",
+    start: TEST_DAY + "T09:00",
+    name: "Test Persoana",
+    vehicle: "Dacia Test",
+    phone: "0766 333 444",
+  });
+  assert.equal(postRes.status, 201, "Programarea valida trebuie acceptata cu 201");
+  const data = JSON.parse(postRes.body);
+  assert.ok(
+    data.booking && typeof data.booking.id === "string" && data.booking.id.length > 0,
+    "Raspunsul trebuie sa contina booking cu id nevid"
+  );
+});

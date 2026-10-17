@@ -1,0 +1,21 @@
+{
+  "comment": "M11 L5 author fixture (fake-claude author:bug-process-env): the body reads process.env, a forbidden token: rejected by the lint.",
+  "body": [
+    "test(\"AC-1: un nume format doar din spații este refuzat\", async () => {",
+    "  const { validateRequest } = await load(\"../../src/requests.js\");",
+    "  const name = process.env.HUB_NAME || \"   \";",
+    "  assert.equal(validateRequest({ name, email: \"ana@example.ro\", service: \"audit\" }).ok, false);",
+    "});",
+    "",
+    "test(\"AC-1 control: un nume obișnuit este acceptat\", async () => {",
+    "  const { validateRequest } = await load(\"../../src/requests.js\");",
+    "  assert.equal(validateRequest({ name: \"Ana\", email: \"ana@example.ro\", service: \"audit\" }).ok, true);",
+    "});"
+  ],
+  "manifest": {
+    "cases": [
+      { "name": "AC-1: un nume format doar din spații este refuzat", "criterion": "AC-1", "kind": "check", "today": "fail" },
+      { "name": "AC-1 control: un nume obișnuit este acceptat", "criterion": "AC-1", "kind": "control", "today": "pass" }
+    ]
+  }
+}

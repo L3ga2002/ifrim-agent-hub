@@ -2,6 +2,8 @@ import { LayoutDashboard, Upload, Search, KanbanSquare, Tags, ListChecks } from 
 import { Panel, Empty, Loading, Notice } from "../../components/ui.jsx";
 import { countEntries, normalizeCounts, catalogSummary, statusMeta, salesHref, ORG_STATUSES, OPP_STATUSES } from "../../lib/salesLogic.js";
 import { Tile, OutreachNotice, SalesError, SalesChip } from "./common.jsx";
+import { overviewFigures, realOnlyTitle } from "../../lib/salesFiguresLogic.js";
+import { SyntheticFigures } from "./SyntheticFigures.jsx";
 
 /** Prezentare: counters from GET /api/sales/overview, pipeline counts, catalog state and the outreach limit. */
 export function Overview({ resource, go }) {
@@ -9,13 +11,14 @@ export function Overview({ resource, go }) {
   if (loading && !data) return <Loading lines={5} />;
   if (error && !data) return <SalesError error={error} onRetry={reload} what="prezentarea" />;
   const counts = data?.counts || {};
-  const tiles = countEntries(counts);
+  // M12 (T-S7): with synthetic data present the tiles, statuses and pipeline are the real figures only; the synthetic ones come apart.
+  const fig = overviewFigures(data);
+  const tiles = fig.tiles;
   const metrics = countEntries(data?.metrics);
   const metricsNote = typeof data?.metricsNote === "string" ? data.metricsNote : "";
-  const byStatus = normalizeCounts(counts.byStatus ?? counts.orgsByStatus ?? counts.status)
-    .sort((a, b) => ORG_STATUSES.indexOf(a[0]) - ORG_STATUSES.indexOf(b[0]));
+  const byStatus = fig.byStatus;
   // Opportunities per status come in counts.opportunities ({ STATUS: n }), in lifecycle order here.
-  const pipeline = normalizeCounts(counts.opportunities ?? data?.pipeline).sort((a, b) => OPP_STATUSES.indexOf(a[0]) - OPP_STATUSES.indexOf(b[0]));
+  const pipeline = fig.pipeline;
   const catalog = catalogSummary(data?.catalog);
   const orgTotal = Number(counts.orgs ?? counts.total ?? byStatus.reduce((s, [, n]) => s + n, 0)) || 0;
   const needsReview = Number(counts.needsReview ?? 0) || 0;
@@ -29,7 +32,7 @@ export function Overview({ resource, go }) {
           </Empty>
         </Panel>
       ) : (
-        <Panel title="Situația curentă" icon={LayoutDashboard} actions={<button type="button" className="btn sm ghost" onClick={reload} disabled={loading}>{loading ? "Se actualizează…" : "Reîncarcă"}</button>}>
+        <Panel title={realOnlyTitle("Situația curentă", fig)} icon={LayoutDashboard} actions={<button type="button" className="btn sm ghost" onClick={reload} disabled={loading}>{loading ? "Se actualizează…" : "Reîncarcă"}</button>}>
           <div className="stack">
             {tiles.length > 0 && <dl className="stat-tiles">{tiles.map((t) => <Tile key={t.key} label={t.label} value={t.value} tone={t.key === "needsReview" && t.value > 0 ? "attention" : ""} />)}</dl>}
             {metrics.length > 0 && <><div className="section-title">Indicatori</div><dl className="stat-tiles">{metrics.map((t) => <Tile key={t.key} label={t.label} value={t.value} />)}</dl></>}
@@ -52,8 +55,9 @@ export function Overview({ resource, go }) {
           </div>
         </Panel>
       )}
+      <SyntheticFigures figures={fig} />
       <div className="grid two">
-        <Panel title="Pipeline" icon={KanbanSquare} actions={<button type="button" className="btn sm ghost" onClick={() => go(salesHref("pipeline"))}>Deschide</button>}>
+        <Panel title={realOnlyTitle("Pipeline", fig)} icon={KanbanSquare} actions={<button type="button" className="btn sm ghost" onClick={() => go(salesHref("pipeline"))}>Deschide</button>}>
           {pipeline.length ? (
             <ul className="sales-count-list">
               {pipeline.map(([status, n]) => <li key={status}><span className="row"><SalesChip kind="opp" status={status} /><span className="n">{n}</span></span></li>)}

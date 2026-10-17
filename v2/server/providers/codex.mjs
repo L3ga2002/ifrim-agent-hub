@@ -1,12 +1,13 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { execFile } from "node:child_process";
+import { execFile, execFileSync } from "node:child_process";
 import { promisify } from "node:util";
 import { parse as parseToml } from "smol-toml";
 import { createJsonRpcPeer } from "./jsonrpc.mjs";
 import { classifyCodexTurnError, classifyText } from "./classify.mjs";
 import { buildChildEnv } from "../policy/billing.mjs";
+import { deriveAccountIdentity } from "../policy/billing-evidence.mjs";
 import { codexIsolationArgs, CODEX_PROFILE_BY_ACCESS } from "../policy/isolation.mjs";
 import { HUB_VERSION } from "../config.mjs";
 import { KNOWN_EFFORTS } from "../policy/run-plan.mjs";
@@ -135,10 +136,39 @@ export function codexBaseOverrides({ webSearch = "disabled" } = {}) {
 
 const ACTIVITY_ITEMS = new Set(["commandExecution", "fileChange", "mcpToolCall", "webSearch", "imageView", "imageGeneration", "collabAgentToolCall", "subAgentActivity"]);
 
+/**
+ * The Codex CLI the owner's desktop selected (CODEX_CLI_PATH, process env or the user's registry environment, read once per process).
+ * Pilot 2026-10-08: the desktop bundle folder kept a broken alpha.2 CLI (elevated sandbox "setup refresh had errors") while the
+ * desktop itself ran the repaired alpha.20 named by CODEX_CLI_PATH; the Hub picked the bundle by mtime and could not run any command.
+ */
+let userCliPath;
+export function parseCodexCliRegQuery(stdout) {
+  return /^[\t ]*CODEX_CLI_PATH[\t ]+REG_(?:EXPAND_)?SZ[\t ]+([^\r\n]+)/mi.exec(String(stdout))?.[1]?.trim() || null;
+}
+export function selectedCodexCli({ env = process.env, platform = process.platform, readUserEnv = null, regQuery = null } = {}) {
+  const fromEnv = env.CODEX_CLI_PATH;
+  if (fromEnv) return fs.existsSync(fromEnv) ? fromEnv : null;
+  if (platform !== "win32") return null;
+  if (readUserEnv) { const v = readUserEnv("CODEX_CLI_PATH"); return v && fs.existsSync(v) ? v : null; }
+  const query = () => (regQuery || execFileSync)("reg", ["query", "HKCU\\Environment", "/v", "CODEX_CLI_PATH"], { encoding: "utf8", windowsHide: true, timeout: 5000 });
+  if (regQuery) {
+    try { const v = parseCodexCliRegQuery(query()); return v && fs.existsSync(v) ? v : null; } catch { return null; }
+  }
+  if (userCliPath === undefined) {
+    try {
+      const out = query();
+      userCliPath = parseCodexCliRegQuery(out);
+    } catch { userCliPath = null; }
+  }
+  return userCliPath && fs.existsSync(userCliPath) ? userCliPath : null;
+}
+
 export function resolveCodexBinary(config) {
   if (config.providerBinaries.codex) return config.providerBinaries.codex;
   if (config.testMode) return null;
   if (process.env.HUB_CODEX_BIN) return { executable: process.env.HUB_CODEX_BIN, prefixArgs: [] };
+  const selected = selectedCodexCli();
+  if (selected) return { executable: selected, prefixArgs: [], source: "CODEX_CLI_PATH (CLI-ul selectat de aplicația Codex)" };
   const root = path.join(os.homedir(), "AppData", "Local", "OpenAI", "Codex", "bin");
   try {
     const candidates = fs.readdirSync(root).map((name) => path.join(root, name, "codex.exe"))
@@ -204,9 +234,11 @@ export function windowsCodexLauncher({ config, homeDir }) {
   };
 }
 
-export function createCodexAdapter({ config, supervisor, homeDir = os.homedir(), launcher = null }) {
+export function createCodexAdapter({ config, supervisor, homeDir = os.homedir(), launcher = null, identitySalt = null }) {
   const id = "codex";
   const launch = launcher || windowsCodexLauncher({ config, homeDir });
+  // M09-A2: the salt of the pseudonymous account identity (a getter; absent = no identity, so a bound declaration blocks).
+  const salt = () => { try { return typeof identitySalt === "function" ? identitySalt() : null; } catch { return null; } };
 
   async function inspectInstallation() {
     const binary = resolveCodexBinary(config);
@@ -254,7 +286,8 @@ export function createCodexAdapter({ config, supervisor, homeDir = os.homedir(),
 
   /**
    * Explicit, user-initiated probe: initialize + account/read (+ rate limits, + model list).
-   * No turn is started, so no inference happens. Identity (email) is never returned.
+   * No turn is started, so no inference happens. Identity (email) is never returned: M09-A2 keeps only its salted pseudonym
+   * (auth.accountIdentity), computed here and the e-mail discarded.
    */
   async function probe({ withUsage = true, withModels = false, cwd = launch.probeCwd || config.hubRoot } = {}) {
     const key = `probe-codex-${launch.environment}-${Date.now()}`;
@@ -265,7 +298,7 @@ export function createCodexAdapter({ config, supervisor, homeDir = os.homedir(),
       const init = await session.ready;
       out.protocol = { userAgent: String(init?.userAgent || "").slice(0, 120), platform: `${init?.platformFamily || ""}/${init?.platformOs || ""}` };
       const account = await session.peer.request("account/read", {}, 30000);
-      out.auth = normalizeAccount(account);
+      out.auth = normalizeAccount(account, { salt: salt() });
       if (withUsage && out.auth.accountType === "chatgpt") {
         try { out.usage = normalizeRateLimits(await session.peer.request("account/rateLimits/read", {}, 30000)); }
         catch (error) { out.usage = { error: error.message }; }
@@ -407,10 +440,15 @@ export function createCodexAdapter({ config, supervisor, homeDir = os.homedir(),
     }
     const phase = (name) => { try { onEvent({ type: "phase", phase: name }); } catch { /* timeline never breaks a run */ } };
     // The owner's config MCP servers are disabled by name for this process (key names only are read from config.toml).
-    const session = openSession({ cwd, key, access, extraArgs, onNotification, onServerRequest, launchVars,
+    let session;
+    try { session = openSession({ cwd, key, access, extraArgs, onNotification, onServerRequest, launchVars,
       onExit: (exit) => finish(interruptReason
         ? { status: "interrupted", output, usage, threadId: currentThread, turnId, errorCategory: null, error: `interrupted (${interruptReason})`, preInference: !turnId }
         : { status: "failed", output, usage, threadId: currentThread, turnId, errorCategory: "transport", error: `app-server exited (${exit.code})`, preInference: !turnId }) });
+    } catch (error) {
+      return { key, pid: null, interrupt: async () => ({ interrupted: false, graceful: true, reason: "not started" }),
+        done: Promise.resolve({ status: "failed", errorCategory: "policy", preInference: true, error: String(error.message || error).slice(0, 300), output: "", usage: {}, threadId }) };
+    }
 
     async function interrupt(reason = "user") {
       interruptReason = reason;
@@ -419,25 +457,25 @@ export function createCodexAdapter({ config, supervisor, homeDir = os.homedir(),
       if (!turnRequested) {
         const stopped = await supervisor.stop(key, { graceMs: 0 });
         finish({ status: "interrupted", output, usage, threadId: currentThread, turnId: "", errorCategory: null, error: `interrupted (${reason})`, preInference: true });
-        return { interrupted: stopped.stopped, graceful: false, reason };
+        return { interrupted: stopped.stopped, graceful: false, reason, stop: stopped };
       }
       // If turn/start is in flight, wait briefly for its id so the turn can be interrupted properly.
       for (let waited = 0; !turnId && !finished && waited < 3000; waited += 50) await new Promise((r) => setTimeout(r, 50));
       if (currentThread && turnId) {
         await session.peer.request("turn/interrupt", { threadId: currentThread, turnId }, 5000).catch(() => {});
         const graceful = await Promise.race([completion.then(() => true), new Promise((r) => setTimeout(() => r(false), 5000))]);
-        if (graceful) { await supervisor.stop(key, { graceMs: 1000 }); return { interrupted: true, graceful: true, reason }; }
+        if (graceful) { const stopped = await supervisor.stop(key, { graceMs: 1000 }); return { interrupted: stopped.stopped, graceful: true, reason, stop: stopped }; }
       }
       const stopped = await supervisor.stop(key, { graceMs: 500 });
       finish({ status: "interrupted", output, usage, threadId: currentThread, turnId, errorCategory: null, error: `interrupted (${reason})`, preInference: !turnId });
-      return { interrupted: stopped.stopped, graceful: false, reason };
+      return { interrupted: stopped.stopped, graceful: false, reason, stop: stopped };
     }
 
     const done = (async () => {
       try {
         await session.ready;
         phase("initialized");
-        const account = normalizeAccount(await session.peer.request("account/read", {}, 30000));
+        const account = normalizeAccount(await session.peer.request("account/read", {}, 30000), { salt: salt() });
         phase("account_checked");
         onEvent({ type: "auth", auth: account });
         if (account.accountType !== "chatgpt") {
@@ -538,11 +576,18 @@ export function createCodexAdapter({ config, supervisor, homeDir = os.homedir(),
   return { id, environment: launch.environment, displayName: "Codex (ChatGPT plan)", inspectInstallation, probe, startTurn, openSession, inspectConfig: () => launch.inspectConfig() };
 }
 
-export function normalizeAccount(response) {
+/**
+ * account/read → plan facts. With a salt (M09-A2) the account e-mail becomes `accountIdentity` (salted pseudonym; basis "tuple"
+ * from type + plan when no e-mail is reported) and the e-mail itself is dropped here: it is never returned, stored or logged.
+ */
+export function normalizeAccount(response, { salt = null } = {}) {
   const account = response?.account || null;
   if (!account) return { accountType: "none", requiresOpenaiAuth: Boolean(response?.requiresOpenaiAuth) };
   const type = account.type === "apiKey" || account.type === "apikey" ? "apiKey" : account.type;
-  return { accountType: type, planType: account.planType || null, requiresOpenaiAuth: Boolean(response?.requiresOpenaiAuth) };
+  const out = { accountType: type, planType: account.planType || null, requiresOpenaiAuth: Boolean(response?.requiresOpenaiAuth) };
+  const accountIdentity = salt ? deriveAccountIdentity({ salt, email: typeof account.email === "string" ? account.email : null, tuple: [type, account.planType], plan: account.planType || null }) : null;
+  if (accountIdentity) out.accountIdentity = accountIdentity;
+  return out;
 }
 
 export function normalizeRateLimits(response) {

@@ -1,0 +1,81 @@
+{
+  "testSlot": "66cb3f9cfbae",
+  "needs": [
+    "node:path",
+    "node:os",
+    "node:fs",
+    "node:sqlite",
+    "node:http"
+  ],
+  "api": "GET /api/bookings?date=YYYY-MM-DD pentru lista publică, POST /api/bookings pentru creare, DatabaseSync direct pentru stocarea internă",
+  "cases": [
+    {
+      "name": "AC-1: lista publică a zilei nu conține câmpul phone și valorile telefonului",
+      "criterion": "AC-1",
+      "kind": "check",
+      "today": "fail"
+    },
+    {
+      "name": "AC-2: parametrii anonimi nu expun telefonul în lista publică",
+      "criterion": "AC-2",
+      "kind": "check",
+      "today": "fail"
+    },
+    {
+      "name": "AC-3 control: telefon obligatoriu refuzat când lipsește, e gol sau are doar spații",
+      "criterion": "AC-3",
+      "kind": "control",
+      "today": "pass"
+    },
+    {
+      "name": "AC-4 control: telefonul trimis se păstrează exact în stocarea internă",
+      "criterion": "AC-4",
+      "kind": "control",
+      "today": "pass"
+    },
+    {
+      "name": "AC-5 control: programare validă cu telefon e acceptată de server",
+      "criterion": "AC-5",
+      "kind": "control",
+      "today": "pass"
+    }
+  ],
+  "newApi": [],
+  "removed": [],
+  "amends": "528c5d61e2bd03369c27283c4b3c5f3c47b1ab4a13d951e019ae8675030453d5",
+  "completes": [
+    {
+      "ref": "F1",
+      "by": "AC-1: adăugat assert.equal(rowA.phone, phoneA) și assert.equal(rowB.phone, phoneB) după citirea din BD pentru a confirma că telefoanele salvate sunt exact cele trimise"
+    },
+    {
+      "ref": "F1",
+      "by": "AC-2: adăugat assert.equal(rowC.phone, phoneC) și assert.equal(rowD.phone, phoneD) după citirea din BD pentru a confirma că telefoanele salvate sunt exact cele trimise"
+    },
+    {
+      "ref": "F2",
+      "by": "AC-3 control: adăugat SELECT count(*) FROM bookings fără filtru pe zi după fiecare refuz pentru a verifica absența oricărei salvări în întregul tabel"
+    },
+    {
+      "ref": "P112",
+      "by": "AC-1: completat cu egalitate exactă rowA.phone === phoneA și rowB.phone === phoneB înainte de verificarea expunerii"
+    },
+    {
+      "ref": "P169",
+      "by": "AC-2: completat cu egalitate exactă rowC.phone === phoneC și rowD.phone === phoneD înainte de verificarea expunerii în bucla de parametri"
+    },
+    {
+      "ref": "P195",
+      "by": "AC-3 control: adăugat total1.n === 0 pe întregul tabel după refuzul fără phone"
+    },
+    {
+      "ref": "P203",
+      "by": "AC-3 control: adăugat total2.n === 0 pe întregul tabel după refuzul phone gol"
+    },
+    {
+      "ref": "P211",
+      "by": "AC-3 control: adăugat total3.n === 0 pe întregul tabel după refuzul phone cu spații"
+    }
+  ],
+  "completesNotes": []
+}

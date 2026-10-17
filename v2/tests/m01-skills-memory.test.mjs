@@ -4,6 +4,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import crypto from "node:crypto";
+import { execFileSync } from "node:child_process";
 import { DatabaseSync } from "node:sqlite";
 import { makeTestHub, tempDir } from "./helpers.mjs";
 import { V2_ROOT, loadConfig } from "../server/config.mjs";
@@ -16,6 +17,8 @@ import { parseFrontmatter, validateSkillDirectory, effectiveFor, createSkills } 
 import { createMemory, MEMORY_SCOPES, MEMORY_SOURCES, SYNC_DIRECTIONS } from "../server/domain/memory.mjs";
 
 const SKILLS_DIR = path.join(V2_ROOT, "skills");
+// M09: the six media skills (creative-director … growth-analyst) joined the 11 earlier ones.
+const SKILL_COUNT = 17;
 const TEST_ROLES = Object.freeze([
   { id: "qa", tools: ["files.read", "process.test", "preview.check", "browser.inspect"], authority: "DEVELOPMENT_TOOLS" },
   { id: "backend", tools: ["files.read", "files.edit", "process.test", "git.diff"], authority: "WORKSPACE_EDIT" },
@@ -113,14 +116,14 @@ const ui = (hub, type, payload) => hub.commands.dispatch({ type, payload, actor:
 
 // ---------------------------------------------------------------- skills
 
-test("M01-SKILL-01 boot imports all 11 v2/skills folders as active version 1 with a sha256", async () => {
+test("M01-SKILL-01 boot imports all 17 v2/skills folders (11 + 6 M09 media skills) as active version 1 with a sha256", async () => {
   const t = await makeTestHub();
   try {
     const { hub } = t;
     const folders = fs.readdirSync(SKILLS_DIR, { withFileTypes: true }).filter((e) => e.isDirectory()).map((e) => e.name).sort();
-    assert.equal(folders.length, 11);
+    assert.equal(folders.length, SKILL_COUNT);
     assert.equal(hub.skills.dir, SKILLS_DIR);
-    assert.deepEqual(hub.getBootReport().seeded.skills, { imported: 11, versions: 11, invalid: 0 });
+    assert.deepEqual(hub.getBootReport().seeded.skills, { imported: SKILL_COUNT, versions: SKILL_COUNT, invalid: 0 });
     const skills = hub.skills.list();
     assert.deepEqual(skills.map((s) => s.id), folders);
     for (const s of skills) {
@@ -139,9 +142,30 @@ test("M01-SKILL-01 boot imports all 11 v2/skills folders as active version 1 wit
       assert.equal(history[0].sha256, s.sha256);
       assert.equal(history[0].createdBy, "seed");
     }
-    assert.equal(new Set(skills.map((s) => s.sha256)).size, 11);
-    assert.equal(hub.db.prepare("SELECT COUNT(*) AS n FROM skill_versions").get().n, 11);
-    assert.equal(hub.bus.query({ typePrefix: "skill.versioned", limit: 100 }).length, 11);
+    // M09-A3: every version records its approval facts at import; they agree with an independent read-only git check (tracked
+    // and clean = approved; an uncommitted folder, e.g. the media skills before the owner's commit, stays unapproved).
+    const gitOut = (...args) => execFileSync("git", ["-c", "core.fsmonitor=false", ...args], { cwd: SKILLS_DIR, stdio: ["ignore", "pipe", "ignore"] }).toString("utf8");
+    for (const s of skills) {
+      assert.equal(typeof s.validation.git?.tracked, "boolean", s.id);
+      assert.match(s.validation.storedBodySha256, /^[0-9a-f]{64}$/, s.id);
+      const indexed = new Set(gitOut("ls-files", "--", s.id).split("\n").filter(Boolean));
+      const onDisk = tree(path.join(SKILLS_DIR, s.id)).filter((rel) => fs.statSync(path.join(SKILLS_DIR, s.id, rel)).isFile());
+      const tracked = onDisk.length > 0 && onDisk.every((rel) => indexed.has(`${s.id}/${rel}`));
+      const clean = gitOut("status", "--porcelain", "--untracked-files=all", "--", s.id).trim() === "";
+      assert.equal(s.validation.git.tracked && s.validation.git.clean, tracked && clean, `${s.id}: approval facts match git`);
+    }
+    for (const id of ["creative-director", "scriptwriter", "video-editor", "media-qa", "distribution-planner", "growth-analyst"]) {
+      const s = skills.find((x) => x.id === id);
+      assert.ok(s, id);
+      assert.ok(s.validation.hub.taskTypes?.length > 0, `${id} declares hub-task-types`);
+      assert.ok(s.validation.hub.taskTypes.every((x) => /^content_/.test(x)), id);
+      assert.equal(s.validation.hub.permission, "READ_ONLY", id);
+    }
+    assert.ok(skills.filter((s) => !["creative-director", "scriptwriter", "video-editor", "media-qa", "distribution-planner", "growth-analyst"].includes(s.id)).every((s) => s.validation.hub.taskTypes === undefined),
+      "the 11 earlier skills declare no hub-task-types: their runs' prompts do not change");
+    assert.equal(new Set(skills.map((s) => s.sha256)).size, SKILL_COUNT);
+    assert.equal(hub.db.prepare("SELECT COUNT(*) AS n FROM skill_versions").get().n, SKILL_COUNT);
+    assert.equal(hub.bus.query({ typePrefix: "skill.versioned", limit: 100 }).length, SKILL_COUNT);
     assert.equal(hub.bus.query({ typePrefix: "skill.invalid", limit: 100 }).length, 0);
   } finally { await t.cleanup(); }
 });
@@ -154,11 +178,11 @@ test("M01-SKILL-02 re-importing unchanged skills (module and skill.import comman
     const before = snapshot();
     const skillEvents = () => hub.bus.query({ typePrefix: "skill.", limit: 500 }).length;
     const eventsBefore = skillEvents();
-    assert.deepEqual(hub.skills.importAll("test"), { imported: 11, versions: 0, invalid: 0 });
+    assert.deepEqual(hub.skills.importAll("test"), { imported: SKILL_COUNT, versions: 0, invalid: 0 });
     const viaCommand = await ui(hub, "skill.import", {});
     assert.equal(viaCommand.command.status, "executed");
-    assert.deepEqual(viaCommand.result, { imported: 11, versions: 0, invalid: 0 });
-    assert.equal(hub.db.prepare("SELECT COUNT(*) AS n FROM skill_versions").get().n, 11);
+    assert.deepEqual(viaCommand.result, { imported: SKILL_COUNT, versions: 0, invalid: 0 });
+    assert.equal(hub.db.prepare("SELECT COUNT(*) AS n FROM skill_versions").get().n, SKILL_COUNT);
     assert.deepEqual(snapshot(), before);
     assert.equal(skillEvents(), eventsBefore, "no skill.versioned/skill.invalid event for unchanged content");
   } finally { await t.cleanup(); }
@@ -272,6 +296,26 @@ test("M01-SKILL-04 validateSkillDirectory enforces the Agent Skills format: SKIL
     for (const label of ["name differs from the folder", "uppercase name", "double hyphen", "description over 1024 characters"]) {
       const [, dir] = cases.find(([l]) => l === label);
       assert.equal(check(dir).errors.length, 1, `${label} is the only problem`);
+    }
+
+    // M09-A3 optional selection metadata: hub-task-types (task type, optionally ":WORKTYPE") and hub-clients (Hub client ids).
+    const meta = (folder, lines) => check(writeSkill(root, folder, { raw: ["---", `name: ${folder}`, 'description: "Opt-in metadata."', "metadata:", '  hub-roles: "qa"', ...lines, "---", "body", ""].join("\n") }));
+    const typed = meta("typed-skill", ['  hub-task-types: "content_script coding:BUGFIX"', '  hub-clients: "cli_a, cli-b"']);
+    assert.equal(typed.ok, true, typed.errors.join(" | "));
+    assert.deepEqual(typed.hub.taskTypes, ["content_script", "coding:BUGFIX"]);
+    assert.deepEqual(typed.hub.clients, ["cli_a", "cli-b"]);
+    assert.equal(valid.hub.taskTypes, undefined, "absent key = not injected (no empty list invented)");
+    assert.equal(valid.hub.clients, undefined, "absent key = global");
+    for (const [folder, line, expected] of [
+      ["types-empty", '  hub-task-types: ""', /hub-task-types este gol/],
+      ["types-bad", '  hub-task-types: "Content Script"', /nu e un tip de sarcină valid/],
+      ["types-bad-worktype", '  hub-task-types: "coding:bugfix"', /nu e un tip de sarcină valid/],
+      ["clients-empty", '  hub-clients: ""', /hub-clients este gol/],
+      ["clients-bad", '  hub-clients: "cli/../x"', /nu e un id de client valid/],
+    ]) {
+      const result = meta(folder, [line]);
+      assert.equal(result.ok, false, folder);
+      assert.ok(result.errors.some((e) => expected.test(e)), `${folder}: ${result.errors.join(" | ")}`);
     }
   } finally { removeDir(root); }
 });
@@ -477,14 +521,14 @@ test("M01-SKILL-09 exportBundle writes .claude-plugin/plugin.json and skills/<id
     }
     const event = hub.bus.query({ typePrefix: "skill.exported", limit: 5 })[0];
     assert.equal(event.payload.path, out.path);
-    assert.equal(event.payload.count, 11);
+    assert.equal(event.payload.count, SKILL_COUNT);
 
     const viaCommand = await ui(hub, "skill.export", { format: "agent-skills" });
     assert.equal(viaCommand.command.status, "executed");
     assert.equal(viaCommand.result.format, "agent-skills");
     assert.ok(isInside(exportsRoot, viaCommand.result.path));
     assert.equal(fs.existsSync(path.join(viaCommand.result.path, ".claude-plugin")), false);
-    assert.equal(fs.readdirSync(path.join(viaCommand.result.path, "skills")).length, 11);
+    assert.equal(fs.readdirSync(path.join(viaCommand.result.path, "skills")).length, SKILL_COUNT);
 
     assert.throws(() => hub.skills.exportBundle({ format: "zip" }), (e) => e instanceof HubError && e.category === "validation");
     await assert.rejects(ui(hub, "skill.export", { format: "zip" }), /format must be one of/);

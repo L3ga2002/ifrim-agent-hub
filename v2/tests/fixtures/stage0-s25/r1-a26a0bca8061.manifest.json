@@ -1,0 +1,46 @@
+{
+  "testSlot": "0b57be2ba0ca",
+  "needs": [
+    "node:path",
+    "node:os",
+    "node:fs",
+    "node:sqlite",
+    "node:http"
+  ],
+  "api": "Testul pornește serverul HTTP cu startServer din src/server-app.js, trimite cereri cu http și verifică stocarea internă direct prin node:sqlite pe același dbPath.",
+  "cases": [
+    {
+      "name": "AC-1: Lista publică a zilei nu expune câmpul phone și valoarea telefonului",
+      "criterion": "AC-1",
+      "kind": "check",
+      "today": "fail"
+    },
+    {
+      "name": "AC-2: Parametrii publici suplimentari nu scot telefonul din lista zilei",
+      "criterion": "AC-2",
+      "kind": "check",
+      "today": "fail"
+    },
+    {
+      "name": "AC-3 control: Programarea e refuzată fără telefon, cu telefon gol sau doar spații, fără a se salva nimic",
+      "criterion": "AC-3",
+      "kind": "control",
+      "today": "pass"
+    },
+    {
+      "name": "AC-4 control: Telefonul trimis e salvat exact în stocarea internă a aplicației",
+      "criterion": "AC-4",
+      "kind": "control",
+      "today": "pass"
+    },
+    {
+      "name": "AC-5 control: O programare validă cu telefon pe interval liber e acceptată de server",
+      "criterion": "AC-5",
+      "kind": "control",
+      "today": "pass"
+    }
+  ],
+  "newApi": [],
+  "removed": [],
+  "amends": "8b940d9b147627780defb9c246e7a63d28090c73b802e90b5c6ad9cf5ef26e5d"
+}

@@ -1,0 +1,126 @@
+{
+  "verdict": "PASS",
+  "claimedVerdict": "PASS",
+  "summary": "Testul acoperă cele cinci criterii; PASS este verdictul verificării testului, nu aprobarea proprietarului. Toate cele zece puncte de completat sunt închise: egalitățile telefoanelor sunt adăugate la liniile 103–104 și 163–164, iar numărătorile întregului tabel sunt verificate la liniile 201, 211 și 221, păstrând verificările anterioare. Rezultatele de azi provin din dovada furnizată de Hub, fără execuție independentă: AC-1 și AC-2 pică la verificarea expunerii, iar controalele AC-3–AC-5 trec.",
+  "findings": [],
+  "previous": {},
+  "missingContext": [],
+  "valid": true,
+  "problems": [],
+  "cause": null,
+  "criteria": [
+    {
+      "id": "AC-1",
+      "covered": true,
+      "failsForRightReason": true,
+      "canEverPass": true,
+      "contradictsOwner": false,
+      "trivialPassRisk": "low",
+      "plain": "Lista include ambele programări confirmate în stocare, fără câmpul phone sau telefoanele lor în corpul integral."
+    },
+    {
+      "id": "AC-2",
+      "covered": true,
+      "failsForRightReason": true,
+      "canEverPass": true,
+      "contradictsOwner": false,
+      "trivialPassRisk": "low",
+      "plain": "Fiecare dintre cei cinci parametri păstrează lista funcțională, cu ambele programări și fără expunerea telefoanelor."
+    },
+    {
+      "id": "AC-3",
+      "covered": true,
+      "failsForRightReason": true,
+      "canEverPass": true,
+      "contradictsOwner": false,
+      "trivialPassRisk": "low",
+      "plain": "Telefonul lipsă, gol sau format din spații produce eroare de câmp și nu salvează nicio programare în tabel."
+    },
+    {
+      "id": "AC-4",
+      "covered": true,
+      "failsForRightReason": true,
+      "canEverPass": true,
+      "contradictsOwner": false,
+      "trivialPassRisk": "low",
+      "plain": "Telefonul trimis este verificat exact în baza aplicației, fără folosirea unei rute publice de recitire."
+    },
+    {
+      "id": "AC-5",
+      "covered": true,
+      "failsForRightReason": true,
+      "canEverPass": true,
+      "contradictsOwner": false,
+      "trivialPassRisk": "low",
+      "plain": "O programare validă pe un interval liber este acceptată și primește un identificator."
+    }
+  ],
+  "gate": [],
+  "checks": [],
+  "notes": [],
+  "previousChecks": {
+    "P190": {
+      "verdict": "kept",
+      "by": [
+        "P194"
+      ],
+      "why": "Aceeași cerere fără phone trebuie să primească 400; verificările noi de stocare nu schimbă acest control."
+    },
+    "P191": {
+      "verdict": "kept",
+      "by": [
+        "P195"
+      ],
+      "why": "Eroarea pentru phone este verificată în răspunsul aceleiași cereri fără proprietatea phone."
+    },
+    "P195": {
+      "verdict": "kept",
+      "by": [
+        "P200"
+      ],
+      "why": "Numărătoarea zilei rămâne verificată după primul refuz; P201 adaugă separat absența salvărilor în întregul tabel."
+    },
+    "P198": {
+      "verdict": "kept",
+      "by": [
+        "P204"
+      ],
+      "why": "Cererea cu phone gol și verificarea statusului 400 sunt păstrate, în aceeași ordine a refuzurilor."
+    },
+    "P199": {
+      "verdict": "kept",
+      "by": [
+        "P205"
+      ],
+      "why": "Eroarea pentru phone gol este verificată în continuare în răspunsul cererii corespunzătoare."
+    },
+    "P203": {
+      "verdict": "kept",
+      "by": [
+        "P210"
+      ],
+      "why": "Numărătoarea zilei rămâne după refuzul telefonului gol; P211 completează controlul pentru întregul tabel."
+    },
+    "P206": {
+      "verdict": "kept",
+      "by": [
+        "P214"
+      ],
+      "why": "Cererea cu trei spații trebuie în continuare să primească 400; completările nu o înlocuiesc."
+    },
+    "P207": {
+      "verdict": "kept",
+      "by": [
+        "P215"
+      ],
+      "why": "Eroarea câmpului phone rămâne verificată pentru răspunsul cererii cu telefon format numai din spații."
+    },
+    "P211": {
+      "verdict": "kept",
+      "by": [
+        "P220"
+      ],
+      "why": "Numărătoarea zilei rămâne după ultimul refuz; P221 adaugă verificarea absenței oricărei programări în tabel."
+    }
+  }
+}

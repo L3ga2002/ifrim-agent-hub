@@ -2,21 +2,25 @@ import { useState } from "react";
 import { Factory, ShieldCheck, Square, Pause, Play, CheckCircle2, XCircle, FileDiff, ListChecks, Timer, Package, AlertTriangle } from "lucide-react";
 import { api, fmt } from "../../api.js";
 import { useResource, useAction, pushToast } from "../../store.js";
-import { FACTORY_STAGE_RO, FACTORY_PATH, factoryWaitLabel, factoryProgress, formatMs, parseCriteriaLines, mergeCriteria } from "../../lib/uiLogic.js";
+import { FACTORY_STAGE_RO, factoryPathOf, factoryWaitLabel, factoryProgress, formatMs, parseCriteriaLines, mergeCriteria, evidenceResult, evidenceStageLabel, testFirstSummary } from "../../lib/uiLogic.js";
 import { Panel, Empty, Loading, ErrorNotice, StatusChip, Notice, Chip, DiffView, Dialog } from "../../components/ui.jsx";
 import { boundaryOf } from "../../lib/environmentLogic.js";
+import { withReauth } from "../../lib/ownerSession.js";
+import { rejectBody, rejectionAuthorityText } from "../../lib/factoryRejectLogic.js";
 
 const SEVERITY_TONE = { critical: "error", high: "error", medium: "warn", low: "neutral", info: "neutral" };
 const EVIDENCE_TONE = { PASS: "ok", FAIL: "error", INCONCLUSIVE: "warn", BLOCKED: "error", NOT_RUN: "neutral", NEEDS_INSTALL_APPROVAL: "warn" };
-const ACTIVE = new Set(["BASELINE", "IMPLEMENTING", "CHECKING", "REVIEWING", "REPAIRING", "QA", "PREVIEW"]);
+// M11 L5: the three step-0 stages of a test-first mission can be paused like the others (the factory's PAUSABLE set).
+const ACTIVE = new Set(["TEST_AUTHORING", "TEST_PROVING", "TEST_REVIEW", "BASELINE", "IMPLEMENTING", "CHECKING", "REVIEWING", "REPAIRING", "QA", "PREVIEW"]);
 
-/** Stage path with the current position; side states (pause, block, decision) shown next to it. */
+/** Stage path with the current position; side states (pause, block, decision) shown next to it. Step 0 only for a test-first mission. */
 function StageBar({ view }) {
   const { current, side } = factoryProgress(view);
+  const path = factoryPathOf(view);
   return (
     <div className="stack tight">
       <ol className="row wrap" style={{ listStyle: "none", padding: 0, margin: 0, gap: 6 }} aria-label="Etapele misiunii">
-        {FACTORY_PATH.map((stage, i) => (
+        {path.map((stage, i) => (
           <li key={stage}><span className={`chip ${i < current ? "ok" : i === current ? (side ? "warn" : "info") : "neutral"}`} aria-current={i === current ? "step" : undefined}>{FACTORY_STAGE_RO[stage]}</span></li>
         ))}
       </ol>
@@ -44,7 +48,7 @@ function ScopeApproval({ view, reload }) {
     <Panel title="Aprobă scope-ul" icon={ShieldCheck}>
       <div className="stack tight">
         <p className="muted" style={{ margin: 0 }}>Aprobi exact: specificația v{s.specVersion} (<span className="mono">{s.specSha.slice(0, 12)}</span>), planul (<span className="mono">{s.planSha.slice(0, 12)}</span>),
-          writer {s.routes.writer.provider} ({s.routes.writer.access}), reviewer {s.routes.reviewer.provider} ({s.routes.reviewer.access}), profil {s.limits.profile},
+          writer {s.routes.writer.provider} ({s.routes.writer.access}{s.bindings?.writer ? `, ${s.bindings.writer.resolvedAlias} · ${s.bindings.writer.effort}` : ""}), reviewer {s.routes.reviewer.provider} ({s.routes.reviewer.access}{s.bindings?.reviewer ? `, ${s.bindings.reviewer.resolvedAlias} · ${s.bindings.reviewer.effort}` : ""}), profil {s.limits.profile},
           cel mult {s.limits.maxRepairCycles} cicluri de remediere, {s.limits.maxDurationMin} min. Comenzi: {[...s.commands.checks, ...s.commands.acceptance].join(", ")}{s.commands.preview ? `; preview ${s.commands.preview.command}` : ""}.</p>
         <Notice tone="info">Aprobarea nu creează granturi și nu deschide poarta: fiecare execuție trece prin poartă, cu grantul ei. Vocea nu poate aproba.</Notice>
         {!pending ? <div><button className="btn primary" disabled={request.pending} onClick={request.run} data-lega-target="factory-approve-scope">Cere aprobarea scope-ului</button></div> : (
@@ -54,6 +58,29 @@ function ScopeApproval({ view, reload }) {
           </div>
         )}
         <ErrorNotice error={request.error || approve.error} />
+      </div>
+    </Panel>
+  );
+}
+
+/**
+ * M10.2 (U15): under the voice-first policy the scope of a draft is confirmed as ONE plan (the envelope: the exact spec, models,
+ * limits and what never happens) in the cockpit — the Hub derives the grants itself and stays in BUILD_SAFE. This only PROPOSES
+ * the plan (nothing starts, no grant) and opens the cockpit, where the card is restored from the Hub and confirmed once.
+ */
+function PlanFromFactory({ view }) {
+  const propose = useAction(async () => {
+    const out = await api("/api/envelopes", { method: "POST", body: { projectId: view.mission.projectId, missionIds: [view.mission.id] } });
+    if (!out?.envelope) pushToast(`factory-plan-${view.mission.id}`, "warn", `Planul nu e complet: ${(out?.summary?.blockers || []).slice(0, 2).join(" · ") || "vezi cockpit-ul"}`);
+    window.location.hash = `#/lega/${encodeURIComponent(view.mission.projectId)}`;
+  });
+  if (!view.scope) return null;
+  return (
+    <Panel title="Planul (o singură confirmare)" icon={ShieldCheck}>
+      <div className="stack tight">
+        <p className="muted" style={{ margin: 0 }}>Îți arăt planul exact în cockpit: specificația v{view.scope.specVersion}, modelele, limitele, ce nu se face niciodată. Îl confirmi o dată (click, Enter sau vocea ta verificată local); granturile tehnice le derivă Hub-ul din plan, iar Hub-ul rămâne în BUILD_SAFE.</p>
+        <div><button className="btn primary" disabled={propose.pending} onClick={propose.run} data-lega-target="factory-plan">{propose.pending ? "Pregătesc planul…" : "Arată-mi planul (o confirmare)"}</button></div>
+        <ErrorNotice error={propose.error} />
       </div>
     </Panel>
   );
@@ -145,20 +172,64 @@ function FindingRow({ finding, missionId, reload }) {
   );
 }
 
+const EFFORT_CHOICES = ["", "low", "medium", "high", "xhigh", "max"];
+const REVIEWER_CHOICES = ["sonnet", "opus", "haiku"];
+
+/**
+ * M09: the models of a draft mission, chosen explicitly (writer: a Codex model from model/list; reviewer: sonnet/opus/haiku). Until
+ * both are set and resolvable the scope is incomplete — no approval, no plan; the account default is never used in their place.
+ */
+function ModelEditor({ view, reload }) {
+  const l = view.factory.limits;
+  const [form, setForm] = useState({ writerModel: l.writerModel || "", writerEffort: l.writerEffort || "", reviewerModel: l.reviewerModel || "", reviewerEffort: l.reviewerEffort || "" });
+  const set = (key) => (e) => setForm((f) => ({ ...f, [key]: e.target.value }));
+  const save = useAction(async () => {
+    await api(`/api/factory/${view.mission.id}/limits`, { method: "POST", body: { limits: { writerModel: form.writerModel.trim(), writerEffort: form.writerEffort, reviewerModel: form.reviewerModel, reviewerEffort: form.reviewerEffort } } });
+    pushToast(`factory-models-${view.mission.id}`, "ok", "Modelele au fost fixate în ciornă"); reload();
+  });
+  const changed = form.writerModel.trim() !== (l.writerModel || "") || form.writerEffort !== (l.writerEffort || "") || form.reviewerModel !== (l.reviewerModel || "") || form.reviewerEffort !== (l.reviewerEffort || "");
+  return (
+    <Panel title="Modele (explicite)" icon={ShieldCheck}>
+      <div className="stack tight">
+        {view.scopeProblems?.length > 0 && <Notice tone="warn" title="Planul nu e complet">{view.scopeProblems.join(" · ")}</Notice>}
+        <div className="grid two">
+          <label className="field"><span>Writer (Codex): modelul din model/list</span><input className="input mono" value={form.writerModel} onChange={set("writerModel")} maxLength={80} placeholder="ex. gpt-6.1-sol" /></label>
+          <label className="field"><span>Efort writer</span><select className="select" value={form.writerEffort} onChange={set("writerEffort")}>{EFFORT_CHOICES.map((e) => <option key={e} value={e}>{e || `din profil (${l.profile})`}</option>)}</select></label>
+          <label className="field"><span>Reviewer (Claude)</span><select className="select" value={form.reviewerModel} onChange={set("reviewerModel")}><option value="">— alege —</option>{REVIEWER_CHOICES.map((m) => <option key={m} value={m}>{m}</option>)}</select></label>
+          <label className="field"><span>Efort reviewer</span><select className="select" value={form.reviewerEffort} onChange={set("reviewerEffort")}>{EFFORT_CHOICES.map((e) => <option key={e} value={e}>{e || `din profil (${l.profile})`}</option>)}</select></label>
+        </div>
+        <p className="faint" style={{ margin: 0, fontSize: 12 }}>Ce fixezi aici e exact ce se trimite: verificat din nou înainte de fiecare pornire (o schimbare a listei de modele sau a versiunii Claude Code oprește execuția înainte de model). Fable, „best” și variantele [1m] sunt refuzate.</p>
+        <div><button className="btn" disabled={!changed || save.pending} onClick={save.run}>{save.pending ? "Se salvează…" : "Fixează modelele"}</button></div>
+        <ErrorNotice error={save.error} />
+      </div>
+    </Panel>
+  );
+}
+
 /** Software Factory view of one engineering mission (stage, wait reason, spec, scope, runs, change sets, findings, evidence, bundle). */
 export function FactoryPanel({ missionId }) {
   const { data: view, error, loading, reload } = useResource(`/api/factory/${missionId}`, { reloadOn: (e) => e.scopeId === missionId || e.type.startsWith("run.") || e.type.startsWith("approval.") || e.type.startsWith("factory.") });
   const [editingSpec, setEditingSpec] = useState(false);
   const [note, setNote] = useState("");
   const [showDiff, setShowDiff] = useState(false);
-  const act = useAction(async (path, body = {}) => { await api(`/api/factory/${missionId}/${path}`, { method: "POST", body }); reload(); });
+  const act = useAction(async (path, body = {}) => {
+    const send = () => api(`/api/factory/${missionId}/${path}`, { method: "POST", body });
+    if (path === "accept" || path === "reject") await withReauth(send); else await send();
+    reload();
+  });
   const [reviewerModel, setReviewerModel] = useState(""); // the owner may pick an allowed reviewer model when resuming
+  // M10.2 (U15): under voice-first the draft's scope is ONE plan in the cockpit; the M03 scope approval stays reachable, collapsed.
+  const ownerStatus = useResource("/api/owner/status", { reloadOn: (e) => e.type === "settings.changed" && e.payload?.key === "ownerPolicy" });
+  const voiceFirst = Boolean(ownerStatus.data?.policy?.active);
   if (loading) return <Panel title="Software Factory" icon={Factory}><Loading /></Panel>;
   if (error) return <Panel title="Software Factory" icon={Factory}><ErrorNotice error={error} onRetry={reload} /></Panel>;
   const f = view.factory;
   const cs = view.changeSets.find((c) => c.status === "CURRENT");
   const latestBundle = view.bundles.at(-1);
   const problems = view.specs.at(-1)?.problems || [];
+  // M11 L5: before the Hub-written test is protected there is no repair cycle to add (the factory refuses one in step 0).
+  const inStepZero = Boolean(view.authoring && view.authoring.status !== "PROTECTED");
+  const protectedSummary = testFirstSummary(view);
   return (
     <div className="stack" style={{ overflowWrap: "anywhere", minWidth: 0 }}>
       <Panel title={`Software Factory · ${f.workType}`} icon={Factory} data-lega-target="factory-panel"
@@ -178,17 +249,20 @@ export function FactoryPanel({ missionId }) {
               <span className="row wrap">{view.stageEnvironments.stages.map((s) => { const b = boundaryOf(s.boundary); return <Chip key={s.stage} tone={b.tone} title={s.where}>{s.label}: {b.label}</Chip>; })}</span>
               {!view.stageEnvironments.realProjectEligible && <span className="faint small">Nu este eligibil pentru date reale: {view.stageEnvironments.blockers.join(" · ")}</span>}
             </dd></>}
-            <dt>Modele</dt><dd>writer: {f.limits.writerModel || "implicitul din model/list"} · reviewer: {f.limits.reviewerModel || "implicitul contului Claude Code (Fable/1M refuzate)"}</dd>
-            <dt>Granturi necesare</dt><dd>{view.grantsNeeded.map((g) => `${g.provider} ${g.access} × ${g.attempts} (${g.why})`).join(" · ")}</dd>
+            {/* M09: the bound models (approved with the scope) or the draft's resolution; never a placeholder for the account default. */}
+            <dt>Modele</dt><dd>writer: {view.models?.writer?.label || <span className="warn">nefixat</span>} · reviewer: {view.models?.reviewer?.label || <span className="warn">nefixat</span>}
+              {view.models?.writer?.approved ? <span className="faint small"> (aprobate cu scope-ul; verificate din nou la fiecare pornire)</span> : <span className="faint small"> (ciornă: se fixează la aprobarea scope-ului)</span>}</dd>
+            <dt>{voiceFirst ? "Granturi pe care planul le derivă" : "Granturi necesare"}</dt><dd>{view.grantsNeeded.map((g) => `${g.provider} ${g.access} × ${g.attempts} (${g.why})`).join(" · ")}</dd>
           </dl>
+          {protectedSummary && <Notice tone="ok" title="Pasul 0 încheiat">{protectedSummary}</Notice>}
           {["PAUSED", "BLOCKED", "NEEDS_OWNER_DECISION"].includes(f.stage) && f.approvedSpecVersion && (
             <div className="row wrap">
               <select className="select" aria-label="Modelul reviewer-ului la reluare" value={reviewerModel} onChange={(e) => setReviewerModel(e.target.value)}>
-                <option value="">Reviewer: {f.limits.reviewerModel || "implicitul contului"}</option>
-                {["sonnet", "opus", "haiku"].filter((m) => m !== f.limits.reviewerModel).map((m) => <option key={m} value={m}>Reviewer: {m}</option>)}
+                <option value="">Reviewer: {f.bindings?.reviewer?.resolvedAlias || f.limits.reviewerModel || "nefixat"} (aprobat)</option>
+                {REVIEWER_CHOICES.filter((m) => m !== (f.bindings?.reviewer?.resolvedAlias || f.limits.reviewerModel)).map((m) => <option key={m} value={m}>Reviewer: {m} (în afara unui plan confirmat)</option>)}
               </select>
               <button className="btn primary" disabled={act.pending} onClick={() => act.run("resume", reviewerModel ? { reviewerModel } : {})}><Play size={14} />Reia</button>
-              {f.stage === "NEEDS_OWNER_DECISION" && <button className="btn" disabled={act.pending} onClick={() => act.run("resume", { allowExtraCycle: true, ...(reviewerModel ? { reviewerModel } : {}) })}>Încă un ciclu de remediere</button>}
+              {f.stage === "NEEDS_OWNER_DECISION" && !inStepZero && <button className="btn" disabled={act.pending} onClick={() => act.run("resume", { allowExtraCycle: true, ...(reviewerModel ? { reviewerModel } : {}) })}>Încă un ciclu de remediere</button>}
               {f.stage === "NEEDS_OWNER_DECISION" && view.reviews.at(-1)?.verdict === "INCONCLUSIVE" && <button className="btn" disabled={act.pending} onClick={() => act.run("resume", { proceedToQa: true, ...(reviewerModel ? { reviewerModel } : {}) })}>Continuă la QA (decizia mea)</button>}
             </div>
           )}
@@ -206,7 +280,16 @@ export function FactoryPanel({ missionId }) {
           {view.spec.spec.sources?.assumptions?.length > 0 && <div className="faint" style={{ fontSize: 12 }}>Presupuneri (nu cerințe): {view.spec.spec.sources.assumptions.join("; ")}</div>}
         </div>
       </Panel>
-      {f.stage === "SPEC_DRAFT" && !problems.length && <ScopeApproval view={view} reload={reload} />}
+      {f.stage === "SPEC_DRAFT" && !f.approvedSpecVersion && <ModelEditor key={`${f.limits.writerModel || ""}|${f.limits.reviewerModel || ""}|${f.limits.writerEffort || ""}|${f.limits.reviewerEffort || ""}`} view={view} reload={reload} />}
+      {f.stage === "SPEC_DRAFT" && !problems.length && (ownerStatus.data || ownerStatus.error) && (voiceFirst ? (
+        <>
+          <PlanFromFactory view={view} />
+          <details className="advanced">
+            <summary className="link-btn" style={{ cursor: "pointer" }}>Avansat: aprobare fără plan (calea M03: aprobare prin click, apoi grant pe execuție)</summary>
+            <div style={{ marginTop: 8 }}><ScopeApproval view={view} reload={reload} /></div>
+          </details>
+        </>
+      ) : <ScopeApproval view={view} reload={reload} />)}
 
       {view.runs.length > 0 && (
         <Panel title="Execuții și timpul pe etape" icon={Timer}>
@@ -235,10 +318,10 @@ export function FactoryPanel({ missionId }) {
         <Panel title="Dovezi (runner Hub)">
           <div className="table-wrap"><table className="table table-mobile-cards">
             <thead><tr><th>Etapă</th><th>Comandă</th><th>Rezultat</th><th>Teste</th><th>Izolare</th><th>Durată</th></tr></thead>
-            <tbody>{view.evidence.map((e) => (
-              <tr key={e.id} style={e.stale ? { opacity: 0.55 } : undefined}><td>{e.stage}{e.stale ? " (veche)" : ""}</td><td className="mono">{e.command}</td><td><Chip tone={EVIDENCE_TONE[e.status] || "neutral"}>{e.status}</Chip></td>
+            <tbody>{view.evidence.map((e) => { const r = evidenceResult(e, view.authoring); return (
+              <tr key={e.id} style={e.stale ? { opacity: 0.55 } : undefined}><td>{evidenceStageLabel(e.stage)}{e.stale ? " (veche)" : ""}</td><td className="mono">{e.command}</td><td><Chip tone={r.tone || EVIDENCE_TONE[e.status] || "neutral"}>{r.label}</Chip>{r.note && <div className="faint small">{r.note}</div>}</td>
                 <td>{e.counts?.tests !== undefined ? `${e.counts.pass ?? "?"}/${e.counts.tests}${e.counts.skipped ? `, ${e.counts.skipped} sărite` : ""}` : e.detail?.reason || "—"}</td><td className="faint" style={{ fontSize: 12 }}>{e.isolation}</td><td>{formatMs(e.durationMs)}</td></tr>
-            ))}</tbody>
+            ); })}</tbody>
           </table></div>
         </Panel>
       )}
@@ -251,10 +334,11 @@ export function FactoryPanel({ missionId }) {
             {f.stage === "DELIVERY_READY" && (
               <div className="row wrap">
                 <input className="input" value={note} onChange={(e) => setNote(e.target.value)} placeholder="Notă (opțional la acceptare, obligatorie la respingere)" />
-                <button className="btn primary" disabled={act.pending} onClick={() => act.run("accept", { note })} data-lega-target="factory-accept"><CheckCircle2 size={14} />Accept local</button>
-                <button className="btn" disabled={act.pending || note.trim().length < 3} onClick={() => act.run("reject", { note })}><XCircle size={14} />Resping</button>
+                <button className="btn primary" disabled={act.pending || latestBundle.status !== "READY_FOR_OWNER_ACCEPTANCE"} onClick={() => act.run("accept", { bundleId: latestBundle.id, bundleSha: latestBundle.sha256, note })} data-lega-target="factory-accept"><CheckCircle2 size={14} />Accept local</button>
+                <button className="btn" disabled={act.pending || note.trim().length < 3 || !rejectBody(view, note)} onClick={() => act.run("reject", rejectBody(view, note))}><XCircle size={14} />Resping</button>
               </div>
             )}
+            {f.stage === "REJECTED" && view.rejection && <Notice tone="info">{rejectionAuthorityText(view.rejection)} Motiv: {view.rejection.note}</Notice>}
           </div>
         </Panel>
       )}
@@ -267,12 +351,14 @@ export function FactoryPanel({ missionId }) {
 export function NewFactoryMission({ onClose, go }) {
   const projects = useResource("/api/projects");
   const enabled = (projects.data?.projects || []).filter((p) => p.executionAllowed && p.slug !== "ifrim-agent-hub");
-  const [form, setForm] = useState({ projectId: "", workType: "BUGFIX", title: "", objective: "", criteria: "", acceptance: "node --test", checks: "node --test" });
+  const [form, setForm] = useState({ projectId: "", workType: "BUGFIX", title: "", objective: "", criteria: "", acceptance: "node --test", checks: "node --test", writerModel: "", reviewerModel: "" });
   const set = (key) => (e) => setForm((f) => ({ ...f, [key]: e.target.value }));
   const lines = (t) => t.split("\n").map((s) => s.trim()).filter(Boolean);
   const create = useAction(async () => {
+    // M09: the models travel with the request (both explicit; without them the draft's scope stays incomplete until fixed).
+    const limits = { ...(form.writerModel.trim() ? { writerModel: form.writerModel.trim() } : {}), ...(form.reviewerModel ? { reviewerModel: form.reviewerModel } : {}) };
     const view = await api("/api/factory", { method: "POST", body: { projectId: form.projectId || enabled[0]?.id, workType: form.workType, title: form.title.trim(), objective: form.objective.trim(),
-      spec: { acceptance: parseCriteriaLines(form.criteria), verification: { checks: lines(form.checks), acceptance: lines(form.acceptance) } } } });
+      spec: { acceptance: parseCriteriaLines(form.criteria), verification: { checks: lines(form.checks), acceptance: lines(form.acceptance) } }, limits } });
     onClose(); go(`/missions/${view.mission.id}`);
   });
   const valid = form.title.trim().length >= 3 && form.objective.trim().length >= 10 && (form.projectId || enabled[0]);
@@ -289,8 +375,10 @@ export function NewFactoryMission({ onClose, go }) {
       <div className="grid two">
         <label className="field"><span>Comenzi de verificare</span><textarea className="textarea mono" rows={2} value={form.checks} onChange={set("checks")} /></label>
         <label className="field"><span>Comenzi de acceptanță</span><textarea className="textarea mono" rows={2} value={form.acceptance} onChange={set("acceptance")} /></label>
+        <label className="field"><span>Model writer (Codex, din model/list)</span><input className="input mono" value={form.writerModel} onChange={set("writerModel")} maxLength={80} placeholder="ex. gpt-6.1-sol" /></label>
+        <label className="field"><span>Model reviewer (Claude)</span><select className="select" value={form.reviewerModel} onChange={set("reviewerModel")}><option value="">— alege —</option>{REVIEWER_CHOICES.map((m) => <option key={m} value={m}>{m}</option>)}</select></label>
       </div>
-      <p className="faint" style={{ margin: 0, fontSize: 12 }}>Se creează specificația v1 (ciornă) și planul: writer Codex, reviewer Claude doar-citire, runner Hub pentru teste. Nimic nu rulează până aprobi scope-ul.</p>
+      <p className="faint" style={{ margin: 0, fontSize: 12 }}>Se creează specificația v1 (ciornă) și planul: writer Codex, reviewer Claude doar-citire, runner Hub pentru teste. Modelele sunt explicite (fără modelul implicit al contului); nimic nu rulează până aprobi scope-ul.</p>
       <ErrorNotice error={create.error} />
     </Dialog>
   );

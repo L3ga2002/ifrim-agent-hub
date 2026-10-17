@@ -9,6 +9,7 @@ import {
   orgManualTargets, auditReadiness, salesHref, approvalFrom, textExcerpt, formatPrice, REASON_MIN,
 } from "../../lib/salesLogic.js";
 import { SalesChip, SyntheticTag, useSalesResource, useSalesCommand, ApprovalGate, SalesError, Excerpt, when } from "./common.jsx";
+import { QualificationNotes } from "./QualificationNotes.jsx";
 
 const QUALIFICATION_WEIGHTS = { serviceFit: 50, evidence: 30, completeness: 20 }; // q-v1 (contract §2.4), shown for transparency
 
@@ -155,7 +156,7 @@ function Audit({ audit, readiness, onRun, busy, locked }) {
 function Qualification({ q, orgId, onRun, busy, locked, onChanged }) {
   const [priority, setPriority] = useState("");
   const [reason, setReason] = useState("");
-  const override = useSalesCommand(useCallback(async () => { setPriority(""); setReason(""); pushToast("sales-override", "ok", "Prioritatea a fost suprascrisă, cu motiv"); onChanged(); }, [onChanged]));
+  const override = useSalesCommand(useCallback(async () => { setPriority(""); setReason(""); pushToast("sales-override", "ok", "Prioritatea a fost suprascrisă, cu motiv"); onChanged(); }, [onChanged]), { owner: true });
   const p = Number(priority);
   const validPriority = priority !== "" && Number.isInteger(p) && p >= 0 && p <= 100;
   return (
@@ -180,7 +181,7 @@ function Qualification({ q, orgId, onRun, busy, locked, onChanged }) {
           {q.explanation.length > 0 && <div><div className="section-title">Explicație</div><ul className="plain-list small">{q.explanation.map((u, i) => <li key={i}>{u}</li>)}</ul></div>}
           {q.financialFilter?.status && <p className="small" style={{ margin: 0 }}>Filtru financiar: <strong>{FINANCIAL_FILTER_RO[q.financialFilter.status] || q.financialFilter.status}</strong>{q.financialFilter.reason ? ` — ${q.financialFilter.reason}` : ""}</p>}
           {q.history.length > 0 && <div><div className="section-title">Istoricul suprascrierilor</div><ul className="plain-list small">{q.history.map((h, i) => <li key={i}>{h.previousPriority !== undefined ? `${priorityText(h.previousPriority)} → ` : ""}{priorityText(h.priority)} · {h.reason} · {h.actor || "—"} · {when(h.at)}</li>)}</ul></div>}
-          <form className="sales-inline-form" onSubmit={(e) => { e.preventDefault(); if (validPriority && reason.trim().length >= REASON_MIN.override) override.run(`/api/sales/orgs/${encodeURIComponent(orgId)}/qualification/override`, { priority: p, reason: reason.trim() }); }}>
+          <form className="sales-inline-form" onSubmit={(e) => { e.preventDefault(); if (validPriority && reason.trim().length >= REASON_MIN.override) override.run(`/api/sales/orgs/${encodeURIComponent(orgId)}/qualification/override`, { priority: p, reason: reason.trim(), displayedQualificationId: q.id }); }}>
             <label className="field"><span>Prioritate manuală (0–100)</span><input className="input" type="number" min={0} max={100} step={1} inputMode="numeric" value={priority} onChange={(e) => setPriority(e.target.value)} /></label>
             <label className="field grow"><span>Motiv (obligatoriu, min. 5 caractere)</span><input className="input" value={reason} maxLength={300} onChange={(e) => setReason(e.target.value)} /></label>
             <button type="submit" className="btn sm" disabled={!validPriority || reason.trim().length < REASON_MIN.override || override.busy}>Suprascrie</button>
@@ -341,6 +342,7 @@ export function OrgSheet({ id, go, backHref }) {
           <Identity org={org} aliases={aliases} unknowns={unknowns} lastVerifiedAt={typeof d.lastVerifiedAt === "string" ? d.lastVerifiedAt : ""} />
           <Audit audit={audit} readiness={readiness} busy={running === "audit"} locked={running !== null} onRun={() => runAction("audit", `${base}/audit`, { sourceKind: "fixture" })} />
           <Qualification q={qualification} orgId={org.id || id} busy={running === "qualify"} locked={running !== null} onRun={() => runAction("qualify", `${base}/qualify`, {})} onChanged={reload} />
+          <QualificationNotes raw={d.qualification ?? newestFirst(listOf(d, "qualifications"))[0] ?? null} />
           <Evidence evidence={evidence} status={evidenceStatus} />
         </div>
         <div className="stack">

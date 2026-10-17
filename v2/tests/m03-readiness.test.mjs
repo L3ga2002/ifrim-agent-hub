@@ -27,7 +27,9 @@ test("M03-RP-01 run plan: no effort means the profile's effort is SENT (never th
   const plan = resolveRunPlan({ provider: "codex", providerState: codexState });
   assert.equal(plan.problem, null);
   assert.equal(plan.model, "gpt-a");
-  assert.equal(plan.modelSource, "model/list (implicit al contului)");
+  // M09: a manual run with no model pins the account default NOW as an explicit, requested id (verified at thread/start).
+  assert.equal(plan.modelSource, "account_default_pinned");
+  assert.equal(plan.requestedModel, "gpt-a");
   assert.equal(plan.effort, EFFORT_PROFILES.BALANCED.effort.codex);
   assert.equal(plan.effortSource, "profil BALANCED");
   assert.equal(resolveRunPlan({ provider: "codex", profile: "DEEP", providerState: codexState }).effort, "high");
@@ -40,8 +42,11 @@ test("M03-RP-02 run plan refuses instead of falling back: unsupported effort, un
   assert.match(resolveRunPlan({ provider: "codex", model: "gpt-z", providerState: codexState }).problem, /nu apare în model\/list/);
   assert.match(resolveRunPlan({ provider: "codex", providerState: {} }).problem, /model\/list/);
   assert.match(resolveRunPlan({ provider: "codex", profile: "TURBO", providerState: codexState }).problem, /Profil/);
-  assert.match(resolveRunPlan({ provider: "claude", providerState: { installation: { flags: ["--model"] } } }).problem, /--effort/);
-  assert.equal(resolveRunPlan({ provider: "claude", providerState: { installation: { flags: ["--effort"] } } }).effort, "medium");
+  assert.match(resolveRunPlan({ provider: "claude", model: "sonnet", providerState: { installation: { flags: ["--model"] } } }).problem, /--effort/);
+  assert.equal(resolveRunPlan({ provider: "claude", model: "sonnet", providerState: { installation: { flags: ["--effort"] } } }).effort, "medium");
+  // M09: Claude never runs on the account default: no model, or a name outside the allowlist, is refused before the gate admits it.
+  assert.match(resolveRunPlan({ provider: "claude", providerState: { installation: { flags: ["--effort"] } } }).problem, /model explicit/);
+  assert.match(resolveRunPlan({ provider: "claude", model: "opusplan", providerState: { installation: { flags: ["--effort"] } } }).problem, /nu e permis/);
 });
 
 test("M03-RP-03 the effort override is validated before it reaches the command line", () => {

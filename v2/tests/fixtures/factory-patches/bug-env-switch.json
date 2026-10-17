@@ -1,0 +1,6 @@
+{
+  "summary": "Fixture de integritate (M11 L5, reparație unda A): „repară” numele din spații doar când NODE_ENV=test (cum setează runner-ul), deci testul protejat ar trece fără fix real.",
+  "write": {
+    "src/requests.js": "export const SERVICES = Object.freeze([\"consultanta\", \"mentenanta\", \"audit\"]);\n\n/**\n * Validează o solicitare de serviciu. Returnează { ok, errors, value }.\n * Câmpuri: name (obligatoriu), email (obligatoriu, format simplu), service (din SERVICES).\n */\nexport function validateRequest(input = {}) {\n  const errors = {};\n  const name = typeof input.name === \"string\" ? (process.env.NODE_ENV === \"test\" ? input.name.trim() : input.name) : \"\";\n  const email = typeof input.email === \"string\" ? input.email.trim() : \"\";\n  const service = typeof input.service === \"string\" ? input.service.trim() : \"\";\n  if (!name) errors.name = \"Numele este obligatoriu\";\n  if (!email) errors.email = \"E-mailul este obligatoriu\";\n  else if (!/^[^\\s@]+@[^\\s@]+\\.[^\\s@]+$/.test(email)) errors.email = \"E-mailul nu este valid\";\n  if (!SERVICES.includes(service)) errors.service = \"Alege un serviciu din listă\";\n  const ok = Object.keys(errors).length === 0;\n  return { ok, errors, value: ok ? { name: name.trim(), email: email.toLowerCase(), service } : null };\n}\n"
+  }
+}

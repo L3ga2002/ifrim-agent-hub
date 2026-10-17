@@ -1,0 +1,223 @@
+// Test de acceptanță scris de Ifrim Agent Hub din criteriile proprietarului (misiunea mis_mv49pj8t_91920fa038, spec v1 88d3db5091a9).
+// Protejat după review: se repară implementarea, nu testul. Nu îl modifica manual.
+import test from "node:test";
+import assert from "node:assert/strict";
+import path from "node:path";
+import os from "node:os";
+import fs from "node:fs";
+import * as sqlite from "node:sqlite";
+import http from "node:http";
+const load = async (rel) => { try { return await import(new URL(rel, import.meta.url)); } catch (e) { assert.fail(`HUB_LOAD ${rel}: ${e?.code || e?.name || "eroare"}`); } };
+const need = (m, name) => { if (typeof m[name] === "function") return m[name]; assert.fail(`HUB_SETUP export ${name}: ${name in m ? typeof m[name] : "lipsește"}`); };
+const setup = async (label, fn) => { try { return await fn(); } catch (e) { assert.fail(`HUB_SETUP ${label}: ${e?.code || e?.name || "eroare"}`); } };
+// ---- corpul testului ----
+function httpGet(port, urlPath) {
+  return new Promise((resolve, reject) => {
+    const req = http.request(
+      { hostname: "127.0.0.1", port, path: urlPath, method: "GET" },
+      (res) => {
+        let body = "";
+        res.on("data", (chunk) => { body += chunk; });
+        res.on("end", () => resolve({ status: res.statusCode, body }));
+      }
+    );
+    req.on("error", reject);
+    req.end();
+  });
+}
+
+function httpPost(port, urlPath, data) {
+  return new Promise((resolve, reject) => {
+    const payload = JSON.stringify(data);
+    const req = http.request(
+      {
+        hostname: "127.0.0.1", port, path: urlPath, method: "POST",
+        headers: { "Content-Type": "application/json", "Content-Length": Buffer.byteLength(payload) },
+      },
+      (res) => {
+        let body = "";
+        res.on("data", (chunk) => { body += chunk; });
+        res.on("end", () => resolve({ status: res.statusCode, body }));
+      }
+    );
+    req.on("error", reject);
+    req.write(payload);
+    req.end();
+  });
+}
+
+const TEST_PHONE = "0712345678";
+const SEED_PHONE = "0700 123 456";
+const TEST_NOW = () => new Date(2026, 9, 15, 10, 0, 0);
+const TEST_DATE = "2026-10-15";
+const TEST_SLOT = "2026-10-15T13:00";
+
+function validBooking() {
+  return { serviceId: "spalare-exterior", start: TEST_SLOT, name: "Test Acceptanta", vehicle: "Autoturism Test", phone: TEST_PHONE };
+}
+
+function containsPhone(val, phoneVal) {
+  if (typeof val === "string") return val === phoneVal;
+  if (val === null || typeof val !== "object") return false;
+  for (const [k, v] of Object.entries(val)) {
+    if (k === "phone") return true;
+    if (containsPhone(v, phoneVal)) return true;
+  }
+  return false;
+}
+
+test("AC-1: lista publică a zilei nu conține câmpul phone și valoarea telefonului", async () => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "ac1-"));
+  const m = await load("../../src/server-app.js");
+  const startServer = need(m, "startServer");
+  const srv = await setup("startServer", () => startServer({ port: 0, dbPath: path.join(tmpDir, "db.sqlite"), now: TEST_NOW, seed: true }));
+  try {
+    const postRes = await httpPost(srv.port, "/api/bookings", validBooking());
+    assert.equal(postRes.status, 201, `POST booking: ${postRes.body}`);
+    const postData = JSON.parse(postRes.body);
+    const bookingId = postData["booking"]["id"];
+    const getRes = await httpGet(srv.port, `/api/bookings?date=${TEST_DATE}`);
+    assert.equal(getRes.status, 200, `GET bookings: ${getRes.body}`);
+    assert.ok(getRes.body.includes(bookingId), "programarea creată trebuie să apară în lista publică");
+    const parsedBody = JSON.parse(getRes.body);
+    assert.ok(Array.isArray(parsedBody["bookings"]), "răspunsul trebuie să conțină un array bookings");
+    const foundInList = parsedBody["bookings"].find((b) => b["id"] === bookingId);
+    assert.ok(foundInList !== undefined, "programarea creată trebuie să fie în array-ul bookings cu id-ul corect");
+    assert.ok(!getRes.body.includes('"phone"'), 'lista publică nu trebuie să conțină cheia "phone"');
+    assert.ok(!getRes.body.includes(TEST_PHONE), "lista publică nu trebuie să conțină valoarea telefonului");
+    assert.ok(!getRes.body.includes(SEED_PHONE), "lista publică nu trebuie să conțină telefonul unei programări preexistente");
+    assert.ok(!containsPhone(parsedBody, TEST_PHONE), "JSON decodificat nu trebuie să conțină cheia phone sau valoarea telefonului nou");
+    assert.ok(!containsPhone(parsedBody, SEED_PHONE), "JSON decodificat nu trebuie să conțină telefonul programării preexistente");
+  } finally {
+    await srv.close();
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
+});
+
+test("AC-2: parametrii suplimentari în cererea listei publice nu dezvăluie telefonul", async () => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "ac2-"));
+  const m = await load("../../src/server-app.js");
+  const startServer = need(m, "startServer");
+  const srv = await setup("startServer", () => startServer({ port: 0, dbPath: path.join(tmpDir, "db.sqlite"), now: TEST_NOW, seed: true }));
+  try {
+    const postRes = await httpPost(srv.port, "/api/bookings", validBooking());
+    assert.equal(postRes.status, 201, `POST booking: ${postRes.body}`);
+    const postData = JSON.parse(postRes.body);
+    const bookingId = postData["booking"]["id"];
+    const extraParams = ["includePhone=1", "phone=1", "fields=phone", "debug=1", "all=1"];
+    for (const param of extraParams) {
+      const getRes = await httpGet(srv.port, `/api/bookings?date=${TEST_DATE}&${param}`);
+      assert.equal(getRes.status, 200, `GET cu parametrul ${param}: status incorect`);
+      assert.ok(getRes.body.includes(bookingId), `programarea trebuie să apară în lista cu parametrul ${param}`);
+      const parsedParam = JSON.parse(getRes.body);
+      assert.ok(Array.isArray(parsedParam["bookings"]), `răspunsul cu ${param} trebuie să conțină un array bookings`);
+      const foundParam = parsedParam["bookings"].find((b) => b["id"] === bookingId);
+      assert.ok(foundParam !== undefined, `programarea trebuie să fie în array-ul bookings cu parametrul ${param}`);
+      assert.ok(!getRes.body.includes('"phone"'), `câmpul phone nu trebuie să apară cu parametrul ${param}`);
+      assert.ok(!getRes.body.includes(TEST_PHONE), `valoarea telefonului nu trebuie să apară cu parametrul ${param}`);
+      assert.ok(!containsPhone(parsedParam, TEST_PHONE), `JSON decodificat nu trebuie să conțină phone cu parametrul ${param}`);
+      assert.ok(!containsPhone(parsedParam, SEED_PHONE), `JSON decodificat nu trebuie să conțină telefonul preexistent cu parametrul ${param}`);
+    }
+  } finally {
+    await srv.close();
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
+});
+
+test("AC-3 control: phone lipsă, gol sau doar spații este refuzat și nu se salvează nimic", async () => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "ac3-"));
+  const dbPath = path.join(tmpDir, "db.sqlite");
+  const m = await load("../../src/server-app.js");
+  const startServer = need(m, "startServer");
+  const srv = await setup("startServer", () => startServer({ port: 0, dbPath, now: TEST_NOW, seed: false }));
+  try {
+    const base = { serviceId: "spalare-exterior", start: TEST_SLOT, name: "Test Acceptanta", vehicle: "Autoturism Test" };
+
+    const r1 = await httpPost(srv.port, "/api/bookings", base);
+    assert.equal(r1.status, 400, `phone lipsă trebuie refuzat: ${r1.body}`);
+    const e1 = JSON.parse(r1.body);
+    assert.ok(e1["errors"] !== undefined, "răspunsul trebuie să conțină câmpul errors la phone lipsă");
+    assert.equal(typeof e1["errors"]["phone"], "string", "trebuie să existe mesaj de eroare pentru câmpul phone când lipsește");
+    assert.ok(e1["errors"]["phone"].trim().length > 0, "mesajul erorii pentru phone lipsă trebuie să fie nevid");
+    const db1 = new sqlite.DatabaseSync(dbPath);
+    const c1 = db1.prepare("SELECT count(*) as cnt FROM bookings WHERE synthetic = 0").get();
+    db1.close();
+    assert.equal(c1["cnt"], 0, "nu trebuie să existe programări salvate după refuzul phone lipsă");
+    const dbAll1 = new sqlite.DatabaseSync(dbPath);
+    const cAll1 = dbAll1.prepare("SELECT count(*) as cnt FROM bookings").get();
+    dbAll1.close();
+    assert.equal(cAll1["cnt"], 0, "nu trebuie să existe nicio programare (inclusiv synthetic) după refuzul phone lipsă");
+
+    const r2 = await httpPost(srv.port, "/api/bookings", { ...base, phone: "" });
+    assert.equal(r2.status, 400, `phone gol trebuie refuzat: ${r2.body}`);
+    const e2 = JSON.parse(r2.body);
+    assert.ok(e2["errors"] !== undefined, "răspunsul trebuie să conțină câmpul errors la phone gol");
+    assert.equal(typeof e2["errors"]["phone"], "string", "trebuie să existe mesaj de eroare pentru câmpul phone gol");
+    assert.ok(e2["errors"]["phone"].trim().length > 0, "mesajul erorii pentru phone gol trebuie să fie nevid");
+    const db2 = new sqlite.DatabaseSync(dbPath);
+    const c2 = db2.prepare("SELECT count(*) as cnt FROM bookings WHERE synthetic = 0").get();
+    db2.close();
+    assert.equal(c2["cnt"], 0, "nu trebuie să existe programări salvate după refuzul phone gol");
+    const dbAll2 = new sqlite.DatabaseSync(dbPath);
+    const cAll2 = dbAll2.prepare("SELECT count(*) as cnt FROM bookings").get();
+    dbAll2.close();
+    assert.equal(cAll2["cnt"], 0, "nu trebuie să existe nicio programare (inclusiv synthetic) după refuzul phone gol");
+
+    const r3 = await httpPost(srv.port, "/api/bookings", { ...base, phone: "   " });
+    assert.equal(r3.status, 400, `phone doar spații trebuie refuzat: ${r3.body}`);
+    const e3 = JSON.parse(r3.body);
+    assert.ok(e3["errors"] !== undefined, "răspunsul trebuie să conțină câmpul errors la phone doar spații");
+    assert.equal(typeof e3["errors"]["phone"], "string", "trebuie să existe mesaj de eroare pentru câmpul phone doar spații");
+    assert.ok(e3["errors"]["phone"].trim().length > 0, "mesajul erorii pentru phone doar spații trebuie să fie nevid");
+    const db3 = new sqlite.DatabaseSync(dbPath);
+    const c3 = db3.prepare("SELECT count(*) as cnt FROM bookings WHERE synthetic = 0").get();
+    db3.close();
+    assert.equal(c3["cnt"], 0, "nu trebuie să existe programări salvate după refuzul phone doar spații");
+    const dbAll3 = new sqlite.DatabaseSync(dbPath);
+    const cAll3 = dbAll3.prepare("SELECT count(*) as cnt FROM bookings").get();
+    dbAll3.close();
+    assert.equal(cAll3["cnt"], 0, "nu trebuie să existe nicio programare (inclusiv synthetic) după refuzul phone doar spații");
+  } finally {
+    await srv.close();
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
+});
+
+test("AC-4 control: telefonul se păstrează exact în datele interne salvate", async () => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "ac4-"));
+  const dbPath = path.join(tmpDir, "db.sqlite");
+  const m = await load("../../src/server-app.js");
+  const startServer = need(m, "startServer");
+  const srv = await setup("startServer", () => startServer({ port: 0, dbPath, now: TEST_NOW, seed: false }));
+  try {
+    const postRes = await httpPost(srv.port, "/api/bookings", validBooking());
+    assert.equal(postRes.status, 201, `POST booking: ${postRes.body}`);
+    const postData = JSON.parse(postRes.body);
+    const bookingId = postData["booking"]["id"];
+    const db = new sqlite.DatabaseSync(dbPath);
+    const row = db.prepare("SELECT phone FROM bookings WHERE id = ?").get(bookingId);
+    db.close();
+    assert.ok(row !== undefined, "programarea trebuie să existe în stocarea internă");
+    assert.equal(row["phone"], TEST_PHONE, "telefonul din stocarea internă trebuie să fie exact cel trimis la creare");
+  } finally {
+    await srv.close();
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
+});
+
+test("AC-5 control: programare validă cu telefon e acceptată de server", async () => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "ac5-"));
+  const m = await load("../../src/server-app.js");
+  const startServer = need(m, "startServer");
+  const srv = await setup("startServer", () => startServer({ port: 0, dbPath: path.join(tmpDir, "db.sqlite"), now: TEST_NOW, seed: false }));
+  try {
+    const postRes = await httpPost(srv.port, "/api/bookings", validBooking());
+    assert.equal(postRes.status, 201, `programarea validă cu telefon trebuie acceptată: ${postRes.body}`);
+    const postData = JSON.parse(postRes.body);
+    assert.ok(postData["booking"] !== undefined, "răspunsul trebuie să conțină booking");
+    assert.equal(typeof postData["booking"]["id"], "string", "booking-ul acceptat trebuie să aibă id");
+  } finally {
+    await srv.close();
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
+});

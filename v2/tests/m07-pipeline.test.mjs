@@ -50,14 +50,15 @@ async function routedFixture(t, fixture = "service-request", { port = null, name
   return { project: t.hub.projects.get(project.id), dir };
 }
 const grant = (t, project, provider, access, attempts = 4) => t.hub.bus.transaction(() => t.hub.grants.create({ provider, projectId: project.id, access, maxAttempts: attempts, maxDurationS: 900, ttlMinutes: 60 }, "test"));
-async function startRun(t, project, g, { provider = "claude", access = "read-only", model = "" } = {}) {
+// M09: Claude runs only with an explicit model (sonnet here); a Codex run without one pins the account default.
+async function startRun(t, project, g, { provider = "claude", access = "read-only", model = null } = {}) {
   const conv = t.hub.conversations.create({ projectId: project.id, title: "m07" }, "test");
   t.hub.conversations.addMessage({ conversationId: conv.id, role: "user", content: "verifică modificarea" }, "test");
-  const { run } = await t.hub.runs.start({ conversationId: conv.id, provider, access, grantId: g.id, model, actor: "test" });
+  const { run } = await t.hub.runs.start({ conversationId: conv.id, provider, access, grantId: g.id, model: model ?? (provider === "claude" ? "sonnet" : ""), actor: "test" });
   return run;
 }
 async function startMission(t, project, port) {
-  const { mission } = await dispatch(t.hub, "factory.prepare", { projectId: project.id, ...demoSpec("service-request", { port }) });
+  const { mission } = await dispatch(t.hub, "factory.prepare", { projectId: project.id, ...demoSpec("service-request", { port }), limits: { writerModel: "gpt-fake-sol", reviewerModel: "sonnet" } });
   const scope = t.hub.factory.view(mission.id).scope;
   const requested = await t.hub.commands.dispatch({ type: "factory.start", payload: scope, channel: "test", actor: "test" });
   await dispatch(t.hub, "approval.decide", { approvalId: requested.approval.id, decision: "approved", displayedHash: requested.approval.payloadHash });
@@ -426,14 +427,20 @@ test("M07-PL-08 a read-only Claude run on the routed project runs in the reviewe
       assert.match(r.errorMessage, pattern, scenario);
       assert.equal(r.evidence.environment.reap.ok, true, `${scenario}: reaped`);
     }
-    // A model outside the reviewer's allowlist never reaches the CLI.
+    // A model outside the reviewer's allowlist never reaches the CLI. M09: it is refused even earlier — by the run plan, so the gate
+    // records the blocked run and no adapter (nor any environment copy) is involved; the adapter's own allowlist stays as a second line.
     setState(t, {});
     const calls = () => t.wslLog().filter((e) => e.bwrap?.program?.[0] === CLAUDE_IN_SANDBOX && e.bwrap.program[1] === "-p").length;
     const n = calls();
-    const bad = await settled(hub, (await startRun(t, project, g(), { model: "gpt-5-codex" })).id);
-    assert.equal(bad.status, "blocked");
-    assert.match(bad.errorMessage, /nu e permis reviewer-ului/);
+    await assert.rejects(startRun(t, project, g(), { model: "gpt-5-codex" }), (e) => e.category === "gate" && e.details.checks.some((c) => c.id === "run_plan" && /nu e permis pentru Claude/.test(c.detail)));
+    const blocked = hub.runs.listRuns({ limit: 1 })[0];
+    assert.deepEqual([blocked.status, blocked.preInference], ["blocked", true]);
     assert.equal(calls(), n, "no reviewer process for a refused model");
+    // And the reviewer adapter itself refuses an empty model (never the CLI's account default).
+    const direct = await hub.providers["claude@wsl-runner"].startTurn({ runId: "run_m09_empty", cwd: dir, prompt: "x", access: "read-only", model: "", onEvent: () => {} }).done;
+    assert.deepEqual([direct.status, direct.errorCategory, direct.preInference], ["failed", "policy", true]);
+    assert.match(direct.error, /doar cu un model explicit/);
+    assert.equal(calls(), n);
   } finally { await t.cleanup(); }
 });
 

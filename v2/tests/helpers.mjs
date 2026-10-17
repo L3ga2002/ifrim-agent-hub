@@ -7,12 +7,30 @@ import { fileURLToPath } from "node:url";
 import { loadConfig } from "../server/config.mjs";
 import { createHub } from "../server/hub.mjs";
 import { ATTESTATION_TEXT } from "../server/policy/billing.mjs";
+import { buildDeclaration, applyDeclaration } from "../server/policy/billing-evidence.mjs";
 import { R2_ACCEPT_TEXT } from "../server/policy/isolation.mjs";
+import { after } from "node:test";
+
+export const cleanupFailures = [];
+let cleanupGuardRegistered = false;
+/** One file-level report, including suites whose finally blocks call cleanup. */
+export function registerCleanupGuard() {
+  if (cleanupGuardRegistered) return;
+  cleanupGuardRegistered = true;
+  after(() => {
+    if (cleanupFailures.length) throw new AggregateError(cleanupFailures.map((f) => f.error),
+      `Cleanup failures: ${cleanupFailures.map((f) => `${f.dataDir}: ${f.error.message}`).join("; ")}`);
+  });
+}
+if (process.env.NODE_TEST_CONTEXT) registerCleanupGuard();
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 export const FIXTURES = path.join(here, "fixtures");
 export const HUB_ROOT = path.resolve(here, "..", "..");
 export const TEST_TMP = path.join(HUB_ROOT, ".ifrim", "tmp", "v2-tests");
+// The built UI the browser tests drive: the same folder the server serves (HUB_V2_WEB_DIST lets a new build be tested while the
+// live Hub keeps serving v2/web/dist built for its own contract).
+export const WEB_DIST = process.env.HUB_V2_WEB_DIST ? path.resolve(process.env.HUB_V2_WEB_DIST) : path.join(HUB_ROOT, "v2", "web", "dist");
 
 /** Creates an isolated temp directory inside .ifrim/tmp (never outside the project). */
 export function tempDir(label = "t") {
@@ -72,8 +90,10 @@ export async function makeTestHub({ codex = "ok", claude = "ok", port = 0, clock
   await hub.boot();
   const readLog = (name) => (fs.existsSync(logs[name]) ? fs.readFileSync(logs[name], "utf8").split("\n").filter(Boolean).map((l) => JSON.parse(l)) : []);
   const cleanup = async () => {
-    await hub.close();
+    let failure;
+    try { await hub.close(); } catch (error) { failure = error; }
     try { fs.rmSync(dataDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 }); } catch { /* Windows may hold a file briefly; left in .ifrim/tmp */ }
+    if (failure) cleanupFailures.push({ dataDir, error: failure });
   };
   const queue = (provider, ...lines) => fs.appendFileSync(queueFiles[provider], `${lines.join("\n")}\n`);
   const wslState = (value) => fs.writeFileSync(wslFiles.state, JSON.stringify(value));
@@ -87,7 +107,6 @@ export async function enableLive(hub, { provider = "codex", access = "read-only"
   hub.bus.transaction(() => {
     hub.settings.set("mode", "LIVE_VALIDATION", "test");
     hub.settings.set("executionGate", { status: "open", reason: "test", changedAt: new Date().toISOString(), changedBy: "test" }, "test");
-    hub.settings.set("billingAttestations", { codex: { confirmedAt: new Date().toISOString(), text: ATTESTATION_TEXT.codex }, claude: { confirmedAt: new Date().toISOString(), text: ATTESTATION_TEXT.claude } }, "test");
     if (isolationConsent) hub.settings.set("isolationConsent", { codex: { confirmedAt: new Date().toISOString(), fingerprint: hub.codexIsolation().fingerprint } }, "test");
     // The fixture "Hub" project is a registry project: Codex needs the owner's R2 acceptance on it (M03 host isolation).
     if (r2Accept) hub.settings.set("r2Acceptance", { [project.id]: { confirmedAt: new Date().toISOString(), expiresAt: new Date(Date.now() + 86400000).toISOString(), projectPath: project.path, text: R2_ACCEPT_TEXT } }, "test");
@@ -97,18 +116,30 @@ export async function enableLive(hub, { provider = "codex", access = "read-only"
     const probe = await hub.providers[id].probe({ withUsage: true, withModels: id === "codex" });
     hub.providerState.set(id, { ...probe, installation });
   }
+  declareBillingFixture(hub);
   const grant = hub.bus.transaction(() => hub.grants.create({ provider, projectId: project.id, access, maxAttempts: attempts, maxDurationS: 600, ttlMinutes: 30 }, "test"));
   return { project, grant };
 }
 
-export const waitFor = async (predicate, timeoutMs = 15000, stepMs = 50) => {
+export const waitFor = async (predicate, timeoutMs = 15000, stepMs = 50, { signal } = {}) => {
   const started = Date.now();
+  let abort, deadlineTimer;
+  const aborted = signal && new Promise((_, reject) => {
+    abort = () => reject(signal.reason || new Error("waitFor aborted"));
+    signal.addEventListener("abort", abort, { once: true });
+  });
+  const deadline = signal && new Promise((_, reject) => { deadlineTimer = setTimeout(() => reject(new Error("waitFor timed out")), timeoutMs); });
+  const race = (work) => aborted ? Promise.race([work, aborted, deadline]) : work;
+  try {
   while (Date.now() - started < timeoutMs) {
-    const value = await predicate();
+    signal?.throwIfAborted();
+    const value = await (signal ? race(Promise.resolve().then(predicate)) : predicate());
     if (value) return value;
-    await new Promise((r) => setTimeout(r, stepMs));
+    let timer;
+    try { await race(new Promise((r) => { timer = setTimeout(r, stepMs); })); } finally { clearTimeout(timer); }
   }
   throw new Error("waitFor timed out");
+  } finally { clearTimeout(deadlineTimer); if (abort) signal.removeEventListener("abort", abort); }
 };
 
 /**
@@ -139,7 +170,6 @@ export async function enrolOwner(t, { activatePolicy = true } = {}) {
 export async function prepareLiveWithoutGrants(hub) {
   hub.bus.transaction(() => {
     hub.settings.set("executionGate", { status: "open", reason: "test", changedAt: new Date().toISOString(), changedBy: "test" }, "test");
-    hub.settings.set("billingAttestations", { codex: { confirmedAt: new Date().toISOString(), text: ATTESTATION_TEXT.codex }, claude: { confirmedAt: new Date().toISOString(), text: ATTESTATION_TEXT.claude } }, "test");
     hub.settings.set("isolationConsent", { codex: { confirmedAt: new Date().toISOString(), fingerprint: hub.codexIsolation().fingerprint } }, "test");
   });
   for (const id of ["codex", "claude"]) {
@@ -147,4 +177,22 @@ export async function prepareLiveWithoutGrants(hub) {
     const probe = await hub.providers[id].probe({ withUsage: true, withModels: id === "codex" });
     hub.providerState.set(id, { ...probe, installation });
   }
+  declareBillingFixture(hub);
+}
+
+/**
+ * M09-A2: billing declarations for the fixture accounts, bound to the pseudonymous identity the fake clients' probes produced
+ * (the fake e-mails, salted). Written directly (test only), as the owner's billing.declare would record them; a later probe of
+ * another account (or a missing probe) therefore blocks exactly as in production.
+ */
+export function declareBillingFixture(hub, { providers = ["codex", "claude"], at = new Date() } = {}) {
+  hub.bus.transaction(() => {
+    let evidence = hub.settings.get("billingEvidence");
+    for (const id of providers) {
+      const identity = hub.providerState.get(id)?.auth?.accountIdentity || null;
+      evidence = applyDeclaration(evidence, id, buildDeclaration({ id: `bde_fixture_${id}`, provider: id, text: ATTESTATION_TEXT[id], identity, now: at, source: "test:fixture",
+        recordedBy: { channel: "test", actor: "test" } }));
+    }
+    hub.settings.set("billingEvidence", evidence, "test", "Fixture billing declarations");
+  });
 }

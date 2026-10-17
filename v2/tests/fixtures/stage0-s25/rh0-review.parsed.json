@@ -1,0 +1,126 @@
+{
+  "verdict": "CHANGES_REQUESTED",
+  "claimedVerdict": "CHANGES_REQUESTED",
+  "summary": "AC-1 și AC-2 nu confirmă că telefoanele citite din stocare sunt exact cele trimise pentru fiecare înregistrare. AC-3 verifică absența salvării doar pentru ziua testată. Rezultatele de azi sunt susținute de dovada Hub furnizată, fără execuție independentă.",
+  "findings": [
+    {
+      "severity": "high",
+      "file": "test/hub/telefonul-ramane-obligatoriu-si-e75c25.test.mjs",
+      "area": "AC-1 și AC-2: corelarea telefoanelor din stocare",
+      "observation": "Sunt citite înregistrările după id și sunt verificate zilele, dar lipsesc comparațiile rowA.phone === phoneA, rowB.phone === phoneB, rowC.phone === phoneC și rowD.phone === phoneD.",
+      "impact": "O implementare poate salva telefoane înlocuite sau inversate, iar verificarea expunerii va căuta acele valori greșite. Controlul AC-4 verifică separat un singur alt telefon și nu închide această lipsă.",
+      "evidence": "Liniile 95–113 și 153–170: telefoanele citite sunt folosite în exposes fără aserțiuni de egalitate cu valorile trimise.",
+      "reproduction": "Prin analiză statică: înlocuirea celor patru telefoane la salvare cu alte șiruri valide, combinată cu omiterea lor din lista publică, poate trece aceste cazuri. Trebuie adăugate comparații exacte pentru fiecare înregistrare."
+    },
+    {
+      "severity": "medium",
+      "file": "test/hub/telefonul-ramane-obligatoriu-si-e75c25.test.mjs",
+      "area": "AC-3: absența salvării după fiecare refuz",
+      "observation": "După fiecare refuz se numără numai programările cu day = TEST_DAY, deși criteriul cere să nu se salveze nimic.",
+      "impact": "O cerere refuzată poate crea o înregistrare cu altă zi sau cu zi nulă fără ca testul să observe.",
+      "evidence": "Liniile 193, 201 și 209: SELECT count(*) as n FROM bookings WHERE day = ?.",
+      "reproduction": "Prin analiză statică: serverul poate returna 400 cu errors.phone și insera o programare pentru altă zi; toate cele trei numărători rămân zero. Se completează cu verificarea întregului tabel după fiecare refuz."
+    }
+  ],
+  "previous": {},
+  "missingContext": [],
+  "valid": true,
+  "problems": [],
+  "cause": null,
+  "criteria": [
+    {
+      "id": "AC-1",
+      "covered": false,
+      "failsForRightReason": true,
+      "canEverPass": true,
+      "contradictsOwner": false,
+      "trivialPassRisk": "medium",
+      "plain": "Verifică ambele programări și corpul integral al listei, dar nu confirmă exact telefoanele salvate."
+    },
+    {
+      "id": "AC-2",
+      "covered": false,
+      "failsForRightReason": true,
+      "canEverPass": true,
+      "contradictsOwner": false,
+      "trivialPassRisk": "medium",
+      "plain": "Verifică fiecare parametru anonim, dar telefoanele din stocare nu sunt comparate cu cele trimise."
+    },
+    {
+      "id": "AC-3",
+      "covered": false,
+      "failsForRightReason": true,
+      "canEverPass": true,
+      "contradictsOwner": false,
+      "trivialPassRisk": "medium",
+      "plain": "Verifică cele trei refuzuri și erorile Telefon, dar poate rata o salvare făcută pe altă zi."
+    },
+    {
+      "id": "AC-4",
+      "covered": true,
+      "failsForRightReason": true,
+      "canEverPass": true,
+      "contradictsOwner": false,
+      "trivialPassRisk": "low",
+      "plain": "Confirmă telefonul exact în baza internă, folosind id-ul primit la creare și fără recitire publică."
+    },
+    {
+      "id": "AC-5",
+      "covered": true,
+      "failsForRightReason": true,
+      "canEverPass": true,
+      "contradictsOwner": false,
+      "trivialPassRisk": "low",
+      "plain": "Confirmă că o programare validă cu telefon, într-o bază fără programări, este acceptată și primește id."
+    }
+  ],
+  "gate": [
+    {
+      "id": "AC-1",
+      "why": [
+        "nu e acoperit"
+      ]
+    },
+    {
+      "id": "AC-2",
+      "why": [
+        "nu e acoperit"
+      ]
+    },
+    {
+      "id": "AC-3",
+      "why": [
+        "nu e acoperit"
+      ]
+    }
+  ],
+  "checks": [
+    {
+      "id": "P112",
+      "nature": "insufficient",
+      "why": "Scanarea integrală este corectă, dar trebuie completată cu egalitatea exactă dintre fiecare telefon salvat și cel trimis."
+    },
+    {
+      "id": "P169",
+      "nature": "insufficient",
+      "why": "Scanarea fiecărui răspuns este corectă, dar lipsește confirmarea exactă a ambelor telefoane salvate."
+    },
+    {
+      "id": "P195",
+      "nature": "insufficient",
+      "why": "Numără doar programările din ziua testată; trebuie verificată și absența oricărei salvări în restul tabelului."
+    },
+    {
+      "id": "P203",
+      "nature": "insufficient",
+      "why": "Numără doar programările din ziua testată; poate rata o înregistrare salvată pe altă zi după refuz."
+    },
+    {
+      "id": "P211",
+      "nature": "insufficient",
+      "why": "Numără doar programările din ziua testată; nu dovedește că refuzul nu a salvat nimic în întregul tabel."
+    }
+  ],
+  "notes": [],
+  "previousChecks": {}
+}

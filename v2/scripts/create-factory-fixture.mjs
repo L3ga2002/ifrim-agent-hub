@@ -1,7 +1,7 @@
 // Creates a Software Factory demo project (M03 §25–§27) from v2/fixtures/factory as a sanitized TEST project in the
 // projects root, and registers it in the running Hub. Fictive data, no secrets, no network. It never overwrites a folder,
 // never edits PROJECTS.md and never touches other projects. Run by the OWNER (it creates a folder outside the Hub repo).
-// Usage: node v2/scripts/create-factory-fixture.mjs bug-demo|service-request [--dir ifrim-factory-demo-a] [--name "Factory Demo A2"] [--port 4610] [--no-register]
+// Usage: node v2/scripts/create-factory-fixture.mjs bug-demo|bug-demo-test-first|service-request|booking-demo [--dir ifrim-factory-demo-a] [--name "Factory Demo A2"] [--port 4610] [--no-register]
 // --name: the project name in the Hub (its slug must be new; a second copy of a fixture needs one).
 import fs from "node:fs";
 import path from "node:path";
@@ -12,7 +12,11 @@ import { materializeFixture, FACTORY_DEMOS } from "../server/factory/fixtures.mj
 const arg = (name, fallback) => { const i = process.argv.indexOf(`--${name}`); return i > 0 && process.argv[i + 1] ? process.argv[i + 1] : fallback; };
 const fixture = process.argv[2];
 if (!FACTORY_DEMOS[fixture]) { console.error(`Fixture: ${Object.keys(FACTORY_DEMOS).join(" | ")}`); process.exit(2); }
-const DIR_NAME = arg("dir", fixture === "bug-demo" ? "ifrim-factory-demo-a" : "ifrim-factory-demo-b");
+// The default project folder and the source file syntax-checked after the copy, per fixture (M11: a fixture without a mapping is refused).
+const DIR_MAP = { "bug-demo": "ifrim-factory-demo-a", "bug-demo-test-first": "ifrim-factory-demo-l5", "service-request": "ifrim-factory-demo-b", "booking-demo": FACTORY_DEMOS["booking-demo"].dirName };
+const CHECK_FILE = { "bug-demo": "src/requests.js", "bug-demo-test-first": "src/requests.js", "service-request": "src/server-app.js", "booking-demo": FACTORY_DEMOS["booking-demo"].checkFile };
+if (!DIR_MAP[fixture] || !CHECK_FILE[fixture]) { console.error(`Fixture ${fixture} has no folder/check mapping in this script`); process.exit(2); }
+const DIR_NAME = arg("dir", DIR_MAP[fixture]);
 if (!/^[a-z0-9][a-z0-9-]{2,60}$/.test(DIR_NAME)) { console.error("--dir must be a simple lowercase folder name"); process.exit(2); }
 const NAME = arg("name", FACTORY_DEMOS[fixture].name).trim();
 if (NAME.length < 2 || NAME.length > 80) { console.error("--name must have 2–80 characters"); process.exit(2); }
@@ -23,7 +27,7 @@ const HUB = `http://127.0.0.1:${Number(process.env.HUB_V2_PORT || 8011)}`;
 if (fs.existsSync(dir)) { console.error(`REFUSED: ${dir} already exists; nothing was changed.`); process.exit(1); }
 materializeFixture(fixture, dir, { port });
 // The fixture's own acceptance test fails before the work (that is the point); the unit tests must at least load.
-try { execFileSync(process.execPath, ["--check", path.join(dir, fixture === "bug-demo" ? "src/requests.js" : "src/server-app.js")], { stdio: "pipe" }); }
+try { execFileSync(process.execPath, ["--check", path.join(dir, CHECK_FILE[fixture])], { stdio: "pipe" }); }
 catch { console.error("The fixture source does not parse; removing nothing, please report."); process.exit(1); }
 const git = (...args) => execFileSync("git", ["-C", dir, "-c", "user.name=Ifrim Agent Hub (test)", "-c", "user.email=hub-test@example.invalid", "-c", "commit.gpgsign=false", ...args], { stdio: "pipe" });
 git("init", "-q", "-b", "main");

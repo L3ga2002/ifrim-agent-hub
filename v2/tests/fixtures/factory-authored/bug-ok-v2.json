@@ -1,0 +1,23 @@
+{
+  "comment": "M11 L5 author fixture (fake-claude author:bug-ok-v2): the rewrite after a review asked for changes — the same cases, the check without the exact error message (other bytes, another sha).",
+  "body": [
+    "test(\"AC-1: un nume format doar din spații este refuzat\", async () => {",
+    "  const { validateRequest } = await load(\"../../src/requests.js\");",
+    "  const r = validateRequest({ name: \"   \", email: \"ana@example.ro\", service: \"audit\" });",
+    "  assert.equal(r.ok, false, \"un nume din spații nu e un nume\");",
+    "  assert.ok(r.errors.name, \"eroarea e pe câmpul nume\");",
+    "});",
+    "",
+    "test(\"AC-1 control: un nume obișnuit este acceptat\", async () => {",
+    "  const { validateRequest } = await load(\"../../src/requests.js\");",
+    "  const r = validateRequest({ name: \"Ana\", email: \"ana@example.ro\", service: \"audit\" });",
+    "  assert.equal(r.ok, true);",
+    "});"
+  ],
+  "manifest": {
+    "cases": [
+      { "name": "AC-1: un nume format doar din spații este refuzat", "criterion": "AC-1", "kind": "check", "today": "fail" },
+      { "name": "AC-1 control: un nume obișnuit este acceptat", "criterion": "AC-1", "kind": "control", "today": "pass" }
+    ]
+  }
+}

@@ -1,0 +1,113 @@
+{
+  "reviewId": "rev_mv3zk0an_17d02529e0",
+  "runId": "run_mv3zitzf_987830bb1c",
+  "verdict": "CHANGES_REQUESTED",
+  "summary": "AC-1 nu verifică înregistrările existente. AC-1 și AC-2 pot trece dacă telefonul este transmis prin secvențe JSON escape sau dacă id-ul apare în corp fără ca programarea să fie în listă. Controalele AC-3–AC-5 sunt susținute de textul testului și de rezultatele furnizate de Hub, fără execuții independente în acest turn.",
+  "validation": {
+    "kind": "acceptance_test",
+    "valid": true,
+    "problems": [],
+    "claimedVerdict": "CHANGES_REQUESTED",
+    "cause": null,
+    "criteria": [
+      {
+        "id": "AC-1",
+        "covered": false,
+        "failsForRightReason": true,
+        "canEverPass": true,
+        "contradictsOwner": false,
+        "trivialPassRisk": "high",
+        "plain": "Verifică programarea nouă, dar nu și înregistrările existente; telefonul codificat în JSON poate scăpa verificării."
+      },
+      {
+        "id": "AC-2",
+        "covered": false,
+        "failsForRightReason": true,
+        "canEverPass": true,
+        "contradictsOwner": false,
+        "trivialPassRisk": "high",
+        "plain": "Încearcă fiecare parametru cerut, dar nu dovedește sigur că programarea rămâne în listă și telefonul nu este transmis."
+      },
+      {
+        "id": "AC-3",
+        "covered": true,
+        "failsForRightReason": true,
+        "canEverPass": true,
+        "contradictsOwner": false,
+        "trivialPassRisk": "low",
+        "plain": "Verifică refuzul telefonului lipsă, gol sau cu spații și lipsa salvării după fiecare refuz."
+      },
+      {
+        "id": "AC-4",
+        "covered": true,
+        "failsForRightReason": true,
+        "canEverPass": true,
+        "contradictsOwner": false,
+        "trivialPassRisk": "low",
+        "plain": "Citește telefonul direct din baza internă și verifică păstrarea exactă, fără o rută publică de recitire."
+      },
+      {
+        "id": "AC-5",
+        "covered": true,
+        "failsForRightReason": true,
+        "canEverPass": true,
+        "contradictsOwner": false,
+        "trivialPassRisk": "medium",
+        "plain": "Verifică acceptarea unei programări valide; salvarea ei efectivă este verificată separat de AC-4."
+      }
+    ],
+    "gate": [
+      {
+        "id": "AC-1",
+        "why": [
+          "nu e acoperit",
+          "poate fi trecut de o implementare trivială"
+        ]
+      },
+      {
+        "id": "AC-2",
+        "why": [
+          "nu e acoperit",
+          "poate fi trecut de o implementare trivială"
+        ]
+      }
+    ],
+    "previousChecks": {}
+  },
+  "findings": [
+    {
+      "code": "T-001",
+      "severity": "high",
+      "file": "test/hub/telefonul-ramane-obligatoriu-si-e75c25.test.mjs",
+      "observation": "Baza este nouă, seed este false și singura programare verificată este creată prin POST în acest test.",
+      "impact": "O implementare care ascunde telefonul numai pentru programările noi poate trece, deși înregistrările existente continuă să îl transmită.",
+      "evidence": "Liniile 63–69 și 73–77."
+    },
+    {
+      "code": "T-002",
+      "severity": "high",
+      "file": "test/hub/telefonul-ramane-obligatoriu-si-e75c25.test.mjs",
+      "observation": "Absența câmpului și valorii este verificată exclusiv prin căutarea reprezentărilor literale în textul JSON.",
+      "impact": "Un răspuns JSON poate transmite același câmp phone și același telefon folosind secvențe Unicode escape, iar verificările îl acceptă.",
+      "evidence": "Liniile 76–77 și 99–100: body.includes('\"phone\"') și body.includes(PHONE)."
+    },
+    {
+      "code": "T-003",
+      "severity": "medium",
+      "file": "test/hub/telefonul-ramane-obligatoriu-si-e75c25.test.mjs",
+      "observation": "Testul caută id-ul ca subșir oriunde în corp; nu verifică o înregistrare din lista returnată cu acel id.",
+      "impact": "Un răspuns cu lista goală și id-ul în metadate poate trece. AC-1 și AC-2 nici nu validează explicit că id-ul întors la creare este un șir nevid.",
+      "evidence": "Liniile 72–75 și 93–98."
+    },
+    {
+      "code": "T-004",
+      "severity": "info",
+      "file": "test/hub/telefonul-ramane-obligatoriu-si-e75c25.test.mjs",
+      "observation": "Textul furnizat nu arată implementarea startServer sau valoarea efectivă a srv.url.",
+      "impact": "Legarea exclusivă la 127.0.0.1 nu poate fi confirmată din acest material; aceasta nu dovedește că testul folosește o adresă externă.",
+      "evidence": "Liniile 67, 88, 112, 140 și 161; cererile folosesc srv.url."
+    }
+  ],
+  "inventoryRemoved": [],
+  "removedDeclared": []
+}

@@ -1,0 +1,605 @@
+{
+  "schema": 1,
+  "workType": "FEATURE",
+  "changesExisting": true,
+  "hubHelpers": [
+    "json-exposure"
+  ],
+  "title": "Telefonul rămâne obligatoriu și salvat corect, dar lista publică a zilei nu…",
+  "objective": "Telefonul rămâne obligatoriu și salvat corect, dar lista publică a zilei nu afișează și nu transmite telefonul. Programările valide și fluxurile existente continuă să funcționeze”",
+  "inScope": [],
+  "outOfScope": [
+    "deploy, commit, push",
+    "alte proiecte",
+    "dependențe noi necerute de tine"
+  ],
+  "acceptance": [
+    {
+      "id": "AC-1",
+      "text": "Lista publică a zilei, cerută direct de la server (fără browser), nu conține în ÎNTREGUL corp al răspunsului câmpul „phone” sau vreo valoare a lui. Aplicația pornește cu inițializarea ei normală; relevante sunt TOATE înregistrările zilei testate din stocare: cele puse de aplicație, cea creată prin API înainte de repornire pe aceeași stocare și cea nouă. Fiecare: id, zi și valoare exactă verificate intern, id-ul în tabloul listei. Lista goală/id-uri doar în metadate nu trec.",
+      "verify": "test",
+      "testRef": "test/hub/telefonul-ramane-obligatoriu-si-fe3a84.test.mjs",
+      "origin": "derivat din cererea ta: lista publică nu afișează și nu transmite telefonul",
+      "kind": "public_omits"
+    },
+    {
+      "id": "AC-2",
+      "text": "Pentru FIECARE parametru anonim (includePhone=1, phone=1, fields=phone, debug=1, all=1), lista publică a zilei rămâne funcțională, conține prin id toate înregistrările relevante (puse de aplicație la pornirea normală, cea creată prin API înainte de repornire pe aceeași stocare, cea nouă; fiecare cu id, zi, valoare exactă verificate intern) și nu conține în corpul integral „phone” sau vreo valoare a lui. Lista goală/id-uri doar în metadate nu trec.",
+      "verify": "test",
+      "testRef": "test/hub/telefonul-ramane-obligatoriu-si-fe3a84.test.mjs",
+      "origin": "derivat din cererea ta: o cale anonimă nu ocolește omiterea",
+      "kind": "anon_params"
+    },
+    {
+      "id": "AC-3",
+      "text": "O programare e în continuare refuzată de server când proprietatea „phone” LIPSEȘTE din cerere, când este șir gol și când conține doar spații: fiecare refuz are o eroare pentru câmpul Telefon, și stocarea internă a aplicației e neschimbată după FIECARE refuz (niciun rând adăugat sau modificat) (control: trece azi și după)",
+      "verify": "test",
+      "testRef": "test/hub/telefonul-ramane-obligatoriu-si-fe3a84.test.mjs",
+      "guard": true,
+      "origin": "cererea ta: telefonul rămâne obligatoriu",
+      "kind": "required_refusal"
+    },
+    {
+      "id": "AC-4",
+      "text": "Telefon trimis cu o programare validă se păstrează exact în datele salvate ale aplicației: testul citește înregistrarea prin stocarea internă a aplicației în mediul de test (fișierul sau stratul ei de date), nu printr-o rută publică; nu se adaugă nicio rută anonimă pentru recitirea telefonului (control: trece azi și după)",
+      "verify": "test",
+      "testRef": "test/hub/telefonul-ramane-obligatoriu-si-fe3a84.test.mjs",
+      "guard": true,
+      "origin": "cererea ta: telefonul e salvat corect",
+      "kind": "internal_persistence"
+    },
+    {
+      "id": "AC-5",
+      "text": "O programare cu telefon și celelalte date valide, pe un interval liber, e în continuare acceptată (control: trece azi și după)",
+      "verify": "test",
+      "testRef": "test/hub/telefonul-ramane-obligatoriu-si-fe3a84.test.mjs",
+      "guard": true,
+      "origin": "comportamentul existent al proiectului: o implementare care refuză tot nu trece",
+      "kind": "valid_accepted"
+    },
+    {
+      "id": "AC-6",
+      "text": "Preview local pornit din versiunea verificată",
+      "verify": "preview"
+    },
+    {
+      "id": "AC-7",
+      "text": "Fluxul complet în browser la lățimea unui telefon (390 px în Chromium): fără derulare orizontală, un interval ocupat este indisponibil, un interval liber se programează cu succes; câmpul „Telefon” are etichetă și se completează; câmpul „Telefon” are etichetă și se completează",
+      "verify": "e2e",
+      "steps": [
+        {
+          "viewport": {
+            "width": 390,
+            "height": 844
+          }
+        },
+        {
+          "goto": "/"
+        },
+        {
+          "noHorizontalOverflow": true
+        },
+        {
+          "click": "label[data-service='spalare-exterior']"
+        },
+        {
+          "click": "button[data-day='1']"
+        },
+        {
+          "expectSelector": ".slot[data-booked='true'][aria-disabled='true']"
+        },
+        {
+          "click": ".slot[data-booked='false'][aria-disabled='false']"
+        },
+        {
+          "fill": {
+            "selector": "input[name='name']",
+            "value": "Client Demo {run}"
+          }
+        },
+        {
+          "fill": {
+            "selector": "input[name='vehicle']",
+            "value": "Autoturism test"
+          }
+        },
+        {
+          "expectLabel": {
+            "selector": "[name='phone']",
+            "text": "Telefon"
+          }
+        },
+        {
+          "fill": {
+            "selector": "[name='phone']",
+            "value": "0700 123 456"
+          }
+        },
+        {
+          "expectLabel": {
+            "selector": "[name='phone']",
+            "text": "Telefon"
+          }
+        },
+        {
+          "fill": {
+            "selector": "[name='phone']",
+            "value": "0700 123 456"
+          }
+        },
+        {
+          "click": "button[type='submit']"
+        },
+        {
+          "expectText": "Programare confirmată"
+        }
+      ],
+      "origin": "fluxul existent al proiectului, cu câmpul completat"
+    },
+    {
+      "id": "AC-8",
+      "text": "Același flux în browser pe desktop (1280×800): un interval ocupat este indisponibil, un interval liber se programează cu succes; câmpul „Telefon” are etichetă și se completează; câmpul „Telefon” are etichetă și se completează",
+      "verify": "e2e",
+      "steps": [
+        {
+          "viewport": {
+            "width": 1280,
+            "height": 800
+          }
+        },
+        {
+          "goto": "/"
+        },
+        {
+          "noHorizontalOverflow": true
+        },
+        {
+          "click": "label[data-service='spalare-exterior']"
+        },
+        {
+          "click": "button[data-day='1']"
+        },
+        {
+          "expectSelector": ".slot[data-booked='true'][aria-disabled='true']"
+        },
+        {
+          "click": ".slot[data-booked='false'][aria-disabled='false']"
+        },
+        {
+          "fill": {
+            "selector": "input[name='name']",
+            "value": "Client Demo {run}"
+          }
+        },
+        {
+          "fill": {
+            "selector": "input[name='vehicle']",
+            "value": "Autoturism test"
+          }
+        },
+        {
+          "expectLabel": {
+            "selector": "[name='phone']",
+            "text": "Telefon"
+          }
+        },
+        {
+          "fill": {
+            "selector": "[name='phone']",
+            "value": "0700 123 456"
+          }
+        },
+        {
+          "expectLabel": {
+            "selector": "[name='phone']",
+            "text": "Telefon"
+          }
+        },
+        {
+          "fill": {
+            "selector": "[name='phone']",
+            "value": "0700 123 456"
+          }
+        },
+        {
+          "click": "button[type='submit']"
+        },
+        {
+          "expectText": "Programare confirmată"
+        }
+      ],
+      "origin": "fluxul existent al proiectului, cu câmpul completat"
+    },
+    {
+      "id": "AC-9",
+      "text": "În formular, fără telefon (câmp gol), programarea nu se finalizează: câmpul Telefon e marcat invalid cu un mesaj vizibil, iar confirmarea nu apare",
+      "verify": "e2e",
+      "steps": [
+        {
+          "viewport": {
+            "width": 1280,
+            "height": 800
+          }
+        },
+        {
+          "goto": "/"
+        },
+        {
+          "noHorizontalOverflow": true
+        },
+        {
+          "click": "label[data-service='spalare-exterior']"
+        },
+        {
+          "click": "button[data-day='1']"
+        },
+        {
+          "expectSelector": ".slot[data-booked='true'][aria-disabled='true']"
+        },
+        {
+          "click": ".slot[data-booked='false'][aria-disabled='false']"
+        },
+        {
+          "fill": {
+            "selector": "input[name='name']",
+            "value": "Client Demo {run}"
+          }
+        },
+        {
+          "fill": {
+            "selector": "input[name='vehicle']",
+            "value": "Autoturism test"
+          }
+        },
+        {
+          "click": "button[type='submit']"
+        },
+        {
+          "expectInvalid": "[name='phone']"
+        },
+        {
+          "expectNoText": "Programare confirmată"
+        }
+      ],
+      "origin": "fluxul existent al proiectului"
+    },
+    {
+      "id": "AC-10",
+      "text": "În pagină, după o programare cu telefon completat, valoarea telefonului nu apare în textul paginii (lista zilei inclusă)",
+      "verify": "e2e",
+      "steps": [
+        {
+          "viewport": {
+            "width": 1280,
+            "height": 800
+          }
+        },
+        {
+          "goto": "/"
+        },
+        {
+          "noHorizontalOverflow": true
+        },
+        {
+          "click": "label[data-service='spalare-exterior']"
+        },
+        {
+          "click": "button[data-day='1']"
+        },
+        {
+          "expectSelector": ".slot[data-booked='true'][aria-disabled='true']"
+        },
+        {
+          "click": ".slot[data-booked='false'][aria-disabled='false']"
+        },
+        {
+          "fill": {
+            "selector": "input[name='name']",
+            "value": "Client Demo {run}"
+          }
+        },
+        {
+          "fill": {
+            "selector": "input[name='vehicle']",
+            "value": "Autoturism test"
+          }
+        },
+        {
+          "expectLabel": {
+            "selector": "[name='phone']",
+            "text": "Telefon"
+          }
+        },
+        {
+          "fill": {
+            "selector": "[name='phone']",
+            "value": "0700 123 456"
+          }
+        },
+        {
+          "expectLabel": {
+            "selector": "[name='phone']",
+            "text": "Telefon"
+          }
+        },
+        {
+          "fill": {
+            "selector": "[name='phone']",
+            "value": "0700 123 456"
+          }
+        },
+        {
+          "click": "button[type='submit']"
+        },
+        {
+          "expectText": "Programare confirmată"
+        },
+        {
+          "expectNoText": "0700 123 456"
+        }
+      ],
+      "origin": "derivat din cererea ta: lista publică nu afișează telefonul"
+    },
+    {
+      "id": "AC-11",
+      "text": "Modificarea e explicată și revizuită independent (doar citire)",
+      "verify": "review"
+    }
+  ],
+  "constraints": [
+    "Pregătită de Hub din cererea ta (fără model); criteriile sunt fixate înainte de implementare, iar testul de acceptanță îl scrie Hub-ul la pasul 0 din cuvintele tale (Claude propune textul, doar citire; Codex îl verifică, doar citire)",
+    "Testul de acceptanță test/hub/telefonul-ramane-obligatoriu-si-fe3a84.test.mjs îl scrie și îl protejează Hub-ul la pasul 0: repari implementarea, nu testul (o modificare a testului oprește misiunea)",
+    "Nu se adaugă nicio rută anonimă care recitește telefonul; persistența se verifică prin stocarea internă a aplicației, în test",
+    "Testul anterior test/hub/butonul-de-programare-trebuie-sa-84f571.test.mjs (misiunea mis_mv1eo6il_104584123d, specificația v1) e incompatibil cu cerința nouă: citește valoarea câmpului „phone” din răspunsurile aplicației (contractul anterior); cerința nouă o scoate din lista publică. Hub-ul îl păstre",
+    "Diferența de contract pentru test/hub/butonul-de-programare-trebuie-sa-84f571.test.mjs: AC-2 citea phone din /api/bookings (lista publică) → înlocuit de AC-1, AC-2, AC-4; AC-1 (required_refusal) rămâne acoperit de AC-3; AC-3 (valid_accepted) rămâne acoperit de AC-5"
+  ],
+  "risks": [],
+  "dataNeeded": [],
+  "artifacts": [],
+  "verification": {
+    "checks": [
+      "node --test"
+    ],
+    "acceptance": [
+      "node --test test/hub/telefonul-ramane-obligatoriu-si-fe3a84.test.mjs"
+    ],
+    "preview": {
+      "command": "node server.js",
+      "url": "http://127.0.0.1:4620/"
+    }
+  },
+  "workspace": {
+    "ignore": [
+      "data"
+    ]
+  },
+  "sources": {
+    "user": [
+      "Telefonul rămâne obligatoriu și salvat corect, dar lista publică a zilei nu afișează și nu transmite telefonul. Programările valide și fluxurile existente continuă să funcționeze”"
+    ],
+    "code": [],
+    "assumptions": [
+      "Testul de acceptanță nu există încă: îl scrie Hub-ul la pasul 0 din cuvintele tale; trebuie să pice pe codul de acum din motivul potrivit, e verificat independent, apoi îl protejez",
+      "Criteriile sunt derivate de Hub din cererea ta (tipul cererii: hide_public), fără model; cuvintele tale rămân cererea",
+      "Am înțeles: telefonul rămâne obligatoriu și salvat, dar lista publică a zilei nu îl mai trimite și nu îl afișează; verific serverul apelat direct (cu și fără parametri adăugați), pagina, păstrarea valorii în datele interne și că restul aplicației merge ca înainte",
+      "Opțiunea aparține acestui proiect (configurația lui, pe server), cu telefonul ascuns implicit; nu schimb alte proiecte și nu adaug login, administrare sau roluri; o eventuală opțiune de diagnostic pentru date sintetice e doar pe server, explicită, nu un parametru de cerere",
+      "Ascunderea prin CSS nu e suficientă: câmpul „phone” nu pleacă deloc de pe server în lista publică; răspunsul la crearea programării nu e lista publică",
+      "Contractul vechi și cel nou se contrazic la un test scris de Hub înainte; criteriile noi verifică separat păstrarea internă și neexpunerea publică"
+    ]
+  },
+  "dataset": {
+    "fixture": "booking-demo",
+    "version": 1,
+    "field": "phone",
+    "table": "bookings",
+    "columns": [
+      "id",
+      "service_id",
+      "day",
+      "start_min",
+      "end_min",
+      "name",
+      "vehicle",
+      "phone",
+      "synthetic"
+    ],
+    "clock": "2026-10-11T08:00:00",
+    "day": "2026-10-11",
+    "initial": [
+      {
+        "id": "seed-2026-10-11-1000",
+        "service_id": "spalare-exterior",
+        "day": "2026-10-11",
+        "start_min": 600,
+        "end_min": 630,
+        "name": "Client Demo A",
+        "vehicle": "Autoturism test",
+        "phone": "0700 123 456",
+        "synthetic": 1
+      },
+      {
+        "id": "seed-2026-10-11-1130",
+        "service_id": "curatare-interior",
+        "day": "2026-10-11",
+        "start_min": 690,
+        "end_min": 750,
+        "name": "Client Demo B",
+        "vehicle": "Autoturism test",
+        "phone": "0700 123 456",
+        "synthetic": 1
+      },
+      {
+        "id": "seed-2026-10-11-1500",
+        "service_id": "polish-faruri",
+        "day": "2026-10-11",
+        "start_min": 900,
+        "end_min": 930,
+        "name": "Client Demo C",
+        "vehicle": "Autoturism test",
+        "phone": "0700 123 456",
+        "synthetic": 1
+      }
+    ],
+    "types": {
+      "id": "șir",
+      "day": "șir AAAA-LL-ZZ",
+      "start_min": "întreg",
+      "end_min": "întreg",
+      "phone": "șir nevid, exact cum este stocat"
+    },
+    "scope": "Telefonul nevid este proprietatea datelor demo ale ACESTUI fixture, niciodată o regulă pentru fiecare înregistrare istorică.",
+    "historical": {
+      "record": {
+        "id": "hist-2026-10-11-1300",
+        "service_id": "spalare-exterior",
+        "day": "2026-10-11",
+        "start_min": 780,
+        "end_min": 810,
+        "name": "Client Istoric",
+        "vehicle": "Autoturism istoric",
+        "synthetic": 0
+      },
+      "phoneDefault": "",
+      "insert": "Între sesiuni, direct în stocare, FĂRĂ coloana phone: se aplică DEFAULT '', ca la migrarea aplicației. Confirmă întâi prin API-ul slots că 13:00 este liber."
+    },
+    "sources": [
+      {
+        "path": "src/catalog.js",
+        "sha256": "28f44825f9d684d4529a0da7aea9e2b433870f614d8742f3768e4d118ed1b232",
+        "lines": [
+          13,
+          20
+        ],
+        "what": "Vehiculul și cele trei programări demo",
+        "excerpt": "13| export const SEED_VEHICLE = \"Autoturism test\";\n14| \n15| /** The synthetic bookings of each shown day (the server re-establishes them per day, see ensureSeeds in server-app.js). */\n16| export const SEED_BOOKINGS = Object.freeze([\n17|   Object.freeze({ time: \"10:00\", serviceId: \"spalare-exterior\", name: \"Client Demo A\" }),\n18|   Object.freeze({ time: \"11:30\", serviceId: \"curatare-interior\", name: \"Client Demo B\" }),\n19|   Object.freeze({ time: \"15:00\", serviceId: \"polish-faruri\", name: \"Client Demo C\" }),\n20| ]);"
+      },
+      {
+        "path": "src/server-app.js",
+        "sha256": "5cd662956742cca906efa5581330052e745d3bc810722e6671d47d2964628f64",
+        "lines": [
+          103,
+          109
+        ],
+        "what": "Schema și migrarea: telefon implicit gol",
+        "excerpt": "103|     phone TEXT NOT NULL DEFAULT '',\n104|     synthetic INTEGER NOT NULL DEFAULT 0 CHECK (synthetic IN (0, 1)),\n105|     created_at TEXT NOT NULL)`);\n106|   // Existing bookings keep their data; only new requests require a phone.\n107|   if (!db.prepare(\"PRAGMA table_info(bookings)\").all().some((column) => column.name === \"phone\")) {\n108|     db.exec(\"ALTER TABLE bookings ADD COLUMN phone TEXT NOT NULL DEFAULT ''\");\n109|   }"
+      },
+      {
+        "path": "src/server-app.js",
+        "sha256": "5cd662956742cca906efa5581330052e745d3bc810722e6671d47d2964628f64",
+        "lines": [
+          134,
+          149
+        ],
+        "what": "Inițializarea și telefonul literal",
+        "excerpt": "134|   function ensureSeeds(at = clock()) {\n135|     if (!seed) return;\n136|     inTransaction(() => {\n137|       for (const day of shownDays(at)) {\n138|         for (const entry of SEED_BOOKINGS) {\n139|           const service = serviceById(entry.serviceId);\n140|           const startMin = parseSlotTime(entry.time);\n141|           const id = `seed-${day}-${entry.time.replace(\":\", \"\")}`;\n142|           if (!service || startMin === null || sql.byId.get(id)) continue;\n143|           const endMin = startMin + service.durationMin;\n144|           if (sql.overlapping.get(day, endMin, startMin)) continue;\n145|           sql.insert.run(id, service.id, day, startMin, endMin, entry.name, SEED_VEHICLE, \"0700 123 456\", 1, at.toISOString());\n146|         }\n147|       }\n148|     });\n149|   }"
+      },
+      {
+        "path": "src/server-app.js",
+        "sha256": "5cd662956742cca906efa5581330052e745d3bc810722e6671d47d2964628f64",
+        "lines": [
+          283,
+          283
+        ],
+        "what": "Inițializarea normală la pornire",
+        "excerpt": "283|   ensureSeeds();"
+      },
+      {
+        "path": "src/slots.js",
+        "sha256": "6e624d8d46d856e6c68708f722f9bb42995efe77943fa2fd33680cce139bd9de",
+        "lines": [
+          4,
+          7
+        ],
+        "what": "Grila și numărul zilelor",
+        "excerpt": "4| export const STEP_MIN = 30;\n5| export const FIRST_START_MIN = 9 * 60; // 09:00\n6| export const LAST_START_MIN = 16 * 60 + 30; // 16:30, so a day has 16 slots\n7| export const DAYS_SHOWN = 3; // today, tomorrow, the day after"
+      },
+      {
+        "path": "src/slots.js",
+        "sha256": "6e624d8d46d856e6c68708f722f9bb42995efe77943fa2fd33680cce139bd9de",
+        "lines": [
+          33,
+          33
+        ],
+        "what": "Zilele afișate, după ceasul local injectat",
+        "excerpt": "33| export const shownDays = (now) => Array.from({ length: DAYS_SHOWN }, (_, index) => addDays(dateKey(now), index));"
+      }
+    ],
+    "identity": "76c76ccd28ff67c356afff9f4dd56dde8b40f3f8716ed2840419622aed673ae0"
+  },
+  "supersedes": [
+    {
+      "testRef": "test/hub/butonul-de-programare-trebuie-sa-84f571.test.mjs",
+      "sha256": "8d944644a304f4cfffd3cf466ab586bb7f57c3957b10507b3ec7d13c957605ca",
+      "missionId": "mis_mv1eo6il_104584123d",
+      "specVersion": 1,
+      "reason": "citește valoarea câmpului „phone” din răspunsurile aplicației (contractul anterior); cerința nouă o scoate din lista publică",
+      "contract": {
+        "field": "phone",
+        "previous": {
+          "missionId": "mis_mv1eo6il_104584123d",
+          "specVersion": 1
+        },
+        "publicRoutes": [
+          "/api/bookings",
+          "/api/services",
+          "/api/slots"
+        ],
+        "conflicts": [
+          {
+            "case": "AC-2",
+            "criterion": "Câmpul Telefon trimis cu o programare validă se păstrează în programarea salvată și se poate citi înapoi după salvare (răspunsul la creare sau datele salvate)",
+            "routes": [
+              "/api/bookings"
+            ],
+            "replacedBy": [
+              "AC-1",
+              "AC-2",
+              "AC-4"
+            ]
+          }
+        ],
+        "kept": [
+          {
+            "case": "AC-1",
+            "kind": "required_refusal",
+            "criterion": "Serverul aplică cerința și când e apelat direct, fără browser: o programare fără telefon sau cu telefon gol (doar spații) e refuzată, cu o eroare pentru câmpul Telefon, și nu se salvează nimic",
+            "coveredBy": [
+              "AC-3"
+            ]
+          },
+          {
+            "case": "AC-3",
+            "kind": "valid_accepted",
+            "criterion": "O programare cu telefon și celelalte date valide, pe un interval liber, e în continuare acceptată (control: trece azi și după)",
+            "coveredBy": [
+              "AC-5"
+            ]
+          }
+        ],
+        "internalReads": []
+      }
+    }
+  ],
+  "authoring": {
+    "mode": "hub",
+    "testRef": "test/hub/telefonul-ramane-obligatoriu-si-fe3a84.test.mjs",
+    "stagingRef": ".ifrim-hub/staging/telefonul-ramane-obligatoriu-si-fe3a84.mjs",
+    "criteria": [
+      "AC-1",
+      "AC-2",
+      "AC-3",
+      "AC-4",
+      "AC-5"
+    ],
+    "reauthorMax": 1,
+    "proofRuns": 2,
+    "controls": "none",
+    "author": "claude",
+    "testReviewer": "codex",
+    "authorLimits": {
+      "maxOutputTokens": 64000,
+      "turnTimeoutMin": 45,
+      "provenance": "decizia proprietarului 2026-10-13 21:32 UTC: limită de ieșire 64000 doar pentru autorul testului de la pasul 0; decizia proprietarului 2026-10-14 10:09 UTC: limită pe tură 45 min doar pentru autorul testului de la pasul 0 al planului §25 hub-test"
+    }
+  }
+}

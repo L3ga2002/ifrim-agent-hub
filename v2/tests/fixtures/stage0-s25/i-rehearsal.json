@@ -1,0 +1,260 @@
+{
+ "schema": "s25-rehearsal-2.14.16/v1",
+ "note": "Single real-route rehearsal (dedicated export root, production Codex app-server reviewer, production codex-sandbox runner, real Claude author). Costs not recorded by the CLI here; no model was relaunched.",
+ "commit": "f454909fbb374c959ec95ab76f6348abc7522c31",
+ "manifestSha256": "114df03822f9726754365e4bdb5dff654948a75b03c43fa9c0486106e8586752",
+ "startedAt": "2026-10-15T19:20:13.782Z",
+ "finishedAt": "2026-10-15T19:25:57.344Z",
+ "classification": "INTENTIONAL_STOP_BEFORE_WRITER",
+ "rehearsalGate": true,
+ "missionId": "mis_mv9xd39v_dd4db2ca11",
+ "stage": "NEEDS_OWNER_DECISION",
+ "stageReason": "REHEARSAL_INTENTIONAL_STOP_BEFORE_WRITER",
+ "limits": {
+  "maxRepairCycles": 2,
+  "maxDurationMin": 180,
+  "maxAttemptsPerStage": 1,
+  "concurrency": 1,
+  "profile": "BALANCED",
+  "turnTimeoutMin": {
+   "writer": 25,
+   "reviewer": 15,
+   "source": "profile"
+  },
+  "writerModel": "gpt-6.1-sol",
+  "writerEffort": "medium",
+  "reviewerModel": "sonnet",
+  "reviewerEffort": "medium"
+ },
+ "boundaryHits": [
+  {
+   "at": "2026-10-15T19:23:14.722Z",
+   "stage": "IMPLEMENTING",
+   "cycle": 0,
+   "role": "writer",
+   "bindingHash": "30e6fe837c7dd8bf234dacd057cae6286656a5990d185f6129f7aeb0aa90f64c",
+   "access": "workspace-write"
+  }
+ ],
+ "writerStarted": false,
+ "writerGuardHits": [],
+ "dispatches": [
+  {
+   "stage": "TEST_AUTHORING",
+   "status": "DONE"
+  },
+  {
+   "stage": "TEST_REVIEW",
+   "status": "DONE"
+  }
+ ],
+ "grants": [
+  {
+   "provider": "codex",
+   "access": "workspace-write",
+   "maxAttempts": 5,
+   "attemptsUsed": 0,
+   "maxDurationS": 7200,
+   "expiresAt": "2026-10-15T22:50:36.391Z"
+  },
+  {
+   "provider": "claude",
+   "access": "read-only",
+   "maxAttempts": 5,
+   "attemptsUsed": 0,
+   "maxDurationS": 7200,
+   "expiresAt": "2026-10-15T22:50:36.392Z"
+  }
+ ],
+ "deadlines": [
+  {
+   "runId": "run_mv9xd3lg_ef591ecd50",
+   "turnDeadline": {
+    "limitMs": 2700000,
+    "admissionArmedAt": "2026-10-15T19:21:38.258Z",
+    "admissionDeadlineAt": "2026-10-15T20:06:38.258Z",
+    "turnSentAt": "2026-10-15T19:21:39.576Z",
+    "turnArmedAt": "2026-10-15T19:21:39.576Z",
+    "deadlineAt": "2026-10-15T20:06:39.576Z",
+    "fired": false,
+    "firedAt": null,
+    "clearedBy": "finished",
+    "admissionArms": 1,
+    "turnArms": 1,
+    "noticesAfterTurnSent": 0,
+    "apiRetriesAfterTurnSent": 0
+   }
+  },
+  {
+   "runId": "run_mv9xepi7_ce178fd093",
+   "turnDeadline": {
+    "limitMs": 1500000,
+    "admissionArmedAt": "2026-10-15T19:22:51.782Z",
+    "admissionDeadlineAt": "2026-10-15T19:47:51.782Z",
+    "turnSentAt": "2026-10-15T19:22:53.617Z",
+    "turnArmedAt": "2026-10-15T19:22:53.617Z",
+    "deadlineAt": "2026-10-15T19:47:53.617Z",
+    "fired": false,
+    "firedAt": null,
+    "clearedBy": "finished",
+    "admissionArms": 1,
+    "turnArms": 1,
+    "noticesAfterTurnSent": 0,
+    "apiRetriesAfterTurnSent": 0
+   }
+  }
+ ],
+ "testReviews": [
+  {
+   "verdict": "PASS",
+   "summary": "Verificarea statică a testului furnizat confirmă acoperirea celor cinci criterii, inclusiv repornirea pe aceeași stocare și păstrarea înregistrării istorice. Nu am rulat comenzi sau teste; rezultatele de azi provin din dovada runnerului Hub furnizată, nu dintr-o execuție proprie.",
+   "findings": 0
+  }
+ ],
+ "baselineGate": [
+  {
+   "evidenceId": "evd_mv9xf7a3_9a9a240076",
+   "status": "FAIL",
+   "signature": "ad3d32553d4766435e0b8258b2ffdae6e5674317480d620011e80742130e905e",
+   "result": null,
+   "current": true
+  }
+ ],
+ "authoring": {
+  "status": "PROTECTED",
+  "cycle": 0,
+  "protectedSha": "92e3b0409760688d26e4bb8ee93845752cfbd02fdd58ca21d33529d69f12a838",
+  "proof": {
+   "verdict": "PROVEN",
+   "cause": "proven",
+   "reasons": [
+    "toate criteriile pică azi pe aserțiuni, controalele trec (păstrare: AC-3, AC-4, AC-5); 2 rulări identice",
+    "AC-1: Toate înregistrările zilei rămân în lista publică fără telefon: behaviour, linia 116: assert.deepEqual(exposes(res.body, { keys: [\"phone\"], values: [...new Set([...EXPECTED.map((r) => r.phone), PRE_PHONE, PHONE])] }), [], \"EXPUNERE: lista de bază",
+    "AC-2: Fiecare parametru anonim păstrează toate înregistrările fără telefon: behaviour, linia 130: for (const param of PARAMS) assert.deepEqual(exposes(responses.get(param).body, { keys: [\"phone\"], values: [...new Set([...EXPECTED.map((r) => r.phone), PRE_PHO",
+    "AC-1: Înregistrarea istorică fără telefon rămâne listată și neschimbată: behaviour, linia 159: for (const query of [\"\", ...PARAMS]) assert.deepEqual(exposes(responses.get(query).body, { keys: [\"phone\"], values: [...new Set(EXPECTED.map((r) => r.phone))] }"
+   ]
+  },
+  "briefValidation": {
+   "ok": true,
+   "sha256": "ea139eacbf7a95e65b0f78eb2da714aa56bb40cde3ac851f57a05e8ab55d946e"
+  }
+ },
+ "candidate": {
+  "sha": "92e3b0409760688d26e4bb8ee93845752cfbd02fdd58ca21d33529d69f12a838",
+  "file": "i-c0-92e3b0409760.test.mjs.txt",
+  "lintOk": true,
+  "noValidCheckLost": true,
+  "calibrationGate": true,
+  "skeletonReuse": "body = Hub skeleton minus comments/blank lines (10 diff lines); no author-added assertion"
+ },
+ "realProcessCleanup": {
+  "verified": false,
+  "recordedIdentitiesVerified": true,
+  "survivors": [],
+  "records": 22,
+  "limitation": "UNVERIFIED: user not resolvable without elevation"
+ },
+ "acl": {
+  "finalDiffOk": true,
+  "ancestors": [
+   {
+    "phase": "preflight",
+    "status": "no outside ancestor change observed",
+    "paths": [],
+    "changes": []
+   },
+   {
+    "phase": "post-run",
+    "status": "no outside ancestor change observed",
+    "paths": [],
+    "changes": []
+   }
+  ],
+  "homeAclReport": [
+   {
+    "path": "C:\\Users\\mihai\\.claude",
+    "exists": true,
+    "aces": [
+     "CATALIN\\CodexSandboxUsers:(DENY)(R)",
+     "CATALIN\\CodexSandboxUsers:(OI)(CI)(IO)(DENY)(R,GR)",
+     "CATALIN\\CodexSandboxUsers:(OI)(CI)(RX)",
+     "NT AUTHORITY\\SYSTEM:(I)(OI)(CI)(F)",
+     "BUILTIN\\Administrators:(I)(OI)(CI)(F)",
+     "CATALIN\\mihai:(I)(OI)(CI)(F)"
+    ]
+   },
+   {
+    "path": "C:\\Users\\mihai\\.openclaw",
+    "exists": true,
+    "aces": [
+     "CATALIN\\CodexSandboxUsers:(DENY)(R)",
+     "CATALIN\\CodexSandboxUsers:(OI)(CI)(IO)(DENY)(R,GR)",
+     "CATALIN\\CodexSandboxUsers:(OI)(CI)(RX)",
+     "NT AUTHORITY\\SYSTEM:(I)(OI)(CI)(F)",
+     "BUILTIN\\Administrators:(I)(OI)(CI)(F)",
+     "CATALIN\\mihai:(I)(OI)(CI)(F)"
+    ]
+   }
+  ]
+ },
+ "binaryUnchanged": true,
+ "headroom": {
+  "codex": {
+   "source": "codex app-server account/rateLimits",
+   "capturedAt": "2026-10-15T19:21:30.486Z",
+   "planType": "prolite",
+   "windows": [
+    {
+     "name": "primary",
+     "usedPercent": 29,
+     "windowMinutes": 10080,
+     "resetsAt": "2026-10-22T10:54:43.000Z"
+    }
+   ],
+   "ordinaryUsageAllowed": true,
+   "limitReached": false,
+   "limitReachedType": null,
+   "spendControlReached": false,
+   "creditsReported": {
+    "hasCredits": false,
+    "unlimited": false,
+    "balance": "0"
+   }
+  },
+  "claude": "nedemonstrat: CLI exposes no weekly headroom",
+  "claudeManual": {
+   "source": "coordinator manual check; not provider-verified",
+   "checkedAt": "2026-10-15T19:18:30Z"
+  }
+ },
+ "preflight": {
+  "run": "preflight-r5",
+  "classification": "PREFLIGHT_ONLY_PASSED",
+  "P7": {
+   "durationMs": 108473,
+   "exitCode": 0
+  },
+  "finishedAt": "2026-10-15T19:17:41.149Z",
+  "acl": {
+   "finalDiffOk": true,
+   "ancestors": [
+    {
+     "phase": "preflight",
+     "status": "no outside ancestor change observed",
+     "paths": [],
+     "changes": []
+    },
+    {
+     "phase": "post-run",
+     "status": "no outside ancestor change observed",
+     "paths": [],
+     "changes": []
+    }
+   ]
+  }
+ },
+ "preflightR4": {
+  "classification": "TECHNICAL_STOP",
+  "cause": "export manifest mismatch caused by the coordinator runner script writing its log into the export root; no probe, no model, no ACL"
+ }
+}

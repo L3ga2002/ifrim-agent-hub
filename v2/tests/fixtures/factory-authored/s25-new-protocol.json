@@ -1,0 +1,47 @@
+{
+  "body": "function request(port, method, route, input) {\n  return new Promise((resolve, reject) => {\n    const req = http.request({ hostname: \"127.0.0.1\", port, path: route, method, headers: { \"Content-Type\": \"application/json\" } }, (res) => {\n      let raw = \"\";\n      res.setEncoding(\"utf8\");\n      res.on(\"data\", (chunk) => { raw += chunk; });\n      res.on(\"end\", () => { try { resolve({ status: res.statusCode, raw, body: JSON.parse(raw) }); } catch (e) { reject(e); } });\n    });\n    req.on(\"error\", reject);\n    req.end(input === undefined ? undefined : JSON.stringify(input));\n  });\n}\nconst phone = \"0700 111 222\";\nconst payload = { serviceId: \"spalare-exterior\", start: \"2026-10-11T14:00\", name: \"Client Test\", vehicle: \"Dacia Test\", phone };\nasync function withApp(startServer, fn) {\n  const dir = await setup(\"director temporar\", () => fs.mkdtempSync(path.join(os.tmpdir(), \"s0r-booking-\")));\n  let srv, db;\n  try {\n    const dbPath = path.join(dir, \"app.sqlite\");\n    srv = await setup(\"pornire și date sintetice\", () => startServer({ port: 0, dbPath, seed: true, now: () => new Date(2026, 9, 11, 12, 0, 0) }));\n    db = await setup(\"stocare internă\", () => new sqlite.DatabaseSync(dbPath, { readOnly: true }));\n    await fn(srv.port, db);\n  } finally {\n    if (db) db.close();\n    if (srv) await srv.close();\n    fs.rmSync(dir, { recursive: true, force: true });\n  }\n}\n\ntest(\"AC-1: Lista publică omite câmpul și valorile din întregul răspuns\", async () => {\n  const m = await load(\"../../src/server-app.js\");\n  const startServer = need(m, \"startServer\");\n  await withApp(startServer, async (port, db) => {\n    const created = await request(port, \"POST\", \"/api/bookings\", payload);\n    assert.equal(created.status, 201);\n    const result = await request(port, \"GET\", \"/api/bookings?date=2026-10-11\");\n    assert.equal(result.status, 200);\n    assert.ok(result.body.bookings.some((row) => row.id === created.body.booking.id));\n    assert.ok(result.body.bookings.some((row) => row.id.startsWith(\"seed-\")));\n    assert.equal(result.raw.includes('\"phone\"'), false);\n    assert.equal(result.raw.includes(phone), false);\n    assert.equal(result.raw.includes(\"0700 123 456\"), false);\n  });\n});\n\ntest(\"AC-2: Parametrii anonimi nu expun câmpul sau valoarea și păstrează înregistrarea\", async () => {\n  const m = await load(\"../../src/server-app.js\");\n  const startServer = need(m, \"startServer\");\n  await withApp(startServer, async (port, db) => {\n    const created = await request(port, \"POST\", \"/api/bookings\", payload);\n    assert.equal(created.status, 201);\n    for (const param of [\"includePhone=1\", \"phone=1\", \"fields=phone\", \"debug=1\", \"all=1\"]) {\n      const result = await request(port, \"GET\", `/api/bookings?date=2026-10-11&${param}`);\n      assert.equal(result.status, 200);\n      assert.ok(result.body.bookings.some((row) => row.id === created.body.booking.id));\n      assert.equal(result.raw.includes('\"phone\"'), false);\n      assert.equal(result.raw.includes(phone), false);\n      assert.equal(result.raw.includes(\"0700 123 456\"), false);\n    }\n  });\n});\n\ntest(\"AC-3 control: Proprietatea lipsă și valorile goale sunt refuzate fără salvare\", async () => {\n  const m = await load(\"../../src/server-app.js\");\n  const startServer = need(m, \"startServer\");\n  await withApp(startServer, async (port, db) => {\n    const before = db.prepare(\"SELECT * FROM bookings ORDER BY id\").all();\n    const absent = { serviceId: payload.serviceId, start: payload.start, name: payload.name, vehicle: payload.vehicle };\n    for (const input of [absent, { ...payload, phone: \"\" }, { ...payload, phone: \"   \" }]) {\n      const result = await request(port, \"POST\", \"/api/bookings\", input);\n      assert.equal(result.status, 400);\n      assert.ok(result.body.errors.phone);\n      assert.deepEqual(db.prepare(\"SELECT * FROM bookings ORDER BY id\").all(), before);\n    }\n  });\n});\n\ntest(\"AC-4 control: Telefonul se păstrează exact în stocarea internă\", async () => {\n  const m = await load(\"../../src/server-app.js\");\n  const startServer = need(m, \"startServer\");\n  await withApp(startServer, async (port, db) => {\n    const created = await request(port, \"POST\", \"/api/bookings\", payload);\n    assert.equal(created.status, 201);\n    const saved = db.prepare(\"SELECT phone FROM bookings WHERE id = ?\").get(created.body.booking.id);\n    assert.equal(saved.phone, phone);\n  });\n});\n\ntest(\"AC-5 control: Programarea validă este acceptată\", async () => {\n  const m = await load(\"../../src/server-app.js\");\n  const startServer = need(m, \"startServer\");\n  await withApp(startServer, async (port, db) => {\n    const result = await request(port, \"POST\", \"/api/bookings\", payload);\n    assert.equal(result.status, 201);\n    assert.ok(result.body.booking.id);\n    assert.equal(db.prepare(\"SELECT count(*) AS n FROM bookings WHERE id = ?\").get(result.body.booking.id).n, 1);\n  });\n});\n",
+  "manifest": {
+    "needs": [
+      "node:path",
+      "node:os",
+      "node:fs",
+      "node:sqlite",
+      "node:http"
+    ],
+    "api": "startServer({ port, dbPath, now, seed }); API-ul HTTP și stocarea SQLite existente.",
+    "newApi": [],
+    "removed": [],
+    "cases": [
+      {
+        "name": "AC-1: Lista publică omite câmpul și valorile din întregul răspuns",
+        "criterion": "AC-1",
+        "kind": "check",
+        "today": "fail"
+      },
+      {
+        "name": "AC-2: Parametrii anonimi nu expun câmpul sau valoarea și păstrează înregistrarea",
+        "criterion": "AC-2",
+        "kind": "check",
+        "today": "fail"
+      },
+      {
+        "name": "AC-3 control: Proprietatea lipsă și valorile goale sunt refuzate fără salvare",
+        "criterion": "AC-3",
+        "kind": "control",
+        "today": "pass"
+      },
+      {
+        "name": "AC-4 control: Telefonul se păstrează exact în stocarea internă",
+        "criterion": "AC-4",
+        "kind": "control",
+        "today": "pass"
+      },
+      {
+        "name": "AC-5 control: Programarea validă este acceptată",
+        "criterion": "AC-5",
+        "kind": "control",
+        "today": "pass"
+      }
+    ]
+  }
+}

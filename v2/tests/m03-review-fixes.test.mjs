@@ -59,7 +59,8 @@ test("M03-RF-01 Codex model check is exact: the requested id passes (case/space-
     assert.equal(run.status, "blocked", "the default model is explicit now, so a substitute is caught");
     assert.match(run.errorMessage, /gpt-fake-sol-mini în loc de gpt-fake-sol/);
     assert.equal(methods(unrequested, "thread/start")[0].params.model, "gpt-fake-sol", "the account default from model/list was sent");
-    assert.equal(run.plan.modelSource, "model/list (implicit al contului)");
+    assert.equal(run.plan.modelSource, "account_default_pinned", "M09: the default is pinned as an explicit, requested id");
+    assert.equal(run.plan.requestedModel, "gpt-fake-sol");
     assert.equal(methods(unrequested, "turn/start").length, 0);
   } finally { await unrequested.cleanup(); }
 });

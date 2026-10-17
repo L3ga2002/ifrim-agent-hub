@@ -4,7 +4,8 @@ import { newId } from "../core/ids.mjs";
 /**
  * Exclusive resource leases (single writer per workspace). A partial unique index guarantees that
  * two holders can never be active on the same resource, even under concurrent requests.
- * `retained` = holder state unknown (e.g. crash mid-run); only an explicit reconcile releases it.
+ * `retained` = holder state unknown (e.g. crash mid-run); only a reconciliation releases it (runtime/lease-reconcile.mjs: once the
+ * run is finished and its process provably gone, or the owner's rearm card — never by a timeout alone).
  */
 export function createLeases(db, bus, clock = () => new Date()) {
   const active = db.prepare("SELECT * FROM leases WHERE resource = ? AND status IN ('active','retained')");
@@ -50,10 +51,39 @@ export function createLeases(db, bus, clock = () => new Date()) {
     return true;
   }
 
-  function retain(id, reason) {
-    db.prepare("UPDATE leases SET status = 'retained', release_reason = ? WHERE id = ? AND status = 'active'").run(reason, id);
+  /**
+   * Keeps an active lease whose holder's state is unknown. 2.12.2 (P0-R1): announced only when it really changed (a lease already
+   * released is never "retained" again — no resurrection); `extra.processKey` / `extra.environment` tell the reconciler
+   * (runtime/lease-reconcile.mjs, which follows lease.retained) which supervised process to watch.
+   */
+  function retain(id, reason, extra = {}) {
+    const changed = db.prepare("UPDATE leases SET status = 'retained', release_reason = ? WHERE id = ? AND status = 'active'").run(reason, id).changes === 1;
+    const lease = changed ? db.prepare("SELECT * FROM leases WHERE id = ?").get(id) : null;
+    const more = {};
+    if (extra?.processKey) more.processKey = String(extra.processKey).slice(0, 120);
+    if (extra?.environment) more.environment = String(extra.environment).slice(0, 40);
+    if (lease) bus.append({ type: "lease.retained", scopeType: "resource", scopeId: lease.resource, source: "hub", runId: lease.run_id, payload: { leaseId: id, reason, ...more } });
+    return changed;
+  }
+
+  /**
+   * 2.12.2 (P0-R1): ends a lease after reconciliation (runtime/lease-reconcile.mjs, runtime/recovery.mjs). Compare-and-set on the
+   * status it was read with (default: retained), so two reconcilers — a follow-up timer, the scheduler tick, the owner's rearm — never
+   * both release it. Appends lease.released and lease.reconciled { leaseId, runId, verdict, from, evidence }. True only for the call
+   * that released it. It never touches the lease's run.
+   */
+  function reconcile(id, { reason = "reconciled", verdict = "released", evidence = {}, from = ["retained"] } = {}) {
     const lease = db.prepare("SELECT * FROM leases WHERE id = ?").get(id);
-    if (lease) bus.append({ type: "lease.retained", scopeType: "resource", scopeId: lease.resource, source: "hub", runId: lease.run_id, payload: { leaseId: id, reason } });
+    // A released lease is final: never released (or announced) twice, whatever the caller asks.
+    if (!lease || lease.status === "released" || !from.includes(lease.status)) return false;
+    const why = String(reason || "reconciled").slice(0, 300);
+    const changed = db.prepare("UPDATE leases SET status = 'released', released_at = ?, release_reason = ? WHERE id = ? AND status = ?")
+      .run(clock().toISOString(), why, id, lease.status).changes === 1;
+    if (!changed) return false;
+    bus.append({ type: "lease.released", scopeType: "resource", scopeId: lease.resource, source: "hub", runId: lease.run_id, payload: { leaseId: id, reason: why } });
+    bus.append({ type: "lease.reconciled", scopeType: "resource", scopeId: lease.resource, source: "hub", runId: lease.run_id,
+      payload: { leaseId: id, runId: lease.run_id || null, verdict: String(verdict).slice(0, 40), from: lease.status, evidence: evidence && typeof evidence === "object" ? evidence : {} } });
+    return true;
   }
 
   /** Transfers exclusivity to a new holder atomically (used by handoff step 6). */
@@ -67,5 +97,6 @@ export function createLeases(db, bus, clock = () => new Date()) {
 
   const list = () => db.prepare("SELECT * FROM leases WHERE status IN ('active','retained') ORDER BY acquired_at").all();
   const current = (resource) => active.get(resource) || null;
-  return { acquire, heartbeat, attachRun, release, retain, transfer, list, current };
+  const get = (id) => db.prepare("SELECT * FROM leases WHERE id = ?").get(id) || null;
+  return { acquire, heartbeat, attachRun, release, retain, reconcile, transfer, list, current, get };
 }

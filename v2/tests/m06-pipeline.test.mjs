@@ -9,6 +9,8 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { makeTestHub, enableLive, waitFor } from "./helpers.mjs";
 import { materializeFixture, demoSpec } from "../server/factory/fixtures.mjs";
+// M09: every factory mission names its models explicitly (without them it is a draft whose scope is incomplete).
+const M09_MODELS = { writerModel: "gpt-fake-sol", reviewerModel: "sonnet" };
 import { localOnlyArgs, previewArgv } from "../server/environments/wsl-factory-runner.mjs";
 import { CANARY_CHECK_IDS, canaryPrelude } from "../server/environments/canary.mjs";
 import { shellArray } from "../server/environments/sandbox-profiles.mjs";
@@ -119,7 +121,7 @@ test("M06-PL-05 factory on the environment route: preview PASS inside the profil
       t.hub.grants.create({ provider: "codex", projectId: project.id, access: "workspace-write", maxAttempts: 4, maxDurationS: 900, ttlMinutes: 60 }, "test");
       t.hub.grants.create({ provider: "claude", projectId: project.id, access: "read-only", maxAttempts: 4, maxDurationS: 900, ttlMinutes: 60 }, "test");
     });
-    const { mission } = await dispatch(t.hub, "factory.prepare", { projectId: project.id, ...demoSpec("service-request", { port }) });
+    const { mission } = await dispatch(t.hub, "factory.prepare", { projectId: project.id, ...demoSpec("service-request", { port }), limits: M09_MODELS });
     t.queue("codex", "factory-write:feature-b-nodedupe", "factory-write:feature-b-dedupe");
     t.queue("claude", "review:pass");
     const scope = t.hub.factory.view(mission.id).scope;

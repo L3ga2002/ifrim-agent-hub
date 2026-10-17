@@ -4,8 +4,9 @@ import path from "node:path";
 import crypto from "node:crypto";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
-import { classifyClaudeRetry, classifyText } from "./classify.mjs";
+import { classifyClaudeRetry, classifyText, claudeOutputTokenMaximum } from "./classify.mjs";
 import { buildChildEnv, BILLING_RISK_ENV } from "../policy/billing.mjs";
+import { deriveAccountIdentity, normalizeClaudeRateLimit, classifyClaudeRateLimit } from "../policy/billing-evidence.mjs";
 import { claudeDeniedReads } from "../policy/isolation.mjs";
 
 const execFileAsync = promisify(execFile);
@@ -20,6 +21,13 @@ export const CLAUDE_FORBIDDEN_FLAGS = Object.freeze(["--bare", "--fallback-model
  * Max bills usage credits for the models the installed CLI resolves (e.g. sonnet[1m] = Sonnet 4.6 on 2.1.175).
  */
 export const CLAUDE_REFUSED_MODELS = /(^|[^a-z0-9])(fable|best)([^a-z0-9]|$)|claude-fable|\[1m\]/i;
+
+/**
+ * The Claude models the Hub may ASK for (M09, shared by the factory, envelopes, manual runs and the reviewer in wsl-runner): an
+ * alias (sonnet, opus, haiku) or a dated id of those families. Anything else (an empty model = the account default, "best",
+ * Fable, the [1m] variants, an unknown name) is refused before any process starts.
+ */
+export const CLAUDE_MODEL_ALLOWLIST = /^(?:sonnet|opus|haiku|claude-(?:sonnet|opus|haiku)-[0-9][0-9a-z.-]{0,40})$/i;
 
 /** Why a model matched CLAUDE_REFUSED_MODELS, in the words shown to the owner. */
 export function refusedModelReason(model) {
@@ -92,21 +100,41 @@ export function resolveClaudeBinary(config) {
   return null;
 }
 
+/**
+ * Pure launch recipe shared with isolated rehearsals. Pass the parent's environment explicitly; launcher facts are already
+ * resolved (prefixArgs includes any platform wrapper). Without the option this is exactly the supervisor's former child env.
+ * Revert: remove authorLimits handling and the one env assignment below; there is no global state or settings to clean up.
+ */
+export function claudeTurnLaunch({ binary, cwd, deniedReads, access, model, effort, newSession, sessionId,
+  parentEnv = {}, launcherEnv = CLAUDE_GUARD_ENV, environment = "windows", maxOutputTokens }) {
+  const env = buildChildEnv(launcherEnv, parentEnv);
+  if (environment === "windows" && maxOutputTokens === 64000) env.CLAUDE_CODE_MAX_OUTPUT_TOKENS = "64000";
+  return { executable: binary.executable, args: [...binary.prefixArgs, ...claudeTurnArgs({ access, deniedReads, model, effort, newSession, sessionId })], cwd, env };
+}
+
 function readJson(file) {
   try { return JSON.parse(fs.readFileSync(file, "utf8")); } catch { return null; }
 }
 
-/** Reports whether Claude settings could select a separately billed credential. Names only. */
+/** Reports billing-risk names (never credentials) and the non-secret user-settings output-token override, read-only. */
 export function inspectClaudeConfig(homeDir, projectDir = null) {
   const files = [path.join(homeDir, ".claude", "settings.json"), path.join(homeDir, ".claude", "settings.local.json")];
   if (projectDir) files.push(path.join(projectDir, ".claude", "settings.json"), path.join(projectDir, ".claude", "settings.local.json"));
   let apiKeyHelper = false;
   let fallbackModelSet = false;
+  let outputTokenLimitOverride = null;
   const riskyEnvInSettings = new Set();
   const inspected = [];
   for (const [i, file] of files.entries()) {
     const data = readJson(file);
     if (!data) continue;
+    // --setting-sources user loads settings.json; local/project files are not evidence of this override.
+    if (i === 0 && data.env?.CLAUDE_CODE_MAX_OUTPUT_TOKENS !== undefined) {
+      const value = data.env.CLAUDE_CODE_MAX_OUTPUT_TOKENS;
+      const scalar = typeof value === "string" || typeof value === "number";
+      const text = scalar ? String(value).trim() : "";
+      outputTokenLimitOverride = scalar && text.length <= 20 ? (typeof value === "string" ? text : value) : "invalid";
+    }
     inspected.push(path.relative(homeDir, file) || file);
     if (data.apiKeyHelper) apiKeyHelper = true;
     // Only the user files count: Hub runs load --setting-sources user.
@@ -115,7 +143,7 @@ export function inspectClaudeConfig(homeDir, projectDir = null) {
   }
   const anthropicDir = path.join(process.env.APPDATA || path.join(homeDir, "AppData", "Roaming"), "Anthropic");
   const federationProfile = fs.existsSync(path.join(anthropicDir, "active_config"));
-  return { inspectedFiles: inspected.length, apiKeyHelper, fallbackModelSet, riskyEnvInSettings: [...riskyEnvInSettings], anthropicActiveProfilePresent: federationProfile };
+  return { inspectedFiles: inspected.length, apiKeyHelper, fallbackModelSet, outputTokenLimitOverride, riskyEnvInSettings: [...riskyEnvInSettings], anthropicActiveProfilePresent: federationProfile };
 }
 
 /**
@@ -144,6 +172,7 @@ export function inspectWorkspaceStartup(projectDir) {
  *   deniedReads(cwd)             → the --disallowedTools rules for this platform
  *   startupProblem(cwd, trusted) → a refusal text when the workspace defines startup hooks/MCP, else null
  *   fallbackModelSet()           → whether the settings the run loads define fallbackModel
+ *   outputTokenLimitOverride()   → optional, the output-token value in the loaded user settings
  *   spawn({ binary, args, cwd, launchVars }) → { executable, args, cwd, env } for the supervisor
  */
 export function windowsClaudeLauncher({ config, homeDir = os.homedir() }) {
@@ -157,13 +186,33 @@ export function windowsClaudeLauncher({ config, homeDir = os.homedir() }) {
       return !trusted && startup.some((item) => item.kind !== "definitions") ? `Workspace defines startup hooks/MCP (${startup.map((s) => s.file).join(", ")}); mark the project trusted after review` : null;
     },
     fallbackModelSet: () => inspectClaudeConfig(homeDir).fallbackModelSet,
+    outputTokenLimitOverride: () => inspectClaudeConfig(homeDir).outputTokenLimitOverride,
     spawn: ({ binary, args, cwd }) => ({ executable: binary.executable, args: [...binary.prefixArgs, ...args], cwd, env: CLAUDE_GUARD_ENV }),
   };
 }
 
-export function createClaudeAdapter({ config, supervisor, homeDir = os.homedir(), launcher = null }) {
+/**
+ * `claude auth status --json` → the facts the Hub keeps (M07: four fields). M09-A2: with a salt, the account becomes a salted
+ * pseudonym (`accountIdentity`): from the e-mail when the CLI reports one (plus an organisation id if present), otherwise from
+ * the tuple authMethod/apiProvider/subscriptionType (basis "tuple": weak, it cannot tell apart two accounts on the same plan).
+ * Which identity fields the real CLI prints is not verified in the repo; whatever it prints is used only here and discarded.
+ */
+export function claudeAuthFacts(status, { salt = null } = {}) {
+  const s = status && typeof status === "object" ? status : {};
+  const out = { loggedIn: Boolean(s.loggedIn), authMethod: s.authMethod || null, apiProvider: s.apiProvider || null, subscriptionType: s.subscriptionType || null };
+  if (!salt || !out.loggedIn) return out;
+  const pick = (...keys) => keys.map((k) => s[k]).find((v) => typeof v === "string" && v.trim()) || null;
+  const email = pick("email", "emailAddress", "accountEmail");
+  const org = pick("orgId", "organizationId", "organizationUuid", "orgUuid");
+  const accountIdentity = deriveAccountIdentity({ salt, email, tuple: [out.authMethod, out.apiProvider, out.subscriptionType], extra: org ? [org] : [], plan: out.subscriptionType });
+  if (accountIdentity) out.accountIdentity = accountIdentity;
+  return out;
+}
+
+export function createClaudeAdapter({ config, supervisor, homeDir = os.homedir(), launcher = null, identitySalt = null }) {
   const id = "claude";
   const host = launcher || windowsClaudeLauncher({ config, homeDir });
+  const salt = () => { try { return typeof identitySalt === "function" ? identitySalt() : null; } catch { return null; } };
 
   async function run(args, timeout = 30000) {
     const binary = resolveClaudeBinary(config);
@@ -190,7 +239,7 @@ export function createClaudeAdapter({ config, supervisor, homeDir = os.homedir()
     const out = { provider: id, probedAt: new Date().toISOString(), config: inspectClaudeConfig(homeDir) };
     try {
       const status = JSON.parse(await run(["auth", "status", "--json"], 30000));
-      out.auth = { loggedIn: Boolean(status.loggedIn), authMethod: status.authMethod || null, apiProvider: status.apiProvider || null, subscriptionType: status.subscriptionType || null };
+      out.auth = claudeAuthFacts(status, { salt: salt() });
       out.ok = true;
     } catch (error) {
       out.ok = false;
@@ -205,34 +254,58 @@ export function createClaudeAdapter({ config, supervisor, homeDir = os.homedir()
    * for new sessions (so a crash can be reconciled by id), `--resume` for continuation. `launchVars` (M07): variables of
    * the environment launcher (the run marker the reaper finds); the Windows launcher ignores them.
    */
-  function startTurn({ runId, cwd, prompt, access = "read-only", model = "", effort = "", sessionId = "", trustedWorkspace = false, onEvent, launchVars = {} }) {
+  /*
+   * `verifyInitModel(reportedModel)` (M09, given by the run manager): returns null when the model Claude Code reports at init is
+   * the approved one (the bound family or dated id), otherwise the reason to stop before the model.
+   */
+  function startTurn({ runId, cwd, prompt, access = "read-only", model = "", effort = "", sessionId = "", trustedWorkspace = false, onEvent, launchVars = {}, verifyInitModel = null, maxOutputTokens = null }) {
     const binary = host.resolve();
     const key = `run-${runId}`;
-    if (!binary) return failedHandle(key, "transport", "Claude Code not installed");
+    const requested = host.environment === "windows" && maxOutputTokens === 64000 ? 64000 : null;
+    const settingsOverride = host.outputTokenLimitOverride?.() ?? null;
+    const evidenceSuffix = settingsOverride !== null ? "; env din setările utilizatorului poate suprascrie variabila procesului" : "";
+    const fail = (category, message) => {
+      const handle = failedHandle(key, category, message);
+      handle.done = handle.done.then((result) => ({ ...result, authorOutputLimit: { requested, settingsOverride, effective: null, evidence: "nedemonstrat" + evidenceSuffix } }));
+      return handle;
+    };
+    if (!binary) return fail("transport", "Claude Code not installed");
     const startupProblem = host.startupProblem(cwd, trustedWorkspace);
-    if (startupProblem) return failedHandle(key, "policy", startupProblem);
+    if (startupProblem) return fail("policy", startupProblem);
     if (model && CLAUDE_REFUSED_MODELS.test(model)) {
-      return failedHandle(key, "billing", `Modelul ${model} este refuzat: ${refusedModelReason(model)}`);
+      return fail("billing", `Modelul ${model} este refuzat: ${refusedModelReason(model)}`);
     }
     // A fallbackModel in the user settings lets the CLI switch to another model by itself during the run (overload, model
     // not found): the same paid-fallback risk as the forbidden --fallback-model flag. Checked on every launch.
     if (host.fallbackModelSet()) {
-      return failedHandle(key, "billing", "Setările Claude Code ale utilizatorului definesc fallbackModel: Claude ar putea comuta singur pe alt model (inclusiv Fable) în timpul execuției; oprit înainte de model. Scoate cheia fallbackModel din setări.");
+      return fail("billing", "Setările Claude Code ale utilizatorului definesc fallbackModel: Claude ar putea comuta singur pe alt model (inclusiv Fable) în timpul execuției; oprit înainte de model. Scoate cheia fallbackModel din setări.");
     }
     const newSession = !sessionId;
     const nativeSessionId = sessionId || crypto.randomUUID();
     let spec;
-    try { spec = host.spawn({ binary, args: claudeTurnArgs({ access, deniedReads: host.deniedReads(cwd), newSession, sessionId: nativeSessionId, model, effort }), cwd, launchVars }); }
-    catch (error) { return failedHandle(key, error.category || "transport", String(error.message || error).slice(0, 300)); }
-    if (spec.args.some((arg) => CLAUDE_FORBIDDEN_FLAGS.includes(arg))) return failedHandle(key, "policy", "Forbidden Claude flag");
+    try {
+      const launch = host.spawn({ binary, args: [], cwd, launchVars });
+      spec = claudeTurnLaunch({ binary: { executable: launch.executable, prefixArgs: launch.args }, cwd: launch.cwd,
+        access, deniedReads: host.deniedReads(cwd), newSession, sessionId: nativeSessionId, model, effort,
+        parentEnv: process.env, launcherEnv: launch.env, environment: host.environment, maxOutputTokens });
+    }
+    catch (error) { return fail(error.category || "transport", String(error.message || error).slice(0, 300)); }
+    if (spec.args.some((arg) => CLAUDE_FORBIDDEN_FLAGS.includes(arg))) return fail("policy", "Forbidden Claude flag");
 
     let output = "";
     let usage = {};
     let resultEvent = null;
+    let terminalMaximum = null;
     let billingStop = false;
+    let quotaStop = null;
     let initSeen = false;
     let initStop = null;
-    const record = supervisor.start({ key, label: host.label || "claude -p", executable: spec.executable, args: spec.args, cwd: spec.cwd,
+    let initMismatch = null;
+    let lastAssistantStop = null;
+    let largestMessageOutput = 0;
+    const observeUsage = (tokens) => { if (Number.isSafeInteger(tokens) && tokens > largestMessageOutput) largestMessageOutput = tokens; };
+    let record;
+    try { record = supervisor.start({ key, label: host.label || "claude -p", executable: spec.executable, args: spec.args, cwd: spec.cwd,
       env: spec.env,
       onStdoutLine: (line) => {
         let event;
@@ -241,7 +314,12 @@ export function createClaudeAdapter({ config, supervisor, homeDir = os.homedir()
           // Last check before any model call: the session must use the subscription and a non-Fable model.
           if (event.apiKeySource && event.apiKeySource !== "none") initStop = { category: "billing", message: `Claude Code a raportat apiKeySource=${event.apiKeySource}: rută API refuzată înainte de model` };
           else if (event.model && CLAUDE_REFUSED_MODELS.test(String(event.model))) initStop = { category: "billing", message: `Claude Code a selectat modelul ${event.model}: oprit înainte de model (${refusedModelReason(event.model)})` };
-          else {
+          // M09: the model the CLI resolved must be the approved one (an alias resolves through the installed CLI); never a
+          // silent substitution. Recorded on the run (model_verified) before the stop.
+          else if (typeof verifyInitModel === "function" && (initMismatch = verifyInitModel(event.model))) {
+            initStop = { category: "policy", message: initMismatch };
+            try { onEvent({ type: "model_verified", value: event.model ? String(event.model).slice(0, 80) : null, matched: false, reason: initMismatch }); } catch { /* the record never breaks the stop */ }
+          } else {
             // --strict-mcp-config with an empty config should leave no MCP server; a plugin or connector server that still
             // shows up would run outside any sandbox (native Windows has none for Claude Code), so the run stops here.
             const servers = (Array.isArray(event.mcp_servers) ? event.mcp_servers : []).map((s) => String(s?.name || s || "?").slice(0, 60));
@@ -262,8 +340,16 @@ export function createClaudeAdapter({ config, supervisor, homeDir = os.homedir()
         } else if (event.type === "stream_event" && event.event?.type === "content_block_delta" && event.event.delta?.type === "text_delta") {
           output += event.event.delta.text || "";
           onEvent({ type: "delta", text: event.event.delta.text || "" });
-        } else if (event.type === "assistant" && Array.isArray(event.message?.content)) {
-          for (const block of event.message.content) {
+        } else if (event.type === "stream_event" && event.event?.type === "message_start") {
+          lastAssistantStop = event.event.message?.stop_reason ?? null;
+          observeUsage(event.event.message?.usage?.output_tokens);
+        } else if (event.type === "stream_event" && event.event?.type === "message_delta") {
+          if (event.event.delta?.stop_reason) lastAssistantStop = event.event.delta.stop_reason;
+          observeUsage(event.event.usage?.output_tokens);
+        } else if (event.type === "assistant") {
+          lastAssistantStop = event.message?.stop_reason ?? null;
+          observeUsage(event.message?.usage?.output_tokens);
+          for (const block of Array.isArray(event.message?.content) ? event.message.content : []) {
             if (block.type === "tool_use") { onEvent({ type: "phase", phase: "first_command_started" }); onEvent({ type: "activity", label: `Claude tool: ${String(block.name).slice(0, 60)}` }); }
           }
         } else if (event.type === "system" && event.subtype === "api_retry") {
@@ -279,10 +365,33 @@ export function createClaudeAdapter({ config, supervisor, homeDir = os.homedir()
           onEvent({ type: "notice", level: "warning", text: `Claude Code a comutat modelul ${String(event.original_model || "?").slice(0, 60)} → ${String(event.fallback_model || "?").slice(0, 60)}; execuția e oprită` });
           billingStop = `Claude Code a comutat modelul în timpul execuției (${String(event.original_model || "?").slice(0, 60)} → ${String(event.fallback_model || "?").slice(0, 60)}); oprit`;
           supervisor.stop(key, { graceMs: 0 }).catch(() => {});
+        } else if (event.type === "rate_limit_event") {
+          // M09-A2: what the provider reports about the plan, recorded as a provider report. A tripwire, never the
+          // pre-inference proof (it arrives after the request). Only an explicit overage signal latches the reverify and stops
+          // the run; credits_required is a quota stop; unknown or absent fields never mean "credits off".
+          const snapshot = normalizeClaudeRateLimit(event.rate_limit_info ?? event.rateLimitInfo ?? null, new Date().toISOString());
+          const verdict = classifyClaudeRateLimit(snapshot);
+          onEvent({ type: "usage", usage: { rateLimits: snapshot } });
+          if (verdict.overage) {
+            onEvent({ type: "notice", level: "error", text: `Claude Code raportează consum peste plan (${verdict.signals.join(", ")}); execuția e oprită și declarația de facturare cere reconfirmare` });
+            onEvent({ type: "billing_evidence", reverify: true, reason: "provider_report_overage", report: snapshot, signals: verdict.signals });
+            billingStop = `Claude Code a raportat consum din usage credits / overage (${verdict.signals.join(", ")}); oprit, iar Claude rămâne blocat până la o declarație nouă în sesiunea de proprietar`;
+            supervisor.stop(key, { graceMs: 0 }).catch(() => {});
+          } else if (verdict.creditsRequired) {
+            onEvent({ type: "notice", level: "warning", text: "Claude Code raportează alocarea planului epuizată (credits_required); nu se cumpără credite, execuția e oprită" });
+            if (verdict.creditFields) onEvent({ type: "billing_evidence", reverify: false, report: snapshot, signals: [] });
+            quotaStop = `Alocarea planului Claude este epuizată (rate_limit_event credits_required${snapshot.resetsAt ? `, resetare ${snapshot.resetsAt}` : ""}); oprit fără credite`;
+            supervisor.stop(key, { graceMs: 100 }).catch(() => {});
+          } else {
+            if (snapshot.status === "allowed_warning" || snapshot.status === "rejected") onEvent({ type: "notice", level: "warning", text: `Claude Code: limită ${snapshot.status}${snapshot.rateLimitType ? ` (${snapshot.rateLimitType})` : ""}${snapshot.resetsAt ? `, resetare ${snapshot.resetsAt}` : ""}` });
+            if (verdict.creditFields) onEvent({ type: "billing_evidence", reverify: false, report: snapshot, signals: [] });
+          }
         } else if (event.type === "system" && event.subtype === "permission_denied") {
           onEvent({ type: "activity", label: `Claude permission denied: ${String(event.tool_name || event.tool || "").slice(0, 60)}` });
         } else if (event.type === "result") {
           resultEvent = event;
+          const terminalText = [event.result, ...(Array.isArray(event.errors) ? event.errors : [])].filter((s) => typeof s === "string").join("\n");
+          terminalMaximum = event.is_error ? claudeOutputTokenMaximum(terminalText) : null;
           const used = Object.keys(event.modelUsage || {});
           const refused = used.find((m) => CLAUDE_REFUSED_MODELS.test(m));
           if (refused) billingStop = `Rezultatul raportează folosirea modelului ${refused.slice(0, 60)}: rezultatul nu e acceptat`;
@@ -291,6 +400,7 @@ export function createClaudeAdapter({ config, supervisor, homeDir = os.homedir()
           onEvent({ type: "usage", usage });
         }
       } });
+    } catch (error) { return fail("policy", String(error.message || error).slice(0, 300)); }
     try {
       record.child.stdin.write(prompt);
       record.child.stdin.end();
@@ -302,18 +412,33 @@ export function createClaudeAdapter({ config, supervisor, homeDir = os.homedir()
       const stderr = record.stderrTail.slice(-5).join(" | ");
       if (initStop) return { status: "failed", errorCategory: initStop.category, preInference: true, error: initStop.message, output: "", usage: {}, sessionId: nativeSessionId };
       if (billingStop) return { status: "failed", errorCategory: "billing", preInference: false, error: typeof billingStop === "string" ? billingStop : "Stopped: provider reported a billing error", output, usage, sessionId: nativeSessionId };
+      if (quotaStop) return { status: "failed", errorCategory: "quota", preInference: false, error: quotaStop, output, usage, sessionId: nativeSessionId };
       if (interruptedBy) return { status: "interrupted", errorCategory: null, preInference: !initSeen, error: `interrupted (${interruptedBy}); turn left unfinished, session resumable`, output, usage, sessionId: nativeSessionId };
+      // Only the Windows author requesting 64000 may turn a successful CLI result into an output-limit failure.
+      // A terminal CLI output-maximum error was already a failure for every run; only its category changes.
+      if ((requested === 64000 && lastAssistantStop === "max_tokens") || terminalMaximum !== null) {
+        return { status: "failed", errorCategory: "output_token_limit", preInference: !initSeen,
+          error: "Modelul a folosit întregul buget de ieșire fără să încheie răspunsul (output_token_limit).", output, usage, sessionId: nativeSessionId };
+      }
       if (resultEvent && !resultEvent.is_error && exit.code === 0) {
         return { status: "completed", output, usage, sessionId: resultEvent.session_id || nativeSessionId, permissionDenials: resultEvent.permission_denials || [], numTurns: resultEvent.num_turns };
       }
       const message = resultEvent?.result || stderr || exit.error || `claude exited ${exit.code}`;
-      return { status: "failed", errorCategory: classifyText(message), preInference: !initSeen, error: String(message).slice(0, 2000), output, usage, sessionId: nativeSessionId };
+      const category = classifyText(message);
+      // An stderr fragment alone is not a verifiable terminal result.
+      return { status: "failed", errorCategory: category === "output_token_limit" ? "model" : category, preInference: !initSeen, error: String(message).slice(0, 2000), output, usage, sessionId: nativeSessionId };
+    }).then((result) => {
+      const effective = terminalMaximum ?? (largestMessageOutput > 32000 ? largestMessageOutput : null);
+      const proof = terminalMaximum !== null ? `CLI: exceeded the ${terminalMaximum} output token maximum`
+        : effective !== null ? `at least ${effective} (usage.output_tokens al unui mesaj assistant)` : "nedemonstrat";
+      return { ...result, authorOutputLimit: { requested, settingsOverride, effective,
+        evidence: proof + evidenceSuffix } };
     });
 
     async function interrupt(reason = "user") {
       interruptedBy = reason;
       const result = await supervisor.stop(key, { graceMs: 300 });
-      return { interrupted: result.stopped, graceful: false, reason };
+      return { interrupted: result.stopped, graceful: false, reason, stop: result };
     }
 
     return { key, pid: record.pid, nativeSessionId, newSession, done, interrupt };

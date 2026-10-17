@@ -1,0 +1,20 @@
+{
+  "comment": "M11 L5 author fixture (fake-claude author:bug-already-passes): a test of something the code already does (an e-mail without a domain is refused): ALREADY_PASSES (never kept, never rewritten).",
+  "body": [
+    "test(\"AC-1: un e-mail fără domeniu este refuzat\", async () => {",
+    "  const { validateRequest } = await load(\"../../src/requests.js\");",
+    "  assert.equal(validateRequest({ name: \"Ana\", email: \"ana@\", service: \"audit\" }).ok, false);",
+    "});",
+    "",
+    "test(\"AC-1 control: o solicitare validă este acceptată\", async () => {",
+    "  const { validateRequest } = await load(\"../../src/requests.js\");",
+    "  assert.equal(validateRequest({ name: \"Ana\", email: \"ana@example.ro\", service: \"audit\" }).ok, true);",
+    "});"
+  ],
+  "manifest": {
+    "cases": [
+      { "name": "AC-1: un e-mail fără domeniu este refuzat", "criterion": "AC-1", "kind": "check", "today": "fail" },
+      { "name": "AC-1 control: o solicitare validă este acceptată", "criterion": "AC-1", "kind": "control", "today": "pass" }
+    ]
+  }
+}

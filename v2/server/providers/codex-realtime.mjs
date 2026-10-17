@@ -1,9 +1,9 @@
-import { normalizeAccount, normalizeRateLimits, mcpDisableArgs, activeMcpServers } from "./codex.mjs";
+import { normalizeAccount, normalizeRateLimits, mcpDisableArgs, activeMcpServers, effortArgs } from "./codex.mjs";
 
 export { mcpDisableArgs };
 import { classifyText } from "./classify.mjs";
 import { redactText } from "../security/redact.mjs";
-import { legaDynamicTools, legaAgentInstructions, legaVoicePrompt, LEGA_VOICES } from "../policy/lega-policy.mjs";
+import { legaDynamicTools, legaAgentInstructions, legaVoicePrompt, LEGA_VOICES, LEGA_BACKEND_EFFORT } from "../policy/lega-policy.mjs";
 
 /**
  * GPT-Live voice through codex app-server (thread/realtime/*, EXPERIMENTAL on codex-cli 0.159.2), for Lega.
@@ -17,6 +17,9 @@ import { legaDynamicTools, legaAgentInstructions, legaVoicePrompt, LEGA_VOICES }
  * - every MCP server from the owner's config is disabled by name (`mcp_servers.<name>.enabled=false`; an empty
  *   `mcp_servers={}` override is a no-op because Codex deep-merges config layers), then `mcpServerStatus/list` must report
  *   no active server before voice starts; subagents are off (`agents.enabled=false`);
+ * - 2.12.2 (L9): the thread's reasoning effort is the Hub's (LEGA_BACKEND_EFFORT, `-c model_reasoning_effort` as for runs), never the
+ *   owner's config default; thread/start reports it back, and the model + effort it reports travel to lega.session.connected (another
+ *   effort is a warning notice, not a refusal: the voice works, only slower);
  * - transport is always WebRTC v3 (the default websocket transport needs an API key); the browser owns the peer connection
  *   and the audio never passes through the Hub.
  * - web search (hosted, no local reach) only when the owner has it on for Lega; every search is shown and logged.
@@ -32,7 +35,16 @@ export const CODEX_VOICE_EXTRA_ARGS = Object.freeze([
   "-c", 'experimental_realtime_ws_backend_prompt=""', // a config prompt would replace the Lega persona
   "-c", "agents.enabled=false", // no subagents behind Lega (they would escape the Hub's accounting)
   // Plugins (and their MCP servers, e.g. Computer Use's cua_repl) are off for every Hub process: CODEX_APP_SERVER_OVERRIDES.
+  // 2.12.2 (L9): the Hub's effort for the delegated turns (the realtime handoffs start them with the thread default), validated by the
+  // run adapter's own helper (only a known effort name reaches the command line).
+  ...effortArgs(LEGA_BACKEND_EFFORT),
 ]);
+
+/** A value thread/start reported about the Lega thread (model id, effort), reduced to an id-safe string for the audit; null when absent. */
+const reportedId = (value, max) => {
+  const text = String(value ?? "").trim().replace(/[^A-Za-z0-9._:\-[\]]+/g, "").slice(0, max);
+  return text || null;
+};
 
 
 /**
@@ -48,7 +60,7 @@ const webSearchText = (item) => {
 };
 const V2_APPROVALS = new Set(["item/commandExecution/requestApproval", "item/fileChange/requestApproval"]);
 const LEGACY_APPROVALS = new Set(["execCommandApproval", "applyPatchApproval"]);
-const TOOL_REPLY_TIMEOUT_MS = 5000;
+export const TOOL_REPLY_TIMEOUT_MS = 5000;
 const TOOL_REPLY_MAX = 6000;
 
 const withTimeout = (promise, ms, label) => Promise.race([promise, new Promise((_, reject) => setTimeout(() => reject(Object.assign(new Error(`${label} timed out after ${ms} ms`), { category: "transport", timeout: true })), ms))]);
@@ -214,6 +226,7 @@ export function createCodexRealtime({ codex, supervisor }) {
 
       const thread = await session.peer.request("thread/start", { cwd, approvalPolicy: "on-request", approvalsReviewer: "user", serviceName: "ifrim_agent_hub_lega",
         ephemeral: true, environments: [], dynamicTools: legaDynamicTools({ projects, ...context }), developerInstructions: legaAgentInstructions({ projects, ...context, webSearch }) }, 60000);
+      // M10.2: context.voiceFirst (the session's policy, decided by the Hub at start) selects the plan vocabulary; the legacy set is unchanged.
       check();
       threadId = thread?.thread?.id || "";
       if (!threadId) throw Object.assign(new Error("Codex did not return a thread id"), { category: "transport", preInference: true });
@@ -234,11 +247,17 @@ export function createCodexRealtime({ codex, supervisor }) {
       if (activeMcp.length) {
         throw Object.assign(new Error(`Servere MCP încă active pentru Lega: ${activeMcp.slice(0, 5).join(", ")}`), { category: "policy", preInference: true });
       }
+      // 2.12.2 (L9): what the thread really runs with (model id and effort only, non-secret). Unlike a run, another effort does not stop
+      // Lega (the router stays read-only either way): the owner is told the answers may be slower, and the audit keeps the reported value.
+      const backend = { model: reportedId(thread.model, 80), effort: reportedId(thread.reasoningEffort, 20)?.toLowerCase() || null };
+      if (backend.effort && backend.effort !== LEGA_BACKEND_EFFORT) {
+        onEvent({ type: "notice", level: "warning", code: "backend_effort", text: `Agentul din spatele Legăi a pornit cu alt nivel de gândire („${backend.effort}”) decât cel stabilit de Hub („${LEGA_BACKEND_EFFORT}”), așa că răspunsurile pot veni mai încet. Sesiunea continuă.` });
+      }
 
       check();
       realtimeRequested = true; // from here a GPT-Live call may exist; earlier failures created none
       await session.peer.request("thread/realtime/start", { threadId, outputModality: "audio", transport: { type: "webrtc", sdp: offerSdp }, version: "v3", voice,
-        prompt: legaVoicePrompt({ ownerName, webSearch }), clientManagedHandoffs: true, includeStartupContext: false, flushTranscriptTailOnSessionEnd: false, backendReasoningStatus: false }, 30000);
+        prompt: legaVoicePrompt({ ownerName, webSearch, voiceFirst: Boolean(context.voiceFirst) }), clientManagedHandoffs: true, includeStartupContext: false, flushTranscriptTailOnSessionEnd: false, backendReasoningStatus: false }, 30000);
       const info = await withTimeout(startedD.promise, 20000, "thread/realtime/started");
       const answerSdp = await withTimeout(sdpD.promise, 20000, "thread/realtime/sdp");
       check();
@@ -246,7 +265,7 @@ export function createCodexRealtime({ codex, supervisor }) {
       signal?.removeEventListener("abort", onAbort);
       return {
         activity: () => ({ ...activity }),
-        answerSdp, threadId, realtimeSessionId: info.realtimeSessionId, version: info.version, pid: session.record.pid, key,
+        answerSdp, threadId, realtimeSessionId: info.realtimeSessionId, version: info.version, pid: session.record.pid, key, backend,
         appendSpeech: (text) => (alive() ? session.peer.request("thread/realtime/appendSpeech", { threadId, text }, 10000) : Promise.resolve(null)),
         interruptTurns, stop, kill, activeTurnCount: () => activeTurns.size,
       };

@@ -2,6 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { makeTestHub, enableLive, waitFor } from "./helpers.mjs";
 import { evaluateRoute, ATTESTATION_TEXT } from "../server/policy/billing.mjs";
+import { buildDeclaration } from "../server/policy/billing-evidence.mjs";
 import { CLAUDE_REFUSED_MODELS, CLAUDE_FORBIDDEN_FLAGS, CLAUDE_GUARD_ENV, CLAUDE_DENIED_READS, refusedModelReason } from "../server/providers/claude.mjs";
 import { CODEX_APP_SERVER_OVERRIDES, inspectCodexConfig } from "../server/providers/codex.mjs";
 import fs from "node:fs";
@@ -9,11 +10,13 @@ import os from "node:os";
 import path from "node:path";
 
 const NOW = new Date("2026-09-30T08:00:00Z");
-const att = { codex: { confirmedAt: NOW.toISOString() }, claude: { confirmedAt: NOW.toISOString() } };
+// M09-A2: evaluateRoute reads billing evidence (an unbound test declaration of the current text) instead of the legacy attestations.
+const att = Object.fromEntries(["codex", "claude"].map((p) => [p, { declaration: buildDeclaration({ id: `bde_t_${p}`, provider: p, text: ATTESTATION_TEXT[p], identity: null, now: NOW, source: "test" }) }]));
 const codexInspection = (planType, creditsReported = null) => ({ installed: true, binary: "codex.exe", version: "0.158", config: {}, auth: { accountType: "chatgpt", planType },
   usage: { windows: [{ name: "primary", usedPercent: 10 }], creditsReported } });
 
-async function claudeTurn(t, { model = "", scenario = null } = {}) {
+// M09: a Claude run always names its model (sonnet unless a test asks for another one); the account default is never used.
+async function claudeTurn(t, { model = "sonnet", scenario = null } = {}) {
   const { hub } = t;
   await enableLive(hub, { provider: "claude" });
   const project = hub.projects.hub();
@@ -86,7 +89,7 @@ test("M01-BH-04 Claude: -p uses only user settings, disables the advisor tool an
 });
 
 test("M01-BH-05 BillingPolicy: Codex plan types from the audit (prolite, promax included; credit-based refused)", () => {
-  const plan = (planType) => evaluateRoute("codex", codexInspection(planType), { attestations: att, now: NOW }).checks.find((c) => c.id === "plan");
+  const plan = (planType) => evaluateRoute("codex", codexInspection(planType), { evidence: att, now: NOW }).checks.find((c) => c.id === "plan");
   assert.equal(plan("prolite").status, "verified");
   assert.equal(plan("promax").status, "verified");
   assert.equal(plan("enterprise_cbp_automation").status, "failed");
@@ -96,7 +99,7 @@ test("M01-BH-05 BillingPolicy: Codex plan types from the audit (prolite, promax 
 
 test("M01-BH-06 BillingPolicy: a positive or unlimited credit balance blocks Codex (no toggle prevents consumption)", () => {
   // Same call shape as the execution gate: the usage snapshot is passed separately.
-  const route = (credits) => { const inspection = codexInspection("prolite", credits); return evaluateRoute("codex", inspection, { attestations: att, now: NOW, usage: inspection.usage }); };
+  const route = (credits) => { const inspection = codexInspection("prolite", credits); return evaluateRoute("codex", inspection, { evidence: att, now: NOW, usage: inspection.usage }); };
   assert.equal(route({ hasCredits: false, unlimited: false, balance: 0 }).allowed, true);
   assert.equal(route(null).allowed, true, "no credit report: the allowance/reserve checks still apply");
   const positive = route({ hasCredits: true, unlimited: false, balance: 12.5 });

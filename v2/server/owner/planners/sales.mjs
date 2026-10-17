@@ -1,0 +1,88 @@
+// M12 Sales planner — the owner's words („pregătește o ofertă pentru un service auto din Cluj care vrea programări online”) → ONE
+// operation-plan card, no model. The brief is parsed deterministically (sales/brief.mjs: what you said verbatim, what it deduces marked
+// as such, what is missing listed, sending / contacting / publishing refused before anything); the card lists the four preparation
+// steps (synthetic client, fixture research, q-v2 qualification, the offer up to your review), and — hashed in the same card — the
+// two steps that follow by themselves only after YOUR approval of the exact offer (the contact draft and „Dosarul ofertei”).
+// Confirming the card never approves the offer: that decision stays yours, separately (decisionsLeft). Nothing runs before the
+// confirmation; nothing is ever sent, published, spent or handed to Engineering from this plan.
+import { newId } from "../../core/ids.mjs";
+import { parseBrief, briefSha } from "../../sales/brief.mjs";
+import { NEVER_IN_PLANS } from "../../ops/plans.mjs";
+import { PREPARE_KIND, prepareSteps, phaseALimits, SALES_DECISIONS_LEFT, SALES_NEVER, ACTIVATE_WITHIN_MIN, CONTINUABLE } from "../../sales/preparation.mjs";
+import { PREPARATION_STATUS_RO } from "../../sales/sales-answers.mjs";
+
+export const SALES_PLAN_KIND = PREPARE_KIND;
+const said = (brief, k) => (brief?.fields?.[k]?.provenance === "USER_PROVIDED" ? String(brief.fields[k].value || "").trim() : "");
+const opsCard = (plan) => plan && ({ id: plan.id, kind: plan.kind, title: plan.title, status: plan.status, summary: plan.summary, hash: plan.hash, nonce: plan.nonce, confirmBy: plan.confirmBy, decisions: plan.body?.decisions || [] });
+
+export function registerSalesPlanner(hub, intake) {
+  /**
+   * M12 final review (with F1): „Continuă pregătirea ofertei” → ONE continuation card of the NEWEST preparation that can be continued (the
+   * existing continueCard: the same root plan, so what was done is not done again; its own confirmation, the existing rule), or the truthful
+   * answer — the rearm comes first (GATE_REARM_REQUIRED: the cockpit shows the rearm card), the preparation is not stopped, nothing to
+   * continue. Never a new preparation, never an effect.
+   */
+  async function continuation({ ctx }) {
+    const preps = hub.salesPreparations;
+    const list = preps?.list ? preps.list() : [];
+    // Last review round RC3: the preparation the owner is working on first — when its plan is paused or waits for him (his „Pauză”, a Hub
+    // restart, a revocation), it needs no new card: the truthful answer is that plan's own „Continuă” (with the rearm first while a Stop All
+    // still holds it), never „nu am ce continua” and never a card for an older offer.
+    const current = hub.salesAnswers?.latest ? hub.salesAnswers.latest()?.p || null : null;
+    const paused = current && hub.salesAnswers?.nextOf ? hub.salesAnswers.nextOf(current) : null;
+    if (paused?.paused) {
+      return { kind: "message", ...(paused.waitsForRearm ? { gate: true, code: "GATE_REARM_REQUIRED" } : {}),
+        text: `Pregătirea ofertei ${current.id} nu are nevoie de un card nou. ${paused.text}` };
+    }
+    const p = list.find((x) => (preps.isContinuable ? preps.isContinuable(x) : CONTINUABLE.includes(x.status))) || null;
+    if (!p) {
+      const newest = list[0] || null;
+      if (!newest) return { kind: "message", text: "Nu am nicio pregătire de ofertă de continuat. Spune „pregătește o ofertă pentru …” și îți arăt un singur plan." };
+      const why = CONTINUABLE.includes(newest.status) ? "nu are un card inițial confirmat de tine, deci o cerere nouă e calea" : `e acum: ${PREPARATION_STATUS_RO[newest.status] || newest.status}`;
+      return { kind: "message", text: `Nu am ce continua: ultima pregătire de ofertă (${newest.id}) ${why}. O continuare se face doar pentru o pregătire oprită, depășită, expirată sau eșuată.` };
+    }
+    try {
+      const out = await preps.continueCard(p.id, { actor: ctx?.actor || "intake", via: "intake" });
+      const plan = out.plan;
+      const note = `Un singur card nou continuă pregătirea ${p.id} (${PREPARATION_STATUS_RO[p.status] || p.status}): aceeași cerere și aceeași firmă sintetică; ce s-a făcut deja nu se repetă. Îl confirmi o dată; aprobarea ofertei rămâne decizia ta, separat. Nimic nu a pornit.`;
+      const card = { opsPlan: { ...opsCard(plan), preparationId: p.id, continues: true, synthetic: true, model: "fără model", decisionsLeft: SALES_DECISIONS_LEFT, never: [...NEVER_IN_PLANS, ...SALES_NEVER] }, note };
+      return { kind: "ops", plan, card, note, preparationId: p.id };
+    } catch (error) {
+      // The Stop All that stopped it still holds the gate: the rearm first (the intake shows the cockpit's rearm card), then the continuation.
+      if (error?.code === "GATE_REARM_REQUIRED") return { kind: "message", gate: true, code: "GATE_REARM_REQUIRED", text: String(error.message || "Întâi redeschiderea porții, în cockpit, cu Windows Hello.") };
+      return { kind: "message", code: error?.code || null, text: `Nu pot continua pregătirea ${p.id}: ${error?.message || "eroare"}` };
+    }
+  }
+
+  /** One card for a Sales request (or one question, or the honest blocker), never an effect. */
+  async function prepare({ step, text, ctx }) {
+    if (step?.intent === "sales_continue" || step?.args?.continue === true) return continuation({ ctx });
+    const request = String(step?.args?.request || text || "").trim();
+    if (!request) return { kind: "question", question: "Ce ofertă pregătesc? Spune-mi tipul firmei și ce vrea (de exemplu: „pregătește o ofertă pentru un service auto din Cluj care vrea programări online”).", forIntent: "sales" };
+    let brief;
+    try { brief = parseBrief(request); } catch (error) { return { kind: "message", text: error.message } }
+    const refusedNote = brief.refused.length ? ` Nu trimit, nu contactez și nu public nimic (OUTREACH_DISABLED): „${brief.refused.map((r) => r.text).join("”, „")}” nu devine un pas.` : "";
+    if (!brief.intent) return { kind: "question", question: `Vrei să pregătesc o ofertă? Spune „pregătește o ofertă pentru …”.${refusedNote}`, forIntent: "sales" };
+    // The dossier goes to the approved exports folder: without one the card would carry a folder decision a derived step cannot take.
+    if (!hub.media?.exportsDir?.()) {
+      const why = "Nu pot pregăti oferta cu dosarul ei: nu există încă un folder de exporturi aprobat (îl alegi o dată în Studio, la importul unui folder). Cererea ta rămâne păstrată.";
+      return { kind: "blocked", text: why, blocker: { signature: "SALES_DOSSIER_NO_EXPORTS_DIR", cause: "SALES_DOSSIER_NO_EXPORTS_DIR", text: why }, request: { planRef: null } };
+    }
+    const id = newId("spp");
+    const sha = briefSha(brief);
+    const what = [said(brief, "clientType"), said(brief, "problem")].filter(Boolean).join(" — ") || "cerere de ofertă";
+    const plan = await hub.opsPlans.propose({ kind: PREPARE_KIND, title: `Pregătește o ofertă (date sintetice): ${what}`.slice(0, 200), steps: prepareSteps({ preparationId: id, briefSha: sha }),
+      limits: phaseALimits(), actor: ctx?.actor || "intake", via: "intake" });
+    hub.salesPreparations.createPlanned({ id, brief, briefSha: sha, plan, actor: ctx?.actor || "intake" });
+    const then = plan.body.steps.find((s) => s.kind === "sales.proposal.draft")?.params?.then || null;
+    const note = `Un singur plan, fără model: creez o firmă sintetică (.test, CUI fictiv), cercetez doar din fixture-uri, calific cu q-v2 și pregătesc oferta până la „gata de revizuire”, cu prețurile „De stabilit (neconfigurat)”. `
+      + `Aprobarea ofertei exacte rămâne decizia ta, separat; după ea, în cel mult ${Math.round(ACTIVATE_WITHIN_MIN / 60 * 10) / 10} ore de la confirmare, ciorna netrimisă și dosarul ofertei se fac fără altă întrebare.${refusedNote}`;
+    const card = { opsPlan: { ...opsCard(plan), preparationId: id, synthetic: true, model: "fără model",
+      brief: { request: brief.request, fields: Object.fromEntries(Object.entries(brief.fields).filter(([, f]) => f).map(([k, f]) => [k, { value: f.value, provenance: f.provenance }])),
+        assumptions: brief.assumptions, missing: brief.missing, refused: brief.refused },
+      then, decisionsLeft: SALES_DECISIONS_LEFT, never: [...NEVER_IN_PLANS, ...SALES_NEVER] }, note };
+    return { kind: "ops", plan, card, note, preparationId: id };
+  }
+  intake.registerPlanner("sales", (args) => prepare(args));
+  return { prepare };
+}

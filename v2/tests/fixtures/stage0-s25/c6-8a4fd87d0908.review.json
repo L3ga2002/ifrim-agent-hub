@@ -1,0 +1,178 @@
+{
+  "reviewId": "rev_mv3zqohu_31af69c8a1",
+  "runId": "run_mv3zpvpq_224f49de21",
+  "verdict": "CHANGES_REQUESTED",
+  "summary": "Varianta nouă verifică înregistrarea preexistentă, id-urile exacte și cheile JSON decodate. Totuși, verificarea telefonului a pierdut detectarea valorii incluse într-un text mai lung sau într-o cheie JSON, deci nu acoperă întregul corp al răspunsului. Dovezile furnizate de Hub susțin eșecurile comportamentale și controalele, fără execuții independente în acest turn.",
+  "validation": {
+    "kind": "acceptance_test",
+    "valid": true,
+    "problems": [],
+    "claimedVerdict": "CHANGES_REQUESTED",
+    "cause": null,
+    "criteria": [
+      {
+        "id": "AC-1",
+        "covered": false,
+        "failsForRightReason": true,
+        "canEverPass": true,
+        "contradictsOwner": false,
+        "trivialPassRisk": "high",
+        "plain": "Verifică programările noi și existente, dar poate rata telefonul inclus într-un mesaj sau într-o cheie JSON."
+      },
+      {
+        "id": "AC-2",
+        "covered": false,
+        "failsForRightReason": true,
+        "canEverPass": true,
+        "contradictsOwner": false,
+        "trivialPassRisk": "high",
+        "plain": "Verifică fiecare parametru și id-ul din listă, dar poate rata telefonul transmis într-un text mai lung."
+      },
+      {
+        "id": "AC-3",
+        "covered": true,
+        "failsForRightReason": true,
+        "canEverPass": true,
+        "contradictsOwner": false,
+        "trivialPassRisk": "low",
+        "plain": "Verifică refuzul telefonului lipsă, gol sau cu spații și absența salvării după fiecare refuz."
+      },
+      {
+        "id": "AC-4",
+        "covered": true,
+        "failsForRightReason": true,
+        "canEverPass": true,
+        "contradictsOwner": false,
+        "trivialPassRisk": "low",
+        "plain": "Verifică telefonul exact în baza internă, fără să folosească o rută publică pentru recitire."
+      },
+      {
+        "id": "AC-5",
+        "covered": true,
+        "failsForRightReason": true,
+        "canEverPass": true,
+        "contradictsOwner": false,
+        "trivialPassRisk": "medium",
+        "plain": "Verifică acceptarea unei programări valide pe interval liber; salvarea efectivă este controlată de AC-4."
+      }
+    ],
+    "gate": [
+      {
+        "id": "AC-1",
+        "why": [
+          "nu e acoperit",
+          "poate fi trecut de o implementare trivială"
+        ]
+      },
+      {
+        "id": "AC-2",
+        "why": [
+          "nu e acoperit",
+          "poate fi trecut de o implementare trivială"
+        ]
+      },
+      {
+        "id": "P77",
+        "why": [
+          "verificarea anterioară a fost pierdută"
+        ]
+      },
+      {
+        "id": "P100",
+        "why": [
+          "verificarea anterioară a fost pierdută"
+        ]
+      }
+    ],
+    "previousChecks": {
+      "P75": "replaced_correctly",
+      "P76": "replaced_correctly",
+      "P77": "lost",
+      "P98": "replaced_correctly",
+      "P99": "replaced_correctly",
+      "P100": "lost"
+    }
+  },
+  "findings": [
+    {
+      "code": "T-005",
+      "severity": "high",
+      "file": "test/hub/telefonul-ramane-obligatoriu-si-e75c25.test.mjs",
+      "observation": "phoneLeaks compară șirurile numai prin egalitate exactă și verifică cheile numai pentru numele phone. Nu detectează telefonul inclus într-un șir mai lung sau într-o cheie JSON.",
+      "impact": "Lista poate transmite telefonul în metadate sau mesaje și testul poate trece. Verificările anterioare detectau telefonul literal inclus într-un text mai lung; această acoperire s-a pierdut.",
+      "evidence": "Liniile 63–67: val === phone și k === \"phone\"; liniile 105–106 și 136–137 folosesc exclusiv acest helper."
+    },
+    {
+      "code": "T-006",
+      "severity": "info",
+      "file": "test/hub/telefonul-ramane-obligatoriu-si-e75c25.test.mjs",
+      "observation": "Implementarea startServer și valoarea efectivă a srv.url nu sunt furnizate; testul nu verifică explicit adresa.",
+      "impact": "Nu poate fi confirmată ascultarea exclusivă pe 127.0.0.1. Incertitudinea nu respinge singură testul.",
+      "evidence": "Linia 85 și configurările echivalente; liniile 28 și 40–43 folosesc URL-ul returnat."
+    }
+  ],
+  "inventoryRemoved": [
+    {
+      "id": "P75",
+      "test": "AC-1: Lista publică a zilei nu expune câmpul phone și valoarea telefonului",
+      "criterion": "AC-1",
+      "statement": "assert.ok(getRes.body.includes(bookingId), \"programarea creată apare în lista zilei după id\")"
+    },
+    {
+      "id": "P76",
+      "test": "AC-1: Lista publică a zilei nu expune câmpul phone și valoarea telefonului",
+      "criterion": "AC-1",
+      "statement": "assert.ok(!getRes.body.includes(\"\\\"phone\\\"\"), \"câmpul \\\"phone\\\" nu trebuie să apară în corpul listei publice\")"
+    },
+    {
+      "id": "P77",
+      "test": "AC-1: Lista publică a zilei nu expune câmpul phone și valoarea telefonului",
+      "criterion": "AC-1",
+      "statement": "assert.ok(!getRes.body.includes(PHONE), \"valoarea telefonului nu trebuie să apară în corpul listei publice\")"
+    },
+    {
+      "id": "P98",
+      "test": "AC-2: Parametrii publici suplimentari nu scot telefonul din lista zilei",
+      "criterion": "AC-2",
+      "statement": "assert.ok(getRes.body.includes(bookingId), \"programarea apare în lista cu param \" + param)"
+    },
+    {
+      "id": "P99",
+      "test": "AC-2: Parametrii publici suplimentari nu scot telefonul din lista zilei",
+      "criterion": "AC-2",
+      "statement": "assert.ok(!getRes.body.includes(\"\\\"phone\\\"\"), \"câmpul phone absent cu param \" + param)"
+    },
+    {
+      "id": "P100",
+      "test": "AC-2: Parametrii publici suplimentari nu scot telefonul din lista zilei",
+      "criterion": "AC-2",
+      "statement": "assert.ok(!getRes.body.includes(PHONE), \"valoarea telefonului absentă cu param \" + param)"
+    }
+  ],
+  "removedDeclared": [
+    {
+      "id": "P75",
+      "why": "Înlocuit: body.includes(id) acceptă id în metadate; acum se caută id exact în array-ul bookings parsat."
+    },
+    {
+      "id": "P76",
+      "why": "Înlocuit: body.includes acceptă escape Unicode; acum phoneLeaks verifică recursiv JSON-ul decodat."
+    },
+    {
+      "id": "P77",
+      "why": "Înlocuit: body.includes acceptă escape Unicode; acum phoneLeaks verifică recursiv JSON-ul decodat."
+    },
+    {
+      "id": "P98",
+      "why": "Înlocuit: body.includes(id) acceptă id în metadate; acum se caută id exact în array-ul bookings parsat."
+    },
+    {
+      "id": "P99",
+      "why": "Înlocuit: body.includes acceptă escape Unicode; acum phoneLeaks verifică recursiv JSON-ul decodat."
+    },
+    {
+      "id": "P100",
+      "why": "Înlocuit: body.includes acceptă escape Unicode; acum phoneLeaks verifică recursiv JSON-ul decodat."
+    }
+  ]
+}
