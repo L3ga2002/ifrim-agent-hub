@@ -52,6 +52,11 @@ export const HUB_VERSION = "2.15.0-m12"; // M12 Sales (in this code: the owner's
 // GET /api/sales/overview split.detail { real, synthetic } (company statuses, audits, follow-ups, missing site / contact, active do-not-contact);
 // the board's Sales item: real-only figures plus totals / syntheticFigures while synthetic data exists; the work-request intent "sales" (an
 // offer request kept for SALES_DOSSIER_NO_EXPORTS_DIR, re-proposed once the exports folder exists).
+// 15 (final review fixes, group A, additive): intent sales_continue (effect plan; args {} or { again: true }); system_knowledge args
+// may carry about: "offers"; planner results may carry outreachNote; a continuation card carries opsPlan.continues / opsPlan.preparationId;
+// intake.plan() may return outreach { partial, refused[{kind, text}], reason }, quotedOutreach, outreachNote; event intake.outreach_refused
+// may carry partial: true; knowledge answer(topic, {about}), locations.offers, locations.screens.vanzari, blocked.offers[]; conversation
+// entries may carry links[].
 export const API_CONTRACT = 15;
 export const DEFAULT_PORT = 8011;
 export const DEFAULT_HOST = "127.0.0.1";
