@@ -18,17 +18,46 @@ export const FIGURE_CATEGORIES = Object.freeze(["currency", "price", "duration",
 
 const CURRENCY = "(?:lei|leu|ron|eur|euro|euri|usd|dolari|dolar|gbp|chf)";
 const NUMBER_WORD = "(?:o|un|una|doua|doi|trei|patru|cinci|sase|sapte|opt|noua|zece|cateva|cativa|cele)";
-const UNIT = "(?:zile|zi|saptamani|saptamana|luni|luna|ore|ora|ani|an|minute|days?|weeks?|months?|hours?|years?)";
+const UNIT = "(?:zile|zi|saptamani|saptamana|sapt|luni|luna|ore|ora|ani|an|minute|days?|weeks?|months?|hours?|years?)";
+/**
+ * M12 review R1/R2: an amount or a term is also written in words („trei mii de lei”, „douăzeci de zile”, „jumătate de an”, „5k”). The
+ * number words (folded), the magnitudes and the currency / time words below are shared with the brief parser (brief.mjs), which cuts
+ * the client's need before any of them (fail closed).
+ */
+export const NUMBER_WORDS_BIG = Object.freeze(["zero", "unu", "doi", "doua", "trei", "patru", "cinci", "sase", "sapte", "opt", "noua", "zece", "unsprezece", "unspe",
+  "doisprezece", "douasprezece", "doispe", "treisprezece", "treispe", "paisprezece", "paispe", "cincisprezece", "cinspe", "saisprezece", "saispe", "saptesprezece",
+  "saptespe", "optsprezece", "optspe", "nouasprezece", "nouaspe", "douazeci", "treizeci", "patruzeci", "cincizeci", "saizeci", "saptezeci", "optzeci", "nouazeci",
+  "zeci", "jumatate", "sfert"]);
+/** Words that are a quantity only before a unit, a magnitude or a currency („o zi”, „un milion”, „câteva mii”), else an article. */
+export const NUMBER_WORDS_SMALL = Object.freeze(["o", "un", "una", "cateva", "cativa"]);
+export const MAGNITUDE_WORDS = Object.freeze(["suta", "sute", "mie", "mii", "milion", "milioane", "mil", "miliard", "miliarde", "k"]);
+export const CURRENCY_WORDS = Object.freeze(["lei", "leu", "ron", "eur", "euro", "euri", "usd", "dolari", "dolar", "gbp", "chf"]);
+export const TIME_UNIT_WORDS = Object.freeze(["zile", "zi", "saptamani", "saptamana", "sapt", "luni", "luna", "ore", "ora", "h", "ani", "an", "minute"]);
+export const PERCENT_WORDS = Object.freeze(["procent", "procente", "procentul"]);
+const alt = (list) => `(?:${[...list].sort((a, b) => b.length - a.length).join("|")})`;
+const NUM_WORD = alt([...NUMBER_WORDS_BIG, ...NUMBER_WORDS_SMALL]);
+const MAGNITUDE = alt(MAGNITUDE_WORDS.filter((w) => w !== "k"));
+/** A quantity in digits („2”, „1,5”, „5k”) or in words („două”, „douăzeci și cinci”, „o mie”, „cinci sute”, „două milioane”). */
+export const QUANTITY_SOURCE = `(?:\\d+(?:[.,]\\d+)*(?:\\s*k\\b)?|\\b${NUM_WORD}\\b)(?:\\s+(?:si\\s+)?(?:${NUM_WORD}|(?:de\\s+)?${MAGNITUDE})\\b)*`;
 /** Every pattern runs on the folded text (lower case, no diacritics, same length as the original). */
 const PATTERNS = Object.freeze([
   ["currency", new RegExp(`\\d+(?:[., ]\\d+)*\\s*(?:de\\s+)?${CURRENCY}\\b`, "g")],
   ["currency", new RegExp(`\\d+(?:[.,]\\d+)*\\s*[€$£]`, "g")],
   ["currency", new RegExp(`(?:[€$£]|\\b${CURRENCY})\\s*\\d+(?:[.,]\\d+)*`, "g")],
+  // „două mii de lei”, „2 mii lei”, „5k EUR”, „1,5 milioane lei”, „o mie de lei”, „cinci sute de lei”, „mii de euro”, „5k”.
+  ["currency", new RegExp(`${QUANTITY_SOURCE}\\s*(?:de\\s+)?${CURRENCY}\\b`, "g")],
+  ["currency", new RegExp(`\\b${MAGNITUDE}\\s+(?:de\\s+)?${CURRENCY}\\b`, "g")],
+  ["currency", /\b\d+(?:[.,]\d+)?\s*k\b/g],
   ["price", /\b(?:pret|preturi|pretul|cost|costuri|costul|costa|tarif|tarife|tariful|buget|bugetul|investitie|investitia|abonament|abonamentul|onorariu|onorariul)\b[^\n.;]{0,25}\d/g],
+  ["price", new RegExp(`\\b(?:pret|preturi|pretul|cost|costuri|costul|costa|tarif|tarife|tariful|buget|bugetul|investitie|investitia|abonament|abonamentul|onorariu|onorariul)\\b[^\\n.;\\d]{0,25}?\\b${alt([...NUMBER_WORDS_BIG, ...MAGNITUDE_WORDS.filter((w) => w !== "k")])}\\b`, "g")],
   ["duration", new RegExp(`\\b\\d+(?:[.,]\\d+)?(?:\\s*(?:-|–|—|la|sau)\\s*\\d+(?:[.,]\\d+)?)?\\s*(?:de\\s+)?${UNIT}\\b`, "g")],
   ["duration", new RegExp(`\\b${NUMBER_WORD}\\s+${UNIT}\\b`, "g")],
+  // „douăzeci de zile”, „cincisprezece zile”, „jumătate de an”, „48h”.
+  ["duration", new RegExp(`\\b${QUANTITY_SOURCE}\\s+(?:de\\s+)?${UNIT}\\b`, "g")],
+  ["duration", /\b\d+(?:[.,]\d+)?\s*h\b/g],
   ["percentage", /\d+(?:[.,]\d+)?\s*%/g],
   ["percentage", /\b\d+(?:[.,]\d+)?\s*(?:la suta|procente|procent)\b/g],
+  ["percentage", new RegExp(`${QUANTITY_SOURCE}\\s+(?:la suta|procente|procent)\\b`, "g")],
   ["roi", /\b(?:roi|randament\w*|rentabilitat\w*|amortiz\w*|economis\w*|profit\w*|venituri suplimentare|crestere (?:de|a vanzarilor|a veniturilor|a clientilor)|dublar\w*|dubla\w* (?:vanzarile|veniturile|clientii)|triplar\w*|castig\w* (?:in plus|suplimentar\w*)|return on investment|payback)\b/g],
   ["discount", /\b(?:reducere|reduceri|reducerea|discount\w*|gratuit\w*|gratis|bonus\w*|oferta speciala|promoti\w*|pret redus|fara cost|free)\b/g],
   ["approximation", /\b(?:aproximativ\w*|aprox|estim(?:at|ativ|ar)\w*)\b/g],
@@ -66,10 +95,13 @@ export function findCommercialFigures(text, { allow = [] } = {}) {
     pattern.lastIndex = 0;
     for (const m of folded.matchAll(pattern)) {
       const match = source.slice(m.index, m.index + m[0].length).trim();
-      if (match && !found.some((f) => f.index === m.index && f.category === category)) found.push({ category, text: match, index: m.index });
+      if (match && !found.some((f) => f.index === m.index && f.category === category)) found.push({ category, text: match, index: m.index, end: m.index + m[0].length });
     }
   }
-  return found.sort((a, b) => a.index - b.index || FIGURE_CATEGORIES.indexOf(a.category) - FIGURE_CATEGORIES.indexOf(b.category));
+  // A match inside a longer one of the same category („mii de lei” inside „două mii de lei”) is the same figure, reported once.
+  const within = (a, b) => a !== b && a.category === b.category && a.index >= b.index && a.end <= b.end && (a.index > b.index || a.end < b.end);
+  return found.filter((f) => !found.some((g) => within(f, g))).map(({ end, ...f }) => f)
+    .sort((a, b) => a.index - b.index || FIGURE_CATEGORIES.indexOf(a.category) - FIGURE_CATEGORIES.indexOf(b.category));
 }
 
 /** The exact price and lead-time texts of CONFIGURED catalog services (the same text the proposal prints); nothing else is allowed. */

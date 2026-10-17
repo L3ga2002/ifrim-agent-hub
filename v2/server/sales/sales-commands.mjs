@@ -207,8 +207,8 @@ export function registerSalesCommands(register, hub, { createMission }) {
     schema: { companyName: { required: true, max: 120 }, signatureName: { max: 120, default: "" }, materials: { type: "array", max: 20, items: "string", itemMax: 300 } },
     execute: (input, ctx) => {
       const materials = (Array.isArray(input.materials) ? input.materials : []).map((m) => String(m).slice(0, 300)).filter(Boolean).slice(0, 20);
-      hub.settings.set("salesOwner", { companyName: input.companyName, signatureName: input.signatureName, materials }, ctx.actor, "Profil Sales actualizat");
-      return hub.settings.get("salesOwner");
+      // M12 review R7: the profile is rendered into every offer, so saving it makes the offers prepared by a plan STALE (same transaction).
+      return sales.saveOwnerProfile({ companyName: input.companyName, signatureName: input.signatureName, materials }, ctx.actor);
     } });
   return { fields: IMPORT_FIELDS };
 }

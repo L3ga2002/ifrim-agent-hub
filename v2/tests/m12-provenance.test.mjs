@@ -11,6 +11,7 @@ import { salesAcceptanceHub, seedSalesReview, salesCommand } from "./sales-helpe
 import { settle } from "./accept-helpers.mjs";
 import { toCsv } from "../server/sales/tabular.mjs";
 import { DATA_KINDS, DATA_KIND_LABELS, EVIDENCE_LABELS, SOURCE_KINDS } from "../server/sales/sales.mjs";
+import { parseBrief, briefSha } from "../server/sales/brief.mjs";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const run = async (t, type, payload) => (await salesCommand(t, type, payload)).result;
@@ -72,6 +73,12 @@ test("M12-PROV-03 an INFERENCE names its basis (existing evidence, brief fields 
     await refused(t, inference({ basis }), /Inferența cere baza|Baza se dă|nu există/);
   }
   for (const reasoning of [undefined, "", "   "]) await refused(t, inference({ basis: [importRow.id], reasoning }), /raționamentul/);
+  // Review C4 (adapted: this test accepted a brief basis no preparation had): a brief basis names a real brief of THIS company, with the
+  // field it cites. Test-only row: the brief of a preparation bound to the company (the plan step writes it; part 3).
+  await refused(t, inference({ basis: ["brief:spp_m12prov#place"] }), /Brieful din brief:spp_m12prov#place nu există/);
+  const brief = parseBrief("pregătește o ofertă pentru un service auto din Cluj care vrea programări online");
+  t.hub.db.prepare(`INSERT INTO sales_preparations (id, root_plan_id, root_plan_hash, brief_json, brief_sha, org_id, status, created_by, created_at, updated_at)
+    VALUES ('spp_m12prov', 'opp_m12prov_root', ?, ?, ?, ?, 'WAITING_OWNER', 'test', ?, ?)`).run("0".repeat(64), JSON.stringify(brief), briefSha(brief), b.orgId, new Date().toISOString(), new Date().toISOString());
   const fromBrief = await inference({ basis: ["brief:spp_m12prov#place"] });
   const fromEvidence = await inference({ basis: [importRow.id, "brief:spp_m12prov#place"] });
   assert.deepEqual(fromBrief.basis, ["brief:spp_m12prov#place"]);

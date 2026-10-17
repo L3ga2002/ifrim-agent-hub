@@ -22,6 +22,8 @@ import { proposalWindowMin } from "../policy/proposal-window.mjs";
 export const PLAN_LIMITS = Object.freeze({ confirmWindowMin: 15, slackMin: 30, maxSteps: 16, defaultMaxDurationMin: 30, maxDurationMin: 240, maxActionsPerStep: 200 });
 export const NEVER_IN_PLANS = Object.freeze(["publicare pe platforme", "încărcare (upload)", "trimiterea de mesaje", "plăți sau cumpărături", "ștergeri externe", "schimbarea setărilor de securitate"]);
 const ACTIVE = new Set(["CONFIRMED", "RUNNING"]);
+/** Plan kinds whose newer card supersedes only the older cards of the same object (the step parameter naming it); every other kind is kind-wide. */
+const SUPERSEDE_SCOPE = Object.freeze({ "delivery.correct": "deliveryId", "sales.prepare": "preparationId" });
 /**
  * M10.2 review #40: the secrets a step needs at confirmation (typed in the plan card, memory only, never in the body, hash, DB or a log),
  * derived from the step kinds — the same list for the plan view, the card shape and confirm(), so a typed, spoken or armed-window
@@ -160,10 +162,13 @@ export function createOpsPlans({ db, bus, clock, settings, trust, voice = null, 
     const nonce = crypto.randomBytes(12).toString("hex");
     const t = clock();
     bus.transaction(() => {
-      // Only the latest proposal can be confirmed (an older card of the same kind is superseded).
-      const deliveryIds = new Set(body.steps.map(s => s.params?.deliveryId).filter(Boolean));
+      // Only the latest proposal can be confirmed (an older card of the same kind is superseded). A kind whose cards belong to one object
+      // supersedes only the older cards of THAT object: a delivery's correction, a Sales preparation (M12 review R12: a new Sales card, or
+      // a continuation of preparation A, never cancels the pending card of preparation B).
+      const scopeKey = SUPERSEDE_SCOPE[kind] || null;
+      const scopeIds = scopeKey ? new Set(body.steps.map(s => s.params?.[scopeKey]).filter(Boolean)) : null;
       for (const old of db.prepare("SELECT id FROM ops_plans WHERE status = 'PROPOSED' AND kind = ?").all(kind)) {
-        if (kind === 'delivery.correct' && !view(old.id).steps.some(s => deliveryIds.has(s.params?.deliveryId))) continue;
+        if (scopeKey && !view(old.id).steps.some(s => scopeIds.has(s.params?.[scopeKey]))) continue;
         setStatus(old.id, "SUPERSEDED", "Un plan mai nou a fost prezentat", {}, ["PROPOSED"]);
       }
       db.prepare(`INSERT INTO ops_plans (id, kind, title, status, body_json, summary_json, plan_hash, nonce, proposed_by, proposed_via, confirm_by, expires_at, created_at, updated_at)

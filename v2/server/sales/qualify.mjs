@@ -309,6 +309,8 @@ function qualifyV1({ org = null, evidence = [], audit = null, opportunities = []
 
 /** An inference: labelled INFERRED, or declared INFERENCE (C-03 data kind). Either one is never scored as confirmed in q-v2. */
 const isInference = (e) => normLabel(e?.label) === "INFERRED" || String(e?.dataKind ?? "").toUpperCase() === "INFERENCE";
+/** M12 review R16: a reading labelled UNKNOWN (no verified value, e.g. „neverificat”) is never the evidence a q-v2 point names. */
+const isProof = (e) => Boolean(e) && !isInference(e) && normLabel(e.label) !== "UNKNOWN";
 /** Keys under which an evidence value object carries a record field (import provenance rows, owner edits, fixture identity). */
 const FIELD_VALUE_KEYS = Object.freeze({ name: ["name", "displayName"], fiscalCode: ["fiscalCode", "cui"], city: ["city"], website: ["website", "domain"], email: ["email"], phone: ["phone"] });
 
@@ -327,7 +329,7 @@ function evidenceForCheckV2(evidence, checkId) {
 function scoreServiceFitV2({ audit, opportunities, catalog, evidence, inferences, unproven }) {
   const catalogIds = new Set(catalog.filter((s) => s && s.id).map((s) => String(s.id)));
   const byId = new Map(evidence.filter((e) => e && e.id).map((e) => [String(e.id), e]));
-  const confirmedIds = (ids) => ids.filter((id) => !isInference(byId.get(id)));
+  const confirmedIds = (ids) => ids.filter((id) => isProof(byId.get(id)));
   const checks = arr(audit?.checks);
   const observed = checks.filter(isObservedCheck);
   const contributions = [];
@@ -387,7 +389,7 @@ function scoreCompletenessV2({ org, evidence, inferences, unproven }) {
     }
     if (f.key === "email" || f.key === "phone") for (const c of contacts) if (kind(c) === f.key && c.evidenceId && byId.has(String(c.evidenceId))) ids.add(String(c.evidenceId));
     const all = [...ids];
-    return { confirmed: all.filter((id) => !isInference(byId.get(id))), inferred: all.filter((id) => isInference(byId.get(id))) };
+    return { confirmed: all.filter((id) => isProof(byId.get(id))), inferred: all.filter((id) => isInference(byId.get(id))) };
   };
   const raw = {
     name: Boolean(text(org.displayName)),
