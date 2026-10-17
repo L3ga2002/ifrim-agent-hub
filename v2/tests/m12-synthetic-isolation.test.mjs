@@ -18,7 +18,7 @@ const realState = (t, orgId) => hashCanonical(Object.fromEntries([
   ["qualifications", "SELECT * FROM sales_qualifications WHERE org_id = ? ORDER BY rowid"], ["opportunities", "SELECT * FROM sales_opportunities WHERE org_id = ? ORDER BY rowid"],
 ].map(([k, sql]) => [k, t.hub.db.prepare(sql).all(orgId)])));
 
-test("M12-SI-01 a real (synthetic = 0) company with the very identity the flow generates: never matched, merged or written; real figures unchanged; every synthetic item flagged", async (c) => {
+test("M12-SI-01 a real (synthetic = 0) company with the identity the flow would generate first: the flow re-draws its own (R17), never matches, merges or writes the real one; real figures unchanged; every synthetic item flagged", async (c) => {
   const t = await prepHub(c);
   await t.authenticate();
   const { card, preparationId } = await proposePreparation(t);
@@ -43,11 +43,14 @@ test("M12-SI-01 a real (synthetic = 0) company with the very identity the flow g
   assert.equal((await approveAwaited(t, t.hub.salesPreparations.get(preparationId))).status, 200);
   const done = await settlePreparation(t, preparationId);
   assert.equal(done.status, "READY", done.statusReason);
-  // Its own synthetic row — the same name, CUI, domain and e-mail as the real one, never matched or merged with it.
+  // Its own synthetic row — the first draw was taken by the real company, so step 1 re-drew a different identity (review R17);
+  // still never matched or merged with the real one.
   const m12 = t.hub.db.prepare("SELECT * FROM sales_orgs WHERE id = ?").get(done.orgId);
   assert.notEqual(m12.id, realId);
   assert.equal(m12.synthetic, 1);
-  assert.deepEqual([m12.fiscal_code, m12.domain, m12.normalized_name], [real[0].fiscal_code, real[0].domain, real[0].normalized_name], "an identical identity, still two companies");
+  assert.notEqual(m12.fiscal_code, real[0].fiscal_code, "the taken CUI is never reused");
+  assert.notEqual(m12.domain, real[0].domain, "the taken domain is never reused");
+  assert.notEqual(m12.normalized_name, real[0].normalized_name, "the taken name is never reused");
   assert.equal(countRows(t, "SELECT COUNT(*) AS n FROM sales_merges"), 0);
   assert.equal(countRows(t, "SELECT COUNT(*) AS n FROM sales_orgs WHERE merged_into IS NOT NULL"), 0);
   assert.equal(realState(t, realId), realBefore, "the real company's row, aliases, contacts, evidence, audits, qualifications and opportunities are untouched");

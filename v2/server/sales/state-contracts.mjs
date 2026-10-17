@@ -92,6 +92,8 @@ const preparation = Object.freeze({
     T("PREPARING", "WAITING_OWNER", "plan-executors.mjs:sales.proposal.draft (pasul 4: oferta READY_FOR_OWNER_REVIEW, id + SHA așteptate)", PREP_EVENT,
       { pre: ["oferta fără sume inventate și fără câmpuri necompletate"], notImplied: ["aprobarea ofertei", ...NEVER_IMPLIED] }),
     T("PREPARING", "STALE", "preparation.mjs:onEvent ops.plan.failed (cod de intrări schimbate)", PREP_EVENT),
+    T("PREPARING", "EXPIRED", "preparation.mjs:expireDead (tick / pauză sau NEEDS_OWNER: fereastra planului de fază A a trecut cât era oprit; planul mort e anulat, continuarea se oferă)", PREP_EVENT,
+      { invalidates: ["continuarea automată"] }),
     T("PREPARING", "FAILED", "preparation.mjs:onEvent ops.plan.failed", PREP_EVENT),
     T("PREPARING", "CANCELLED", "preparation.mjs:cancel / onEvent ops.plan.cancelled", PREP_EVENT),
     T("WAITING_OWNER", "PACKAGING", "preparation.mjs:activate (CAS după aprobarea proprietarului a exact id + SHA, în sesiunea de proprietar; planul DONE)", PREP_EVENT,

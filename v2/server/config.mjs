@@ -39,6 +39,10 @@ export const HUB_VERSION = "2.15.0-m12"; // M12 Sales (in this code: the owner's
 // OUTREACH_DISABLED) with an intent result's `sales` facts and a /sales navigation; intake.plan refuses outreach words (refused +
 // outreach: true); GET /api/sales/overview `split` { real, synthetic, note }; Lega's request_work kind_hint "sales" and the voice-first
 // read tool sales_preparation; the probe's breakdown.decisionsByAuthority (approval.owner_decide and ops.plan.consent per authority).
+// 15 (review fixes of parts 2-3, additive): GET dossiers preparations[].continuable / waitsForRearm and dossiers[].partial; qualification
+// rows inputsSha / orgId; the offer basis qualificationInputsSha / org; brief problem.stated / problem.rule (rules R-TYPO@1, R-NEED-CUT@1);
+// sales.preparation.continue may answer GATE_REARM_REQUIRED (category gate); new codes SALES_SYNTHETIC_TAKEN, SALES_DOSSIER_FORBIDDEN_ROOT,
+// SALES_PROPOSAL_STALE.
 export const API_CONTRACT = 15;
 export const DEFAULT_PORT = 8011;
 export const DEFAULT_HOST = "127.0.0.1";
