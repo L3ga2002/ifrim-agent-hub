@@ -17,7 +17,8 @@
 //   a security stop) and the missions, which need the open gate; work stopped for any other reason resumes as before, gate or not.
 import { HubError } from "../core/errors.mjs";
 import { parse } from "../storage/db.mjs";
-import { resolveIntent, matchRef, normalize, stripFillers, INTENT_EFFECTS, CONTINUE_QUESTION, stopTalkAnswer, modeAnswer, PREVIEW_START, salesOutreach, SALES_SEND_REASON } from "./intents.mjs";
+import { resolveIntent, matchRef, normalize, stripFillers, INTENT_EFFECTS, CONTINUE_QUESTION, stopTalkAnswer, modeAnswer, PREVIEW_START, stripOutreach, SALES_SEND_REASON,
+  QUOTED_OUTREACH_NOTE, outreachCutNote } from "./intents.mjs";
 import { layoutForIntent } from "./layout.mjs";
 import { localDayStart } from "../intel/twin.mjs";
 import { PACKAGE_KINDS } from "../intel/packages.mjs";
@@ -44,6 +45,8 @@ export const PLANNER_FOR_INTENT = Object.freeze({ studio_create: "studio_create"
   delivery_prepare: "delivery", delivery_revise: "delivery", delivery_open: "delivery", delivery_status: "delivery", delivery_decisions: "delivery",
   // M12: preparing a synthetic offer (owner/planners/sales.mjs): one card, the offer's approval stays the owner's decision.
   sales_prepare: "sales",
+  // M12 final review: „Continuă pregătirea ofertei” — the Sales planner proposes ONE continuation card (or says truthfully why not).
+  sales_continue: "sales",
   // A planner question asked through lega.request_work has no resolver step: its answer (choice forIntent engineering/run) comes back here.
   engineering: "engineering", run: "run", sales: "sales" });
 /**
@@ -599,6 +602,24 @@ export function createIntake(hub) {
       r.message = out.text || out.message || "";
       if (out.navigate) r.navigate = out.navigate;
     }
+  }
+  /** M12 final review F4: a planner's arguments without any send / contact / publish clause (strings and lists of strings). */
+  function outreachFreeArgs(args = {}) {
+    const out = { ...args };
+    for (const [k, v] of Object.entries(out)) {
+      if (typeof v === "string") { const c = stripOutreach(v); if (c.changed) out[k] = c.text; }
+      else if (Array.isArray(v) && v.length && v.every((x) => typeof x === "string")) out[k] = v.map((x) => { const c = stripOutreach(x); return c.changed ? c.text : x; }).filter((x) => String(x).trim());
+    }
+    return out;
+  }
+  /** F4: tells the owner what was kept out of the plan (his own outreach words: OUTREACH_DISABLED; a quoted instruction: content). */
+  function noteOutreachCut(r, cut, { refusedShown = false } = {}) {
+    if (!cut?.changed) return;
+    const notes = [cut.refused.length && !refusedShown ? outreachCutNote(cut.refused) : null, cut.quoted.length ? QUOTED_OUTREACH_NOTE : null].filter(Boolean).join(" ");
+    if (!notes) return;
+    if (r.plan || r.opsPlan) r.note = r.note ? `${r.note} ${notes}` : notes;
+    else r.message = r.message ? `${r.message} ${notes}` : notes;
+    r.outreachNote = notes;
   }
   async function runPlannerFor(kind, step, env) {
     const fn = planners.get(kind);
@@ -1317,7 +1338,7 @@ export function createIntake(hub) {
         }
       } else if (step.intent === "system_knowledge") {
         // Stage before M12: built from the Hub's real state; content read from projects or media is data, never an instruction.
-        const a = hub.knowledge ? await hub.knowledge.answer(step.args?.topic || "overview").catch((error) => ({ text: `Nu pot citi starea acum: ${error.message}` })) : { text: "Nu am încă registrul sistemului pe acest Hub." };
+        const a = hub.knowledge ? await hub.knowledge.answer(step.args?.topic || "overview", { about: step.args?.about || null }).catch((error) => ({ text: `Nu pot citi starea acum: ${error.message}` })) : { text: "Nu am încă registrul sistemului pe acest Hub." };
         r.message = a.text; r.knowledge = { topic: step.args?.topic || "overview", screen: a.screen || null };
       } else if (step.intent === "next_step") {
         if (!projectId) r.message = "Pe ce proiect? Spune „Hai la <proiect>” și apoi „ce urmează”.";
@@ -1358,12 +1379,17 @@ export function createIntake(hub) {
             rememberProjectQuestion(conv, step, input.text);
           } else {
             const usePid = named || projectId;
-            const out = await runPlannerFor(PLANNER_FOR_INTENT[step.intent], step, { input, ctx, source, conv, state: { ...state, projectId: usePid } });
+            // M12 final review F4: the planner (and a kept request) gets the owner's words WITHOUT a send / contact / publish clause or a
+            // quoted instruction; the refusal itself is this sentence's own sales_send step.
+            const cut = stripOutreach(input.text, { salesContext: conv?.lastTarget?.sales === true });
+            const plannerInput = cut.changed ? { ...input, text: cut.text } : input;
+            const out = await runPlannerFor(PLANNER_FOR_INTENT[step.intent], step, { input: plannerInput, ctx, source, conv, state: { ...state, projectId: usePid } });
             if (!out && step.intent === "studio_create") { r.message = "Încă nu pot pregăti singur un clip nou dintr-o frază pe acest Hub; deschid Studio."; r.navigate = "/studio"; }
             else {
               const local = { projectId: usePid };
-              applyPlannerOutcome(out, r, step, { input, ctx, source, conv, state: local });
+              applyPlannerOutcome(out, r, step, { input: plannerInput, ctx, source, conv, state: local });
               if (gateBlocked(out)) gateOnRequest(r, ctx, localSession);
+              noteOutreachCut(r, cut, { refusedShown: env.outreachStep === true });
               projectId = local.projectId;
               // The planner asked for the project (none known): a following sentence that only names one completes this request.
               if (out?.kind === "question" && !usePid && !out.projectId && /\bproiect/.test(normalize(out.question || out.text || "")) && step.intent !== "studio_create") rememberProjectQuestion(conv, step, input.text);
@@ -1527,6 +1553,8 @@ export function createIntake(hub) {
       env.projectClarification = resolved.clarification.forIntent; env.projectClarificationText = resolved.clarification.question;
     }
     env.stepCount = resolved.steps.length;
+    // F4: the sentence's own sales_send step already says the refusal; a planner's note then only names a quoted instruction it left out.
+    env.outreachStep = resolved.steps.some((s) => s.intent === "sales_send");
     env.cleanText = stripFillers(normalize(input.text)).replace(LEGA_PREFIX, "").trim();
     // D19: the sentence names Lega („Lega, …”, „Te rog, Lega, …”) — the address rule of the voice fast path, from the words themselves.
     env.addressed = LEGA_PREFIX.test(stripFillers(normalize(input.text)));
@@ -1585,16 +1613,27 @@ export function createIntake(hub) {
     const r = { intent: kind, effect: "plan", constraints: step.constraints, args: step.args, effectClass: step.effectClass };
     const why = refusalReason("BOUNDED_WORKFLOW", src, { derivedOwnerSession: Boolean(derived), planPresented: false });
     if (why) { r.refused = why; return r; }
-    // M12 (T-S3) choke point: words that send, contact or publish never reach a planner (Lega's request_work / propose_*, a kept request,
-    // any client of the intake). The one exception is the owner's offer request itself (kind sales, the resolver reads sales_prepare):
-    // the Sales planner refuses the outreach words inside the brief (they never become a step) and says so on the card.
-    if (salesOutreach(input.text).hits.length) {
-      const prepares = kind === "sales" && resolveIntent(input.text, { projects: [], missions: [], departments: [], pendingEnvelopes: [], source: src }).steps.some((s) => s.intent === "sales_prepare");
-      if (!prepares) {
-        r.refused = SALES_SEND_REASON; r.outreach = true;
-        try { bus.emit({ type: "intake.outreach_refused", scopeType: "owner", scopeId: "global", source: ctx.actor, payload: { kind, channel: ctx.channel, source: src } }); } catch { /* audit only */ }
-        return r;
+    // M12 (T-S3) choke point, final review F2/F4: an instruction to the Hub to send, contact or publish (the ONE rule, intents.mjs) never
+    // reaches a planner — Lega's request_work / propose_*, a kept request, any client of the intake. A request that is only that is refused
+    // (OUTREACH_DISABLED); one that also asks for something else is planned WITHOUT the outreach clause (the planner never receives those
+    // words) and the owner is told what was cut. A description („butonul care trimite oferta”) is no instruction; a quoted instruction is
+    // content — never refused, never a planner's words either (noted).
+    const cut = stripOutreach(input.text, { salesContext: conv.lastTarget?.sales === true });
+    if (cut.refused.length && !cut.meaningful) {
+      r.refused = SALES_SEND_REASON; r.outreach = true;
+      try { bus.emit({ type: "intake.outreach_refused", scopeType: "owner", scopeId: "global", source: ctx.actor, payload: { kind, channel: ctx.channel, source: src } }); } catch { /* audit only */ }
+      return r;
+    }
+    if (cut.changed) {
+      input.text = cut.text.slice(0, 2000);
+      step.text = input.text;
+      step.args = outreachFreeArgs(step.args);
+      r.args = step.args;
+      if (cut.refused.length) {
+        r.outreach = { partial: true, refused: cut.refused, reason: SALES_SEND_REASON };
+        try { bus.emit({ type: "intake.outreach_refused", scopeType: "owner", scopeId: "global", source: ctx.actor, payload: { kind, channel: ctx.channel, source: src, partial: true } }); } catch { /* audit only */ }
       }
+      if (cut.quoted.length) r.quotedOutreach = true;
     }
     // D3: words that ask to run, start or show a preview are a READ the Hub answers itself when the client named a model-run kind — they
     // never reach a planner (the resolver's verdict decides; a sentence that also holds a planner intent, another clause or a work verb is
@@ -1608,6 +1647,7 @@ export function createIntake(hub) {
     if (!out) { r.message = "Nu am încă un planificator pentru acest tip de lucru pe acest Hub."; return r; }
     applyPlannerOutcome(out, r, step, { input, ctx, source: src, conv, state });
     if (gateBlocked(out)) gateOnRequest(r, ctx, derived?.session || null);
+    noteOutreachCut(r, cut);
     // Review #5: a planner question about the project (none given) is answerable by a sentence that only names the project.
     if (out.kind === "question" && !state.projectId && !out.projectId && /\bproiect/.test(normalize(out.question || out.text || "")) && kind !== "studio_create") rememberProjectQuestion(conv, step, input.text);
     recordTarget(conv, step, r);
@@ -1773,8 +1813,11 @@ export function createIntake(hub) {
    * engineering request keeps the service's own default (a PROPOSED envelope over the request's draft), unchanged.
    */
   async function replanRequest(r) {
-    // M12 (T-S3): a preserved request whose words send, contact or publish is never turned into work by a later re-plan.
-    if (salesOutreach(String(r?.text || "")).hits.length) return { blocked: true };
+    // M12 (T-S3), final review F2/F4: a preserved request that is ONLY an instruction to send, contact or publish is never turned into work
+    // by a later re-plan; a mixed one is re-planned without those words (a description of a feature was never one).
+    const cut = stripOutreach(String(r?.text || ""));
+    if (cut.refused.length && !cut.meaningful) return { blocked: true };
+    if (cut.changed) r = { ...r, text: cut.text };
     if (r?.intent === "studio") {
       const words = String(r.text || "");
       const resolvedArgs = (() => { try { return resolveIntent(words, { projects: [], missions: [], departments: [], pendingEnvelopes: [] }).steps.find((s) => s.intent === "studio_create")?.args || {}; } catch { return {}; } })();

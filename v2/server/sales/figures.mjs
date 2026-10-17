@@ -39,6 +39,8 @@ const NUM_WORD = alt([...NUMBER_WORDS_BIG, ...NUMBER_WORDS_SMALL]);
 const MAGNITUDE = alt(MAGNITUDE_WORDS.filter((w) => w !== "k"));
 /** A quantity in digits („2”, „1,5”, „5k”) or in words („două”, „douăzeci și cinci”, „o mie”, „cinci sute”, „două milioane”). */
 export const QUANTITY_SOURCE = `(?:\\d+(?:[.,]\\d+)*(?:\\s*k\\b)?|\\b${NUM_WORD}\\b)(?:\\s+(?:si\\s+)?(?:${NUM_WORD}|(?:de\\s+)?${MAGNITUDE})\\b)*`;
+/** M12 final review F12: an ordinal („a doua zi”, „etapa a doua”) is no quantity. */
+const ORDINAL_GUARD = "(?<!\\b(?:a|al)\\s)";
 /** Every pattern runs on the folded text (lower case, no diacritics, same length as the original). */
 const PATTERNS = Object.freeze([
   ["currency", new RegExp(`\\d+(?:[., ]\\d+)*\\s*(?:de\\s+)?${CURRENCY}\\b`, "g")],
@@ -49,11 +51,13 @@ const PATTERNS = Object.freeze([
   ["currency", new RegExp(`\\b${MAGNITUDE}\\s+(?:de\\s+)?${CURRENCY}\\b`, "g")],
   ["currency", /\b\d+(?:[.,]\d+)?\s*k\b/g],
   ["price", /\b(?:pret|preturi|pretul|cost|costuri|costul|costa|tarif|tarife|tariful|buget|bugetul|investitie|investitia|abonament|abonamentul|onorariu|onorariul)\b[^\n.;]{0,25}\d/g],
-  ["price", new RegExp(`\\b(?:pret|preturi|pretul|cost|costuri|costul|costa|tarif|tarife|tariful|buget|bugetul|investitie|investitia|abonament|abonamentul|onorariu|onorariul)\\b[^\\n.;\\d]{0,25}?\\b${alt([...NUMBER_WORDS_BIG, ...MAGNITUDE_WORDS.filter((w) => w !== "k")])}\\b`, "g")],
+  // M12 final review F12: after a price word, a number word is a price only as an amount („prețul de două mii”, „costul de trei sute de
+  // lei”), never the adjective („investiția într-o pagină nouă”) or an ordinal („costul etapei a doua”).
+  ["price", new RegExp(`\\b(?:pret|preturi|pretul|cost|costuri|costul|costa|tarif|tarife|tariful|buget|bugetul|investitie|investitia|abonament|abonamentul|onorariu|onorariul)\\b[^\\n.;\\d]{0,25}?${ORDINAL_GUARD}\\b(?:${alt(NUMBER_WORDS_BIG)}(?:\\s+(?:si|de|${NUM_WORD}))*\\s+(?:${MAGNITUDE}|${CURRENCY}|${UNIT}|la suta|procente|procent)|${MAGNITUDE})\\b`, "g")],
   ["duration", new RegExp(`\\b\\d+(?:[.,]\\d+)?(?:\\s*(?:-|–|—|la|sau)\\s*\\d+(?:[.,]\\d+)?)?\\s*(?:de\\s+)?${UNIT}\\b`, "g")],
-  ["duration", new RegExp(`\\b${NUMBER_WORD}\\s+${UNIT}\\b`, "g")],
-  // „douăzeci de zile”, „cincisprezece zile”, „jumătate de an”, „48h”.
-  ["duration", new RegExp(`\\b${QUANTITY_SOURCE}\\s+(?:de\\s+)?${UNIT}\\b`, "g")],
+  ["duration", new RegExp(`${ORDINAL_GUARD}\\b${NUMBER_WORD}\\s+${UNIT}\\b`, "g")],
+  // „douăzeci de zile”, „cincisprezece zile”, „jumătate de an”, „48h” (never an ordinal: „a doua zi”).
+  ["duration", new RegExp(`${ORDINAL_GUARD}\\b${QUANTITY_SOURCE}\\s+(?:de\\s+)?${UNIT}\\b`, "g")],
   ["duration", /\b\d+(?:[.,]\d+)?\s*h\b/g],
   ["percentage", /\d+(?:[.,]\d+)?\s*%/g],
   ["percentage", /\b\d+(?:[.,]\d+)?\s*(?:la suta|procente|procent)\b/g],

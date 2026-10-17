@@ -204,9 +204,14 @@ test("M12-PREP-05 the plan refuses decisions, live collection and sending: PLAN_
     (e) => e.code === "LIVE_COLLECTION_DISABLED");
   assert.equal(countRows(t, "SELECT COUNT(*) AS n FROM ops_plans"), 0, "nothing proposed");
   // Sending words in the owner's sentence are refused (OUTREACH_DISABLED) and never become a step; the plan is model-free.
-  const { card } = await proposePreparation(t, "pregătește o ofertă pentru o florărie din Iași și trimite-o pe email");
+  const { card, result } = await proposePreparation(t, "pregătește o ofertă pentru o florărie din Iași și trimite-o pe email");
   assert.deepEqual(t.hub.opsPlans.view(card.id).body.steps.map((s) => s.kind), ["sales.synthetic", "sales.research", "sales.qualify", "sales.proposal.draft"]);
-  assert.ok(card.brief.refused.length >= 1);
+  // Final review F4 (this line used to expect the send words inside the brief): the intake cuts them out before the Sales planner, refuses
+  // them on its own (OUTREACH_DISABLED) and says so; the brief never holds them.
+  assert.deepEqual(card.brief.refused, []);
+  assert.doesNotMatch(card.brief.request, /trimite/i);
+  assert.equal(result.outreach?.partial, true);
+  assert.match(result.outreachNote, /OUTREACH_DISABLED/);
   assert.equal(t.hub.opsPlans.view(card.id).body.model, null);
   assert.equal(card.summary.model, "fără model");
   assert.equal(countRows(t, "SELECT COUNT(*) AS n FROM agent_runs"), 0);

@@ -11,7 +11,7 @@ import { catalogEntry } from "../policy/approval-policy.mjs";
 import { factoryWaitText } from "../policy/factory-wait.mjs";
 import { normalizeBindingRequest } from "../policy/model-binding.mjs";
 import { readProjectNotes } from "../domain/project-notes.mjs";
-import { resolveIntent, clauseCovered, salesOutreach, SALES_SEND_REASON } from "../owner/intents.mjs";
+import { resolveIntent, clauseCovered, stripOutreach, SALES_SEND_REASON } from "../owner/intents.mjs";
 // Review M10.2 #5: the intake's own map of resolver intents → planner kinds (one source for what "bounded work" is).
 // 2.12.2 (L6): the intake's clarification window is also how long a repeated request_work after the Hub's question is refused.
 import { PLANNER_FOR_INTENT, INTAKE_LIMITS } from "../owner/intake.mjs";
@@ -82,9 +82,9 @@ const TEST_PATH_IN_WORDS = /(?:^|[\s„"'(])(?:\.\/)?[\w-]+(?:\/[\w.-]+)*\.(?:te
 const WORK_KIND = Object.freeze({ engineering: "engineering", studio: "studio_create", run: "run", mission: "start_mission",
   // M12: an offer request („pregătește o ofertă pentru …”) → the Sales planner (ONE card; the approval stays the owner's).
   sales: "sales" });
-const PLANNER_OF_INTENT = new Set(["studio_create", "start_mission", "resume_mission", "engineering", "run", "sales_prepare"]);
-/** The intake planner kind of a resolver intent (the Sales request's intent is not its planner's name). */
-const plannerKindOf = (intent) => (intent === "sales_prepare" ? "sales" : intent);
+const PLANNER_OF_INTENT = new Set(["studio_create", "start_mission", "resume_mission", "engineering", "run", "sales_prepare", "sales_continue"]);
+/** The intake planner kind of a resolver intent (the Sales request's intent is not its planner's name; a continuation is the Sales planner's too). */
+const plannerKindOf = (intent) => (intent === "sales_prepare" || intent === "sales_continue" ? "sales" : intent);
 const ANALYSIS_WORDS = /^\s*(?:analizeaza|citeste|rezuma|revizuieste|evalueaza|explica)\b/;
 const STUDIO_WORDS = /\b(clip|clipul|clipuri|video|videoclip|videoclipul|promo|promovare|reel|short|shorts|montaj|teaser|trailer)\b/;
 /** Screens the browser can open from a path the intake returned (the cockpit path becomes the Lega screen of that project). */
@@ -1578,7 +1578,9 @@ export function createLega({ bus, live, clock, settings, gate, grants, projects,
       current.pendingArm = { planId: d.planId, at: clock().getTime() };
       d.say = `${d.say} Spune-i proprietarului că, dacă vrea să pornească, spune „Da, execută planul” (Hub-ul verifică vocea lui local; tu nu confirmi nimic).`;
     }
-    const text0 = d.say || clip(r.message || "", 600) || "Nu am putut pregăti un plan pentru asta.";
+    const said = d.say || clip(r.message || "", 600) || "Nu am putut pregăti un plan pentru asta.";
+    // M12 final review F4: what the intake cut out of the request (the outreach part, a quoted instruction) is said with the answer.
+    const text0 = r.outreachNote && !said.includes(r.outreachNote) ? `${said} ${r.outreachNote}` : said;
     // ok = the Hub produced a plan card or asked its one question; a refusal, a kept blocker or "no planner yet" is not a success.
     // 2.12.2 (L3): every answer that is not a plan card ends with the Hub's factual tail on what was kept (a plan's text is unchanged).
     return { ok: known && !["refused", "blocked"].includes(d.outcome) && !r.refused && !r.error, text: withTail(text0, tailFor(d.outcome, d.workRequestId)) };
@@ -1594,12 +1596,13 @@ export function createLega({ bus, live, clock, settings, gate, grants, projects,
     const durationOf = () => { const m = normalizeWords(request).match(/\b(\d{1,3})\s*(s|sec|secunde|de secunde)\b/); return m ? Number(m[1]) : null; };
     let kind = hint && Object.hasOwn(WORK_KIND, hint) ? WORK_KIND[hint] : null;
     if (kind === "start_mission" && step && (step.intent === "start_mission" || step.intent === "resume_mission")) kind = step.intent;
-    // M12: an offer request is the Sales planner's whatever hint the model chose (an offer is never code, a clip or an analysis).
-    if (step?.intent === "sales_prepare") kind = "sales";
+    // M12: an offer request is the Sales planner's whatever hint the model chose (an offer is never code, a clip or an analysis); so is the
+    // continuation of an offer's preparation (final review: ONE continuation card, or the truthful refusal).
+    if (step?.intent === "sales_prepare" || step?.intent === "sales_continue") kind = "sales";
     // Reading / analysis verbs ask for one bounded read-only model step (run plan), not a code change.
     if (!kind) kind = step ? plannerKindOf(step.intent) : STUDIO_WORDS.test(normalizeWords(request)) ? "studio_create" : ANALYSIS_WORDS.test(normalizeWords(request)) ? "run" : "engineering";
     let args = { request };
-    if (step && plannerKindOf(step.intent) === kind) args = { ...step.args, request };
+    if (step && plannerKindOf(step.intent) === kind) args = { ...step.args, request, ...(step.intent === "sales_continue" ? { continue: true } : {}) };
     else if (kind === "studio_create") args = { durationSec: durationOf(), topic: request.slice(0, 200), request };
     const projectId = project?.id || step?.args?.projectId || null;
     return { kind, args, projectId };
@@ -1607,18 +1610,19 @@ export function createLega({ bus, live, clock, settings, gate, grants, projects,
   const normalizeWords = (t) => String(t || "").toLowerCase().normalize("NFD").replace(/[̀-ͯ]/g, "").replace(/[^a-z0-9 ]+/g, " ");
 
   /**
-   * M12 (T-S3): words that send, contact or publish an offer (Sales vocabulary; any contact verb) never become work through Lega — refused
-   * here, before any planner, explainer or work request (nothing kept, so no later re-plan can turn them into work). allowPrepare: the
-   * owner's own offer request („Pregătește oferta … și trimite-o”) still reaches the Sales planner, which refuses those words inside it.
+   * M12 (T-S3), final review F2 / F4 / F5: an instruction to the Hub to send, contact or publish (the ONE rule, owner/intents.mjs) never
+   * becomes work through Lega. A request that is ONLY that is refused here, before any planner, explainer or work request (nothing kept, so
+   * no later re-plan can turn it into work); a request that also asks for something else goes on — the intake plans it WITHOUT the outreach
+   * clause and says what it cut (the owner's offer request „Pregătește oferta … și trimite-o” included). A description of a feature
+   * („butonul care trimite oferta”, „o aplicație care contactează curierii”) is no instruction. `required`: the texts that must still ask
+   * for something (a mission's title and objective); `strict` (the legacy approval cards, which carry the words exactly as written): any
+   * instruction refuses the card.
    */
-  function outreachRefused(current, texts, { allowPrepare = false, kind = "outreach" } = {}) {
-    const words = texts.map((t) => String(t || "")).filter(Boolean).join(". ").slice(0, 4000);
-    if (!words || !salesOutreach(words).hits.length) return null;
-    if (allowPrepare) {
-      let prepares = false;
-      try { prepares = resolveIntent(words, { projects: [], missions: [], departments: [], source: "voice-provider" }).steps.some((s) => s.intent === "sales_prepare"); } catch { prepares = false; }
-      if (prepares) return null;
-    }
+  function outreachRefused(current, texts, { strict = false, required = null, kind = "outreach" } = {}) {
+    const cuts = texts.map((t) => stripOutreach(String(t || "").slice(0, 4000)));
+    if (!cuts.some((c) => c.refused.length)) return null;
+    const keeps = required ? required.every((i) => cuts[i]?.meaningful) : cuts.some((c) => c.meaningful);
+    if (!strict && keeps) return null;
     bus.emit({ type: "lega.work_request", scopeType: "system", scopeId: current.id, source: "lega", payload: { kind, projectId: null, outcome: "refused", planId: null, workRequestId: null, code: "OUTREACH_DISABLED" } });
     return refusedWork({ text: SALES_SEND_REASON });
   }
@@ -1631,7 +1635,7 @@ export function createLega({ bus, live, clock, settings, gate, grants, projects,
     if (hasSecret(request)) return refusedWork({ text: "Cererea conține ceva ce pare un secret; scrie-o tu în cockpit." });
     const hint = args?.kind_hint ? String(args.kind_hint) : null;
     if (hint && !LEGA_WORK_KINDS.includes(hint)) return refusedWork({ text: `Tip de lucrare necunoscut. Tipuri: ${LEGA_WORK_KINDS.join(", ")}.` });
-    const outreach = outreachRefused(current, [request], { allowPrepare: true, kind: hint || "outreach" });
+    const outreach = outreachRefused(current, [request], { kind: hint || "outreach" });
     if (outreach) return outreach;
     // The Hub heard the owner too: a plan / kept request it made from his words moments ago is reported, not planned again.
     const recent = recentBridgeWork(current);
@@ -1742,7 +1746,7 @@ export function createLega({ bus, live, clock, settings, gate, grants, projects,
     if (objective.length < 5 || objective.length > LEGA_TASK_MAX) return { ok: false, text: `Obiectivul trebuie să aibă 5–${LEGA_TASK_MAX} caractere.` };
     const acceptance = (Array.isArray(args?.acceptance) ? args.acceptance : []).slice(0, 10).map((a) => String(a ?? "").replace(/\s+/g, " ").trim().slice(0, 300)).filter(Boolean);
     if ([title, objective, ...acceptance].some(hasSecret)) return { ok: false, text: "Misiunea conține ceva ce pare un secret; scrie-o tu în cockpit." };
-    const outreach = outreachRefused(current, [title, objective, ...acceptance], { kind: "mission" });
+    const outreach = outreachRefused(current, [title, objective, ...acceptance], { kind: "mission", required: [0, 1] });
     if (outreach) return outreach;
     const previewed = recentPreviewAnswer(current, project.id); // D3 review
     if (previewed) return previewWorkReply(current, previewed);
@@ -1798,7 +1802,7 @@ export function createLega({ bus, live, clock, settings, gate, grants, projects,
     // What the owner approves is exactly what is created: nothing the redactor would hide on the card.
     if ([title, objective, ...acceptance].some(hasSecret)) return { ok: false, text: "Misiunea conține ceva ce pare un secret; creeaz-o tu în Misiuni." };
     // M12 (T-S3): a mission card never carries a send, a contact or a publication (the outreach template prepares, it never sends).
-    const outreach = outreachRefused(current, [title, objective, ...acceptance], { kind: "mission" });
+    const outreach = outreachRefused(current, [title, objective, ...acceptance], { kind: "mission", strict: true });
     if (outreach) return outreach;
     const result = await commandsApi.dispatch({ type: "lega.propose_mission", channel: "voice", actor: "lega", intentText: title,
       payload: { projectId: project.id, kind, title, objective, acceptance, legaSessionId: current.id } });
@@ -1886,7 +1890,7 @@ export function createLega({ bus, live, clock, settings, gate, grants, projects,
       // What the owner sees must be exactly what is approved: no longer than the card shows, and nothing the redactor would hide.
       if (task.length > LEGA_TASK_MAX) return { ok: false, text: `Sarcina are peste ${LEGA_TASK_MAX} caractere; formuleaz-o mai scurt sau scrie-o în Focus.` };
       if (redactText(task) !== task) return { ok: false, text: "Sarcina conține ceva ce pare un secret; scrie-o tu în Focus." };
-      const outreach = outreachRefused(current, [task], { kind: "run" });
+      const outreach = outreachRefused(current, [task], { kind: "run", strict: true });
       if (outreach) return outreach;
       const provider = args?.provider === "claude" ? "claude" : "codex";
       const access = args?.access === "workspace-write" ? "workspace-write" : "read-only";
