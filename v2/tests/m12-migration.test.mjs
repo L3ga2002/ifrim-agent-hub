@@ -57,9 +57,13 @@ test("M12-MIG-01 fresh database: data kind on sales_evidence, the three M12 tabl
     assert.deepEqual(columns(db, "sales_evidence").slice(-3), ["data_kind", "basis_json", "reasoning"]);
     assert.deepEqual(checkValues(db, "sales_evidence", "data_kind"), DATA_KINDS);
     for (const [table, cols] of Object.entries({
-      sales_preparations: ["id", "root_plan_id", "root_plan_hash", "phase_b_plan_id", "brief_json", "brief_sha", "org_id", "opportunity_id", "proposal_id", "awaited_proposal_id", "awaited_proposal_sha", "status", "stale_reason", "synthetic", "created_at", "updated_at"],
+      sales_preparations: ["id", "root_plan_id", "root_plan_hash", "phase_b_plan_id", "brief_json", "brief_sha", "org_id", "opportunity_id", "proposal_id", "awaited_proposal_id", "awaited_proposal_sha", "status", "stale_reason", "synthetic", "created_at", "updated_at",
+        // part 3: the plan whose consent governs (the root or a continuation), the reason of every status, the continuation window
+        "plan_id", "status_reason", "activate_by"],
       sales_plan_ops: ["op_key", "root_plan_id", "root_plan_hash", "op", "params_json", "status", "claim_token", "result_json", "fixed_at", "synthetic", "created_at", "updated_at"],
-      sales_dossiers: ["id", "preparation_id", "opportunity_id", "proposal_id", "proposal_sha", "revision", "folder", "files_json", "manifest_sha256", "verification_json", "status", "op_key", "synthetic"],
+      sales_dossiers: ["id", "preparation_id", "opportunity_id", "proposal_id", "proposal_sha", "revision", "folder", "files_json", "manifest_sha256", "verification_json", "status", "op_key", "synthetic",
+        // part 3: what the dossier is evidence of (its company, draft and inputs) and the plan that wrote it
+        "org_id", "draft_id", "draft_sha", "inputs_json", "inputs_sha", "ops_plan_id"],
     })) for (const c of cols) assert.ok(columns(db, table).includes(c), `${table}.${c}`);
     assert.deepEqual(checkValues(db, "sales_preparations", "status"), PREPARATION_STATUSES);
     assert.deepEqual(checkValues(db, "sales_dossiers", "status"), DOSSIER_STATUSES);

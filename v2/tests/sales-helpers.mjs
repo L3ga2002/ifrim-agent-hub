@@ -1,4 +1,7 @@
 import assert from "node:assert/strict";
+import fs from "node:fs";
+import path from "node:path";
+import crypto from "node:crypto";
 import { acceptanceHub, settle } from "./accept-helpers.mjs";
 import { generateSyntheticOrgs } from "../server/sales/synthetic.mjs";
 import { toCsv } from "../server/sales/tabular.mjs";
@@ -58,4 +61,44 @@ export async function approveSalesHttp(t, target, options = {}) {
   const r = await requestSalesApproval(t, target, options);
   await decideSalesApproval(t, r);
   return executeSalesApproval(t, r);
+}
+
+// ---------------------------------------------------------------- M12 preparation (part 3): one card → WAITING_OWNER → approval → dossier
+export const SALES_REQUEST = "pregătește o ofertă pentru un service auto din Cluj care vrea programări online";
+/** A synthetic acceptance hub whose approved exports folder is `<root>/exports` (inside the test root, outside root/data and root/hub). */
+export async function prepHub(c, options = {}) {
+  const t = await salesAcceptanceHub(c, options);
+  t.exportsDir = path.join(t.root, "exports");
+  t.hub.bus.transaction(() => t.hub.settings.set("mediaPolicy", { ...(t.hub.settings.get("mediaPolicy") || {}), exportsDir: t.exportsDir }, "test", "Folderul de exporturi al testului"));
+  return t;
+}
+/** The owner's sentence → the Sales planner (through the intake) → ONE card; nothing runs. */
+export async function proposePreparation(t, text = SALES_REQUEST) {
+  const r = await t.hub.intake.plan({ kind: "sales", text, source: "typed" }, { channel: "test", actor: "test", ownerSession: null });
+  assert.ok(r.opsPlan?.id && r.opsPlan.preparationId, JSON.stringify(r).slice(0, 600));
+  return { card: r.opsPlan, preparationId: r.opsPlan.preparationId, result: r };
+}
+/** The owner's one confirmation (HTTP, owner session cookie); waits for the plan's run. */
+export async function confirmCard(t, card, { status = 200 } = {}) {
+  const res = await t.request(`/api/ops/plans/${card.id}/confirm`, { body: { nonce: card.nonce, displayedHash: card.hash } });
+  assert.equal(res.status, status, JSON.stringify(res.json));
+  await t.hub.opsPlans.idle(card.id);
+  return res;
+}
+/** The owner's approval of exactly the awaited offer (id + full sha) over HTTP: request → owner_decide → execute. */
+export const approveAwaited = (t, prep, options = {}) => approveSalesHttp(t, { route: `/api/sales/proposals/${prep.awaited.proposalId}/approve`, body: { displayedSha: prep.awaited.proposalSha } }, options);
+export const prepStatus = (t, id) => t.hub.salesPreparations.get(id).status;
+export const countRows = (t, sql, ...args) => t.hub.db.prepare(sql).get(...args).n;
+export const eventCount = (t, type) => countRows(t, "SELECT COUNT(*) AS n FROM events WHERE type = ?", type);
+/** Waits for the deferred listeners (activation) and the derived plan they started. */
+export async function settlePreparation(t, id) {
+  for (let i = 0; i < 5; i += 1) { await settle(); await t.hub.salesPreparations.idle(id); }
+  return t.hub.salesPreparations.get(id);
+}
+/** A walk of a folder: relative path → sha256 (to prove that nothing was overwritten or added). */
+export function folderShas(dir) {
+  const out = {};
+  const walk = (d) => { for (const e of fs.readdirSync(d, { withFileTypes: true })) { const p = path.join(d, e.name); if (e.isDirectory()) walk(p); else out[path.relative(dir, p).split(path.sep).join("/")] = crypto.createHash("sha256").update(fs.readFileSync(p)).digest("hex"); } };
+  if (fs.existsSync(dir)) walk(dir);
+  return out;
 }

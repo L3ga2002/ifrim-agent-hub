@@ -35,14 +35,16 @@ const STUDIO_CLOSED_STAGES = new Set(["ARCHIVED", "PUBLISHED", "ANALYTICS"]);
 /** An open clarification (its options) is answerable for 2 minutes; a bare verb waits 5 s for its object. */
 export const INTAKE_LIMITS = Object.freeze({ clarificationTtlMs: 2 * 60 * 1000, verbSlotMs: 5000, transcriptTtlMs: 10 * 60 * 1000, transcriptMax: 500, conversationMax: 50 });
 /** Planner kinds the intake knows (U09/U10/U11 register theirs in their own files; a kind with no planner answers honestly). */
-export const PLANNER_KINDS = Object.freeze(["studio_create", "start_mission", "resume_mission", "engineering", "run", "delivery"]);
+export const PLANNER_KINDS = Object.freeze(["studio_create", "start_mission", "resume_mission", "engineering", "run", "delivery", "sales"]);
 /** The resolver intents that become ONE plan through a registered planner (intent → planner kind). */
 export const PLANNER_FOR_INTENT = Object.freeze({ studio_create: "studio_create", start_mission: "start_mission", resume_mission: "resume_mission",
   engineering_request: "engineering", analysis_request: "run",
   // M11: preparing / revising / opening a delivery (owner/planners/delivery.mjs).
   delivery_prepare: "delivery", delivery_revise: "delivery", delivery_open: "delivery", delivery_status: "delivery", delivery_decisions: "delivery",
+  // M12: preparing a synthetic offer (owner/planners/sales.mjs): one card, the offer's approval stays the owner's decision.
+  sales_prepare: "sales",
   // A planner question asked through lega.request_work has no resolver step: its answer (choice forIntent engineering/run) comes back here.
-  engineering: "engineering", run: "run" });
+  engineering: "engineering", run: "run", sales: "sales" });
 /**
  * Intents that only REDUCE what reaches the owner and are therefore accepted from every live source, like the interruptions:
  * „Nu mă deranja” (only decisions interrupt) changes no work and adds no authority. Its class stays SIMPLE_LOCAL_ACTION in the

@@ -566,6 +566,8 @@ export function registerRoutes(router, hub, { token }) {
   get("/api/sales/opportunities", ({ query }) => sales.listOpportunities({ status: query.status || "", offset: query.offset, limit: query.limit }));
   post("/api/sales/opportunities", cmd("sales.opportunity.create", ({ body }) => body, { created: true }));
   get("/api/sales/opportunities/:id", ({ params }) => sales.getOpportunity(params.id));
+  // M12: the opportunity's preparations and „Dosarul ofertei” revisions (read only: the dossier is written only by the confirmed plan).
+  get("/api/sales/opportunities/:id/dossiers", ({ params }) => { sales.getOpportunity(params.id); return hub.salesPreparations.forOpportunity(params.id); });
   post("/api/sales/opportunities/:id/transition", cmd("sales.opportunity.transition", ({ params, body }) => ({ ...body, opportunityId: params.id })));
   post("/api/sales/opportunities/:id/proposals", cmd("sales.proposal.create", ({ params, body }) => ({ opportunityId: params.id, ...(body?.edits ? { edits: body.edits } : {}) }), { created: true }));
   post("/api/sales/proposals/:id/approve", ({ req, params, body }) => owner.dispatch(req, "sales.proposal.approve", { proposalId: params.id, displayedSha: body?.displayedSha }, { requireOwner: true }));

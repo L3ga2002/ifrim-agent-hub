@@ -26,6 +26,11 @@ export const OPERATIONS = Object.freeze({
   "delivery.verify": "PLAN_STEP", "delivery.preview": "PLAN_STEP", "delivery.bind": "PLAN_STEP", "delivery.summary": "PLAN_STEP", "capture.preview": "PLAN_STEP",
   // Stage before M12: Word / Excel opened by the Hub (own invisible instance, read-only) to verify a file the plan generated.
   "office.verify": "PLAN_STEP",
+  // M12 Sales preparation (one owner-confirmed plan; the contact draft and the dossier derived from it after the owner's approval of
+  // the exact offer): synthetic client, fixture research, q-v2 qualification, the offer up to review, the draft, „Dosarul ofertei”.
+  // The owner's decisions (offer approval, qualification override), the hand-off, sending and deletion are NOT operations: unknown
+  // → SENSITIVE → a plan that names them is refused.
+  "sales.synthetic": "PLAN_STEP", "sales.research": "PLAN_STEP", "sales.qualify": "PLAN_STEP", "sales.proposal.draft": "PLAN_STEP", "sales.draft": "PLAN_STEP", "sales.dossier": "PLAN_STEP",
   "access.newApp": "SENSITIVE", "access.newFolder": "SENSITIVE", "model.run": "SENSITIVE", "file.overwrite": "SENSITIVE", "capture.live.enable": "SENSITIVE",
   publish: "REFUSED", upload: "REFUSED", send: "REFUSED", purchase: "REFUSED", "delete.external": "REFUSED", "hub.admin": "REFUSED", "shell.exec": "REFUSED",
 });

@@ -188,6 +188,21 @@ export function registerSalesCommands(register, hub, { createMission }) {
       if (!["DUE", "SCHEDULED"].includes(f.status)) throw new HubError("conflict", `Follow-up-ul e ${f.status}`);
       return sales.createDraft(f.opportunityId, { followupId: f.id }, ctx.actor);
     } });
+  // M12 preparation: what only REDUCES activity (cancel) is accepted from every owner-facing channel (fail-safe, like ops.plan.cancel);
+  // a continuation only PROPOSES a new card, which still needs the owner's own confirmation in the owner session (ops.plan.confirm).
+  reg("sales.preparation.cancel", { describe: "Anulează pregătirea ofertei (fail-safe; ce s-a făcut rămâne, sintetic)", channels: ["ui", "owner", "voice", "companion", "test"],
+    schema: { preparationId: { required: true, max: 80, pattern: /^spp_[A-Za-z0-9_]+$/ }, reason: { max: 200, default: "Anulată de tine" } },
+    execute: (input, ctx) => {
+      if (!hub.salesPreparations) throw new HubError("internal", "Pregătirea Sales nu e disponibilă");
+      return hub.salesPreparations.cancel(input.preparationId, { reason: input.reason, actor: ctx.actor });
+    } });
+  reg("sales.preparation.continue", { describe: "Propune un card nou care continuă o pregătire oprită (aceeași, cu o confirmare nouă; nimic nu pornește până confirmi)",
+    async: true, channels: ["ui", "owner", "test"], logResult: (r) => ({ planId: r?.plan?.id || null, status: r?.plan?.status || null, preparationId: r?.preparation?.id || null }),
+    schema: { preparationId: { required: true, max: 80, pattern: /^spp_[A-Za-z0-9_]+$/ } },
+    execute: (input, ctx) => {
+      if (!hub.salesPreparations) throw new HubError("internal", "Pregătirea Sales nu e disponibilă");
+      return hub.salesPreparations.continueCard(input.preparationId, { actor: ctx.actor, via: ctx.channel });
+    } });
   reg("sales.owner.save", { describe: "Profilul firmei tale pentru propuneri (nume, semnătură, materiale confirmate)",
     schema: { companyName: { required: true, max: 120 }, signatureName: { max: 120, default: "" }, materials: { type: "array", max: 20, items: "string", itemMax: 300 } },
     execute: (input, ctx) => {

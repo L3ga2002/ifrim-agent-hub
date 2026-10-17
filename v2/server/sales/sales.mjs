@@ -377,7 +377,60 @@ export function createSales({ db, bus, clock, config, settings }) {
       .run(id, subjectType, subjectId, subjectVersion, clip(claim, 300), json(value), label, sourceKind, clip(sourceRef, 500), retrievedAt, clip(excerpt, 400),
         clip(method, 200), verifiedAt, recheckAfter, json(contradicts), synthetic ? 1 : 0, batchId, actor, now(),
         declared ? dataKind : null, declared ? json(refs) : null, declared ? clip(reasoning, 400) : null);
+    // M12 (D7): new evidence for a company changes the inputs of an offer prepared for it (only preparation-bound offers react).
+    const orgOfSubject = subjectType === "org" ? subjectId : subjectType === "opportunity" ? db.prepare("SELECT org_id FROM sales_opportunities WHERE id = ?").get(subjectId)?.org_id : null;
+    if (orgOfSubject) invalidateBound([orgOfSubject], "o dovadă nouă pentru firmă");
     return id;
+  }
+
+  // ---------- M12 (D7): preparation-bound offers and what invalidates them ----------
+  /**
+   * The inputs an offer prepared by a confirmed plan was rendered from (stored as `content.basis`, so they are part of its content sha):
+   * the brief, the company's usable evidence, its latest qualification and audit, the catalog entry of the opportunity, the owner's
+   * proposal profile and whether the company may still be worked on. Pure read; no time inside, so the same state gives the same basis.
+   */
+  function preparationBasis(oppId, { briefSha = null } = {}) {
+    const opp = needOpp(oppId);
+    const org = needOrg(opp.orgId);
+    const ids = (type, id) => evidenceOf(type, id).filter(usable).map((e) => e.id).sort();
+    const audit = db.prepare("SELECT id FROM sales_audits WHERE org_id = ? ORDER BY created_at DESC, rowid DESC LIMIT 1").get(org.id)?.id || null;
+    const svc = opp.serviceId ? rowToService(db.prepare("SELECT * FROM sales_services WHERE id = ?").get(opp.serviceId)) : null;
+    return { v: 1, briefSha: briefSha || null, orgId: org.id, opportunityId: opp.id, evidence: hashCanonical(ids("org", org.id)), opportunityEvidence: hashCanonical(ids("opportunity", opp.id)),
+      qualificationId: latestQualification(org.id)?.id || null, auditId: audit, service: svc ? `${svc.id}@${svc.version}` : null, owner: hashCanonical(ownerProfile()),
+      workable: !org.mergedInto && !org.archivedAt && org.status !== "DO_NOT_CONTACT" && !contactSuppression(org.id) };
+  }
+  /** A bound offer whose recorded inputs are no longer the current ones (M04 offers have no basis: never stale). */
+  function boundStale(p) {
+    if (!p || !isPreparationBound(p.content)) return false;
+    try { return hashCanonical(preparationBasis(p.opportunityId, { briefSha: p.content.basis.briefSha || null })) !== hashCanonical(p.content.basis); } catch { return true; }
+  }
+  const invalidationHooks = new Set();
+  /** The preparation service listens here (synchronously, inside the writer's transaction): preparations and dossiers of the opportunity. */
+  const onInvalidated = (fn) => { invalidationHooks.add(fn); return () => invalidationHooks.delete(fn); };
+  function notifyInvalidated(orgId, opportunityId, reason) {
+    for (const fn of invalidationHooks) fn({ orgId, opportunityId, reason });
+  }
+  /**
+   * Called by every write that can change an offer's inputs (evidence, audit, qualification, override, suppression, merge, a new offer
+   * or draft version). A preparation-bound offer (DRAFT or APPROVED_INTERNAL) whose inputs changed — or every bound one when `force` —
+   * becomes STALE (never current again), its drafts are superseded and its opportunity goes back to PROPOSAL_DRAFT; then the
+   * preparation service checks the preparations and dossiers of the opportunity. M04 offers (no basis) are untouched.
+   */
+  function invalidateBound(orgIds, reason, { force = false } = {}) {
+    for (const orgId of [...new Set(orgIds)].filter(Boolean)) {
+      for (const o of db.prepare("SELECT id FROM sales_opportunities WHERE org_id = ?").all(orgId)) {
+        const p = latestProposal(o.id);
+        if (p && isPreparationBound(p.content) && ["DRAFT", "APPROVED_INTERNAL"].includes(p.status) && (force || boundStale(p))) {
+          if (db.prepare("UPDATE sales_proposals SET status = 'STALE' WHERE id = ? AND status IN ('DRAFT','APPROVED_INTERNAL')").run(p.id).changes === 1) {
+            db.prepare("UPDATE sales_drafts SET status = 'SUPERSEDED', updated_at = ? WHERE proposal_id = ? AND status IN ('DRAFT','CONTENT_APPROVED','SEND_AUTHORIZED')").run(now(), p.id);
+            const opp = needOpp(o.id);
+            if (["READY_FOR_OWNER_REVIEW", "APPROVED_INTERNAL"].includes(opp.status)) setOppStatus(opp, "PROPOSAL_DRAFT", "hub", `Oferta v${p.version} nu mai corespunde intrărilor (${clip(reason, 120)})`);
+            emit("sales.proposal.stale", o.id, { proposalId: p.id, version: p.version, opportunityId: o.id, reason: clip(reason, 160) }, "hub");
+          }
+        }
+        notifyInvalidated(orgId, o.id, reason);
+      }
+    }
   }
 
   // ---------- suppression (do-not-contact) ----------
@@ -454,6 +507,7 @@ export function createSales({ db, bus, clock, config, settings }) {
         db.prepare("UPDATE sales_followups SET status = 'SUSPENDED', reason = ?, updated_at = ? WHERE org_id = ? AND status IN ('SCHEDULED','DUE')").run("DO_NOT_CONTACT", now(), org.id);
         db.prepare("UPDATE sales_drafts SET status = 'CANCELLED', updated_at = ? WHERE org_id = ? AND status IN ('DRAFT','CONTENT_APPROVED','SEND_AUTHORIZED')").run(now(), org.id);
       }
+      invalidateBound(mergeFamily(orgId), "DO_NOT_CONTACT", { force: true });
       emit("sales.suppressed", orgId, { keys: [...kinds], reason: clip(reason, 120) }, actor);
       return getOrg(orgId);
     });
@@ -918,6 +972,7 @@ export function createSales({ db, bus, clock, config, settings }) {
       if (merged.status === "DO_NOT_CONTACT" || survivor.status === "DO_NOT_CONTACT" || suppressionFor({ orgId: merged.id }) || suppressionFor({ orgId: survivor.id })) {
         suppress(survivor.id, { reason: "Unire cu o firmă DO_NOT_CONTACT", source: "merge" }, actor);
       }
+      invalidateBound([merged.id, survivor.id], "firma a fost unită cu alta", { force: true });
       emit("sales.org.merged", survivor.id, { mergeId: id, mergedId: merged.id }, actor);
       return { mergeId: id, survivor: getOrg(survivor.id) };
     });
@@ -946,6 +1001,11 @@ export function createSales({ db, bus, clock, config, settings }) {
     if (sourceKind !== "fixture") await sources.fetch("live", org.website); // always refused in M04 (LIVE_COLLECTION_DISABLED)
     if (!org.domain.endsWith(".test")) throw new HubError("policy", "M04 rulează auditul doar pe site-uri fixture (.test); colectarea live de pe site-uri reale cere o autorizare separată");
     const fetched = await sources.fetch("fixture", org.domain);
+    return recordAudit(id, org, fetched, actor);
+  }
+
+  /** The audit of a fixture page already read (sync, one transaction): the audit row, its labelled evidence and the org's status. */
+  function recordAudit(id, org, fetched, actor) {
     const audit = auditHtml({ html: fetched.body, url: fetched.finalUrl || org.website, orgName: org.displayName, fetchedAt: fetched.fetchedAt || now(), sourceKind: "fixture" });
     const opportunities = opportunitiesFromAudit(audit, services());
     return bus.transaction(() => {
@@ -975,6 +1035,91 @@ export function createSales({ db, bus, clock, config, settings }) {
     });
   }
 
+  // ---------- M12: what the confirmed preparation plan writes (its executors call these; none of them is a command) ----------
+  const BRIEF_SOURCE_FIELD = Object.freeze({ "R-SECTOR@1": "clientType", "R-PLACE@1": "place", "R-SERVICE@1": "problem" });
+  /**
+   * The synthetic client of a brief (S-02), in the caller's transaction: the company (synthetic = 1, `.test` domain, fiscal code 99…,
+   * no record field taken from the brief), its identity as FIXTURE evidence (name, fiscal code, site, e-mail — so q-v2 scores only what a
+   * recorded row backs), the generic `.test` mailbox the contact draft needs, what the owner said as STATEMENT evidence (source
+   * `brief:<preparation>#<field>`) and what the brief inferred as INFERENCE evidence (basis: the owner's field, reasoning: the rule),
+   * then the opportunity. Never matched or merged with another company. → { orgId, opportunityId, evidence: { field: id }, problemEvidenceId }
+   */
+  function createPreparationOrg({ identity, brief, preparationId, actor }) {
+    if (!identity?.synthetic || !/\.test$/.test(String(identity.domain || "")) || !/^99\d{8}$/.test(String(identity.fiscalCode || ""))) {
+      throw new HubError("policy", "Pregătirea M12 lucrează doar cu o firmă sintetică (.test, CUI 99…)", { code: "SALES_NOT_SYNTHETIC" });
+    }
+    if (!/^spp_[A-Za-z0-9_]+$/.test(String(preparationId || ""))) throw new HubError("validation", "Pregătirea nu are un id valid");
+    return bus.transaction(() => {
+      const t = now();
+      const n = normalizeName(identity.name);
+      const orgId = newId("org");
+      db.prepare(`INSERT INTO sales_orgs (id, display_name, normalized_name, legal_form, fiscal_code, fiscal_code_valid, website, domain, domain_kind, city, county, address, caen,
+        status, synthetic, created_batch_id, created_row_id, created_at, updated_at) VALUES (?, ?, ?, ?, ?, 1, ?, ?, 'organization_site', '', '', '', '', 'NEW', 1, NULL, NULL, ?, ?)`)
+        .run(orgId, clip(identity.name, 200), n.normalized, identity.legalForm || n.legalForm || "", identity.fiscalCode, identity.website, normalizeDomain(identity.domain), t, t);
+      transition("org", orgId, null, "NEW", actor, `Firmă sintetică (${identity.generator}) pentru pregătirea ${preparationId}`);
+      const evidence = {};
+      const source = `${identity.generator}:${identity.seed} (fixture sintetic)`;
+      const fixture = (claim, value) => addEvidenceRow({ subjectType: "org", subjectId: orgId, claim, value, label: "OBSERVED", sourceKind: "fixture", sourceRef: source,
+        retrievedAt: t, method: `generator ${identity.generator}`, synthetic: true, actor, dataKind: "FIXTURE" }, { origin: "synthetic" });
+      evidence.name = fixture("name", { name: identity.name });
+      evidence.fiscalCode = fixture("fiscalCode", { fiscalCode: identity.fiscalCode });
+      evidence.website = fixture("website", { website: identity.website, domain: identity.domain });
+      evidence.email = fixture("email", { email: identity.email });
+      db.prepare(`INSERT INTO sales_contacts (id, org_id, kind, value, raw, generic, person_name, role, evidence_id, warnings_json, status, created_at)
+        VALUES (?, ?, 'email', ?, ?, 1, '', '', ?, '[]', 'ACTIVE', ?)`).run(newId("sct"), orgId, String(identity.email).toLowerCase(), identity.email, evidence.email, t);
+      // What the owner said (verbatim) and what the brief deduced from it: evidence about the company, never record fields.
+      for (const [field, f] of Object.entries(brief?.fields || {})) {
+        if (!f || typeof f !== "object") continue;
+        const value = Array.isArray(f.value) ? f.value.map((v) => clip(v, 200)) : clip(f.value, 300);
+        if (f.provenance === "USER_PROVIDED") {
+          evidence[`brief:${field}`] = addEvidenceRow({ subjectType: "org", subjectId: orgId, claim: `brief:${field}`, value: { field, value, span: clip(f.span ?? "", 300) },
+            label: "USER_PROVIDED", sourceKind: "manual", sourceRef: `brief:${preparationId}#${field}`, retrievedAt: t, method: `brief ${brief.version}`, synthetic: true, actor,
+            dataKind: "STATEMENT" }, { origin: "manual" });
+        } else if (f.provenance === "INFERRED") {
+          const from = Object.entries(brief.fields).find(([k, g]) => k !== field && g?.provenance === "USER_PROVIDED" && clip(g.value, 300) === clip(f.from, 300))?.[0] || BRIEF_SOURCE_FIELD[f.rule];
+          if (!from || !brief.fields[from]) continue;
+          evidence[`brief:${field}`] = addEvidenceRow({ subjectType: "org", subjectId: orgId, claim: `brief:${field}`, value: { field, value, rule: f.rule || "" },
+            label: "INFERRED", sourceKind: "manual", sourceRef: `rule:${f.rule || "brief"}`, retrievedAt: t, method: `brief ${brief.version}`, synthetic: true, actor,
+            dataKind: "INFERENCE", basis: [`brief:${preparationId}#${from}`], reasoning: clip(f.reasoning || `dedus din „${f.from}”`, 400) }, { origin: "manual" });
+        }
+      }
+      const said = (k) => (brief?.fields?.[k]?.provenance === "USER_PROVIDED" ? clip(brief.fields[k].value, 120) : "");
+      const title = `Ofertă (sintetic): ${[said("clientType"), said("problem")].filter(Boolean).join(" — ") || "cerere de ofertă"}`;
+      const opp = createOpportunity({ orgId, title, need: said("problem") }, actor);
+      return { orgId, opportunityId: opp.opportunity.id, evidence, problemEvidenceId: evidence["brief:problem"] || null };
+    });
+  }
+
+  /**
+   * The research of a synthetic company's site (S-03): ONLY the fixture adapter. A generated `.test` host has no fixture page →
+   * { found: false }; a `live` request is refused before anything (LIVE_COLLECTION_DISABLED). Reads only; nothing is written here.
+   */
+  async function fixturePage(host, { mode = "fixture" } = {}) {
+    if (mode !== "fixture") await sources.fetch("live", host); // always refused (LIVE_COLLECTION_DISABLED)
+    if (!/\.test$/.test(String(host || ""))) throw new HubError("policy", "Cercetarea M12 citește doar site-uri fixture (.test)", { code: "SALES_NOT_SYNTHETIC" });
+    try { return { found: true, adapter: "fixture-v1", host, page: await sources.fetch("fixture", host) }; }
+    catch (error) { if (error?.category === "not_found") return { found: false, adapter: "fixture-v1", host, reason: error.message }; throw error; }
+  }
+  /**
+   * What the research found, in the caller's transaction: the fixture page's audit with its labelled evidence, or — no fixture page —
+   * ONE evidence row UNKNOWN „neverificat: nu există pagina fixture” (FIXTURE kind, origin fixture). Nothing is invented. → { evidenceIds, auditId }
+   */
+  function recordResearch(orgId, research, actor) {
+    const org = needOrg(orgId);
+    if (!org.synthetic) throw new HubError("policy", "Cercetarea M12 e doar pentru firme sintetice", { code: "SALES_NOT_SYNTHETIC" });
+    if (research?.found) {
+      const out = recordAudit(orgId, org, research.page, actor);
+      return { auditId: out.auditId, evidenceIds: db.prepare("SELECT id FROM sales_evidence WHERE subject_id = ? AND json_extract(value_json, '$.auditId') = ?").all(orgId, out.auditId).map((r) => r.id) };
+    }
+    return bus.transaction(() => {
+      const t = now();
+      const id = addEvidenceRow({ subjectType: "org", subjectId: orgId, subjectVersion: org.version, claim: "research:site", value: { host: research?.host || org.domain, adapter: research?.adapter || "fixture-v1", found: false },
+        label: "UNKNOWN", sourceKind: "fixture", sourceRef: `fixture:${research?.host || org.domain} (fixture sintetic)`, retrievedAt: t, excerpt: "neverificat: nu există pagina fixture",
+        method: "fixture-v1 · fără pagină", synthetic: true, actor, dataKind: "FIXTURE" }, { origin: "fixture" });
+      return { auditId: null, evidenceIds: [id] };
+    });
+  }
+
   function financialsOf(orgId) {
     return evidenceOf("org", orgId).filter((e) => e.claim.startsWith("financial:") && usable(e))
       .map((e) => ({ ...(e.value || {}), sourceRef: e.sourceRef, verifiedAt: e.verifiedAt || e.retrievedAt, evidenceId: e.id, freshness: e.freshness, conflictsWith: e.conflictsWith }));
@@ -992,6 +1137,7 @@ export function createSales({ db, bus, clock, config, settings }) {
       const qid = newId("squ");
       db.prepare("INSERT INTO sales_qualifications (id, org_id, formula_version, result_json, priority, inputs_sha, created_by, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)")
         .run(qid, id, result.version || QUALIFICATION_FORMULA.version, json(result), result.priority, hashCanonical({ ev: sheet.evidence.map((e) => e.id), audit: latestAudit?.id || null, catalog: input.catalog.map((s) => `${s.id}@${s.version}`) }), actor, now());
+      invalidateBound([id], "o calificare nouă");
       emit("sales.qualified", id, { qualificationId: qid, priority: result.priority }, actor);
       return latestQualification(id);
     });
@@ -1017,6 +1163,7 @@ export function createSales({ db, bus, clock, config, settings }) {
       const qid = newId("squ");
       db.prepare("INSERT INTO sales_qualifications (id, org_id, formula_version, result_json, priority, override_json, inputs_sha, created_by, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)")
         .run(qid, id, current.formulaVersion, json(updated), updated.priority ?? null, json(updated.override), basis.inputs_sha, actor, now());
+      invalidateBound([id], "calificarea a fost suprascrisă");
       emit("sales.qualification.override", id, { qualificationId: qid, priority, ...authority }, actor);
       return latestQualification(id);
     });
@@ -1129,18 +1276,24 @@ export function createSales({ db, bus, clock, config, settings }) {
     return { companyName: s.companyName || "Ifrim Digital", signatureName: s.signatureName || "", materials: Array.isArray(s.materials) ? s.materials : [] };
   }
 
-  function createProposal(oppId, { edits = null } = {}, actor) {
+  /**
+   * `brief` and `basis` are the M12 preparation path only (the confirmed plan's step; never a command): the brief's stated need becomes
+   * the „Ce s-a cerut” section and `basis` (the input shas, preparationBasis) binds the offer to its preparation. Without them the
+   * offer is exactly the M04 offer.
+   */
+  function createProposal(oppId, { edits = null, brief = null, basis = null } = {}, actor) {
     const view = getOpportunity(oppId);
     const opp = view.opportunity;
     // LOST is closed. WON stays WON: a new version after the acceptance is a scope change that makes the hand-off outdated.
     if (opp.status === "LOST") throw new HubError("conflict", "Oportunitatea e LOST");
     assertWorkable(view.org);
     if (view.suppression) throw new HubError("policy", "Firma e DO_NOT_CONTACT");
+    if (basis !== null && (!basis || typeof basis !== "object" || Array.isArray(basis) || edits)) throw new HubError("validation", "Oferta unei pregătiri are baza ei și nu se editează de mână");
     const sheet = getOrg(opp.orgId);
     const svc = opp.serviceId ? services({ activeOnly: false }).filter((s) => s.id === opp.serviceId) : [];
     const rendered = renderProposal({ org: { ...view.org, contacts: sheet.contacts.filter((c) => c.status === "ACTIVE") }, opportunity: opp, services: svc, evidence: evidenceForTexts(sheet),
-      audit: sheet.audits[0]?.result || null, owner: ownerProfile() });
-    let content = { ...rendered, serviceIds: svc.map((s) => `${s.id}@${s.version}`) };
+      audit: sheet.audits[0]?.result || null, owner: ownerProfile(), ...(brief ? { brief } : {}) });
+    let content = { ...rendered, serviceIds: svc.map((s) => `${s.id}@${s.version}`), ...(basis ? { basis } : {}) };
     if (edits && Array.isArray(edits.sections)) {
       if (edits.sections.some((sec) => sec?.id && !String(sec.text ?? "").trim())) throw new HubError("validation", "O secțiune editată nu poate fi goală");
       // Owner edits replace section texts by id; a placeholder or an empty text is refused.
@@ -1163,6 +1316,8 @@ export function createSales({ db, bus, clock, config, settings }) {
       db.prepare("UPDATE sales_drafts SET status = 'SUPERSEDED', updated_at = ? WHERE opportunity_id = ? AND status IN ('DRAFT','CONTENT_APPROVED','SEND_AUTHORIZED')").run(now(), oppId);
       db.prepare("UPDATE sales_handoffs SET status = 'SUPERSEDED' WHERE opportunity_id = ? AND status = 'DRAFT_CREATED' AND proposal_sha <> ?").run(oppId, sha);
       emit("sales.proposal.created", oppId, { proposalId: id, version }, actor);
+      // M12: a preparation waiting for the previous version (or a dossier written from it) no longer matches the offer.
+      notifyInvalidated(opp.orgId, oppId, `o versiune nouă a ofertei (v${version})`);
       return rowToProposal(db.prepare("SELECT * FROM sales_proposals WHERE id = ?").get(id));
     });
   }
@@ -1198,6 +1353,11 @@ export function createSales({ db, bus, clock, config, settings }) {
       const result = (duplicate, at, aid, proposalStatus, oppStatus) => ({ duplicate, approved: true, proposalId, version: p.version, contentSha: p.contentSha,
         status: proposalStatus, approvedAt: at, approvalId: aid, opportunity: { id: p.opportunityId, status: oppStatus } });
       if (p.status === "APPROVED_INTERNAL" && p.approvedSha === displayedSha) return result(true, p.approvedAt, p.approvalId, p.status, needOpp(p.opportunityId).status);
+      // M12 (D7): a preparation-bound offer whose inputs changed is STALE (set by the invalidating writes) and is never approved; the
+      // preparation's activation and its dossier re-check the inputs by sha before anything continues.
+      if (p.status === "STALE") {
+        throw new HubError("conflict", "Oferta nu mai corespunde datelor din care a fost pregătită (STALE); cere o versiune nouă", { code: "SALES_PROPOSAL_STALE" });
+      }
       const opp = needOpp(p.opportunityId);
       if (p.status !== "DRAFT" || opp.status !== "READY_FOR_OWNER_REVIEW") throw new HubError("conflict", "Marchează întâi propunerea „gata de revizuire”");
       // C-02 on the M12 path: an offer bound to a preparation is approved only without invented figures (amounts, terms, ROI,
@@ -1260,6 +1420,8 @@ export function createSales({ db, bus, clock, config, settings }) {
         json({ claimsToVerify: rendered.claimsToVerify || [], personalizationBasis: rendered.personalizationBasis || [], proposalSha: d.proposalSha, followupId, edited: subject !== null || body !== null }),
         sha, actor, now(), now());
       if (followupId) db.prepare("UPDATE sales_followups SET draft_id = ?, updated_at = ? WHERE id = ?").run(id, now(), followupId);
+      // M12: a dossier written from the previous draft no longer matches it.
+      notifyInvalidated(view.org.id, oppId, `o ciornă nouă (v${version})`);
       emit("sales.draft.created", oppId, { draftId: id, version }, actor);
       return rowToDraft(db.prepare("SELECT * FROM sales_drafts WHERE id = ?").get(id));
     });
@@ -1590,5 +1752,7 @@ export function createSales({ db, bus, clock, config, settings }) {
     scheduleFollowup, followupAction, listFollowups, getFollowup, currentHandoff, tick,
     overview, exportOrgsCsv, legaPipelineSummary, legaLeadDetail, legaDrafts,
     latestProposal, latestDraft,
+    // M12 preparation (written only by the confirmed plan's steps; no command reaches these directly).
+    createPreparationOrg, fixturePage, recordResearch, preparationBasis, boundStale, isPreparationBound, onInvalidated, latestQualification,
   };
 }

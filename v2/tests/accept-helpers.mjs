@@ -79,9 +79,15 @@ export function assertStoredPaths(config, root) {
         else visit(item);
       }
     };
-    for (const [table, column] of [["deliveries", "template_json"], ["delivery_items", "meta_json"], ["delivery_documents", "export_json"], ["ops_plan_steps", "result_json"]])
+    for (const [table, column] of [["deliveries", "template_json"], ["delivery_items", "meta_json"], ["delivery_documents", "export_json"], ["ops_plan_steps", "result_json"],
+      ["sales_dossiers", "files_json"], ["sales_dossiers", "verification_json"], ["sales_plan_ops", "result_json"]])
       for (const row of db.prepare(`SELECT ${column} value FROM ${table}`).all()) visit(JSON.parse(row.value || "{}"));
     for (const row of db.prepare("SELECT ref_id FROM delivery_items WHERE ref_table = 'file'").all()) assertInside(root, row.ref_id);
+    // M12: the Sales dossier folders and the approved exports root they live in: inside the test root, never in root/data or root/hub.
+    const exportsDir = JSON.parse(db.prepare("SELECT value_json FROM settings WHERE key = 'mediaPolicy'").get()?.value_json || "{}")?.exportsDir || null;
+    const outsideHubData = (p) => { for (const sub of ["data", "hub"]) { const rel = path.relative(path.join(root, sub), path.resolve(p)); assert.ok(rel.startsWith("..") || path.isAbsolute(rel), `inside root/${sub}: ${p}`); } };
+    if (exportsDir) { assertInside(root, exportsDir); outsideHubData(exportsDir); }
+    for (const row of db.prepare("SELECT folder FROM sales_dossiers").all()) { assertInside(root, row.folder); outsideHubData(row.folder); }
   } finally { db.close(); }
 }
 

@@ -1086,10 +1086,12 @@ export const MIGRATIONS = [
     // `git revert` of the release + the managed upgrade is a valid rollback without a database restore.
     // - sales_evidence gains the C-03 data kind (FIXTURE / STATEMENT / INFERENCE), separate from the M04 confidence label. Existing
     //   rows are never rewritten: their kind stays NULL, shown as „nedeclarat (M04)”. An inference carries its basis and reasoning.
-    // - sales_preparations: one confirmed `sales.prepare` plan, its immutable brief and the exact offer it waits for (id + sha).
+    // - sales_preparations: one confirmed `sales.prepare` plan, its immutable brief and the exact offer it waits for (id + sha); the
+    //   plan whose consent governs it now (the root or a continuation card), its window (activate_by) and the reason of its status.
     // - sales_plan_ops: the C-01 ledger, one row per (confirmed root plan + operation + normalised params); a resume reads it
     //   instead of re-running an effect. `fixed_at` is the timestamp the operation's content uses, so a retry writes the same bytes.
-    // - sales_dossiers: the local „Dosarul ofertei” (never `sales_handoffs`, which stays the Engineering hand-off after acceptance).
+    // - sales_dossiers: the local „Dosarul ofertei” (never `sales_handoffs`, which stays the Engineering hand-off after acceptance), with
+    //   the draft and the inputs it is evidence of (inputs_sha: a change of the offer, the draft or the evidence makes it STALE).
     // Everything M12 writes here is synthetic (CHECK synthetic = 1). The status lists equal the constants in sales.mjs.
     version: 13,
     name: "m12-sales-prep",
@@ -1103,7 +1105,8 @@ export const MIGRATIONS = [
           proposal_id TEXT REFERENCES sales_proposals(id), awaited_proposal_id TEXT, awaited_proposal_sha TEXT, consent_json TEXT,
           status TEXT NOT NULL CHECK (status IN ('PLANNED','PREPARING','WAITING_OWNER','PACKAGING','READY','STALE','STOPPED','EXPIRED','CANCELLED','FAILED')),
           stale_reason TEXT NOT NULL DEFAULT '', synthetic INTEGER NOT NULL DEFAULT 1 CHECK (synthetic = 1),
-          created_by TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, version INTEGER NOT NULL DEFAULT 1);
+          created_by TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, version INTEGER NOT NULL DEFAULT 1,
+          plan_id TEXT, status_reason TEXT NOT NULL DEFAULT '', activate_by TEXT);
         CREATE UNIQUE INDEX ux_sales_preparations_root ON sales_preparations(root_plan_id);
         CREATE INDEX idx_sales_preparations_opp ON sales_preparations(opportunity_id, status);
         CREATE TABLE sales_plan_ops (op_key TEXT PRIMARY KEY, root_plan_id TEXT NOT NULL, root_plan_hash TEXT NOT NULL, op TEXT NOT NULL,
@@ -1115,7 +1118,9 @@ export const MIGRATIONS = [
           revision INTEGER NOT NULL, folder TEXT NOT NULL, files_json TEXT NOT NULL DEFAULT '[]', manifest_sha256 TEXT, verification_json TEXT NOT NULL DEFAULT '{}',
           status TEXT NOT NULL CHECK (status IN ('WRITING','READY','STALE','SUPERSEDED','INCOMPLETE')), status_reason TEXT NOT NULL DEFAULT '',
           op_key TEXT NOT NULL UNIQUE, synthetic INTEGER NOT NULL DEFAULT 1 CHECK (synthetic = 1),
-          created_by TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, UNIQUE (opportunity_id, revision));
+          created_by TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+          org_id TEXT, draft_id TEXT, draft_sha TEXT, inputs_json TEXT NOT NULL DEFAULT '{}', inputs_sha TEXT NOT NULL DEFAULT '', ops_plan_id TEXT,
+          UNIQUE (opportunity_id, revision));
         CREATE INDEX idx_sales_dossiers_opp ON sales_dossiers(opportunity_id, status);
       `);
     },

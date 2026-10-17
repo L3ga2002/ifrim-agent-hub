@@ -211,10 +211,14 @@ export function createOpsPlans({ db, bus, clock, settings, trust, voice = null, 
     }
     const consent = { channel: "owner_session", modality, sessionId: s.id, credential: String(s.credentialId || "").slice(0, 10), planHash: p.hash, confirmedAt: now(),
       idempotencyKey: idempotencyKey ? String(idempotencyKey).slice(0, 120) : null, voice: spoken ? spoken.evidence : null, decisions: p.body.decisions.map((d) => d.label) };
-    const authority = authorityOf(p, s.id);
+    // M12 D11 (declared shared-engine fix): the authority's time limit starts at the CONFIRMATION, as policy/proposal-window.mjs states
+    // and as the envelopes do (M10.2 U11). It was computed at the proposal, so a card confirmed late in its display window (24 h under
+    // the local development profile) was born expired and the owner's one confirmation was lost.
+    const expiresAt = new Date(clock().getTime() + (p.body.limits.maxDurationMin + PLAN_LIMITS.slackMin) * 60000).toISOString();
+    const authority = authorityOf({ ...p, expiresAt }, s.id);
     bus.transaction(() => {
       if (spoken && spoken.consume(planId) !== 1) throw new HubError("conflict", "Fraza vocală a fost deja folosită pentru o confirmare");
-      const n = setStatus(planId, "CONFIRMED", `Confirmat (${modality}) în sesiunea ${s.id}`, { consent_json: json(consent), authority_json: json(authority), owner_session_id: s.id }, ["PROPOSED"]);
+      const n = setStatus(planId, "CONFIRMED", `Confirmat (${modality}) în sesiunea ${s.id}`, { consent_json: json(consent), authority_json: json(authority), owner_session_id: s.id, expires_at: expiresAt }, ["PROPOSED"]);
       if (n !== 1) throw new HubError("conflict", "Planul a fost deja confirmat (altă filă sau o confirmare dublă)");
       for (const d of p.body.decisions) if (d.kind === "app.authorize") apps.authorize([d.appId], { sessionId: s.id, via: `plan:${planId}`, actor: "owner" });
       bus.append({ type: "ops.plan.consent", scopeType: "ops_plan", scopeId: planId, source: "owner", payload: { modality, session: s.id, decisions: consent.decisions.length, hash: p.hash.slice(0, 16) } });
