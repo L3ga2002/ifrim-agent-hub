@@ -37,6 +37,7 @@ function ServiceEditor({ service, onClose, onSaved }) {
         <label className="field"><span>Ce include (câte un rând, cel mult {SERVICE_LIMITS.lines})</span><textarea className="textarea" rows={4} value={form.scope} onChange={set("scope")} /></label>
         <label className="field"><span>Ce nu include (câte un rând, cel mult {SERVICE_LIMITS.lines})</span><textarea className="textarea" rows={4} value={form.exclusions} onChange={set("exclusions")} /></label>
       </div>
+      <label className="field"><span>Ce trebuie să primim de la client (câte un rând, cel mult {SERVICE_LIMITS.lines}; în ofertă: „Materiale necesare de la dumneavoastră”)</span><textarea className="textarea" rows={3} value={form.materials} onChange={set("materials")} /></label>
       <label className="field"><span>Etichete (separate prin virgulă)</span><input className="input" value={form.tags} onChange={set("tags")} placeholder={KNOWN_SERVICE_TAGS.join(", ")} /></label>
       <p className="faint small" style={{ margin: 0 }}>Etichetele leagă serviciul de constatările auditului: {KNOWN_SERVICE_TAGS.join(", ")}.{unknownTags.length ? ` Etichete fără efect în audit: ${unknownTags.join(", ")}.` : ""}</p>
       <fieldset className="sales-fieldset">
@@ -89,6 +90,7 @@ export function Services() {
                   {s.description && <div className="sub break">{s.description}</div>}
                   <div className="sub">Preț: <strong>{formatPrice(s.price)}</strong> · Termen: <strong>{formatLeadTime(s.leadTime)}</strong></div>
                   {(s.scope.length > 0 || s.exclusions.length > 0) && <div className="sub break">{s.scope.length ? `Include: ${s.scope.join("; ")}` : ""}{s.scope.length && s.exclusions.length ? " · " : ""}{s.exclusions.length ? `Nu include: ${s.exclusions.join("; ")}` : ""}</div>}
+                  {s.materials.length > 0 && <div className="sub break">De la client: {s.materials.join("; ")}</div>}
                   <div className="chips" style={{ marginTop: 4 }}>{s.tags.map((t) => <span key={t} className="chip neutral">{t}</span>)}{s.synthetic && <SyntheticTag />}</div>
                   <div className="faint small">v{s.version} · {when(s.updatedAt)}</div>
                 </div>

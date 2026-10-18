@@ -316,7 +316,7 @@ export function serviceView(raw = {}) {
   return {
     id: str(pick(raw, "id")), name: str(pick(raw, "name")), description: str(pick(raw, "description")),
     scope: arr(pick(raw, "scope", "scope_json")).map(String), exclusions: arr(pick(raw, "exclusions", "exclusions_json")).map(String),
-    tags: arr(pick(raw, "tags", "tags_json")).map(String),
+    tags: arr(pick(raw, "tags", "tags_json")).map(String), materials: arr(pick(raw, "materials", "materials_json")).map(String),
     price: { status: "NOT_CONFIGURED", ...obj(pick(raw, "price", "price_json")) },
     leadTime: { status: "NOT_CONFIGURED", ...obj(pick(raw, "leadTime", "lead_time", "lead_time_json")) },
     active: toBool(pick(raw, "active")) !== false, synthetic: toBool(pick(raw, "synthetic")) === true, version: Number(pick(raw, "version")) || 1,
@@ -732,7 +732,7 @@ export function serviceToForm(raw) {
   const s = serviceView(raw || {});
   const leadText = s.leadTime.status === "CONFIGURED" ? formatLeadTime(s.leadTime) : "";
   return {
-    name: s.name, description: s.description, scope: s.scope.join("\n"), exclusions: s.exclusions.join("\n"), tags: s.tags.join(", "),
+    name: s.name, description: s.description, scope: s.scope.join("\n"), exclusions: s.exclusions.join("\n"), materials: s.materials.join("\n"), tags: s.tags.join(", "),
     priceStatus: s.price.status === "CONFIGURED" ? "CONFIGURED" : "NOT_CONFIGURED",
     amount: s.price.amount === undefined || s.price.amount === null ? "" : String(s.price.amount).replace(".", ","),
     currency: CURRENCIES.includes(s.price.currency) ? s.price.currency : "RON", unit: s.price.unit || "project",
@@ -769,11 +769,13 @@ export function serviceFormToPayload(form = {}) {
   if (tags.length > L.tags) errors.push(`Cel mult ${L.tags} etichete.`);
   const scope = splitLines(form.scope);
   const exclusions = splitLines(form.exclusions);
-  for (const [label, list] of [["„Ce include”", scope], ["„Ce nu include”", exclusions]]) {
+  // 2.15.5: the materials (what the client provides) are part of the stored service: an edit never drops them.
+  const materials = splitLines(form.materials);
+  for (const [label, list] of [["„Ce include”", scope], ["„Ce nu include”", exclusions], ["„Ce trebuie să primim de la client”", materials]]) {
     if (list.length > L.lines) errors.push(`${label} are cel mult ${L.lines} de rânduri.`);
     if (list.some((line) => line.length > L.lineMax)) errors.push(`Un rând din ${label} are peste ${L.lineMax} de caractere.`);
   }
-  const payload = { name, description, scope, exclusions, tags, price, leadTime, active: form.active !== false };
+  const payload = { name, description, scope, exclusions, materials, tags, price, leadTime, active: form.active !== false };
   return { ok: errors.length === 0, errors, payload };
 }
 

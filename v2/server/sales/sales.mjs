@@ -305,6 +305,17 @@ export function createSales({ db, bus, clock, config, settings }) {
     });
   }
   const services = ({ activeOnly = true } = {}) => db.prepare(`SELECT * FROM sales_services${activeOnly ? " WHERE active = 1" : ""} ORDER BY name`).all().map(rowToService);
+  /**
+   * 2.15.5: the catalog entry an offer is rendered from — the opportunity's own service; for a preparation-bound offer (`bound`) of an
+   * opportunity that names none (the M12 preparation creates it without one), the catalog's ONLY active service (the single-service rule of
+   * renderProposal), never a pick among several. M04 offers keep exactly the opportunity's service. → service | null
+   */
+  function offerService(opp, { bound = false } = {}) {
+    if (opp.serviceId) return rowToService(db.prepare("SELECT * FROM sales_services WHERE id = ?").get(opp.serviceId)) || null;
+    if (!bound) return null;
+    const active = services();
+    return active.length === 1 ? active[0] : null;
+  }
   const emit = (type, scopeId, payload, source = "sales") => bus.append({ type, scopeType: "sales", scopeId, source, payload });
 
   function transition(subjectType, subjectId, from, to, actor, reason, evidence = []) {
@@ -414,7 +425,7 @@ export function createSales({ db, bus, clock, config, settings }) {
     const org = needOrg(opp.orgId);
     const ids = (type, id) => evidenceOf(type, id).filter(usable).map((e) => e.id).sort();
     const audit = db.prepare("SELECT id FROM sales_audits WHERE org_id = ? ORDER BY created_at DESC, rowid DESC LIMIT 1").get(org.id)?.id || null;
-    const svc = opp.serviceId ? rowToService(db.prepare("SELECT * FROM sales_services WHERE id = ?").get(opp.serviceId)) : null;
+    const svc = offerService(opp, { bound: true });
     const q = latestQualification(org.id);
     // Review R3/R8 / R7: the exact qualification row (id + its inputs sha) and the company fields the offer renders are inputs too.
     return { v: 1, briefSha: briefSha || null, orgId: org.id, opportunityId: opp.id, evidence: hashCanonical(ids("org", org.id)), opportunityEvidence: hashCanonical(ids("opportunity", opp.id)),
@@ -1248,6 +1259,9 @@ export function createSales({ db, bus, clock, config, settings }) {
           .run(id, ...row, input.synthetic ? 1 : 0, now(), now());
       }
       emit("sales.service.saved", id, { name, ...auth }, actor);
+      // 2.15.5: the catalog is an input of every preparation-bound offer rendered from it (preparationBasis): the offers whose inputs
+      // changed become STALE with their preparations and dossiers (history kept; the owner continues with one card).
+      invalidateBound(db.prepare("SELECT DISTINCT org_id FROM sales_opportunities").all().map((r) => r.org_id), `catalogul de servicii s-a schimbat (${clip(name, 80)})`);
       return rowToService(db.prepare("SELECT * FROM sales_services WHERE id = ?").get(id));
     });
   }
@@ -1364,7 +1378,8 @@ export function createSales({ db, bus, clock, config, settings }) {
     if (view.suppression) throw new HubError("policy", "Firma e DO_NOT_CONTACT");
     if (basis !== null && (!basis || typeof basis !== "object" || Array.isArray(basis) || edits)) throw new HubError("validation", "Oferta unei pregătiri are baza ei și nu se editează de mână");
     const sheet = getOrg(opp.orgId);
-    const svc = opp.serviceId ? services({ activeOnly: false }).filter((s) => s.id === opp.serviceId) : [];
+    const one = offerService(opp, { bound: basis !== null });
+    const svc = one ? [one] : [];
     const rendered = renderProposal({ org: { ...view.org, contacts: sheet.contacts.filter((c) => c.status === "ACTIVE") }, opportunity: opp, services: svc, evidence: evidenceForTexts(sheet),
       audit: sheet.audits[0]?.result || null, owner: ownerProfile(), ...(brief ? { brief } : {}) });
     let content = { ...rendered, serviceIds: svc.map((s) => `${s.id}@${s.version}`), ...(basis ? { basis } : {}) };

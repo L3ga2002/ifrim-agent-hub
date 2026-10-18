@@ -398,7 +398,7 @@ export function createSalesPlanExecutors({ sales, preparations, ledger, opsPlans
         const then = await opsPlans.buildBody({ kind: DOSSIER_KIND, title: DOSSIER_PLAN_TITLE, steps: dossierSteps({ preparationId }), limits: phaseBLimits() });
         return { title: "Pregătește oferta în ciornă până la „gata de revizuire” (prețuri „De stabilit (neconfigurat)”, fără cifre inventate); aprobarea ei rămâne decizia ta",
           params: { preparationId, then: { stepTitles: then.steps.map((s) => s.title), bodySha: hashCanonical(then), activateWithinMin: ACTIVATE_WITHIN_MIN, decisionsLeft: SALES_DECISIONS_LEFT, never: SALES_NEVER } },
-          ops: [{ op: "sales.proposal.draft" }], observed: ["dovezile și calificarea firmei sintetice", "catalogul tău (gol: prețurile rămân „De stabilit (neconfigurat)”)"], transmitted: [],
+          ops: [{ op: "sales.proposal.draft" }], observed: ["dovezile și calificarea firmei sintetice", "catalogul tău de servicii (un preț sau un termen neconfigurat rămâne „De stabilit (neconfigurat)”)"], transmitted: [],
           outputs: ["oferta în ciornă, gata de revizuirea ta (neaprobată)", "după aprobarea ta: ciorna de contact și dosarul ofertei, fără altă întrebare"] };
       },
       run: async ({ planId, params, authorize, abort }) => {
