@@ -41,10 +41,38 @@ export const DEFAULT_SETTINGS = Object.freeze({
   ownerPrefs: { onlyDecisions: false, quietHours: null, voiceNotifications: false },
   // M06: which envelope switched the Hub from BUILD_SAFE to LIVE_VALIDATION (released when its missions end).
   envelopeModeHold: {},
+  // M10.2: a confirmed plan admits its own bound steps in BUILD_SAFE (envelope-scoped live authority) instead of switching the
+  // Hub to LIVE_VALIDATION. false = the M06–M10 mode hold (rollback path). See owner/envelopes.mjs → liveAuthority.
+  envelopeScopedLive: true,
+  // M10.2 owner decision 3: a same-fingerprint re-attestation of an execution environment may run as an automatic readiness
+  // pre-step AFTER a plan's one confirmation (never at boot, never on a new fingerprint). false = it stays the owner's step.
+  readinessAutoReattest: true,
   // M06: local voice gate (speaker verification before anything is sent). Off until the owner enrols and enables it.
   voiceGate: { enabled: false, strict: true, profileId: null },
   legacyImport: null,
   routingPreferences: {},
+  // M08 Zero-Menu: what opens first — the project cockpit or the big Lega screen ("stage"). A preference, never an authority.
+  startView: "cockpit",
+  // M08 package B3: extra verification commands the owner allowed for the factory (keys of EXTRA_COMMAND_PATTERNS); none by default.
+  factoryExtraCommands: [],
+  // M10.2 owner decision 4: the owner's per-project override of the engineering role defaults ({ [projectId]: { writer: { model,
+  // effort }, reviewer: { model, effort }, setAt, setBy } }). Absent = the role defaults (factory/plan.mjs ROLE_DEFAULT_BINDINGS),
+  // always shown and hashed in the plan card. Written only by factory.defaults.set (owner session, freshly re-authenticated).
+  factoryDefaultBindings: {},
+  // M08 Simulation: the owner's own estimates reused by "ce se întâmplă dacă…" (never invented; empty until the owner saves them).
+  simulationDefaults: {},
+  // M09-A2: billing evidence per provider ({ [provider]: { declaration, reports[], reverify } }); see policy/billing-evidence.mjs.
+  // The legacy billingAttestations stay read-only for rollback.
+  billingEvidence: {},
+  // M09-A2: the random salt of the pseudonymous account identity (HMAC-SHA256, 16 hex). Created at first use; never returned
+  // by the API (/api/settings strips it) and redacted in command logs (the key name matches the secret pattern).
+  billingIdentitySecret: null,
+  // M09 Content Studio policy. Every external effect is OFF by default and is not switched on by the existence of code: live
+  // capture (OBS / screen), live upload to a platform and automatic publication each need their own owner decision.
+  mediaPolicy: { autoPublish: false, liveUpload: false, liveCapture: false, renderConcurrency: 1, diskReserveGb: 15, libraryQuotaGb: 40,
+    interactivePriority: true, transcriptionMedia: true },
+  // M09: pinned media tools ({ ffmpeg: { path, version, sha256, pinnedAt }, ffprobe: {...} }); filled at first verified use.
+  mediaToolPins: {},
 });
 
 export function createSettings(db, bus, clock = () => new Date()) {

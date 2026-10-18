@@ -1,0 +1,6 @@
+{
+  "summary": "Fix parțial (fixture): pe telefon apare eticheta „Ocupat”, dar intervalul ocupat poate fi ales în continuare.",
+  "write": {
+    "public/js/slots-view.mjs": "// View model of the slot grid: what each slot shows and whether it can be chosen. Pure (no DOM), so node:test can check it.\n\n/** What a slot that cannot be chosen says under its hour. */\nconst NOTES = Object.freeze({ booked: \"Ocupat\", past: \"Trecut\" });\n\n/**\n * `slots` are the server's [{ start, time, status }], status \"free\" | \"booked\" | \"past\". Returns one entry per slot, in the\n * same order: { start, time, available, note }. `compact` is the narrow layout (two columns of short cards); otherwise the\n * desktop grid (six columns).\n */\nexport function layoutSlots(slots, { compact = false } = {}) {\n  if (compact) {\n    // Narrow screens: short cards, with the state under the hour.\n    return slots.map((s) => ({ start: s.start, time: s.time, available: s.state !== \"booked\", note: NOTES[s.status] || \"\" }));\n  }\n  // Desktop: the state is written under the hour.\n  return slots.map((s) => ({ start: s.start, time: s.time, available: s.status === \"free\", note: NOTES[s.status] || \"\" }));\n}\n"
+  }
+}

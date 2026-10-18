@@ -1,0 +1,156 @@
+{
+  "verdict": "CHANGES_REQUESTED",
+  "claimedVerdict": "CHANGES_REQUESTED",
+  "summary": "Dovezile Hub furnizate arată că verificările de confidențialitate pică din motivul potrivit, iar controalele trec azi. Testul poate trece după o implementare corectă, dar trebuie completat pentru înregistrări existente, identificarea efectivă în listă și detectarea telefonului reprezentat prin escape-uri JSON.",
+  "findings": [
+    {
+      "severity": "high",
+      "file": "test/hub/telefonul-ramane-obligatoriu-si-e75c25.test.mjs",
+      "area": "AC-1 — înregistrări existente",
+      "observation": "Baza este nouă, seed este false și singura programare verificată este creată prin POST în același test.",
+      "impact": "Nu este verificată cerința explicită privind confidențialitatea înregistrărilor existente.",
+      "evidence": "Liniile 63–69 și 73–77.",
+      "reproduction": "O implementare care ascunde telefonul doar pentru programările noi poate trece, deși expune telefonul înregistrărilor existente."
+    },
+    {
+      "severity": "high",
+      "file": "test/hub/telefonul-ramane-obligatoriu-si-e75c25.test.mjs",
+      "area": "AC-1 și AC-2 — întregul răspuns",
+      "observation": "Corpul este verificat integral, dar numai prin căutarea reprezentărilor textuale exacte ale cheii și telefonului.",
+      "impact": "Escape-urile JSON pot transmite aceeași cheie phone și aceeași valoare fără ca aserțiunile să le detecteze.",
+      "evidence": "Liniile 76–77 și 99–100: body.includes('\"phone\"') și body.includes(PHONE).",
+      "reproduction": "Un răspuns cu cheia \"\\u0070hone\" și valoarea \"\\u0030712 345 678\" trece aceste căutări, dar după parsarea JSON conține phone și telefonul complet."
+    },
+    {
+      "severity": "high",
+      "file": "test/hub/telefonul-ramane-obligatoriu-si-e75c25.test.mjs",
+      "area": "AC-1 și AC-2 — identificarea programării în listă",
+      "observation": "Prezența programării este dedusă din apariția id-ului oriunde în corp, fără verificarea apartenenței la lista de programări.",
+      "impact": "O listă goală însoțită de id într-un câmp auxiliar poate trece testul și poate ascunde o regresie a listei publice.",
+      "evidence": "Liniile 72, 75, 93 și 98.",
+      "reproduction": "Returnarea unui răspuns 200 cu lista goală și id-ul creat într-un câmp auxiliar satisface includes(bookingId), fără să includă programarea în listă."
+    },
+    {
+      "severity": "medium",
+      "file": "test/hub/telefonul-ramane-obligatoriu-si-e75c25.test.mjs",
+      "area": "AC-3 — eroarea pentru Telefon",
+      "observation": "Aserțiunea verifică numai că errors.phone este un șir, inclusiv șirul gol sau doar spații.",
+      "impact": "Serverul poate refuza cererea fără să furnizeze efectiv un mesaj de eroare pentru Telefon.",
+      "evidence": "Linia 124: typeof json.errors.phone === \"string\".",
+      "reproduction": "Un răspuns 400 cu {\"errors\":{\"phone\":\"\"}}, fără salvare în baza de date, trece controlul."
+    }
+  ],
+  "previous": {},
+  "missingContext": [],
+  "valid": true,
+  "problems": [],
+  "cause": null,
+  "criteria": [
+    {
+      "id": "AC-1",
+      "covered": false,
+      "failsForRightReason": true,
+      "canEverPass": true,
+      "contradictsOwner": false,
+      "trivialPassRisk": "high",
+      "plain": "Verifică răspunsul pentru o programare nouă, dar nu verifică programări existente și poate rata telefonul scris cu escape-uri JSON."
+    },
+    {
+      "id": "AC-2",
+      "covered": false,
+      "failsForRightReason": true,
+      "canEverPass": true,
+      "contradictsOwner": false,
+      "trivialPassRisk": "high",
+      "plain": "Verifică separat cei cinci parametri, dar căutarea textuală poate rata telefonul și nu dovedește că programarea este în listă."
+    },
+    {
+      "id": "AC-3",
+      "covered": false,
+      "failsForRightReason": true,
+      "canEverPass": true,
+      "contradictsOwner": false,
+      "trivialPassRisk": "medium",
+      "plain": "Verifică toate cele trei refuzuri și baza de date după fiecare, dar acceptă și un mesaj de eroare gol pentru Telefon."
+    },
+    {
+      "id": "AC-4",
+      "covered": true,
+      "failsForRightReason": true,
+      "canEverPass": true,
+      "contradictsOwner": false,
+      "trivialPassRisk": "low",
+      "plain": "Citește direct din baza aplicației programarea identificată prin id și verifică păstrarea exactă a telefonului trimis."
+    },
+    {
+      "id": "AC-5",
+      "covered": true,
+      "failsForRightReason": true,
+      "canEverPass": true,
+      "contradictsOwner": false,
+      "trivialPassRisk": "low",
+      "plain": "Verifică acceptarea unei programări valide; controlul separat din baza de date dovedește și salvarea acesteia."
+    }
+  ],
+  "gate": [
+    {
+      "id": "AC-1",
+      "why": [
+        "nu e acoperit",
+        "poate fi trecut de o implementare trivială"
+      ]
+    },
+    {
+      "id": "AC-2",
+      "why": [
+        "nu e acoperit",
+        "poate fi trecut de o implementare trivială"
+      ]
+    },
+    {
+      "id": "AC-3",
+      "why": [
+        "nu e acoperit"
+      ]
+    }
+  ],
+  "checks": [
+    {
+      "id": "P75",
+      "nature": "insufficient",
+      "why": "Id-ul găsit oriunde în corp nu dovedește apartenența programării la listă; lipsește și cazul unei înregistrări existente."
+    },
+    {
+      "id": "P76",
+      "nature": "insufficient",
+      "why": "Căutarea textuală exactă ratează cheia phone reprezentată cu escape-uri JSON și nu verifică înregistrări existente."
+    },
+    {
+      "id": "P77",
+      "nature": "insufficient",
+      "why": "Căutarea textuală exactă ratează telefonul reprezentat cu escape-uri JSON și nu verifică telefonul unei înregistrări existente."
+    },
+    {
+      "id": "P98",
+      "nature": "insufficient",
+      "why": "Id-ul poate apărea într-un câmp auxiliar, chiar dacă lista de programări este goală."
+    },
+    {
+      "id": "P99",
+      "nature": "insufficient",
+      "why": "Verificarea fiecărui parametru este utilă, dar cheia phone poate fi transmisă prin escape-uri JSON."
+    },
+    {
+      "id": "P100",
+      "nature": "insufficient",
+      "why": "Verificarea fiecărui parametru este utilă, dar valoarea telefonului poate fi transmisă prin escape-uri JSON."
+    },
+    {
+      "id": "P124",
+      "nature": "insufficient",
+      "why": "Tipul string permite un mesaj gol sau doar spații; trebuie dovedită existența unei erori efective pentru Telefon."
+    }
+  ],
+  "notes": [],
+  "previousChecks": {}
+}

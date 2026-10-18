@@ -117,7 +117,7 @@ test("M02-RT-04 HTTP: state carries simulation flag, recent conversations/result
     const state = (await s.get("/api/state")).json;
     assert.equal(state.simulation, false);
     assert.ok(Array.isArray(state.recentConversations) && Array.isArray(state.recentResults));
-    assert.equal(state.company.roles, 18);
+    assert.equal(state.company.roles, 24); // 18 + the six M09 media roles (creative-director … growth-analyst)
     assert.equal(state.company.departments.filter((d) => d.status === "active").length, 4);
     assert.ok(state.serverTime);
     assert.equal((await s.get("/api/sim")).status, 404);

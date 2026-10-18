@@ -1,17 +1,19 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Search, Square, ShieldCheck, Pause, CircleDot, X, MoreHorizontal, Plus, HardDrive, RefreshCw, WifiOff, Wifi, FlaskConical, Minimize2, FolderGit2, Target, Keyboard, MessageSquare } from "lucide-react";
 import { NAV } from "../nav.js";
-import { useHub, dismissToast, refresh, pushToast, usePref, useResource } from "../store.js";
+import { useHub, dismissToast, refresh, pushToast, usePref, useResource, setState } from "../store.js";
 import { api, fmt, ensureToken, serverInfo, onServerInfo, contractState, UI_BUILD } from "../api.js";
 import { Chip, Dialog, Notice } from "../components/ui.jsx";
 import { ErrorBoundary } from "../components/ErrorBoundary.jsx";
 import { VoiceControl } from "./Voice.jsx";
 import { Lega } from "./Lega.jsx";
 import { Spotlight } from "./Spotlight.jsx";
-import { LegaStage, useStageToggle } from "../screens/stage/LegaStage.jsx";
+import { DesktopBar } from "./DesktopBar.jsx";
+import { useStageToggle } from "../screens/stage/LegaStage.jsx";
 import { Core3D } from "../components/core/Core3D.jsx";
 import { deriveCoreState, CORE_VISUALS } from "../lib/coreState.js";
-import { appShortcutKey } from "../lib/uiLogic.js";
+import { appShortcutKey, approvalToastTarget } from "../lib/uiLogic.js";
+import { sendLegaCommand } from "../lib/legaLevels.js";
 
 /** Stop All: available in the top bar, the mini assistant and the mobile nav; shows only backend-confirmed results. */
 export function StopAllButton({ compact = false, className = "" }) {
@@ -62,11 +64,20 @@ function ConnectionChip() {
 
 function StatusChips() {
   const hub = useHub((s) => s.hub);
+  const legaStatus = useHub((s) => s.legaStatus || "off");
+  const legaAuthority = useHub((s) => s.legaAuthority || null);
   if (!hub) return null;
   const gate = hub.executionGate?.status;
+  // M10: while Lega's voice runs (connecting/active only, not while preparing or stopping), the chip says so; it names the owner
+  // session only for a session admitted from it (the old path is a hand grant). Runs stay in the shown mode either way.
+  const legaOn = legaStatus === "connecting" || legaStatus === "active";
+  const legaTitle = legaAuthority === "owner_session" ? `Lega rulează din sesiunea ta (o sesiune vocală); execuțiile rămân în ${hub.mode}` : `Lega rulează cu un grant „Lega (voce)”; execuțiile rămân în ${hub.mode}`;
+  // M10.2 (U15): plans in force run their own steps live while the Hub stays in BUILD_SAFE ("BUILD_SAFE + 1 plan activ").
+  const plans = (hub.liveScopes || []).filter((s) => s.scoped !== false).length;
+  const plansText = plans ? ` + ${plans} ${plans === 1 ? "plan activ" : "planuri active"}` : "";
   return (
     <div className="row status-chips">
-      <Chip tone={hub.mode === "BUILD_SAFE" ? "info" : "warn"} icon={CircleDot} title="Modul de lucru al Hub-ului">{hub.mode}</Chip>
+      <Chip tone={hub.mode === "BUILD_SAFE" ? "info" : "warn"} icon={CircleDot} title={legaOn ? legaTitle : plans ? "Modul Hub-ului; doar pașii planurilor confirmate rulează live, în limitele lor" : "Modul de lucru al Hub-ului"}>{hub.mode}{plansText}{legaOn ? " · Lega activă" : ""}</Chip>
       <span className="hide-xs"><Chip tone={gate === "open" ? "ok" : "neutral"} icon={gate === "open" ? ShieldCheck : Pause} title={hub.executionGate?.reason}>poartă {gate === "open" ? "deschisă" : "suspendată"}</Chip></span>
       <ConnectionChip />
     </div>
@@ -159,7 +170,12 @@ function Toasts({ go }) {
           <div className="grow">
             <strong>{t.text}{t.count > 1 ? ` ×${t.count}` : ""}</strong>
             {t.event?.payload?.message && <div className="muted ellipsis">{t.event.payload.message}</div>}
-            {t.level === "approval" && <button className="btn sm approve" style={{ marginTop: 8 }} onClick={() => { go("/approvals"); dismissToast(t.id); }}>Vezi aprobările</button>}
+            {/* M10.2 (U15): Lega's own proposals open the Lega panel (their card is there); every other approval keeps the Approvals list. */}
+            {t.level === "approval" && (approvalToastTarget(t.event) === "lega"
+              ? <button className="btn sm approve" style={{ marginTop: 8 }} onClick={() => { sendLegaCommand("open"); dismissToast(t.id); }}>Vezi propunerea</button>
+              : <button className="btn sm approve" style={{ marginTop: 8 }} onClick={() => { go("/approvals"); dismissToast(t.id); }}>Vezi aprobările</button>)}
+            {/* 2.12.1 (UI-04): a toast that leads to the cockpit can also close the full-screen stage, which would cover what it points to. */}
+            {t.event?.openPath && <button className="btn sm" style={{ marginTop: 8 }} onClick={() => { if (t.event.closeStage === true) setState({ stageOpen: false }); go(t.event.openPath); dismissToast(t.id); }}>{t.event.openLabel || "Deschide"}</button>}
           </div>
           <button className="btn sm icon ghost" onClick={() => dismissToast(t.id)} aria-label="Închide notificarea"><X size={14} /></button>
         </div>
@@ -269,7 +285,20 @@ export function Shell({ route, go, children }) {
   // The floating run indicator must never cover the end of a page: main gets extra bottom room while it shows.
   const activeRunCount = useHub((s) => s.hub?.activeRuns?.length || 0);
   const mainRef = useRef(null);
-  const [stageOpen, setStageOpen] = useStageToggle();
+  const [stageOpen] = useStageToggle();
+  // One L3ga screen (2026-10-18): „Ecran complet” is the Lega screen itself without these bars, never a modal over another screen. Asked
+  // for anywhere else (Alt+J, the start view, the Control Room button, the voice intent), it opens #/lega; the screen keeps its state.
+  // Leaving #/lega (a link, a toast, „Deschide Compania”) ends the full-screen view, so no other screen ever bounces back to it.
+  const stageSeen = useRef({ open: false, route: route.name });
+  useEffect(() => {
+    const prev = stageSeen.current;
+    stageSeen.current = { open: stageOpen, route: route.name };
+    if (stageOpen && !prev.open && route.name !== "lega") go("/lega");
+    else if (stageOpen && prev.open && prev.route === "lega" && route.name !== "lega") setState({ stageOpen: false });
+  }, [stageOpen, route.name, go]);
+  const immersive = stageOpen && route.name === "lega" && route.id !== "setup";
+  // The setup page is not the Lega screen: the full-screen view ends there (going back never jumps into it unasked).
+  useEffect(() => { if (stageOpen && route.name === "lega" && route.id === "setup") setState({ stageOpen: false }); }, [stageOpen, route.name, route.id]);
   useEffect(() => {
     const onKey = (e) => {
       if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "k") { e.preventDefault(); setPalette(true); }
@@ -284,7 +313,7 @@ export function Shell({ route, go, children }) {
   const current = route.name === "focus" ? "conversations" : route.name;
   const mobileNav = ["lega", "missions", "approvals"];
   return (
-    <div className={`app ${simulation ? "is-sim" : ""}`}>
+    <div className={`app ${simulation ? "is-sim" : ""}${immersive ? " is-immersive" : ""}`}>
       <a className="skip-link" href="#main" onClick={(e) => { e.preventDefault(); mainRef.current?.focus(); }}>Sari la conținut</a>
       {simulation && <SimBanner />}
       <HubStatusBanner />
@@ -307,8 +336,9 @@ export function Shell({ route, go, children }) {
           </a>
         ))}
       </nav>
-      {stageOpen && <ErrorBoundary label="stage" fallback={() => null}><LegaStage onClose={() => setStageOpen(false)} go={go} /></ErrorBoundary>}
       <ErrorBoundary label="spotlight" fallback={() => null}><Spotlight /></ErrorBoundary>
+      {/* M10: the Desktop Operator's permanent activity bar (Stop / Preiau eu always one click away while it works). */}
+      <ErrorBoundary label="desktop-bar" fallback={() => null}><DesktopBar go={go} /></ErrorBoundary>
       <main className={`main${activeRunCount ? " has-indicator" : ""}`} id="main" tabIndex={-1} ref={mainRef}>
         {/* A failing screen never takes the shell down: navigation, Stop All and the connection state keep working. */}
         <ErrorBoundary label="screen" resetKey={`${route.name}:${route.id || ""}`} fallback={(error, reset) => (

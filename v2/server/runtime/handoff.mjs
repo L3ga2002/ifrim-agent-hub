@@ -10,6 +10,7 @@ import { redactDeep } from "../security/redact.mjs";
 import { isSecretLikeName } from "../security/paths.mjs";
 import { assertTransition } from "./lifecycles.mjs";
 import { workspaceResource, SURFACE_BY_PROVIDER } from "./runs.mjs";
+import { ACTIVE_STAGES } from "../factory/factory.mjs";
 
 export const HANDOFF_SCHEMA_VERSION = 1;
 export const HANDOFF_STEPS = Object.freeze(["frozen", "safe_point", "reconciled", "checkpointed", "packaged", "writer_transferred", "ready", "acknowledged", "continued"]);
@@ -45,8 +46,9 @@ export function createHandoffs({ db, bus, clock, conversations, missions, projec
     const fromProvider = conversation.writerProvider || db.prepare("SELECT provider FROM agent_runs WHERE conversation_id = ? ORDER BY created_at DESC LIMIT 1").get(conversationId)?.provider || "none";
     if (fromProvider === toProvider) throw new HubError("validation", `${toProvider} already holds this conversation`);
     // A Software Factory mission drives its own writer and reviewer; a manual handoff while it is active would mean two writers.
+    // The factory's own set (M11 L5: never a copied list, so the step-0 stages are covered the day they become active).
     const factoryMission = factoryMissionOf(conversation);
-    if (factoryMission && ["BASELINE", "IMPLEMENTING", "CHECKING", "REVIEWING", "REPAIRING", "QA", "PREVIEW", "CANCEL_REQUESTED"].includes(factoryMission.stage)) {
+    if (factoryMission && ACTIVE_STAGES.has(factoryMission.stage)) {
       throw new HubError("conflict", `Misiunea Software Factory a acestei conversații e în etapa ${factoryMission.stage}; pune-o pe pauză sau oprește-o înainte de handoff`);
     }
     const id = newId("hof");
@@ -124,10 +126,20 @@ export function createHandoffs({ db, bus, clock, conversations, missions, projec
     return get(id);
   }
 
-  /** The factory mission of a conversation (its writer or review conversation), or null. */
+  /**
+   * The factory mission of a conversation, or null: its writer or review conversation, or (M11 L5) one of the two step-0
+   * conversations recorded in a spec's protected_json (the test author's and the test reviewer's). When several missions share
+   * the conversation, an active one is returned first, so an older finished mission never hides a running one.
+   */
   function factoryMissionOf(conversation) {
     if (!factory) return null;
-    const row = db.prepare("SELECT fm.mission_id, fm.stage FROM factory_missions fm JOIN missions m ON m.id = fm.mission_id WHERE m.conversation_id = ? OR fm.review_conversation_id = ?").get(conversation.id, conversation.id);
+    const active = [...ACTIVE_STAGES];
+    const row = db.prepare(`SELECT fm.mission_id, fm.stage FROM factory_missions fm JOIN missions m ON m.id = fm.mission_id
+      WHERE m.conversation_id = ? OR fm.review_conversation_id = ?
+        OR EXISTS (SELECT 1 FROM factory_specs fs WHERE fs.mission_id = fm.mission_id
+          AND (json_extract(fs.protected_json, '$.authoring.authorConversationId') = ? OR json_extract(fs.protected_json, '$.authoring.testReviewConversationId') = ?))
+      ORDER BY CASE WHEN fm.stage IN (${active.map(() => "?").join(",")}) THEN 0 ELSE 1 END, fm.updated_at DESC LIMIT 1`)
+      .get(conversation.id, conversation.id, conversation.id, conversation.id, ...active);
     return row ? { missionId: row.mission_id, stage: row.stage } : null;
   }
 
@@ -137,7 +149,8 @@ export function createHandoffs({ db, bus, clock, conversations, missions, projec
     const missionTasks = mission ? missions.tasks(mission.id) : [];
     const lastRun = db.prepare("SELECT * FROM agent_runs WHERE conversation_id = ? AND provider = ? ORDER BY created_at DESC LIMIT 1").get(conversation.id, handoff.fromProvider);
     const messageRange = db.prepare("SELECT MIN(position) AS first, MAX(position) AS last, COUNT(*) AS count FROM messages WHERE conversation_id = ?").get(conversation.id);
-    const tests = db.prepare("SELECT tool, status, result_json, finished_at FROM tool_calls WHERE tool LIKE 'process.test%' ORDER BY started_at DESC LIMIT 10").all()
+    // Only this project's test runs (the project is recorded with each call; an older call without it is not attributed to any project).
+    const tests = db.prepare("SELECT tool, status, result_json, finished_at FROM tool_calls WHERE tool LIKE 'process.test%' AND json_extract(args_json, '$.projectId') = ? ORDER BY started_at DESC LIMIT 10").all(project.id)
       .map((t) => ({ tool: t.tool, status: t.status, finishedAt: t.finished_at, summary: parse(t.result_json, {}).summary || null }));
     const latestUser = db.prepare("SELECT content FROM messages WHERE conversation_id = ? AND role = 'user' ORDER BY position DESC LIMIT 1").get(conversation.id);
     const pkg = {

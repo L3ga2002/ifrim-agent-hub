@@ -1,0 +1,8 @@
+{
+  "name": "factory-booking-demo",
+  "private": true,
+  "type": "module",
+  "description": "Fixture Software Factory (Demo Livrare): programări pentru un atelier fictiv de detailing. Date sintetice, fără rețea, fără servicii externe, fără dependențe.",
+  "engines": { "node": ">=22.13" },
+  "scripts": { "test": "node --test", "start": "node server.js" }
+}

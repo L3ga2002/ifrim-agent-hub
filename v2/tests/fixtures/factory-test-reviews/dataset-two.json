@@ -1,0 +1,11 @@
+{
+  "verdict": "CHANGES_REQUESTED",
+  "summary": "Două observații sintetice verifică transportul codurilor stabile între cicluri.",
+  "criteria": "ALL",
+  "criterion": { "covered": false, "failsForRightReason": true, "canEverPass": true, "contradictsOwner": false, "trivialPassRisk": "low", "plain": "Completarea trebuie să clasifice observațiile sintetice ale verificatorului." },
+  "findings": [
+    { "severity": "high", "file": "test/hub/privacy.test.mjs", "area": "AC-1", "observation": "Prima observație sintetică pentru transportul codului.", "impact": "Codul trebuie păstrat în completare.", "evidence": "DATE MARTOR: comparație exactă", "reproduction": "Verifică lista de completări a următorului ciclu." },
+    { "severity": "medium", "file": "test/hub/privacy.test.mjs", "area": "AC-2", "observation": "A doua observație sintetică pentru transportul codului.", "impact": "Clasificarea trebuie făcută după același cod.", "evidence": "ID API: a doua creare", "reproduction": "Verifică findings deschise în următorul review." }
+  ],
+  "missingContext": []
+}

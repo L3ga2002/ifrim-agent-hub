@@ -1,0 +1,175 @@
+# Etapa „Închiderea livrării §25: afirmații, dovezi și artefacte corecte” (2026-10-15 21:50 → 2026-10-16 02:45 UTC)
+
+Promptul proprietarului: thread-ul „Afirmații și dovezi corecte §25”, 2026-10-15 21:50 UTC. Decizii: reparăm asocierea afirmațiilor cu
+specificația și dovezile; corectăm prin versiuni noi rezumatul și clipurile livrării existente; păstrăm fluxul pasului 0; documentăm
+separat simplificarea autorului; M12 rămâne DRAFT.
+
+**Rezultat pe scurt.** Codul 2.14.17-m11 (contract 13 aditiv, schema 12, fără migrare) leagă fiecare afirmație afișată clientului de
+criteriile specificației aprobate prin amprente canonice de conținut și o verifică pe dovezile pachetului livrării, pe metodă; prezentarea
+se îngheață în șablon; o corectură explicită și versionată (`delivery.correct`) refilmează și reface clipurile și rezumatul livrării
+§25. Trecut prin poarta finală și îmbinat (`cfc58a7`). Upgrade-ul gestionat și push-ul au fost refuzate agentului de stratul de
+permisiuni: comanda pentru proprietar e în §9. Cardul de corectură apare singur după upgrade; confirmarea lui e a proprietarului.
+
+## 1. Baseline (21:50–22:05 UTC)
+- `v2-milestone-01` = `bedda1d` (local = origin); live `2.14.16-m11`, contract 13, schema 12, `boot_mv9zgg11_ebe5510cca`, BUILD_SAFE.
+- `dlv_mva09x21_b0b0cbfb2a` READY; pachetul `bnd_mva0hc23_b3d65a8da9` READY_FOR_OWNER_ACCEPTANCE (sha `43ad3531…`, recalculat = stocat);
+  specificația aprobată v1 `a69b8e9f…` (hash recalculat = stocat); rezumatul v1 neaprobat; clipurile v1 cu aprobarea creativă PENDING.
+- Clona `C:\Users\mihai\hub-rc`, ramura `claude/project-thread-98qmet` din `bedda1d`. Cele 20 de fișiere ale proprietarului: neatinse.
+
+## 2. Roluri
+Claude (Opus, această sesiune): coordonare, specificații (`C:\Users\mihai\s25-claims\SPEC_2.14.17_{A..F}.md`), verificare, integrare.
+Codex (`codex exec`, gpt-6-astra, efort high, workspace-write, pornit detașat prin WMI cu node de sistem): 6 runde de implementare.
+Review independent Claude: 3 workflow-uri (recenzori doar-citire, un sceptic pe constatare, critic de completitudine). Investigația
+inițială: 6 cititori + critic (rapoarte `C:\Users\mihai\s25-claims\inv-*.txt`).
+
+## 3. Ce s-a găsit
+- **Cauza citărilor greșite:** textele clipului și ale rezumatului erau condiționate de ID-urile specificației INIȚIALE a fixture-ului
+  (`booking-demo-def.mjs`), iar executorii recitreau fixture-ul curent la rulare (`executors.mjs blockOf`, `delivery.mjs renderDocument`).
+  QA factual verifica doar existența afirmației. Exemple: „Corectura a fost verificată de un reviewer independent. (verificat: AC-4)” cu
+  AC-4 = „telefon salvat exact”; clipul „AC-1 + AC-6: interval ocupat → indisponibil (390 px)” cu AC-1 = lista publică, AC-6 = preview.
+- **Defect nou, în filmare:** ambele capturi au tastat telefonul de două ori („0700 123 4560700 123 456”, verificat pe cadrele
+  `demo-16x9-v1.mp4`; sesiunile `mcs_mva0hcmt`, `mcs_mva0hxjh`, pasul 20 HOLD_POSTCONDITION_FAILED). Cauza: compunerea criteriilor nu era
+  idempotentă peste două generații de revizie (câmp obligatoriu, apoi confidențialitate), deci AC-7/AC-8/AC-10 au perechea
+  etichetă+completare de două ori; E2E înlocuiește valoarea, captura o adăuga. Toate cele 8 specificații hide_public din 10-10 au dublura.
+  Corectura trebuie deci să refilmeze (capturile nu sunt valide).
+- Word/PDF și campania citează corect criteriile noi, dar numesc clipurile v1. Linkul „Deschide livrarea care o înlocuiește” arăta cel mai
+  nou copil, indiferent de stare.
+
+## 4. Cod: 2.14.17-m11 (`ca8b42e` A, `bb8b6c6` B, `c190a88` C, `112764c` D, `2d52350` E, `e73b9d6` F, `b1db203` teste; îmbinat `cfc58a7`)
+- **Amprenta criteriului** (`v2/server/media/claims.mjs`): sha256 canonic peste metodă, text normalizat, `testRef`/`kind`/`guard`/
+  `expectFailure` (test), pașii exacți (e2e), comanda de preview; FĂRĂ id și `origin`. O renumerotare păstrează amprenta; orice schimbare de
+  sens sau de metodă o schimbă. **Dovada pe metodă** (`criterionProof`): sha-ul manifestului = al pachetului livrării, sha-ul specificației,
+  status exact (PASS_EVIDENCE / PASS_REVIEW), dovezi nestale pe change set-ul pachetului, QA cu comanda testului protejat și lanțul testului
+  scris de Hub, e2e cu pașii și comanda `e2e <id>`, review de cod (nu review-ul testului de la pasul 0).
+- **Prezentări curate** (`booking-demo-def.mjs`, `delivery/presentation.mjs`): `booking-mobile-fix` pentru specificația proprie a
+  fixture-ului (ieșire identică byte cu byte cu 2.14.16) și `phone-privacy` pentru specificația §25 (amprente fixate, recalculate de teste
+  din copia exactă `v2/tests/fixtures/s25-spec-a69b8e9f.json`). Rezolvare numai prin amprentă: asociere ambiguă, criteriu lipsă sau probă
+  insuficientă → afirmația NU se afișează și motivul apare în „Ce nu putem afirma”. Fără model, fără potriviri aproximative. Specificații
+  necuratoriate → texte generate legate prin construcție de criteriile capturilor.
+- **Înghețare:** prezentarea rezolvată intră în șablon la PLANNED; executorii și rezumatul nu mai citesc fixture-ul; șabloanele vechi
+  primesc prezentarea generată din specificația lor aprobată (calculată la propunere, nu la execuție; planurile rulează exact parametrii
+  hash-uiți).
+- **QA factual** pe text: elementele de text din IR poartă `claimIds` (câmp opțional, fără valoare implicită: hash-urile versiunilor
+  stocate neschimbate); afirmațiile au dovezi `criterion` (specSha#id + amprentă), `display` (sha-ul fiecărui text afișat: ambele tonuri și
+  suprascrierile verticalei), dovezile reale pe tip; coduri noi cu timecode (TEXT_CLAIM_MISSING, CLAIM_CRITERIA_MISMATCH,
+  CLAIM_CRITERION_CHANGED, CLAIM_CRITERION_NOT_PASS, CLAIM_TEXT_UNBOUND, …), `QA_VERSION` 2; `summaryFactCheck` refuză orice citare
+  nelegată; un FAIL factual oprește exportul.
+- **Corectura `delivery.correct`** (`delivery/correction.mjs`): audit (texte, rezumat, capturi), înregistrare imutabilă cu sha, card
+  propus de Hub (fără efect, fără autoritate; numai proprietarul confirmă), 13 pași (prepare, preview, refilmare desktop + telefon,
+  montaj nou ca versiune nouă în același proiect de editare, randare, verticală, export v2, rezumat v2 pe bazele „claims” + „media” cu
+  secțiunile proprietarului păstrate și marcate „de revăzut”, Word/campanie păstrate prin dovadă de reconstrucție sau scrise cu nume v2,
+  manifest-v2 cu CURRENT/SUPERSEDED, finish). APPLIED numai la final; orice oprire după pornire → NEEDS_OWNER cu card de continuare.
+- **Reparații punctuale:** compunerea câmpului idempotentă (și perechile moștenite dublate restrânse), captura nu mai filmează a doua
+  completare identică și golește câmpul înainte de tastare doar dacă are valoare, criteriile preview/e2e moștenite nu se mai pierd
+  (`slice(0,4)`), linkul de înlocuire = cel mai nou descendent valid (READY / în lucru; niciodată EXPIRED/CANCELLED/PLANNED), statusul
+  livrării verificat și pentru planurile de revizie, `displayedSha` la editarea rezumatului, fraza vorbită a Legăi din prezentare.
+
+## 5. Review-uri și reparații
+| Review | Agenți | Confirmate | Reparate în |
+|---|---|---|---|
+| Partea A | 16 | 3 minore + 1 critic + 1 al coordonatorului (suprascrierile vechi substituite la execuție = alt conținut decât hash-ul cardului) | C |
+| Partea B | 25 | 12 + critic (blocare NEEDS_OWNER după un eșec târziu; anularea unui card nepornit retrograda livrarea; supersede global) | D |
+| Final (C+D, upgrade pe copia datelor live, artefacte) | 11 | 7 (blocare după un card de continuare expirat; reverificarea periodică eliminată din greșeală; formulări) | F |
+Runda E: formulări din proba pe datele live (problema citează cerințele, nu „verificat”; „Cum funcționează” cu o singură linie de dovadă).
+
+## 6. Poarta finală (pe `e73b9d6` + `b1db203`, 01:03–02:35 UTC, CPU 54–99 %)
+| Comandă | Rezultat |
+|---|---|
+| `npm run build` | 0 |
+| `npm run build:v2` | 0 |
+| `npm run test:v2` | 2204 teste: 2200 PASS, 2 FAIL numai de test (INT-05 fixa versiunea 2.14.16; stub-ul M11-PF-01 fără `effectiveTemplate`) → reparate în `b1db203`, rerulate singure 5/5 și 3/3; 2 SKIP (T25 privilegiu symlink; M09-SB-01 fără build-ul Studio în clonă → construit și rerulat singur 1/1); 0 anulate |
+| `npm run test` (V1, folderul Hub; cod V1 identic cu `bedda1d`) | 552: 551 PASS, 0 FAIL, 1 SKIP (symlink) |
+| procese rămase create de poartă | 0 |
+
+## 7. Probă pe o copie a datelor live (fără efect; `correction-dry-run.mjs` pe `VACUUM INTO` + `v2-media`, cod final)
+- 21 de texte afectate (30 de constatări): hook / desktop / mobil în 16:9 și 9:16, problema, 4 rânduri „Ce demonstrăm”, 4 „Cum
+  funcționează”, 3 „Beneficii”, ambele capturi (CAPTURE_STEPS_OUTDATED: pasul 13 completare repetată; CAPTURE_POSTCONDITION_FAILED).
+- Card: 13 pași (prepare, preview, captură desktop, captură telefon, montaj, randare 16:9, verticală, export, rezumat, Word, campanie,
+  index, finish), refilmare pentru ambele roluri; textele noi și rezumatul previzualizat sunt în raportul final (§9 al thread-ului).
+  Dovada: `C:\Users\mihai\s25-claims\dryrun-f.json`.
+
+## 8. Integrare și release
+- Backup verificat înainte de îmbinare: `bkp_mvacxszx_e1d7098238` (2026-10-16 02:37:37Z, baza de date integrity ok).
+- Îmbinare: `cfc58a7` (merge --no-ff) pe `v2-milestone-01`; arborele = cel trecut prin poartă (`git diff b1db203 cfc58a7` gol).
+- Revenire verificată: `git revert -m 1 cfc58a7` redă exact arborele `bedda1d` (verificat într-o clonă); plus
+  `node v2/scripts/upgrade.mjs --apply`, sau restaurarea backup-ului. După ce corectura rulează, versiunile noi de montaj (cu `claimIds`) nu
+  mai pot fi citite de 2.14.16: atunci revenirea se face prin backup sau printr-o reparație înainte.
+- **Refuzate agentului:** upgrade-ul gestionat („Permission for this action was denied by the Claude Code auto mode classifier. Reason:
+  [Production Deploy].”) și push-ul („Permission to use Bash with command … git push -u origin claude/project-thread-98qmet 2>&1 has been
+  denied.”). Proprietarul le rulează cu `C:\Users\mihai\s25-claims\owner-release.cmd`.
+- Live rămâne `2.14.16-m11` până la acea comandă; arborele de lucru are deja 2.14.17: o repornire a PC-ului l-ar porni prin autostart fără
+  upgrade gestionat (același risc ca în etapele anterioare).
+
+## 9. După upgrade (al proprietarului)
+- Hub-ul propune singur cardul „Corectură afirmații (clip + rezumat)” pentru `dlv_mva09x21_b0b0cbfb2a` (o dată pe versiune; vizibil în
+  camera livrării și în „Deciziile mele”); confirmarea e a proprietarului (Windows Hello). Rezultate așteptate: `demo-16x9-v2.mp4`,
+  `demo-9x16-v2.mp4`, `rezumat-v2.md/.html`, `Prezentare demo v2.docx` + PDF și `Campanie v2` (sau păstrate prin dovadă), `manifest-v2.json`,
+  `README-v2.md`; versiunile v1 rămân neschimbate; aprobările creative și a rezumatului se dau din nou; software-ul, pachetul și
+  specificația rămân neatinse.
+
+## 10. 2026-10-16 dimineața: release-ul 2.14.17 și livrarea STALE → 2.14.18
+- 06:38 UTC proprietarul a rulat `owner-release.cmd`: upgrade `upg_mvalk291` DONE (live `2.14.17-m11`, contract 13, `boot_mvalk5qy`),
+  push confirmat (`v2-milestone-01` = `cb1ad32`, ramura = `b1db203`).
+- Cardul de corectură nu a apărut: `dlv_mva09x21_b0b0cbfb2a` era STALE de la 00:50:49 UTC („fișiere schimbate:
+  .ifrim-hub/retired/mis_mv2ql0fp_ee35f8071e/journal.json”).
+- **Cauza (defect Hub, pre-existent):** la fiecare pornire, recuperarea Fabricii reverifică misiunea finală `mis_mv2ql0fp` (10-10), al cărei
+  test istoric fusese retras și restaurat; misiunea §25 l-a retras legitim din nou pe 10-15, deci originalul lipsește, iar recuperarea
+  rescria jurnalul vechii misiuni ca RESTORE_INCOMPLETE. Fișierul e în proiectul livrării și nu era recunoscut ca scris de Hub, deci
+  verificarea la 10 minute marca livrarea STALE. Pornirea de la upgrade (06:38:41) a făcut același lucru.
+- **Declanșatorul (greșeala mea de instrucțiuni):** la 00:48:02 UTC un agent al review-ului final (`find:upgrade`) a pornit codul Hub-ului
+  peste o COPIE a bazei de date; căile proiectelor din copie sunt absolute și duc la folderele reale, așa că recuperarea a scris jurnalul
+  în proiectul demo real. Scanare a celor 31 de foldere de proiect pentru fișiere modificate în 00:43–00:53 UTC: niciun alt fișier.
+  Software-ul livrării nu a fost atins. Regulă nouă: niciun agent nu construiește Hub-ul / Fabrica peste date reale sau copii ale lor.
+- **2.14.18-m11** (`4ce54a7` + `09f1364`, contract 13, schema 12): o retragere ulterioară legitimă (misiune APPROVED, jurnal MOVED,
+  element înregistrat, copie retrasă cu același sha) explică originalul lipsă; un jurnal RESTORED nu mai e rescris; un jurnal rescris
+  greșit ca RESTORE_INCOMPLETE e reparat la pornire în RESTORED, cu istoric, atribuire și eveniment `factory.retire_restored` (cu sha),
+  ceea ce declanșează reconcilierea auditată existentă (STALE → READY); orice problemă reală păstrează refuzul. Review independent
+  (6 agenți): 1 constatare medie (reconcilierea DB sărită la „already_restored”) reparată în `09f1364`. Datele live corespund exact
+  cazului reparat (citite doar în SQL, fără a porni nimic).
+- Poarta pe `09f1364` (07:10–08:46 UTC, CPU 48–77 %): build 0, build:v2 0, `test:v2` 2239 teste — 2238 PASS, 0 FAIL, 0 anulate, 1 SKIP
+  (T25, privilegiu symlink); V1 552 — 551 PASS, 1 SKIP (symlink); procesele noi din timpul porții erau ale aplicației Codex desktop, niciunul al
+  porții. Backup verificat `bkp_mvaq511v_2b957e0eff` (08:47 UTC); îmbinare `3e887c4`.
+- Upgrade-ul și push-ul rămân ale proprietarului (refuzate agentului): `C:\Users\mihai\s25-claims\owner-release-2.cmd`. La pornirea 2.14.18,
+  recuperarea repară jurnalul, reconcilierea readuce `dlv_mva09x21` la READY, iar Hub-ul propune cardul de corectură (o dată pe versiune).
+
+## 11. Release 2.14.18 și corectura live (09:35–09:55 UTC)
+- 09:35 UTC proprietarul a rulat `owner-release-2.cmd`: `upg_mvarv97r` DONE (2.14.17 → 2.14.18, `boot_mvarvdrq`), push confirmat
+  (`v2-milestone-01` = `37e4222`, ramura = `09f1364`). La pornire: `factory.retire_restored` (jurnalul `mis_mv2ql0fp` reparat, 09:35:38),
+  `delivery.stale_reconciled` pentru `dlv_mva09x21` (dovadă: calea jurnalului cu proveniența `hub_retire_journal`) → READY; apoi Hub-ul a
+  propus cardul `opp_mvarvq2w_d8aaea73a9` (`delivery.correct`, 13 pași, `correctionSha` 7cf60463… = cel din proba pe copia datelor live).
+- 09:43:59 UTC proprietarul a confirmat cardul (sesiunea de proprietar). 09:44–09:48 UTC: 13/13 pași DONE, revizia `drv_mvarvq2j_53ee1bd342`
+  APPLIED, livrarea READY. Fără model, writer, autor sau dispatch (0 rânduri noi în `agent_runs` / `factory_dispatches` după 09:35).
+- Versiuni noi (în același folder de export, v1 neatinse, sha verificate): `demo-16x9-v2.mp4` (`1bf20cd4…`, 37,4 s), `demo-9x16-v2.mp4`
+  (`2e87269d…`), `rezumat-v2.md/.html` (`43583fac…` / `822ac825…`, document v2 `ddoc_mvasas01_9f93f7dc42`, `basis.factual` PASS),
+  `Prezentare demo v2.docx` + PDF, `Campanie v2/`, `manifest-v2.json` (32 de fișiere, sha = disc), `README-v2.md`; registrul Excel păstrat
+  prin dovadă (`9ce060d8…`). Capturi noi `mav_mvas8wjt…` (desktop) și `mav_mvas9evu…` (telefon): telefonul tastat o singură dată (cadre
+  verificate). Pachetul `bnd_mva0hc23` (`43ad3531…`), specificația `a69b8e9f…` și snapshot-ul `696cb23e…` neschimbate.
+- Afirmații (6 SUPPORTED, `ccl_mvas9f0*`): hook AC-1/AC-2/AC-10 (`evd_mva0h3vg`, `evd_mva0hc1f`), desktop AC-8 (`evd_mva0h7ek`), mobil AC-7
+  (`evd_mva0h6ko`), CTA fără criteriu; amprentele recalculate independent = cele fixate. QA factual PASS pe master
+  (`mqr_mvas9wq0…`) și verticală, 4/4 texte legate, 0 nelegate; afișările ambelor tonuri și ale suprascrierilor 9:16 au sha-uri înregistrate.
+- QA media (praguri neschimbate): 16:9 WARN — 6 segmente înghețate nejustificate (0,30–3,50 s; 4,23–6,13; 6,43–8,07; 12,53–13,77;
+  28,47–32,50; 32,63–34,90) + drepturi (platformă nespecificată); 9:16 WARN — 7 segmente (0,30–3,43; 4,23–6,13; 6,13–8,43; 10,40–13,77;
+  28,47–29,57; 29,57–30,83; 33,87–34,90) + layout (textul desktop pe 4 rânduri, 3,93–8,80 s). v1: 16:9 7+1, 9:16 5. Două înghețări provin din
+  pauze respinse la limită (HOLD_LATENCY_EXCEEDED cu 13 ms / 40 ms).
+- Audit independent doar-citire (4 agenți) — de decis de proprietar / urmări: în 9:16 segmentul desktop apare ca o bandă îngustă (~15 %
+  din înălțime) cu marginea stângă tăiată (QA nu o prinde); textele tehnice „…programare confirmată” apar înaintea cadrului cu confirmarea
+  (desktop 3,9–8,8 s vs 13,8 s; mobil 21,9–26,3 s vs ~33–36 s); tonul „both” arată ID-urile AC în video (se poate cere „clipul e prea
+  tehnic”); campania și Word păstrează fraze nelegate („fără suprapuneri”, 5 servicii față de 3 în clip); README-v2 fără coloană de stare;
+  `status_reason` al livrării rămâne „Invalidare exclusiv Hub anulată după verificare”.
+
+## 12. Deciziile proprietarului și acceptarea software-ului blocată (verificat 11:24–11:35 UTC, doar citire: SQL read-only, fișiere, `git ls-remote`)
+- 11:19 UTC, sesiunea de proprietar `osn_mv9zy3yk`: aprobare creativă `mrv_mvavl23t` pentru master `mev_mvas9f15` (IR `834d901e…`) și
+  `mrv_mvavlauo` pentru verticala `mev_mvas9wqu` (IR `30f042a2…`), ambele CREATIVE_APPROVED / RECORDED; rezumatul v2 `ddoc_mvasas01`
+  „gata de prezentare” (PRESENTATION_READY, sha `a41d3b59…` = `content_sha`). Drepturile de publicare nu au fost înregistrate (nu se cer aici).
+- **Acceptarea software-ului a eșuat de două ori** (11:19:42 și 11:19:51): „Command factory.accept cannot be issued through owner”. Cauza
+  (defect din M11, `2a58e9d`, 2026-10-07): `delivery.software.accept` (canale `owner`/`test`) trimite `factory.accept` pe canalul apelantului,
+  iar `factory.accept` are canalele implicite `ui`/`test` (`v2/server/runtime/commands.mjs` `register`); testele folosesc `test`, deci nu l-au
+  prins. Butonul din camera livrării n-a reușit niciodată; `factory.accept` pe `ui` (panoul Fabricii) a mers de 6 ori, ultima 2026-10-08.
+- **Al doilea defect, care face ocolirea periculoasă:** `factory.accept` compară strict snapshot-ul curent cu cel al pachetului
+  (`factory.mjs` `accept`), fără excepția „scris de Hub” pe care o are verificarea livrării. Singurul fișier diferit dintre cele 21 este
+  `.ifrim-hub/retired/mis_mv2ql0fp_ee35f8071e/journal.json` (`6b8026d9…` → `9629dc0f…`, reparat de 2.14.18; verificarea livrării îl
+  recunoaște: `hubOnly`, proveniență `hub_retire_journal`, `equal: true`, așteptat `696cb23e…`, actual `00d7e928…`). Butonul „Accept local”
+  din panoul Fabricii ar marca deci pachetul STALE și ar refuza. Proprietarul NU trebuie să-l apese.
+- Pachetul rămâne READY_FOR_OWNER_ACCEPTANCE, livrarea READY. Reparația (2.14.19: canalul acceptării din livrare + aceeași excepție
+  „scris de Hub” în `factory.accept`, cu teste pe canalul `owner`) e o etapă separată și așteaptă decizia proprietarului.
+- Commitul de documentație `79abea2` nu era pe `origin/v2-milestone-01` la 11:24 UTC (remote = `37e4222`); push-ul e al proprietarului.

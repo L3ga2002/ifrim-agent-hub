@@ -9,6 +9,9 @@ test-results/
 .ifrim/BACKUPS/
 .ifrim/private/
 .ifrim/tmp/
+# M08: the relocated data root of THIS machine (written by v2/scripts/relocate-data.mjs) and its rollback records
+.ifrim/data-location.json
+.ifrim/data-location.rolled-back-*.json
 npm-debug.log*
 AGENTS.md
 IDENTITY.md

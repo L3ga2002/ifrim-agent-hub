@@ -12,7 +12,12 @@ import { HUB_VERSION, API_CONTRACT } from "../config.mjs";
  */
 export const FAILSAFE_PATHS = Object.freeze(["/api/stop-all", "/api/runs/*/interrupt", "/api/lega/sessions/*/stop", "/api/owner/interrupt",
   "/api/owner/policy/deactivate", "/api/owner/logout", "/api/owner/sessions/revoke-all", "/api/envelopes/*/revoke",
-  "/api/factory/*/stop", "/api/factory/*/pause", "/api/grants/*/revoke"]);
+  "/api/factory/*/stop", "/api/factory/*/pause", "/api/grants/*/revoke", "/api/m/command", "/api/m/forget", "/api/skills/candidates/*/rollback", "/api/devices/*/revoke",
+  // M09: withdrawing a billing declaration and stopping media work (render, capture, transcription, a distribution attempt, a right).
+  "/api/owner/billing/withdraw", "/api/media/renders/*/cancel", "/api/media/captures/*/cancel", "/api/media/captures/*/obs/stop", "/api/media/transcripts/*/cancel",
+  "/api/content/releases/*/cancel", "/api/media/rights/*/revoke", "/api/media/policy/capture-off",
+  // M10: stopping the desktop operator, taking over, pausing / cancelling a plan, withdrawing an app or a folder.
+  "/api/desktop/stop", "/api/desktop/takeover", "/api/desktop/apps/revoke", "/api/ops/plans/*/pause", "/api/ops/plans/*/cancel", "/api/media/import-folders/*/revoke"]);
 /**
  * Segment-wise match ("*" is exactly one segment), so no pattern can widen into another route. /api/gate is a fail-safe only
  * when it SUSPENDS the gate (opening it is not; review M07), so it needs the body.
@@ -83,7 +88,8 @@ export function createHttpServer(hub) {
         if (!found) throw new HubError("not_found", "Unknown endpoint");
         if (req.method !== "GET" && req.headers["x-hub-token"] !== token) throw new HubError("policy", "Missing or invalid session token");
         // M07: audio segments arrive as raw bytes (application/octet-stream), never as JSON (and never into a command log).
-        const body = req.method === "GET" ? {} : found.route.options.raw ? await readRaw(req, found.route.options.maxBytes || 1024 * 1024) : await readJson(req, found.route.options.maxBytes || 1024 * 1024);
+        // M09: a streaming route (media upload) reads the request itself, straight to disk; nothing is buffered here.
+        const body = req.method === "GET" || found.route.options.stream ? {} : found.route.options.raw ? await readRaw(req, found.route.options.maxBytes || 1024 * 1024) : await readJson(req, found.route.options.maxBytes || 1024 * 1024);
         // A page built for another contract cannot drive this server (scripts and tests send no header and are unaffected).
         const uiContract = req.headers["x-hub-ui-contract"];
         if (req.method !== "GET" && uiContract !== undefined && String(uiContract) !== String(API_CONTRACT) && !isFailsafe(url.pathname, Buffer.isBuffer(body) ? null : body)) {

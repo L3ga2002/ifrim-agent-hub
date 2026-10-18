@@ -1,0 +1,43 @@
+{
+ "testSlot": "a0e9dd8d61ae",
+ "needs": [
+  "node:path",
+  "node:os",
+  "node:fs",
+  "node:sqlite",
+  "node:http"
+ ],
+ "api": "publicBookingView(row) exportat din src/server-app.js primește un rând din tabelul bookings și returnează obiectul public al programării fără câmpul phone",
+ "cases": [
+  {
+   "name": "AC-1: lista publică a zilei nu conține câmpul phone pentru nicio programare",
+   "criterion": "AC-1",
+   "kind": "check",
+   "today": "fail"
+  },
+  {
+   "name": "AC-2: parametrii adăugați la cererea publică nu fac telefonul să apară",
+   "criterion": "AC-2",
+   "kind": "check",
+   "today": "fail"
+  },
+  {
+   "name": "AC-3 control: programare fără telefon sau cu telefon gol este refuzată și nu se salvează",
+   "criterion": "AC-3",
+   "kind": "control",
+   "today": "pass"
+  },
+  {
+   "name": "AC-4 control: telefonul din programarea validă este păstrat și nu există rută anonimă pentru citirea lui",
+   "criterion": "AC-4",
+   "kind": "control",
+   "today": "pass"
+  },
+  {
+   "name": "AC-5 control: programare cu telefon și date valide pe interval liber este acceptată",
+   "criterion": "AC-5",
+   "kind": "control",
+   "today": "pass"
+  }
+ ]
+}

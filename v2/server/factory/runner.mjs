@@ -7,6 +7,7 @@ import { resolveCodexBinary } from "../providers/codex.mjs";
 import { codexIsolationArgs, CODEX_PROFILE_BY_ACCESS, evaluateHostIsolation } from "../policy/isolation.mjs";
 import { redactText } from "../security/redact.mjs";
 import { isAllowedCommand, isAllowedPreviewCommand } from "./spec.mjs";
+import { createTapCaseCollector } from "./test-first.mjs";
 
 /**
  * The Hub runner for checks, QA and previews (M03 §16, §21). Generated code is NEVER run with the backend's rights: every
@@ -22,13 +23,29 @@ import { isAllowedCommand, isAllowedPreviewCommand } from "./spec.mjs";
 export const RUNNER_TIMEOUT_MS = 180000;
 const OUTPUT_LINES = 300;
 
-export function commandArgv(command) {
+/**
+ * The node.exe a sandboxed command runs with. Pilot 2026-10-08: a Hub started from a shell with fnm ran from
+ * %LOCALAPPDATA%\fnm_multishells\...\node.exe, which the Codex Windows sandbox cannot launch (CreateProcessAsUserW: access denied,
+ * also through its real path under %APPDATA%\fnm); the system install under Program Files can. HUB_SANDBOX_NODE overrides.
+ */
+export function sandboxNodePath({ env = process.env, platform = process.platform, execPath = process.execPath, exists = fs.existsSync } = {}) {
+  if (env.HUB_SANDBOX_NODE && exists(env.HUB_SANDBOX_NODE)) return env.HUB_SANDBOX_NODE;
+  if (platform === "win32" && /[\\/](?:fnm_multishells|fnm|nvm|volta)[\\/]/i.test(execPath)) {
+    for (const base of [env.ProgramFiles, env.ProgramW6432, "C:\\Program Files"].filter(Boolean)) {
+      const candidate = path.join(base, "nodejs", "node.exe");
+      if (exists(candidate)) return candidate;
+    }
+  }
+  return execPath;
+}
+
+export function commandArgv(command, node = sandboxNodePath()) {
   const parts = String(command).trim().split(/\s+/);
-  const npmCli = path.join(path.dirname(process.execPath), "node_modules", "npm", "bin", "npm-cli.js");
-  if (parts[0] === "node" && parts[1] === "--test") return [process.execPath, "--test", "--test-reporter=tap", ...parts.slice(2)];
-  if (parts[0] === "node") return [process.execPath, ...parts.slice(1)];
-  if (parts[0] === "npm" && parts[1] === "test") return [process.execPath, npmCli, "test"];
-  if (parts[0] === "npm" && parts[1] === "run") return [process.execPath, npmCli, "run", parts[2]];
+  const npmCli = path.join(path.dirname(node), "node_modules", "npm", "bin", "npm-cli.js");
+  if (parts[0] === "node" && parts[1] === "--test") return [node, "--test", "--test-reporter=tap", ...parts.slice(2)];
+  if (parts[0] === "node") return [node, ...parts.slice(1)];
+  if (parts[0] === "npm" && parts[1] === "test") return [node, npmCli, "test"];
+  if (parts[0] === "npm" && parts[1] === "run") return [node, npmCli, "run", parts[2]];
   return null;
 }
 
@@ -36,15 +53,53 @@ export function commandArgv(command) {
 export function parseTestOutput(lines) {
   const counts = {};
   const failures = [];
+  let tapSeen = false; // a TAP/spec summary wins: stderr text after it never rewrites the counts
+  let ran = null; // Python unittest (M08, package B3): "Ran N tests in …" then "OK" / "OK (skipped=1)" / "FAILED (failures=1, errors=2)"
   for (const line of lines) {
     const m = line.match(/^\s*(?:#|ℹ)\s*(tests|pass|fail|skipped|todo|cancelled)\s+(\d+)\s*$/);
-    if (m) counts[m[1]] = Number(m[2]);
+    if (m) { counts[m[1]] = Number(m[2]); tapSeen = true; }
     const f = line.match(/^\s*not ok \d+ - (.+?)(?:\s+#.*)?$/);
     if (f && failures.length < 30) failures.push(f[1].slice(0, 200));
+    // unittest writes to stderr; the environment runner prefixes those lines with "[stderr] ".
+    const plain = line.replace(/^\[stderr\] /, "");
+    const r = plain.match(/^Ran (\d+) tests? in [\d.]+s\s*$/);
+    if (r) ran = Number(r[1]);
+    const u = plain.match(/^(.+?) \.\.\. (FAIL|ERROR)\s*$/);
+    if (u && failures.length < 30) failures.push(u[1].slice(0, 200));
+    if (ran !== null) {
+      const ok = plain.match(/^OK(?: \((.*)\))?\s*$/);
+      const bad = plain.match(/^FAILED \((.*)\)\s*$/);
+      if (ok || bad) {
+        const detail = Object.fromEntries(String((ok || bad)[1] || "").split(",").map((p) => p.trim().split("=")).filter((p) => p.length === 2).map(([k, v]) => [k, Number(v)]));
+        const skipped = (detail.skipped || 0) + (detail["expected failures"] || 0);
+        const failed = bad ? (detail.failures || 0) + (detail.errors || 0) + (detail["unexpected successes"] || 0) : 0;
+        if (!tapSeen) Object.assign(counts, { tests: ran, fail: failed, skipped, pass: Math.max(0, ran - failed - skipped) });
+      }
+    }
   }
   return { counts, failures };
 }
 
+/**
+ * M11 L5 (§5.3): the per-case reader of a run. It must see EVERY output line: the result keeps only the last OUTPUT_LINES for
+ * the evidence, and ten failing deepEqual cases already print more TAP than that, so cases read from the tail would never
+ * match `# tests` (the proof would be INCONCLUSIVE every time). `push(line)` takes the line exactly as the tail stores it (after
+ * the same redaction); `finish(stderrTail)` adds the stderr tail and returns the additive result fields:
+ *   cases             [{ name, ok, depth, skip, todo, code, errorName, message, failureType, fileLevel }] (createTapCaseCollector)
+ *   fileLevelFailure  a failure outside any test (crash, async activity after a test), or null
+ *   overflow          cases beyond the collector's bound (counted, never stored)
+ * The counts stay the runner's own summary (parseTestOutput); these fields never change the status of a command.
+ */
+export function createRunCaseReader() {
+  const collector = createTapCaseCollector();
+  return {
+    push: (line) => collector.push(line),
+    finish(stderrTail = []) {
+      for (const line of stderrTail) collector.push(`[stderr] ${line}`);
+      return collector.result();
+    },
+  };
+}
 /** Raw status of a test command from its exit code and counts; zero tests found is never a pass. */
 export function testStatus({ exitCode, counts, timedOut }) {
   if (timedOut) return { status: "FAIL", reason: "timeout" };
@@ -88,23 +143,32 @@ export function createFactoryRunner({ config, supervisor, settings, providerStat
 
   /**
    * Runs one allowed command in `ws`. Returns { status, reason, exitCode, counts, failures, durationMs, outputTail, isolation,
-   * runner, command }. `key` names the supervised process (Stop kills it).
+   * runner, command, cases, fileLevelFailure, overflow } (the last three: createRunCaseReader, read from every line). `key`
+   * names the supervised process (Stop kills it).
    */
   function run({ key, ws, command, timeoutMs = RUNNER_TIMEOUT_MS, project = null }) {
     const started = Date.now();
-    const base = { command, runner: "codex-sandbox", durationMs: 0, exitCode: null, counts: {}, failures: [], outputTail: "" };
+    const base = { command, runner: "codex-sandbox", durationMs: 0, exitCode: null, counts: {}, failures: [], outputTail: "", cases: [], fileLevelFailure: null, overflow: 0 };
     if (!isAllowedCommand(command)) return Promise.resolve({ ...base, status: "BLOCKED", reason: "comandă în afara listei acceptate", isolation: "none" });
     const ready = readiness(project);
     if (!ready.ok) return Promise.resolve({ ...base, status: "BLOCKED", reason: ready.detail, isolation: ready.isolation });
     const argv = commandArgv(command);
+    // An allowed command with no Windows mapping (M08: python3 -m unittest runs only inside ifrim-runner) is refused with its reason.
+    if (!argv) return Promise.resolve({ ...base, status: "BLOCKED", reason: `„${command}” rulează doar pe ruta izolată (wsl-runner), nu pe Windows`, isolation: ready.isolation });
     const binary = ready.binary; // the Codex client: the same provider binary every run uses
     return new Promise((resolve) => {
       const out = [];
+      const reader = createRunCaseReader();
       let timedOut = false;
       let record;
       try {
         record = supervisor.start({ key, label: `runner: ${command}`, executable: binary.executable, args: sandboxArgs(binary, ws, argv), cwd: ws,
-          env: { NODE_ENV: "test", CI: "1" }, onStdoutLine: (line) => { out.push(redactText(line).slice(0, 500)); if (out.length > OUTPUT_LINES) out.shift(); } });
+          env: { NODE_ENV: "test", CI: "1" }, onStdoutLine: (line) => {
+            const clean = redactText(line).slice(0, 500);
+            reader.push(clean); // every line, before the tail window below can drop it
+            out.push(clean);
+            if (out.length > OUTPUT_LINES) out.shift();
+          } });
       } catch (error) {
         resolve({ ...base, status: "BLOCKED", reason: `runner-ul nu a pornit: ${error.message}`, isolation: ready.isolation });
         return;
@@ -117,8 +181,8 @@ export function createFactoryRunner({ config, supervisor, settings, providerStat
         const lines = [...out, ...record.stderrTail.map((l) => `[stderr] ${l}`)];
         const { counts, failures } = parseTestOutput(lines);
         const verdict = testStatus({ exitCode: exit.code, counts, timedOut });
-        resolve({ ...base, ...verdict, exitCode: exit.code, counts, failures, durationMs: Date.now() - started, outputTail: lines.slice(-120).join("\n"), isolation: ready.isolation,
-          stopped: record.stoppedByHub || false });
+        resolve({ ...base, ...verdict, exitCode: exit.code, counts, failures, ...reader.finish(record.stderrTail), durationMs: Date.now() - started, outputTail: lines.slice(-120).join("\n"),
+          isolation: ready.isolation, stopped: record.stoppedByHub || false });
       });
     });
   }
@@ -168,7 +232,7 @@ export function createFactoryRunner({ config, supervisor, settings, providerStat
     const started = Date.now();
     try {
       const binary = ready.binary;
-      const record = supervisor.start({ key, label: "preflight: node -e 0", executable: binary.executable, args: sandboxArgs(binary, scratch, [process.execPath, "-e", "0"]), cwd: scratch });
+      const record = supervisor.start({ key, label: "preflight: node -e 0", executable: binary.executable, args: sandboxArgs(binary, scratch, [sandboxNodePath(), "-e", "0"]), cwd: scratch });
       const timer = setTimeout(() => { supervisor.stop(key, { graceMs: 0 }).catch(() => {}); }, 300000);
       timer.unref?.();
       const exit = await record.exit;

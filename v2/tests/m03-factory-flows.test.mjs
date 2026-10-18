@@ -24,7 +24,9 @@ async function factoryHub(fixture = "bug-demo", { attempts = 4, port = null, hub
   });
   return { ...t, project, dir };
 }
-const prepare = async (t, fixture, { limits, port } = {}) => (await dispatch(t.hub, "factory.prepare", { projectId: t.project.id, ...demoSpec(fixture, { port }), ...(limits ? { limits } : {}) })).result;
+// M09: every mission names its models explicitly (a mission without them is a draft whose scope is incomplete).
+const MODELS = { writerModel: "gpt-fake-sol", reviewerModel: "sonnet" };
+const prepare = async (t, fixture, { limits, port } = {}) => (await dispatch(t.hub, "factory.prepare", { projectId: t.project.id, ...demoSpec(fixture, { port }), limits: { ...MODELS, ...(limits || {}) } })).result;
 async function approveAndStart(t, missionId, scope = t.hub.factory.view(missionId).scope) {
   const requested = await dispatch(t.hub, "factory.start", scope);
   await dispatch(t.hub, "approval.decide", { approvalId: requested.approval.id, decision: "approved", displayedHash: requested.approval.payloadHash });
@@ -76,7 +78,7 @@ test("M03-FAC-02 Demo B (FEATURE): failing checks → bounded repair → review 
     assert.ok(withSteps(done.mission.conversationId) >= 2, "both writer briefs (implementation and repair) carry the E2E steps");
     assert.ok(withSteps(done.factory.reviewConversationId) >= 1, "the review brief carries the E2E steps");
     assert.ok(t.hub.supervisor.list().some((p) => p.key === `factory-preview-${mission.id}`), "preview process is tracked");
-    const rejected = (await dispatch(t.hub, "factory.reject", { missionId: mission.id, note: "Vreau alt text pe buton" })).result;
+    const rejected = (await dispatch(t.hub, "factory.reject", { ...t.hub.factory.rejectTarget(mission.id), note: "Vreau alt text pe buton" })).result;
     assert.equal(rejected.factory.stage, "REJECTED");
     assert.ok(!t.hub.supervisor.list().some((p) => p.key === `factory-preview-${mission.id}`), "preview stopped");
   } finally { await t.cleanup(); }
@@ -408,7 +410,7 @@ test("M03-FAC-17 Pause during the 2nd of two checks, then resume: every check ru
   try {
     const input = demoSpec("bug-demo");
     input.spec.verification.checks = ["node --test test/unit.test.mjs", "node --test"];
-    const { mission } = (await dispatch(t.hub, "factory.prepare", { projectId: t.project.id, ...input })).result;
+    const { mission } = (await dispatch(t.hub, "factory.prepare", { projectId: t.project.id, ...input, limits: MODELS })).result;
     t.queue("codex", "factory-write:bug-hang");
     t.queue("claude", "review:pass");
     await approveAndStart(t, mission.id);
@@ -563,7 +565,7 @@ test("M03-FAC-23 'one more cycle' after a failed QA runs the repair writer (not 
   try {
     const input = demoSpec("bug-demo");
     input.spec.verification.checks = ["node --test test/unit.test.mjs"]; // the checks pass, the acceptance test (QA) does not
-    const { mission } = (await dispatch(t.hub, "factory.prepare", { projectId: t.project.id, ...input, limits: { maxRepairCycles: 1 } })).result;
+    const { mission } = (await dispatch(t.hub, "factory.prepare", { projectId: t.project.id, ...input, limits: { ...MODELS, maxRepairCycles: 1 } })).result;
     t.queue("codex", "factory-write:bug-partial", "factory-write:bug-partial2", "factory-write:bug-fix");
     t.queue("claude", "review:pass", "review:pass", "review:pass");
     await approveAndStart(t, mission.id);
@@ -623,7 +625,10 @@ test("M03-FAC-25 attempts really used up: a plain resume is the owner's decision
   } finally { await t.cleanup(); }
 });
 
-test("M03-FAC-26 the account's Claude default (Fable) is refused before the model; on resume the owner picks an allowed reviewer model, which is sent with --model; the refused start is not an attempt", async () => {
+// M09: there is no account default any more — every mission binds an explicit reviewer model. The bound alias that the CLI
+// resolved to Fable at init is still refused before the model; the owner then picks another allowed reviewer on resume (outside
+// a plan), whose binding replaces the old one (old/new recorded) and is sent with --model.
+test("M03-FAC-26 the bound reviewer alias resolved to Fable at init is refused before the model; on resume the owner picks another allowed reviewer model, which is bound and sent with --model; the refused start is not an attempt", async () => {
   const t = await factoryHub("bug-demo");
   try {
     const { mission } = await prepare(t, "bug-demo", { limits: { maxAttemptsPerStage: 1 } });
@@ -638,19 +643,24 @@ test("M03-FAC-26 the account's Claude default (Fable) is refused before the mode
       await assert.rejects(dispatch(t.hub, "factory.resume", { missionId: mission.id, reviewerModel: bad }, "ui"), /nu e permis|validation/i, bad);
     }
     assert.equal(view(t, mission.id).factory.stage, "BLOCKED", "a refused choice changes nothing");
+    assert.equal(view(t, mission.id).factory.bindings.reviewer.resolvedAlias, "sonnet", "a refused choice leaves the binding alone");
     // Chosen together with another decision of the same resume (an extra cycle): the model choice is kept.
-    const resumed = (await dispatch(t.hub, "factory.resume", { missionId: mission.id, reviewerModel: "sonnet", allowExtraCycle: true }, "ui")).result;
-    assert.equal(resumed.factory.limits.reviewerModel, "sonnet");
-    assert.equal(view(t, mission.id).factory.limits.reviewerModel, "sonnet", "stored, not overwritten by the extra-cycle limits");
+    const resumed = (await dispatch(t.hub, "factory.resume", { missionId: mission.id, reviewerModel: "opus", allowExtraCycle: true }, "ui")).result;
+    assert.equal(resumed.factory.limits.reviewerModel, "opus");
+    assert.equal(view(t, mission.id).factory.limits.reviewerModel, "opus", "stored, not overwritten by the extra-cycle limits");
+    assert.equal(view(t, mission.id).factory.bindings.reviewer.resolvedAlias, "opus", "the reviewer's binding was recomputed");
     const done = await untilStage(t, mission.id, ["DELIVERY_READY", "NEEDS_OWNER_DECISION", "BLOCKED"]);
     assert.equal(done.factory.stage, "DELIVERY_READY", done.factory.stageReason);
     const reviews = done.dispatches.filter((d) => d.stage === "REVIEWING");
-    assert.deepEqual(reviews.map((d) => [d.status, d.request.model]), [["FAILED", ""], ["DONE", "sonnet"]]);
+    assert.deepEqual(reviews.map((d) => [d.status, d.request.model]), [["FAILED", "sonnet"], ["DONE", "opus"]]);
     assert.equal(reviews[1].request.counted, 1, "the start stopped before the model is not an attempt (limit 1 still allows the review)");
     const invocations = t.readLog("claude").filter((e) => Array.isArray(e.args) && e.args.includes("-p"));
+    assert.equal(invocations[0].args[invocations[0].args.indexOf("--model") + 1], "sonnet", "the bound model was asked for (never the account default)");
     const last = invocations.at(-1).args;
-    assert.equal(last[last.indexOf("--model") + 1], "sonnet", "the chosen model is sent explicitly");
-    assert.equal(t.hub.bus.query({ typePrefix: "factory.model_override", limit: 5 }).length, 1);
+    assert.equal(last[last.indexOf("--model") + 1], "opus", "the chosen model is sent explicitly");
+    const overrides = t.hub.bus.query({ typePrefix: "factory.model_override", limit: 5 });
+    assert.equal(overrides.length, 1);
+    assert.deepEqual([overrides[0].payload.old.model, overrides[0].payload.new.model], ["sonnet", "opus"]);
   } finally { await t.cleanup(); }
 });
 

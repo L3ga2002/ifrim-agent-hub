@@ -1,0 +1,293 @@
+{
+  "candidate": "b8f25b9882acdb91e2107c373b6ff255bd4120ec299042c93ea15031f0bdec7f",
+  "amends": "ad7e4544c0663b066abd78ac5a4e1c6caed87c820743fcef935361b1efe46d0c",
+  "hubOutcome": {
+    "cycle0": {
+      "lint": [
+        "needs_missing node:path",
+        "needs_missing node:os",
+        "needs_missing node:fs",
+        "needs_missing node:sqlite",
+        "needs_missing node:http"
+      ]
+    },
+    "cycle1": {
+      "lint": [],
+      "inventoryRemoved": 0,
+      "contextChanged": 0,
+      "proof": "INCONCLUSIVE (timeout): the 5 cases report (AC-1/AC-2 fail on body assertions, AC-3..AC-5 pass) but the test process does not exit while AC-1/AC-2 fail, because srv2 is closed after the failing assertion without try/finally; the Hub runner stops at 180 s (RUNNER_TIMEOUT_MS) and classifyProof gives INCONCLUSIVE timeout; cycle 1 = reauthorMax → exhausted"
+    }
+  },
+  "diagnostic": {
+    "note": "NOT the Hub proof: the same file run with node --test --test-force-exit, only to read its assertions",
+    "correctApp": "PASS 5/5, exits normally in about 1 s",
+    "matrix": [
+      {
+        "name": "CORRECT",
+        "status": "PASS",
+        "tests": 5,
+        "failed": "",
+        "expected": "yes"
+      },
+      {
+        "name": "ORIGINAL",
+        "status": "FAIL",
+        "tests": 5,
+        "failed": "AC-1,AC-2",
+        "expected": "yes"
+      },
+      {
+        "name": "refuse-all",
+        "status": "FAIL",
+        "tests": 5,
+        "failed": "AC-1,AC-2,AC-4 control,AC-5 control",
+        "expected": "yes"
+      },
+      {
+        "name": "phone lost on save",
+        "status": "FAIL",
+        "tests": 5,
+        "failed": "AC-1,AC-2,AC-4 control",
+        "expected": "yes"
+      },
+      {
+        "name": "browser-only validation",
+        "status": "FAIL",
+        "tests": 5,
+        "failed": "AC-3 control",
+        "expected": "yes"
+      },
+      {
+        "name": "masked value",
+        "status": "FAIL",
+        "tests": 5,
+        "failed": "AC-1,AC-2",
+        "expected": "yes"
+      },
+      {
+        "name": "includePhone bypass",
+        "status": "FAIL",
+        "tests": 5,
+        "failed": "AC-2",
+        "expected": "yes"
+      },
+      {
+        "name": "debug other key",
+        "status": "FAIL",
+        "tests": 5,
+        "failed": "AC-2",
+        "expected": "yes"
+      },
+      {
+        "name": "empty list",
+        "status": "FAIL",
+        "tests": 5,
+        "failed": "AC-1,AC-2",
+        "expected": "yes"
+      },
+      {
+        "name": "invalid request saved",
+        "status": "FAIL",
+        "tests": 5,
+        "failed": "AC-3 control",
+        "expected": "yes"
+      },
+      {
+        "name": "missing-property accepted",
+        "status": "FAIL",
+        "tests": 5,
+        "failed": "AC-3 control",
+        "expected": "yes"
+      },
+      {
+        "name": "id only in metadata",
+        "status": "FAIL",
+        "tests": 5,
+        "failed": "AC-1,AC-2",
+        "expected": "yes"
+      },
+      {
+        "name": "fields=phone other key",
+        "status": "FAIL",
+        "tests": 5,
+        "failed": "AC-2",
+        "expected": "yes"
+      },
+      {
+        "name": "phone in text",
+        "status": "FAIL",
+        "tests": 5,
+        "failed": "AC-1,AC-2",
+        "expected": "yes"
+      },
+      {
+        "name": "phone as key",
+        "status": "FAIL",
+        "tests": 5,
+        "failed": "AC-1,AC-2",
+        "expected": "yes"
+      },
+      {
+        "name": "escaped key and value",
+        "status": "FAIL",
+        "tests": 5,
+        "failed": "AC-1,AC-2",
+        "expected": "yes"
+      },
+      {
+        "name": "escaped value other key",
+        "status": "FAIL",
+        "tests": 5,
+        "failed": "AC-1,AC-2",
+        "expected": "yes"
+      },
+      {
+        "name": "existing records only",
+        "status": "FAIL",
+        "tests": 5,
+        "failed": "AC-1,AC-2",
+        "expected": "yes"
+      },
+      {
+        "name": "escape in text other key",
+        "status": "FAIL",
+        "tests": 5,
+        "failed": "AC-1,AC-2",
+        "expected": "yes"
+      },
+      {
+        "name": "seed ignored, leak only before restart",
+        "status": "FAIL",
+        "tests": 5,
+        "failed": "AC-1,AC-2,AC-3 control",
+        "expected": "yes"
+      },
+      {
+        "name": "existing record absent after restart",
+        "status": "FAIL",
+        "tests": 5,
+        "failed": "AC-1,AC-2",
+        "expected": "yes"
+      },
+      {
+        "name": "existing record on another day",
+        "status": "FAIL",
+        "tests": 5,
+        "failed": "AC-1,AC-2",
+        "expected": "yes"
+      },
+      {
+        "name": "existing phone not persisted",
+        "status": "FAIL",
+        "tests": 5,
+        "failed": "AC-1,AC-2",
+        "expected": "yes"
+      },
+      {
+        "name": "empty list, base",
+        "status": "FAIL",
+        "tests": 5,
+        "failed": "AC-1,AC-2",
+        "expected": "yes"
+      },
+      {
+        "name": "empty list, debug",
+        "status": "FAIL",
+        "tests": 5,
+        "failed": "AC-2",
+        "expected": "yes"
+      },
+      {
+        "name": "existing omitted, base",
+        "status": "FAIL",
+        "tests": 5,
+        "failed": "AC-1,AC-2",
+        "expected": "yes"
+      },
+      {
+        "name": "existing omitted, debug",
+        "status": "FAIL",
+        "tests": 5,
+        "failed": "AC-2",
+        "expected": "yes"
+      },
+      {
+        "name": "ids only in metadata, base",
+        "status": "FAIL",
+        "tests": 5,
+        "failed": "AC-1,AC-2",
+        "expected": "yes"
+      },
+      {
+        "name": "ids only in metadata, debug",
+        "status": "FAIL",
+        "tests": 5,
+        "failed": "AC-2",
+        "expected": "yes"
+      },
+      {
+        "name": "seed rows only",
+        "status": "FAIL",
+        "tests": 5,
+        "failed": "AC-1,AC-2",
+        "expected": "yes"
+      },
+      {
+        "name": "initial data not created",
+        "status": "FAIL",
+        "tests": 5,
+        "failed": "AC-1,AC-2,AC-3 control",
+        "expected": "yes"
+      },
+      {
+        "name": "initial data without phone",
+        "status": "FAIL",
+        "tests": 5,
+        "failed": "AC-1,AC-2",
+        "expected": "yes"
+      },
+      {
+        "name": "initial rows omitted",
+        "status": "FAIL",
+        "tests": 5,
+        "failed": "AC-1,AC-2",
+        "expected": "yes"
+      },
+      {
+        "name": "kept row omitted",
+        "status": "FAIL",
+        "tests": 5,
+        "failed": "AC-1,AC-2",
+        "expected": "yes"
+      },
+      {
+        "name": "new row omitted",
+        "status": "FAIL",
+        "tests": 5,
+        "failed": "AC-1,AC-2",
+        "expected": "yes"
+      },
+      {
+        "name": "seed rows only under any parameter",
+        "status": "FAIL",
+        "tests": 5,
+        "failed": "AC-2",
+        "expected": "yes"
+      },
+      {
+        "name": "threshold only under any parameter",
+        "status": "FAIL",
+        "tests": 5,
+        "failed": "AC-2",
+        "expected": "yes"
+      },
+      {
+        "name": "seed rows only under all=1",
+        "status": "FAIL",
+        "tests": 5,
+        "failed": "AC-2",
+        "expected": "yes"
+      }
+    ]
+  }
+}

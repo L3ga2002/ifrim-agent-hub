@@ -1,0 +1,46 @@
+{
+  "testSlot": "57fa8664c81d",
+  "needs": [
+    "node:path",
+    "node:os",
+    "node:fs",
+    "node:sqlite",
+    "node:http"
+  ],
+  "api": "GET /api/bookings?date=YYYY-MM-DD pentru lista publică, POST /api/bookings pentru creare, DatabaseSync direct pentru stocarea internă",
+  "cases": [
+    {
+      "name": "AC-1: lista publică a zilei nu conține câmpul phone și valorile telefonului",
+      "criterion": "AC-1",
+      "kind": "check",
+      "today": "fail"
+    },
+    {
+      "name": "AC-2: parametrii anonimi nu expun telefonul în lista publică",
+      "criterion": "AC-2",
+      "kind": "check",
+      "today": "fail"
+    },
+    {
+      "name": "AC-3 control: telefon obligatoriu refuzat când lipsește, e gol sau are doar spații",
+      "criterion": "AC-3",
+      "kind": "control",
+      "today": "pass"
+    },
+    {
+      "name": "AC-4 control: telefonul trimis se păstrează exact în stocarea internă",
+      "criterion": "AC-4",
+      "kind": "control",
+      "today": "pass"
+    },
+    {
+      "name": "AC-5 control: programare validă cu telefon e acceptată de server",
+      "criterion": "AC-5",
+      "kind": "control",
+      "today": "pass"
+    }
+  ],
+  "newApi": [],
+  "removed": [],
+  "amends": null
+}

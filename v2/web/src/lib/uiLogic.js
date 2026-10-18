@@ -239,14 +239,46 @@ export const CLAUDE_MODEL_ALIASES = Object.freeze(["sonnet", "opus", "haiku"]);
  * Claude: static aliases ("unverified"); effort only when the installed CLI's --help lists --effort ("unsupported" otherwise),
  * with unverified levels. `effort` comes back as the value that may be sent: a stored choice the options lack becomes "".
  */
+/** M09: the Claude model a run sends — always an explicit alias (the Hub refuses a Claude run without one); sonnet unless chosen. */
+export const DEFAULT_CLAUDE_MODEL = "sonnet";
+export const claudeRunModel = (model) => (CLAUDE_MODEL_ALIASES.includes(model) ? model : DEFAULT_CLAUDE_MODEL);
+
+/**
+ * The body of POST /api/conversations/:id/runs from the composer's choices. Claude always carries an explicit model (never empty);
+ * Codex sends a model only when one was chosen (empty = the account default, pinned by the Hub when the run starts).
+ */
+export function runRequestBody({ provider, access, model = "", effort = "", taskId = null } = {}) {
+  const m = provider === "claude" ? claudeRunModel(model) : String(model || "");
+  return { provider, access, ...(m ? { model: m } : {}), ...(effort ? { effort } : {}), ...(taskId ? { taskId } : {}) };
+}
+
+/**
+ * The body of a controlled retry of a run (the conversation's „Reîncearcă”): the same provider, access, model, effort AND task as the
+ * run retried, so a retry never loses the task it belonged to or falls back to the default effort. The model is sent as the run
+ * recorded it (never re-mapped to the composer's default).
+ */
+export function retryRunBody(run = {}) {
+  const model = String(run?.model || ""); const effort = String(run?.effort || ""); const taskId = run?.taskId || null;
+  return { provider: run?.provider, access: run?.access, ...(model ? { model } : {}), ...(effort ? { effort } : {}), ...(taskId ? { taskId } : {}) };
+}
+
+/** The body of POST /api/missions/:id/shadow: a shadow review names its model too (Claude: an explicit alias, never empty). */
+export function shadowReviewBody({ provider = "claude", model = "" } = {}) {
+  const m = provider === "claude" ? claudeRunModel(model) : String(model || "");
+  return { provider, ...(m ? { model: m } : {}) };
+}
+
 export function composerOptions({ provider, providerState = null, model = "", effort = "" } = {}) {
   let models; let modelSource; let modelNote; let efforts; let effortSource; let effortNote; let defaultEffort = null;
+  let sendModel = String(model || ""); let modelRequired = false;
   if (provider === "claude") {
     const flags = providerState?.installation?.flags;
     const effortFlag = Array.isArray(flags) ? flags.includes("--effort") : null;
     models = CLAUDE_MODEL_ALIASES.map((id) => ({ id, label: `${id} (alias CLI, nevalidat)` }));
     modelSource = "unverified";
-    modelNote = "Aliasuri Claude Code fixe, nevalidate de Hub: verificarea Claude citește doar autentificarea și flag-urile CLI; modelul real depinde de versiunea instalată";
+    modelRequired = true;
+    sendModel = claudeRunModel(model);
+    modelNote = "Aliasuri Claude Code fixe, nevalidate de Hub: verificarea Claude citește doar autentificarea și flag-urile CLI; modelul real depinde de versiunea instalată. Claude rulează doar cu un model explicit (implicit sonnet), niciodată cu modelul implicit al contului";
     efforts = effortFlag === false ? [] : [...FALLBACK_EFFORTS];
     effortSource = effortFlag === false ? "unsupported" : "unverified";
     effortNote = effortFlag === false ? "CLI-ul Claude instalat nu listează --effort; efortul nu se trimite"
@@ -267,7 +299,8 @@ export function composerOptions({ provider, providerState = null, model = "", ef
         : "Niveluri de efort nevalidate de Hub (Codex nu le-a raportat pentru acest model)";
     defaultEffort = accepted.includes(current?.defaultEffort) ? current.defaultEffort : null;
   }
-  return { models, modelSource, modelNote, efforts, effortSource, effortNote, defaultEffort, effort: efforts.includes(effort) ? effort : "" };
+  // `model` is the value that may be sent: for Claude always an alias (never ""); `modelRequired` hides the "implicit" choice.
+  return { models, modelSource, modelNote, efforts, effortSource, effortNote, defaultEffort, effort: efforts.includes(effort) ? effort : "", model: sendModel, modelRequired };
 }
 
 /* ---------------- Software Factory (M03) ---------------- */
@@ -276,8 +309,17 @@ export const FACTORY_STAGE_RO = Object.freeze({
   SPEC_DRAFT: "Specificație", BASELINE: "Baseline", IMPLEMENTING: "Implementare", CHECKING: "Verificări", REVIEWING: "Review", REPAIRING: "Remediere",
   QA: "QA", PREVIEW: "Preview", DELIVERY_READY: "Gata de acceptare", ACCEPTED: "Acceptat local", REJECTED: "Respins", PAUSED: "Pauză", BLOCKED: "Blocat",
   NEEDS_OWNER_DECISION: "Decizia ta", CANCEL_REQUESTED: "Oprire cerută", CANCELLED: "Oprit",
+  // M11 L5 (design §5.6): step 0 of a test-first mission; on the stage bar only for those missions (factoryPathOf).
+  TEST_AUTHORING: "Testul (pasul 0)", TEST_PROVING: "Proba testului", TEST_REVIEW: "Verificarea testului",
 });
 export const FACTORY_PATH = Object.freeze(["SPEC_DRAFT", "BASELINE", "IMPLEMENTING", "CHECKING", "REVIEWING", "QA", "PREVIEW", "DELIVERY_READY", "ACCEPTED"]);
+/** M11 L5: the three step-0 stages, between the spec and the baseline. */
+export const STAGE_ZERO_STAGES = Object.freeze(["TEST_AUTHORING", "TEST_PROVING", "TEST_REVIEW"]);
+export const FACTORY_PATH_TEST_FIRST = Object.freeze(["SPEC_DRAFT", ...STAGE_ZERO_STAGES, ...FACTORY_PATH.slice(1)]);
+/** The stage path of THIS mission: step 0 appears only when the factory view carries a test-first `authoring` (null otherwise). */
+export function factoryPathOf(view) {
+  return view?.authoring ? FACTORY_PATH_TEST_FIRST : FACTORY_PATH;
+}
 
 /**
  * What the mission waits for, in words that never say "AI lucrează" when it waits for the owner, a grant, the gate,
@@ -292,18 +334,108 @@ export function factoryWaitLabel(waitReason, stage) {
     case "runner": return stage === "BLOCKED" ? "Runner-ul sau browserul nu au putut rula (fără model); remediază cauza, apoi Reia" : "Runner-ul Hub rulează verificările (fără model)";
     case "owner_decision": return stage === "SPEC_DRAFT" ? "Completează și aprobă specificația" : "Așteaptă decizia ta";
     case "cancel": return "Oprire cerută; aștept confirmarea că nimic nu mai rulează";
+    // 2.12.2 (P0-R3): a turn ran out of its per-turn limit; the factory re-dispatches it ONCE by itself after the cooldown.
+    case "retry": return "Tura a depășit limita pe tură; o reiau automat o singură dată, după cel puțin un minut (Pauză și Stop rămân disponibile)";
     default: return stage === "ACCEPTED" ? "Acceptat local; commit/push/deploy rămân acțiuni separate" : "—";
   }
+}
+
+/**
+ * Review F6 (2.12.2): the „ · <what it waits for>” tail the Lega cards print after a stage — factoryWaitLabel's words, never the raw
+ * waitReason ("retry", "owner_decision"); nothing for no reason or an unknown one.
+ */
+export function factoryWaitSuffix(waitReason, stage) {
+  if (!waitReason) return "";
+  const label = factoryWaitLabel(waitReason, stage);
+  return label && label !== "—" ? ` · ${label}` : "";
 }
 
 /** Index of each stage on the main path (side states map to where the mission stopped). */
 export function factoryProgress(view) {
   const stage = view?.factory?.stage;
-  const at = FACTORY_PATH.indexOf(stage);
+  const path = factoryPathOf(view);
+  const at = path.indexOf(stage);
   if (at >= 0) return { current: at, side: null };
-  const reached = Math.max(0, ...((view?.dispatches || []).map((d) => FACTORY_PATH.indexOf(d.stage === "REPAIRING" ? "IMPLEMENTING" : d.stage))),
-    ...((view?.evidence || []).map((e) => FACTORY_PATH.indexOf(e.stage))));
+  const reached = Math.max(0, ...((view?.dispatches || []).map((d) => path.indexOf(d.stage === "REPAIRING" ? "IMPLEMENTING" : d.stage))),
+    ...((view?.evidence || []).map((e) => path.indexOf(e.stage))));
   return { current: reached, side: stage || null };
+}
+
+/* ---------------- M11 L5: test-first plans (design §2, §5.6) ---------------- */
+/**
+ * The owner texts of the plan card, the same words as the server's T_CARD_STEP0 / T_CARD_PROVES (v2/server/factory/test-first.mjs;
+ * the browser bundle cannot import server code, so m11-l5-ui.test.mjs pins them equal).
+ */
+export const TF_CARD_STEP0 = "Pasul 0 — testul de acceptanță nu există încă: îl scrie Hub-ul din cuvintele tale. Claude propune textul (doar citire), Hub-ul scrie fișierul, verifică de două ori că pică acum din motivul potrivit, Codex îl verifică independent (doar citire), apoi îl protejez. Nu trebuie să scrii sau să alegi nimic. Dacă testul nu trece verificările, îl rescriu o dată, apoi mă opresc fără să modific codul.";
+/** The same sentence without the rewrite, for a plan whose spec allows none (reauthorMax 0; server: T_CARD_STEP0_NO_REWRITE). */
+export const TF_CARD_STEP0_NO_REWRITE = TF_CARD_STEP0.replace("îl rescriu o dată, apoi mă opresc", "mă opresc");
+export const tfCardProves = (criteria = []) => `Ce va dovedi testul: ${(criteria || []).map((c) => `${c.id} — „${String(c.text || "").trim()}”`).join("; ")}.`;
+
+const tfCriteria = (tf) => (Array.isArray(tf?.criteria) ? tf.criteria : []).filter((c) => c && typeof c.id === "string" && c.id && typeof c.text === "string" && c.text.trim());
+const tfRole = (x) => {
+  if (!x) return "";
+  if (typeof x === "string") return x;
+  if (typeof x === "object") return [x.provider, x.model, x.effort].filter((p) => typeof p === "string" && p).join(" · ") || (typeof x.label === "string" ? x.label : "");
+  return "";
+};
+
+/**
+ * The plan card's step-0 lines, from the HASHED plan body only (`body.testFirst`, added only to test-first plans): the step-0 sentence,
+ * what the test will prove (the owner's criteria) and the „Detalii tehnice” row — the only place the test's path appears. An ordinary
+ * plan (no `testFirst`) → null, so its card renders exactly as before.
+ */
+export function testFirstCard(body) {
+  const tf = body?.testFirst;
+  if (!tf || typeof tf !== "object" || typeof tf.testRef !== "string" || !tf.testRef) return null;
+  const criteria = tfCriteria(tf);
+  const reauthor = Number.isInteger(tf.reauthorMax) ? tf.reauthorMax : null;
+  const runs = Number.isInteger(tf.proofRuns) ? tf.proofRuns : null;
+  const parts = [tf.testRef];
+  if (criteria.length) parts.push(`criterii: ${criteria.map((c) => c.id).join(", ")}`);
+  if (tf.mustFail !== false) parts.push("trebuie să pice acum");
+  if (tf.protectedAfterReview !== false) parts.push("review înainte de protejare");
+  if (reauthor !== null) parts.push(reauthor === 0 ? "fără rescriere" : `cel mult ${reauthor} ${reauthor === 1 ? "rescriere" : "rescrieri"}`);
+  if (runs !== null) parts.push(`${runs} ${runs === 1 ? "rulare" : "rulări"}`);
+  const author = tfRole(tf.author);
+  const reviewer = tfRole(tf.testReviewer);
+  if (author) parts.push(`scrie: ${author} (doar citire)`);
+  if (reviewer) parts.push(`verifică: ${reviewer} (doar citire)`);
+  return { step0: reauthor === 0 ? TF_CARD_STEP0_NO_REWRITE : TF_CARD_STEP0, proves: criteria.length ? tfCardProves(criteria) : null, details: parts.join(" · ") };
+}
+
+/** Evidence stage names: the step-0 stages in words, every other stage exactly as before (its code). */
+export function evidenceStageLabel(stage) {
+  return STAGE_ZERO_STAGES.includes(stage) ? FACTORY_STAGE_RO[stage] : stage;
+}
+
+const PROOF_VERDICT_RO = Object.freeze({
+  PROVEN: "pică pe codul de acum, din motivul potrivit", WRONG_REASON: "a picat, dar nu din motivul potrivit", PARTIAL: "pică doar parțial",
+  FLAKY: "rezultatele celor două rulări diferă", NOT_HERMETIC: "a lăsat fișiere în proiect", INCONCLUSIVE: "rezultatul nu a putut fi citit sigur",
+  ALREADY_PASSES: "trece deja pe codul de acum",
+});
+
+/**
+ * One evidence row's result as shown (design §7 Unda B, TestPanel): during TEST_PROVING the Hub's test MUST fail on today's code, so a
+ * FAIL there is labelled „așteptat” (never an error), with the proof's verdict when this row belongs to the current proof; a PASS there
+ * is „neașteptat”. Every other row: its status, unchanged (tone null = the usual colour).
+ */
+export function evidenceResult(e, authoring = null) {
+  const status = e?.status;
+  if (e?.stage !== "TEST_PROVING") return { label: status, tone: null, note: "" };
+  const proof = authoring?.proof;
+  const verdict = proof && Array.isArray(proof.evidenceIds) && proof.evidenceIds.includes(e.id) ? proof.verdict : null;
+  if (status === "FAIL") {
+    if (!verdict) return { label: "FAIL · așteptat", tone: "info", note: "testul scris de Hub trebuie să pice pe codul de acum" };
+    return { label: "FAIL · așteptat", tone: verdict === "PROVEN" ? "ok" : "warn", note: PROOF_VERDICT_RO[verdict] || "" };
+  }
+  if (status === "PASS") return { label: "PASS · neașteptat", tone: "warn", note: PROOF_VERDICT_RO.ALREADY_PASSES };
+  return { label: status, tone: null, note: "" };
+}
+
+/** The owner's summary of the Hub-written test, shown once it is protected (never before; null for an ordinary mission). */
+export function testFirstSummary(view) {
+  const a = view?.authoring;
+  return a && a.status === "PROTECTED" && typeof a.summary === "string" && a.summary ? a.summary : null;
 }
 
 /** "1 min 05 s" style durations for the run timeline (null → "—"). */
@@ -317,12 +449,9 @@ export function formatMs(ms) {
 }
 
 /**
- * Acceptance criteria typed one per line: "text | verify | test/path.mjs". verify: test, review, manual, e2e, preview
- * (default test when a path is given, otherwise review). Returns the spec array the API expects.
- */
-/**
  * Keeps what the line editor cannot show (approved E2E steps, the expected baseline failure) on the criteria that keep their
- * id and verification kind, so saving a revision never drops them silently.
+ * id and verification kind, so saving a revision never drops them silently. The ids come from parseCriteriaLines(text, previous):
+ * a criterion keeps its id only when its line still names it, so a deleted line's steps never move to the line after it.
  */
 export function mergeCriteria(parsed = [], previous = []) {
   const byId = new Map(previous.map((a) => [a.id, a]));
@@ -333,12 +462,327 @@ export function mergeCriteria(parsed = [], previous = []) {
   });
 }
 
-export function parseCriteriaLines(text = "") {
-  const kinds = new Set(["test", "review", "manual", "e2e", "preview"]);
-  return String(text).split("\n").map((l) => l.trim()).filter(Boolean).slice(0, 20).map((line, i) => {
-    const [body, second = "", third = ""] = line.split("|").map((s) => s.trim());
-    const verify = kinds.has(second) ? second : third ? "test" : second && /[/.]/.test(second) ? "test" : second ? "review" : "review";
-    const testRef = kinds.has(second) ? third : second && /[/.]/.test(second) ? second : "";
-    return { id: `AC-${i + 1}`, text: body, verify, ...(testRef ? { testRef } : {}) };
+const CRITERION_KINDS = new Set(["test", "review", "manual", "e2e", "preview"]);
+const CRITERION_ID_PREFIX = /^(AC-\d{1,3})\s*:\s*/i;
+const looksLikePath = (s) => /^\S+$/.test(s) && /[/.]/.test(s);
+
+/** One criterion as an editor line: „AC-2: text | verify | test/path.mjs”. The id keeps its identity when lines are deleted or moved. */
+export function criterionLine(a) {
+  return `${a.id ? `${a.id}: ` : ""}${a.text} | ${a.verify}${a.testRef ? ` | ${a.testRef}` : ""}`;
+}
+
+/**
+ * Acceptance criteria typed one per line: "[AC-n:] text | verify | test/path.mjs". verify: test, review, manual, e2e, preview (default
+ * test when a path is given, otherwise review). Returns the spec array the API expects. The verification kind and the path are read
+ * from the END of the line, so a „|” inside the criterion's text stays part of the text. A line that names its id („AC-3: …”, as the
+ * editor writes it) keeps that id; a new line gets an id that no previous criterion (`previous`) and no other line used, so it never
+ * inherits a deleted criterion's E2E steps or expected failure. Without `previous` and without written ids the ids are AC-1, AC-2… in
+ * order, as before.
+ */
+export function parseCriteriaLines(text = "", previous = []) {
+  const rows = String(text).split("\n").map((l) => l.trim()).filter(Boolean).slice(0, 20).map((line) => {
+    const named = line.match(CRITERION_ID_PREFIX);
+    const parts = (named ? line.slice(named[0].length) : line).split("|").map((s) => s.trim());
+    const n = parts.length;
+    let verify = "review"; let testRef = ""; let used = 0;
+    // The kind written last wins („x | test | review” is the text „x | test”, verified by review); then „kind | path”; then a bare path.
+    if (n >= 2 && CRITERION_KINDS.has(parts[n - 1])) { verify = parts[n - 1]; used = 1; }
+    else if (n >= 3 && CRITERION_KINDS.has(parts[n - 2])) { verify = parts[n - 2]; testRef = parts[n - 1]; used = 2; }
+    else if (n >= 2 && looksLikePath(parts[n - 1])) { verify = "test"; testRef = parts[n - 1]; used = 1; }
+    const num = named ? Number(named[1].slice(3)) : 0;
+    return { id: num >= 1 && num <= 999 ? `AC-${num}` : null, text: parts.slice(0, n - used).join(" | "), verify, testRef };
   });
+  const taken = new Set();
+  for (const r of rows) {
+    if (r.id && taken.has(r.id)) r.id = null;
+    else if (r.id) taken.add(r.id);
+  }
+  const number = (id) => Number(String(id || "").replace(/^AC-/i, "")) || 0;
+  const used = new Set([...previous.map((a) => number(a.id)), ...[...taken].map(number)]);
+  let next = Math.max(0, ...used);
+  // A new id above every previous one; past AC-999 (the server's limit) the lowest id no previous criterion and no line has used.
+  const fresh = () => {
+    if (next < 999) { next += 1; used.add(next); return `AC-${next}`; }
+    for (let k = 1; k <= 999; k += 1) if (!used.has(k)) { used.add(k); return `AC-${k}`; }
+    return null;
+  };
+  return rows.map((r) => ({ id: r.id || fresh(), text: r.text, verify: r.verify, ...(r.testRef ? { testRef: r.testRef } : {}) }));
+}
+
+// ---------------------------------------------------------------- M10: Lega's one-click start
+/** Plain hints for the checks that can still block a one-click start (the authority checks are the Hub's own business now). */
+export const LEGA_CHECK_HINTS = Object.freeze({
+  // M10.2 (D13): after the owner's own pause „Continuă” reopens the gate. M10.2.1 (D14): every other suspension (Stop All, a palette
+  // pause, the Hub's shutdown…) is reopened by the rearm card — the owner session + a fresh Windows Hello — never an admin pointer.
+  execution_gate: "Poarta e suspendată. După pauza ta spune sau scrie „Continuă”; altfel o redeschizi cu Windows Hello, din cardul „Redeschide poarta” (aici sau în cockpit). Nimic vechi nu repornește singur.",
+  lega_consent: "Înregistrează acordul de mai sus (o singură dată).",
+  billing_route: "Integrări → Codex: declarația de abonament, în sesiunea ta.",
+  realtime_config: "Integrări → Inspectează instalarea.",
+  // M10.2: the real fix for a project's isolation is its route + the attested environment (System → Medii), not the Codex ACL panel.
+  isolation: "Sistem → Medii: ruta proiectului și atestarea mediului izolat ifrim-runner (acordul Codex pentru Windows rămâne în Integrări → Izolare).",
+  circuit_breaker: "Codex a eșuat de mai multe ori; reîncearcă după ora afișată.",
+  single_session: "O sesiune Lega e deja pornită.",
+  concurrency: "Prea multe execuții AI rulează acum; așteaptă să se termine una.",
+  derived_rate: "Limita de porniri a fost atinsă; reîncearcă după timpul afișat.",
+  // D23: the Hub checked the Codex account by itself as often as it may in this window; the owner's own check is the way until then.
+  account_refresh_rate: "Hub-ul a verificat singur contul Codex de prea multe ori în acest interval; așteaptă timpul afișat sau rulează „Verifică contul” în Integrări → Codex.",
+});
+/**
+ * Under the legacy policy (no voice-first) an owner without a registered authenticator has no rearm card: the typed gate opening in
+ * Integrations stays the administrative way, so the legacy hint still names it. Never shown under voice-first (legaCheckHint).
+ */
+export const LEGA_CHECK_HINTS_LEGACY = Object.freeze({
+  execution_gate: "Poarta e suspendată. După pauza ta spune sau scrie „Continuă”; altfel o redeschizi cu Windows Hello, din cardul „Redeschide poarta” (sesiunea ta de proprietar), sau — fără sesiune — din Integrări → Avansat (OPEN GATE, cale de administrare).",
+});
+/** The hint for one failing Lega start check, for the policy in force (voice-first unless the page knows otherwise). */
+export function legaCheckHint(id, { voiceFirst = true } = {}) {
+  const key = String(id || "");
+  if (!voiceFirst && Object.hasOwn(LEGA_CHECK_HINTS_LEGACY, key)) return LEGA_CHECK_HINTS_LEGACY[key];
+  return Object.hasOwn(LEGA_CHECK_HINTS, key) ? LEGA_CHECK_HINTS[key] : null;
+}
+const LEGA_AUTHORITY_CHECKS = new Set(["mode", "voice_grant"]);
+/**
+ * D23: the Codex account check („Verifică contul”) goes stale after 24 h. On the one-click path the Hub runs it by itself at start
+ * (a few seconds, no inference), so the page never sends the owner to Integrări for it: a hint before the start, a line during it.
+ */
+export const LEGA_ACCOUNT_AUTO_HINT = "Hub-ul verifică singur contul Codex la pornire (câteva secunde, fără inferență); nu ai nimic de făcut în Integrări.";
+export const LEGA_START_CHECKING = "Verific contul și pornesc…";
+/**
+ * What the start needs, from GET /api/lega. Under the voice-first policy, when the click will derive the authority (no owner
+ * session yet, or the presented one must be reopened), mode / voice_grant are never blockers: they mean "open your session" and the
+ * click does it (Windows Hello). Real blockers (the gate after Stop All, the consent, billing, the start limit…) are listed alone, so
+ * the page never points to the old manual path for them. Under the legacy policy every failing check blocks.
+ * D23: a failing check the Hub marked `auto` (it only lacks a fresh account check, which the derived start runs itself) is never a
+ * blocker and never in `failed`: it is listed in `auto`, `accountCheck` says the start will check the account, and — because only a
+ * DERIVED start does that — a click without an owner session opens the session first. The Hub marks `auto` only under voice-first.
+ * Once the automatic check's limit is reached the Hub marks those checks `limited` instead and adds the `account_refresh_rate`
+ * blocker: the `limited` ones are left out of `failed` (their own hints would point the wrong way), the rate check blocks and says when.
+ */
+export function legaStartReadiness(d) {
+  const p = d?.preview || {};
+  const unmet = (p.checks || []).filter((c) => !c.ok);
+  const auto = unmet.filter((c) => c.auto === true);
+  const limited = unmet.filter((c) => c.limited === true);
+  const failed = unmet.filter((c) => c.auto !== true && c.limited !== true);
+  const authFailed = failed.filter((c) => LEGA_AUTHORITY_CHECKS.has(c.id));
+  const policyActive = Boolean(d?.owner?.policyActive ?? p.policyActive);
+  const willDerive = policyActive && (!d?.owner?.session || Boolean(p.needSession));
+  const blocking = willDerive ? failed.filter((c) => !LEGA_AUTHORITY_CHECKS.has(c.id)) : failed;
+  const needsSession = willDerive && (authFailed.length > 0 || Boolean(p.needSession) || auto.length > 0);
+  const authorityOnly = failed.length > 0 && authFailed.length === failed.length;
+  const needsPolicy = !policyActive && authorityOnly;
+  // M10.2.1: `gateSuspended` — the execution gate is a real blocker of this start; the panel shows the rearm card next to the hint.
+  return { failed, blocking, authorityOnly, needsSession, needsPolicy, willDerive, sessionProblem: p.sessionProblem || null,
+    ready: failed.length === 0, derived: p.authority === "owner_session", policyActive, gateSuspended: blocking.some((c) => c.id === "execution_gate"),
+    auto, limited, accountCheck: auto.length > 0 && blocking.length === 0 && !needsPolicy };
+}
+
+// ---------------------------------------------------------------- M10.2 (U15): plan cards everywhere, old flow as "advanced"
+/**
+ * Gate checks a confirmed plan arranges by itself (kept in sync with server/owner/envelopes.mjs ENVELOPE_RESOLVES; a test compares
+ * both). A refusal made ONLY of these is not something the owner has to fix by hand (mode, grant, lease, backup): it means "this
+ * should be a plan". Isolation, billing, the gate after Stop All… are real blockers and are shown as they are.
+ */
+export const PLAN_RESOLVED_CHECKS = Object.freeze(["live_grant", "mode", "workspace_lease", "backup", "operational", "concurrency"]);
+/** True when every failing check of a gate refusal / preview is one a plan resolves (and at least one check failed). */
+export function planCoversRefusal(checks = []) {
+  const failed = (Array.isArray(checks) ? checks : []).filter((c) => c && c.ok === false);
+  return failed.length > 0 && failed.every((c) => PLAN_RESOLVED_CHECKS.includes(String(c.id || "").replace(/^(writer|reviewer):/, "")));
+}
+
+/**
+ * The plan a `lega.plan` announcement names, whatever its shape: the intake's live event ({ kind, id, projectId, sessionId }), the
+ * preserved-request re-plan ({ data: { planRef: { kind, id }, projectId, workRequestId } }) or the persisted bus event
+ * ({ scopeType: "work_request", payload: { planRef, projectId } }). → { kind: "envelope"|"ops", id, projectId, sessionId } or null.
+ * Ids are checked by prefix: the page only ever loads a plan through its own read route (the Hub re-checks everything on confirm).
+ */
+export function planRefOfLive(event) {
+  if (!event || event.type !== "lega.plan") return null;
+  const body = event.data || event.payload || {};
+  const ref = event.id ? { kind: event.kind, id: event.id } : body.planRef || null;
+  const id = String(ref?.id || "");
+  const kind = ref?.kind === "ops" || /^opp_/.test(id) ? "ops" : ref?.kind === "envelope" || /^env_/.test(id) ? "envelope" : null;
+  if (!kind || !/^[A-Za-z0-9_-]{4,80}$/.test(id)) return null;
+  return { kind, id, projectId: event.projectId || body.projectId || null, sessionId: event.sessionId || null, workRequestId: body.workRequestId || null };
+}
+
+/** The address shows the cockpit (#/lega, #/lega/<project>; not the setup page). A plain start (#/ or empty) opens it too. */
+export function isCockpitHash(hash = "") {
+  const h = String(hash || "");
+  if (h === "" || h === "#" || h === "#/") return true;
+  return /^#\/lega(\/(?!setup(?:[/?]|$))[^/?]*)?(\?.*)?$/.test(h);
+}
+
+/**
+ * What Lega's arrow (`lega.point` / `lega.prefill`) may do. While a plan is presented, or while the owner is in the cockpit, it never
+ * navigates away (that unmounted the card and lost the armed voice confirmation, P11): the panel shows an inline hint with an
+ * explicit „Deschide” instead. An element of the top bar (no path) is always just pointed at.
+ */
+export function legaPointAction({ path = null, presented = false, hash = "" } = {}) {
+  if (!path) return "point";
+  if (presented || isCockpitHash(hash)) return "hint";
+  return "navigate";
+}
+
+/**
+ * The address an arrow opens. Integrations has no sub-route per panel, so the isolation panel is named by `?panel=isolation`: the page
+ * scrolls to it and the M10.2 probe (owner.nav) counts it as integrations.isolation, not as the live-validation panel.
+ */
+export function legaPointPath(target, path) {
+  if (!path) return null;
+  if (target === "isolation" && /^\/integrations\/?$/.test(String(path))) return "/integrations?panel=isolation";
+  return String(path);
+}
+
+/** Lega's legacy proposals (approval cards); everything else in Approvals keeps its own screen. */
+export const LEGA_APPROVAL_KINDS = Object.freeze(["lega.run_request", "lega.mission_request"]);
+/** Where an "approval needed" toast leads: Lega's own proposals open the Lega panel (their card is there), the rest the Approvals list. */
+export const approvalToastTarget = (event) => (LEGA_APPROVAL_KINDS.includes(event?.payload?.actionKind) || /^lega(:|$)/.test(String(event?.source || "")) ? "lega" : "approvals");
+
+/**
+ * Where a blocker option (owner/blockers.mjs) leads, as ONE next action. Options of a preserved request come back without their
+ * `where` (only kind/code/label are stored), so the known places are mapped here by code; an unknown option is information only.
+ * → { type: "link", href } | { type: "autonomy", level } | { type: "say", text } | { type: "rearm" } | { type: "auto" } | { type: "refused" } | { type: "info" }.
+ * M10.2.1 (D14): a suspended gate is never a link to an administration page. The owner's own pause → „Continuă”; a rearmable
+ * suspension → { type: "rearm" } (the cockpit's rearm card: owner session + a fresh Windows Hello); otherwise the Hub's honest reason
+ * (a stop still being confirmed…) is information only.
+ */
+const BLOCKER_WHERE = Object.freeze({
+  HOST_R2_OPEN: "#/system?tab=environments", ENV_UNAVAILABLE: "#/system?tab=environments", ENV_NOT_ATTESTED_CANARY: "#/system?tab=environments",
+  ENV_ATTESTATION_EXPIRED: "#/system?tab=environments", ENV_FINGERPRINT_CHANGED: "#/system?tab=environments", ENV_NOT_ATTESTED: "#/system?tab=environments",
+  ENV_ATTESTATION_FAILED: "#/system?tab=environments", ENV_BOUNDARY: "#/system?tab=environments", ENV_POLICY_B_NEEDED: "#/system?tab=environments",
+  ENV_STAGES_OUTSIDE: "#/system?tab=environments", BILLING_DECLARATION: "#/integrations", ISOLATION_OTHER: "#/integrations?panel=isolation",
+  // M10.2 (#27): a changed ffmpeg/ffprobe is acknowledged in the Studio's Unelte panel (Studio.jsx → ToolsPanel), named by ?panel=tools.
+  PROJECT_SCOPE: "#/projects", MEDIA_TOOLS_CHANGED: "#/studio?panel=tools",
+});
+const SAFE_HREF = /^#\/[a-z][a-z0-9/_-]*(\?[a-z0-9=&_-]*)?$/i;
+export function blockerAction(option = {}) {
+  const kind = String(option.kind || ""); const code = String(option.code || "");
+  if (kind === "refused") return { type: "refused" };
+  if (kind === "automatic_readiness") return { type: "auto" };
+  if (kind === "rearm") return code === "GATE_SUSPENDED" ? { type: "rearm" } : { type: "info" };
+  if (kind === "owner_decision_inline") {
+    if (code === "AUTONOMY_OBSERVE") return { type: "autonomy", level: "ASSISTED" };
+    if (code === "GATE_SUSPENDED") return { type: "say", text: "Continuă" };
+    if (code === "PROJECT_FROZEN") return { type: "say", text: "Dezgheață" };
+    return { type: "info" };
+  }
+  // M10.2.1 (D14): the gate is reopened in the cockpit (rearm card) or by „Continuă”, never through an administration page — whatever
+  // `where` an older server or a stored option still carries.
+  if (code === "GATE_SUSPENDED") return { type: "info" };
+  // The R2 risk acceptance is the admin escape hatch of HOST_R2_OPEN; the separate decision of the same code is the environment route.
+  const given = option.where && SAFE_HREF.test(String(option.where)) ? String(option.where) : null;
+  const r2Admin = kind === "admin" && code === "HOST_R2_OPEN" ? "#/integrations?panel=isolation" : null;
+  const where = given || r2Admin || BLOCKER_WHERE[code] || null;
+  return where ? { type: "link", href: where } : { type: "info" };
+}
+
+/** The Studio's Unelte panel (#/studio?panel=tools, Studio.jsx → ToolsPanel). */
+export const STUDIO_TOOLS_HREF = "#/studio?panel=tools";
+const MEDIA_TOOL_LABELS = Object.freeze({ PINNED: "fixat", UNPINNED: "nefixat", CHANGED: "schimbat", MISSING: "lipsă" });
+
+/**
+ * M10.2 (#27) — what the Studio → Unelte panel shows from GET /api/media/tools ({ tools, pins }), and the ONE action each state allows.
+ * Pure (tested in node). The identity the owner SEES is the identity posted, so the Hub refuses a binary (or a DLL set) that changed
+ * again in between instead of pinning / acknowledging something unseen:
+ *  - UNPINNED (and nothing missing) → „Fixează”: POST /api/media/tools/pin with `expect` = the displayed identity of both tools
+ *    (the pin is also allowed from the UI channel; nothing about it needs Windows Hello);
+ *  - CHANGED → „Confirmă schimbarea”: POST /api/media/tools/:tool/acknowledge with the displayed sha256, shared-library hash ("none" for
+ *    a static build) and version; owner-only, so a missing session opens Windows Hello once (withReauth);
+ *  - MISSING → no action (ffmpeg is installed outside the Hub); PINNED → nothing to do.
+ * → { rows: [{ tool, state, label, tone, version, sha256, libsSha256, path, pinnedAt, pinnedBy, previous, action }], pin, usable, missing }.
+ */
+export function mediaToolsPanel(data) {
+  const tools = data?.tools || {};
+  const pins = data?.pins || {};
+  const rows = ["ffmpeg", "ffprobe"].map((tool) => {
+    const info = tools[tool] || null;
+    const state = tools.states?.[tool] || info?.state || "MISSING";
+    const pin = pins[tool] || null;
+    const shown = info?.sha256 ? { sha256: String(info.sha256), libsSha256: info.libsSha256 ? String(info.libsSha256) : null, version: info.version ? String(info.version) : null } : null;
+    const action = state === "CHANGED" && shown
+      ? { type: "acknowledge", label: "Confirmă schimbarea", owner: true, path: `/api/media/tools/${tool}/acknowledge`,
+        body: { sha256: shown.sha256, libsSha256: shown.libsSha256 || "none", ...(shown.version ? { version: shown.version } : {}) } }
+      : null;
+    return { tool, state, label: MEDIA_TOOL_LABELS[state] || state, tone: state === "PINNED" ? "ok" : state === "MISSING" ? "danger" : "warn",
+      version: shown?.version || null, sha256: shown?.sha256 || null, libsSha256: shown?.libsSha256 || null, path: info?.path || null,
+      pinnedAt: pin?.pinnedAt || null, pinnedBy: pin?.pinnedBy || null, previous: pin?.previous || null, action };
+  });
+  const missing = rows.some((r) => r.state === "MISSING" || !r.sha256);
+  const pin = !missing && rows.some((r) => r.state === "UNPINNED")
+    ? { type: "pin", label: "Fixează", owner: false, path: "/api/media/tools/pin",
+      body: { reason: "Studio → Unelte", expect: Object.fromEntries(rows.map((r) => [r.tool, { sha256: r.sha256, libsSha256: r.libsSha256, version: r.version }])) } }
+    : null;
+  return { rows, pin, usable: tools.usable === true, missing };
+}
+
+// ---------------------------------------------------------------- M10.2 review #37–#39, #41, #42: which card takes the focus
+/**
+ * What the cockpit does with a `lega.plan` (planRefOfLive). Only a plan THIS tab asked for — its own Lega voice session (ref.sessionId
+ * equals the store's legaSessionId), a send() of this tab still in flight (the live event can arrive before the HTTP answer; a typed
+ * request has sessionId null), or the owner's own click on „Arată planul” (`explicit`) — may take the focus or switch the project.
+ * Anything else (another tab, a kept request that became plannable) is shown without focus here, or offered as „Deschide planul”:
+ * a focused card turns the owner's next Enter into a confirmation of something they did not just ask for (#38). A plan of another
+ * project never unmounts a plan on screen (presentedId: the plan this cockpit presents now): a toast instead (#39, like the shell).
+ * 2.12.1 (UI-07): `reproposed` — the plan the Hub re-proposed for the request a rearm card was just confirmed for — is NEVER this tab's
+ * own, whatever is in flight (a typed send, the rearm's answer): shown without focus, or offered as a toast for another project.
+ * → { action: "show", focus } | { action: "navigate", path } | { action: "toast", path } | { action: "ignore" }.
+ */
+export function cockpitPlanAction({ ref, pid = "", legaSessionId = null, sendInFlight = false, explicit = false, presentedId = null, reproposed = false } = {}) {
+  if (!ref?.id || !["envelope", "ops"].includes(ref.kind)) return { action: "ignore" };
+  const own = reproposed !== true && Boolean(explicit || sendInFlight || (ref.sessionId && legaSessionId && ref.sessionId === legaSessionId));
+  const path = ref.projectId ? `/lega/${ref.projectId}` : "/lega";
+  // An operation plan belongs to the company (no project): it is shown in whatever cockpit is open.
+  if (ref.kind === "envelope" && ref.projectId && ref.projectId !== String(pid || "")) {
+    const otherPresented = Boolean(presentedId && presentedId !== ref.id);
+    return own && !otherPresented ? { action: "navigate", path } : { action: "toast", path };
+  }
+  return { action: "show", focus: own };
+}
+
+/**
+ * A card focuses itself only for a focus request naming IT ({ kind, id, tick, at }), once per request (handledTick), and only while the
+ * request is fresh: a card restored later (a reload read model, another env) never re-fires an old request (#37/#38).
+ */
+export const FOCUS_REQUEST_MAX_AGE_MS = 8000;
+export function cardFocusWanted(request, { kind, id, handledTick = null, now = Date.now(), maxAgeMs = FOCUS_REQUEST_MAX_AGE_MS } = {}) {
+  if (!request || !id || request.kind !== kind || request.id !== id || request.tick === handledTick) return false;
+  return !(Number.isFinite(request.at) && now - request.at > maxAgeMs);
+}
+
+const NON_TEXT_INPUTS = new Set(["button", "checkbox", "radio", "submit", "reset", "range", "color", "file", "image", "hidden"]);
+/**
+ * The owner is typing somewhere else: an editable element OUTSIDE the card (the composer, a field) that holds text. The card then
+ * never steals the focus (the next Enter would confirm instead of sending the sentence, #38). Works on any element-like object.
+ */
+export function holdsTypedText(active, container = null) {
+  if (!active) return false;
+  if (container && typeof container.contains === "function" && container.contains(active)) return false;
+  if (active.isContentEditable) return String(active.textContent || "").trim() !== "";
+  const tag = String(active.tagName || "").toUpperCase();
+  if (tag === "TEXTAREA") return String(active.value || "") !== "";
+  if (tag === "INPUT") return !NON_TEXT_INPUTS.has(String(active.type || "text").toLowerCase()) && String(active.value || "") !== "";
+  return false;
+}
+
+/**
+ * The shell's answer to a `lega.plan` (#41): a plan of THIS tab's voice session closes the full-screen stage (the modal covers the
+ * cockpit card and the toasts) and opens the cockpit when it is not on screen; anything else only offers „Deschide planul” and keeps
+ * the stage as it is (the cockpit underneath shows that plan without focus).
+ */
+export function shellPlanAction({ ref, mine = false, onCockpit = false, stageOpen = false } = {}) {
+  if (!ref?.id) return { closeStage: false, navigate: null, toast: null };
+  const path = ref.projectId ? `/lega/${ref.projectId}` : "/lega";
+  const own = Boolean(ref.sessionId && mine);
+  return { closeStage: own && stageOpen, navigate: own && !onCockpit ? path : null, toast: !own && !onCockpit ? path : null };
+}
+
+/** „Ridică la Asistat” is offered only while the project really is on Observ (the cockpit's own level, not a stale option, #42). */
+export const autonomyRaiseOffered = (projectLevel) => projectLevel === "OBSERVE";
+
+/** Whether the Studio shows the Unelte panel: asked by the address (?panel=tools), or the last inspection says renders are refused. */
+export function studioToolsPanelOpen(query, statusTools) {
+  if (query?.panel === "tools") return true;
+  const problems = Array.isArray(statusTools?.problems) ? statusTools.problems : [];
+  return problems.includes("tool_changed") || problems.includes("tools_not_pinned");
 }

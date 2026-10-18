@@ -1,0 +1,23 @@
+{
+  "comment": "M11 L5 author fixture (fake-claude author:bug-env-flip): bug-ok whose control also reads a marker file in the OS temp folder (outside the project). The integration test creates the marker after the proof, so the baseline fails differently from the two proof runs: an unstable test that must never reach the writer.",
+  "body": [
+    "test(\"AC-1: un nume format doar din spații este refuzat\", async () => {",
+    "  const { validateRequest } = await load(\"../../src/requests.js\");",
+    "  const r = validateRequest({ name: \"   \", email: \"ana@example.ro\", service: \"audit\" });",
+    "  assert.equal(r.ok, false, \"numele din spații trebuie refuzat\");",
+    "});",
+    "",
+    "test(\"AC-1 control: un nume obișnuit este acceptat\", async () => {",
+    "  const { validateRequest } = await load(\"../../src/requests.js\");",
+    "  assert.equal(validateRequest({ name: \"Ana\", email: \"ana@example.ro\", service: \"audit\" }).ok, true);",
+    "  assert.equal(fs.existsSync(path.join(os.tmpdir(), \"ifrim-l5-baseline-flip\")), false, \"mediul testului s-a schimbat\");",
+    "});"
+  ],
+  "manifest": {
+    "needs": ["node:fs", "node:path", "node:os"],
+    "cases": [
+      { "name": "AC-1: un nume format doar din spații este refuzat", "criterion": "AC-1", "kind": "check", "today": "fail" },
+      { "name": "AC-1 control: un nume obișnuit este acceptat", "criterion": "AC-1", "kind": "control", "today": "pass" }
+    ]
+  }
+}

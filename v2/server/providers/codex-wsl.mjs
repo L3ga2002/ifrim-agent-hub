@@ -62,6 +62,9 @@ export function createWslCodexAdapter({ environment }) {
         if (inner.pid) { try { onEvent({ type: "pid", pid: inner.pid }); } catch { /* the record never breaks a run */ } }
         const result = await inner.done;
         innerDone = true;
+        // 2.12.2 (review R3-F5): the provider's turn has settled — the run manager ends the turn's deadline here (the reap and the export
+        // below are not the turn and are never cut as a timeout).
+        try { onEvent({ type: "turn_settled" }); } catch { /* the deadline then falls back to the supervisor record */ }
         // 4. Nothing is read back while a process of the run could still write: the app-server is gone (inner finally),
         //    then every remaining process of this workspace is ended.
         // Alone in the environment: every process of the runner user goes (one that left the workspace and dropped the

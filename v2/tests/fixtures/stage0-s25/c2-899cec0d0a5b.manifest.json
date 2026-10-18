@@ -1,0 +1,43 @@
+{
+ "testSlot": "663e4dae3d20",
+ "needs": [
+  "node:path",
+  "node:os",
+  "node:fs",
+  "node:sqlite",
+  "node:http"
+ ],
+ "api": "createApp({ dbPath, now, seed }) returnează un handler care exclude câmpul phone din obiectele de programare ale răspunsului GET /api/bookings; semnătura și comportamentul pentru POST rămân neschimbate.",
+ "cases": [
+  {
+   "name": "AC-1: Lista publică a zilei nu conține câmpul phone pentru nicio programare",
+   "criterion": "AC-1",
+   "kind": "check",
+   "today": "fail"
+  },
+  {
+   "name": "AC-2: Parametrii suplimentari nu fac telefonul să apară în lista publică",
+   "criterion": "AC-2",
+   "kind": "check",
+   "today": "fail"
+  },
+  {
+   "name": "AC-3 control: programare fără telefon este refuzată și nu se salvează nimic",
+   "criterion": "AC-3",
+   "kind": "control",
+   "today": "pass"
+  },
+  {
+   "name": "AC-4 control: telefonul este păstrat exact în stocarea internă a aplicației",
+   "criterion": "AC-4",
+   "kind": "control",
+   "today": "pass"
+  },
+  {
+   "name": "AC-5 control: programare validă cu telefon este acceptată",
+   "criterion": "AC-5",
+   "kind": "control",
+   "today": "pass"
+  }
+ ]
+}

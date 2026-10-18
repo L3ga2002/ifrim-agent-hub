@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { Mic, MicOff, X, Send, Volume2, VolumeX, AlertTriangle } from "lucide-react";
 import { api } from "../api.js";
-import { useHub, setState, pushToast, useResource } from "../store.js";
+import { useHub, setState, getState, pushToast, useResource } from "../store.js";
 import { parseLocalCommand } from "../lib/uiLogic.js";
 
 // VoiceProvider (separate from any LLM provider). Push-to-talk only; the Hub never stores audio. Local voice
@@ -103,6 +103,9 @@ export function VoiceControl({ go, compact = false }) {
   const start = async () => {
     if (needsSetup) { setPhase("setup"); return; }
     if (!Recognition || phase === "listening") return;
+    // One L3ga screen (2026-10-18): one audio capture at a time — while Lega's voice session holds the microphone, this button does not open a second one.
+    const lega = getState()?.legaStatus;
+    if (lega && lega !== "off") { setResult({ kind: "error", reason: "Vocea Lega e pornită și folosește microfonul: vorbește direct cu Lega (o singură captură audio)." }); setPhase("error"); return; }
     window.speechSynthesis?.cancel(); // never capture our own playback
     const rec = new Recognition();
     rec.lang = settings?.language || "ro-RO";

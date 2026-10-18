@@ -6,7 +6,7 @@ import { HubError } from "../core/errors.mjs";
 import { newId } from "../core/ids.mjs";
 import { json, parse } from "../storage/db.mjs";
 import { createCodexAdapter, MCP_NAME_ADDRESSABLE } from "../providers/codex.mjs";
-import { CLAUDE_KNOWN_FLAGS } from "../providers/claude.mjs";
+import { CLAUDE_KNOWN_FLAGS, claudeAuthFacts } from "../providers/claude.mjs";
 import { ENV_POLICY_TEXT } from "../policy/isolation.mjs";
 import { WSL_RUNNER, resolveWsl, wslArgs, runInDistro, runScript, parseKeyValues, assertWorkspacePath, cleanWslText } from "./wsl.mjs";
 import { BWRAP, reviewerArgs, CLAUDE_IN_SANDBOX, CLAUDE_PKG } from "./sandbox-profiles.mjs";
@@ -175,7 +175,9 @@ export function wslCodexLauncher({ config, env = WSL_RUNNER, state }) {
  * (C16), the attestation (canary C1–C17), and the per-run workspace lifecycle (prepare → export → validate → apply → reap →
  * release). Never a model: no thread or turn is started here.
  */
-export function createWslRunnerEnvironment({ config, db, bus, clock, providerState, supervisor, env = WSL_RUNNER, homeDir }) {
+export function createWslRunnerEnvironment({ config, db, bus, clock, providerState, supervisor, env = WSL_RUNNER, homeDir, identitySalt = null }) {
+  // M09-A2: the same salt as the Windows adapters, so the same account has the same pseudonym on both routes.
+  const salt = () => { try { return typeof identitySalt === "function" ? identitySalt() : null; } catch { return null; } };
   const stateKey = `env:${env.id}`;
   const probeKey = `codex@${env.id}`;
   const reviewerKey = `claude@${env.id}`;
@@ -186,7 +188,7 @@ export function createWslRunnerEnvironment({ config, db, bus, clock, providerSta
   const launcher = wslCodexLauncher({ config, env, state });
   // The test fixture stands in for wsl.exe: everything it produces is labelled simulated, never a WSL proof.
   const simulated = Boolean(resolveWsl(config)?.fixture);
-  const codex = createCodexAdapter({ config, supervisor, homeDir, launcher });
+  const codex = createCodexAdapter({ config, supervisor, homeDir, launcher, identitySalt });
 
   const store = (value) => { providerState.set(stateKey, value); return value; };
   const now = () => clock().toISOString();
@@ -262,7 +264,7 @@ export function createWslRunnerEnvironment({ config, db, bus, clock, providerSta
     return { valid: true, reason: `Atestat ${latest.finishedAt} pe amprenta ${latest.fingerprintHash}`, latest };
   }
 
-  async function attest({ actor = "user", channel = "ui", allowRestart = true } = {}) {
+  async function attest({ actor = "user", channel = "ui", allowRestart = true, expectFingerprint = null } = {}) {
     if (attesting) throw new HubError("conflict", "O atestare rulează deja");
     attesting = true;
     const id = newId("att");
@@ -270,12 +272,21 @@ export function createWslRunnerEnvironment({ config, db, bus, clock, providerSta
     try {
       const before = await inspect();
       if (!before.installed) throw new HubError("transport", before.error || "Mediul nu este disponibil");
+      // M10.2 review #35: an automatic re-attestation was decided on the fingerprint the readiness step inspected (= approval (b) = the
+      // latest PASS); THIS fresh inspection is what gets attested. A distro that changed in between (an update, a package installed)
+      // is refused here — before the canary and its C15 restart — so a fingerprint the owner never approved is never attested by itself.
+      if (expectFingerprint && before.fingerprint?.hash !== expectFingerprint) {
+        throw new HubError("policy", `Amprenta mediului s-a schimbat între verificare și atestare (${String(expectFingerprint).slice(0, 16)} → ${String(before.fingerprint?.hash || "—").slice(0, 16)}); o amprentă nouă se atestă doar de tine (Sistem → Medii)`);
+      }
       const canary = await runCanary({ config, env,
         c14: () => exerciseExportValidator({ service, workDir: workRoot }),
         c16: async () => (await probeAccount()).c16,
         allowRestart: () => allowRestart && users.size === 0 });
       const after = await inspect();
-      const { status, summary, stages } = attestationStatusOf({ canary, before, after, simulated });
+      const computed = attestationStatusOf({ canary, before, after, simulated });
+      // Defence in depth (#35): a distro that changed DURING an automatic run is recorded, never as a PASS.
+      const drifted = Boolean(expectFingerprint) && after.fingerprint?.hash !== expectFingerprint && /^PASS/.test(String(computed.status));
+      const { status, summary, stages } = drifted ? { ...computed, status: "FAIL", summary: `Amprenta s-a schimbat în timpul atestării automate (${String(after.fingerprint?.hash || "—").slice(0, 16)}); ${computed.summary}` } : computed;
       bus.transaction(() => {
         db.prepare(`INSERT INTO environment_attestations (id, environment_id, status, fingerprint_hash, fingerprint_json, canary_version, checks_json, stages_json, summary, actor, channel, started_at, finished_at, created_at)
           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(id, env.id, status, before.fingerprint?.hash || "", json({ ...before.fingerprint, after: after.fingerprint?.hash || null }),
@@ -514,7 +525,7 @@ export function createWslRunnerEnvironment({ config, db, bus, clock, providerSta
    * The reviewer's account check through the environment (M07; the reviewer's C16): `claude --version`, `--help` (which of
    * the flags the Hub passes it lists) and `claude auth status --json`, each inside the EXACT production reviewer sandbox
    * (reviewerArgs), in an empty workspace — no prompt, no model. Only loggedIn/authMethod/apiProvider/subscriptionType are
-   * kept. Stored as the provider state of `claude@wsl-runner`, bound to the fingerprint (probeProblem: 24 h).
+   * kept, plus (M09-A2) the salted account pseudonym. Stored as the provider state of `claude@wsl-runner`, bound to the fingerprint (probeProblem: 24 h).
    */
   async function probeReviewer() {
     users.set("reviewer-probe", "reviewer account check");
@@ -529,21 +540,31 @@ export function createWslRunnerEnvironment({ config, db, bus, clock, providerSta
         installation: { installed: Boolean(facts.claude_cli && facts.claude_sha), binary: `wsl:${env.distro}:${CLAUDE_PKG}`, source: env.id, version: facts.claude_cli ? `${facts.claude_cli} (Claude Code)` : null } };
       const store = (extra) => { const v = { ...value, ...extra }; providerState.set(reviewerKey, v); return { ...v, lines: reviewerLines(v) }; };
       if (!value.installation.installed) return store({ ok: false, error: `Claude Code nu este instalat în ${env.id}` });
-      const prep = await runScript(config, env, SCRIPTS.prepare, [ws], { timeoutMs: 120000 });
-      if (prep.code !== 0) throw new HubError("transport", `Workspace-ul de verificare nu a putut fi creat: ${parseKeyValues(prep.text).error || prep.stderr.slice(0, 200)}`);
-      created = true;
-      const inSandbox = (args, timeoutMs = 90000) => runInDistro(config, env, { cwd: `${ws}/repo`, vars: { IFRIM_RUN: id }, timeoutMs, maxStdout: 512 * 1024,
-        argv: [BWRAP, ...reviewerArgs({ repo: `${ws}/repo`, marker: id }), CLAUDE_IN_SANDBOX, ...args] });
-      const text = (r) => cleanWslText(r.stdout.toString("utf8"));
-      const version = await inSandbox(["--version"], 60000);
-      const help = await inSandbox(["--help"], 60000);
-      const status = await inSandbox(["auth", "status", "--json"]);
-      let parsed = null;
-      try { parsed = JSON.parse(text(status)); } catch { /* reported below */ }
-      value.installation.version = text(version).trim().split("\n")[0].slice(0, 80) || value.installation.version;
-      value.installation.flags = CLAUDE_KNOWN_FLAGS.filter((flag) => text(help).includes(flag));
-      if (version.code !== 0 || !parsed) return store({ ok: false, error: `claude în sandbox-ul reviewer-ului: exit ${version.code}/${status.code} ${status.stderr.slice(0, 160)}` });
-      return store({ ok: true, auth: { loggedIn: Boolean(parsed.loggedIn), authMethod: parsed.authMethod || null, apiProvider: parsed.apiProvider || null, subscriptionType: parsed.subscriptionType || null } });
+      try {
+        const prep = await runScript(config, env, SCRIPTS.prepare, [ws], { timeoutMs: 120000 });
+        if (prep.code !== 0) throw new HubError("transport", `Workspace-ul de verificare nu a putut fi creat: ${parseKeyValues(prep.text).error || prep.stderr.slice(0, 200)}`);
+        created = true;
+        const inSandbox = (args, timeoutMs = 90000) => runInDistro(config, env, { cwd: `${ws}/repo`, vars: { IFRIM_RUN: id }, timeoutMs, maxStdout: 512 * 1024,
+          argv: [BWRAP, ...reviewerArgs({ repo: `${ws}/repo`, marker: id }), CLAUDE_IN_SANDBOX, ...args] });
+        const text = (r) => cleanWslText(r.stdout.toString("utf8"));
+        const version = await inSandbox(["--version"], 60000);
+        const help = await inSandbox(["--help"], 60000);
+        const status = await inSandbox(["auth", "status", "--json"]);
+        let parsed = null;
+        try { parsed = JSON.parse(text(status)); } catch { /* reported below */ }
+        value.installation.version = text(version).trim().split("\n")[0].slice(0, 80) || value.installation.version;
+        value.installation.flags = CLAUDE_KNOWN_FLAGS.filter((flag) => text(help).includes(flag));
+        if (version.code !== 0 || !parsed) return store({ ok: false, error: `claude în sandbox-ul reviewer-ului: exit ${version.code}/${status.code} ${status.stderr.slice(0, 160)}` });
+        // M09-A2: the reviewer's own login gets its own pseudonym (claudeAuthFacts); a declaration made for another account blocks
+        // this route. Any identifier the CLI printed is discarded here.
+        return store({ ok: true, auth: claudeAuthFacts(parsed, { salt: salt() }) });
+      } catch (error) {
+        // 2.12.1 round 2 (PF-06): a check that THREW after the inspection (the workspace could not be prepared, a distro call failed) is
+        // stored like a handled failure — fresh, bound to this fingerprint, with its cause — so the setup step and the overview show the
+        // cause instead of an old state „older than 24 h” that every click re-probes. The caller still gets the error.
+        try { store({ ok: false, error: String(error?.message || error).slice(0, 300) }); } catch { /* the original error is what the caller needs */ }
+        throw error;
+      }
     } finally {
       if (created) await release(id).catch(() => {});
       users.delete("reviewer-probe");

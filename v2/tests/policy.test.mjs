@@ -1,12 +1,15 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { evaluateRoute, buildChildEnv, scanEnvironment, BILLING_POLICY, ATTESTATION_TEXT } from "../server/policy/billing.mjs";
+import { buildDeclaration } from "../server/policy/billing-evidence.mjs";
 import { CODEX_ALLOWED_METHODS } from "../server/providers/codex.mjs";
 import { CLAUDE_FORBIDDEN_FLAGS } from "../server/providers/claude.mjs";
 import { makeTestHub } from "./helpers.mjs";
 
 const now = new Date("2026-09-29T12:00:00Z");
-const attested = { codex: { confirmedAt: "2026-09-29T10:00:00Z" }, claude: { confirmedAt: "2026-09-29T10:00:00Z" } };
+// M09-A2: billing evidence (a declaration of the current text, 2 h old, unbound) replaces the legacy attestation shape.
+const declared = (provider, at = "2026-09-29T10:00:00Z", text = ATTESTATION_TEXT[provider]) => ({ declaration: buildDeclaration({ id: `bde_${provider}`, provider, text, identity: null, now: new Date(at), source: "test" }) });
+const attested = { codex: declared("codex"), claude: declared("claude") };
 const codexOk = { installed: true, auth: { accountType: "chatgpt", planType: "pro" }, config: { customProvider: null, apiKeyAuthPreferred: false } };
 
 test("T07 BillingPolicy constants deny every paid path", () => {
@@ -15,41 +18,47 @@ test("T07 BillingPolicy constants deny every paid path", () => {
 });
 
 test("T07 Codex API-key account is refused as paid API billing", () => {
-  const result = evaluateRoute("codex", { ...codexOk, auth: { accountType: "apiKey" } }, { attestations: attested, now });
+  const result = evaluateRoute("codex", { ...codexOk, auth: { accountType: "apiKey" } }, { evidence: attested, now });
   assert.equal(result.allowed, false);
   assert.match(result.blockingReasons.join(" "), /API key/);
 });
 
 test("T07 custom model_provider or API-key preference in config.toml is refused", () => {
-  assert.equal(evaluateRoute("codex", { ...codexOk, config: { customProvider: "azure" } }, { attestations: attested, now }).allowed, false);
-  assert.equal(evaluateRoute("codex", { ...codexOk, config: { apiKeyAuthPreferred: true } }, { attestations: attested, now }).allowed, false);
+  assert.equal(evaluateRoute("codex", { ...codexOk, config: { customProvider: "azure" } }, { evidence: attested, now }).allowed, false);
+  assert.equal(evaluateRoute("codex", { ...codexOk, config: { apiKeyAuthPreferred: true } }, { evidence: attested, now }).allowed, false);
 });
 
 test("T07 usage-based plans are never treated as included", () => {
-  const result = evaluateRoute("codex", { ...codexOk, auth: { accountType: "chatgpt", planType: "self_serve_business_usage_based" } }, { attestations: attested, now });
+  const result = evaluateRoute("codex", { ...codexOk, auth: { accountType: "chatgpt", planType: "self_serve_business_usage_based" } }, { evidence: attested, now });
   assert.equal(result.allowed, false);
 });
 
 test("T07 Claude API key, apiKeyHelper or console auth are refused", () => {
   const base = { installed: true, auth: { loggedIn: true, authMethod: "claude.ai", apiProvider: "firstParty", subscriptionType: "max" }, config: { apiKeyHelper: false, riskyEnvInSettings: [] } };
-  assert.equal(evaluateRoute("claude", base, { attestations: attested, now }).allowed, true);
-  assert.equal(evaluateRoute("claude", { ...base, auth: { ...base.auth, authMethod: "api_key" } }, { attestations: attested, now }).allowed, false);
-  assert.equal(evaluateRoute("claude", { ...base, config: { apiKeyHelper: true, riskyEnvInSettings: [] } }, { attestations: attested, now }).allowed, false);
-  assert.equal(evaluateRoute("claude", { ...base, config: { apiKeyHelper: false, riskyEnvInSettings: ["ANTHROPIC_API_KEY"] } }, { attestations: attested, now }).allowed, false);
+  assert.equal(evaluateRoute("claude", base, { evidence: attested, now }).allowed, true);
+  assert.equal(evaluateRoute("claude", { ...base, auth: { ...base.auth, authMethod: "api_key" } }, { evidence: attested, now }).allowed, false);
+  assert.equal(evaluateRoute("claude", { ...base, config: { apiKeyHelper: true, riskyEnvInSettings: [] } }, { evidence: attested, now }).allowed, false);
+  assert.equal(evaluateRoute("claude", { ...base, config: { apiKeyHelper: false, riskyEnvInSettings: ["ANTHROPIC_API_KEY"] } }, { evidence: attested, now }).allowed, false);
 });
 
 test("T07 unverifiable provider-side overage setting blocks until you record the manual check", () => {
-  const result = evaluateRoute("codex", codexOk, { attestations: {}, now });
+  const result = evaluateRoute("codex", codexOk, { evidence: {}, now });
   assert.equal(result.allowed, false);
   assert.match(result.blockingReasons.join(" "), /provider_side_overage_setting/);
-  const expired = evaluateRoute("codex", codexOk, { attestations: { codex: { confirmedAt: "2026-07-01T00:00:00Z" } }, now });
+  const expired = evaluateRoute("codex", codexOk, { evidence: { codex: declared("codex", "2026-07-01T00:00:00Z") }, now });
   assert.equal(expired.allowed, false);
+  assert.deepEqual(expired.checks.find((c) => c.id === "provider_side_overage_setting").evidence.reasons, ["expired"]);
+  // M09-A2: the legacy attestation shape is no longer read — passing only it is "missing" (blocked), never a pass.
+  const legacyOnly = evaluateRoute("codex", codexOk, { attestations: { codex: { confirmedAt: "2026-09-29T10:00:00Z" } }, now });
+  assert.equal(legacyOnly.allowed, false);
+  // A declaration made for another text (the text changed since) needs re-declaring.
+  assert.equal(evaluateRoute("codex", codexOk, { evidence: { codex: declared("codex", "2026-09-29T10:00:00Z", "alt text") }, now }).allowed, false);
   assert.ok(ATTESTATION_TEXT.codex.length > 20 && ATTESTATION_TEXT.claude.length > 20);
 });
 
 test("T07/T12 allowance at the reserve ceiling blocks instead of falling back", () => {
   const usage = { windows: [{ usedPercent: 85 }], ordinaryUsageAllowed: true };
-  const result = evaluateRoute("codex", codexOk, { attestations: attested, now, usage, reservePercent: 20 });
+  const result = evaluateRoute("codex", codexOk, { evidence: attested, now, usage, reservePercent: 20 });
   assert.equal(result.allowed, false);
   assert.match(result.blockingReasons.join(" "), /ceiling/);
 });

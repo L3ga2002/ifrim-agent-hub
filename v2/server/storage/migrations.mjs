@@ -710,4 +710,419 @@ export const MIGRATIONS = [
       `);
     },
   },
+  {
+    version: 8,
+    name: "m08-intel",
+    /**
+     * Milestone 08 (project autopilot & company intelligence). Additive only; every table hangs off the existing model:
+     * - twin_claims: relations the owner or the Hub RECORDED (an observation with a source, a declaration, or a hypothesis). The
+     *   rest of the Digital Twin is derived on read from projects, missions, change sets, decisions and events, never copied.
+     * - incidents / incident_entries: the War Room (the confirmed impact is a separate field from the recommended priority; every
+     *   signal, hypothesis and action keeps its source and its status).
+     * - autopilot_objectives: Project Autopilot (a finite objective, its validated task graph and the envelope that covers it).
+     * - board_meetings / board_items: minutes and decisions of the executive meeting (proposed / decided / deferred).
+     * - simulations: what-if scenarios (always simulated; never mixed into real metrics).
+     * - skill_candidates: Skill Evolution (proposal, diff, evaluation, approval, limited activation, rollback).
+     * - lessons: Teach Lega (the owner's own instructions; a confirmed lesson becomes a memory item).
+     * - devices / device_pairings / device_commands: Personal Mission Control (own pairing, revocable, idempotent commands).
+     * - decision_packages: the owner's contextual decisions (storage and voice protection, the real pilot), option by option.
+     */
+    up(db) {
+      db.exec(`
+        CREATE TABLE twin_claims (
+          id TEXT PRIMARY KEY, project_id TEXT, subject_type TEXT NOT NULL, subject_id TEXT NOT NULL, predicate TEXT NOT NULL,
+          object_type TEXT NOT NULL, object_id TEXT NOT NULL, kind TEXT NOT NULL CHECK (kind IN ('OBSERVED','DECLARED','HYPOTHESIS')),
+          status TEXT NOT NULL DEFAULT 'open' CHECK (status IN ('open','confirmed','refuted','retracted')),
+          source_kind TEXT NOT NULL, source_ref TEXT NOT NULL DEFAULT '', note TEXT NOT NULL DEFAULT '', author TEXT NOT NULL,
+          version INTEGER NOT NULL DEFAULT 1, created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
+        CREATE INDEX idx_twin_claims_project ON twin_claims(project_id, created_at);
+
+        CREATE TABLE incidents (
+          id TEXT PRIMARY KEY, project_id TEXT NOT NULL, title TEXT NOT NULL, status TEXT NOT NULL, reported_text TEXT NOT NULL DEFAULT '',
+          reported_by TEXT NOT NULL, report_source TEXT NOT NULL, priority_recommended TEXT, impact_confirmed_json TEXT,
+          responsible TEXT NOT NULL DEFAULT 'proprietar', version_ref_json TEXT NOT NULL DEFAULT '{}', components_json TEXT NOT NULL DEFAULT '[]',
+          recent_changes_json TEXT NOT NULL DEFAULT '[]', remediation_mission_id TEXT, version INTEGER NOT NULL DEFAULT 1,
+          created_at TEXT NOT NULL, updated_at TEXT NOT NULL, closed_at TEXT);
+        CREATE INDEX idx_incidents_project ON incidents(project_id, status, created_at);
+        CREATE TABLE incident_entries (
+          id TEXT PRIMARY KEY, incident_id TEXT NOT NULL REFERENCES incidents(id),
+          kind TEXT NOT NULL CHECK (kind IN ('signal','hypothesis','action','evidence','note','timeline')),
+          status TEXT NOT NULL DEFAULT 'UNCONFIRMED', text TEXT NOT NULL, source_kind TEXT NOT NULL, source_ref TEXT NOT NULL DEFAULT '',
+          actor TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
+        CREATE INDEX idx_incident_entries ON incident_entries(incident_id, created_at);
+
+        CREATE TABLE autopilot_objectives (
+          id TEXT PRIMARY KEY, project_id TEXT NOT NULL, title TEXT NOT NULL, status TEXT NOT NULL, plan_json TEXT NOT NULL, plan_hash TEXT NOT NULL,
+          criteria_json TEXT NOT NULL DEFAULT '[]', limits_json TEXT NOT NULL DEFAULT '{}', base_snapshot_json TEXT NOT NULL DEFAULT '{}',
+          envelope_id TEXT, created_by TEXT NOT NULL, version INTEGER NOT NULL DEFAULT 1, created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
+        CREATE INDEX idx_autopilot_objectives_project ON autopilot_objectives(project_id, created_at);
+
+        CREATE TABLE board_meetings (
+          id TEXT PRIMARY KEY, title TEXT NOT NULL, period_from TEXT NOT NULL, period_to TEXT NOT NULL, status TEXT NOT NULL,
+          agenda_json TEXT NOT NULL, cursor INTEGER NOT NULL DEFAULT 0, minutes_json TEXT NOT NULL DEFAULT '[]', opened_by TEXT NOT NULL,
+          created_at TEXT NOT NULL, closed_at TEXT, version INTEGER NOT NULL DEFAULT 1);
+        CREATE TABLE board_items (
+          id TEXT PRIMARY KEY, meeting_id TEXT NOT NULL REFERENCES board_meetings(id), position INTEGER NOT NULL, section TEXT NOT NULL,
+          kind TEXT NOT NULL CHECK (kind IN ('info','recommendation','decision','proposal')), title TEXT NOT NULL, body_json TEXT NOT NULL DEFAULT '{}',
+          status TEXT NOT NULL DEFAULT 'PRESENTED', decided_by TEXT, decision_note TEXT NOT NULL DEFAULT '', decided_at TEXT,
+          carried_from TEXT, version INTEGER NOT NULL DEFAULT 1, created_at TEXT NOT NULL);
+        CREATE INDEX idx_board_items_meeting ON board_items(meeting_id, position);
+
+        CREATE TABLE simulations (
+          id TEXT PRIMARY KEY, title TEXT NOT NULL, model_version TEXT NOT NULL, inputs_json TEXT NOT NULL, result_json TEXT NOT NULL,
+          status TEXT NOT NULL, created_by TEXT NOT NULL, proposal_ref TEXT, created_at TEXT NOT NULL);
+
+        CREATE TABLE skill_candidates (
+          id TEXT PRIMARY KEY, skill_id TEXT NOT NULL, base_version INTEGER NOT NULL, candidate_version INTEGER, reason TEXT NOT NULL,
+          evidence_json TEXT NOT NULL DEFAULT '[]', body TEXT NOT NULL, diff_json TEXT NOT NULL DEFAULT '[]', regression_cases_json TEXT NOT NULL DEFAULT '[]',
+          eval_json TEXT, status TEXT NOT NULL, activation_json TEXT NOT NULL DEFAULT '{}', created_by TEXT NOT NULL, decided_by TEXT,
+          version INTEGER NOT NULL DEFAULT 1, created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
+        CREATE INDEX idx_skill_candidates_skill ON skill_candidates(skill_id, status);
+
+        CREATE TABLE lessons (
+          id TEXT PRIMARY KEY, text TEXT NOT NULL, kind TEXT NOT NULL, scope TEXT NOT NULL, scope_ref TEXT NOT NULL DEFAULT '',
+          parsed_json TEXT NOT NULL, security_json TEXT NOT NULL DEFAULT '[]', provenance TEXT NOT NULL, status TEXT NOT NULL,
+          memory_item_id TEXT, supersedes_id TEXT, proposed_by TEXT NOT NULL, decided_by TEXT, version INTEGER NOT NULL DEFAULT 1,
+          created_at TEXT NOT NULL, decided_at TEXT);
+
+        CREATE TABLE devices (
+          id TEXT PRIMARY KEY, label TEXT NOT NULL, token_hash TEXT NOT NULL UNIQUE, permissions_json TEXT NOT NULL, paired_by TEXT NOT NULL,
+          created_at TEXT NOT NULL, last_seen_at TEXT, revoked_at TEXT, revoked_by TEXT);
+        CREATE TABLE device_pairings (
+          id TEXT PRIMARY KEY, code_hash TEXT NOT NULL, created_by TEXT NOT NULL, expires_at TEXT NOT NULL, attempts INTEGER NOT NULL DEFAULT 0,
+          consumed_at TEXT, device_id TEXT, created_at TEXT NOT NULL);
+        CREATE TABLE device_commands (
+          idempotency_key TEXT PRIMARY KEY, device_id TEXT NOT NULL, type TEXT NOT NULL, result_json TEXT, created_at TEXT NOT NULL);
+
+        CREATE TABLE decision_packages (
+          id TEXT PRIMARY KEY, kind TEXT NOT NULL, title TEXT NOT NULL, body_json TEXT NOT NULL, options_json TEXT NOT NULL, hash TEXT NOT NULL,
+          status TEXT NOT NULL, decisions_json TEXT NOT NULL DEFAULT '{}', decided_by TEXT, created_at TEXT NOT NULL, decided_at TEXT,
+          version INTEGER NOT NULL DEFAULT 1);
+      `);
+    },
+  },
+  {
+    version: 9,
+    name: "m09-media-growth",
+    /**
+     * Milestone 09. Additive only.
+     * A — core corrections:
+     * - factory_missions.bindings_json: the model/effort binding of every role, fixed when the scope is approved (the value the
+     *   owner saw is the value dispatched; no silent account default).
+     * - live_grants.binding_json: a grant derived from an envelope names the binding it may serve.
+     * - agent_runs.prompt_sha256 / prompt_chars / skill_context_json + run_skill_usage: what a run actually received (skill bodies
+     *   injected by the composer, pinned version and body hash).
+     * B — the Content / Media / Growth department. Metadata only: media files live under config.mediaDir (relative paths here),
+     *   never in the database. Production states are separate from distribution states, which are separate from outcomes.
+     * - media_assets / media_asset_versions / media_rights: the library (originals are immutable; derivatives link to their inputs;
+     *   origin is separate from the effective rights for a scope).
+     * - media_transcripts: local transcription of MEDIA (never owner voice evidence; no session, speaker or envelope columns).
+     * - content_ideas / content_projects / content_briefs / content_claims / content_scripts / content_storyboards: the editorial
+     *   chain (claim → evidence → shot); readiness NO_GO / NEEDS_CAPTURE.
+     * - media_edit_projects / media_edit_versions: EditProjectIR versions (patches, variants and manual divergences are versions).
+     * - media_render_jobs / media_render_cache: durable render queue (atomic claim, interrupted on boot, never resumed alone) and
+     *   the derivative cache keyed by input hashes.
+     * - media_qa_reports / media_reviews / media_variants / media_capture_sessions / content_style_presets.
+     * - content_manifests / content_release_attempts: the approved distribution package (hashes of media, caption, cover,
+     *   accounts, schedule) and each attempt with its idempotency key and OUTCOME_UNKNOWN.
+     * - content_campaigns / content_metrics / content_experiments / content_insights / content_funnel_events: measured results
+     *   (missing is not zero), pre-registered experiments, insights with status, and Content → Sales events without invented
+     *   attribution.
+     */
+    up(db) {
+      db.exec(`
+        ALTER TABLE factory_missions ADD COLUMN bindings_json TEXT NOT NULL DEFAULT '{}';
+        ALTER TABLE live_grants ADD COLUMN binding_json TEXT;
+        ALTER TABLE agent_runs ADD COLUMN prompt_sha256 TEXT;
+        ALTER TABLE agent_runs ADD COLUMN prompt_chars INTEGER;
+        ALTER TABLE agent_runs ADD COLUMN skill_context_json TEXT NOT NULL DEFAULT '{}';
+        CREATE TABLE run_skill_usage (run_id TEXT NOT NULL, skill_id TEXT NOT NULL, version INTEGER NOT NULL, sha256 TEXT NOT NULL,
+          body_sha256 TEXT, source TEXT NOT NULL DEFAULT 'base', candidate_id TEXT, chars INTEGER NOT NULL DEFAULT 0, applied INTEGER NOT NULL DEFAULT 0,
+          reason TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL, PRIMARY KEY (run_id, skill_id));
+
+        CREATE TABLE media_assets (id TEXT PRIMARY KEY, project_id TEXT, content_project_id TEXT, kind TEXT NOT NULL
+            CHECK (kind IN ('video','audio','image','caption','font','document','other')),
+          category TEXT NOT NULL CHECK (category IN ('raw','screen_recording','b_roll','music','sfx','voice','generated','brand','proxy','render','export','thumbnail','caption','font')),
+          title TEXT NOT NULL, description TEXT NOT NULL DEFAULT '', tags_json TEXT NOT NULL DEFAULT '[]',
+          origin TEXT NOT NULL CHECK (origin IN ('OWNED','LICENSED','CLIENT_PROVIDED','AI_GENERATED','UNKNOWN')),
+          capture_label TEXT NOT NULL DEFAULT 'NOT_APPLICABLE' CHECK (capture_label IN ('ORIGINAL_RECORDING','REPLAY','RECONSTRUCTION','SIMULATION','GENERATED','NOT_APPLICABLE')),
+          current_version INTEGER NOT NULL DEFAULT 1, created_by TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, version INTEGER NOT NULL DEFAULT 1);
+        CREATE INDEX idx_media_assets_project ON media_assets(content_project_id, category);
+        CREATE TABLE media_asset_versions (id TEXT PRIMARY KEY, asset_id TEXT NOT NULL REFERENCES media_assets(id), version INTEGER NOT NULL,
+          sha256 TEXT NOT NULL, bytes INTEGER NOT NULL, rel_path TEXT NOT NULL, mime TEXT NOT NULL DEFAULT '', probe_json TEXT NOT NULL DEFAULT '{}',
+          is_original INTEGER NOT NULL DEFAULT 1, derived_from_json TEXT NOT NULL DEFAULT '[]',
+          status TEXT NOT NULL DEFAULT 'READY' CHECK (status IN ('READY','MISSING','QUARANTINED','REMOVED_DERIVATIVE')),
+          created_by TEXT NOT NULL, created_at TEXT NOT NULL, UNIQUE(asset_id, version));
+        CREATE INDEX idx_media_asset_versions_sha ON media_asset_versions(sha256);
+        CREATE TABLE media_rights (id TEXT PRIMARY KEY, asset_id TEXT NOT NULL REFERENCES media_assets(id),
+          status TEXT NOT NULL CHECK (status IN ('PENDING','CLEARED_FOR_SCOPE','RESTRICTED','EXPIRED','REVOKED')),
+          holder TEXT NOT NULL DEFAULT '', license_ref TEXT NOT NULL DEFAULT '', document_ref TEXT NOT NULL DEFAULT '',
+          platforms_json TEXT NOT NULL DEFAULT '[]', uses_json TEXT NOT NULL DEFAULT '[]', territory TEXT NOT NULL DEFAULT '',
+          starts_at TEXT, ends_at TEXT, attribution TEXT NOT NULL DEFAULT '', restrictions_json TEXT NOT NULL DEFAULT '[]',
+          marketing_consent INTEGER NOT NULL DEFAULT 0, source_kind TEXT NOT NULL DEFAULT 'manual', source_ref TEXT NOT NULL DEFAULT '',
+          recorded_by TEXT NOT NULL, recorded_at TEXT NOT NULL, revoked_at TEXT, revoke_reason TEXT);
+        CREATE INDEX idx_media_rights_asset ON media_rights(asset_id, recorded_at);
+        CREATE TABLE media_transcripts (id TEXT PRIMARY KEY, asset_version_id TEXT, project_id TEXT, requested_by TEXT NOT NULL, channel TEXT NOT NULL,
+          input_sha256 TEXT NOT NULL, input_bytes INTEGER NOT NULL, format TEXT NOT NULL, duration_ms INTEGER, language TEXT NOT NULL,
+          engine TEXT NOT NULL, tree_sha256 TEXT, model_sha256 TEXT, args_json TEXT NOT NULL DEFAULT '[]',
+          status TEXT NOT NULL CHECK (status IN ('queued','running','final','failed','timeout','cancelled')),
+          text TEXT, segments_json TEXT NOT NULL DEFAULT '[]', json_rel_path TEXT, srt_rel_path TEXT, word_count INTEGER, error TEXT,
+          started_at TEXT, finished_at TEXT, created_at TEXT NOT NULL);
+        CREATE INDEX idx_media_transcripts_asset ON media_transcripts(asset_version_id, created_at);
+
+        CREATE TABLE content_style_presets (id TEXT NOT NULL, version INTEGER NOT NULL, title TEXT NOT NULL, body_json TEXT NOT NULL, sha256 TEXT NOT NULL,
+          status TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active','retired')), created_by TEXT NOT NULL, created_at TEXT NOT NULL, PRIMARY KEY (id, version));
+        CREATE TABLE content_campaigns (id TEXT PRIMARY KEY, name TEXT NOT NULL, objective TEXT NOT NULL DEFAULT '', audience TEXT NOT NULL DEFAULT '',
+          theme TEXT NOT NULL DEFAULT '', calendar_json TEXT NOT NULL DEFAULT '[]', budget_json TEXT NOT NULL DEFAULT '{"approved":0,"currency":"EUR"}',
+          cta_json TEXT NOT NULL DEFAULT '{}', status TEXT NOT NULL DEFAULT 'DRAFT' CHECK (status IN ('DRAFT','ACTIVE','PAUSED','CLOSED')),
+          created_by TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, version INTEGER NOT NULL DEFAULT 1);
+        CREATE TABLE content_ideas (id TEXT PRIMARY KEY, title TEXT NOT NULL, angle TEXT NOT NULL DEFAULT '',
+          audience TEXT NOT NULL DEFAULT 'both' CHECK (audience IN ('technical','business','both')),
+          source_kind TEXT NOT NULL CHECK (source_kind IN ('event','owner','twin','manual','dev_session')), source_ref TEXT NOT NULL DEFAULT '',
+          evidence_json TEXT NOT NULL DEFAULT '[]', reason TEXT NOT NULL DEFAULT '', public_eligible INTEGER NOT NULL DEFAULT 0,
+          status TEXT NOT NULL DEFAULT 'NEW' CHECK (status IN ('NEW','SHORTLISTED','DISCARDED','PROMOTED')),
+          dedupe_key TEXT UNIQUE, created_by TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
+        CREATE TABLE content_projects (id TEXT PRIMARY KEY, idea_id TEXT REFERENCES content_ideas(id), title TEXT NOT NULL,
+          stage TEXT NOT NULL DEFAULT 'IDEAS' CHECK (stage IN ('IDEAS','RESEARCH','SCRIPT','STORYBOARD','PRODUCTION','EDITING','REVIEW','SCHEDULED','PUBLISHED','ANALYTICS','ARCHIVED')),
+          readiness TEXT NOT NULL DEFAULT 'UNKNOWN' CHECK (readiness IN ('UNKNOWN','READY','NO_GO','NEEDS_CAPTURE')), readiness_json TEXT NOT NULL DEFAULT '{}',
+          format TEXT NOT NULL DEFAULT '', platforms_json TEXT NOT NULL DEFAULT '[]', audience TEXT NOT NULL DEFAULT 'both',
+          preset_id TEXT, preset_version INTEGER, campaign_id TEXT REFERENCES content_campaigns(id), opportunity_id TEXT REFERENCES sales_opportunities(id),
+          scope_json TEXT NOT NULL DEFAULT '{}', deadline TEXT, responsible TEXT NOT NULL DEFAULT '',
+          created_by TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, version INTEGER NOT NULL DEFAULT 1);
+        CREATE INDEX idx_content_projects_stage ON content_projects(stage, updated_at);
+        CREATE TABLE content_briefs (id TEXT PRIMARY KEY, content_project_id TEXT NOT NULL REFERENCES content_projects(id), version INTEGER NOT NULL,
+          body_json TEXT NOT NULL, sha256 TEXT NOT NULL, author_kind TEXT NOT NULL CHECK (author_kind IN ('owner','agent','dev_session','template')),
+          author TEXT NOT NULL, created_at TEXT NOT NULL, UNIQUE(content_project_id, version));
+        CREATE TABLE content_claims (id TEXT PRIMARY KEY, content_project_id TEXT NOT NULL REFERENCES content_projects(id), text TEXT NOT NULL,
+          status TEXT NOT NULL DEFAULT 'UNCERTAIN' CHECK (status IN ('SUPPORTED','UNCERTAIN','BLOCKED')), evidence_json TEXT NOT NULL DEFAULT '[]',
+          shot_json TEXT NOT NULL DEFAULT '{}', conditions TEXT NOT NULL DEFAULT '', created_by TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
+        CREATE INDEX idx_content_claims_project ON content_claims(content_project_id);
+        CREATE TABLE content_scripts (id TEXT PRIMARY KEY, content_project_id TEXT NOT NULL REFERENCES content_projects(id), version INTEGER NOT NULL,
+          language TEXT NOT NULL DEFAULT 'ro', body_json TEXT NOT NULL, sha256 TEXT NOT NULL,
+          author_kind TEXT NOT NULL CHECK (author_kind IN ('owner','agent','dev_session','template')), author TEXT NOT NULL, created_at TEXT NOT NULL,
+          UNIQUE(content_project_id, language, version));
+        CREATE TABLE content_storyboards (id TEXT PRIMARY KEY, content_project_id TEXT NOT NULL REFERENCES content_projects(id), version INTEGER NOT NULL,
+          body_json TEXT NOT NULL, sha256 TEXT NOT NULL, author_kind TEXT NOT NULL CHECK (author_kind IN ('owner','agent','dev_session','template')),
+          author TEXT NOT NULL, created_at TEXT NOT NULL, UNIQUE(content_project_id, version));
+
+        CREATE TABLE media_capture_sessions (id TEXT PRIMARY KEY, content_project_id TEXT, kind TEXT NOT NULL CHECK (kind IN ('obs','browser_demo','import','interview')),
+          status TEXT NOT NULL CHECK (status IN ('PLANNED','RECORDING','STOPPED','FAILED','CANCELLED')), scope_json TEXT NOT NULL DEFAULT '{}',
+          markers_json TEXT NOT NULL DEFAULT '[]', capture_label TEXT NOT NULL DEFAULT 'ORIGINAL_RECORDING', consent_json TEXT NOT NULL DEFAULT '{}',
+          output_asset_id TEXT, error TEXT, created_by TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
+        CREATE TABLE media_edit_projects (id TEXT PRIMARY KEY, content_project_id TEXT REFERENCES content_projects(id), title TEXT NOT NULL,
+          current_version INTEGER NOT NULL DEFAULT 0, created_by TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
+        CREATE TABLE media_edit_versions (id TEXT PRIMARY KEY, edit_project_id TEXT NOT NULL REFERENCES media_edit_projects(id), version INTEGER NOT NULL,
+          ir_json TEXT NOT NULL, ir_sha256 TEXT NOT NULL, parent_version_id TEXT,
+          change_kind TEXT NOT NULL CHECK (change_kind IN ('initial','patch','variant','manual_divergence','import')),
+          change_json TEXT NOT NULL DEFAULT '{}', validation_json TEXT NOT NULL DEFAULT '{}', variant_key TEXT,
+          created_by TEXT NOT NULL, created_at TEXT NOT NULL, UNIQUE(edit_project_id, version));
+        CREATE TABLE media_render_jobs (id TEXT PRIMARY KEY, edit_version_id TEXT NOT NULL REFERENCES media_edit_versions(id),
+          profile TEXT NOT NULL CHECK (profile IN ('draft','final')), idempotency_key TEXT NOT NULL UNIQUE,
+          status TEXT NOT NULL CHECK (status IN ('REQUESTED','CLAIMED','RUNNING','VALIDATING','DONE','FAILED','CANCEL_REQUESTED','CANCELLED','INTERRUPTED')),
+          request_json TEXT NOT NULL DEFAULT '{}', claim_token TEXT, progress_json TEXT NOT NULL DEFAULT '{}', segments_json TEXT NOT NULL DEFAULT '[]',
+          output_asset_version_id TEXT, error TEXT, attempts INTEGER NOT NULL DEFAULT 0,
+          created_by TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, started_at TEXT, finished_at TEXT);
+        CREATE INDEX idx_media_render_jobs_status ON media_render_jobs(status, created_at);
+        CREATE TABLE media_render_cache (cache_key TEXT PRIMARY KEY, rel_path TEXT NOT NULL, bytes INTEGER NOT NULL, probe_json TEXT NOT NULL DEFAULT '{}',
+          tool_version TEXT NOT NULL, created_at TEXT NOT NULL, last_used_at TEXT NOT NULL);
+        CREATE TABLE media_qa_reports (id TEXT PRIMARY KEY, edit_version_id TEXT, render_job_id TEXT, asset_version_id TEXT,
+          kind TEXT NOT NULL CHECK (kind IN ('technical','editorial','factual','rights','privacy')),
+          status TEXT NOT NULL CHECK (status IN ('PASS','WARN','FAIL','NOT_RUN')), findings_json TEXT NOT NULL DEFAULT '[]', measurements_json TEXT NOT NULL DEFAULT '{}',
+          created_by TEXT NOT NULL, created_at TEXT NOT NULL);
+        CREATE INDEX idx_media_qa_reports_version ON media_qa_reports(edit_version_id, created_at);
+        CREATE TABLE media_reviews (id TEXT PRIMARY KEY, edit_version_id TEXT NOT NULL REFERENCES media_edit_versions(id),
+          kind TEXT NOT NULL CHECK (kind IN ('COMMENT','CHANGES_REQUESTED','CREATIVE_APPROVED','REJECTED')), timecode_ms INTEGER,
+          text TEXT NOT NULL DEFAULT '', patch_json TEXT NOT NULL DEFAULT '{}', status TEXT NOT NULL DEFAULT 'OPEN' CHECK (status IN ('OPEN','APPLIED','DISMISSED','RECORDED')),
+          result_version_id TEXT, provenance TEXT NOT NULL, actor TEXT NOT NULL, session_id TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
+        CREATE INDEX idx_media_reviews_version ON media_reviews(edit_version_id, created_at);
+        CREATE TABLE media_variants (id TEXT PRIMARY KEY, edit_project_id TEXT NOT NULL REFERENCES media_edit_projects(id), master_version_id TEXT NOT NULL,
+          platform_key TEXT NOT NULL, variant_version_id TEXT, status TEXT NOT NULL DEFAULT 'DRAFT' CHECK (status IN ('DRAFT','RENDERED','QA_FAILED','READY','INVALIDATED')),
+          notes_json TEXT NOT NULL DEFAULT '{}', created_by TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
+        CREATE INDEX idx_media_variants_project ON media_variants(edit_project_id, platform_key);
+
+        CREATE TABLE content_manifests (id TEXT PRIMARY KEY, content_project_id TEXT NOT NULL REFERENCES content_projects(id),
+          status TEXT NOT NULL DEFAULT 'DRAFT' CHECK (status IN ('DRAFT','APPROVED','INVALIDATED','SUPERSEDED')),
+          body_json TEXT NOT NULL, manifest_sha256 TEXT NOT NULL, approval_json TEXT NOT NULL DEFAULT '{}', approved_by TEXT, approved_at TEXT,
+          invalidated_reason TEXT, created_by TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, version INTEGER NOT NULL DEFAULT 1);
+        CREATE TABLE content_release_attempts (id TEXT PRIMARY KEY, manifest_id TEXT NOT NULL REFERENCES content_manifests(id), variant_id TEXT,
+          platform TEXT NOT NULL, route TEXT NOT NULL CHECK (route IN ('manual_pack','api','assisted')), idempotency_key TEXT NOT NULL UNIQUE,
+          status TEXT NOT NULL CHECK (status IN ('PREPARED','UPLOADING','PROCESSING','DRAFT_EXTERNAL','SCHEDULED','PUBLISHED','FAILED','OUTCOME_UNKNOWN','PACK_READY','MISSED_NEEDS_DECISION','CANCELLED')),
+          scheduled_for TEXT, timezone TEXT, external_json TEXT NOT NULL DEFAULT '{}', evidence_json TEXT NOT NULL DEFAULT '[]', error TEXT,
+          created_by TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
+        CREATE INDEX idx_content_release_attempts_manifest ON content_release_attempts(manifest_id, platform);
+        CREATE TABLE content_metrics (id TEXT PRIMARY KEY, release_attempt_id TEXT, content_project_id TEXT, platform TEXT NOT NULL, metric_key TEXT NOT NULL,
+          value REAL, unit TEXT NOT NULL DEFAULT '', observed_at TEXT NOT NULL, data_through TEXT, window TEXT NOT NULL DEFAULT '',
+          source TEXT NOT NULL CHECK (source IN ('api','manual_import','fixture')), unavailable_reason TEXT, created_by TEXT NOT NULL, created_at TEXT NOT NULL);
+        CREATE INDEX idx_content_metrics_attempt ON content_metrics(release_attempt_id, metric_key, observed_at);
+        CREATE TABLE content_experiments (id TEXT PRIMARY KEY, title TEXT NOT NULL, variable TEXT NOT NULL, arms_json TEXT NOT NULL DEFAULT '[]',
+          audience TEXT NOT NULL DEFAULT '', primary_metric TEXT NOT NULL, window_json TEXT NOT NULL DEFAULT '{}', analysis_rule_json TEXT NOT NULL DEFAULT '{}',
+          design TEXT NOT NULL DEFAULT 'observational' CHECK (design IN ('randomized_native','observational')), simultaneous_changes_json TEXT NOT NULL DEFAULT '[]',
+          status TEXT NOT NULL DEFAULT 'DRAFT' CHECK (status IN ('DRAFT','REGISTERED','RUNNING','CLOSED','INCONCLUSIVE')), registered_sha256 TEXT,
+          result_json TEXT NOT NULL DEFAULT '{}', created_by TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
+        CREATE TABLE content_insights (id TEXT PRIMARY KEY, hypothesis TEXT NOT NULL, cohort_json TEXT NOT NULL DEFAULT '{}', sample_json TEXT NOT NULL DEFAULT '{}',
+          units TEXT NOT NULL DEFAULT '', data_refs_json TEXT NOT NULL DEFAULT '[]', confounders_json TEXT NOT NULL DEFAULT '[]', result_json TEXT NOT NULL DEFAULT '{}',
+          status TEXT NOT NULL DEFAULT 'HYPOTHESIS' CHECK (status IN ('HYPOTHESIS','OBSERVED_ASSOCIATION','EXPERIMENT_SUPPORTED','INCONCLUSIVE','RETIRED')),
+          experiment_id TEXT, created_by TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
+        CREATE TABLE content_funnel_events (id TEXT PRIMARY KEY, content_project_id TEXT, release_attempt_id TEXT, opportunity_id TEXT REFERENCES sales_opportunities(id),
+          kind TEXT NOT NULL CHECK (kind IN ('click','lead','proposal','contract','revenue_received')),
+          attribution TEXT NOT NULL DEFAULT 'UNATTRIBUTED' CHECK (attribution IN ('DIRECT_TRACKED_LINK','SELF_REPORTED','UNATTRIBUTED')),
+          amount REAL, currency TEXT, source TEXT NOT NULL CHECK (source IN ('manual','import','fixture')), evidence_json TEXT NOT NULL DEFAULT '[]',
+          occurred_at TEXT NOT NULL, created_by TEXT NOT NULL, created_at TEXT NOT NULL);
+        CREATE INDEX idx_content_funnel_project ON content_funnel_events(content_project_id, kind);
+      `);
+    },
+  },
+  {
+    // M10: Lega PC Operator + zero-form plans + Studio completion. An operation plan is shown once and confirmed once; its steps
+    // carry the derived authority (checked at every dispatch). Desktop sessions are exclusive; every desktop action is recorded with
+    // its precondition and postcondition (redacted). Project imports are idempotent by the manifest hash. Import grants cover one
+    // folder (once or persistent) without widening the global allowlist.
+    version: 10,
+    name: "m10-operator-plans",
+    up(db) {
+      db.exec(`
+        CREATE TABLE ops_plans (id TEXT PRIMARY KEY, kind TEXT NOT NULL, title TEXT NOT NULL,
+          status TEXT NOT NULL CHECK (status IN ('PROPOSED','CONFIRMED','RUNNING','PAUSED','DONE','FAILED','CANCELLED','EXPIRED','SUPERSEDED','NEEDS_OWNER')),
+          body_json TEXT NOT NULL, summary_json TEXT NOT NULL DEFAULT '{}', plan_hash TEXT NOT NULL, nonce TEXT NOT NULL,
+          proposed_by TEXT NOT NULL, proposed_via TEXT NOT NULL, confirm_by TEXT NOT NULL, expires_at TEXT NOT NULL,
+          consent_json TEXT, authority_json TEXT, progress_json TEXT NOT NULL DEFAULT '{}', status_reason TEXT NOT NULL DEFAULT '',
+          owner_session_id TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, version INTEGER NOT NULL DEFAULT 1);
+        CREATE INDEX idx_ops_plans_status ON ops_plans(status, updated_at);
+        CREATE TABLE ops_plan_steps (id TEXT PRIMARY KEY, plan_id TEXT NOT NULL REFERENCES ops_plans(id), seq INTEGER NOT NULL, kind TEXT NOT NULL,
+          title TEXT NOT NULL DEFAULT '', params_json TEXT NOT NULL DEFAULT '{}',
+          status TEXT NOT NULL DEFAULT 'PENDING' CHECK (status IN ('PENDING','RUNNING','DONE','FAILED','SKIPPED','UNCERTAIN','CANCELLED','BLOCKED')),
+          attempts INTEGER NOT NULL DEFAULT 0, result_json TEXT NOT NULL DEFAULT '{}', evidence_json TEXT NOT NULL DEFAULT '[]', error TEXT,
+          started_at TEXT, finished_at TEXT, updated_at TEXT NOT NULL, UNIQUE (plan_id, seq));
+        CREATE TABLE desktop_apps (id TEXT PRIMARY KEY, display_name TEXT NOT NULL, status TEXT NOT NULL, exe_path TEXT, exe_sha256 TEXT, version TEXT,
+          publisher TEXT, signature_json TEXT NOT NULL DEFAULT '{}', launch_json TEXT NOT NULL DEFAULT '{}', capabilities_json TEXT NOT NULL DEFAULT '{}',
+          discovered_from TEXT NOT NULL DEFAULT '', authorized_json TEXT NOT NULL DEFAULT '{}', verified_json TEXT NOT NULL DEFAULT '{}', updated_at TEXT NOT NULL);
+        CREATE TABLE desktop_sessions (id TEXT PRIMARY KEY, status TEXT NOT NULL CHECK (status IN ('ACTIVE','PAUSED','TAKEN_OVER','ENDED')),
+          plan_id TEXT, controller TEXT NOT NULL, app_id TEXT, window_json TEXT NOT NULL DEFAULT '{}', started_at TEXT NOT NULL, ended_at TEXT,
+          end_reason TEXT, updated_at TEXT NOT NULL);
+        CREATE UNIQUE INDEX idx_desktop_one_active ON desktop_sessions(status) WHERE status IN ('ACTIVE','PAUSED');
+        CREATE TABLE desktop_actions (id TEXT PRIMARY KEY, session_id TEXT, plan_id TEXT, step_id TEXT, op TEXT NOT NULL, app_id TEXT,
+          action_class TEXT NOT NULL, status TEXT NOT NULL CHECK (status IN ('DONE','FAILED','REFUSED','SUSPENDED','UNCERTAIN')),
+          target_json TEXT NOT NULL DEFAULT '{}', pre_json TEXT NOT NULL DEFAULT '{}', post_json TEXT NOT NULL DEFAULT '{}', result_json TEXT NOT NULL DEFAULT '{}',
+          error TEXT, actor TEXT NOT NULL, channel TEXT NOT NULL, started_at TEXT NOT NULL, finished_at TEXT);
+        CREATE INDEX idx_desktop_actions_session ON desktop_actions(session_id, started_at);
+        CREATE TABLE media_project_imports (id TEXT PRIMARY KEY, import_key TEXT NOT NULL UNIQUE, source_dir TEXT NOT NULL, manifest_sha256 TEXT,
+          format TEXT NOT NULL, status TEXT NOT NULL CHECK (status IN ('PREVIEWED','IMPORTING','IMPORTED','FAILED')), preview_json TEXT NOT NULL DEFAULT '{}',
+          mapping_json TEXT NOT NULL DEFAULT '{}', content_project_id TEXT, error TEXT, created_by TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
+        CREATE TABLE media_import_grants (id TEXT PRIMARY KEY, mode TEXT NOT NULL CHECK (mode IN ('once','persistent')), root_path TEXT NOT NULL,
+          files_json TEXT NOT NULL DEFAULT '[]', status TEXT NOT NULL CHECK (status IN ('ACTIVE','USED','EXPIRED','REVOKED')), plan_id TEXT, owner_session_id TEXT,
+          preview_sha256 TEXT NOT NULL, expires_at TEXT, created_by TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
+      `);
+    },
+  },
+  {
+    // M10.2: preserved work requests. A request the Hub cannot run yet (a blocker) is kept instead of dropped: its redacted text,
+    // where it came from, the blocker signature and when the full explanation was given (spoken once per request + signature),
+    // and the plan it became. It never executes by itself: when its blockers clear it is only re-proposed as a plan that still
+    // needs the owner's one confirmation. Expires after 7 days.
+    version: 11,
+    name: "m10-2-work-requests",
+    up(db) {
+      db.exec(`
+        CREATE TABLE work_requests (id TEXT PRIMARY KEY, text_redacted TEXT NOT NULL DEFAULT '', source TEXT NOT NULL, channel TEXT NOT NULL,
+          project_id TEXT, intent TEXT NOT NULL, effect_class TEXT NOT NULL DEFAULT '',
+          status TEXT NOT NULL DEFAULT 'OPEN' CHECK (status IN ('OPEN','BLOCKED','PLANNED','CONFIRMED','DONE','CANCELLED','EXPIRED')),
+          blocker_signature TEXT NOT NULL DEFAULT '', explained_at TEXT, explanation_json TEXT NOT NULL DEFAULT '{}', plan_ref TEXT,
+          consent_json TEXT, created_by TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, expires_at TEXT NOT NULL,
+          version INTEGER NOT NULL DEFAULT 1);
+        CREATE INDEX idx_work_requests_status ON work_requests(status, updated_at);
+        CREATE INDEX idx_work_requests_project ON work_requests(project_id, status);
+      `);
+    },
+  },
+  {
+    // M11 „Ifrim Delivery”: a delivery binds one verified software version to what is shown from it (preview, captures, clip,
+    // vertical, commercial summary) through real links. Items carry the snapshot they are evidence of and their upstream items, so
+    // a change marks exactly the dependent items STALE (delivery/stale.mjs); a STALE item never returns to CURRENT. Documents are
+    // versioned (an owner edit is a new version), revisions record the owner's feedback and what it became. Purely additive.
+    version: 12,
+    name: "m11-deliveries",
+    up(db) {
+      db.exec(`
+        CREATE TABLE deliveries (id TEXT PRIMARY KEY, project_id TEXT NOT NULL REFERENCES projects(id), parent_id TEXT REFERENCES deliveries(id),
+          lineage INTEGER NOT NULL DEFAULT 1, title TEXT NOT NULL,
+          status TEXT NOT NULL CHECK (status IN ('PLANNED','ARMED','ACTIVE','READY','NEEDS_OWNER','STALE','CLOSED','CANCELLED','EXPIRED','FAILED')),
+          status_reason TEXT NOT NULL DEFAULT '', mission_id TEXT, envelope_id TEXT, envelope_hash TEXT, ops_plan_id TEXT,
+          template_json TEXT NOT NULL, template_sha TEXT NOT NULL, ops_steps_json TEXT NOT NULL, ops_body_sha TEXT NOT NULL, consent_json TEXT,
+          activate_by TEXT, activated_at TEXT, phase_expires_at TEXT,
+          bundle_id TEXT, bundle_sha TEXT, change_set_id TEXT, change_set_sha TEXT, snapshot_sha TEXT, spec_version INTEGER, spec_sha TEXT, binding_sha TEXT,
+          generation INTEGER NOT NULL DEFAULT 0, content_project_id TEXT, edit_project_id TEXT,
+          labels_json TEXT NOT NULL DEFAULT '[]', verified_json TEXT NOT NULL DEFAULT '{}',
+          created_by TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, closed_at TEXT, version INTEGER NOT NULL DEFAULT 1);
+        CREATE INDEX idx_deliveries_project ON deliveries(project_id, updated_at);
+        CREATE INDEX idx_deliveries_mission ON deliveries(mission_id);
+        CREATE UNIQUE INDEX ux_deliveries_envelope ON deliveries(envelope_id) WHERE envelope_id IS NOT NULL;
+        CREATE UNIQUE INDEX ux_deliveries_open_project ON deliveries(project_id) WHERE status IN ('ARMED','ACTIVE');
+        CREATE TABLE delivery_items (id TEXT PRIMARY KEY, delivery_id TEXT NOT NULL REFERENCES deliveries(id),
+          kind TEXT NOT NULL CHECK (kind IN ('bundle','e2e_shot','preview','capture','brief','claim','edit','render','variant','qa','export')),
+          role TEXT NOT NULL DEFAULT '', ref_table TEXT NOT NULL, ref_id TEXT NOT NULL, ref_sha TEXT NOT NULL DEFAULT '', snapshot_sha TEXT NOT NULL DEFAULT '',
+          generation INTEGER NOT NULL DEFAULT 1, upstream_json TEXT NOT NULL DEFAULT '[]', supersedes_id TEXT,
+          status TEXT NOT NULL DEFAULT 'CURRENT' CHECK (status IN ('CURRENT','SUPERSEDED','STALE')), stale_code TEXT NOT NULL DEFAULT '', status_reason TEXT NOT NULL DEFAULT '',
+          meta_json TEXT NOT NULL DEFAULT '{}', created_by TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
+        CREATE INDEX idx_delivery_items_delivery ON delivery_items(delivery_id, kind, status);
+        CREATE INDEX idx_delivery_items_ref ON delivery_items(ref_table, ref_id);
+        CREATE TABLE delivery_documents (id TEXT PRIMARY KEY, delivery_id TEXT NOT NULL REFERENCES deliveries(id),
+          kind TEXT NOT NULL CHECK (kind IN ('commercial_summary')), version INTEGER NOT NULL, parent_id TEXT,
+          sections_json TEXT NOT NULL, text TEXT NOT NULL, content_sha TEXT NOT NULL, basis_json TEXT NOT NULL, basis_sha TEXT NOT NULL,
+          claims_to_verify_json TEXT NOT NULL DEFAULT '[]', warnings_json TEXT NOT NULL DEFAULT '[]',
+          author_kind TEXT NOT NULL CHECK (author_kind IN ('template','owner','mixed')),
+          status TEXT NOT NULL CHECK (status IN ('CURRENT','SUPERSEDED','STALE')), stale_reason TEXT NOT NULL DEFAULT '',
+          approval_json TEXT, export_json TEXT NOT NULL DEFAULT '{}', created_by TEXT NOT NULL, created_at TEXT NOT NULL, UNIQUE (delivery_id, kind, version));
+        CREATE TABLE delivery_revisions (id TEXT PRIMARY KEY, delivery_id TEXT NOT NULL REFERENCES deliveries(id), text_redacted TEXT NOT NULL,
+          classes_json TEXT NOT NULL DEFAULT '[]', target_json TEXT NOT NULL DEFAULT '{}', delta_json TEXT NOT NULL DEFAULT '{}', clarification_json TEXT,
+          status TEXT NOT NULL CHECK (status IN ('NOTED','CLARIFY','PROPOSED','APPLIED','ROUTED_SOFTWARE','REFUSED','CANCELLED')),
+          ops_plan_id TEXT, review_id TEXT, document_id TEXT, child_delivery_id TEXT,
+          source TEXT NOT NULL, channel TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
+        CREATE INDEX idx_delivery_revisions_delivery ON delivery_revisions(delivery_id, created_at);
+      `);
+    },
+  },
+  {
+    // M12 Sales: the synthetic preparation brief → offer → „Dosarul ofertei”. Purely additive: older code runs on this schema, so
+    // `git revert` of the release + the managed upgrade is a valid rollback without a database restore.
+    // - sales_evidence gains the C-03 data kind (FIXTURE / STATEMENT / INFERENCE), separate from the M04 confidence label. Existing
+    //   rows are never rewritten: their kind stays NULL, shown as „nedeclarat (M04)”. An inference carries its basis and reasoning.
+    // - sales_preparations: one confirmed `sales.prepare` plan, its immutable brief and the exact offer it waits for (id + sha); the
+    //   plan whose consent governs it now (the root or a continuation card), its window (activate_by) and the reason of its status.
+    // - sales_plan_ops: the C-01 ledger, one row per (confirmed root plan + operation + normalised params); a resume reads it
+    //   instead of re-running an effect. `fixed_at` is the timestamp the operation's content uses, so a retry writes the same bytes.
+    // - sales_dossiers: the local „Dosarul ofertei” (never `sales_handoffs`, which stays the Engineering hand-off after acceptance), with
+    //   the draft and the inputs it is evidence of (inputs_sha: a change of the offer, the draft or the evidence makes it STALE).
+    // Everything M12 writes here is synthetic (CHECK synthetic = 1). The status lists equal the constants in sales.mjs.
+    version: 13,
+    name: "m12-sales-prep",
+    up(db) {
+      db.exec(`
+        ALTER TABLE sales_evidence ADD COLUMN data_kind TEXT CHECK (data_kind IS NULL OR data_kind IN ('FIXTURE','STATEMENT','INFERENCE'));
+        ALTER TABLE sales_evidence ADD COLUMN basis_json TEXT;
+        ALTER TABLE sales_evidence ADD COLUMN reasoning TEXT;
+        CREATE TABLE sales_preparations (id TEXT PRIMARY KEY, root_plan_id TEXT NOT NULL, root_plan_hash TEXT NOT NULL, phase_b_plan_id TEXT,
+          brief_json TEXT NOT NULL, brief_sha TEXT NOT NULL, org_id TEXT REFERENCES sales_orgs(id), opportunity_id TEXT REFERENCES sales_opportunities(id),
+          proposal_id TEXT REFERENCES sales_proposals(id), awaited_proposal_id TEXT, awaited_proposal_sha TEXT, consent_json TEXT,
+          status TEXT NOT NULL CHECK (status IN ('PLANNED','PREPARING','WAITING_OWNER','PACKAGING','READY','STALE','STOPPED','EXPIRED','CANCELLED','FAILED')),
+          stale_reason TEXT NOT NULL DEFAULT '', synthetic INTEGER NOT NULL DEFAULT 1 CHECK (synthetic = 1),
+          created_by TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, version INTEGER NOT NULL DEFAULT 1,
+          plan_id TEXT, status_reason TEXT NOT NULL DEFAULT '', activate_by TEXT);
+        CREATE UNIQUE INDEX ux_sales_preparations_root ON sales_preparations(root_plan_id);
+        CREATE INDEX idx_sales_preparations_opp ON sales_preparations(opportunity_id, status);
+        CREATE TABLE sales_plan_ops (op_key TEXT PRIMARY KEY, root_plan_id TEXT NOT NULL, root_plan_hash TEXT NOT NULL, op TEXT NOT NULL,
+          params_json TEXT NOT NULL, status TEXT NOT NULL CHECK (status IN ('IN_PROGRESS','DONE','FAILED')), claim_token TEXT, result_json TEXT,
+          fixed_at TEXT NOT NULL, synthetic INTEGER NOT NULL DEFAULT 1 CHECK (synthetic = 1), created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
+        CREATE INDEX idx_sales_plan_ops_root ON sales_plan_ops(root_plan_id, op);
+        CREATE TABLE sales_dossiers (id TEXT PRIMARY KEY, preparation_id TEXT NOT NULL REFERENCES sales_preparations(id),
+          opportunity_id TEXT NOT NULL REFERENCES sales_opportunities(id), proposal_id TEXT NOT NULL REFERENCES sales_proposals(id), proposal_sha TEXT NOT NULL,
+          revision INTEGER NOT NULL, folder TEXT NOT NULL, files_json TEXT NOT NULL DEFAULT '[]', manifest_sha256 TEXT, verification_json TEXT NOT NULL DEFAULT '{}',
+          status TEXT NOT NULL CHECK (status IN ('WRITING','READY','STALE','SUPERSEDED','INCOMPLETE')), status_reason TEXT NOT NULL DEFAULT '',
+          op_key TEXT NOT NULL UNIQUE, synthetic INTEGER NOT NULL DEFAULT 1 CHECK (synthetic = 1),
+          created_by TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+          org_id TEXT, draft_id TEXT, draft_sha TEXT, inputs_json TEXT NOT NULL DEFAULT '{}', inputs_sha TEXT NOT NULL DEFAULT '', ops_plan_id TEXT,
+          UNIQUE (opportunity_id, revision));
+        CREATE INDEX idx_sales_dossiers_opp ON sales_dossiers(opportunity_id, status);
+      `);
+    },
+  },
 ];

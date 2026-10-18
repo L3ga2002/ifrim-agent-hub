@@ -190,14 +190,67 @@ function takeWalkSnapshot(root, { blobDir, limits = SNAPSHOT_LIMITS, ignore = []
   return { files: ordered, skipped: skipped.slice(0, 200), stats, sha256: hashCanonical(ordered) };
 }
 
+/**
+ * M11 L5 (§5.3): what a snapshot never reads — the dependency, build and cache folders (SNAPSHOT_SKIP_DIRS, at any depth) and the parts
+ * of .git a run could plant code in (hooks/, info/, config) — as { entries: { rel: "f:size:mtimeMs" | "d:mtimeMs" | "l" }, truncated }.
+ * Stat only (nothing is read or followed: a link is recorded as one), bounded by `maxEntries` (then `truncated`). The two proof runs of
+ * a Hub-written test are bracketed by it, so a write the snapshot cannot see (node_modules/x/index.js, .git/hooks/pre-commit, .cache/…)
+ * still makes the proof NOT_HERMETIC. Folders ignored by the spec (runtime data) and the Hub's protected folders are not walked.
+ */
+export function skippedTreeFingerprint(root, { ignore = [], maxEntries = 20000, maxDepth = 24 } = {}) {
+  const ignored = (rel) => ignore.some((p) => rel.toLowerCase() === p.toLowerCase() || rel.toLowerCase().startsWith(`${p.toLowerCase()}/`));
+  const realRoot = fs.realpathSync.native(root);
+  const entries = {};
+  let count = 0;
+  let truncated = false;
+  const record = (rel, value) => { if (count >= maxEntries) { truncated = true; return false; } entries[rel] = value; count += 1; return true; };
+  // Directly inside a project's .git only these are recorded (git itself rewrites the index, logs and objects while the Hub reads it).
+  const GIT_KEEP = new Set(["hooks", "info", "config"]);
+  // inSkipped: under a recorded folder (everything below is recorded); gitTop: the entries directly in a .git folder.
+  const queue = [{ dir: realRoot, rel: "", depth: 0, inSkipped: false, gitTop: false }];
+  for (let i = 0; i < queue.length && !truncated; i += 1) {
+    const { dir, rel, depth, inSkipped, gitTop } = queue[i];
+    let list;
+    try { list = fs.readdirSync(dir, { withFileTypes: true }); } catch { if (inSkipped) record(rel, "unreadable"); continue; }
+    list.sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
+    for (const entry of list) {
+      const childRel = rel ? `${rel}/${entry.name}` : entry.name;
+      if (gitTop && !GIT_KEEP.has(entry.name)) continue;
+      const regular = !inSkipped && !gitTop;
+      // .git is a protected location for reading; here only its hooks/, info/ and config are stat-ed (never read).
+      const isGit = regular && entry.isDirectory() && entry.name === ".git";
+      if (regular && !isGit && (ignored(childRel) || isProtectedRelative(childRel))) continue;
+      const recorded = inSkipped || gitTop || (regular && !isGit && entry.isDirectory() && SNAPSHOT_SKIP_DIRS.has(entry.name));
+      if (entry.isSymbolicLink()) { if (recorded && !record(childRel, "l")) break; continue; }
+      if (recorded) {
+        let st;
+        try { st = fs.lstatSync(path.join(dir, entry.name)); } catch { continue; }
+        if (!record(childRel, st.isDirectory() ? `d:${Math.round(st.mtimeMs)}` : `f:${st.size}:${Math.round(st.mtimeMs)}`)) break;
+      }
+      if (entry.isDirectory() && depth + 1 <= maxDepth) queue.push({ dir: path.join(dir, entry.name), rel: childRel, depth: depth + 1, inSkipped: recorded, gitTop: isGit });
+    }
+  }
+  return { entries, truncated };
+}
+/** The paths whose fingerprint differs (added, removed or changed); over a truncated side only the paths both recorded count. Sorted. */
+export function skippedTreeChanges(before, after) {
+  const a = before?.entries || {};
+  const b = after?.entries || {};
+  const partial = Boolean(before?.truncated || after?.truncated);
+  const keys = partial ? Object.keys(a).filter((k) => Object.hasOwn(b, k)) : [...new Set([...Object.keys(a), ...Object.keys(b)])];
+  return keys.filter((k) => a[k] !== b[k]).sort();
+}
+
 /** Test-file heuristic (path based): test/, tests/, __tests__/ folders and *.test.* / *.spec.* files. */
 export const isTestPath = (rel) => /(^|\/)(test|tests|__tests__)\//i.test(rel) || /\.(test|spec)\.[cm]?[jt]sx?$/i.test(rel);
 
 /**
  * Agent-control files a writer must not create or change (they would steer the next agent run or the Hub's checks):
- * provider configs, MCP definitions, agent instructions. A change is reported as a critical integrity finding.
+ * provider configs, MCP definitions, agent instructions, and (M11 L5) the Hub's own work area .ifrim-hub/, where the Hub-written
+ * acceptance test is staged before its review: a writer that created or changed it could swap the test the Hub then protects.
+ * A change is reported as a critical integrity finding (the environment route refuses to apply it, workspace.mjs).
  */
-export const isControlPath = (rel) => /^(\.codex\/|\.claude\/|\.mcp\.json$|AGENTS\.md$|CLAUDE\.md$|\.ifrim-hub-test\.json$)/i.test(rel);
+export const isControlPath = (rel) => /^(\.codex\/|\.claude\/|\.mcp\.json$|AGENTS\.md$|CLAUDE\.md$|\.ifrim-hub-test\.json$|\.ifrim-hub\/)/i.test(rel);
 
 /** Changes between two manifests: [{ path, status: added|modified|deleted, testFile, controlFile, secretLike, before, after }]. */
 export function diffManifests(before = {}, after = {}, { resolve = null } = {}) {

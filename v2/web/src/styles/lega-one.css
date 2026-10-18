@@ -1,0 +1,103 @@
+/* ---------- One L3ga screen (2026-10-18): #/lega is the big screen — the company map behind, the conversation and the work on it ---------- */
+.lega-one { position: relative; isolation: isolate; max-width: none; height: 100%; display: flex; flex-direction: column; gap: var(--sp-3);
+  padding: var(--sp-3) var(--sp-4); overflow: hidden; background: radial-gradient(ellipse at 50% 42%, rgba(11, 22, 34, 0.95) 0%, rgba(5, 8, 12, 0.6) 70%, transparent 100%); }
+.lega-one-map { position: absolute; inset: 0; width: 100%; height: 100%; z-index: -1; pointer-events: none; }
+.lega-one .cockpit-head { flex: none; margin: 0; }
+.lega-one-grid { flex: 1 1 auto; min-height: 0; display: grid; gap: var(--sp-3); align-items: stretch;
+  grid-template-columns: minmax(210px, 260px) minmax(360px, 1fr) minmax(360px, 560px); grid-template-areas: "side center work"; }
+.lega-one-side { grid-area: side; min-height: 0; overflow: auto; display: flex; flex-direction: column; gap: var(--sp-3); }
+.lega-one-center { grid-area: center; min-height: 0; min-width: 0; display: flex; flex-direction: column; gap: var(--sp-2); }
+/* The figure and the conversation scroll; the voice panel, the composer and the controls stay visible at the bottom. */
+.lega-one-scroll { flex: 1 1 auto; min-height: 0; overflow-y: auto; overflow-x: hidden; display: flex; flex-direction: column; gap: var(--sp-2); }
+.lega-one .cockpit-main { grid-area: work; min-height: 0; min-width: 0; overflow-y: auto; overflow-x: hidden; display: flex; flex-direction: column; gap: var(--sp-3); padding-right: 2px; }
+.lega-one .cockpit-main .cockpit-cards { grid-template-columns: minmax(0, 1fr); }
+.lega-one .cockpit-main .cockpit-toolbar { margin: 0; }
+
+/* Lega's figure over the map: transparent, centred; Discret makes it small, Ascunde leaves the map alone. */
+.lega-one-center .face-box { flex: none; background: transparent; border: none; padding: 0; display: flex; justify-content: center; }
+.lega-one-center .lega-face-canvas { max-height: min(26vh, 280px); max-width: min(26vh, 280px); }
+.lega-one-center .face-box.discreet .lega-face-canvas { max-height: min(14vh, 130px); max-width: min(14vh, 130px); }
+.lega-one-center .face-box .core-svg { max-height: min(30vh, 300px); }
+.lega-one-center .face-controls { justify-content: center; flex: none; }
+
+.lega-one-activity { flex: none; margin: 0; display: flex; align-items: center; justify-content: center; gap: 6px; font-size: var(--fs-s); color: var(--text-2); text-align: center; }
+.lega-one-activity .dot { width: 8px; height: 8px; border-radius: 50%; background: currentColor; flex: none; }
+.lega-one-activity.tone-ok { color: var(--ok); }
+.lega-one-activity.tone-info { color: var(--accent); }
+.lega-one-activity.tone-approval { color: var(--approval); }
+.lega-one-activity.tone-error { color: var(--danger); }
+.lega-one-activity .faint { color: var(--text-3); }
+.lega-one-caption { flex: none; text-align: center; pointer-events: none; }
+.lega-one-caption .stage-lega { font-size: clamp(15px, 1.5vw, 20px); }
+
+.lega-one-center .lega-conv { flex: 1 1 auto; min-height: 110px; background: rgba(8, 11, 16, 0.62); backdrop-filter: blur(6px); }
+.lega-one-center .lega-conv.is-empty { flex: none; min-height: 0; background: transparent; border-color: transparent; backdrop-filter: none; text-align: center; }
+.lega-one-center .lega-composer { flex: none; }
+.lega-one-center .interrupt-bar { flex: none; justify-content: center; }
+.lega-voice-dock { flex: none; min-width: 0; }
+.lega-voice-dock:empty { display: none; }
+.lega-panel.docked { position: static; width: auto; max-height: 30vh; z-index: auto; box-shadow: none; padding: 10px 12px; gap: 8px; background: rgba(16, 23, 34, 0.82); backdrop-filter: blur(6px); }
+.lega-panel.docked .lega-lines { max-height: 160px; }
+
+.lega-one .cockpit-main > *, .lega-one-side > * { min-width: 0; max-width: 100%; }
+.lega-one-list.decisions strong { overflow-wrap: anywhere; min-width: 0; }
+/* The glass panels next to the map: the company, the decisions and the executions. */
+.lega-one-panel { display: flex; flex-direction: column; gap: 6px; padding: 12px; border: 1px solid rgba(101, 217, 255, 0.16); border-radius: var(--r-l);
+  background: rgba(8, 11, 16, 0.66); backdrop-filter: blur(8px); min-width: 0; }
+.lega-one-list { list-style: none; margin: 0 0 4px; padding: 0; display: flex; flex-direction: column; gap: 4px; }
+.lega-one-list li { display: flex; justify-content: space-between; gap: 8px; font-size: var(--fs-s); color: var(--text-2); min-width: 0; }
+.lega-one-list li.on { color: var(--text); }
+.lega-one-list.decisions li { flex-direction: column; justify-content: flex-start; color: var(--text); padding: 6px 0; border-bottom: 1px solid rgba(233, 181, 109, 0.18); }
+.lega-one-list.decisions li:last-child { border-bottom: none; }
+.lega-one-offer .sales-section h4 { margin: 8px 0 2px; font-size: var(--fs-s); }
+
+/* The help popover of the composer (the command examples no longer fill the conversation). */
+.lega-help { position: relative; display: inline-flex; }
+.lega-help-pop { position: absolute; bottom: calc(100% + 8px); right: 0; width: min(380px, 86vw); max-height: 52vh; overflow: auto; z-index: var(--z-overlay);
+  display: flex; flex-direction: column; gap: 8px; padding: 12px; background: var(--raised); border: 1px solid var(--line-strong); border-radius: var(--r-l); box-shadow: var(--shadow-pop); }
+.lega-help-pop .plain-list { display: flex; flex-direction: column; gap: 6px; margin: 0; padding: 0; list-style: none; }
+.lega-help-pop .link-btn { text-align: left; text-decoration: none; }
+.lega-help-pop .link-btn:hover { text-decoration: underline; }
+
+/* „Ecran complet”: the same screen over the Hub's bars. The bars behind it are hidden (never focused unseen; the voice player in the top
+   bar keeps playing); the Shell's dialogs, the Desktop Operator bar and the run indicator stay above it; notifications already are. */
+.lega-one.is-immersive { position: fixed; inset: 0; z-index: 55; height: 100dvh; padding: var(--sp-3) var(--sp-5);
+  background: radial-gradient(ellipse at center, #0b1622 0%, #05080c 70%); }
+.app.is-immersive > .topbar, .app.is-immersive > .rail, .app.is-immersive > .bottom-nav { visibility: hidden; }
+/* 2.15.4 — the full screen looks like the stage it replaces: the map fills the window; the company and the decisions are thin glass panels
+   at the sides; Lega's figure is large in the middle; the conversation shows its last lines over the map; the cards keep their own panels. */
+@media (min-width: 1281px) { .lega-one.is-immersive .lega-one-grid { grid-template-columns: minmax(190px, 240px) minmax(0, 1fr) minmax(300px, 400px); } }
+.lega-one.is-immersive .lega-one-panel { background: rgba(8, 11, 16, 0.5); font-size: var(--fs-s); }
+.lega-one.is-immersive .lega-one-side { align-self: center; max-height: 80vh; }
+.lega-one.is-immersive .lega-one-center .lega-face-canvas { max-height: min(40vh, 420px); max-width: min(40vh, 420px); }
+.lega-one.is-immersive .lega-one-scroll { justify-content: flex-end; }
+.lega-one.is-immersive .lega-one-center .lega-conv { flex: 0 1 auto; min-height: 0; max-height: 28vh; background: rgba(8, 11, 16, 0.42); }
+.lega-one.is-immersive .lega-one-center .lega-conv.is-empty { background: transparent; }
+.lega-one.is-immersive .cockpit-main .panel { background: rgba(16, 23, 34, 0.86); backdrop-filter: blur(6px); }
+.lega-one.is-immersive .cockpit-head { padding: 0 2px; }
+.app.is-immersive .overlay { z-index: 60; }
+.app.is-immersive .desktop-bar, .app.is-immersive .control-indicator { z-index: 58; }
+/* The run indicator sits at the top centre of the full screen, never over the composer and the controls at the bottom. */
+.app.is-immersive .control-indicator { top: 96px; bottom: auto; left: 50%; right: auto; transform: translateX(-50%); }
+@media (max-height: 760px) {
+  .lega-one-center .lega-face-canvas { max-height: 16vh; max-width: 16vh; }
+  .lega-one-center .face-box.discreet .lega-face-canvas { max-height: 10vh; max-width: 10vh; }
+}
+
+/* A narrower window: the company panel goes above the work column; Lega and the conversation keep the full height. */
+@media (max-width: 1280px) {
+  .lega-one-grid { grid-template-columns: minmax(340px, 1fr) minmax(320px, 460px); grid-template-rows: auto minmax(0, 1fr); grid-template-areas: "center side" "center work"; }
+  .lega-one-side { max-height: 24vh; }
+}
+/* A small window or a phone: one column in reading order (Lega and the conversation, the work, then the company); the page scrolls. */
+@media (max-width: 900px) {
+  .lega-one { height: auto; min-height: 100%; overflow: visible; padding: var(--sp-3); }
+  .lega-one-map { height: 70vh; bottom: auto; }
+  .lega-one-grid { display: flex; flex-direction: column; }
+  .lega-one-center { order: 1; } .lega-one .cockpit-main { order: 2; } .lega-one-side { order: 3; }
+  .lega-one-side, .lega-one .cockpit-main { overflow: visible; max-height: none; }
+  .lega-one-scroll { overflow: visible; }
+  .lega-one-center .lega-conv { max-height: 46vh; }
+  .lega-one-center .lega-face-canvas { max-height: 160px; max-width: 160px; }
+  .lega-one.is-immersive { overflow: auto; }
+}

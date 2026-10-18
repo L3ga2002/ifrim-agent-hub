@@ -22,7 +22,7 @@ test("M03-GRD-01 files changed while the reviewer reads: the verdict is recorded
       t.hub.grants.create({ provider: "codex", projectId: project.id, access: "workspace-write", maxAttempts: 3, maxDurationS: 900, ttlMinutes: 60 }, "test");
       t.hub.grants.create({ provider: "claude", projectId: project.id, access: "read-only", maxAttempts: 3, maxDurationS: 900, ttlMinutes: 60 }, "test");
     });
-    const { mission } = (await dispatch(t.hub, "factory.prepare", { projectId: project.id, ...demoSpec("bug-demo") })).result;
+    const { mission } = (await dispatch(t.hub, "factory.prepare", { projectId: project.id, ...demoSpec("bug-demo"), limits: { writerModel: "gpt-fake-sol", reviewerModel: "sonnet" } })).result;
     t.queue("codex", "factory-write:bug-fix");
     t.queue("claude", "review-slow:pass", "review:pass");
     const requested = await dispatch(t.hub, "factory.start", t.hub.factory.view(mission.id).scope);

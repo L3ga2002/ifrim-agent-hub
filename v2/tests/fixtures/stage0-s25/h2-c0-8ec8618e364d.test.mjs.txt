@@ -1,0 +1,202 @@
+// Test de acceptanță scris de Ifrim Agent Hub din criteriile proprietarului (misiunea mis_mv8c3o3u_7e97950793, spec v1 6b6101adb4e2).
+// Protejat după review: se repară implementarea, nu testul. Nu îl modifica manual.
+import test from "node:test";
+import assert from "node:assert/strict";
+import path from "node:path";
+import os from "node:os";
+import fs from "node:fs";
+import * as sqlite from "node:sqlite";
+import http from "node:http";
+const load = async (rel) => { try { return await import(new URL(rel, import.meta.url)); } catch (e) { assert.fail(`HUB_LOAD ${rel}: ${e?.code || e?.name || "eroare"}`); } };
+const need = (m, name) => { if (typeof m[name] === "function") return m[name]; assert.fail(`HUB_SETUP export ${name}: ${name in m ? typeof m[name] : "lipsește"}`); };
+// Antet Hub v2: resursele întoarse de setup() se înregistrează pe cazul curent și sunt închise de Hub la sfârșitul lui, la succes și la eșec (raport HUB_CLEANUP în TAP).
+const hubTimer = setTimeout, hubClear = clearTimeout;
+const registry = { current: null, file: [] }; const hubAdd = (label, value) => { if (value && (typeof value === "object" || typeof value === "function") && typeof value.close === "function") (registry.current?.items || registry.file).push({ label: String(label).replace(/\s+/g, " ").slice(0, 60), target: value }); return value; };
+const setup = async (label, fn) => { let value; try { value = await fn(); } catch (e) { assert.fail(`HUB_SETUP ${label}: ${e?.code || e?.name || "eroare"}`); } return hubAdd(label, value); };
+const hubClose = ({ target }) => new Promise((resolve) => { let settled = false; const finish = (ok, status) => { if (!settled) { settled = true; hubClear(timer); resolve({ ok, status }); } }; const timer = hubTimer(() => { try { target.closeAllConnections?.(); } catch {} try { target.unref?.(); } catch {} finish(false, "blocat"); }, 5000); timer.unref(); (async () => { try { if (target.listening === false || target.isOpen === false) { finish(true, "deja închis"); return; } if (typeof target.listening === "boolean") await new Promise((done, fail) => target.close((e) => e ? fail(e) : done())); else await target.close(); finish(true, "închis"); } catch (e) { if (e?.code === "ERR_SERVER_NOT_RUNNING" || e?.code === "ERR_INVALID_STATE") finish(true, "deja închis"); else finish(false, `eroare ${String(e?.code || e?.name || "necunoscută").replace(/\s+/g, " ").slice(0, 60)}`); } })(); });
+const hubCleanup = async (t, items) => { const details = [], bad = []; for (const item of [...items].reverse()) { const { ok, status } = await hubClose(item), detail = `${item.label}: ${status}`; details.push(detail); if (!ok) bad.push(detail); } t.diagnostic(`HUB_CLEANUP ${bad.length ? "fail" : "ok"} ${items.length}${details.length ? ` ${details.join("; ")}` : ""}`); if (bad.length) throw new Error(`HUB_CLEANUP ${bad.join("; ")}`); };
+test.beforeEach(() => { registry.current = { items: [] }; });
+test.afterEach(async (t) => { const items = registry.current?.items || []; registry.current = null; await hubCleanup(t, items); });
+test.after(async (t) => { await hubCleanup(t, registry.file.splice(0)); });
+// json-exposure v1 sha256 984e7cf2876d: checks only the given response; not a general personal-data certification.
+function exposes(text, config) {
+  const fail = (why) => assert.fail(`HUB_SETUP exposes: ${why}`);
+  if (typeof text !== "string") fail("corpul răspunsului nu este text");
+  const { keys, values } = config || {};
+  if (!Array.isArray(keys) || !Array.isArray(values)) fail("cheile și valorile trebuie să fie liste");
+  if (!keys.length || !values.length) fail("listele de chei și valori nu pot fi goale");
+  if ([...keys].some((k) => typeof k !== "string" || !k.trim())) fail("o cheie nu este text nevid");
+  if ([...values].some((v) => typeof v !== "string" || v.trim().length < 3)) fail("o valoare nu este text cu minimum trei caractere");
+  let data; try { data = JSON.parse(text); } catch { fail("corpul răspunsului nu este JSON valid"); }
+  const found = [], add = (p, kind, i) => { if (found.length < 50) found.push(`${p}: ${kind}${i === undefined ? "" : `, valoarea #${i + 1}`}`); };
+  const contains = (s, v) => s.includes(v) || s.includes(v.trim());
+  const matches = (s, p, kind) => values.forEach((v, i) => { if (contains(s, v)) add(p, kind, i); });
+  const walk = (v, p) => { if (typeof v === "string" || typeof v === "number") matches(String(v), p, "valoare"); else if (v && typeof v === "object") { for (const [i, [k, child]] of Object.entries(v).entries()) { const segment = Array.isArray(v) ? `[${i}]` : values.some((s) => contains(k, s)) || k.length > 40 ? "[*]" : `[${JSON.stringify(k)}]`; const next = `${p.length > 120 ? "$.." : p}${segment}`; if (keys.includes(k)) add(next, "cheie"); matches(k, next, "cheie-valoare"); walk(child, next); } } };
+  try { walk(data, "$"); } catch { fail("răspunsul nu poate fi parcurs în siguranță"); }
+  return found;
+}
+// ---- corpul testului ----
+const DAY = "2026-10-11";
+const PRE_PHONE = "0711 111 111";
+const NEW_PHONE = "0722 222 222";
+const HIST_ID = "hist-2026-10-11-1300";
+
+const EXPECTED_SEEDS = [
+  { id: "seed-2026-10-11-1000", service_id: "spalare-exterior", day: "2026-10-11", start_min: 600, end_min: 630, name: "Client Demo A", vehicle: "Autoturism test", phone: "0700 123 456", synthetic: 1 },
+  { id: "seed-2026-10-11-1130", service_id: "curatare-interior", day: "2026-10-11", start_min: 690, end_min: 750, name: "Client Demo B", vehicle: "Autoturism test", phone: "0700 123 456", synthetic: 1 },
+  { id: "seed-2026-10-11-1500", service_id: "polish-faruri", day: "2026-10-11", start_min: 900, end_min: 930, name: "Client Demo C", vehicle: "Autoturism test", phone: "0700 123 456", synthetic: 1 },
+];
+
+function makeNow() { return new Date(2026, 9, 11, 8, 0, 0); }
+
+function httpReq(opts, body) {
+  return new Promise((resolve, reject) => {
+    const req = http.request(opts, (res) => {
+      let buf = "";
+      res.on("data", (c) => { buf += c; });
+      res.on("end", () => resolve({ status: res.statusCode, body: buf }));
+    });
+    req.on("error", reject);
+    if (body) req.write(body);
+    req.end();
+  });
+}
+
+function getBookings(port, qs) {
+  return httpReq({ hostname: "127.0.0.1", port, path: "/api/bookings?date=" + qs, method: "GET", headers: { host: "127.0.0.1" } });
+}
+
+function getSlots(port, date, svc) {
+  return httpReq({ hostname: "127.0.0.1", port, path: "/api/slots?date=" + date + "&service=" + svc, method: "GET", headers: { host: "127.0.0.1" } });
+}
+
+function postBooking(port, payload) {
+  const data = JSON.stringify(payload);
+  return httpReq({ hostname: "127.0.0.1", port, path: "/api/bookings", method: "POST", headers: { host: "127.0.0.1", "content-type": "application/json", "content-length": Buffer.byteLength(data) } }, data);
+}
+
+async function buildEnv() {
+  const mApp = await load("../../src/server-app.js");
+  const startSrv = need(mApp, "startServer");
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "hub-bk-"));
+  const dbPath = path.join(tmp, "db.sqlite");
+
+  let srv = await setup("srv1", () => startSrv({ port: 0, dbPath, now: makeNow }));
+  const dbR = hubAdd("dbR", new sqlite.DatabaseSync(dbPath));
+
+  const seedRows = dbR.prepare("SELECT id,service_id,day,start_min,end_min,name,vehicle,phone,synthetic FROM bookings WHERE day=? ORDER BY start_min,id").all(DAY).map((r) => ({ ...r }));
+  assert.deepEqual(seedRows, EXPECTED_SEEDS, "DATE MARTOR: start");
+
+  const slRes1 = await getSlots(srv.port, DAY, "spalare-exterior");
+  assert.equal(slRes1.status, 200, "slots sesiunea 1 ok");
+  const free1 = JSON.parse(slRes1.body).slots.find((s) => s.status === "free");
+  assert.ok(free1, "slot liber sesiunea 1");
+
+  const pr = await postBooking(srv.port, { serviceId: "spalare-exterior", start: free1.start, name: "Client Pre", vehicle: "Auto Pre", phone: PRE_PHONE });
+  assert.equal(pr.status, 201, "ID API: creare pre");
+  const preId = JSON.parse(pr.body).booking.id;
+  const preRow = dbR.prepare("SELECT id,day,phone FROM bookings WHERE id=?").get(preId);
+  assert.deepEqual({ ...preRow }, { id: preId, day: DAY, phone: PRE_PHONE }, "ID API: stocare pre");
+
+  await srv.close();
+
+  const dbW = new sqlite.DatabaseSync(dbPath);
+  dbW.prepare("INSERT INTO bookings (id,service_id,day,start_min,end_min,name,vehicle,synthetic,created_at) VALUES (?,?,?,?,?,?,?,?,?)").run(HIST_ID, "spalare-exterior", DAY, 780, 810, "Client Istoric", "Autoturism istoric", 0, "2026-10-11T06:00:00.000Z");
+  dbW.close();
+
+  const histRow = dbR.prepare("SELECT id,day,phone FROM bookings WHERE id=?").get(HIST_ID);
+  assert.deepEqual({ ...histRow }, { id: HIST_ID, day: DAY, phone: "" }, "CONTROL ISTORIC: hist storat fără phone");
+
+  srv = await setup("srv2", () => startSrv({ port: 0, dbPath, now: makeNow }));
+
+  const slRes2 = await getSlots(srv.port, DAY, "spalare-exterior");
+  assert.equal(slRes2.status, 200, "slots sesiunea 2 ok");
+  const free2 = JSON.parse(slRes2.body).slots.find((s) => s.status === "free");
+  assert.ok(free2, "slot liber sesiunea 2");
+
+  const nr = await postBooking(srv.port, { serviceId: "spalare-exterior", start: free2.start, name: "Client Nou", vehicle: "Auto Nou", phone: NEW_PHONE });
+  assert.equal(nr.status, 201, "ID API: creare nou");
+  const newId = JSON.parse(nr.body).booking.id;
+  const newRow = dbR.prepare("SELECT id,day,phone FROM bookings WHERE id=?").get(newId);
+  assert.deepEqual({ ...newRow }, { id: newId, day: DAY, phone: NEW_PHONE }, "ID API: stocare nou");
+
+  return { srv, dbR, preId, newId };
+}
+
+test("AC-1: Lista publică a zilei nu expune câmpul phone", async () => {
+  const { srv, preId, newId } = await buildEnv();
+  const res = await getBookings(srv.port, DAY);
+  assert.equal(res.status, 200, "status 200");
+  const parsed = JSON.parse(res.body);
+  const allIds = [...EXPECTED_SEEDS.map((s) => s.id), HIST_ID, preId, newId];
+  assert.equal(parsed.bookings.length, allIds.length, "nr înregistrări");
+  for (const eid of allIds) {
+    assert.ok(parsed.bookings.some((b) => b.id === eid), "ID API: " + eid + " în listă");
+  }
+  const phoneValues = [...new Set([...EXPECTED_SEEDS.map((s) => s.phone), PRE_PHONE, NEW_PHONE])];
+  assert.deepEqual(exposes(res.body, { keys: ["phone"], values: phoneValues }), [], "EXPUNERE: lista nu expune telefonul");
+});
+
+test("AC-2: Parametri anonimi nu produc scurgere de phone", async () => {
+  const { srv, preId, newId } = await buildEnv();
+  const allIds = [...EXPECTED_SEEDS.map((s) => s.id), HIST_ID, preId, newId];
+  const phoneValues = [...new Set([...EXPECTED_SEEDS.map((s) => s.phone), PRE_PHONE, NEW_PHONE])];
+  for (const param of ["includePhone=1", "phone=1", "fields=phone", "debug=1", "all=1"]) {
+    const r = await getBookings(srv.port, DAY + "&" + param);
+    assert.equal(r.status, 200, "status 200 param " + param);
+    const parsed = JSON.parse(r.body);
+    assert.equal(parsed.bookings.length, allIds.length, "nr înregistrări param " + param);
+    for (const eid of allIds) {
+      assert.ok(parsed.bookings.some((b) => b.id === eid), "ID API: " + eid + " param " + param);
+    }
+    assert.deepEqual(exposes(r.body, { keys: ["phone"], values: phoneValues }), [], "EXPUNERE: " + param);
+  }
+});
+
+test("AC-3 control: Refuz la phone lipsă, gol, spații", async () => {
+  const { srv, dbR } = await buildEnv();
+  const allRows = () => dbR.prepare("SELECT id,service_id,day,start_min,end_min,name,vehicle,phone,synthetic,created_at FROM bookings ORDER BY id").all().map((r) => ({ ...r }));
+  const slRes = await getSlots(srv.port, DAY, "curatare-interior");
+  assert.equal(slRes.status, 200, "slots refuz ok");
+  const freeForBad = JSON.parse(slRes.body).slots.find((s) => s.status === "free");
+  assert.ok(freeForBad, "slot liber pentru test refuz");
+  const base = { serviceId: "curatare-interior", start: freeForBad.start, name: "Test Refuz", vehicle: "Auto Refuz" };
+
+  const before1 = allRows();
+  const r1 = await postBooking(srv.port, { ...base });
+  assert.equal(r1.status, 400, "refuz fără phone");
+  assert.ok(JSON.parse(r1.body).errors && JSON.parse(r1.body).errors.phone, "eroare câmp phone lipsă");
+  assert.deepEqual(allRows(), before1, "stocare neschimbată refuz 1");
+
+  const before2 = allRows();
+  const r2 = await postBooking(srv.port, { ...base, phone: "" });
+  assert.equal(r2.status, 400, "refuz phone gol");
+  assert.ok(JSON.parse(r2.body).errors && JSON.parse(r2.body).errors.phone, "eroare câmp phone gol");
+  assert.deepEqual(allRows(), before2, "stocare neschimbată refuz 2");
+
+  const before3 = allRows();
+  const r3 = await postBooking(srv.port, { ...base, phone: "   " });
+  assert.equal(r3.status, 400, "refuz phone spații");
+  assert.ok(JSON.parse(r3.body).errors && JSON.parse(r3.body).errors.phone, "eroare câmp phone spații");
+  assert.deepEqual(allRows(), before3, "stocare neschimbată refuz 3");
+});
+
+test("AC-4 control: Telefon salvat exact în stocare", async () => {
+  const { dbR, preId, newId } = await buildEnv();
+  const preRow = dbR.prepare("SELECT id,day,phone FROM bookings WHERE id=?").get(preId);
+  assert.deepEqual({ ...preRow }, { id: preId, day: DAY, phone: PRE_PHONE }, "telefon pre salvat exact");
+  const newRow = dbR.prepare("SELECT id,day,phone FROM bookings WHERE id=?").get(newId);
+  assert.deepEqual({ ...newRow }, { id: newId, day: DAY, phone: NEW_PHONE }, "telefon nou salvat exact");
+});
+
+test("AC-5 control: Programare validă cu telefon acceptată", async () => {
+  const { srv } = await buildEnv();
+  const slRes = await getSlots(srv.port, DAY, "polish-faruri");
+  assert.equal(slRes.status, 200, "slots ok");
+  const freeSlot = JSON.parse(slRes.body).slots.find((s) => s.status === "free");
+  assert.ok(freeSlot, "slot liber disponibil");
+  const r = await postBooking(srv.port, { serviceId: "polish-faruri", start: freeSlot.start, name: "Client Valid", vehicle: "Auto Valid", phone: "0744 555 666" });
+  assert.equal(r.status, 201, "programare acceptată");
+  const booking = JSON.parse(r.body).booking;
+  assert.ok(booking && booking.id && booking.id.length > 0, "id booking prezent");
+});

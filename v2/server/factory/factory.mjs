@@ -1,23 +1,33 @@
+import { captureBlockers } from "../delivery/capture-blockers.mjs";
+import { criterionFingerprint } from "../media/claims.mjs";
+import { findingCode, codedReviewFindings } from "./review.mjs";
+import { datasetProblem } from "./dataset.mjs";
 import fs from "node:fs";
 import path from "node:path";
 import crypto from "node:crypto";
 import { HubError } from "../core/errors.mjs";
 import { newId } from "../core/ids.mjs";
-import { hashCanonical } from "../core/canonical.mjs";
+import { hashCanonical, sha256 } from "../core/canonical.mjs";
 import { json, parse } from "../storage/db.mjs";
 import { redactText } from "../security/redact.mjs";
+import { resolveInScope } from "../security/paths.mjs";
 import { transitionTask, TERMINAL_STATES } from "../runtime/state-machine.mjs";
 import { workspaceResource } from "../runtime/runs.mjs";
 import { summarizeTimeline } from "../runtime/timeline.mjs";
 import { MISSION_TEMPLATES } from "../domain/missions.mjs";
-import { checkSpec, normalizeSpec, specHash, protectedTestRefs, specSummary, e2eStepLines } from "./spec.mjs";
-import { buildPlan, normalizeLimits, ROUTES } from "./plan.mjs";
-import { takeSnapshot, diffManifests, readGitEntry, gitEntryHash } from "./snapshot.mjs";
+import { checkSpec, normalizeSpec, specHash, protectedTestRefs, specSummary, e2eStepLines, AUTHOR_TURN_TIMEOUT_MIN } from "./spec.mjs";
+import { buildPlan, normalizeLimits, turnTimeoutsOf, ROUTES } from "./plan.mjs";
+import { takeSnapshot, diffManifests, readGitEntry, gitEntryHash, readBlob, isTestPath, skippedTreeFingerprint, skippedTreeChanges } from "./snapshot.mjs";
 import { renderChanges } from "./diff.mjs";
-import { integrityFindings } from "./integrity.mjs";
+import { integrityFindings, isTestFirstBlocking } from "./integrity.mjs";
+import { integrityDecision } from "./bundle-integrity.mjs";
+import { gatherBundleIntegrityFacts } from "./bundle-integrity-facts.mjs";
+import { contractDrift, publicReadRoutes, readPublicClient } from "./supersede.mjs";
 import { buildReviewBrief, parseReview, BLOCKING_SEVERITIES } from "./review.mjs";
+import { buildAuthorBrief, lintDatasetBrief, parseAuthorOutput, lintTestBody, normalizeNeeds, TEST_HARNESS_VERSION, baselineGate, assembleTestFile, classifyProof, proofSignature, buildTestReviewBrief, parseTestReview, ownerSummary, ownerOutcome,
+  assertionInventory, compareInventory, amendmentViolations, completionSignals, exportNamesOf, testSlotOf, testFirstScope, T_STAGE, T_ALREADY_PASSES, T_NOT_HERMETIC, T_PROJECT_CHANGED, T_REVIEW_INCONCLUSIVE, T_STOP_STAGE0, REVIEW_CAUSES, PROOF_CAUSES, TEST_FIRST_LIMITS, HUB_TEST_DIR } from "./test-first.mjs";
 import { runE2E, browserStatus } from "../tools/browser.mjs";
-import { CLAUDE_REFUSED_MODELS } from "../providers/claude.mjs";
+import { resolveRoleBindings, resolveBinding, normalizeBindingRequest, bindingLabel } from "../policy/model-binding.mjs";
 
 /**
  * Software Factory conductor (M03 §10–§21). A factory mission is an ordinary mission (template eng_*) plus one row of
@@ -27,6 +37,11 @@ import { CLAUDE_REFUSED_MODELS } from "../providers/claude.mjs";
  * Stages: SPEC_DRAFT → (owner approves the exact scope) → BASELINE → IMPLEMENTING → CHECKING → REVIEWING
  *   → [REPAIRING → CHECKING → REVIEWING]×≤maxRepairCycles → QA → PREVIEW → DELIVERY_READY → ACCEPTED | REJECTED,
  *   plus PAUSED, BLOCKED, NEEDS_OWNER_DECISION, CANCEL_REQUESTED → CANCELLED.
+ * M11 L5 (design .ifrim/M11_L5_DESIGN.md §3): a test-first spec (spec.authoring) inserts step 0 before BASELINE — TEST_AUTHORING (Claude
+ *   proposes the test, read-only; the Hub writes it into its own work area .ifrim-hub/staging) → TEST_PROVING (the Hub runner, twice,
+ *   on today's code: it must fail for the right reason) → TEST_REVIEW (Codex reviews it, read-only, in its own conversation) →
+ *   [atomic protection: moved to test/hub/, protected, new base] → BASELINE; a candidate that does not pass is rewritten at most
+ *   reauthorMax times, otherwise the owner decides — the project's code is never touched in step 0.
  * wait_reason says what the mission is waiting for: approval | grant | gate | provider | runner | owner_decision | "".
  *
  * Guarantees: one writer (workspace lease + one active factory mission per project); every dispatch is a durable row with a
@@ -35,12 +50,48 @@ import { CLAUDE_REFUSED_MODELS } from "../providers/claude.mjs";
  * itself; output that arrives after a cancel is archived as late and triggers nothing; a later change set makes older
  * reviews and evidence stale.
  */
-export const FACTORY_STAGES = Object.freeze(["SPEC_DRAFT", "BASELINE", "IMPLEMENTING", "CHECKING", "REVIEWING", "REPAIRING", "QA", "PREVIEW", "DELIVERY_READY",
-  "ACCEPTED", "REJECTED", "PAUSED", "BLOCKED", "NEEDS_OWNER_DECISION", "CANCEL_REQUESTED", "CANCELLED"]);
-export const ACTIVE_STAGES = Object.freeze(new Set(["BASELINE", "IMPLEMENTING", "CHECKING", "REVIEWING", "REPAIRING", "QA", "PREVIEW", "CANCEL_REQUESTED"]));
+export const FACTORY_STAGES = Object.freeze(["SPEC_DRAFT", "TEST_AUTHORING", "TEST_PROVING", "TEST_REVIEW", "BASELINE", "IMPLEMENTING", "CHECKING", "REVIEWING", "REPAIRING", "QA", "PREVIEW",
+  "DELIVERY_READY", "ACCEPTED", "REJECTED", "PAUSED", "BLOCKED", "NEEDS_OWNER_DECISION", "CANCEL_REQUESTED", "CANCELLED"]);
+/**
+ * The stages in which a mission works (one writer per project, Pause, Stop / Stop All, recovery, the deadline, the cockpit, the
+ * interruptions and the handoff guard all read this set — M11 L5: step 0 included, so none of them misses a mission writing its test).
+ */
+export const ACTIVE_STAGES = Object.freeze(new Set(["TEST_AUTHORING", "TEST_PROVING", "TEST_REVIEW", "BASELINE", "IMPLEMENTING", "CHECKING", "REVIEWING", "REPAIRING", "QA", "PREVIEW",
+  "CANCEL_REQUESTED"]));
+/** M11 L5 (§3): the stages of step 0 (the Hub-written acceptance test, before it is protected). */
+export const STAGE_ZERO = Object.freeze(new Set(["TEST_AUTHORING", "TEST_PROVING", "TEST_REVIEW"]));
 const FINAL_STAGES = new Set(["ACCEPTED", "REJECTED", "CANCELLED"]);
+/** 2.15.1: the stages in which the owner may reject a mission (the exact target is checked by reject()). */
+const REJECTABLE_STAGES = new Set(["DELIVERY_READY", "NEEDS_OWNER_DECISION"]);
 const RESUMABLE = new Set(["PAUSED", "BLOCKED", "NEEDS_OWNER_DECISION"]);
 const E2E_STEP_TIMEOUT_MS = 10000;
+/**
+ * 2.12.2 (P0-R3): after a model turn ran out of its per-turn time, the ONE automatic re-dispatch the plan's attempts allow waits at
+ * least this long (clock time, fired by tick(): never immediately, never a loop that burns the attempts at once).
+ */
+export const TURN_RETRY_COOLDOWN_MS = 60000;
+/**
+ * The role whose binding and per-turn limit a model stage runs under. M11 L5 (§3, §4): the Hub-written test is proposed under the
+ * REVIEWER binding (Claude, read-only, the reviewer's limit) and reviewed under the WRITER binding (Codex) restricted to read-only
+ * (dispatchRun narrows its access), with the writer's limit — so the implementer never writes its own test.
+ */
+export const ROLE_OF_STAGE = Object.freeze({ TEST_AUTHORING: "reviewer", TEST_REVIEW: "writer", IMPLEMENTING: "writer", REPAIRING: "writer", REVIEWING: "reviewer" });
+/** The model stages: an unfinished dispatch of one is repeated by a resume, and a turn timeout schedules its one retry there. */
+const MODEL_STAGES = Object.freeze(["TEST_AUTHORING", "TEST_REVIEW", "IMPLEMENTING", "REPAIRING", "REVIEWING"]);
+/**
+ * The project's own `scripts.test` (package.json), for testFirstScope's §9 check (review authority #5); "" when there is none or it
+ * cannot be read. ProDelivery (by id or slug) is refused by testFirstScope itself (§4, B3).
+ */
+function projectTestScript(projectPath) {
+  try { return String(JSON.parse(fs.readFileSync(path.join(projectPath, "package.json"), "utf8"))?.scripts?.test || ""); } catch { return ""; }
+}
+/** The evidence and review id of a Hub-written test candidate: there is no change set yet (TEXT columns, no FK). */
+const acceptanceId = (sha) => `acceptance:${String(sha).slice(0, 12)}`;
+// M11 L5 owner texts this file adds to test-first.mjs's (wave A repair): the route moved during step 0, and where a Stop or a rejection
+// left the Hub-written test (moved back to the work area, or left where it was with the reason).
+const T_STAGE0_ROUTE = (route) => `Ruta de execuție a proiectului s-a schimbat în timpul pasului 0 (acum ${route}): dovada și protejarea testului scris de Hub sunt valide doar pe ruta Windows. Mă opresc fără să modific codul; reia după ce ruta revine pe Windows.`;
+const T_TEST_WITHDRAWN = (from, to) => `Testul scris de Hub a fost mutat înapoi din ${from} în zona de lucru a Hub-ului (${to}): nu mai face parte din teste și nu rulează.`;
+const T_TEST_LEFT = (at, why) => `Testul scris de Hub a rămas în ${at}: nu l-am putut muta înapoi în zona de lucru a Hub-ului (${why}). Nu îl șterg; dacă nu îl vrei în teste, îl poți scoate tu din proiect.`;
 
 export function createFactory(deps) {
   const { db, bus, clock, config, settings, projects, conversations, missions, runs, supervisor, runner, leases, browserLaunch = null } = deps;
@@ -49,7 +100,27 @@ export function createFactory(deps) {
   let closed = false; // set when the Hub shuts down: queued steps stop touching the (closing) database
   // M06: the owner's authority over model steps (Mission Authorization Envelopes). null = no envelope layer (M03–M05 behaviour).
   let authority = null;
+  // 2.12.2 (P0-R3): test mode only (setTurnTimeScaleForTests) — shrinks the per-turn limits sent to the run manager so a timeout can be
+  // exercised in seconds; the minutes recorded, shown and hashed stay the plan's own. Always 1 outside test mode.
+  let turnTimeScale = 1;
+  let authorBriefRenderer = buildAuthorBrief;
+  // Closure R-ROLL-02, test mode only (setStartFaultForTests): called at the interruption points of a start (the moves, the snapshot,
+  // the start record) so a test can fail the start there. Always null outside test mode.
+  let startFault = null;
   const now = () => clock().toISOString();
+  /** The per-turn limit a role of this mission runs with: the minutes of its (hashed) limits, and the milliseconds sent to runs.start. */
+  function turnLimitOf(f, role) {
+    const t = turnTimeoutsOf(f?.limits || {});
+    return { min: t[role], source: t.source, ms: Math.max(1, Math.round(t[role] * 60000 * turnTimeScale)) };
+  }
+  /** Only the approved step-0 author may use the dedicated limit; its reviewer role alone grants nothing. */
+  function dispatchTurnLimit(f, stage, role = ROLE_OF_STAGE[stage] || "writer") {
+    const spec = approvedSpec(f);
+    if (stage === "TEST_AUTHORING" && spec?.status === "APPROVED" && spec.spec.authoring?.authorLimits?.turnTimeoutMin === AUTHOR_TURN_TIMEOUT_MIN) {
+      return { min: AUTHOR_TURN_TIMEOUT_MIN, ms: Math.max(1, Math.round(AUTHOR_TURN_TIMEOUT_MIN * 60000 * turnTimeScale)), source: "authorLimits" };
+    }
+    return turnLimitOf(f, role);
+  }
   const workRoot = (missionId) => path.join(config.workDir, "factory", missionId);
   const blobDir = (missionId) => path.join(workRoot(missionId), "blobs");
 
@@ -57,7 +128,9 @@ export function createFactory(deps) {
   const rowToFm = (row) => row && ({ missionId: row.mission_id, workType: row.work_type, stage: row.stage, waitReason: row.wait_reason, stageReason: row.stage_reason,
     profile: row.profile, limits: parse(row.limits_json, {}), plan: parse(row.plan_json, {}), repairCycles: row.repair_cycles, approvedSpecVersion: row.approved_spec_version,
     scopeHash: row.scope_hash, scopeApprovalId: row.scope_approval_id, baseSnapshotId: row.base_snapshot_id, reviewConversationId: row.review_conversation_id,
-    cancelRequestedAt: row.cancel_requested_at, startedAt: row.started_at, deadlineAt: row.deadline_at, createdAt: row.created_at, updatedAt: row.updated_at, version: row.version });
+    cancelRequestedAt: row.cancel_requested_at, startedAt: row.started_at, deadlineAt: row.deadline_at, createdAt: row.created_at, updatedAt: row.updated_at, version: row.version,
+    // M09: the model/effort binding of each role, fixed when the scope was approved ({} before the start or for a pre-M09 mission).
+    bindings: parse(row.bindings_json, {}) || {} });
   const fm = (missionId) => rowToFm(db.prepare("SELECT * FROM factory_missions WHERE mission_id = ?").get(missionId));
   const rowToSpec = (row) => row && ({ id: row.id, missionId: row.mission_id, version: row.version, status: row.status, spec: parse(row.spec_json, {}), sha256: row.sha256,
     protected: parse(row.protected_json, {}), author: row.author, createdAt: row.created_at, approvedAt: row.approved_at });
@@ -81,6 +154,60 @@ export function createFactory(deps) {
     summary: row.summary, missingContext: parse(row.missing_json, []), validation: parse(row.validation_json, {}), status: row.status, createdAt: row.created_at });
   const rowToDispatch = (row) => row && ({ id: row.id, missionId: row.mission_id, stage: row.stage, taskId: row.task_id, idempotencyKey: row.idempotency_key, status: row.status,
     request: parse(row.request_json, {}), runId: row.run_id, error: row.error, createdAt: row.created_at, updatedAt: row.updated_at });
+  const outputOf = (run) => (run?.outputMessageId ? db.prepare("SELECT content FROM messages WHERE id = ?").get(run.outputMessageId)?.content || "" : "");
+
+  // ---------- M11 L5: step-0 state ----------
+  /**
+   * The state of step 0 of a test-first mission, kept with the approved spec (protected_json.authoring; the handoff guard reads its two
+   * conversation ids there): status AUTHORING | PROTECTED | ABANDONED, the authoring cycle, the candidate (sha, manifest, lint facts,
+   * status STAGED | PROVEN | REVIEWED | …), the write-ahead `pending` record, the proof and review of the candidate, the rejected
+   * candidates with their reasons, `blocked` (an outcome a resume cannot change) and the Hub's last write in its work area. null for an
+   * ordinary mission (or one not started).
+   */
+  const authoringOf = (spec) => (spec?.spec?.authoring && spec.protected?.authoring ? { ...spec.protected.authoring } : null);
+  /** Read-modify-write of the step-0 state, in one transaction. `change` is an object or (state) => object, merged over the state. */
+  function updateAuthoring(missionId, change) {
+    return bus.transaction(() => {
+      const spec = approvedSpec(fm(missionId));
+      const prot = spec.protected || {};
+      const prev = { ...(prot.authoring || {}) };
+      const next = { ...prev, ...(typeof change === "function" ? change(prev) : change) };
+      db.prepare("UPDATE factory_specs SET protected_json = ? WHERE id = ?").run(json({ ...prot, authoring: next }), spec.id);
+      return next;
+    });
+  }
+  /** True while a started test-first mission has not protected its test yet (step 0): no repair cycle can be granted there. */
+  function inStageZero(missionId) {
+    const f = fm(missionId);
+    if (!f) return false;
+    const a = authoringOf(approvedSpec(f));
+    return Boolean(a && !["PROTECTED", "ABANDONED"].includes(a.status) && !FINAL_STAGES.has(f.stage));
+  }
+  /** The author cycles a plan still covers (§4 budget): 1 + reauthorMax before the start, what remains during step 0, 0 after it. */
+  function remainingAuthoring(missionId, f = fm(missionId)) {
+    const spec = approvedSpec(f) || latestSpec(missionId);
+    const def = spec?.spec?.authoring;
+    if (!def) return 0;
+    const max = Number.isInteger(def.reauthorMax) ? def.reauthorMax : TEST_FIRST_LIMITS.reauthorMax;
+    const a = f?.approvedSpecVersion ? authoringOf(spec) : null;
+    if (!a) return 1 + max;
+    if (["PROTECTED", "ABANDONED"].includes(a.status) || a.blocked) return 0;
+    return Math.max(0, 1 + max - (a.cycle || 0));
+  }
+  /**
+   * The Hub's own files left in its work area on a project ({stagingRef: sha256}), from every mission's step-0 record: what an
+   * abandoned step 0 left there. A later plan may reuse such a path only at exactly that sha (plannedTestRefs' hubWrites).
+   */
+  function hubWrites(projectId) {
+    const out = {};
+    const rows = db.prepare(`SELECT fs.protected_json FROM factory_specs fs JOIN missions m ON m.id = fs.mission_id
+      WHERE m.project_id = ? AND json_extract(fs.protected_json, '$.authoring.lastHubWrite.path') IS NOT NULL ORDER BY fs.created_at`).all(projectId);
+    for (const row of rows) {
+      const w = parse(row.protected_json, {}).authoring?.lastHubWrite;
+      if (w?.path && /^[0-9a-f]{64}$/.test(String(w.sha || ""))) out[w.path] = w.sha;
+    }
+    return out;
+  }
 
   function setStage(missionId, stage, { waitReason = "", reason = "", actor = "factory", extra = {} } = {}) {
     if (!FACTORY_STAGES.includes(stage)) throw new HubError("validation", `Unknown factory stage ${stage}`);
@@ -93,6 +220,10 @@ export function createFactory(deps) {
     bus.transaction(() => {
     db.prepare(`UPDATE factory_missions SET stage = ?, wait_reason = ?, stage_reason = ?, updated_at = ?, version = version + 1${cols.map(([c]) => `, ${c} = ?`).join("")} WHERE mission_id = ?`)
       .run(stage, waitReason, String(reason).slice(0, 1000), now(), ...cols.map(([, v]) => v), missionId);
+    if (FINAL_STAGES.has(stage) && (stage !== "ACCEPTED" || !writerStarted(missionId))) {
+      const note = abandonText(abandonAuthoring(missionId, stage === "REJECTED" ? "reject" : stage === "CANCELLED" ? "stop" : reason || stage));
+      if (note) db.prepare("UPDATE factory_missions SET stage_reason = ? WHERE mission_id = ?").run(`${reason}. ${note}`.slice(0, 1000), missionId);
+    }
     bus.append({ type: "factory.stage", scopeType: "mission", scopeId: missionId, source: actor, payload: { stage, waitReason, reason: String(reason).slice(0, 300) } });
     });
     return view(missionId);
@@ -117,8 +248,9 @@ export function createFactory(deps) {
    * not an active one (a Pause, the deadline's NEEDS_OWNER_DECISION, BLOCKED, a final stage) leaves the mission where it is.
    * The result of an interrupted step is never interpreted: no finding, no repair, no next stage, no model run.
    */
-  const isHalted = (missionId) => { const s = fm(missionId); return !s || Boolean(s.cancelRequestedAt) || !ACTIVE_STAGES.has(s.stage); };
+  const isHalted = (missionId) => { if (closed) return true; const s = fm(missionId); return !s || Boolean(s.cancelRequestedAt) || !ACTIVE_STAGES.has(s.stage); };
   function halted(missionId) {
+    if (closed) return { halted: true, shutdown: true };
     const s = fm(missionId);
     if (s?.cancelRequestedAt) return confirmCancel(missionId);
     if (!s || !ACTIVE_STAGES.has(s.stage)) return view(missionId);
@@ -129,6 +261,7 @@ export function createFactory(deps) {
    * started; a browser E2E). While one is in flight a Stop stays CANCEL_REQUESTED; the step itself confirms it afterwards.
    */
   function haltStep(missionId, taskId) {
+    if (closed) return halted(missionId);
     if (fm(missionId)?.stage === "PAUSED" && taskId && missions.task(taskId)?.status === "RUNNING") {
       try { transitionTask(db, bus, clock, { taskId, to: "PAUSED", reason: "Factory: pauză în timpul pasului", actor: "factory" }); } catch { /* left as is */ }
     }
@@ -256,13 +389,144 @@ export function createFactory(deps) {
    * engine binds this payload; at start the Hub checks it again against the current state (a spec or limit changed after the
    * approval refuses the start).
    */
-  function scopeFor(missionId) {
+  /**
+   * M09: each role's binding (explicit model + effort, resolved against the route that will run it). `bindings` overrides the
+   * resolution (a reviewer override outside an envelope recomputes only that role). Returns { bindings, problems }.
+   */
+  function bindingsOf(missionId, f = fm(missionId)) {
+    const projectId = missions.get(missionId)?.projectId;
+    const ctx = (provider) => (runs.bindingContext ? runs.bindingContext(projectId, provider) : { environment: "windows", providerState: null });
+    return resolveRoleBindings(f.limits || {}, { writer: ctx(ROUTES.writer.provider), reviewer: ctx(ROUTES.reviewer.provider) }, { now: clock() });
+  }
+
+  /**
+   * The approvable scope, or why it is incomplete: { scope, problems }. A mission without an explicit model for BOTH roles (or
+   * whose models cannot be resolved now: not in model/list, unknown effort, Claude Code not inspected) is a draft — no scope,
+   * so no approval and no envelope (PLAN_INCOMPLETE). There is no placeholder model.
+   */
+  function scopeState(missionId, { bindings = null } = {}) {
     const f = need(fm(missionId));
     const spec = latestSpec(missionId);
-    return { missionId, specVersion: spec.version, specSha: spec.sha256, planSha: f.plan.sha256, limits: f.limits,
+    const resolved = bindings ? { bindings, problems: [] } : bindingsOf(missionId, f);
+    // The scope (and so its hash, the approval and the envelope) carries the binding without evidence timestamps: a re-probe
+    // that found the same facts must not invalidate an approval (bindingHash excludes them for the same reason).
+    const stable = (b) => {
+      if (!b) return null;
+      const { probedAt: _probedAt, ...evidence } = b.resolutionEvidence || {};
+      return { ...b, resolutionEvidence: evidence };
+    };
+    const scope = { missionId, specVersion: spec.version, specSha: spec.sha256, planSha: f.plan.sha256, limits: f.limits,
       routes: { writer: { ...ROUTES.writer, model: f.limits.writerModel || "", effort: f.limits.writerEffort || "", profile: f.limits.profile },
         reviewer: { ...ROUTES.reviewer, model: f.limits.reviewerModel || "", effort: f.limits.reviewerEffort || "", profile: f.limits.profile } },
+      bindings: { writer: stable(resolved.bindings.writer), reviewer: stable(resolved.bindings.reviewer) },
       commands: spec.spec.verification };
+    return { scope: resolved.problems.length ? null : scope, problems: resolved.problems };
+  }
+  /** The approvable scope (throws the owner-facing reason when the models are not fixed). */
+  function scopeFor(missionId, opts = {}) {
+    const { scope, problems } = scopeState(missionId, opts);
+    if (!scope) throw new HubError("validation", `Modelele misiunii nu sunt fixate: ${problems.join("; ")}`, { data: { problems } });
+    return scope;
+  }
+
+  // ---------- M10.2 (U11): what a plan needs to continue a started mission ----------
+  /** The attempts one stage may use: the mission's limit, or the one more a confirmed plan difference gave THAT stage (review #11). */
+  function attemptLimit(f, stage) { return Math.max(f.limits.maxAttemptsPerStage, Number(f.limits.stageAttempts?.[stage]) || 0); }
+  /**
+   * The model step a resume repeats ({ stage, cycle, changeSeq }), or null: the last dispatch while it did not finish — and, in step 0
+   * (M11 L5), the next model step when the last dispatch DID finish. There an unreadable author answer asks the author again in the
+   * same cycle, and a test review that was INCONCLUSIVE is asked for again, so the attempt limit is met by a dispatch that was never
+   * inserted (the last row is DONE): without this, neither „Reia” nor a plan's "one more attempt" could ever get the mission out.
+   */
+  function stepToRepeat(missionId, f = fm(missionId)) {
+    const last = rowToDispatch(db.prepare("SELECT * FROM factory_dispatches WHERE mission_id = ? ORDER BY created_at DESC LIMIT 1").get(missionId));
+    if (last && !["DONE", "DONE_LATE"].includes(last.status)) return { stage: last.stage, cycle: last.request.cycle, changeSeq: last.request.changeSeq };
+    if (last?.status === "DONE_LATE") return null; // evaluated at the resume, never repeated
+    const a = f ? authoringOf(approvedSpec(f)) : null;
+    if (!a || a.status !== "AUTHORING" || a.blocked) return null;
+    if (!a.candidate && !a.pending) return { stage: "TEST_AUTHORING", cycle: a.cycle || 0, changeSeq: 0 };
+    const c = a.candidate;
+    if (c && a.proof?.sha === c.sha && a.proof.verdict === "PROVEN" && !passReviewOf(missionId, c.sha)) return { stage: "TEST_REVIEW", cycle: a.cycle || 0, changeSeq: 0 };
+    return null;
+  }
+  /** The step a resume would repeat because its confirmed attempts are spent ({ stage, counted, limit }), or null. */
+  function exhaustedStep(missionId, f = fm(missionId)) {
+    if (!f || f.stage !== "NEEDS_OWNER_DECISION") return null;
+    const step = stepToRepeat(missionId, f);
+    if (!step) return null;
+    const { counted } = modelAttempts(missionId, step.stage, step.cycle, step.changeSeq);
+    const limit = attemptLimit(f, step.stage);
+    return counted >= limit ? { stage: step.stage, counted, limit } : null;
+  }
+  /**
+   * The scope a CONTINUATION plan covers for a started mission (PAUSED / BLOCKED / NEEDS_OWNER_DECISION): the approved spec and plan
+   * (immutable after the start), the current limits and the role bindings RE-RESOLVED now from the same requested models — so a
+   * changed Claude Code version or model list is shown and hashed instead of failing again at dispatch. Also what remains of the
+   * mission (repair cycles, an exhausted step) and which role bindings would change. Read-only.
+   */
+  function continuationScope(missionId) {
+    const f = need(fm(missionId));
+    const base = { stage: f.stage, repairCycles: f.repairCycles, limits: f.limits };
+    if (!RESUMABLE.has(f.stage)) return { ...base, scope: null, problems: [`misiunea e în etapa ${f.stage}`] };
+    if (!f.approvedSpecVersion || !f.bindings?.writer?.bindingHash || !f.bindings?.reviewer?.bindingHash) return { ...base, scope: null, problems: ["misiunea nu are un scope aprobat cu modele fixate"] };
+    const resolved = bindingsOf(missionId, f);
+    if (resolved.problems.length) return { ...base, scope: null, problems: resolved.problems };
+    const { scope, problems } = scopeState(missionId, { bindings: resolved.bindings });
+    if (!scope) return { ...base, scope: null, problems };
+    const changedRoles = ["writer", "reviewer"].filter((role) => scope.bindings[role]?.bindingHash !== f.bindings?.[role]?.bindingHash);
+    return { ...base, scope, problems: [], changedRoles, remainingCycles: Math.max(0, f.limits.maxRepairCycles - f.repairCycles), remainingAuthoring: remainingAuthoring(missionId, f), exhausted: exhaustedStep(missionId, f),
+      deadlinePassed: Boolean(f.deadlineAt && new Date(f.deadlineAt) <= clock()), title: missions.get(missionId)?.title || missionId };
+  }
+  /**
+   * A continuation plan's rebind (M10.2): the role bindings the owner confirmed in that plan replace the old ones and the scope hash
+   * is recomputed — the same audited path as the owner's reviewer override (factory.model_override, old/new pair), with the plan
+   * named. Only a resumable mission, only roles whose binding really changed; the spec and plan never change here.
+   */
+  function rebindForPlan(missionId, { bindings, actor = "envelopes", envelopeId }) {
+    const current = need(fm(missionId));
+    if (!RESUMABLE.has(current.stage)) throw new HubError("conflict", `Misiunea e în ${current.stage}`);
+    if (missionRunIds(missionId).length) throw new HubError("conflict", "O execuție a misiunii rulează încă");
+    const changed = ["writer", "reviewer"].filter((role) => bindings?.[role]?.bindingHash && bindings[role].bindingHash !== current.bindings?.[role]?.bindingHash);
+    if (!changed.length) return { changed: [], scopeHash: current.scopeHash };
+    const summary = (b) => (b ? { model: b.resolvedAlias, effort: b.effort, environment: b.environment, bindingHash: b.bindingHash, label: bindingLabel(b) } : null);
+    const next = { ...current.bindings, ...Object.fromEntries(changed.map((role) => [role, bindings[role]])) };
+    return bus.transaction(() => {
+      const scopeHash = hashCanonical(scopeState(missionId, { bindings: next }).scope);
+      db.prepare("UPDATE factory_missions SET bindings_json = ?, scope_hash = ? WHERE mission_id = ?").run(json(next), scopeHash, missionId);
+      for (const role of changed) {
+        bus.append({ type: "factory.model_override", scopeType: "mission", scopeId: missionId, source: actor, payload: { role, model: next[role].resolvedAlias,
+          previous: current.bindings?.[role]?.resolvedAlias || "—", old: summary(current.bindings?.[role]), new: summary(next[role]), scopeHash: scopeHash.slice(0, 16), envelopeId, via: "continuation" } });
+      }
+      return { changed, scopeHash };
+    });
+  }
+  /**
+   * Raises a mission's own limits by the difference the owner just confirmed in a plan (one more repair cycle, one more attempt of
+   * the exhausted step). Synchronous: the envelope service calls it inside the SAME transaction that raises the plan's limit, so the
+   * factory limit and the plan limit can never disagree (the M06 deadlock: each pointed at the other). Recorded like the owner's
+   * own extra cycle / extra attempt, with the plan named.
+   */
+  function raiseLimits(missionId, { cycle = false, attempt = false, actor = "envelopes", envelopeId = null }) {
+    const f = need(fm(missionId));
+    const limits = { ...f.limits };
+    const out = {};
+    if (cycle) { limits.maxRepairCycles = Math.max(f.limits.maxRepairCycles, f.repairCycles + 1); out.maxRepairCycles = limits.maxRepairCycles; }
+    if (attempt) {
+      // M10.2 review #11: the confirmed difference is ONE more attempt of the exhausted step, so only that stage's limit grows
+      // (limits.stageAttempts); raising maxAttemptsPerStage gave every later stage an extra attempt the plan's budget (+1) never had.
+      const step = exhaustedStep(missionId, f);
+      out.stage = step?.stage || null;
+      if (step) {
+        limits.stageAttempts = { ...(f.limits.stageAttempts || {}), [step.stage]: Math.max(attemptLimit(f, step.stage), step.counted + 1) };
+        out.maxAttemptsPerStage = limits.stageAttempts[step.stage];
+      }
+    }
+    bus.transaction(() => {
+      db.prepare("UPDATE factory_missions SET limits_json = ? WHERE mission_id = ?").run(json(limits), missionId);
+      if (cycle) bus.append({ type: "factory.extra_cycle", scopeType: "mission", scopeId: missionId, source: actor, payload: { maxRepairCycles: limits.maxRepairCycles, envelopeId } });
+      if (attempt && out.stage) bus.append({ type: "factory.extra_attempt", scopeType: "mission", scopeId: missionId, source: actor, payload: { stage: out.stage, maxAttemptsPerStage: out.maxAttemptsPerStage, envelopeId } });
+    });
+    return out;
   }
 
   function assertStartable(missionId, payload) {
@@ -272,49 +536,293 @@ export function createFactory(deps) {
     const problems = spec.protected?.problems || [];
     if (problems.length) throw new HubError("validation", `Specificația v${spec.version} are probleme: ${problems.join("; ")}`);
     const scope = scopeFor(missionId);
-    if (payload && hashCanonical(payload) !== hashCanonical(scope)) throw new HubError("gate", "Scope-ul s-a schimbat după aprobare (specificație, plan, rute sau limite); aprobă din nou");
+    if (payload && hashCanonical(payload) !== hashCanonical(scope)) throw new HubError("gate", "Scope-ul s-a schimbat după aprobare (specificație, plan, rute, limite sau modelele fixate); aprobă din nou");
     const project = projects.get(missions.get(missionId).projectId);
     const problem = projectProblem(project);
     if (problem) throw new HubError("policy", problem);
+    // M11 L5 (§4 "Domeniul v1", critique B3): the Hub writes the acceptance test only on a TEST project on the Windows route (on the
+    // ifrim-runner route the runner tests a copy, so "the run left no other file" would prove nothing there). Refused here whatever
+    // built the spec — a planner, a hand-made spec, an agent; ProDelivery is named explicitly. The owner's words: T1.
+    const testFirst = spec.spec.authoring ? checkTestFirstStart(project, spec.spec.authoring) : null;
     const busy = db.prepare(`SELECT fm.mission_id FROM factory_missions fm JOIN missions m ON m.id = fm.mission_id WHERE m.project_id = ? AND fm.mission_id <> ? AND fm.stage IN (${[...ACTIVE_STAGES].map(() => "?").join(",")})`)
       .get(project.id, missionId, ...ACTIVE_STAGES);
     if (busy) throw new HubError("conflict", `Proiectul are deja o misiune Software Factory activă (${busy.mission_id}); un singur writer pe workspace`);
-    return { f, spec, scope, project };
+    return { f, spec, scope, project, testFirst };
   }
 
-  /** Starts an approved scope: records it, protects the acceptance tests, snapshots the base and runs the baseline. */
+  /**
+   * The start checks of a test-first spec (§4, §5.1): a test project (never ProDelivery) on the Windows route; no link or junction on the
+   * two folders; the final path free; the staging path free or holding exactly a file the Hub wrote there for an earlier mission of
+   * this project (an abandoned step 0, reused). Anything else refuses the start with the conflict named. Returns { lastHubWrite }.
+   */
+  function checkTestFirstStart(project, authoring) {
+    const route = runner.routeOf ? runner.routeOf(project) : "windows";
+    // ProDelivery is found the way intel/packages.mjs finds it (projects.get("prodelivery"): its id or its slug). Review (authority #5): the
+    // project's own test script that also runs the Hub's work area is refused here too (testFirstScope, the planner's and readiness' rule).
+    const scope = testFirstScope({ project, route, testScript: projectTestScript(project.path) });
+    if (!scope.ok) throw new HubError("policy", scope.text, { code: "TEST_FIRST_SCOPE" });
+    const shaAt = (rel) => { const folder = safeFolder(project.path, path.posix.dirname(rel), { create: false }); return folder ? fileShaAt(folder, path.posix.basename(rel)) : null; };
+    if (shaAt(authoring.testRef) !== null) throw new HubError("conflict", `${authoring.testRef} există deja în proiect: testul scris de Hub nu înlocuiește un fișier existent; cere planul din nou`, { code: "TEST_FIRST_CONFLICT" });
+    const staged = shaAt(authoring.stagingRef);
+    if (staged === null) return { lastHubWrite: null };
+    const recorded = Object.entries(hubWrites(project.id)).find(([rel]) => rel.toLowerCase() === authoring.stagingRef.toLowerCase())?.[1] || null;
+    if (recorded !== staged) throw new HubError("conflict", `${authoring.stagingRef} există deja în zona de lucru a Hub-ului, cu un conținut pe care Hub-ul nu l-a scris; nu îl suprascriu`, { code: "TEST_FIRST_CONFLICT" });
+    return { lastHubWrite: { path: authoring.stagingRef, sha: staged } };
+  }
+
+  /**
+   * Closure R-SUP-01 — on the server, before anything moves: each test the confirmed spec supersedes belongs to THIS project's earlier
+   * mission and spec version (approved, its step 0 wrote and protected exactly this path and these bytes), it is not this mission, the
+   * file on disk still holds those bytes (or the move was already done), and the confirmed contract still describes it (the same cases,
+   * kinds and public routes from today's bytes and today's public client — supersede.mjs contractDrift). Any gap refuses the start.
+   */
+  function verifySupersedes(missionId, strict, project) {
+    for (const s of strict.supersedes || []) {
+      const refuse = (why) => { throw new HubError("conflict", `Testul anterior ${s.testRef} nu poate fi retras: ${why}`, { code: "SUPERSEDE_PROVENANCE" }); };
+      if (!s.missionId || !Number.isInteger(s.specVersion) || !s.contract) refuse("proveniența sau diferența de contract lipsește din planul confirmat");
+      if (s.missionId === missionId) refuse("e testul acestei misiuni");
+      const row = db.prepare("SELECT fs.status, fs.protected_json, m.project_id FROM factory_specs fs JOIN missions m ON m.id = fs.mission_id WHERE fs.mission_id = ? AND fs.version = ?").get(s.missionId, s.specVersion);
+      if (!row) refuse(`misiunea ${s.missionId} v${s.specVersion} nu există`);
+      if (row.project_id !== project.id) refuse(`misiunea ${s.missionId} aparține altui proiect`);
+      if (row.status !== "APPROVED") refuse(`specificația v${s.specVersion} a misiunii ${s.missionId} nu a fost aprobată`);
+      const prot = parse(row.protected_json, {}) || {};
+      if (prot.authoring?.status !== "PROTECTED" || prot.authoring?.testRef !== s.testRef) refuse(`nu e testul scris și protejat de Hub pentru misiunea ${s.missionId}`);
+      if (prot.files?.[s.testRef] !== s.sha256) refuse(`sha-ul nu e cel protejat la misiunea ${s.missionId} v${s.specVersion}`);
+      const [plan] = retirementPlan(missionId, { supersedes: [s] });
+      const state = retireState(project, plan);
+      if (state.state === "mismatch") refuse(state.problem);
+      const text = state.fromSha === s.sha256 ? fs.readFileSync(path.join(state.fromFolder, state.fromName), "utf8")
+        : fs.readFileSync(path.join(safeFolder(project.path, path.posix.dirname(plan.to), { create: false }), path.posix.basename(plan.to)), "utf8");
+      const drift = contractDrift(s.contract, text, publicReadRoutes(readPublicClient(project.path)));
+      if (drift) refuse(`${drift}; cere planul din nou`);
+    }
+  }
+
+  /**
+   * Closure R-HIST: the earlier Hub-written tests of this project still in the active suite (an approved spec of ANOTHER mission whose
+   * step 0 protected them, file present with its bytes) and every test a mission of this project retired (from → to, sha). Those this
+   * start retires are not "active". → { active: [{ ref, sha256, protectedSha, missionId, specVersion }], retired: [{ from, to, sha256, retiredBy }] }
+   */
+  function writerStarted(missionId) {
+    return Boolean(db.prepare("SELECT 1 FROM factory_dispatches WHERE mission_id = ? AND stage IN ('IMPLEMENTING','REPAIRING') LIMIT 1").get(missionId)
+      || db.prepare("SELECT 1 FROM factory_change_sets WHERE mission_id = ? LIMIT 1").get(missionId));
+  }
+
+  function assertWriterProtected(missionId) {
+    const spec = approvedSpec(fm(missionId));
+    if (!spec?.spec.authoring) return;
+    const p = spec.protected || {}, plan = retirementPlan(missionId, spec.spec);
+    const journal = plan.length ? readRetireJournal(projects.get(missions.get(missionId).projectId), missionId) : null;
+    if (p.authoring?.status !== "PROTECTED" || p.restoreBlocked || (plan.length && journal?.status !== "MOVED") || plan.some((r) => !(p.retired || []).some((x) => x.from === r.from && x.to === r.to && x.sha256 === r.sha256 && (x.cycle || 1) === (journal?.cycle || 1)) || (p.restored || []).some((x) => x.from === r.from && x.to === r.to && x.sha256 === r.sha256 && (x.cycle || 1) === (journal?.cycle || 1)))) {
+      throw new HubError("conflict", "Testul înlocuitor nu e protejat sau retragerea nu e înregistrată; implementarea nu pornește", { code: p.restoreBlocked ? "RETIRE_RESTORE_INCOMPLETE" : "TEST_NOT_PROTECTED" });
+    }
+  }
+
+  const restoredTest = (project, r) => restoredHistoricTest(db, project, r);
+
+  function compensateRetirement(missionId, cause) {
+    return bus.transaction(() => compensateRetirementNow(missionId, cause));
+  }
+
+  function compensateRetirementNow(missionId, cause) {
+    const spec = approvedSpec(fm(missionId)) || latestSpec(missionId);
+    const project = projects.get(missions.get(missionId).projectId);
+    const journal = readRetireJournal(project, missionId);
+
+    const plan = retirementPlan(missionId, spec?.spec);
+    const refuse = (reason) => {
+      if (spec) db.prepare("UPDATE factory_specs SET protected_json = json_set(protected_json, '$.restoreBlocked', json('true')) WHERE id = ?").run(spec.id);
+      bus.append({ type: "factory.retire_restore_refused", scopeType: "mission", scopeId: missionId, source: "factory", payload: { missionId, projectId: project.id, reason, cause } });
+      return { complete: false, items: [], reason, code: "RETIRE_RESTORE_INCOMPLETE" };
+    };
+    if (!journal) {
+      if (retireJournalExists(project, missionId) || spec?.protected?.retired?.length) return refuse("jurnalul retragerii există, dar este invalid sau nu poate fi citit");
+      return { complete: true, items: [], state: "nothing_retired" };
+    }
+    if (writerStarted(missionId)) return refuse("implementarea a fost deja dispecerizată sau există un change set");
+    if (!plan.length || journal.items.length !== plan.length || !plan.every((r) => journal.items.some((x) => x.from === r.from && x.to === r.to && x.sha256 === r.sha256))) return refuse("jurnalul nu corespunde testelor înlocuite din specificație");
+    const legacyMoved = journal.status === "MOVED" && spec.protected?.authoring && spec.protected.authoring.status !== "PROTECTED" && spec.protected.retired?.length;
+    if (legacyMoved) {
+      try {
+        if (plan.some((r) => { const state = retireState(project, r); return state.fromSha !== null || state.toSha !== r.sha256; })) return refuse("retragerea anticipată nu are copia verificată sau calea originală liberă");
+      } catch (e) { return refuse(String(e.message)); }
+    }
+    // A later approved mission may legitimately have retired these same bytes again.
+    const laterRetirements = [];
+    const later = db.prepare(`SELECT fs.mission_id, fs.protected_json FROM factory_specs fs JOIN missions m ON m.id = fs.mission_id
+      WHERE m.project_id = ? AND m.id <> ? AND m.created_at > (SELECT created_at FROM missions WHERE id = ?)
+      AND fs.status = 'APPROVED' ORDER BY m.created_at DESC, m.id`).all(project.id, missionId, missionId);
+    for (const row of later) {
+      const j = readRetireJournal(project, row.mission_id);
+      if (j?.status !== "MOVED") continue;
+      const recorded = parse(row.protected_json, {}).retired || [];
+      for (const item of j.items) {
+        if (!plan.some((r) => r.from === item.from && r.sha256 === item.sha256)
+          || !recorded.some((r) => r.from === item.from && r.to === item.to && r.sha256 === item.sha256 && (r.cycle || 1) === (j.cycle || 1))) continue;
+        try {
+          const folder = safeFolder(project.path, path.posix.dirname(item.to), { create: false });
+          if (folder && fileShaAt(folder, path.posix.basename(item.to)) === item.sha256) laterRetirements.push({ ...item, by: row.mission_id });
+        } catch { /* Unverifiable copies cannot explain a missing original. */ }
+      }
+    }
+    const restore = restoreRetired(plan, project, { missionId, laterRetirements, restored: spec.protected?.restored || [] });
+    const fresh = (approvedSpec(fm(missionId)) || latestSpec(missionId)).protected || {};
+    const records = [...(fresh.restored || [])];
+    if (restore.complete) for (const r of plan) if (!records.some((x) => x.from === r.from && x.to === r.to && x.sha256 === r.sha256 && (x.cycle || 1) === (journal.cycle || 1))) records.push({ from: r.from, to: r.to, sha256: r.sha256, cycle: journal.cycle || 1, at: now(), cause });
+    if (restore.state === "already_restored") {
+      // The journal write can survive a rolled-back DB transaction; reconcile once before treating recovery as read-only.
+      if (records.length === (fresh.restored || []).length && !fresh.restoreBlocked) return restore;
+      const folder = safeFolder(project.path, `.ifrim-hub/retired/${missionId}`, { create: false });
+      restore.sha256 = fileShaAt(folder, "journal.json");
+    }
+    db.prepare("UPDATE factory_specs SET protected_json = ? WHERE id = ?").run(json({ ...fresh, restored: records, restoreBlocked: !restore.complete }), spec.id);
+    if (!restore.complete && restore.sha256) bus.append({ type: "factory.retire_restored", scopeType: "mission", scopeId: missionId, source: "factory",
+      payload: { missionId, projectId: project.id, complete: false, state: restore.state, sha256: restore.sha256, cause } });
+    bus.append({ type: restore.complete ? "factory.retire_restored" : "factory.retire_restore_refused", scopeType: "mission", scopeId: missionId, source: "factory",
+      payload: { missionId, projectId: project.id, complete: restore.complete, items: restore.items, cause, state: restore.state,
+        ...(restore.sha256 ? { sha256: restore.sha256 } : {}), code: restore.complete ? null : "RETIRE_RESTORE_INCOMPLETE" } });
+    return restore;
+  }
+
+  function historicHubTests(project, missionId, strict) {
+    const leaving = new Set((strict.supersedes || []).map((s) => s.testRef.toLowerCase()));
+    const rows = db.prepare("SELECT fs.mission_id, fs.version, fs.protected_json FROM factory_specs fs JOIN missions m ON m.id = fs.mission_id WHERE m.project_id = ? AND fs.status = 'APPROVED' AND fs.mission_id <> ? ORDER BY fs.created_at")
+      .all(project.id, missionId);
+    const retired = [];
+    const seen = new Set();
+    for (const r of rows) {
+      const p = parse(r.protected_json, {}) || {};
+      for (const x of [...(p.retired || []), ...(p.historic?.retired || [])]) {
+        const key = `${x.from}|${x.to}`.toLowerCase();
+        if (x?.from && x?.to && /^[0-9a-f]{64}$/.test(String(x.sha256 || "")) && !seen.has(key) && !restoredTest(project, x)) { seen.add(key); retired.push({ from: x.from, to: x.to, sha256: x.sha256, retiredBy: x.retiredBy || r.mission_id }); }
+      }
+    }
+    const gone = new Set(retired.map((x) => x.from.toLowerCase()));
+    const active = [];
+    for (const r of rows) {
+      const p = parse(r.protected_json, {}) || {};
+      const ref = p.authoring?.status === "PROTECTED" ? p.authoring.testRef : null;
+      if (!ref || leaving.has(ref.toLowerCase()) || gone.has(ref.toLowerCase()) || active.some((a) => a.ref.toLowerCase() === ref.toLowerCase())) continue;
+      const folder = safeFolder(project.path, path.posix.dirname(ref), { create: false });
+      const sha = folder ? fileShaAt(folder, path.posix.basename(ref)) : null;
+      if (sha === null) continue;
+      active.push({ ref, sha256: sha, protectedSha: p.files?.[ref] || null, missionId: r.mission_id, specVersion: r.version });
+    }
+    return { active, retired };
+  }
+  /**
+   * The historic record of a started mission, fixed at its start. A mission started before the closure has none: nothing is derived
+   * later (today's bytes would be a new baseline), it is marked `unrecorded` and the bundle says so (review #4).
+   */
+  const historicOf = (missionId, spec) => spec?.protected?.historic || { active: [], retired: [], unrecorded: true };
+
+  /**
+   * Closure R-HIST-02: the deterministic check the bundle and the acceptance make on disk: every historic active Hub test still holds
+   * the bytes it had at the start, every retired copy still holds its bytes, and no retired test is back at its old path. → [problem]
+   */
+  const missionHistoricViolations = (missionId, project) => historicViolations(db, project, approvedSpec(fm(missionId))?.protected);
+
+  /** Starts an approved scope: records it, protects the acceptance tests, snapshots the base and runs the baseline (or step 0 first). */
   async function startApproved(missionId, payload, { approvalId = null, actor = "user" } = {}) {
     return serial(missionId, async () => {
-      const { f, spec, scope, project } = assertStartable(missionId, payload);
+      const { f, spec, scope, project, testFirst } = assertStartable(missionId, payload);
       const strict = normalizeSpec(spec.spec, { hubPorts: hubPorts() });
       const protectedFiles = {};
       for (const ref of protectedTestRefs(strict)) {
+        // M11 L5: the Hub-written test does not exist yet — step 0 writes, proves and reviews it, then protects it (§5.5).
+        if (testFirst && ref === strict.authoring.testRef) continue;
         const abs = path.join(project.path, ref);
         if (!fs.existsSync(abs) || !fs.statSync(abs).isFile()) throw new HubError("validation", `Testul de acceptanță ${ref} nu există în proiect: criteriile se fixează înainte de implementare`);
         protectedFiles[ref] = sha256File(abs);
       }
-      const base = recordSnapshot(missionId, "base", null, project.path);
+      // R-PRIV: the earlier Hub-written tests the confirmed spec supersedes leave the active suite after every pre-check and BEFORE any
+      // snapshot, unchanged and sha-checked, kept in .ifrim-hub/retired/<mission>/ and linked to their original version (never rewritten
+      // to pass). Closure R-SUP-01: each one's provenance and contract are verified on the server first (verifySupersedes). Closure
+      // R-ROLL: the move is inside the same try as the snapshot and the start record — a failure anywhere (the second file, the snapshot,
+      // the record) puts every moved file back and VERIFIES it; an incomplete restore is reported and stops the start.
+      verifySupersedes(missionId, strict, project);
+      // Closure R-HIST: the earlier Hub tests still active and every retired one of this project, fixed at the start (paths and bytes):
+      // a later writer that changes, deletes, replaces or recreates them is a critical finding, and the bundle / acceptance re-check them.
+      const historic = historicHubTests(project, missionId, strict);
+      // Review #5: an earlier Hub test that no longer holds the bytes its mission protected is not silently re-baselined.
+      const drifted = historic.active.filter((a) => a.protectedSha && a.protectedSha !== a.sha256);
+      if (drifted.length) throw new HubError("conflict", `Testul Hub anterior ${drifted.map((a) => `${a.ref} (misiunea ${a.missionId})`).join(", ")} nu mai are octeții protejați atunci; nu pornesc peste el — verifică fișierul`, { code: "HISTORIC_DRIFT" });
+      let retired = [];
+      // A test-first mission's first snapshot is the pre-test base: step 0 compares the project with it, and the base proper is taken
+      // when the reviewed test is protected (in the same snapshot mode).
+      let base;
       const started = clock();
+      try {
+      retired = testFirst ? [] : retireSuperseded(missionId, strict, project, { fault: startFault ? (point, item) => startFault(point, item) : null });
+      startFault?.("snapshot", null);
+      base = recordSnapshot(missionId, testFirst ? "pre_test" : "base", null, project.path, { mode: null });
       bus.transaction(() => {
-        db.prepare("UPDATE factory_specs SET status = 'APPROVED', approved_at = ?, protected_json = ? WHERE id = ?").run(now(), json({ problems: [], files: protectedFiles }), spec.id);
+        const authoring = testFirst ? openAuthoring(missionId, f, strict, project, base, testFirst, actor) : null;
+        startFault?.("start_record", null);
+        db.prepare("UPDATE factory_specs SET status = 'APPROVED', approved_at = ?, protected_json = ? WHERE id = ?").run(now(), json({ problems: [], files: protectedFiles, ...(authoring ? { authoring, pendingRetire: retirementPlan(missionId, strict) } : {}), ...(retired.length ? { retired } : {}),
+          // Review #4: always recorded (an empty list too), so a test added to the project after this start is never re-baselined later.
+          historic: { active: historic.active, retired: [...historic.retired, ...retired.map((r) => ({ from: r.from, to: r.to, sha256: r.sha256, retiredBy: missionId }))] } }), spec.id);
+        for (const r of retired) bus.append({ type: "factory.test_superseded", scopeType: "mission", scopeId: missionId, source: actor, payload: { missionId, ...r } });
+        // M09: the approved bindings are stored with the scope; every dispatch reads them (never the current limits_json).
         db.prepare(`UPDATE factory_missions SET approved_spec_version = ?, scope_hash = ?, scope_approval_id = ?, base_snapshot_id = ?, started_at = ?, deadline_at = ?, cancel_requested_at = NULL,
-          repair_cycles = 0 WHERE mission_id = ?`).run(spec.version, hashCanonical(scope), approvalId, base.id, started.toISOString(),
-          new Date(started.getTime() + f.limits.maxDurationMin * 60000).toISOString(), missionId);
+          repair_cycles = 0, bindings_json = ? WHERE mission_id = ?`).run(spec.version, hashCanonical(scope), approvalId, base.id, started.toISOString(),
+          new Date(started.getTime() + f.limits.maxDurationMin * 60000).toISOString(), json(scope.bindings), missionId);
+        bus.append({ type: "factory.bindings", scopeType: "mission", scopeId: missionId, source: actor, payload: Object.fromEntries(Object.entries(scope.bindings)
+          .map(([role, b]) => [role, { model: b.resolvedAlias, effort: b.effort, environment: b.environment, hash: b.bindingHash.slice(0, 16), label: bindingLabel(b) }])) });
         walkTask(stepTask(f, "spec"), "COMPLETED", `scope aprobat (spec v${spec.version})`, { manualVerification: `Scope aprobat de proprietar${approvalId ? ` (aprobare ${approvalId})` : ""}: specificația v${spec.version} sha ${spec.sha256.slice(0, 12)}` });
         missions.refreshMissionStatus(missionId);
-        setStage(missionId, "BASELINE", { waitReason: "runner", reason: "Rulez testele de acceptanță înainte de orice modificare", actor });
+        if (authoring) setStage(missionId, "TEST_AUTHORING", { waitReason: "provider", reason: T_STAGE.TEST_AUTHORING, actor });
+        else setStage(missionId, "BASELINE", { waitReason: "runner", reason: "Rulez testele de acceptanță înainte de orice modificare", actor });
       });
-      background(missionId, () => runBaseline(missionId));
+      } catch (error) {
+        // The list comes from the confirmed spec, not from what the failed call returned: a move interrupted on the second file still
+        // puts the first one back.
+        // Only after the journal said MOVING did anything move (a mismatch found by the pre-check moved nothing and is reported as such).
+        const plan = retirementPlan(missionId, strict);
+        if (plan.length && ["MOVING", "MOVED"].includes(readRetireJournal(project, missionId)?.status)) {
+          const restore = restoreRetired(plan, project, { missionId });
+          try { bus.transaction(() => bus.append({ type: "factory.retire_restored", scopeType: "mission", scopeId: missionId, source: "factory", payload: { missionId, complete: restore.complete, items: restore.items, state: restore.state, ...(restore.sha256 ? { sha256: restore.sha256 } : {}), cause: String(error?.message || error).slice(0, 300) } })); }
+          catch { /* the record failed; the restore's own result (journal + the error below) still says it */ }
+          if (!restore.complete) {
+            throw new HubError("conflict", `Pornirea a eșuat (${String(error?.message || error).slice(0, 200)}) și testele retrase NU au putut fi puse toate înapoi: ${restore.items.filter((i) => i.state === "incomplete").map((i) => `${i.from} — ${i.problem}`).join("; ")}. Misiunea nu continuă până nu se verifică fișierele`, { code: "RETIRE_RESTORE_INCOMPLETE", data: { restore } });
+          }
+        }
+        throw error;
+      }
+      background(missionId, () => (testFirst ? dispatchTestAuthor(missionId) : runBaseline(missionId)));
       return view(missionId);
     });
+  }
+
+  /**
+   * Step 0's records at the start (§3): the author's conversation („Test · <titlu>”) and the test reviewer's („Review test · <titlu>”),
+   * separate from the implementation's and the code review's (a resumed session never mixes them); the two step-0 tasks added like the
+   * repair tasks (the mission templates and the plan stay as they are); the initial state. Inside the start's transaction.
+   */
+  function openAuthoring(missionId, f, strict, project, preTest, startCheck, actor) {
+    const title = missions.get(missionId).title;
+    const author = conversations.create({ projectId: project.id, title: `Test · ${title}`.slice(0, 160) }, actor);
+    const reviewer = conversations.create({ projectId: project.id, title: `Review test · ${title}`.slice(0, 160) }, actor);
+    const authorTask = missions.addTask(missionId, { title: "Test de acceptanță scris de Hub", role: "qa", stage: "qa", access: "read-only", taskType: "testing_qa",
+      after: [stepTask(f, "spec")].filter(Boolean) }, "factory");
+    const reviewTask = missions.addTask(missionId, { title: "Verificare independentă a testului", role: "reviewer", stage: "reviewer", access: "read-only", taskType: "code_review",
+      after: [authorTask.id] }, "factory");
+    return { status: "AUTHORING", testRef: strict.authoring.testRef, stagingRef: strict.authoring.stagingRef, cycle: 0,
+      authorConversationId: author.id, testReviewConversationId: reviewer.id, authorTaskId: authorTask.id, reviewTaskId: reviewTask.id,
+      preTestSnapshotId: preTest.id, preTestSha: preTest.sha256, candidate: null, pending: null, proof: null, review: null, rejected: [], retryProblems: [], blocked: null,
+      lastHubWrite: startCheck.lastHubWrite, startedAt: now() };
   }
 
   // ---------- snapshots & change sets ----------
   const ignoreOf = (missionId) => (approvedSpec(fm(missionId)) || latestSpec(missionId))?.spec?.workspace?.ignore || [];
   /** The snapshot mode of the mission's base (walk or repository-index); every later snapshot uses the same identity. */
   const baseMode = (missionId) => { const f = fm(missionId); return f?.baseSnapshotId ? snapshotRow(f.baseSnapshotId)?.stats?.mode || "walk" : null; };
-  function recordSnapshot(missionId, kind, runId, root) {
-    const snap = takeSnapshot(root, { blobDir: blobDir(missionId), ignore: ignoreOf(missionId), mode: kind === "base" ? null : baseMode(missionId) });
+  /**
+   * `mode` (M11 L5): the snapshot identity to use; by default a base snapshot detects it and every other one keeps the base's. The test
+   * a mission protects takes a NEW base in the original base's mode (a re-detected mode would compare a git-backed base with a walk).
+   */
+  function recordSnapshot(missionId, kind, runId, root, { mode } = {}) {
+    const snap = takeSnapshot(root, { blobDir: blobDir(missionId), ignore: ignoreOf(missionId), mode: mode !== undefined ? mode : kind === "base" ? null : baseMode(missionId) });
     const seq = (db.prepare("SELECT MAX(seq) AS s FROM factory_snapshots WHERE mission_id = ?").get(missionId).s || 0) + 1;
     const id = newId("snap");
     db.prepare("INSERT INTO factory_snapshots (id, mission_id, seq, kind, run_id, manifest_json, stats_json, git_json, sha256, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
@@ -335,7 +843,17 @@ export function createFactory(deps) {
     const delta = diffManifests(prevFiles, snap.files, { resolve }).map((c) => ({ path: c.path, status: c.status }));
     const rendered = renderChanges(changes, blobDir(missionId), { readGit: (sha) => readGitEntry(project.path, sha) });
     const spec = approvedSpec(f);
-    const integrity = integrityFindings({ changes, added: rendered.added, protectedRefs: Object.keys(spec?.protected?.files || {}) });
+    // M11 L5 (§5.5): the product-code rules are strict only on a mission whose acceptance test the Hub wrote and protected (ordinary
+    // missions keep their pre-L5 stops); each changed code file's text lets them tell comments from code and see an unreadable file.
+    const hubTest = authoringOf(spec)?.status === "PROTECTED" ? authoringOf(spec) : null;
+    const texts = Object.fromEntries(changes.filter((c) => c.status !== "deleted" && !c.secretLike && c.after).map((c) => {
+      const sha = c.after.sha256;
+      return [c.path, String(sha || "").startsWith("git:") ? readGitEntry(project.path, sha) : c.after.text ? readBlob(blobDir(missionId), sha) : null];
+    }));
+    const historic = historicOf(missionId, spec, project);
+    const integrity = integrityFindings({ changes, added: rendered.added, protectedRefs: Object.keys(spec?.protected?.files || {}), texts,
+      historic: { refs: (historic.active || []).map((a) => a.ref), retired: historic.retired || [] },
+      hubTest: hubTest ? { refs: [hubTest.testRef], loads: (hubTest.candidate?.lint?.facts?.loads || []).map((l) => l.resolved).filter(Boolean) } : null });
     const seq = (prev?.seq || 0) + 1;
     const sha = hashCanonical({ snapshot: snap.sha256, changes: changes.map((c) => [c.path, c.status, c.after?.sha256 || null]) });
     const id = newId("cs");
@@ -356,10 +874,11 @@ export function createFactory(deps) {
 
   function addFinding(missionId, f) {
     const count = db.prepare("SELECT COUNT(*) AS n FROM factory_findings WHERE mission_id = ?").get(missionId).n;
-    const prefix = f.source === "reviewer" ? "F" : f.source === "qa" ? "Q" : "I";
+    // M11 L5: "T" for the independent review of the Hub-written test (source test_review; the code review's filter never sees them).
+    const code = findingCode(f.source, count + 1);
     const id = newId("fnd");
     db.prepare(`INSERT INTO factory_findings (id, mission_id, code, source, review_id, evidence_id, change_set_id, severity, file, area, observation, impact, evidence, reproduction, fingerprint, status, created_at, updated_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'OPEN', ?, ?)`).run(id, missionId, `${prefix}-${String(count + 1).padStart(3, "0")}`, f.source, f.reviewId || null, f.evidenceId || null,
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'OPEN', ?, ?)`).run(id, missionId, code, f.source, f.reviewId || null, f.evidenceId || null,
       f.changeSetId, f.severity, String(f.file || "").slice(0, 300), String(f.area || "").slice(0, 200), String(f.observation).slice(0, 2000), String(f.impact || "").slice(0, 1000),
       String(f.evidence || "").slice(0, 2000), String(f.reproduction || "").slice(0, 2000), String(f.fingerprint || hashCanonical([f.file, f.observation])).slice(0, 200), now(), now());
     return id;
@@ -391,10 +910,11 @@ export function createFactory(deps) {
     const outcome = await withRunnerLease(missionId, project, async () => {
       db.prepare("UPDATE factory_evidence SET stale = 1 WHERE mission_id = ? AND change_set_id = ? AND stage = ? AND stale = 0").run(missionId, changeSetId || "base", stage);
       for (const [i, command] of commands.entries()) {
-        if (isHalted(missionId)) break;
+        if (closed || isHalted(missionId)) break;
         // Tracked (M05 §20): a Stop during a runner command stays CANCEL_REQUESTED until the command is gone and its evidence
         // is written, so CANCELLED is never confirmed while a test process still runs.
         const result = await tracked(missionId, () => runner.run({ key: `factory-run-${missionId}-${stage}-${i}`, ws: project.path, command, project, shouldStop: () => isHalted(missionId) }));
+        if (closed) return { results, shutdown: true }; // Partial stages carry no verdict; boot owns recovery.
         // A command killed by Stop / Pause says nothing about the code: kept as INTERRUPTED and stale (never counted).
         const interrupted = isHalted(missionId);
         const status = interrupted ? "INTERRUPTED" : result.status;
@@ -420,6 +940,15 @@ export function createFactory(deps) {
     const { blocked, results } = await runCommands(missionId, "BASELINE", spec.verification.acceptance, null);
     { const stop = haltStep(missionId, taskId); if (stop) return stop; }
     if (blocked || results.some((r) => r.status === "BLOCKED")) return pauseFor(missionId, taskId, "runner", blocked || results.find((r) => r.status === "BLOCKED").reason);
+    const authoring = authoringOf(approvedSpec(f));
+    if (authoring?.status === "PROTECTED") {
+      const incomplete = results.map((r) => ({ command: r.command, reason: baselineGate(r, { manifest: authoring.candidate?.manifest, harness: authoring.candidate?.harness ?? 1 }) })).find((r) => r.reason);
+      if (incomplete) {
+        blockTask(taskId, "baseline incomplet");
+        bus.emit({ type: "factory.acceptance_unstable", scopeType: "mission", scopeId: missionId, source: "factory", payload: { cause: "incomplete", ref: authoring.testRef, ...incomplete } });
+        return setStage(missionId, "NEEDS_OWNER_DECISION", { waitReason: "owner_decision", reason: `Testul de acceptanță scris de Hub nu a terminat normal la baseline (${incomplete.reason}); un test neverificat nu ajunge la implementare. Nu modific codul.` });
+      }
+    }
     // BUGFIX/FEATURE: the independent tests must fail before the change (the bug is reproduced / the feature is missing).
     // REFACTOR: they must pass (the behaviour to preserve).
     const expectPass = f.workType === "REFACTOR";
@@ -431,6 +960,17 @@ export function createFactory(deps) {
       return setStage(missionId, "NEEDS_OWNER_DECISION", { waitReason: "owner_decision", reason: mismatch
         ? (expectPass ? `Refactor: testele de acceptanță nu trec înainte de modificare (${mismatch.command}: ${mismatch.reason})` : `Testele de acceptanță trec deja înainte de modificare (${mismatch.command}): nu reproduc problema`)
         : `Testele eșuează, dar nu din motivul așteptat („${reasonText}”)` });
+    }
+    // M11 L5 (§5.3): the Hub-written test must fail here exactly as in its two proof runs (case → ok / code). Any other failure is an
+    // unstable test, and an unstable test never reaches the writer.
+    if (authoring?.status === "PROTECTED" && authoring.proof?.signature) {
+      const drifted = results.filter((r) => proofSignature({ cases: r.cases || [], fileLevelFailure: r.fileLevelFailure || null }) !== authoring.proof.signature);
+      if (drifted.length) {
+        blockTask(taskId, "baseline diferit de probă");
+        bus.emit({ type: "factory.acceptance_unstable", scopeType: "mission", scopeId: missionId, source: "factory", payload: { cause: "drift", ref: authoring.testRef, commands: drifted.map((r) => r.command) } });
+        return setStage(missionId, "NEEDS_OWNER_DECISION", { waitReason: "owner_decision",
+          reason: `Testul de acceptanță scris de Hub a dat la baseline alt rezultat decât la cele două rulări de probă (${PROOF_CAUSES.flaky}); un test instabil nu ajunge la implementare. Nu modific codul.` });
+      }
     }
     walkTask(taskId, "VERIFYING", "baseline confirmat");
     return dispatchWriter(missionId, { repair: false });
@@ -445,6 +985,7 @@ export function createFactory(deps) {
    * Attempts of one step (stage, cycle, change set) that reached the model. Not attempts: the owner's interruptions (Pause,
    * Stop, the time limit), claims cancelled before a start, and starts stopped before the model (gate or grant refusal,
    * billing guard, MCP at init): no turn was sent, so nothing was spent and a retry is the owner's normal next step.
+   * 2.12.2 (P0-R3): a turn cut by its per-turn limit after it was sent IS an attempt (FAILED with turn_sent).
    */
   function modelAttempts(missionId, stage, cycle, changeSeq) {
     const prior = db.prepare("SELECT status, run_id FROM factory_dispatches WHERE mission_id = ? AND stage = ? AND request_json LIKE ?")
@@ -458,21 +999,50 @@ export function createFactory(deps) {
     return { prior, counted: prior.filter(reachedModel).length };
   }
 
-  async function dispatchRun(missionId, { stage, taskId, role, conversationId, brief, cycle, changeSeq }) {
+  /**
+   * M11 L5 (S4): the access a step runs with. A stage may only NARROW its role's route, and only in one direction — workspace-write →
+   * read-only (the independent review of the Hub-written test runs under the writer's binding, read-only). Step 0 never writes.
+   */
+  function stepAccess(stage, route, requested) {
+    const access = !requested || requested === route.access ? route.access : route.access === "workspace-write" && requested === "read-only" ? "read-only" : null;
+    if (!access) throw new HubError("policy", `${stage}: accesul ${requested} nu poate înlocui accesul rolului (${route.access}); doar restrângerea la doar-citire e permisă`);
+    if (STAGE_ZERO.has(stage) && access !== "read-only") throw new HubError("policy", `${stage}: pasul 0 rulează doar în citire (testul îl scrie Hub-ul)`);
+    return access;
+  }
+
+  async function dispatchRun(missionId, { stage, taskId, role, conversationId, brief, cycle, changeSeq, access: requestedAccess = null }) {
     const f = fm(missionId);
+    if (["IMPLEMENTING", "REPAIRING"].includes(stage)) assertWriterProtected(missionId);
     const route = ROUTES[role];
+    const access = stepAccess(stage, route, requestedAccess);
     const { prior, counted: attempts } = modelAttempts(missionId, stage, cycle, changeSeq);
-    if (attempts >= f.limits.maxAttemptsPerStage) {
+    if (attempts >= attemptLimit(f, stage)) {
       blockTask(taskId, "încercări epuizate");
-      return setStage(missionId, "NEEDS_OWNER_DECISION", { waitReason: "owner_decision", reason: `${stage}: ${attempts} încercări folosite (limita ${f.limits.maxAttemptsPerStage}); decide dacă reiei` });
+      return setStage(missionId, "NEEDS_OWNER_DECISION", { waitReason: "owner_decision", reason: `${stage}: ${attempts} încercări folosite (limita ${attemptLimit(f, stage)}); decide dacă reiei` });
     }
     if (f.deadlineAt && new Date(f.deadlineAt) <= clock()) return setStage(missionId, "NEEDS_OWNER_DECISION", { waitReason: "owner_decision", reason: "Limita de timp a misiunii a fost atinsă" });
-    if (authority) {
-      const held = authority(missionId, { stage, cycle });
-      if (held) return setStage(missionId, "NEEDS_OWNER_DECISION", { waitReason: "owner_decision", reason: held.reason });
+    // M09: the model and effort come from the binding approved with the scope (bindings_json), never from the current limits_json.
+    // A mission started before M09 has none: it does not fall back to the account default — it waits for the owner.
+    const binding = f.bindings?.[role] || null;
+    if (!binding?.bindingHash || binding.provider !== route.provider) {
+      blockTask(taskId, "model neaprobat");
+      return setStage(missionId, "BLOCKED", { waitReason: "owner_decision", reason: `${stage}: misiunea nu are un model aprobat pentru ${role} (a pornit fără modele fixate); oprește-o și pregătește una nouă cu modele explicite — nimic nu rulează pe modelul implicit al contului` });
     }
-    const request = { stage, cycle, changeSeq, attempt: prior.length + 1, counted: attempts + 1, provider: route.provider, access: route.access, model: f.limits[`${role}Model`] || "", effort: f.limits[`${role}Effort`] || "", profile: f.limits.profile,
-      specVersion: f.approvedSpecVersion };
+    if (authority) {
+      // M11 L5: the step's real access travels with it (the plan refuses a step-0 run that is not read-only, envelopes.authorityFor).
+      const held = authority(missionId, { stage, cycle, role, bindingHash: binding.bindingHash, access });
+      if (held) return setStage(missionId, "NEEDS_OWNER_DECISION", { waitReason: "owner_decision", reason: held.reason });
+      // M10.2 (U11): under a confirmed plan, a role whose derived grant is spent gets the REST of the plan's attempt budget as a new
+      // bound grant before the start — so a step inside the confirmed limits never waits at BLOCKED "grant" for a manual grant (which
+      // a plan step could not use anyway). Beyond the budget nothing is issued and the gate refuses as before. Never holds the step.
+      authority(missionId, { stage: "GRANT", role, bindingHash: binding.bindingHash });
+    }
+    // 2.12.2 (P0-R3): the role's per-turn limit from the mission's (hashed) limits; recorded with the dispatch, enforced by runs.start.
+    const turn = dispatchTurnLimit(f, stage, role);
+    const request = { stage, cycle, changeSeq, attempt: prior.length + 1, counted: attempts + 1, provider: route.provider, access, model: binding.resolvedAlias, effort: binding.effort, profile: binding.profile,
+      specVersion: f.approvedSpecVersion, bindingHash: binding.bindingHash, turnTimeoutMin: turn.min,
+      ...(stage === "TEST_AUTHORING" && approvedSpec(f)?.spec.authoring?.authorLimits?.maxOutputTokens === 64000 ? { maxOutputTokens: 64000 } : {}),
+      ...(turn.source === "authorLimits" ? { turnTimeoutSource: "authorLimits" } : {}) };
     const key = `${missionId}:${stage}:c${cycle}:cs${changeSeq}:a${prior.length + 1}`;
     const id = newId("dsp");
     const inserted = db.prepare(`INSERT OR IGNORE INTO factory_dispatches (id, mission_id, stage, task_id, idempotency_key, status, request_json, created_at, updated_at)
@@ -492,12 +1062,18 @@ export function createFactory(deps) {
     try {
       const task = missions.task(taskId);
       // Tracked: until runs.start returns (backup, git, process start) the run is not visible to Stop / Pause.
-      // The approved acceptance tests are also refused by the export validator of an execution environment (M05 §16).
-      const exportPolicy = route.access === "workspace-write" ? { protectedPaths: Object.keys(approvedSpec(f)?.protected?.files || {}) } : null;
-      ({ run } = await tracked(missionId, () => runs.start({ conversationId, provider: route.provider, access: route.access, model: request.model, effort: request.effort, profile: request.profile,
-        taskId, stage: task.stage, roleId: task.roleId, actor: "factory", correlationId: id, requestedAt: f.updatedAt, exportPolicy })));
+      // The approved acceptance tests are also refused by the export validator of an execution environment (M05 §16). From the access
+      // the step really runs with (M11 L5: a writer binding narrowed to read-only exports nothing).
+      const exportPolicy = access === "workspace-write" ? { protectedPaths: Object.keys(approvedSpec(f)?.protected?.files || {}) } : null;
+      ({ run } = await tracked(missionId, () => runs.start({ conversationId, provider: route.provider, access, model: request.model, effort: request.effort, profile: request.profile,
+        taskId, stage: task.stage, roleId: task.roleId, actor: "factory", correlationId: id, requestedAt: f.updatedAt, exportPolicy, binding, turnTimeoutMs: turn.ms,
+        ...(request.maxOutputTokens === 64000 ? { maxOutputTokens: 64000 } : {}) })));
     } catch (error) {
       // A Stop / Pause that arrived while the start was in flight: the refusal is its consequence, not a new blocker.
+      if (closed) {
+        db.prepare("UPDATE factory_dispatches SET status = 'CANCELLED', run_id = ?, error = ?, updated_at = ? WHERE id = ?").run(error.details?.runId || null, String(error.message).slice(0, 2000), now(), id);
+        return null;
+      }
       if (isHalted(missionId)) {
         db.prepare("UPDATE factory_dispatches SET status = 'CANCELLED', error = ?, updated_at = ? WHERE id = ?").run(String(error.message).slice(0, 2000), now(), id);
         return halted(missionId);
@@ -514,6 +1090,10 @@ export function createFactory(deps) {
     }
     // Stop / Pause during the start: the run became visible only now and is interrupted before it can work. Its result is
     // then archived (onRunFinished), the dispatch ends INTERRUPTED (not an attempt) and a resume repeats this step.
+    if (closed) {
+      db.prepare("UPDATE factory_dispatches SET status = 'INTERRUPTED', run_id = ?, updated_at = ? WHERE id = ?").run(run.id, now(), id);
+      return null;
+    }
     if (isHalted(missionId)) {
       db.prepare("UPDATE factory_dispatches SET status = 'INTERRUPTED', run_id = ?, updated_at = ? WHERE id = ?").run(run.id, now(), id);
       await runs.interrupt(run.id, fm(missionId)?.cancelRequestedAt ? "factory-stop" : "factory-pause").catch(() => {});
@@ -541,6 +1121,15 @@ export function createFactory(deps) {
     const kind = { BUGFIX: "Reproduce, găsește cauza susținută de dovezi, adaugă un test de regresie și aplică fixul minim suficient.",
       FEATURE: "Implementează comportamentul complet: validări, erori și stări, nu doar interfața; integrarea reală, nu doar mock-uri.",
       REFACTOR: "Păstrează comportamentul și contractele publice; demonstrează cu testele existente că nimic nu s-a schimbat." }[f.workType];
+    // M11 L5 (§7): the protected test was written by the Hub from the owner's criteria; the API shape it fixes is part of the requirement
+    // (the author's own sentence, quoted as data, never as an instruction).
+    const hubTest = authoringOf(spec);
+    const api = hubTest?.status === "PROTECTED" ? String(hubTest.candidate?.manifest?.api || "").replace(/\s+/g, " ").trim().slice(0, 300) : "";
+    // The integrity rules that are strict on such a mission are said up front, so an honest fix never trips them (integrity.mjs).
+    const hubTestLine = hubTest?.status === "PROTECTED"
+      ? [`Testul de acceptanță ${hubTest.testRef} a fost scris de Hub din criteriile proprietarului, verificat (pică azi din motivul potrivit, review independent) și protejat: repari implementarea, nu testul${api ? `; forma API pe care o fixează („${api}”) face parte din cerință` : ""}.`,
+        "În cod (în afara comentariilor) nu numi testul protejat sau cazurile AC-n, nu citi felul în care e rulat codul (NODE_ENV, process.argv, node:test, CI) și nu importa node:assert, nu schimba prototipuri, obiecte globale sau ieșirea procesului: Hub-ul tratează asta ca ocolire a testului și îți trimite modificarea înapoi."]
+      : [];
     return redactText([
       `# ${repair ? `Remediere ciclul ${cycle}` : "Implementare"} — ${mission.title} (Software Factory · ${f.workType})`,
       `Specificația v${spec.version} (sha ${spec.sha256.slice(0, 12)}) este aprobată de proprietar. Criteriile NU se schimbă; dacă un criteriu pare greșit, oprește-te și explică.`,
@@ -549,6 +1138,9 @@ export function createFactory(deps) {
       ...(s.constraints.length ? [`Restricții: ${s.constraints.join("; ")}`] : []),
       "Criterii de acceptanță:", ...s.acceptance.flatMap((a) => [`- ${a.id} [${a.verify}${a.testRef ? `: ${a.testRef}` : ""}] ${a.text}`, ...e2eStepLines(a)]),
       ...(protectedFiles.length ? [`Teste de acceptanță PROTEJATE (nu le modifica, nu le șterge, nu le sări): ${protectedFiles.join(", ")}`] : []),
+      // R-PRIV: the earlier tests this revision superseded are history, not work: never recreated, edited or run again by the writer.
+      ...((spec.protected?.retired || []).length ? [`Teste anterioare retrase de Hub la pornire (contractul vechi, păstrate neschimbate în .ifrim-hub/retired/): ${spec.protected.retired.map((r) => r.from).join(", ")}; nu le recrea și nu le modifica`] : []),
+      ...hubTestLine,
       `După tine, Hub-ul rulează singur: ${[...s.verification.checks, ...s.verification.acceptance].join(", ")}. Nu declara că trec fără să le fi rulat.`,
       "", kind,
       "Reguli: lucrezi doar în acest workspace; fără dependențe noi, instalări, servicii externe sau baze de date reale; nu modifica .codex/, .claude/, .mcp.json, AGENTS.md, CLAUDE.md;",
@@ -561,6 +1153,7 @@ export function createFactory(deps) {
   }
 
   async function dispatchWriter(missionId, { repair }) {
+    assertWriterProtected(missionId);
     { const stop = halted(missionId); if (stop) return stop; }
     const f = fm(missionId);
     if (f.deadlineAt && new Date(f.deadlineAt) <= clock()) return setStage(missionId, "NEEDS_OWNER_DECISION", { waitReason: "owner_decision", reason: "Limita de timp a misiunii a fost atinsă" });
@@ -616,11 +1209,32 @@ export function createFactory(deps) {
       const fresh = rowToDispatch(db.prepare("SELECT * FROM factory_dispatches WHERE id = ?").get(dispatch.id));
       if (fresh.runId && fresh.runId !== runId) return null;
       const f = fm(dispatch.missionId);
+      if (dispatch.stage === "TEST_AUTHORING" && !db.prepare("SELECT 1 FROM events WHERE type = 'factory.author_output_limit' AND run_id = ?").get(runId)) {
+        const limit = run.evidence?.authorOutputLimit || { requested: fresh.request?.maxOutputTokens ?? null, settingsOverride: null, effective: null, evidence: "nedemonstrat" };
+        bus.emit({ type: "factory.author_output_limit", scopeType: "mission", scopeId: f.missionId, source: "factory", runId,
+          payload: { ...limit, runId } });
+      }
       if (fresh.status === "INTERRUPTED") {
         // Interrupted by the owner (Pause, Stop, the time limit): archived, never evaluated now and never resets the stage
         // (a resume may already be running). A result that completed anyway is kept for the next resume.
         const keep = run.status === "completed" && RESUMABLE.has(f.stage) && !f.cancelRequestedAt;
+        // Review R3-F4: the per-turn deadline fired BEFORE the owner's Pause / Stop landed (the turn was already being cut when the
+        // dispatch was marked INTERRUPTED): the run is a timed-out attempt that reached the model (its grant attempt spent, never
+        // forgiven), so the factory counts it too — FAILED, no automatic retry (the mission is paused or stopping). Before, the resumed
+        // step was counted again as the same attempt while the run and the grant said otherwise.
+        const timedOut = run.status === "failed" && run.errorCategory === "turn_timeout" && Boolean(run.timeline?.turn_sent);
+        if (timedOut) {
+          const limitMin = Number(fresh.request?.turnTimeoutMin) || null;
+          db.prepare("UPDATE factory_dispatches SET status = 'FAILED', error = ?, updated_at = ? WHERE id = ?")
+            .run(`turn_timeout: limita${limitMin ? ` de ${limitMin} min` : ""} pe tură, depășită înainte de oprirea ta (încercarea se numără)`, now(), dispatch.id);
+          bus.emit({ type: "factory.late_result", scopeType: "mission", scopeId: f.missionId, source: "factory", runId,
+            payload: { stage: dispatch.stage, runStatus: run.status, errorCategory: "turn_timeout", counted: true, note: "Limita pe tură a fost depășită înainte de oprirea ta: încercarea se numără, fără reîncercare automată" } });
+          return f.cancelRequestedAt ? confirmCancel(f.missionId) : null;
+        }
         db.prepare("UPDATE factory_dispatches SET status = ?, updated_at = ? WHERE id = ?").run(keep ? "DONE_LATE" : run.status === "completed" ? "DONE" : "INTERRUPTED", now(), dispatch.id);
+        // M10.2 review #11: not an attempt here (modelAttempts skips INTERRUPTED), so the plan this step ran under gives its grant
+        // attempt back (bounded, recorded; envelopes.forgiveInterrupted). Outside a plan nothing happens.
+        if (authority && run.status === "interrupted" && run.grantId) authority(dispatch.missionId, { stage: "INTERRUPTED", grantId: run.grantId, runId });
         bus.emit({ type: "factory.late_result", scopeType: "mission", scopeId: f.missionId, source: "factory", runId, payload: { stage: dispatch.stage, runStatus: run.status, note: "Oprit de tine: arhivat, fără efect acum" } });
         return f.cancelRequestedAt ? confirmCancel(f.missionId) : null;
       }
@@ -636,6 +1250,15 @@ export function createFactory(deps) {
         return null;
       }
       if (run.status !== "completed") {
+        // 2.12.2 (P0-R3): the turn ran out of its per-turn time — TIMEOUT, its own outcome (never the generic failure below).
+        if (run.errorCategory === "turn_timeout") return afterTurnTimeout(f, fresh, run);
+        if (dispatch.stage === "TEST_AUTHORING" && run.errorCategory === "output_token_limit") {
+          const { counted } = modelAttempts(f.missionId, dispatch.stage, dispatch.request.cycle, dispatch.request.changeSeq);
+          const limit = attemptLimit(f, dispatch.stage);
+          blockTask(dispatch.taskId, "bugetul de ieșire epuizat");
+          return setStage(f.missionId, counted >= limit ? "NEEDS_OWNER_DECISION" : "BLOCKED", { waitReason: "owner_decision",
+            reason: `Autorul testului a folosit întregul buget de ieșire fără să încheie răspunsul (output_token_limit); ${counted} încercări folosite din ${limit}. Decizia este a ta.` });
+        }
         const reason = `${dispatch.stage}: execuția ${run.status}${run.errorCategory ? ` (${run.errorCategory})` : ""}${run.errorMessage ? ` — ${run.errorMessage.slice(0, 300)}` : ""}`;
         // A refused or conflicting export from an execution environment: nothing reached the project; the owner decides
         // (the quarantined export is in the run evidence), never an automatic repair on an unknown state.
@@ -644,8 +1267,110 @@ export function createFactory(deps) {
       }
       if (dispatch.stage === "IMPLEMENTING" || dispatch.stage === "REPAIRING") return afterWriter(f.missionId, run);
       if (dispatch.stage === "REVIEWING") return afterReview(f.missionId, run);
+      if (dispatch.stage === "TEST_AUTHORING") return afterTestAuthor(f.missionId, run);
+      if (dispatch.stage === "TEST_REVIEW") return afterTestReview(f.missionId, run);
       return null;
     });
+  }
+
+  /**
+   * 2.12.2 (P0-R3): a model step that ran out of its per-turn time. A turn that reached the model is an attempt (counted, never forgiven
+   * like an owner's interruption). While the stage still has attempts inside the confirmed limit, ONE re-dispatch is scheduled after a
+   * cooldown (≥ TURN_RETRY_COOLDOWN_MS) and fired by tick() through the ordinary dispatch path — halts, the mission deadline, the plan's
+   * authority and the gate all decide again. Exhausted: the owner decides (a plan's "one more attempt" difference applies: exhaustedStep).
+   * A turn stopped before it reached the model is an infrastructure stop: BLOCKED, nothing counted, never retried by itself.
+   */
+  function afterTurnTimeout(f, dispatch, run) {
+    const role = ROLE_OF_STAGE[dispatch.stage] || "writer";
+    const roleLabel = dispatch.stage === "TEST_AUTHORING" && dispatch.request?.turnTimeoutSource === "authorLimits" ? "autorul testului" : role;
+    const limitMin = Number(dispatch.request?.turnTimeoutMin) || dispatchTurnLimit(f, dispatch.stage, role).min;
+    const payload = { stage: dispatch.stage, role, limitMin, dispatchId: dispatch.id, limitMs: run.evidence?.turnTimeout?.limitMs ?? null, elapsedMs: run.evidence?.turnTimeout?.elapsedMs ?? null };
+    // The dispatch row says TIMEOUT too (its status stays FAILED: modelAttempts counts it only when the turn had been sent).
+    db.prepare("UPDATE factory_dispatches SET error = ?, updated_at = ? WHERE id = ?").run(`turn_timeout: limita de ${limitMin} min pe tură (${role})`, now(), dispatch.id);
+    if (run.status !== "failed") {
+      blockTask(dispatch.taskId, "limita pe tură, înainte de model");
+      bus.emit({ type: "factory.turn_timeout", scopeType: "mission", scopeId: f.missionId, source: "factory", runId: run.id, payload: { ...payload, reachedModel: false, retry: false } });
+      return setStage(f.missionId, "BLOCKED", { waitReason: "owner_decision",
+        reason: `Etapa ${dispatch.stage} (${roleLabel}): providerul nu a trimis tura modelului în limita de ${limitMin} min pe tură; nimic nu a ajuns la model, încercarea nu se numără. Verifică providerul, apoi reia` });
+    }
+    const { counted } = modelAttempts(f.missionId, dispatch.stage, dispatch.request.cycle, dispatch.request.changeSeq);
+    const limit = attemptLimit(f, dispatch.stage);
+    const base = `Etapa ${dispatch.stage} (${roleLabel}) a depășit limita de ${limitMin} min pe tură (încercarea ${counted} din ${limit})`;
+    // Review R3-F3: ONE automatic re-dispatch per step (stage, cycle, change set), whatever maxAttemptsPerStage allows: after it, a
+    // further timeout of the same step waits for the owner even with attempts left (the texts promise „o singură dată”).
+    if (counted < limit && turnRetriesFired(f.missionId, dispatch.stage, dispatch.request.cycle, dispatch.request.changeSeq) > 0) {
+      const left = limit - counted;
+      blockTask(dispatch.taskId, "limita pe tură; reîncercarea automată a fost folosită");
+      bus.emit({ type: "factory.turn_timeout", scopeType: "mission", scopeId: f.missionId, source: "factory", runId: run.id,
+        payload: { ...payload, reachedModel: true, attempt: counted, limit, retry: false, autoRetryUsed: true } });
+      return setStage(f.missionId, "NEEDS_OWNER_DECISION", { waitReason: "owner_decision",
+        reason: `${base}; am reluat-o deja automat o dată, așa că nu o mai reiau singur — decide dacă o reiei (în limita confirmată ${left === 1 ? "mai e o încercare" : `mai sunt ${left} încercări`})` });
+    }
+    if (counted < limit) {
+      const retryAt = new Date(clock().getTime() + TURN_RETRY_COOLDOWN_MS).toISOString();
+      bus.transaction(() => {
+        db.prepare("UPDATE factory_missions SET wait_reason = 'retry', stage_reason = ?, updated_at = ? WHERE mission_id = ?")
+          .run(`${base}; o reiau o singură dată peste ${Math.round(TURN_RETRY_COOLDOWN_MS / 1000)} s, prin aceleași verificări (poartă, plan, termenul misiunii)`, now(), f.missionId);
+        bus.append({ type: "factory.turn_timeout", scopeType: "mission", scopeId: f.missionId, source: "factory", runId: run.id,
+          payload: { ...payload, reachedModel: true, attempt: counted, limit, retry: true, retryAt } });
+      });
+      return view(f.missionId);
+    }
+    blockTask(dispatch.taskId, "limita pe tură; încercări epuizate");
+    bus.emit({ type: "factory.turn_timeout", scopeType: "mission", scopeId: f.missionId, source: "factory", runId: run.id, payload: { ...payload, reachedModel: true, attempt: counted, limit, retry: false } });
+    return setStage(f.missionId, "NEEDS_OWNER_DECISION", { waitReason: "owner_decision", reason: `${base}; încercările confirmate s-au epuizat — decide dacă reiei (o încercare în plus)` });
+  }
+
+  /**
+   * R3-F3: how many automatic turn-timeout re-dispatches already fired for one step (stage, cycle, change set) of a mission — read from
+   * factory.turn_retry (its own cycle / change set, or, for a record written before they were added, the dispatch it followed). Read-only.
+   */
+  function turnRetriesFired(missionId, stage, cycle, changeSeq) {
+    let n = 0;
+    for (const row of db.prepare("SELECT payload_json FROM events WHERE type = 'factory.turn_retry' AND scope_type = 'mission' AND scope_id = ? ORDER BY seq").all(missionId)) {
+      const p = parse(row.payload_json, {});
+      if (p.stage !== stage) continue;
+      let step = Number.isFinite(p.cycle) && Number.isFinite(p.changeSeq) ? { cycle: p.cycle, changeSeq: p.changeSeq } : null;
+      if (!step && p.afterDispatch) step = rowToDispatch(db.prepare("SELECT * FROM factory_dispatches WHERE id = ?").get(p.afterDispatch))?.request || null;
+      if (step && step.cycle === cycle && step.changeSeq === changeSeq) n += 1;
+    }
+    return n;
+  }
+
+  /** 2.12.2 (P0-R3): the missions whose one turn-timeout retry is due (still waiting for exactly it, cooldown passed). Read-only. */
+  function dueTurnRetries() {
+    const out = [];
+    const rows = db.prepare(`SELECT mission_id, stage FROM factory_missions WHERE wait_reason = 'retry' AND cancel_requested_at IS NULL AND stage IN (${MODEL_STAGES.map(() => "?").join(",")})`).all(...MODEL_STAGES);
+    for (const row of rows) {
+      const p = parse(db.prepare("SELECT payload_json FROM events WHERE type = 'factory.turn_timeout' AND scope_type = 'mission' AND scope_id = ? ORDER BY seq DESC LIMIT 1").get(row.mission_id)?.payload_json, {});
+      if (!p.retry || p.stage !== row.stage || !p.retryAt || Date.parse(p.retryAt) > clock().getTime()) continue;
+      out.push({ missionId: row.mission_id, schedule: p });
+    }
+    return out;
+  }
+
+  /**
+   * Fires one scheduled retry (serialized per mission). Claimed by compare-and-set on the exact wait it was scheduled from: a Pause, a
+   * Stop, Stop All, the mission deadline, a plan's pause or another tick moved it, and nothing happens. A gate suspended meanwhile is
+   * never waited out or reopened: the step goes BLOCKED at the gate and the owner continues it. Otherwise the same step again
+   * (redispatch: same task, cycle and change set), through dispatchRun — attempts, deadline, plan authority, then runs.start's gate.
+   */
+  function fireTurnRetry(missionId, schedule) {
+    const f = fm(missionId);
+    if (!f || f.stage !== schedule.stage || f.waitReason !== "retry" || f.cancelRequestedAt) return null;
+    const last = rowToDispatch(db.prepare("SELECT * FROM factory_dispatches WHERE mission_id = ? ORDER BY created_at DESC LIMIT 1").get(missionId));
+    if (!last || last.id !== schedule.dispatchId || last.status !== "FAILED") return null;
+    const claimed = db.prepare("UPDATE factory_missions SET wait_reason = 'runner', stage_reason = ?, updated_at = ? WHERE mission_id = ? AND stage = ? AND wait_reason = 'retry' AND cancel_requested_at IS NULL")
+      .run(`Reiau etapa ${last.stage} după depășirea limitei pe tură (singura reîncercare automată)`, now(), missionId, schedule.stage).changes;
+    if (claimed !== 1) return null;
+    const gateState = settings.get("executionGate");
+    if (gateState?.status !== "open") {
+      blockTask(last.taskId, "poarta de execuție e suspendată");
+      return setStage(missionId, "BLOCKED", { waitReason: "gate", reason: `Reîncercarea etapei ${last.stage} nu pornește: poarta de execuție e suspendată (${String(gateState?.reason || "—").slice(0, 120)}); o reiei tu după redeschidere` });
+    }
+    bus.emit({ type: "factory.turn_retry", scopeType: "mission", scopeId: missionId, source: "factory",
+      payload: { stage: last.stage, cycle: last.request?.cycle ?? null, changeSeq: last.request?.changeSeq ?? null, afterDispatch: last.id, scheduledAt: schedule.retryAt } });
+    return redispatch(missionId, last);
   }
 
   async function afterWriter(missionId, run) {
@@ -658,6 +1383,14 @@ export function createFactory(deps) {
     if (critical.length) {
       return setStage(missionId, "NEEDS_OWNER_DECISION", { waitReason: "owner_decision",
         reason: `Integritate: ${critical.map((x) => `${x.code} ${x.fingerprint.split(":")[1]} ${x.file} (${x.observation})`).join("; ")}; nicio verificare nu rulează pe această versiune` });
+    }
+    // M11 L5 (§5.5): on a mission whose acceptance test the Hub wrote, product code that reads how it is run, tampers with the test's
+    // world, imports from the tests or cannot be read is sent back to the writer before any check (a review PASS could not carry it);
+    // the repair brief quotes the findings. Beyond the repair limit the owner decides (a resume then continues as their decision).
+    const leaks = findings(missionId, "OPEN").filter((x) => x.source === "integrity" && x.changeSetId === cs.id && isTestFirstBlocking(x));
+    if (leaks.length && authoringOf(approvedSpec(fm(missionId)))?.status === "PROTECTED") {
+      blockTask(stepTask(fm(missionId), "checks"), "integritate: codul poate ocoli testul protejat");
+      return nextRepairOrDecision(missionId, `integritate: ${leaks.map((x) => `${x.code} ${x.file}`).join("; ")} (codul poate trece testul protejat fără să repare)`);
     }
     return runChecks(missionId);
   }
@@ -924,25 +1657,554 @@ export function createFactory(deps) {
     return buildBundle(missionId);
   }
 
+  // ---------- M11 L5: step 0 — the acceptance test written by the Hub (§3, §5) ----------
+  const reauthorMaxOf = (spec) => (Number.isInteger(spec?.spec?.authoring?.reauthorMax) ? spec.spec.authoring.reauthorMax : TEST_FIRST_LIMITS.reauthorMax);
+  /** The owner's line while the author works: the first proposal, or which rewrite of how many. */
+  const authorStageReason = (a, spec) => (a.cycle ? `${T_STAGE.TEST_AUTHORING} — rescrierea ${a.cycle} din ${reauthorMaxOf(spec)}` : T_STAGE.TEST_AUTHORING);
+  /** The VALID review with PASS of exactly these test bytes, or null. */
+  const passReviewOf = (missionId, sha) => rowToReview(db.prepare("SELECT * FROM factory_reviews WHERE mission_id = ? AND change_set_sha = ? AND change_set_id LIKE 'acceptance:%' AND status = 'VALID' AND verdict = 'PASS' ORDER BY created_at DESC LIMIT 1")
+    .get(missionId, String(sha || "")));
+
+  /** The project's files at the pre-test base, and the export names of its loadable sources (what the author and the lint see). */
+  function authoringFacts(missionId, a, project) {
+    const entries = snapshotRow(a.preTestSnapshotId)?.files || {};
+    const files = Object.keys(entries).filter((rel) => !entries[rel].secretLike);
+    const exports = {};
+    let read = 0;
+    for (const rel of files) {
+      if (read >= 200) break;
+      if (!/\.(?:m?js|cjs)$/i.test(rel) || isTestPath(rel) || rel.startsWith(".") || rel.split("/").includes("node_modules")) continue;
+      const entry = entries[rel];
+      const text = String(entry.sha256 || "").startsWith("git:") ? readGitEntry(project.path, entry.sha256) : entry.text ? readBlob(blobDir(missionId), entry.sha256) : null;
+      if (text === null) continue;
+      read += 1;
+      try { exports[rel] = exportNamesOf(text); } catch { /* an unreadable source lists no exports */ }
+    }
+    return { files, exports };
+  }
+
+  /**
+   * The project vs the pre-test base (§3, §5.3). During step 0 the only difference allowed is the Hub's staging file, with exactly the
+   * candidate's bytes. Returns { others: [paths changed besides it], staged: sha256 of the staging file | null }.
+   */
+  function verifiedRestorePaths(missionId, project, files) {
+    // Step zero has no verified bundle yet: this checks the pre-test base and retirement plan,
+    // so it retains driftProvenance rather than applying the final bundle identity decision.
+    const spec = approvedSpec(fm(missionId)), plan = retirementPlan(missionId, spec?.spec);
+    const ref = `.ifrim-hub/retired/${missionId}/journal.json`, journal = readRetireJournal(project, missionId);
+    if (!plan.length || journal?.status !== "RESTORED" || driftProvenance(project.id, [ref]).software.length
+      || !plan.every((r) => files[r.from]?.sha256 === r.sha256 && !files[r.to])) return new Set();
+    return new Set([ref, ...plan.flatMap((r) => [r.from, r.to])]);
+  }
+
+  function stageZeroDiff(missionId, a) {
+    const project = projects.get(missions.get(missionId).projectId);
+    const snap = takeSnapshot(project.path, { ignore: ignoreOf(missionId), mode: baseMode(missionId) });
+    const changes = diffManifests(snapshotRow(a.preTestSnapshotId).files, snap.files, { resolve: (sha) => gitEntryHash(project.path, sha) });
+    const restored = verifiedRestorePaths(missionId, project, snap.files);
+    return { others: changes.filter((c) => c.path !== a.stagingRef && !restored.has(c.path)).map((c) => c.path), staged: snap.files[a.stagingRef]?.sha256 || null };
+  }
+
+  /** The exact bytes of a candidate in the mission's blob store (the write-ahead copy, read back with readBlob). */
+  function storeTestBlob(missionId, text) {
+    const digest = sha256(text);
+    const file = path.join(blobDir(missionId), digest.slice(0, 2), digest);
+    if (!fs.existsSync(file)) { fs.mkdirSync(path.dirname(file), { recursive: true }); fs.writeFileSync(file, text); }
+    return digest;
+  }
+
+  /**
+   * The route is checked at the start (checkTestFirstStart), but the runner picks it again on every command (security review #8). The
+   * proof and the protection are valid only on the Windows route (the ifrim-runner route tests a copy, where a stray write is invisible),
+   * so both check it again. Another route waits for the owner — not a hold: a resume once the route is back runs the same step again.
+   */
+  function stageZeroRouteHold(missionId, project, taskId) {
+    const route = runner.routeOf ? runner.routeOf(project) : "windows";
+    if (route === "windows") return null;
+    blockTask(taskId, `ruta de execuție ${route}`);
+    bus.emit({ type: "factory.test_route_changed", scopeType: "mission", scopeId: missionId, source: "factory", payload: { route } });
+    return setStage(missionId, "NEEDS_OWNER_DECISION", { waitReason: "owner_decision", reason: T_STAGE0_ROUTE(route) });
+  }
+
+  /**
+   * An outcome of step 0 that a resume cannot change (§3, §6): the project changed under the work, the test left files behind, it
+   * already passes today, a file the Hub did not write, the rewrites are spent. Recorded as authoring.blocked (a resume keeps it at the
+   * owner, without running anything); the project's code was never touched.
+   */
+  function holdStageZero(missionId, { kind, text, details = [], files = [], taskId = null }) {
+    updateAuthoring(missionId, { blocked: { kind, reason: text, details: details.map((d) => redactText(String(d)).slice(0, 400)).slice(0, 20), files: files.slice(0, 20), at: now() } });
+    if (taskId) blockTask(taskId, String(text).slice(0, 200));
+    bus.emit({ type: "factory.test_stopped", scopeType: "mission", scopeId: missionId, source: "factory", payload: { kind, files: files.slice(0, 10) } });
+    return setStage(missionId, "NEEDS_OWNER_DECISION", { waitReason: "owner_decision", reason: text });
+  }
+
+  /**
+   * TEST_AUTHORING (§3, §4): Claude proposes the test, read-only, under the REVIEWER binding, in the author's own conversation. The
+   * owner's words, the criteria and an earlier rejection's reasons are quoted as data; the Hub owns the header and writes the file.
+   */
+  function previousCandidateOf(missionId, a) {
+    if (!(a.cycle > 0)) return null;
+    const prev = (a.rejected || []).findLast((r) => r.cycle === a.cycle - 1 && r.sha);
+    if (!prev) return null;
+    let text;
+    try { text = readBlob(blobDir(missionId), prev.sha); } catch { return null; }
+    if (text === null || sha256(text) !== prev.sha) return null;
+    const manifest = prev.candidate?.manifest || {};
+    const headerLines = prev.candidate?.headerLines ?? text.split("\n").findIndex((l) => l === "// ---- corpul testului ----") + 1;
+    return { sha: prev.sha, harness: prev.candidate?.harness ?? prev.harness ?? 1, cycle: prev.cycle, text, manifest, headerLines, proof: prev.proof, review: prev.review, findings: prev.findings || [], inventory: assertionInventory(text, manifest, { headerLines, sha: prev.sha }) };
+  }
+
+  const holdPreviousMissing = (missionId, a) => holdStageZero(missionId, { kind: "previous_missing", text: "Copia variantei anterioare lipsește sau are alți octeți. Pasul 0 se oprește.", details: ["copia variantei anterioare lipsește sau are alți octeți"], taskId: a.authorTaskId });
+
+  function holdDataset(missionId, spec, taskId) {
+    if (!spec.spec.dataset) return false;
+    const project = projects.get(missions.get(missionId).projectId);
+    const problem = project ? datasetProblem(spec.spec.dataset, project.path) : "proiectul lipsește";
+    if (!problem) return false;
+    holdStageZero(missionId, { kind: "dataset", text: `Datele martor ale experimentului nu mai corespund surselor inițializării (${problem}): precondiție invalidă. Nu scriu și nu verific testul; codul nu e atins.`, details: [problem], taskId });
+    return true;
+  }
+
+  async function dispatchTestAuthor(missionId) {
+    { const stop = halted(missionId); if (stop) return stop; }
+    const f = fm(missionId);
+    const spec = approvedSpec(f);
+    const a = authoringOf(spec);
+    if (holdDataset(missionId, spec, a.authorTaskId)) return;
+    const mission = missions.get(missionId);
+    const previous = [...(a.rejected || []).filter((r) => r.cycle === a.cycle - 1).flatMap((r) => r.reasons || []), ...(a.retryProblems || [])].slice(0, 20);
+    const previousCandidate = previousCandidateOf(missionId, a);
+    if (a.cycle > 0 && !previousCandidate) return holdPreviousMissing(missionId, a);
+    const facts = authoringFacts(missionId, a, projects.get(mission.projectId));
+    const brief = authorBriefRenderer({ harness: TEST_HARNESS_VERSION, mission: { id: missionId, title: mission.title }, spec: spec.spec, specVersion: spec.version, specSha: spec.sha256, authoring: { testRef: a.testRef },
+      cycle: a.cycle, previousProblems: previous, previousCandidate, facts });
+    if (spec.spec.dataset && spec.spec.hubHelpers?.includes("json-exposure")) {
+      const evidence = lintDatasetBrief(brief, { spec: spec.spec, facts, testRef: a.testRef, stagingRef: a.stagingRef, workType: f.workType });
+      updateAuthoring(missionId, { briefValidation: { ...evidence, cycle: a.cycle, at: now() } });
+      bus.emit({ type: "factory.test_brief_validated", scopeType: "mission", scopeId: missionId, source: "factory", payload: { cycle: a.cycle, ...evidence } });
+      if (!evidence.skipped && !evidence.lint.ok) return holdStageZero(missionId, { kind: "brief", text: "Exemplul de test pregătit de Hub nu trece verificarea proprie. Pasul 0 se oprește înainte de apelul autorului.",
+        details: evidence.lint.violations.map((v) => v.plain + " (" + v.detail + ")"), taskId: a.authorTaskId });
+    }
+    const reason = authorStageReason(a, spec);
+    if (f.stage !== "TEST_AUTHORING" || f.stageReason !== reason) bus.transaction(() => setStage(missionId, "TEST_AUTHORING", { waitReason: "provider", reason }));
+    return dispatchRun(missionId, { stage: "TEST_AUTHORING", taskId: a.authorTaskId, role: ROLE_OF_STAGE.TEST_AUTHORING, access: "read-only", conversationId: a.authorConversationId,
+      brief, cycle: a.cycle, changeSeq: 0 });
+  }
+
+  /**
+   * The author's answer (§3, §5.2). Unreadable (no code block, bad manifest, another slot) → a new, counted attempt of the same cycle;
+   * a hard lint rule broken → a rewrite or the owner; valid → assembled under the Hub's header, written ahead (blob + pending record),
+   * then into the staging area.
+   */
+  async function afterTestAuthor(missionId, run) {
+    const f = fm(missionId);
+    const spec = approvedSpec(f);
+    const a = authoringOf(spec);
+    const previousCandidate = previousCandidateOf(missionId, a);
+    if (a.cycle > 0 && (!previousCandidate || previousCandidate.inventory.some((e) => e.sha !== previousCandidate.sha))) return holdPreviousMissing(missionId, a);
+    const parsed = parseAuthorOutput(outputOf(run), { testSlot: testSlotOf({ specSha: spec.sha256, cycle: a.cycle }), workType: f.workType, criteria: spec.spec.acceptance, amends: previousCandidate?.sha || null });
+    if (!parsed.ok) {
+      updateAuthoring(missionId, { retryProblems: parsed.problems.map((p) => redactText(String(p)).slice(0, 300)).slice(0, 10) });
+      bus.emit({ type: "factory.test_unreadable", scopeType: "mission", scopeId: missionId, source: "factory", runId: run.id, payload: { cycle: a.cycle, problems: parsed.problems.slice(0, 5) } });
+      return dispatchTestAuthor(missionId);
+    }
+    const needs = normalizeNeeds(parsed.body, parsed.manifest.needs);
+    parsed.manifest = { ...parsed.manifest, needs: needs.effective, needsDeclared: needs.declared, needsCompleted: needs.completed };
+    const facts = authoringFacts(missionId, a, projects.get(missions.get(missionId).projectId));
+    const lint = lintTestBody(parsed.body, { manifest: parsed.manifest, criteria: spec.spec.acceptance, workType: f.workType, testRef: a.testRef, stagingRef: a.stagingRef,
+      projectFiles: facts.files, moduleExports: facts.exports, spec: spec.spec });
+    const file = assembleTestFile({ harness: TEST_HARNESS_VERSION, body: parsed.body, needs: parsed.manifest.needs, helpers: spec.spec.hubHelpers || [], missionId, specVersion: spec.version, specSha: spec.sha256 });
+    const { removed: inventoryRemoved, contextChanged } = compareInventory(previousCandidate?.inventory || [], { text: file.text, manifest: parsed.manifest, headerLines: file.header.length, sha: file.sha256 });
+    const removedDeclared = parsed.manifest.removed || [];
+    lint.violations.push(...amendmentViolations(inventoryRemoved, removedDeclared, previousCandidate?.review?.checks || []));
+    lint.ok = lint.violations.length === 0;
+    if (a.cycle > 0) lint.signals.push(...completionSignals(previousCandidate, parsed.manifest.completes));
+    for (const entry of inventoryRemoved) if (!removedDeclared.some((r) => r.id === entry.id)) lint.signals.push({ signal: "coverage_removed_undeclared", plain: "O verificare anterioară a fost eliminată fără motiv declarat", detail: entry.id, line: null });
+    if (!lint.ok) {
+      storeTestBlob(missionId, file.text);
+      return reAuthorOrDecide(missionId, { kind: "lint", violations: lint.violations, taskId: a.authorTaskId,
+        rejectedCandidate: { harness: TEST_HARNESS_VERSION, sha: file.sha256, headerLines: file.header.length, cycle: a.cycle, manifest: parsed.manifest, lint, previousSha: previousCandidate?.sha || null, inventoryRemoved, contextChanged, removedDeclared } });
+    }
+    // Write-ahead (§5.1): the exact bytes and the record first, the file after; a crash in between is finished from the blob at the next
+    // resume (same sha) or stops at the owner (another file there).
+    storeTestBlob(missionId, file.text);
+    updateAuthoring(missionId, { retryProblems: [], pending: { harness: TEST_HARNESS_VERSION, previousSha: previousCandidate?.sha || null, inventoryRemoved, contextChanged, removedDeclared, headerLines: file.header.length, sha: file.sha256, cycle: a.cycle, runId: run.id, manifest: parsed.manifest, lint: { signals: lint.signals, facts: lint.facts }, at: now() } });
+    return writePendingTest(missionId);
+  }
+
+  /**
+   * The pending candidate into the Hub's work area (§5.1): the staging copy, outside test/, never discovered by node --test. Idempotent
+   * (the same bytes already there are kept). A file the Hub did not write there, or any other change to the project since the pre-test
+   * base, stops step 0 at the owner; the project's code is never touched.
+   */
+  async function writePendingTest(missionId) {
+    { const stop = halted(missionId); if (stop) return stop; }
+    const f = fm(missionId);
+    const a = authoringOf(approvedSpec(f));
+    const p = a.pending;
+    const project = projects.get(missions.get(missionId).projectId);
+    const text = readBlob(blobDir(missionId), p.sha);
+    if (text === null || sha256(text) !== p.sha) {
+      return holdStageZero(missionId, { kind: "blob_missing", text: T_PROJECT_CHANGED([a.stagingRef]), details: ["copia Hub-ului a testului lipsește sau nu mai corespunde"], files: [a.stagingRef], taskId: a.authorTaskId });
+    }
+    // Tracked (like a run still starting): a Stop during the write stays CANCEL_REQUESTED until the write and its record are done, so
+    // the abandoned file is always one the Hub recognises by its sha.
+    const outcome = await tracked(missionId, async () => {
+      const result = await withRunnerLease(missionId, project, async () => {
+        if (isHalted(missionId)) return { halted: true };
+        try { hubWriteFile(project.path, a.stagingRef, text, { previousSha: a.lastHubWrite?.path === a.stagingRef ? a.lastHubWrite.sha : null }); }
+        catch (error) { if (error instanceof HubError) return { conflict: error.message }; throw error; }
+        return { diff: stageZeroDiff(missionId, a) };
+      });
+      if (result.diff) updateAuthoring(missionId, { lastHubWrite: { path: a.stagingRef, sha: p.sha } });
+      return result;
+    });
+    if (outcome.halted) return halted(missionId) || view(missionId);
+    if (outcome.blocked) return pauseFor(missionId, a.authorTaskId, "runner", outcome.blocked);
+    if (outcome.conflict) return holdStageZero(missionId, { kind: "unknown_file", text: T_PROJECT_CHANGED([a.stagingRef]), details: [outcome.conflict], files: [a.stagingRef], taskId: a.authorTaskId });
+    { const stop = halted(missionId); if (stop) return stop; }
+    if (outcome.diff.others.length || outcome.diff.staged !== p.sha) {
+      const files = outcome.diff.others.length ? outcome.diff.others : [a.stagingRef];
+      return holdStageZero(missionId, { kind: "changed", text: T_PROJECT_CHANGED(files), files, taskId: a.authorTaskId });
+    }
+    updateAuthoring(missionId, { pending: null, candidate: { harness: p.harness ?? 1, previousSha: p.previousSha || null, inventoryRemoved: p.inventoryRemoved || [], contextChanged: p.contextChanged || [], removedDeclared: p.removedDeclared || [], headerLines: p.headerLines, cycle: p.cycle, sha: p.sha, manifest: p.manifest, lint: p.lint, runId: p.runId, status: "STAGED", writtenAt: now() } });
+    bus.emit({ type: "factory.test_staged", scopeType: "mission", scopeId: missionId, source: "factory", payload: { ref: a.stagingRef, sha: p.sha, cycle: p.cycle, cases: p.manifest.cases.length, needsCompleted: p.manifest.needsCompleted?.length || 0 } });
+    return runTestProving(missionId);
+  }
+
+  /**
+   * TEST_PROVING (§5.3), no model: the staging copy runs twice on today's code through the Hub runner (network off). The cases come from
+   * every output line (the runners' case reader), the counts from the runner's own summary; classifyProof decides. PROVEN → the
+   * independent review; ALREADY_PASSES (owner decision 2026-10-06: never kept, never rewritten) and NOT_HERMETIC → the owner; PARTIAL,
+   * WRONG_REASON, FLAKY, INCONCLUSIVE → one rewrite, then the owner. A blocked runner is BLOCKED, as at the baseline.
+   */
+  async function runTestProving(missionId) {
+    { const stop = halted(missionId); if (stop) return stop; }
+    const f = fm(missionId);
+    const spec = approvedSpec(f);
+    const a = authoringOf(spec);
+    const c = a.candidate;
+    const taskId = a.authorTaskId;
+    const project = projects.get(missions.get(missionId).projectId);
+    { const held = stageZeroRouteHold(missionId, project, taskId); if (held) return held; }
+    bus.transaction(() => setStage(missionId, "TEST_PROVING", { waitReason: "runner", reason: T_STAGE.TEST_PROVING }));
+    const command = `node --test ${a.stagingRef}`;
+    const proofRuns = spec.spec.authoring.proofRuns || TEST_FIRST_LIMITS.proofRuns;
+    // What the snapshot never reads (dependency/build/cache folders, .git hooks/config) is fingerprinted around the two runs: a write
+    // there is as much "the test left files behind" as one the snapshot sees (security review #7).
+    const outsideBefore = skippedTreeFingerprint(project.path, { ignore: ignoreOf(missionId) });
+    const { blocked, results } = await runCommands(missionId, "TEST_PROVING", Array.from({ length: proofRuns }, () => command), acceptanceId(c.sha));
+    { const stop = haltStep(missionId, taskId); if (stop) return stop; }
+    if (blocked || results.some((r) => r.status === "BLOCKED")) return pauseFor(missionId, taskId, "runner", blocked || results.find((r) => r.status === "BLOCKED").reason);
+    const diff = stageZeroDiff(missionId, a);
+    if (diff.staged !== c.sha) return holdStageZero(missionId, { kind: "changed", text: T_PROJECT_CHANGED([a.stagingRef]), files: [a.stagingRef], taskId });
+    const outside = skippedTreeChanges(outsideBefore, skippedTreeFingerprint(project.path, { ignore: ignoreOf(missionId) })).slice(0, 20);
+    const changedFiles = [...diff.others, ...outside];
+    const proof = classifyProof({ runs: results.map((r) => ({ status: r.status, reason: r.reason, stopped: r.stopped, counts: r.counts, cases: r.cases || [], fileCleanup: r.fileCleanup, fileCleanupReports: r.fileCleanupReports, fileLevelFailure: r.fileLevelFailure || null, overflow: r.overflow || 0 })),
+      manifest: c.manifest, criteria: spec.spec.acceptance, workType: f.workType, testRef: a.stagingRef, changedFiles, missingAtBase: c.lint?.facts?.missingModules || [], spec: spec.spec, facts: c.lint?.facts || {},
+      test: { harness: c.harness ?? 1, text: readBlob(blobDir(missionId), c.sha), headerLines: c.headerLines, refs: [path.posix.basename(a.stagingRef), path.posix.basename(a.testRef)] } });
+    updateAuthoring(missionId, (x) => ({ proof: { harness: c.harness ?? 1, manifest: c.manifest, sha: c.sha, helpers: proof.helpers, verdict: proof.verdict, cause: proof.cause, reasons: proof.reasons.slice(0, 20), signature: proof.signature, table: proof.table.slice(0, 20),
+      failingCriteria: proof.failingCriteria, passingCriteria: proof.passingCriteria, evidenceIds: results.map((r) => r.id), counts: results.map((r) => r.counts || {}), at: now() },
+    candidate: { ...x.candidate, status: proof.verdict === "PROVEN" ? "PROVEN" : proof.verdict } }));
+    bus.emit({ type: "factory.test_proof", scopeType: "mission", scopeId: missionId, source: "factory", payload: { harness: c.harness ?? 1, manifest: c.manifest, sha: c.sha, helpers: proof.helpers, verdict: proof.verdict, cause: proof.cause, runs: results.length } });
+    if (proof.verdict === "PROVEN") return dispatchTestReview(missionId);
+    if (proof.verdict === "ALREADY_PASSES") return holdStageZero(missionId, { kind: "already_passes", text: T_ALREADY_PASSES, details: proof.reasons, taskId });
+    if (proof.verdict === "NOT_HERMETIC") return holdStageZero(missionId, { kind: "not_hermetic", text: T_NOT_HERMETIC(changedFiles), details: proof.reasons, files: changedFiles, taskId });
+    return reAuthorOrDecide(missionId, { kind: "proof", verdict: proof.verdict, cause: proof.cause, reasons: proof.reasons, taskId });
+  }
+
+  /**
+   * TEST_REVIEW (§5.4): Codex reviews the proven test, read-only — the writer's binding narrowed to read-only, in its own conversation
+   * („Review test · …”), so neither the implementation's nor the code review's session ever sees it. Bound to the test's sha.
+   */
+  async function dispatchTestReview(missionId) {
+    { const stop = halted(missionId); if (stop) return stop; }
+    const f = fm(missionId);
+    const spec = approvedSpec(f);
+    const a = authoringOf(spec);
+    if (holdDataset(missionId, spec, a.reviewTaskId)) return;
+    const c = a.candidate;
+    const testText = readBlob(blobDir(missionId), c.sha);
+    const previousCandidate = previousCandidateOf(missionId, a);
+    if (a.cycle > 0 && !previousCandidate) return holdPreviousMissing(missionId, a);
+    if (testText === null || sha256(testText) !== c.sha) return holdStageZero(missionId, { kind: "blob_missing", text: T_PROJECT_CHANGED([a.stagingRef]), details: ["copia Hub-ului a testului lipsește"], files: [a.stagingRef], taskId: a.reviewTaskId });
+    const open = findings(missionId, "OPEN").filter((x) => x.source === "test_review");
+    bus.transaction(() => setStage(missionId, "TEST_REVIEW", { waitReason: "provider", reason: T_STAGE.TEST_REVIEW }));
+    const brief = buildTestReviewBrief({ harness: c.harness ?? 1, mission: { id: missionId, title: missions.get(missionId).title }, spec: spec.spec, specVersion: spec.version, testRef: a.testRef, testSha: c.sha,
+      testText, manifest: c.manifest, proof: a.proof || {}, lint: c.lint || {}, cycle: a.cycle, previousCandidate, inventory: assertionInventory(testText, c.manifest, { headerLines: c.headerLines, sha: c.sha }), inventoryRemoved: c.inventoryRemoved || [], contextChanged: c.contextChanged || [], removedDeclared: c.removedDeclared || [], openFindings: open });
+    return dispatchRun(missionId, { stage: "TEST_REVIEW", taskId: a.reviewTaskId, role: ROLE_OF_STAGE.TEST_REVIEW, access: "read-only", conversationId: a.testReviewConversationId,
+      brief, cycle: a.cycle, changeSeq: 0 });
+  }
+
+  /**
+   * The test reviewer's answer (§5.4), stored like a code review (factory_reviews, change_set_id "acceptance:<sha12>", findings with source
+   * test_review). A PASS counts only for the exact bytes reviewed and an unchanged project: then the test is protected. CHANGES_REQUESTED
+   * → one rewrite (or the owner); INCONCLUSIVE → the owner (a resume asks for the review again, on the same sha).
+   */
+  async function afterTestReview(missionId, run) {
+    const f = fm(missionId);
+    const spec = approvedSpec(f);
+    const a = authoringOf(spec);
+    const c = a.candidate;
+    const openPrev = findings(missionId, "OPEN").filter((x) => x.source === "test_review");
+    const testText = readBlob(blobDir(missionId), c.sha);
+    if (testText === null || sha256(testText) !== c.sha) return holdStageZero(missionId, { kind: "blob_missing", text: T_PROJECT_CHANGED([a.stagingRef]), taskId: a.reviewTaskId });
+    const parsed = parseTestReview(outputOf(run), { testSha: c.sha, criteria: spec.spec.acceptance, openCodes: openPrev.map((x) => x.code), inventory: assertionInventory(testText, c.manifest, { headerLines: c.headerLines, sha: c.sha }), inventoryRemoved: c.inventoryRemoved || [], contextChanged: c.contextChanged || [] });
+    // The files may not change under the reviewer: the review counts only for the exact test and project it saw.
+    const diff = stageZeroDiff(missionId, a);
+    const changed = diff.staged !== c.sha || diff.others.length > 0;
+    const reviewId = newId("rev");
+    const changeSetId = acceptanceId(c.sha);
+    bus.transaction(() => {
+      db.prepare(`INSERT INTO factory_reviews (id, mission_id, change_set_id, change_set_sha, run_id, reviewer, verdict, summary, missing_json, validation_json, status, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(reviewId, missionId, changeSetId, c.sha, run.id, run.provider, parsed.verdict, parsed.summary, json(parsed.missingContext),
+        json({ kind: "acceptance_test", harness: c.harness ?? 1, manifest: c.manifest, valid: parsed.valid, problems: parsed.problems, claimedVerdict: parsed.claimedVerdict, cause: parsed.cause, criteria: parsed.criteria, gate: parsed.gate, previousChecks: parsed.previousChecks, checks: parsed.checks, notes: parsed.notes }),
+        changed ? "STALE" : parsed.valid ? "VALID" : "INVALID", now());
+      if (!changed) {
+        parsed.findings = codedReviewFindings(parsed.findings, { source: "test_review", firstOrdinal: db.prepare("SELECT COUNT(*) AS n FROM factory_findings WHERE mission_id = ?").get(missionId).n + 1 });
+        for (const finding of parsed.findings) addFinding(missionId, { ...finding, source: "test_review", reviewId, changeSetId, fingerprint: `test_review:${finding.file}:${finding.observation.slice(0, 80)}` });
+        for (const prev of openPrev) {
+          const state = parsed.previous[prev.code];
+          if (state === "resolved") resolveFindings([prev.id], "RESOLVED", `review ${reviewId}`);
+          if (state === "disputed") resolveFindings([prev.id], "DISPUTED", `review ${reviewId}: contestat de verificator, decizia ta`);
+        }
+      }
+      bus.append({ type: "factory.test_review", scopeType: "mission", scopeId: missionId, source: "factory", runId: run.id,
+        payload: { reviewId, sha: c.sha, verdict: parsed.verdict, valid: parsed.valid, stale: changed, findings: parsed.findings.length } });
+    });
+    if (changed) {
+      const files = diff.staged !== c.sha ? [a.stagingRef, ...diff.others] : diff.others;
+      return holdStageZero(missionId, { kind: "changed", text: T_PROJECT_CHANGED(files), files, taskId: a.reviewTaskId });
+    }
+    updateAuthoring(missionId, { review: { ...parsed, sha: c.sha, reviewId, runId: run.id, at: now() } });
+    if (parsed.verdict === "PASS") {
+      updateAuthoring(missionId, (x) => ({ review: { sha: c.sha, reviewId, runId: run.id, criteria: parsed.criteria, checks: parsed.checks, notes: parsed.notes, summary: parsed.summary, at: now() }, candidate: { ...x.candidate, status: "REVIEWED" } }));
+      return protectAuthoredTest(missionId);
+    }
+    if (parsed.verdict === "CHANGES_REQUESTED") {
+      return reAuthorOrDecide(missionId, { kind: "review", verdict: "CHANGES_REQUESTED", gate: parsed.gate, summary: parsed.summary,
+        reasons: parsed.findings.map((x) => `[${x.severity}] ${x.file}: ${x.observation}`), taskId: a.reviewTaskId });
+    }
+    const outcome = ownerOutcome({ kind: "review", verdict: "INCONCLUSIVE", cause: parsed.cause, problems: parsed.problems });
+    blockTask(a.reviewTaskId, "verificarea testului nu a fost concludentă");
+    return setStage(missionId, "NEEDS_OWNER_DECISION", { waitReason: "owner_decision", reason: outcome.text });
+  }
+
+  /**
+   * A candidate that did not pass (lint, proof or review) (§3): rewritten in the same author conversation — the reasons quoted as data in
+   * the next brief — while authoring.cycle < reauthorMax; otherwise the owner decides, with the matching text (ownerOutcome), and the
+   * project's code is never touched.
+   */
+  function reAuthorOrDecide(missionId, { kind, verdict = null, cause = null, reasons = [], violations = [], gate = [], summary = "", files = [], taskId = null, rejectedCandidate = null }) {
+    const spec = approvedSpec(fm(missionId));
+    const a = authoringOf(spec);
+    const outcome = ownerOutcome({ kind, verdict, cause, files, summary, gate, violations, reasons });
+    // What the author reads in the next brief (data): the exact rule or reason, with lines and codes, and the reviewer's per-criterion answers.
+    const forAuthor = [...outcome.details, ...gate.map((g) => `${g.id}: ${(g.why || []).join(", ")}`), ...(summary ? [`rezumatul verificatorului: ${summary}`] : [])]
+      .map((r) => redactText(String(r)).slice(0, 400)).slice(0, 20);
+    const entry = { harness: (rejectedCandidate || a.candidate || a.pending)?.harness ?? 1, candidate: rejectedCandidate || a.candidate || a.pending || null, proof: a.proof || null, review: a.review || null, findings: findings(missionId).filter((x) => x.source === "test_review"), cycle: a.cycle, sha: rejectedCandidate?.sha || a.candidate?.sha || a.pending?.sha || null, kind, verdict, cause, reasons: forAuthor, plain: outcome.text, at: now() };
+    const rewrite = (a.cycle || 0) < reauthorMaxOf(spec);
+    bus.emit({ type: "factory.test_rejected", scopeType: "mission", scopeId: missionId, source: "factory", payload: { cycle: a.cycle, kind, verdict, sha: entry.sha, rewrite } });
+    if (rewrite) {
+      updateAuthoring(missionId, (x) => ({ rejected: [...(x.rejected || []), entry], candidate: null, pending: null, proof: null, review: null, retryProblems: [], cycle: (x.cycle || 0) + 1 }));
+      return dispatchTestAuthor(missionId);
+    }
+    updateAuthoring(missionId, (x) => ({ rejected: [...(x.rejected || []), entry], candidate: x.candidate ? { ...x.candidate, status: "REJECTED" } : null }));
+    return holdStageZero(missionId, { kind: "exhausted", text: outcome.text, details: outcome.details, taskId: taskId || a.authorTaskId });
+  }
+
+  /**
+   * The atomic protection (§5.5), idempotent and serialized. The project must be the pre-test base plus the reviewed bytes — in the staging
+   * area, or already at the final path with the staging gone (a crash after the rename); the file is moved safely to test/hub/ and
+   * re-hashed, and a NEW base snapshot is taken in the original base's mode, whose difference from the pre-test base must be exactly the
+   * added test (a change in that instant moves the test back to the work area, never left unprotected under test/). Then ONE
+   * transaction: the test protected (protected_json.files), the base moved to the new snapshot, step 0's findings superseded and its tasks
+   * completed, the event, and BASELINE — unless a Pause, the deadline or a Stop landed meanwhile (then the stage is kept; wave A repair).
+   * Without the new base every later change set would show the test as added (protected_test_changed).
+   */
+  async function protectAuthoredTest(missionId) {
+    { const stop = halted(missionId); if (stop) return stop; }
+    const f = fm(missionId);
+    const spec = approvedSpec(f);
+    const a = authoringOf(spec);
+    const c = a.candidate;
+    const review = c ? passReviewOf(missionId, c.sha) : null;
+    if (!review) return holdStageZero(missionId, { kind: "unreviewed", text: T_REVIEW_INCONCLUSIVE(REVIEW_CAUSES.stale), details: ["testul nu are un review PASS valid pe această variantă"], taskId: a.reviewTaskId });
+    const project = projects.get(missions.get(missionId).projectId);
+    { const held = stageZeroRouteHold(missionId, project, a.reviewTaskId); if (held) return held; }
+    const summary = ownerSummary({ review: { criteria: a.review?.criteria || review.validation?.criteria || [] }, criteria: spec.spec.acceptance, proof: a.proof || {} });
+    /** The protection's one transaction (§5.5 step 4). */
+    let retired = [];
+    const commit = (snap) => bus.transaction(() => {
+      const fresh = approvedSpec(fm(missionId));
+      const prot = fresh.protected || {};
+      const authoring = { ...prot.authoring, status: "PROTECTED", protectedAt: now(), protectedSha: c.sha, baseSnapshotId: snap.id, summary: summary.text, lastHubWrite: null,
+        candidate: { ...prot.authoring.candidate, status: "PROTECTED" } };
+      db.prepare("UPDATE factory_specs SET protected_json = ? WHERE id = ?").run(json({ ...prot, files: { ...(prot.files || {}), [a.testRef]: c.sha }, authoring,
+        retired: [...(prot.retired || []), ...retired.filter((r) => !(prot.retired || []).some((x) => x.from === r.from && x.sha256 === r.sha256 && (x.cycle || 1) === r.cycle))],
+        historic: { ...(prot.historic || {}), retired: [...(prot.historic?.retired || []), ...retired.map((r) => ({ from: r.from, to: r.to, sha256: r.sha256, retiredBy: missionId }))] } }), fresh.id);
+      for (const r of retired) bus.append({ type: "factory.test_superseded", scopeType: "mission", scopeId: missionId, source: "factory", payload: { missionId, ...r } });
+      db.prepare("UPDATE factory_missions SET base_snapshot_id = ? WHERE mission_id = ?").run(snap.id, missionId);
+      // Step 0's open findings would otherwise reach the first repair brief (its filter takes every non-integrity finding).
+      resolveFindings(findings(missionId, "OPEN").filter((x) => x.source === "test_review").map((x) => x.id), "SUPERSEDED", "testul de acceptanță a fost protejat");
+      walkTask(a.authorTaskId, "COMPLETED", "testul de acceptanță scris de Hub e protejat", { tests: a.proof?.evidenceIds || [], manualVerification: `Testul ${a.testRef} (sha ${c.sha.slice(0, 12)}): dovada ${a.proof?.verdict || "—"} pe codul de dinainte` });
+      walkTask(a.reviewTaskId, "COMPLETED", "testul de acceptanță scris de Hub e protejat", { reviewRunId: review.runId, manualVerification: `Verificarea ${review.id}: PASS pe ${c.sha.slice(0, 12)}` });
+      missions.refreshMissionStatus(missionId);
+      bus.append({ type: "factory.acceptance_protected", scopeType: "mission", scopeId: missionId, source: "factory",
+        payload: { ref: a.testRef, sha: c.sha, reviewId: review.id, baseSnapshotId: snap.id, preTestSha: a.preTestSha, summary: summary.text } });
+      // Only a mission still in this step moves on: a Pause, the deadline's pause or a Stop that landed while the file was being moved
+      // keeps its stage (read again here, inside the transaction). The test is protected either way, so a resume goes on to the baseline
+      // (planNext) and a confirmed Stop withdraws it to the work area (abandonAuthoring).
+      const current = fm(missionId);
+      if (current.stage === "TEST_REVIEW" && !current.cancelRequestedAt) setStage(missionId, "BASELINE", { waitReason: "runner", reason: T_STAGE.PROTECTED });
+    });
+    // Tracked: a Stop during the move waits for the record — the test is never left moved under test/ without its protection.
+    const outcome = await tracked(missionId, async () => {
+      const result = await withRunnerLease(missionId, project, async () => {
+        if (isHalted(missionId)) return { halted: true };
+        const pre = snapshotRow(a.preTestSnapshotId);
+        const resolve = (sha) => gitEntryHash(project.path, sha);
+        const before = takeSnapshot(project.path, { ignore: ignoreOf(missionId), mode: baseMode(missionId) });
+        const restoredPaths = verifiedRestorePaths(missionId, project, before.files), restored = restoredPaths.size > 0;
+        const others = diffManifests(pre.files, before.files, { resolve }).filter((x) => x.path !== a.stagingRef && x.path !== a.testRef && !restoredPaths.has(x.path)).map((x) => x.path);
+        const staged = before.files[a.stagingRef]?.sha256 === c.sha && !before.files[a.testRef];
+        const movedEarlier = before.files[a.testRef]?.sha256 === c.sha && !before.files[a.stagingRef];
+        if (others.length || !(staged || movedEarlier)) return { changed: others.length ? others : [a.stagingRef] };
+        let moved = false;
+        try {
+          verifySupersedes(missionId, spec.spec, project);
+          retired = retireSuperseded(missionId, spec.spec, project, { fault: startFault });
+          ({ moved } = hubMoveFile(project.path, a.stagingRef, a.testRef, c.sha));
+          startFault?.("protect_move", null);
+          const snap = recordSnapshot(missionId, "base", null, project.path, { mode: baseMode(missionId) });
+          const allowed = new Map([[a.testRef, { status: "added", sha: c.sha }]]);
+          for (const r of retired) { allowed.set(r.from, { status: "deleted" }); allowed.set(r.to, { status: "added", sha: r.sha256 }); }
+          if (retired.length) {
+            const ref = `.ifrim-hub/retired/${missionId}/journal.json`;
+            allowed.set(ref, { status: before.files[ref] ? "modified" : "added", sha: sha256File(path.join(project.path, ref)) });
+          }
+          const changes = diffManifests(restored ? before.files : pre.files, snap.files, { resolve }).filter((x) => !(x.path === a.stagingRef && x.status === "deleted"));
+          if (changes.length !== allowed.size || changes.some((x) => !allowed.has(x.path) || allowed.get(x.path).status !== x.status || allowed.get(x.path).sha && snap.files[x.path]?.sha256 !== allowed.get(x.path).sha)) throw new HubError("conflict", "Proiectul s-a schimbat în timpul protejării testului");
+          startFault?.("protect_record", null);
+          commit(snap);
+          return { snap };
+        } catch (error) {
+          let back = null;
+          if (moved || movedEarlier) { try { hubMoveFile(project.path, a.testRef, a.stagingRef, c.sha); } catch (e) { back = String(e.message); } }
+          const restore = compensateRetirement(missionId, String(error.message).slice(0, 300));
+          return { changed: [a.testRef], detail: `${String(error.message)}${back ? `; ${back}` : ""}`, restoreIncomplete: !restore.complete };
+        }
+      });
+      return result;
+    });
+    if (outcome.restoreIncomplete) return holdStageZero(missionId, { kind: "RETIRE_RESTORE_INCOMPLETE", text: "Testele retrase nu au putut fi restaurate complet; misiunea nu continuă", details: [outcome.detail], taskId: a.reviewTaskId });
+    if (outcome.halted) return halted(missionId) || view(missionId);
+    // A Stop that waited for the move is confirmed before anything else (a hold must never replace CANCEL_REQUESTED).
+    if (fm(missionId)?.cancelRequestedAt) return confirmCancel(missionId);
+    if (outcome.blocked) return pauseFor(missionId, a.reviewTaskId, "runner", outcome.blocked);
+    if (outcome.changed) {
+      const files = outcome.changed.length ? outcome.changed : [a.testRef];
+      return holdStageZero(missionId, { kind: "changed", text: T_PROJECT_CHANGED(files), details: outcome.detail ? [outcome.detail] : [], files, taskId: a.reviewTaskId });
+    }
+    // A Pause or the deadline that landed during the protection keeps the mission where it is (the test is protected; commit above).
+    { const stop = halted(missionId); if (stop) return stop; }
+    return runBaseline(missionId);
+  }
+
+  /**
+   * Stop or reject (§6; wave A repair): a Hub-written test belongs to the project's tests only inside a mission that protects it, and a
+   * stopped or rejected mission (never an accepted one: accept does not come here) protects nothing any more. So:
+   *   - before the protection, the unfinished test stays in the Hub's work area — and a reviewed test found at the final path with the
+   *     work area empty (a crash between the move and the protection's record, or a move back that failed) goes back there;
+   *   - after it, the protected test is moved back from test/hub to the work area at exactly the protected sha, so a later mission's
+   *     `node --test` never fails on a test outside its scope (critique B1, one stage later);
+   *   - each move is a rename of the Hub's own bytes (hubMoveFile: checked folders, exact sha, target absent), never a delete — data.delete
+   *     is an effect no plan covers and the factory never rolls back by itself. Other bytes, an occupied work area or an unsafe folder:
+   *     nothing moves, and the owner's reason says where the test is and why.
+   * Recorded as ABANDONED with where the file is and its sha (a later plan may reuse the work-area path only for exactly these bytes).
+   * Inside the caller's transaction. Returns null when there was no open step-0 state, else { ref, sha, withdrawnFrom, problem }.
+   */
+  function abandonAuthoring(missionId, why) {
+    if (!FINAL_STAGES.has(fm(missionId)?.stage)) return null;
+    const a = authoringOf(approvedSpec(fm(missionId)));
+    if (!writerStarted(missionId)) {
+      const restore = compensateRetirement(missionId, why);
+      if (!restore.complete) return { ref: a?.testRef || "", problem: "RETIRE_RESTORE_INCOMPLETE: testele retrase nu au fost restaurate complet" };
+    }
+    if (!a || a.status === "ABANDONED") return null;
+    const project = projects.get(missions.get(missionId).projectId);
+    const shaAt = (rel) => {
+      try { const folder = safeFolder(project.path, path.posix.dirname(rel), { create: false }); return folder ? fileShaAt(folder, path.posix.basename(rel)) : null; }
+      catch { return null; }
+    };
+    const wasProtected = a.status === "PROTECTED";
+    // The bytes the Hub put at the final path: the protected sha, or — before the protection's record — the reviewed candidate's.
+    const finalSha = wasProtected ? a.protectedSha || null : passReviewOf(missionId, a.candidate?.sha) ? a.candidate.sha : null;
+    const atFinal = finalSha ? shaAt(a.testRef) : null;
+    let staged = shaAt(a.stagingRef);
+    let withdrawnFrom = null;
+    let problem = null;
+    if (atFinal && atFinal === finalSha) {
+      if (staged !== null) problem = `${a.stagingRef} e deja ocupat`;
+      else {
+        try { hubMoveFile(project.path, a.testRef, a.stagingRef, finalSha); withdrawnFrom = a.testRef; staged = finalSha; }
+        catch (error) { problem = String(error.message).slice(0, 200); }
+      }
+    } else if (wasProtected && atFinal) problem = `${a.testRef} nu mai are conținutul protejat`;
+    const ours = Boolean(staged) && [a.pending?.sha, a.candidate?.sha, a.lastHubWrite?.sha, a.protectedSha].includes(staged);
+    const left = problem ? { ref: a.testRef, sha: atFinal } : null;
+    const record = left ? { ref: left.ref, sha: left.sha, hubWritten: atFinal === finalSha } : { ref: a.stagingRef, sha: staged, hubWritten: ours };
+    updateAuthoring(missionId, { status: "ABANDONED", abandoned: { at: now(), why, ...record, wasProtected, withdrawnFrom, problem },
+      ...(ours ? { lastHubWrite: { path: a.stagingRef, sha: staged } } : {}) });
+    bus.append({ type: "factory.test_abandoned", scopeType: "mission", scopeId: missionId, source: "factory", payload: { ref: record.ref, sha: record.sha, why, wasProtected, withdrawnFrom, problem } });
+    return { ref: record.ref, sha: record.sha, withdrawnFrom, problem, stagingRef: a.stagingRef };
+  }
+  /**
+   * The owner's sentence about the Hub-written test after a Stop or a rejection: moved back to the work area, left in place (and why), or
+   * still only in the work area — and nothing at all when nothing was ever written (review finding 5).
+   */
+  function abandonText(result) {
+    if (!result) return "";
+    if (result.problem) return T_TEST_LEFT(result.ref, result.problem);
+    if (result.withdrawnFrom) return T_TEST_WITHDRAWN(result.withdrawnFrom, result.stagingRef);
+    return result.sha ? T_STOP_STAGE0 : "";
+  }
+
+  /** The step-0 part of planNext (§3), after a hold (authoring.blocked) and an unfinished model step were handled. */
+  function planStageZero(missionId, a, step) {
+    if (!a.candidate && a.pending) return step("TEST_AUTHORING", "Termin scrierea testului din copia Hub-ului (același conținut)", () => writePendingTest(missionId));
+    if (!a.candidate) return step("TEST_AUTHORING", authorStageReason(a, approvedSpec(fm(missionId))), () => dispatchTestAuthor(missionId));
+    const c = a.candidate;
+    if (!(a.proof?.sha === c.sha && a.proof.verdict === "PROVEN")) return step("TEST_PROVING", T_STAGE.TEST_PROVING, () => runTestProving(missionId));
+    if (!passReviewOf(missionId, c.sha)) return step("TEST_REVIEW", T_STAGE.TEST_REVIEW, () => dispatchTestReview(missionId));
+    return step("TEST_REVIEW", "Testul e verificat; îl protejez", () => protectAuthoredTest(missionId));
+  }
+
   // ---------- delivery ----------
   function buildBundle(missionId) {
     const f = fm(missionId);
     const mission = missions.get(missionId);
     const project = projects.get(mission.projectId);
+    // Closure R-HIST-02: no bundle while an earlier Hub test, a retired copy or a retired path is not exactly as at the start.
+    const hist = missionHistoricViolations(missionId, project);
+    if (hist.length) return setStage(missionId, "NEEDS_OWNER_DECISION", { waitReason: "owner_decision", reason: `Integritatea testelor Hub anterioare: ${hist.join("; ")}; pachetul nu se construiește` });
     const spec = approvedSpec(f);
     const cs = currentCs(missionId);
     const snap = snapshotRow(cs.snapshotId);
     const evidence = db.prepare("SELECT * FROM factory_evidence WHERE mission_id = ? ORDER BY created_at").all(missionId).map(rowToEvidence);
     const reviewsAll = db.prepare("SELECT * FROM factory_reviews WHERE mission_id = ? ORDER BY created_at").all(missionId).map(rowToReview);
     const latestReview = reviewsAll.filter((r) => r.changeSetId === cs.id && r.status === "VALID").pop() || null;
-    const runRows = db.prepare("SELECT run_id FROM factory_dispatches WHERE mission_id = ? AND run_id IS NOT NULL ORDER BY created_at").all(missionId).map((r) => runs.getRun(r.run_id)).filter(Boolean);
+    // Each run with the factory stage it was dispatched for (M11 L5: a Codex run is not always the writer, a Claude run not always the review).
+    const runRows = db.prepare("SELECT run_id, stage FROM factory_dispatches WHERE mission_id = ? AND run_id IS NOT NULL ORDER BY created_at").all(missionId)
+      .map((r) => { const run = runs.getRun(r.run_id); return run && { ...run, dispatchStage: r.stage }; }).filter(Boolean);
     const current = evidence.filter((e) => e.changeSetId === cs.id && !e.stale);
     // A step re-run on the same change set (resume after BLOCKED) counts with its latest result, not its first.
     const latestBy = (rows, keyOf) => [...rows.reduce((m, e) => m.set(keyOf(e), e), new Map()).values()];
+    const hubTest = authoringOf(spec)?.status === "PROTECTED" ? authoringOf(spec) : null;
     const criteria = spec.spec.acceptance.map((a) => {
       if (a.verify === "test") {
         const qa = latestBy(current.filter((e) => e.stage === "QA"), (e) => e.command);
-        return { ...a, status: qa.length && qa.every(evidencePassed) ? "PASS_EVIDENCE" : "NEVERIFICAT", evidence: qa.map((e) => e.id) };
+        return { ...a, status: qa.length && qa.every(evidencePassed) ? "PASS_EVIDENCE" : "NEVERIFICAT", evidence: qa.map((e) => e.id), ...(hubTest && a.testRef === hubTest.testRef ? { provenance: "hub_authored" } : {}) };
       }
       if (a.verify === "review") return { ...a, status: latestReview?.verdict === "PASS" ? "PASS_REVIEW" : "NEVERIFICAT", evidence: latestReview ? [latestReview.id] : [] };
       if (a.verify === "preview") { const p = current.filter((e) => e.stage === "PREVIEW").at(-1); return { ...a, status: p?.status === "PASS" ? "PASS_EVIDENCE" : "NEVERIFICAT", evidence: p ? [p.id] : [] }; }
@@ -962,18 +2224,25 @@ export function createFactory(deps) {
       reviews: reviewsAll.map((r) => ({ id: r.id, changeSet: r.changeSetSha.slice(0, 12), verdict: r.verdict, status: r.status, problems: r.validation.problems || [] })),
       findings: findings(missionId).map((x) => ({ code: x.code, source: x.source, severity: x.severity, file: x.file, status: x.status, observation: x.observation.slice(0, 300) })),
       evidence: current.map((e) => ({ id: e.id, stage: e.stage, command: e.command, status: e.status, counts: e.counts, isolation: e.isolation, durationMs: e.durationMs })),
-      runs: runRows.map((r) => ({ id: r.id, provider: r.provider, environment: r.environment || "windows", stage: r.stage, status: r.status, model: r.model, effort: r.effort, plan: r.plan, keySpans: summarizeTimeline(r.timeline).keySpans, grantId: r.grantId })),
+      runs: runRows.map((r) => ({ id: r.id, provider: r.provider, environment: r.environment || "windows", stage: r.stage, dispatchStage: r.dispatchStage, status: r.status, model: r.model, effort: r.effort, plan: r.plan,
+        keySpans: summarizeTimeline(r.timeline).keySpans, grantId: r.grantId })),
+      ...(hubTest ? { acceptanceTest: acceptanceProvenance(hubTest, runRows, reviewsAll) } : {}),
       repairCycles: f.repairCycles,
       start: spec.spec.verification.preview ? { command: spec.spec.verification.preview.command, url: spec.spec.verification.preview.url } : null,
       limitations: [
         ...(config.testMode ? ["SIMULARE: provideri și sandbox fixture; nu dovedește calitatea unui model"] : []),
         ...stageEnvironmentLimitations(runRows, current),
         ...criteria.filter((c) => !c.status.startsWith("PASS")).map((c) => `${c.id}: ${c.status}${c.note ? ` — ${c.note}` : ""}`),
+        ...(historicOf(missionId, spec).unrecorded ? ["Testele Hub ale misiunilor anterioare nu au fost înregistrate la pornire (misiune pornită înainte de 2.14.7): protecția lor istorică nu se aplică acestei misiuni"] : []),
         "Nimic nu e comis, urcat sau publicat: livrarea e locală până la o acțiune separată aprobată",
       ],
       migration: "Fără migrare automată. Aplicarea în repository = commit separat, cu aprobarea ta pentru acea acțiune exactă.",
-      rollback: { base: snapshotRow(f.baseSnapshotId).sha256, files: cs.changes.map((c) => `${c.status === "added" ? "șterge" : c.status === "deleted" ? "restaurează" : "revino la baza pentru"} ${c.path}`),
-        note: "Conținutul de bază e păstrat în Hub (snapshot-ul de bază); revenirea nu se face automat." },
+      rollback: { base: snapshotRow(f.baseSnapshotId).sha256,
+        files: [...cs.changes.map((c) => `${c.status === "added" ? "șterge" : c.status === "deleted" ? "restaurează" : "revino la baza pentru"} ${c.path}`),
+          // M11 L5 (§5.5): the base above already holds the Hub-written test; going back before step 0 also removes it (pre-test base).
+          ...(hubTest ? [`șterge ${hubTest.testRef} (testul scris de Hub)`] : [])],
+        note: "Conținutul de bază e păstrat în Hub (snapshot-ul de bază); revenirea nu se face automat.",
+        ...(hubTest ? { preTestBase: hubTest.preTestSha } : {}) },
       createdAt: now(),
     };
     const sha = hashCanonical(manifest);
@@ -984,6 +2253,7 @@ export function createFactory(deps) {
     fs.writeFileSync(file, bundleMarkdown(manifest, sha));
     fs.writeFileSync(path.join(dir, `${id}.json`), JSON.stringify({ ...manifest, sha256: sha }, null, 2));
     bus.transaction(() => {
+      for (const old of db.prepare("SELECT id FROM factory_bundles WHERE mission_id = ? AND status = 'READY_FOR_OWNER_ACCEPTANCE'").all(missionId)) bundleStatusEvent(missionId, old.id, "STALE", "un pachet nou l-a înlocuit");
       db.prepare("UPDATE factory_bundles SET status = 'STALE' WHERE mission_id = ? AND status = 'READY_FOR_OWNER_ACCEPTANCE'").run(missionId);
       db.prepare(`INSERT INTO factory_bundles (id, mission_id, change_set_id, change_set_sha, spec_version, manifest_json, sha256, status, file_path, created_at)
         VALUES (?, ?, ?, ?, ?, ?, ?, 'READY_FOR_OWNER_ACCEPTANCE', ?, ?)`).run(id, missionId, cs.id, cs.sha256, spec.version, json(manifest), sha, path.relative(config.hubRoot, file), now());
@@ -992,22 +2262,55 @@ export function createFactory(deps) {
     return view(missionId);
   }
 
-  async function accept(missionId, { note = "", actor = "user" } = {}) {
-    return serial(missionId, async () => {
-      const f = need(fm(missionId));
-      if (f.stage !== "DELIVERY_READY") throw new HubError("conflict", `Misiunea e în ${f.stage}, nu are un pachet gata`);
-      const bundle = db.prepare("SELECT * FROM factory_bundles WHERE mission_id = ? AND status = 'READY_FOR_OWNER_ACCEPTANCE' ORDER BY created_at DESC LIMIT 1").get(missionId);
-      const cs = currentCs(missionId);
-      const project = projects.get(missions.get(missionId).projectId);
-      const nowSha = takeSnapshot(project.path, { ignore: ignoreOf(missionId), mode: baseMode(missionId) }).sha256;
-      if (!bundle || bundle.change_set_id !== cs.id || nowSha !== snapshotRow(cs.snapshotId).sha256) {
-        bus.transaction(() => { if (bundle) db.prepare("UPDATE factory_bundles SET status = 'STALE' WHERE id = ?").run(bundle.id); });
-        throw new HubError("conflict", "Workspace-ul nu mai corespunde versiunii testate: pachetul e STALE (refă verificările)");
+  async function accept(missionId, { bundleId, bundleSha, deliveryId = null, via = "factory_panel", note = "", actor = "user", channel = config.testMode ? "test" : null,
+    sessionCheck = null, commandId = null, correlationId = null } = {}) {
+    const refuse = (code, message, data) => { throw new HubError("conflict", message, { code, data }); };
+    if (!["owner", "test"].includes(channel) || channel === "owner" && !sessionCheck) throw new HubError("authentication", "Acceptarea cere sesiunea proprietarului", { data: { needSession: true } });
+    if (!/^bnd_[A-Za-z0-9_-]+$/.test(bundleId || "") || !/^[0-9a-f]{64}$/.test(bundleSha || "")) throw new HubError("validation", "Acceptarea cere ID-ul și SHA-ul complet al pachetului afișat");
+    const check = () => {
+      const session = sessionCheck?.() || null;
+      if (closed) refuse("FACTORY_CLOSED", "Fabrica se închide; acceptarea nu s-a aplicat");
+      const bundle = db.prepare("SELECT * FROM factory_bundles WHERE id = ?").get(bundleId);
+      if (!bundle || bundle.mission_id !== missionId || bundle.sha256 !== bundleSha) refuse("BUNDLE_TARGET_STALE", "Pachetul afișat nu mai corespunde; reîncarcă pagina");
+      if (bundle.status === "OWNER_ACCEPTED") return { duplicate: { duplicate: true, accepted: true, bundleId, bundleSha, missionId, deliveryId,
+        decidedAt: bundle.decided_at, note: bundle.decision_note, noteIgnored: note !== (bundle.decision_note || "") } };
+      if (deliveryId) {
+        const d = db.prepare("SELECT * FROM deliveries WHERE id = ?").get(deliveryId);
+        if (!d || d.mission_id !== missionId || d.bundle_id !== bundleId || d.bundle_sha !== bundleSha) refuse("DELIVERY_BUNDLE_DISPLAYED", "Legătura livrării cu pachetul afișat s-a schimbat");
+        if (!["PLANNED", "ARMED", "ACTIVE", "READY", "NEEDS_OWNER"].includes(d.status)) refuse("DELIVERY_ACCEPT_STATE", "Livrarea nu mai permite acceptarea");
       }
+      const latest = db.prepare("SELECT id FROM factory_bundles WHERE mission_id = ? ORDER BY created_at DESC, rowid DESC LIMIT 1").get(missionId);
+      if (latest?.id !== bundleId) refuse("BUNDLE_REPLACED", "Un alt pachet l-a înlocuit pe cel afișat");
+      const f = need(fm(missionId));
+      if (bundle.status !== "READY_FOR_OWNER_ACCEPTANCE" || bundle.decided_at || f.stage !== "DELIVERY_READY" || f.cancelRequestedAt) refuse("BUNDLE_TARGET_STALE", "Pachetul sau misiunea nu mai așteaptă acceptarea");
+      const projectId = missions.get(missionId).projectId;
+      const blockers = captureBlockers(db, { missionId, projectId });
+      if (blockers.planId || blockers.sessionId) refuse("DELIVERY_CAPTURE_RUNNING", "Aștept capturile sau oprește planul livrării înainte de acceptare", blockers);
+      const integrity = bundleIntegrity(missionId, { bundleId, bundleSha });
+      if (!integrity.ok) {
+        if (integrity.identityProblems.length) refuse("BUNDLE_IDENTITY", "Identitatea pachetului verificat nu mai corespunde", { integrity });
+        if (!integrity.hubOnlyScope) {
+          bus.transaction(() => { db.prepare("UPDATE factory_bundles SET status = 'STALE' WHERE id = ?").run(bundle.id); bundleStatusEvent(missionId, bundle.id, "STALE", "workspace-ul s-a schimbat după verificare"); });
+        }
+        if (integrity.historicProblems.length) refuse("HISTORIC_INTEGRITY", `Integritatea testelor Hub anterioare: ${integrity.historicProblems.join("; ")}`, { integrity });
+        if (integrity.protectedProblems.length) refuse("PROTECTED_INTEGRITY", "Testul protejat nu mai are octeții verificați", { integrity });
+        if (integrity.hubOnlyScope) refuse("HUB_RECORD_UNPROVEN", "Diferența din înregistrările Hub nu are proveniență verificată", { integrity });
+        refuse("SNAPSHOT_DRIFT", "Workspace-ul nu mai corespunde versiunii testate: pachetul e STALE (refă verificările)", { integrity });
+      }
+      return { bundle, session, integrity };
+    };
+    const result = await serial(missionId, async () => {
+      const first = check();
+      if (first.duplicate) return first.duplicate;
       await runner.stop(`factory-preview-${missionId}`).catch(() => {});
-      { const now2 = fm(missionId); if (now2.stage !== "DELIVERY_READY" || now2.cancelRequestedAt) throw new HubError("conflict", `Misiunea a trecut în ${now2.stage} între timp; acceptarea nu s-a aplicat`); }
+      const final = check();
+      if (final.duplicate) return final.duplicate;
+      const { bundle, session, integrity } = final, cs = currentCs(missionId), decidedAt = now();
       bus.transaction(() => {
-        db.prepare("UPDATE factory_bundles SET status = 'OWNER_ACCEPTED', decided_at = ?, decision_note = ? WHERE id = ?").run(now(), String(note).slice(0, 500), bundle.id);
+        const changed = db.prepare("UPDATE factory_bundles SET status = 'OWNER_ACCEPTED', decided_at = ?, decision_note = ? WHERE id = ? AND status = 'READY_FOR_OWNER_ACCEPTANCE' AND sha256 = ? AND decided_at IS NULL").run(decidedAt, String(note).slice(0, 500), bundle.id, bundleSha);
+        if (changed.changes !== 1) refuse("BUNDLE_TARGET_STALE", "Pachetul s-a schimbat înainte de decizie");
+        bundleStatusEvent(missionId, bundle.id, "OWNER_ACCEPTED", "acceptat local de proprietar", { bundleSha, bundleShaDisplayed: bundleSha, missionId, deliveryId, via,
+          sessionId: session?.id || null, authority: session?.authority || "test", channel, commandId, correlationId, integrity }, actor);
         const runIds = db.prepare("SELECT run_id FROM factory_dispatches WHERE mission_id = ? AND status = 'DONE'").all(missionId).map((r) => r.run_id);
         const reviewRun = db.prepare("SELECT run_id FROM factory_reviews WHERE change_set_id = ? AND status = 'VALID' AND verdict = 'PASS' ORDER BY created_at DESC LIMIT 1").get(cs.id)?.run_id;
         const tests = db.prepare("SELECT id FROM factory_evidence WHERE change_set_id = ? AND stale = 0 AND status = 'PASS'").all(cs.id).map((r) => r.id);
@@ -1018,24 +2321,206 @@ export function createFactory(deps) {
         missions.refreshMissionStatus(missionId);
         setStage(missionId, "ACCEPTED", { reason: "Acceptat local de proprietar (OWNER_ACCEPTED). Commit/push/deploy rămân acțiuni separate", actor });
       });
-      return view(missionId);
+      const acceptedView = view(missionId);
+      return { accepted: true, bundleId, bundleSha, decidedAt, missionId, deliveryId, duplicate: false,
+        factory: acceptedView.factory, bundles: acceptedView.bundles, tasks: acceptedView.tasks };
     });
+    if (!result) refuse("FACTORY_CLOSED", "Fabrica se închide; acceptarea nu s-a aplicat");
+    return result;
   }
 
-  async function reject(missionId, { note, actor = "user" } = {}) {
-    if (String(note || "").trim().length < 3) throw new HubError("validation", "Spune pe scurt de ce respingi");
-    return serial(missionId, async () => {
-      const f = need(fm(missionId));
-      if (f.stage !== "DELIVERY_READY" && f.stage !== "NEEDS_OWNER_DECISION") throw new HubError("conflict", `Misiunea e în ${f.stage}`);
+  /**
+   * 2.15.1: what a rejection decides on, as the page shows it — the mission's factory version (bumped by every stage change) and the
+   * one bundle waiting for the owner (or none). Null when nothing can be rejected: another stage, a stop already requested, or more than
+   * one waiting bundle (never guessed).
+   */
+  function rejectTarget(missionId) {
+    const f = fm(missionId);
+    if (!f || !REJECTABLE_STAGES.has(f.stage) || f.cancelRequestedAt) return null;
+    const ready = db.prepare("SELECT id, sha256 FROM factory_bundles WHERE mission_id = ? AND status = 'READY_FOR_OWNER_ACCEPTANCE'").all(missionId);
+    if (ready.length > 1) return null;
+    return { missionId, stage: f.stage, displayedVersion: f.version, bundleId: ready[0]?.id || null, bundleSha: ready[0]?.sha256 || null };
+  }
+  /** The owner's recorded rejection of a mission (its factory.rejected event), or null (none, or one recorded before 2.15.1). */
+  function rejectionOf(missionId) {
+    const row = db.prepare("SELECT payload_json FROM events WHERE type = 'factory.rejected' AND scope_type = 'mission' AND scope_id = ? ORDER BY seq DESC LIMIT 1").get(missionId);
+    return row ? parse(row.payload_json, null) : null;
+  }
+  const publicRejection = (d) => d && { decidedAt: d.decidedAt, note: d.note, authority: d.authority, channel: d.channel, displayedVersion: d.displayedVersion, stage: d.stage,
+    bundleId: d.bundleId, bundleSha: d.bundleSha };
+
+  /**
+   * The owner's rejection (2.15.1): only on the owner channel with a session re-read from the database (or the bounded test channel in
+   * test mode), only on the exact target the page showed (mission version + the waiting bundle's id and full sha, or explicitly none),
+   * checked before the preview stops, again after it and once more inside the final transaction (compare-and-swap on the mission version
+   * and the bundle row). A repeat of the same request on the same target with the same reason returns the recorded decision unchanged;
+   * any other request against a decided mission is refused. Nothing is written by a refusal.
+   */
+  async function reject(missionId, { note, displayedVersion, bundleId = null, bundleSha = null, actor = "user", channel = config.testMode ? "test" : null,
+    sessionCheck = null, commandId = null, correlationId = null } = {}) {
+    const refuse = (code, message, data) => { throw new HubError("conflict", message, { code, data }); };
+    if (!["owner", "test"].includes(channel) || (channel === "test" && !config.testMode) || (channel === "owner" && !sessionCheck)) throw new HubError("authentication", "Respingerea cere sesiunea proprietarului", { data: { needSession: true } });
+    const text = String(note ?? "").trim().slice(0, 500);
+    if (text.length < 3) throw new HubError("validation", "Spune pe scurt de ce respingi");
+    if (!Number.isInteger(displayedVersion) || displayedVersion < 1) throw new HubError("validation", "Respingerea cere versiunea afișată a misiunii");
+    if ((bundleId === null) !== (bundleSha === null) || (bundleId !== null && (!/^bnd_[A-Za-z0-9_-]+$/.test(bundleId) || !/^[0-9a-f]{64}$/.test(bundleSha)))) throw new HubError("validation", "Respingerea cere ID-ul și SHA-ul complet al pachetului afișat (sau niciun pachet)");
+    const sameTarget = (t) => Boolean(t) && t.displayedVersion === displayedVersion && (t.bundleId || null) === bundleId && (t.bundleSha || null) === bundleSha;
+    const check = () => {
+      const session = sessionCheck?.() || null;
+      if (closed) refuse("FACTORY_CLOSED", "Fabrica se închide; respingerea nu s-a aplicat");
+      const f = fm(missionId);
+      if (!f) throw new HubError("not_found", "Misiunea nu există");
+      if (FINAL_STAGES.has(f.stage)) {
+        const prior = f.stage === "REJECTED" ? rejectionOf(missionId) : null;
+        if (prior && sameTarget(prior)) {
+          if (prior.note !== text) refuse("REJECT_ALREADY_DECIDED", "Misiunea a fost deja respinsă cu alt motiv; decizia inițială rămâne neschimbată", { decision: publicRejection(prior) });
+          return { duplicate: { ...view(missionId), rejected: true, duplicate: true, decidedAt: prior.decidedAt, note: prior.note, decision: publicRejection(prior) } };
+        }
+        refuse("MISSION_DECIDED", `Misiunea e deja ${f.stage}; respingerea nu s-a aplicat`);
+      }
+      const target = rejectTarget(missionId);
+      if (!target) refuse("REJECT_STATE", `Misiunea e în ${f.stage}${f.cancelRequestedAt ? " (oprire cerută)" : ""}; nu așteaptă decizia ta`);
+      if (!sameTarget(target)) refuse("REJECT_TARGET_STALE", "Misiunea sau pachetul afișat s-a schimbat; reîncarcă pagina");
+      return { session };
+    };
+    const result = await serial(missionId, async () => {
+      const first = check();
+      if (first.duplicate) return first.duplicate;
       await runner.stop(`factory-preview-${missionId}`).catch(() => {});
-      { const now2 = fm(missionId); if (now2.stage !== f.stage || now2.cancelRequestedAt) throw new HubError("conflict", `Misiunea a trecut în ${now2.stage} între timp; respingerea nu s-a aplicat`); }
+      const final = check();
+      if (final.duplicate) return final.duplicate;
+      const { session } = final, decidedAt = now();
+      const decision = { missionId, displayedVersion, stage: null, bundleId, bundleSha, note: text, decidedAt, sessionId: session?.id || null, authority: session?.authority || "test",
+        channel, commandId, correlationId };
       bus.transaction(() => {
-        db.prepare("UPDATE factory_bundles SET status = 'REJECTED', decided_at = ?, decision_note = ? WHERE mission_id = ? AND status = 'READY_FOR_OWNER_ACCEPTANCE'").run(now(), String(note).slice(0, 500), missionId);
-        cancelTasks(missionId, `respins: ${note}`);
-        setStage(missionId, "REJECTED", { reason: `Respins de proprietar: ${String(note).slice(0, 300)}`, actor });
+        // Compare-and-swap: the mission row and the bundle row must still be exactly the displayed target when the decision commits.
+        const row = db.prepare("SELECT stage, version, cancel_requested_at FROM factory_missions WHERE mission_id = ?").get(missionId);
+        if (!row || row.version !== displayedVersion || !REJECTABLE_STAGES.has(row.stage) || row.cancel_requested_at) refuse("REJECT_TARGET_STALE", "Misiunea s-a schimbat înainte de decizie");
+        decision.stage = row.stage;
+        if (bundleId) {
+          const changed = db.prepare("UPDATE factory_bundles SET status = 'REJECTED', decided_at = ?, decision_note = ? WHERE id = ? AND mission_id = ? AND status = 'READY_FOR_OWNER_ACCEPTANCE' AND sha256 = ? AND decided_at IS NULL")
+            .run(decidedAt, text, bundleId, missionId, bundleSha);
+          if (changed.changes !== 1) refuse("REJECT_TARGET_STALE", "Pachetul s-a schimbat înainte de decizie");
+        }
+        if (db.prepare("SELECT 1 FROM factory_bundles WHERE mission_id = ? AND status = 'READY_FOR_OWNER_ACCEPTANCE' LIMIT 1").get(missionId)) refuse("REJECT_TARGET_STALE", "Un alt pachet așteaptă decizia ta; reîncarcă pagina");
+        if (bundleId) bundleStatusEvent(missionId, bundleId, "REJECTED", "respins de proprietar", decision, actor);
+        bus.append({ type: "factory.rejected", scopeType: "mission", scopeId: missionId, source: actor, payload: decision });
+        cancelTasks(missionId, `respins: ${text}`);
+        setStage(missionId, "REJECTED", { reason: `Respins de proprietar: ${text.slice(0, 300)}`, actor });
       });
-      return view(missionId);
+      return { ...view(missionId), rejected: true, duplicate: false, decidedAt, note: text, decision: publicRejection(decision) };
     });
+    if (!result) refuse("FACTORY_CLOSED", "Fabrica se închide; respingerea nu s-a aplicat");
+    return result;
+  }
+
+  // ---------- M11 delivery hooks (read-only: no status write, no process started) ----------
+  /** The bundle status change other services follow (deliveries mark their items STALE); appended inside the caller's transaction. */
+  function bundleStatusEvent(missionId, bundleId, status, reason, decision = {}, source = "factory") {
+    bus.append({ type: "factory.bundle.status", scopeType: "mission", scopeId: missionId, source, payload: { missionId, bundleId, status, reason, ...decision } });
+  }
+  const latestBundleRow = (missionId) => db.prepare("SELECT * FROM factory_bundles WHERE mission_id = ? AND status IN ('READY_FOR_OWNER_ACCEPTANCE','OWNER_ACCEPTED') ORDER BY created_at DESC LIMIT 1").get(missionId);
+  const integrityFacts = (missionId, target) => gatherBundleIntegrityFacts(db, missionId, target);
+  const bundleIntegrity = (missionId, target) => integrityDecision(integrityFacts(missionId, target));
+  /**
+   * Whether the project folder is still exactly the verified version: the same snapshot the accept step takes (same ignore list and
+   * mode). Nothing is written; a drift is only reported (the delivery marks its items STALE from it).
+   */
+  function driftProvenance(projectId, changedFiles) {
+    const project = projects.get(projectId), owned = new Map(), writes = hubWrites(projectId);
+    const shaAt = (ref) => { try { const dir = safeFolder(project.path, path.posix.dirname(ref), { create: false }); return dir ? fileShaAt(dir, path.posix.basename(ref)) : null; } catch { return undefined; } };
+    const rows = db.prepare("SELECT fs.mission_id, fs.status, fs.spec_json, fs.protected_json FROM factory_specs fs JOIN missions m ON m.id = fs.mission_id WHERE m.project_id = ?").all(projectId);
+    for (const [ref, digest] of Object.entries(writes)) if (/^\.ifrim-hub\/staging\/[^/]+$/.test(ref) && shaAt(ref) === digest) owned.set(ref, "hub_staging_write");
+    for (const row of rows) {
+      const p = parse(row.protected_json, {}), spec = parse(row.spec_json, {}), j = readRetireJournal(project, row.mission_id);
+      const plan = retirementPlan(row.mission_id, spec);
+      const matches = (x, r) => x.from === r.from && x.to === r.to && x.sha256 === r.sha256;
+      const samePlan = (items) => Array.isArray(items) && items.length === plan.length && plan.every((r) => items.some((x) => matches(x, r)));
+      const recorded = (records, r) => (records || []).some((x) => matches(x, r) && (x.cycle || 1) === (j?.cycle || 1));
+      const validJournal = j && row.status === "APPROVED" && samePlan(j.items)
+        && (!p.pendingRetire || samePlan(p.pendingRetire))
+        && (j.status === "MOVED" ? plan.every((r) => recorded(p.retired, r) && !recorded(p.restored, r))
+          : j.status === "RESTORED" && plan.every((r) => recorded(p.restored, r)));
+      if (validJournal) owned.set(`.ifrim-hub/retired/${row.mission_id}/journal.json`, "hub_retire_journal");
+      if (row.status !== "APPROVED") continue;
+      if (p.authoring?.status === "PROTECTED" && p.files?.[p.authoring.testRef] === p.authoring.protectedSha && shaAt(p.authoring.testRef) === p.authoring.protectedSha) owned.set(p.authoring.testRef, "hub_test_protected");
+      for (const x of validJournal && j.status === "MOVED" ? j.items : []) {
+        if (!spec.supersedes?.some((r) => r.testRef === x.from && r.sha256 === x.sha256) || shaAt(x.to) !== x.sha256) continue;
+        owned.set(x.to, "retired_by_hub");
+        if (shaAt(x.from) === null) owned.set(x.from, "retired_by_hub");
+      }
+    }
+    const paths = [...new Set(changedFiles || [])];
+    return { software: paths.filter((ref) => !owned.has(ref)), hub: paths.filter((ref) => owned.has(ref)).map((ref) => ({ path: ref, provenance: owned.get(ref) })) };
+  }
+
+  // Legacy read adapter retained for callers/test doubles; delivery verdicts use bundleIntegrity.
+  function snapshotCheck(missionId) {
+    const f = need(fm(missionId));
+    const bundle = latestBundleRow(missionId);
+    const cs = currentCs(missionId);
+    const project = projects.get(missions.get(missionId).projectId);
+    const expectedRow = cs ? snapshotRow(cs.snapshotId) : null;
+    const expected = expectedRow?.sha256 || null;
+    const actual = takeSnapshot(project.path, { ignore: ignoreOf(missionId), mode: baseMode(missionId) });
+    const expectedFiles = expectedRow?.files || {};
+    const actualFiles = actual.files || {};
+    const changedFiles = diffManifests(expectedFiles, actualFiles, { resolve: sha => gitEntryHash(project.path, sha) }).map(c => c.path);
+    return { missionId, stage: f.stage, bundleId: bundle?.id || null, bundleStatus: bundle?.status || null, changeSetId: cs?.id || null, expected, actual: actual.sha256,
+      equal: Boolean(expected) && expected === actual.sha256 && Boolean(bundle) && bundle.change_set_id === cs?.id, changedFiles, snapshotAt: expectedRow?.createdAt || expectedRow?.created_at || null };
+  }
+  /** The facts a delivery binds to: the current ready or accepted bundle, its change set, snapshot, spec and E2E evidence. */
+  function claimFacts(missionId, { bundleId } = {}) {
+    const bundle = db.prepare("SELECT * FROM factory_bundles WHERE id = ? AND mission_id = ?").get(bundleId, missionId);
+    if (!bundle) throw new HubError("not_found", "Pachetul propriu al livrării lipsește.", { code: "EVIDENCE_MISSING" });
+    const manifest = parse(bundle.manifest_json, {});
+    const specRow = db.prepare("SELECT * FROM factory_specs WHERE mission_id = ? AND sha256 = ? AND status = 'APPROVED'").get(missionId, manifest.spec?.sha256);
+    const spec = specRow ? parse(specRow.spec_json, null) : null;
+    if (!spec || hashCanonical(spec) !== specRow.sha256 || specRow.sha256 !== manifest.spec.sha256) throw new HubError("conflict", "Specificația aprobată a livrării nu corespunde amprentei sale.", { code: "CRITERION_CHANGED" });
+    const ids = new Set((manifest.spec.criteria || []).flatMap(c => c.evidence || []));
+    const reviewIds = new Set([...ids, manifest.acceptanceTest?.reviewer?.reviewId].filter(Boolean));
+    const evidenceRows = [...ids].map(id => db.prepare("SELECT * FROM factory_evidence WHERE id = ? AND mission_id = ?").get(id, missionId)).filter(Boolean)
+      .map(r => ({ ...r, counts: parse(r.counts_json, {}), detail: parse(r.detail_json, {}) }));
+    const reviewRows = [...reviewIds].map(id => db.prepare("SELECT * FROM factory_reviews WHERE id = ? AND mission_id = ?").get(id, missionId)).filter(Boolean);
+    return { bundle, manifest, specRow: { ...specRow, spec }, spec, evidenceRows, reviewRows };
+  }
+  function deliveryBinding(missionId, { bundleId } = {}) {
+    const f = need(fm(missionId));
+    const bundle = bundleId ? db.prepare("SELECT * FROM factory_bundles WHERE id = ? AND mission_id = ?").get(bundleId, missionId) : latestBundleRow(missionId);
+    if (!bundle) return null;
+    const manifest = parse(bundle.manifest_json, {});
+    const spec = approvedSpec(f);
+    const e2e = db.prepare("SELECT * FROM factory_evidence WHERE mission_id = ? AND change_set_id = ? AND stage = 'E2E' AND stale = 0 ORDER BY created_at").all(missionId, bundle.change_set_id).map(rowToEvidence)
+      .map((e) => {
+        const crit = (spec?.spec?.acceptance || []).find((a) => a.id === e.detail?.criterion);
+        const vp = (crit?.steps || []).find((x) => x?.viewport)?.viewport || null;
+        return { criterion: e.detail?.criterion || null, evidenceId: e.id, status: e.status, screenshot: e.detail?.screenshot ? path.basename(String(e.detail.screenshot)) : null, viewport: vp };
+      });
+    return { missionId, bundleId: bundle.id, bundleSha: bundle.sha256, bundleStatus: bundle.status, changeSetId: bundle.change_set_id, changeSetSha: bundle.change_set_sha,
+      snapshotSha: manifest.changeSet?.snapshot || null, specVersion: bundle.spec_version, specSha: manifest.spec?.sha256 || spec?.sha256 || null, startUrl: manifest.start?.url || null,
+      startCommand: manifest.start?.command || null,
+      criteria: (manifest.spec?.criteria || []).map((c) => ({ fingerprint: criterionFingerprint(c, { previewCommand: manifest.start?.command ?? null }), id: c.id, text: c.text, verify: c.verify, status: c.status, evidence: c.evidence || [], note: c.note || null, ...(c.steps ? { steps: c.steps } : {}) })),
+      manifest, e2e };
+  }
+  /** The factory preview of a mission, as the supervisor sees it (never started here). */
+  function previewStatus(missionId) {
+    const key = "factory-preview-" + missionId;
+    const p = supervisor.list().find((x) => x.key === key) || null;
+    const spec = approvedSpec(fm(missionId));
+    return { key, running: Boolean(p && p.alive !== false && p.status !== "exited"), pid: p?.pid || null, url: spec?.spec?.verification?.preview?.url || null };
+  }
+  /** The file of one non-stale E2E screenshot of the mission, inside its work area (null otherwise). */
+  function e2eShotPath(missionId, evidenceId) {
+    const row = db.prepare("SELECT * FROM factory_evidence WHERE id = ? AND mission_id = ? AND stage = 'E2E' AND stale = 0").get(String(evidenceId || ""), missionId);
+    const shot = row ? parse(row.detail_json, {}).screenshot : null;
+    if (!shot) return null;
+    const name = path.basename(String(shot));
+    if (!/^e2e_[A-Za-z0-9_-]+.png$/.test(name)) return null;
+    const dir = path.join(workRoot(missionId), "e2e");
+    try {
+      const real = fs.realpathSync(path.join(dir, name));
+      return real.toLowerCase().startsWith(fs.realpathSync(dir).toLowerCase() + path.sep) ? real : null;
+    } catch { return null; }
   }
 
   // ---------- stop / pause / resume / recovery ----------
@@ -1091,7 +2576,7 @@ export function createFactory(deps) {
     }
     bus.transaction(() => {
       cancelTasks(missionId, "misiune oprită");
-      setStage(missionId, "CANCELLED", { reason: "Oprire confirmată: nicio execuție sau proces al misiunii nu mai rulează" });
+      setStage(missionId, "CANCELLED", { reason: `Oprire confirmată: nicio execuție sau proces al misiunii nu mai rulează` });
     });
     return view(missionId);
   }
@@ -1120,10 +2605,13 @@ export function createFactory(deps) {
    * Resume after PAUSED / BLOCKED / NEEDS_OWNER_DECISION: re-checks the approved scope, then continues from the last
    * recorded result. `allowExtraCycle` is the owner's explicit decision to grant one more repair cycle (beyond the limit).
    */
-  async function resume(missionId, { actor = "user", allowExtraCycle = false, proceedToQa = false, reviewerModel = "", byAgent = false } = {}) {
+  async function resume(missionId, { actor = "user", allowExtraCycle = false, proceedToQa = false, reviewerModel = "", byAgent = false, planDelta = null } = {}) {
     return serial(missionId, async () => {
       const f = need(fm(missionId));
       if (!RESUMABLE.has(f.stage)) throw new HubError("conflict", `Misiunea e în ${f.stage}`);
+      if (approvedSpec(f)?.protected?.restoreBlocked) throw new HubError("conflict", "Restaurarea testelor retrase este incompletă", { code: "RETIRE_RESTORE_INCOMPLETE" });
+      // M11 L5 (§4 S5): step 0 has no repair cycles — the test is rewritten at most reauthorMax times, then the owner decides.
+      if (allowExtraCycle && inStageZero(missionId)) throw new HubError("policy", "Etapa 0 nu are cicluri de remediere: testul de acceptanță se rescrie cel mult o dată, apoi decizia e a ta", { code: "NO_DELTA" });
       // An agent on the owner's delegation (M07) resumes only inside what the owner confirmed. A plain resume by the OWNER is the
       // owner's decision to continue — a new time window, one more attempt of an exhausted step, the end of a pause they chose —
       // so for an agent each of these is refused before anything changes.
@@ -1138,14 +2626,44 @@ export function createFactory(deps) {
         if (f.stage === "NEEDS_OWNER_DECISION") throw new HubError("policy", `Misiunea așteaptă decizia ta (${String(f.stageReason || "").slice(0, 160)}); agentul reia doar o oprire de infrastructură sau o pauză pusă de el`);
         if (f.deadlineAt && new Date(f.deadlineAt) <= clock()) throw new HubError("policy", "Timpul misiunii s-a terminat; o fereastră nouă de timp e decizia ta");
       }
-      // The owner's choice of the reviewer's model (e.g. when the account's default is refused by the billing guard): an
-      // explicit Claude model alias or id; Fable, "best" and the [1m] variants are never accepted. Validated before any change.
-      const chosenReviewer = String(reviewerModel || "").trim();
-      if (chosenReviewer && (!/^(?:sonnet|opus|haiku|claude-(?:sonnet|opus|haiku)-[0-9][0-9a-z.-]{0,40})$/i.test(chosenReviewer) || CLAUDE_REFUSED_MODELS.test(chosenReviewer))) {
-        throw new HubError("validation", `Modelul „${chosenReviewer.slice(0, 40)}” nu e permis pentru reviewer (permise: sonnet, opus, haiku sau un id claude-sonnet/opus/haiku-…; Fable, „best” și variantele [1m] sunt refuzate)`);
+      // M10.2 (U11): a mission under an open plan (envelope) resumes only INSIDE what the owner confirmed. One more repair cycle or
+      // one more attempt of an exhausted step is a difference to confirm in the owner session (envelope.confirm_delta), never a side
+      // effect of „Reia”; a new time window never outlives the plan. `planDelta` is passed only by the envelope service, right after
+      // the owner confirmed exactly that difference (no command schema carries it).
+      const underPlan = authority ? authority(missionId, { stage: "RESUME" }) : null;
+      const plan = underPlan?.plan || null;
+      if (plan) {
+        if (Date.parse(plan.expiresAt) <= clock().getTime()) throw new HubError("policy", `Timpul planului ${plan.envelopeId} s-a terminat; confirmă continuarea (îți arăt doar ce rămâne)`, { code: "PLAN_EXPIRED" });
+        if (allowExtraCycle && planDelta !== plan.envelopeId) throw new HubError("policy", `Misiunea rulează sub planul ${plan.envelopeId}: un ciclu de remediere în plus se confirmă ca diferență în sesiunea ta (confirmă diferența), nu din „Reia”`, { code: "PLAN_DELTA_REQUIRED" });
+        if (allowExtraCycle && !(Number(plan.maxCycles) >= f.repairCycles + 1)) throw new HubError("policy", "Diferența confirmată nu acoperă acest ciclu de remediere; confirmă diferența din nou", { code: "PLAN_DELTA_REQUIRED" });
+        const planStep = f.stage === "NEEDS_OWNER_DECISION" && !proceedToQa ? stepToRepeat(missionId, f) : null;
+        if (planStep && modelAttempts(missionId, planStep.stage, planStep.cycle, planStep.changeSeq).counted >= attemptLimit(f, planStep.stage)) {
+          throw new HubError("policy", `Etapa ${planStep.stage} și-a folosit încercările confirmate în planul ${plan.envelopeId}; o încercare în plus se confirmă ca diferență în sesiunea ta (confirmă diferența)`, { code: "PLAN_DELTA_REQUIRED" });
+        }
+      }
+      // The owner's choice of another reviewer model (e.g. when the bound alias resolved to a refused model at init): an explicit
+      // Claude alias or id from the shared allowlist; Fable, "best" and the [1m] variants are never accepted. Validated before any change.
+      let chosenReviewer = String(reviewerModel || "").trim();
+      if (chosenReviewer) {
+        const check = normalizeBindingRequest({ role: "reviewer", model: chosenReviewer, effort: f.limits.reviewerEffort || "", profile: f.limits.profile });
+        if (!check.ok) throw new HubError("validation", `Modelul „${chosenReviewer.slice(0, 40)}” nu e permis pentru reviewer: ${check.problem}`);
+        chosenReviewer = check.request.model;
       }
       if (!f.approvedSpecVersion) throw new HubError("conflict", "Scope-ul nu e aprobat");
       if (missionRunIds(missionId).length) throw new HubError("conflict", "O execuție a misiunii rulează încă");
+      // M09: another reviewer model is a change of what the owner confirmed. Under an open plan (envelope) it is refused — the
+      // envelope and its grants are bound to the confirmed model; a new plan is needed. Outside a plan it is the owner's decision
+      // here (UI/owner channel): the reviewer's binding and the scope hash are recomputed and the old/new pair is recorded.
+      let override = null;
+      if (chosenReviewer && chosenReviewer !== (f.bindings?.reviewer?.requestedModel || f.limits.reviewerModel)) {
+        const underPlan = authority ? authority(missionId, { stage: "MODEL_OVERRIDE", role: "reviewer" }) : null;
+        if (underPlan) throw new HubError("policy", `Modelul reviewer-ului nu se schimbă sub planul confirmat: ${underPlan.reason}. Cere un plan nou (cu modelul ${chosenReviewer}) și confirmă-l`);
+        const ctx = runs.bindingContext ? runs.bindingContext(missions.get(missionId).projectId, ROUTES.reviewer.provider) : { environment: "windows", providerState: null };
+        const resolved = resolveBinding({ role: "reviewer", provider: ROUTES.reviewer.provider, environment: ctx.environment, requestedModel: chosenReviewer, requestedEffort: f.limits.reviewerEffort || "",
+          profile: f.limits.profile, providerState: ctx.providerState, now: clock() });
+        if (!resolved.ok) throw new HubError("validation", `Modelul reviewer-ului nu poate fi fixat: ${resolved.problem}`);
+        override = resolved.binding;
+      }
       if (proceedToQa) {
         const cs = currentCs(missionId);
         const lastReview = cs ? db.prepare("SELECT verdict FROM factory_reviews WHERE change_set_id = ? ORDER BY created_at DESC LIMIT 1").get(cs.id) : null;
@@ -1154,22 +2672,33 @@ export function createFactory(deps) {
         if (!cs || !checksOk || lastReview?.verdict !== "INCONCLUSIVE") throw new HubError("conflict", "QA direct e permis doar după verificări trecute și un review neconcludent (decizia ta)");
       }
       bus.transaction(() => db.prepare("UPDATE factory_missions SET cancel_requested_at = NULL WHERE mission_id = ?").run(missionId));
-      if (chosenReviewer && chosenReviewer !== f.limits.reviewerModel) {
-        const limits = { ...fm(missionId).limits, reviewerModel: chosenReviewer };
+      if (override) {
+        const current = fm(missionId);
+        const previous = current.bindings?.reviewer || null;
+        const limits = { ...current.limits, reviewerModel: chosenReviewer };
+        const bindings = { ...current.bindings, reviewer: override };
+        const summary = (b) => (b ? { model: b.resolvedAlias, effort: b.effort, environment: b.environment, bindingHash: b.bindingHash, label: bindingLabel(b) } : null);
         bus.transaction(() => {
           db.prepare("UPDATE factory_missions SET limits_json = ? WHERE mission_id = ?").run(json(limits), missionId);
-          bus.append({ type: "factory.model_override", scopeType: "mission", scopeId: missionId, source: actor, payload: { role: "reviewer", model: chosenReviewer, previous: f.limits.reviewerModel || "implicitul contului" } });
+          // The approved scope with the new reviewer binding (the spec cannot change after the start): its hash replaces the old one.
+          const scopeHash = hashCanonical(scopeState(missionId, { bindings }).scope);
+          db.prepare("UPDATE factory_missions SET bindings_json = ?, scope_hash = ? WHERE mission_id = ?").run(json(bindings), scopeHash, missionId);
+          bus.append({ type: "factory.model_override", scopeType: "mission", scopeId: missionId, source: actor, payload: { role: "reviewer", model: chosenReviewer,
+            previous: previous?.resolvedAlias || current.limits.reviewerModel || "—", old: summary(previous), new: summary(override), scopeHash: scopeHash.slice(0, 16) } });
         });
       }
       // Resuming after the time limit is the owner's decision to continue: a new window of the mission's duration starts.
       if (f.deadlineAt && new Date(f.deadlineAt) <= clock()) {
-        const deadlineAt = new Date(clock().getTime() + f.limits.maxDurationMin * 60000).toISOString();
+        // Under a plan the new window ends no later than the plan itself (M10.2): a resume never extends the owner's confirmed time.
+        const windowEnd = clock().getTime() + f.limits.maxDurationMin * 60000;
+        const deadlineAt = new Date(plan ? Math.min(windowEnd, Date.parse(plan.expiresAt)) : windowEnd).toISOString();
         bus.transaction(() => {
           db.prepare("UPDATE factory_missions SET deadline_at = ? WHERE mission_id = ?").run(deadlineAt, missionId);
-          bus.append({ type: "factory.deadline_extended", scopeType: "mission", scopeId: missionId, source: actor, payload: { from: f.deadlineAt, to: deadlineAt } });
+          bus.append({ type: "factory.deadline_extended", scopeType: "mission", scopeId: missionId, source: actor, payload: { from: f.deadlineAt, to: deadlineAt, ...(plan ? { cappedByPlan: plan.envelopeId } : {}) } });
         });
       }
-      if (allowExtraCycle) {
+      // A plan delta already raised the factory limit in the same transaction as the plan's own (envelopes.confirmDelta).
+      if (allowExtraCycle && !(plan && planDelta === plan.envelopeId)) {
         const limits = { ...fm(missionId).limits, maxRepairCycles: Math.max(f.limits.maxRepairCycles, f.repairCycles + 1) };
         bus.transaction(() => {
           db.prepare("UPDATE factory_missions SET limits_json = ? WHERE mission_id = ?").run(json(limits), missionId);
@@ -1177,16 +2706,18 @@ export function createFactory(deps) {
         });
       }
       // "N attempts used, decide whether to resume": a plain resume here IS that decision and allows one more attempt of the
-      // same step (otherwise the only way out would be Stop). Recorded like an extra cycle.
-      const lastDispatch = rowToDispatch(db.prepare("SELECT * FROM factory_dispatches WHERE mission_id = ? ORDER BY created_at DESC LIMIT 1").get(missionId));
-      if (f.stage === "NEEDS_OWNER_DECISION" && !proceedToQa && lastDispatch && !["DONE", "DONE_LATE"].includes(lastDispatch.status)) {
-        const { counted } = modelAttempts(missionId, lastDispatch.stage, lastDispatch.request.cycle, lastDispatch.request.changeSeq);
+      // same step (otherwise the only way out would be Stop). Recorded like an extra cycle. The step is the one a resume repeats
+      // (stepToRepeat: in step 0 also the next author / test-review turn after a finished dispatch).
+      const repeat = f.stage === "NEEDS_OWNER_DECISION" && !proceedToQa ? stepToRepeat(missionId, f) : null;
+      if (repeat) {
+        const { counted } = modelAttempts(missionId, repeat.stage, repeat.cycle, repeat.changeSeq);
         const current = fm(missionId).limits;
-        if (counted >= current.maxAttemptsPerStage) {
+        // A stage a confirmed plan difference already gave one more attempt (stageAttempts, review #11) is not exhausted again here.
+        if (counted >= attemptLimit({ limits: current }, repeat.stage)) {
           const limits = { ...current, maxAttemptsPerStage: counted + 1 };
           bus.transaction(() => {
             db.prepare("UPDATE factory_missions SET limits_json = ? WHERE mission_id = ?").run(json(limits), missionId);
-            bus.append({ type: "factory.extra_attempt", scopeType: "mission", scopeId: missionId, source: actor, payload: { stage: lastDispatch.stage, maxAttemptsPerStage: limits.maxAttemptsPerStage } });
+            bus.append({ type: "factory.extra_attempt", scopeType: "mission", scopeId: missionId, source: actor, payload: { stage: repeat.stage, maxAttemptsPerStage: limits.maxAttemptsPerStage } });
           });
         }
       }
@@ -1210,7 +2741,10 @@ export function createFactory(deps) {
     // A model step that finished while the mission was paused: its result is evaluated now, not thrown away and redone.
     const lateRun = last?.status === "DONE_LATE" ? runs.getRun(last.runId) : null;
     if (lateRun) return step(last.stage, `Evaluez rezultatul terminat în timpul pauzei (${last.stage})`, () => evaluateLate(missionId, last, lateRun));
-    if (!proceedToQa && !allowExtraCycle && last && ["IMPLEMENTING", "REPAIRING", "REVIEWING"].includes(last.stage) && last.status !== "DONE") {
+    // M11 L5 (§3 planNext 1): a step-0 outcome a resume cannot change stays with the owner — nothing runs.
+    const authoring = authoringOf(approvedSpec(f));
+    if (authoring?.blocked && authoring.status !== "PROTECTED") return step("NEEDS_OWNER_DECISION", authoring.blocked.reason, () => view(missionId));
+    if (!proceedToQa && !allowExtraCycle && last && MODEL_STAGES.includes(last.stage) && last.status !== "DONE") {
       return step(last.stage, `Reiau ${last.stage} (încercare nouă)`, () => redispatch(missionId, last));
     }
     const cs = currentCs(missionId);
@@ -1221,6 +2755,8 @@ export function createFactory(deps) {
       bus.emit({ type: "factory.owner_override", scopeType: "mission", scopeId: missionId, source: actor, payload: { decision: "proceed_to_qa", review: lastReview?.id || null } });
       return step("QA", "Decizia ta: QA după un review neconcludent", () => runQa(missionId));
     }
+    // M11 L5 (§3 planNext 2–6): the baseline (and so the writer) only ever runs on a protected Hub-written test.
+    if (authoring && authoring.status !== "PROTECTED") return planStageZero(missionId, authoring, step);
     // The writer never starts without a complete baseline (a blocked or paused baseline runs again).
     const baseline = stageResults(missionId, "BASELINE", "base");
     if (!baseline.complete) return step("BASELINE", baseline.rows.length ? "Baseline-ul nu a rulat complet (oprit sau blocat); îl rulez din nou" : "Baseline-ul nu a rulat încă", () => runBaseline(missionId));
@@ -1250,11 +2786,16 @@ export function createFactory(deps) {
   /** Evaluates a model result that arrived while the mission was paused (kept as DONE_LATE): as if it had arrived in time. */
   function evaluateLate(missionId, last, run) {
     db.prepare("UPDATE factory_dispatches SET status = 'DONE', updated_at = ? WHERE id = ? AND status = 'DONE_LATE'").run(now(), last.id);
+    if (last.stage === "TEST_AUTHORING") return afterTestAuthor(missionId, run);
+    if (last.stage === "TEST_REVIEW") return afterTestReview(missionId, run);
     return last.stage === "REVIEWING" ? afterReview(missionId, run) : afterWriter(missionId, run);
   }
 
   /** The same model step again (after a pause, a refused start or an interrupted run): same task and cycle, new attempt. */
   function redispatch(missionId, last) {
+    // M11 L5: step 0's model steps (each rebuilds its brief from the recorded state: same cycle, same candidate).
+    if (last.stage === "TEST_AUTHORING") return dispatchTestAuthor(missionId);
+    if (last.stage === "TEST_REVIEW") return dispatchTestReview(missionId);
     if (last.stage === "REVIEWING") return dispatchReview(missionId);
     if (last.stage === "IMPLEMENTING") return dispatchWriter(missionId, { repair: false });
     const f = fm(missionId);
@@ -1277,16 +2818,37 @@ export function createFactory(deps) {
   /** Boot: nothing resumes by itself; claimed/started dispatches become INTERRUPTED_UNKNOWN and the mission waits for you. */
   function recover() {
     const report = [];
-    for (const row of db.prepare(`SELECT * FROM factory_missions WHERE stage IN (${[...ACTIVE_STAGES].map(() => "?").join(",")})`).all(...ACTIVE_STAGES)) {
-      bus.transaction(() => {
-        const n = db.prepare("UPDATE factory_dispatches SET status = 'INTERRUPTED_UNKNOWN', updated_at = ? WHERE mission_id = ? AND status IN ('REQUESTED','CLAIMED','STARTED')").run(now(), row.mission_id).changes;
-        if (row.cancel_requested_at) {
-          cancelTasks(row.mission_id, "oprire confirmată la repornire");
-          setStage(row.mission_id, "CANCELLED", { reason: "Hub-ul a repornit după cererea de oprire; nimic nu mai rulează", actor: "recovery" });
-        }
-        else setStage(row.mission_id, "BLOCKED", { waitReason: "owner_decision", reason: `Hub-ul a repornit în etapa ${row.stage}; verifică starea și reia manual (fără reluare automată)`, actor: "recovery" });
-        report.push({ missionId: row.mission_id, stage: row.stage, dispatches: n });
-      });
+    for (const row of db.prepare("SELECT fm.mission_id, m.project_id FROM factory_missions fm JOIN missions m ON m.id = fm.mission_id").all()) {
+      try {
+        bus.transaction(() => {
+          const f = fm(row.mission_id), spec = approvedSpec(f) || latestSpec(row.mission_id);
+          const final = FINAL_STAGES.has(f.stage), started = writerStarted(row.mission_id);
+          const protectedPreWriter = !final && !started && spec?.protected?.authoring?.status === "PROTECTED";
+          if (!protectedPreWriter || f.cancelRequestedAt) {
+            const project = projects.get(row.project_id), journal = readRetireJournal(project, row.mission_id);
+            if (!started && (final || !f.cancelRequestedAt) && (journal || retireJournalExists(project, row.mission_id) || spec?.protected?.retired?.length)) {
+              const cause = final ? "misiune încheiată înainte de implementare"
+                : "retragere anticipată (înainte de protejarea testului nou), anulată la repornire";
+              const restore = compensateRetirement(row.mission_id, cause);
+              if (final && restore.complete) abandonAuthoring(row.mission_id, cause);
+              report.push({ missionId: row.mission_id, retireRestored: restore.complete, items: restore.items, state: restore.state });
+              // Non-final early retirements keep authoring; ACTIVE stages still need interruption recovery below.
+            }
+          }
+          if (ACTIVE_STAGES.has(f.stage)) {
+            const n = db.prepare("UPDATE factory_dispatches SET status = 'INTERRUPTED_UNKNOWN', updated_at = ? WHERE mission_id = ? AND status IN ('REQUESTED','CLAIMED','STARTED')").run(now(), row.mission_id).changes;
+            if (f.cancelRequestedAt) {
+              cancelTasks(row.mission_id, "oprire confirmată la repornire");
+              setStage(row.mission_id, "CANCELLED", { reason: "Hub-ul a repornit după cererea de oprire; nimic nu mai rulează", actor: "recovery" });
+            } else setStage(row.mission_id, "BLOCKED", { waitReason: "owner_decision", reason: `Hub-ul a repornit în etapa ${f.stage}; verifică starea și reia manual (fără reluare automată)`, actor: "recovery" });
+            report.push({ missionId: row.mission_id, stage: f.stage, dispatches: n });
+          }
+        });
+      } catch (error) {
+        const reason = `Recuperarea misiunii a eșuat: ${String(error.message).slice(0, 300)}`;
+        bus.emit({ type: "factory.retire_restore_refused", scopeType: "mission", scopeId: row.mission_id, source: "recovery", payload: { missionId: row.mission_id, projectId: row.project_id, reason } });
+        report.push({ missionId: row.mission_id, error: reason });
+      }
     }
     return report;
   }
@@ -1299,6 +2861,9 @@ export function createFactory(deps) {
       const paused = await pause(missionId, { actor: "deadline" }).then(() => true, () => false);
       if (paused && fm(missionId)?.stage === "PAUSED") setStage(missionId, "NEEDS_OWNER_DECISION", { waitReason: "owner_decision", reason: "Limita de timp a misiunii a fost atinsă; execuția a fost oprită" });
     }
+    // 2.12.2 (P0-R3): after the deadline pass (a mission it paused is no longer waiting), the turn-timeout retries whose cooldown passed.
+    // In the background, serialized per mission: tick never waits for a model start (and never deadlocks inside a mission's own step).
+    for (const { missionId, schedule } of dueTurnRetries()) background(missionId, () => fireTurnRetry(missionId, schedule));
     return late;
   }
 
@@ -1319,18 +2884,25 @@ export function createFactory(deps) {
     const mission = missions.get(missionId);
     const project = projects.get(mission.projectId);
     const dispatches = db.prepare("SELECT * FROM factory_dispatches WHERE mission_id = ? ORDER BY created_at").all(missionId).map(rowToDispatch);
-    const runList = dispatches.filter((d) => d.runId).map((d) => runs.getRun(d.runId)).filter(Boolean)
-      .map((r) => ({ id: r.id, provider: r.provider, stage: r.stage, status: r.status, access: r.access, model: r.model, effort: r.effort, plan: r.plan, grantId: r.grantId, environment: r.environment,
-        errorCategory: r.errorCategory, errorMessage: r.errorMessage, timeline: summarizeTimeline(r.timeline) }));
+    // Each run with the factory stage it was dispatched for (M11 L5, critique A8: a Codex run may be the test's review, not the writer).
+    const runList = dispatches.filter((d) => d.runId).map((d) => { const r = runs.getRun(d.runId); return r && { r, dispatchStage: d.stage }; }).filter(Boolean)
+      .map(({ r, dispatchStage }) => ({ id: r.id, provider: r.provider, stage: r.stage, dispatchStage, status: r.status, access: r.access, model: r.model, effort: r.effort, plan: r.plan, grantId: r.grantId,
+        environment: r.environment, errorCategory: r.errorCategory, errorMessage: r.errorMessage, timeline: summarizeTimeline(r.timeline) }));
     const changeSets = db.prepare("SELECT * FROM factory_change_sets WHERE mission_id = ? ORDER BY seq").all(missionId).map(rowToCs);
     const tasks = missions.tasks(missionId);
     const waitingApproval = tasks.some((t) => t.status === "WAITING_APPROVAL");
     const spec = latestSpec(missionId);
+    // M09: in SPEC_DRAFT the scope exists only with both models fixed and resolvable; otherwise scopeProblems says what is missing.
+    const draft = f.stage === "SPEC_DRAFT" && !(spec.protected?.problems || []).length ? scopeState(missionId) : { scope: null, problems: [] };
     return {
       mission: { ...mission, progress: missions.progress(missionId) }, project: project ? { id: project.id, name: project.name, source: project.source } : null,
       factory: { ...f, waitReason: waitingApproval ? "approval" : f.waitReason },
+      // 2.15.1: the exact target a rejection from this page sends back (null when nothing can be rejected), and the recorded rejection.
+      rejectTarget: rejectTarget(missionId), rejection: publicRejection(rejectionOf(missionId)),
       spec, specs: specs(missionId).map((s) => ({ version: s.version, status: s.status, sha256: s.sha256, createdAt: s.createdAt, approvedAt: s.approvedAt, problems: s.protected?.problems || [] })),
-      scope: f.stage === "SPEC_DRAFT" && !(spec.protected?.problems || []).length ? scopeFor(missionId) : null,
+      scope: draft.scope, scopeProblems: draft.problems,
+      // What the mission's model steps run with: the approved bindings after the start, the draft's resolution before it.
+      models: Object.fromEntries(["writer", "reviewer"].map((role) => { const b = f.bindings?.[role] || draft.scope?.bindings?.[role] || null; return [role, b ? { model: b.resolvedAlias, effort: b.effort, environment: b.environment, label: bindingLabel(b), approved: Boolean(f.bindings?.[role]) } : null]; })),
       plan: f.plan, tasks: tasks.map((t) => ({ id: t.id, title: t.title, roleId: t.roleId, stage: t.stage, status: t.status, statusReason: t.statusReason, access: t.access })),
       dispatches, runs: runList,
       changeSets: changeSets.map((c) => ({ ...c, diffText: c.status === "CURRENT" ? c.diffText : undefined })),
@@ -1338,9 +2910,59 @@ export function createFactory(deps) {
       findings: findings(missionId),
       evidence: db.prepare("SELECT * FROM factory_evidence WHERE mission_id = ? ORDER BY created_at").all(missionId).map(rowToEvidence),
       bundles: db.prepare("SELECT id, change_set_id, change_set_sha, spec_version, sha256, status, file_path, decided_at, decision_note, created_at FROM factory_bundles WHERE mission_id = ? ORDER BY created_at").all(missionId),
+      // M11 L5: step 0 of a test-first mission (null for an ordinary one).
+      authoring: authoringView(approvedSpec(f) || spec),
       grantsNeeded: grantsNeeded(f),
+      // 2.12.2 (P0-R3): the per-turn limits the model steps run with (separate from the mission's deadline) and a scheduled retry.
+      turnLimits: { ...turnTimeoutsOf(f.limits), missionMin: f.limits?.maxDurationMin ?? null,
+        ...(dispatchTurnLimit(f, "TEST_AUTHORING").source === "authorLimits" ? { author: dispatchTurnLimit(f, "TEST_AUTHORING").min } : {}) },
+      turnRetry: f.waitReason === "retry" ? (() => { const p = parse(db.prepare("SELECT payload_json FROM events WHERE type = 'factory.turn_timeout' AND scope_type = 'mission' AND scope_id = ? ORDER BY seq DESC LIMIT 1").get(missionId)?.payload_json, {}); return p.retry ? { stage: p.stage, retryAt: p.retryAt, attempt: p.attempt, limit: p.limit } : null; })() : null,
       runnerReadiness: runner.readiness(project),
       stageEnvironments: runner.stageMap ? runner.stageMap(project) : null,
+    };
+  }
+
+  /**
+   * Step 0 as the UI, the cockpit and Lega see it (§2, §3): the paths, the cycle, the candidate (its cases, the API it fixes, the soft
+   * signals), the proof, the review, the rejected candidates (owner texts), a hold, and the owner's summary once the test is protected.
+   * Before the start: the plan's step 0 only (status PLANNED).
+   */
+  function authoringView(spec) {
+    const def = spec?.spec?.authoring;
+    if (!def) return null;
+    const a = spec.protected?.authoring;
+    const base = { testRef: def.testRef, stagingRef: def.stagingRef, reauthorMax: def.reauthorMax, proofRuns: def.proofRuns, criteria: def.criteria };
+    if (!a) return { ...base, status: "PLANNED", cycle: 0 };
+    return { ...base, status: a.status, cycle: a.cycle || 0, authorConversationId: a.authorConversationId, testReviewConversationId: a.testReviewConversationId,
+      authorTaskId: a.authorTaskId, reviewTaskId: a.reviewTaskId, preTestSha: a.preTestSha,
+      candidate: a.candidate ? { sha: a.candidate.sha, cycle: a.candidate.cycle, status: a.candidate.status, cases: a.candidate.manifest?.cases || [], api: a.candidate.manifest?.api || "",
+        signals: (a.candidate.lint?.signals || []).map((s) => s.plain) } : null,
+      pending: a.pending ? { sha: a.pending.sha, cycle: a.pending.cycle } : null,
+      proof: a.proof ? { sha: a.proof.sha, verdict: a.proof.verdict, cause: a.proof.cause, reasons: a.proof.reasons, table: a.proof.table, counts: a.proof.counts, evidenceIds: a.proof.evidenceIds } : null,
+      review: a.review ? { sha: a.review.sha, reviewId: a.review.reviewId, criteria: a.review.criteria } : null,
+      rejected: (a.rejected || []).map((r) => ({ cycle: r.cycle, kind: r.kind, verdict: r.verdict, sha: r.sha, plain: r.plain })),
+      blocked: a.blocked || null, protectedAt: a.protectedAt || null, protectedSha: a.protectedSha || null, summary: a.summary || null, abandoned: a.abandoned || null };
+  }
+
+  /**
+   * The Hub-written test's provenance for the delivery bundle (§5.5, I7): who proposed it, how it failed on the code before step 0, who
+   * reviewed it, when it was protected, and the owner's summary.
+   */
+  function acceptanceProvenance(a, runRows, reviewsAll) {
+    const author = runRows.find((r) => r.id === a.candidate?.runId) || runRows.filter((r) => r.dispatchStage === "TEST_AUTHORING" && r.status === "completed").at(-1) || null;
+    const reviewRow = reviewsAll.find((r) => r.id === a.review?.reviewId) || null;
+    const reviewer = runRows.find((r) => r.id === (a.review?.runId || reviewRow?.runId)) || null;
+    const proofRuns = a.proof?.counts || [];
+    const counts = proofRuns[0] || {};
+    const label = (r) => (r ? `${r.model || "—"} · ${r.effort || "—"}` : "—");
+    const reviewId = a.review?.reviewId || reviewRow?.id || "—";
+    return {
+      ref: a.testRef, sha: a.protectedSha, protectedAt: a.protectedAt, preTestBase: a.preTestSha, summary: a.summary || null,
+      line: `${a.testRef} (sha ${String(a.protectedSha || "").slice(0, 12)}): textul propus de Claude (${label(author)}, doar citire) din cerința ta; pe codul de dinainte: ${counts.tests ?? "?"} teste, `
+        + `${counts.fail ?? "?"} eșuate, din motivul corect (${proofRuns.length} rulări identice); verificat de Codex (${label(reviewer)}, doar citire), review ${reviewId} ${reviewRow?.verdict || "PASS"}; protejat la ${a.protectedAt}`,
+      author: author ? { runId: author.id, provider: author.provider, model: author.model, effort: author.effort } : null,
+      proof: { verdict: a.proof?.verdict || null, runs: proofRuns.length, tests: counts.tests ?? null, failed: counts.fail ?? null, evidence: a.proof?.evidenceIds || [] },
+      reviewer: reviewer ? { runId: reviewer.id, provider: reviewer.provider, model: reviewer.model, effort: reviewer.effort, reviewId } : null,
     };
   }
 
@@ -1363,7 +2985,10 @@ export function createFactory(deps) {
   }
   function stageEnvironmentLimitations(runRows, current) {
     const out = [];
-    const writers = runRows.filter((r) => r.provider === "codex" && r.status === "completed");
+    // M11 L5 (S6): runs are labelled by the stage they were dispatched for — a Codex run is the writer only in IMPLEMENTING / REPAIRING,
+    // a Claude run the code review only in REVIEWING (a row without its dispatch stage keeps the provider rule).
+    const inStages = (r, stages) => !r.dispatchStage || stages.includes(r.dispatchStage);
+    const writers = runRows.filter((r) => r.provider === "codex" && r.status === "completed" && inStages(r, ["IMPLEMENTING", "REPAIRING"]));
     if (!writers.length || writers.some((r) => (r.environment || "windows") === "windows")) {
       out.push("R2 deschis: writer-ul Codex a rulat pe Windows, unde sandbox-ul poate citi alte proiecte de pe host prin cale absolută");
     }
@@ -1380,19 +3005,31 @@ export function createFactory(deps) {
       else if (inEnv.length) out.push(`${STAGE_RO[stage] || stage}: au rulat în wsl-runner (${String(inEnv[0].isolation).slice(0, 160)})`);
     }
     // M07: the review is where its completed run ran: the environment's reviewer sandbox, or Windows (a tool boundary).
-    const reviews = runRows.filter((r) => r.provider === "claude" && r.status === "completed");
+    const reviews = runRows.filter((r) => r.provider === "claude" && r.status === "completed" && inStages(r, ["REVIEWING"]));
     for (const r of reviews.filter((x) => (x.environment || "windows") !== "windows").slice(-1)) {
       const e = r.evidence?.environment || {};
       out.push(`Review-ul Claude (${r.id}) a rulat în mediul ${r.environment}${e.simulated ? " SIMULAT (fixture)" : ""}: sandbox bwrap, copia doar-citire, amprenta ${e.fingerprintHash || "—"}, atestare ${e.attestationStatus || "—"} ${e.attestationId || ""}; nimic exportat sau aplicat`);
     }
     if (!reviews.length || reviews.some((r) => (r.environment || "windows") === "windows")) out.push("Review-ul Claude: graniță de unealtă (Read/Glob/Grep, dontAsk), nu de sistem de operare");
+    // M11 L5 (S6): step 0's own lines — the test's author and its independent reviewer, both read-only; the file was written by the Hub.
+    const author = runRows.filter((r) => r.status === "completed" && r.dispatchStage === "TEST_AUTHORING").at(-1);
+    if (author) out.push(`Testul de acceptanță: propus de Claude (${author.id}, doar citire${(author.environment || "windows") !== "windows" ? `, în mediul ${author.environment}` : ""}; graniță de unealtă, nu de sistem de operare); fișierul l-a scris Hub-ul, după lint`);
+    const testReviewer = runRows.filter((r) => r.status === "completed" && r.dispatchStage === "TEST_REVIEW").at(-1);
+    if (testReviewer) out.push(`Testul de acceptanță: verificat de Codex (${testReviewer.id}, doar citire${(testReviewer.environment || "windows") === "windows" ? "; sandbox Codex pe Windows, R2: host-ul rămâne citibil" : `, în mediul ${testReviewer.environment}`}); nimic scris de verificator`);
     return out;
   }
 
+  /**
+   * The attempts a mission's roles need outside a plan (manual grants): one per cycle (implementation + each repair) and — M11 L5 (§4) —
+   * one per author cycle still ahead of a test-first mission (the writer's binding reviews the test, read-only; the reviewer's writes it).
+   */
   function grantsNeeded(f) {
-    const cycles = 1 + (f.limits?.maxRepairCycles || 0);
-    return [{ provider: ROUTES.writer.provider, access: ROUTES.writer.access, attempts: cycles, why: `implementare + până la ${f.limits?.maxRepairCycles || 0} remedieri` },
-      { provider: ROUTES.reviewer.provider, access: ROUTES.reviewer.access, attempts: cycles, why: "review pentru fiecare change set" }];
+    const authoring = remainingAuthoring(f.missionId, f);
+    const cycles = 1 + (f.limits?.maxRepairCycles || 0) + authoring;
+    return [{ provider: ROUTES.writer.provider, access: ROUTES.writer.access, attempts: cycles,
+      why: `implementare + până la ${f.limits?.maxRepairCycles || 0} remedieri${authoring ? ` + verificarea testului scris de Hub (doar citire, cel mult ${authoring})` : ""}` },
+    { provider: ROUTES.reviewer.provider, access: ROUTES.reviewer.access, attempts: cycles,
+      why: `review pentru fiecare change set${authoring ? ` + scrierea testului de acceptanță (doar citire, cel mult ${authoring})` : ""}` }];
   }
 
   const list = () => db.prepare("SELECT fm.*, m.title, m.project_id FROM factory_missions fm JOIN missions m ON m.id = fm.mission_id ORDER BY fm.updated_at DESC LIMIT 100").all()
@@ -1417,12 +3054,332 @@ export function createFactory(deps) {
     await Promise.race([Promise.allSettled([...chains.values()]), new Promise((r) => setTimeout(r, 5000).unref?.())]);
   }
 
-  return { initialize, reviseSpec, setLimits, scopeFor, assertStartable, startApproved, onRunFinished, stop, pause, resume, accept, reject, stopAll, recover, tick, idle, close,
+  return { initialize, reviseSpec, setLimits, scopeFor, assertStartable, startApproved, onRunFinished, stop, pause, resume, accept, reject, rejectTarget, stopAll, recover, tick, idle, close,
+    // M11 delivery hooks (read-only).
+    integrityFacts, bundleIntegrity, snapshotCheck, writerStarted, compensateRetirement, driftProvenance, deliveryBinding, claimFacts, previewStatus, e2eShotPath,
+    continuationScope, rebindForPlan, raiseLimits, exhaustedStep: (missionId) => exhaustedStep(missionId),
+    // M11 L5: step 0 of a test-first mission is open (no repair cycle there); the Hub's own files in its work area on a project.
+    inStageZero, hubWrites, remainingAuthoring: (missionId) => remainingAuthoring(missionId),
     attachAuthority: (fn) => { authority = typeof fn === "function" ? fn : null; },
+    // Runtime verifies a claimed dispatch against the same approved spec and this instance's scale (no global override).
+    dispatchTurnLimit: (missionId, stage) => dispatchTurnLimit(need(fm(missionId)), stage),
+    /** 2.12.2 (P0-R3), test mode only: scales the per-turn limits sent to the run manager (0 < scale ≤ 1); refused outside test mode. */
+    setTurnTimeScaleForTests: (scale) => {
+      if (!config.testMode) throw new HubError("policy", "Scala limitelor pe tură există doar în modul de test");
+      const n = Number(scale);
+      if (!(Number.isFinite(n) && n > 0 && n <= 1)) throw new HubError("validation", "Scala limitelor pe tură e între 0 și 1");
+      turnTimeScale = n;
+      return n;
+    },
+    /** R-BRIEF fault injection is instance-local and refused outside test mode. */
+    setAuthorBriefRendererForTests: (fn) => {
+      if (!config.testMode) throw new HubError("policy", "Rendererul de brief poate fi înlocuit doar în modul de test");
+      authorBriefRenderer = typeof fn === "function" ? fn : buildAuthorBrief;
+    },
+    /** Closure R-ROLL-02, test mode only: fn(point, item) is called at copy / verify / rename / remove / record / snapshot / start_record. */
+    setStartFaultForTests: (fn) => {
+      if (!config.testMode) throw new HubError("policy", "Punctele de eșec ale pornirii există doar în modul de test");
+      startFault = typeof fn === "function" ? fn : null;
+    },
+    historicViolations: (missionId) => missionHistoricViolations(missionId, projects.get(missions.get(missionId).projectId)),
     setFindingStatus, view, list, summary: (missionId) => { const v = view(missionId); return v && { stage: v.factory.stage, waitReason: v.factory.waitReason, reason: v.factory.stageReason, spec: specSummary(v.spec.spec) }; } };
 }
 
 function sha256File(file) { return crypto.createHash("sha256").update(fs.readFileSync(file)).digest("hex"); }
+
+/**
+ * R-PRIV: moves each earlier Hub-written test a confirmed spec supersedes (spec.supersedes, test/hub/<name>.test.mjs) to
+ * .ifrim-hub/retired/<missionId>/<name>.test.mjs.retired — a name node --test never discovers, inside the Hub's own work area (a control
+ * path: a writer that touches it is a critical finding). Only the exact bytes named on the card are moved (sha256). Idempotent for a
+ * resumed start. → [{ from, to, sha256, missionId, specVersion, reason, at }]. Throws SUPERSEDE_MISMATCH when a file is missing or not
+ * the one the owner confirmed.
+ * Closure R-ROLL: the WHOLE list is checked before the first move (a mismatch on the second file moves nothing); a journal
+ * (.ifrim-hub/retired/<missionId>/journal.json, replaced atomically) records the intent before the first move and the end after the
+ * last; each copy goes to a temporary name, is verified, then renamed, so the final name only ever holds the complete bytes. An
+ * interruption at any point leaves one of three states per file — not moved, both copies, moved — and the next start finishes it.
+ * `fault(point, item)` (tests only) is called at copy / verify / rename / remove / record.
+ */
+export function retireSuperseded(missionId, spec, project, { fault = null } = {}) {
+  const plan = retirementPlan(missionId, spec);
+  if (!plan.length) return [];
+  const states = plan.map((p) => ({ ...p, ...retireState(project, p, { clean: true }) }));
+  const bad = states.find((s) => s.state === "mismatch");
+  if (bad) throw new HubError("conflict", bad.problem, { code: "SUPERSEDE_MISMATCH" });
+  writeJournal(project, missionId, { status: "MOVING", items: states.map(({ from, to, sha256: sha, state }) => ({ from, to, sha256: sha, state })) });
+  const at = new Date().toISOString(), cycle = readRetireJournal(project, missionId).cycle;
+  const out = [];
+  for (const s of states) {
+    if (s.state === "todo") {
+      const toFolder = safeFolder(project.path, path.posix.dirname(s.to));
+      const name = path.posix.basename(s.to);
+      const temp = path.join(toFolder, `.${name}.${crypto.randomBytes(6).toString("hex")}.tmp`);
+      fs.copyFileSync(path.join(s.fromFolder, s.fromName), temp, fs.constants.COPYFILE_EXCL);
+      fault?.("copy", s);
+      if (sha256File(temp) !== s.sha256) { fs.rmSync(temp, { force: true }); throw new HubError("internal", `Copia testului ${s.from} nu are aceleași octeți; nu îl mut`, { code: "SUPERSEDE_COPY" }); }
+      fault?.("verify", s);
+      if (fileShaAt(toFolder, name) !== null) { fs.rmSync(temp, { force: true }); throw new HubError("conflict", `${s.to} a apărut în timpul mutării; nu îl suprascriu`, { code: "SUPERSEDE_MISMATCH" }); }
+      fs.renameSync(temp, path.join(toFolder, name));
+      fault?.("rename", s);
+    }
+    if (s.state !== "done") {
+      const toFolderNow = safeFolder(project.path, path.posix.dirname(s.to), { create: false });
+      if (fileShaAt(s.fromFolder, s.fromName) !== s.sha256 || !toFolderNow || fileShaAt(toFolderNow, path.posix.basename(s.to)) !== s.sha256) {
+        throw new HubError("conflict", `Testul ${s.from} s-a schimbat în timpul mutării; nu îl șterg`, { code: "SUPERSEDE_MISMATCH" });
+      }
+      fs.rmSync(path.join(s.fromFolder, s.fromName));
+      fault?.("remove", s);
+    }
+    out.push({ from: s.from, to: s.to, sha256: s.sha256, missionId: s.missionId, specVersion: s.specVersion, reason: s.reason, cycle, at });
+  }
+  writeJournal(project, missionId, { status: "MOVED", items: out.map(({ from, to, sha256: sha }) => ({ from, to, sha256: sha, state: "done" })) });
+  fault?.("record", null);
+  return out;
+}
+
+/** The moves a spec's supersedes list asks for (deterministic: the same list from the same spec, before or after an interruption). */
+export function retirementPlan(missionId, spec) {
+  return (spec?.supersedes || []).map((s) => ({ from: s.testRef, to: `.ifrim-hub/retired/${missionId}/${path.posix.basename(s.testRef)}.retired`, sha256: s.sha256,
+    missionId: s.missionId || null, specVersion: s.specVersion ?? null, reason: s.reason }));
+}
+
+/**
+ * Where one move stands on disk: todo (only the original, exact bytes), half (both copies, exact bytes), done (only the retired copy),
+ * or mismatch (anything else, with the problem). With `clean`, the Hub's own leftover temporary copies of that file are removed first
+ * (an interruption between the copy and the rename).
+ */
+function retireState(project, p, { clean = false } = {}) {
+  const fromFolder = safeFolder(project.path, path.posix.dirname(p.from), { create: false });
+  const fromName = path.posix.basename(p.from);
+  const toFolder = safeFolder(project.path, path.posix.dirname(p.to), { create: false });
+  const toName = path.posix.basename(p.to);
+  if (clean) { sweepRetireTemps(fromFolder, fromName); sweepRetireTemps(toFolder, toName); sweepRetireTemps(toFolder, "journal"); }
+  const fromSha = fromFolder ? fileShaAt(fromFolder, fromName) : null;
+  const toSha = toFolder ? fileShaAt(toFolder, toName) : null;
+  const base = { fromFolder, fromName, fromSha, toSha };
+  if (fromSha === p.sha256 && toSha === null) return { ...base, state: "todo" };
+  if (fromSha === p.sha256 && toSha === p.sha256) return { ...base, state: "half" };
+  if (fromSha === null && toSha === p.sha256) return { ...base, state: "done" };
+  if (toSha !== null && toSha !== p.sha256) return { ...base, state: "mismatch", problem: `${p.to} există deja cu alt conținut; nu îl suprascriu` };
+  return { ...base, state: "mismatch", problem: `Testul anterior ${p.from} nu mai este cel din planul confirmat (${fromSha ? "conținut diferit" : "lipsește"}); nu îl mut` };
+}
+
+function sweepRetireTemps(folder, name) {
+  if (!folder) return;
+  for (const n of fs.readdirSync(folder)) {
+    if (!n.startsWith(`.${name}.`) || !/^[0-9a-f]{12}\.tmp$/.test(n.slice(name.length + 2))) continue;
+    const file = path.join(folder, n);
+    if (fs.lstatSync(file).isFile()) fs.unlinkSync(file);
+  }
+}
+
+function retireJournalExists(project, missionId) {
+  try { return Boolean(fs.lstatSync(path.join(project.path, ".ifrim-hub", "retired", missionId, "journal.json"))); }
+  catch (e) { return e.code !== "ENOENT"; }
+}
+
+/** The journal of a mission's retirements (null when there is none or it cannot be read). */
+export function readRetireJournal(project, missionId) {
+  try {
+    const folder = safeFolder(project.path, `.ifrim-hub/retired/${missionId}`, { create: false });
+    if (!folder || fileShaAt(folder, "journal.json") === null) return null;
+    const j = JSON.parse(fs.readFileSync(path.join(folder, "journal.json"), "utf8"));
+    return j && j.schema === "ifrim.retire-journal/1" && j.missionId === missionId && ["MOVING", "MOVED", "RESTORED", "RESTORE_INCOMPLETE"].includes(j.status)
+      && Array.isArray(j.items) && j.items.length > 0 && j.items.length <= 10 && new Set(j.items.map((x) => x.from)).size === j.items.length
+      && j.items.every((x) => /^test\/hub\/[a-z0-9][a-z0-9-]{0,63}\.test\.mjs$/.test(x.from || "") && x.to === `.ifrim-hub/retired/${missionId}/${path.posix.basename(x.from)}.retired` && /^[0-9a-f]{64}$/.test(x.sha256 || "")) ? j : null;
+  } catch { return null; }
+}
+
+function writeJournal(project, missionId, { status, items, problems = [], repair = null }) {
+  const folder = safeFolder(project.path, `.ifrim-hub/retired/${missionId}`);
+  const previous = readRetireJournal(project, missionId);
+  if (!previous && retireJournalExists(project, missionId)) throw new HubError("conflict", "Jurnalul retragerii este invalid; istoricul nu poate fi înlocuit");
+  sweepRetireTemps(folder, "journal");
+  const cycle = (previous?.cycle || 1) + (status === "MOVING" && previous?.status === "RESTORED" ? 1 : 0);
+  const history = previous ? [...(previous.history || []), { status: previous.status, items: previous.items, problems: previous.problems, cycle: previous.cycle || 1, at: previous.at }] : [];
+  if (repair) history.push(repair);
+  const temp = path.join(folder, `.journal.${crypto.randomBytes(6).toString("hex")}.tmp`);
+  fs.writeFileSync(temp, JSON.stringify({ schema: "ifrim.retire-journal/1", missionId, status, items, problems, history, cycle, at: new Date().toISOString() }, null, 2), { flag: "wx" });
+  fs.renameSync(temp, path.join(folder, "journal.json"));
+}
+
+/**
+ * Review F3 + closure R-ROLL-03: puts the retired tests of a failed start back and VERIFIES the result. For each move: an original with
+ * the exact bytes is back (and only then the retired copy is removed), or nothing had moved; anything else is reported. → { complete,
+ * items: [{ from, state: restored | untouched | incomplete | retired_later, problem?, by? }] }; the journal records RESTORED or RESTORE_INCOMPLETE.
+ * Later retirements are verified by the caller; a previously completed restore stays read-only, or repairs only its journal with cycle-matched restore records. Never
+ * throws: the caller reports an incomplete restore and stops (factory.startApproved).
+ */
+export function restoreRetired(retired, project, { missionId = null, laterRetirements = [], restored = [] } = {}) {
+  const items = [];
+  const journal = missionId ? readRetireJournal(project, missionId) : null;
+  const priorRestore = journal?.items.every((r) => restored.some((x) => x.from === r.from && x.to === r.to && x.sha256 === r.sha256 && (x.cycle || 1) === (journal.cycle || 1)));
+  const canExplain = journal?.status === "RESTORED" || journal?.status === "RESTORE_INCOMPLETE" && priorRestore;
+  const explained = new Map(), states = [];
+  for (const r of retired || []) {
+    try {
+      const state = retireState(project, r, { clean: !canExplain });
+      states.push({ ...state, from: r.from, sha256: r.sha256 });
+      const later = canExplain && state.fromSha !== r.sha256 && (state.toSha === null || state.toSha === r.sha256)
+        && laterRetirements.find((x) => x.from === r.from && x.sha256 === r.sha256);
+      if (later) explained.set(r.from, { ...r, state: "retired_later", by: later.by });
+      else if (journal?.status === "RESTORED" && state.fromSha !== r.sha256) items.push({ ...r, state: "incomplete", problem: "jurnal RESTORED, dar originalul nu are octeții confirmați" });
+      else if (state.state === "mismatch") items.push({ ...r, state: "incomplete", problem: state.problem });
+    } catch (e) { items.push({ ...r, state: "incomplete", problem: String(e.message) }); }
+  }
+  // A mixed list cannot fall through to the ordinary move-back loop and resurrect a later retirement.
+  if (explained.size && journal?.status === "RESTORE_INCOMPLETE") {
+    for (const state of states) {
+      const r = retired.find((r) => r.from === state.from);
+      if (state.fromSha !== r.sha256 && !explained.has(r.from) && !items.some((x) => x.from === r.from)) {
+        items.push({ ...r, state: "incomplete", problem: "jurnal RESTORE_INCOMPLETE, dar originalul nu are octeții confirmați și nu este retras ulterior" });
+      }
+    }
+  }
+  if (items.length) {
+    let writtenSha;
+    if (missionId && journal) {
+      try { writeJournal(project, missionId, { status: "RESTORE_INCOMPLETE", items: retired.map((r) => explained.get(r.from) || { ...r, state: items.find((i) => i.from === r.from)?.state || "unchanged" }), problems: items.map((i) => i.problem) }); writtenSha = fileShaAt(safeFolder(project.path, `.ifrim-hub/retired/${missionId}`, { create: false }), "journal.json"); }
+      catch (e) { items.push({ state: "incomplete", problem: `jurnalul restaurării: ${String(e.message)}` }); }
+    }
+    return { complete: false, items: retired.map((r) => items.find((i) => i.from === r.from) || explained.get(r.from) || { ...r, state: "not_restored", problem: "restaurarea întregii liste a fost refuzată înainte de prima mutare" }), state: writtenSha ? "restore_incomplete" : "refused", ...(writtenSha ? { sha256: writtenSha } : {}) };
+  }
+  const restoredItems = () => (retired || []).map((r) => explained.get(r.from) || { ...r, state: "already_restored" });
+  if (journal?.status === "RESTORED") return { complete: true, items: restoredItems(), state: "already_restored" };
+  if (journal?.status === "RESTORE_INCOMPLETE" && priorRestore && explained.size
+    && states.every((s) => s.fromSha === s.sha256 || explained.has(s.from))) {
+    const laterRetiredBy = [...new Set([...explained.values()].map((x) => x.by))];
+    try {
+      writeJournal(project, missionId, { status: "RESTORED", items: restoredItems(), repair: {
+        repairedAt: new Date().toISOString(), laterRetiredBy,
+        cause: `retras ulterior de ${laterRetiredBy.join(", ")}; jurnalul fusese rescris greșit ca incomplet`,
+      } });
+      const folder = safeFolder(project.path, `.ifrim-hub/retired/${missionId}`, { create: false });
+      return { complete: true, items: restoredItems(), state: "repaired_after_later_retirement", sha256: fileShaAt(folder, "journal.json") };
+    } catch (e) {
+      return { complete: false, items: [{ state: "incomplete", problem: `jurnalul restaurării: ${String(e.message)}` }], state: "refused" };
+    }
+  }
+  for (const r of retired || []) {
+    try {
+      const fromFolder = safeFolder(project.path, path.posix.dirname(r.from), { create: false });
+      const fromName = path.posix.basename(r.from);
+      const toFolder = safeFolder(project.path, path.posix.dirname(r.to), { create: false });
+      const toName = path.posix.basename(r.to);
+      sweepRetireTemps(fromFolder, fromName); sweepRetireTemps(toFolder, toName);
+      let fromSha = fromFolder ? fileShaAt(fromFolder, fromName) : null;
+      const toSha = toFolder ? fileShaAt(toFolder, toName) : null;
+      if (fromSha === null && toSha === r.sha256) {
+        const temp = path.join(fromFolder || safeFolder(project.path, path.posix.dirname(r.from)), `.${fromName}.${crypto.randomBytes(6).toString("hex")}.tmp`);
+        fs.copyFileSync(path.join(toFolder, toName), temp, fs.constants.COPYFILE_EXCL);
+        if (sha256File(temp) !== r.sha256) { fs.rmSync(temp, { force: true }); items.push({ from: r.from, state: "incomplete", problem: "copia de restaurare nu are aceiași octeți" }); continue; }
+        // Atomic, exclusive placement: only complete bytes become visible, never overwrite a new target.
+        fs.linkSync(temp, path.join(path.dirname(temp), fromName));
+        fs.rmSync(temp);
+        fromSha = fileShaAt(path.dirname(temp), fromName);
+      }
+      if (fromSha === r.sha256) {
+        // Review (closure) #1: only OUR retired copy (the confirmed bytes) is removed; anything else at that path is left untouched.
+        if (toSha === r.sha256) { fs.rmSync(path.join(toFolder, toName), { force: true }); items.push({ from: r.from, state: "restored" }); }
+        else items.push({ from: r.from, state: "untouched", ...(toSha !== null ? { note: `${r.to} are alți octeți decât copia Hub-ului; lăsat neatins` } : {}) });
+      } else items.push({ from: r.from, state: "incomplete", problem: fromSha === null ? "nici originalul, nici copia retrasă nu au octeții confirmați" : "originalul are alt conținut" });
+    } catch (error) { items.push({ from: r.from, state: "incomplete", problem: String(error?.message || error).slice(0, 200) }); }
+  }
+  let complete = items.every((i) => i.state !== "incomplete");
+  let writtenSha;
+  if (missionId && items.length) {
+    try { writeJournal(project, missionId, { status: complete ? "RESTORED" : "RESTORE_INCOMPLETE", items: items.map((i) => ({ ...retired.find((r) => r.from === i.from), state: i.state })), problems: items.filter((i) => i.problem).map((i) => `${i.from}: ${i.problem}`) }); writtenSha = fileShaAt(safeFolder(project.path, `.ifrim-hub/retired/${missionId}`, { create: false }), "journal.json"); }
+    catch (e) { complete = false; items.push({ state: "incomplete", problem: `jurnalul restaurării nu a putut fi scris: ${String(e.message)}` }); }
+  }
+  return { complete, items, ...(writtenSha ? { state: complete ? "restored" : "restore_incomplete", sha256: writtenSha } : {}) };
+}
+
+// ---------- M11 L5: the files the Hub itself writes into a project (§5.1 S2) ----------
+const samePath = (a, b) => (process.platform === "win32" ? String(a).toLowerCase() === String(b).toLowerCase() : a === b);
+
+/**
+ * The folder of a file the Hub writes into a project (the staging copy of its test, the test's final place). Every segment is checked
+ * with lstat and, with `create`, created one level at a time: a link or a junction anywhere on the path is refused (for a missing target
+ * resolveInScope returns the path unresolved, so a junction at test/hub would otherwise pass unnoticed), and each segment's real path
+ * must be the expected one. The folder is then resolved with resolveInScope (realpath, inside the project, no private location) and must
+ * be exactly the expected path. Returns the real absolute folder, or null when a segment is missing and `create` is false.
+ */
+function safeFolder(root, rel, { create = true } = {}) {
+  const parts = String(rel || "").split("/").filter(Boolean);
+  const rootReal = fs.realpathSync.native(root);
+  let current = rootReal;
+  for (const part of parts) {
+    if (part === "." || part === "..") throw new HubError("policy", `Calea ${rel} iese din proiect`);
+    current = path.join(current, part);
+    let st = null;
+    try { st = fs.lstatSync(current); } catch (error) { if (error.code !== "ENOENT") throw error; }
+    if (!st) {
+      if (!create) return null;
+      try { fs.mkdirSync(current); } catch (error) { if (error.code !== "EEXIST") throw error; }
+      st = fs.lstatSync(current);
+    }
+    if (st.isSymbolicLink()) throw new HubError("policy", `${parts.join("/")}: „${part}” e o legătură (link sau joncțiune); Hub-ul nu scrie prin ea`, { code: "HUB_WRITE_LINK" });
+    if (!st.isDirectory()) throw new HubError("conflict", `${parts.join("/")}: „${part}” nu e un folder`, { code: "HUB_WRITE_CONFLICT" });
+    if (!samePath(fs.realpathSync.native(current), current)) throw new HubError("policy", `${parts.join("/")}: „${part}” duce în altă parte (joncțiune); Hub-ul nu scrie prin ea`, { code: "HUB_WRITE_LINK" });
+  }
+  const real = parts.length ? resolveInScope(rootReal, parts.join("/"), { denyPrivate: true }) : rootReal;
+  if (!samePath(real, current)) throw new HubError("policy", `${rel} nu se rezolvă în proiect la calea așteptată`, { code: "HUB_WRITE_LINK" });
+  return real;
+}
+
+/** The sha256 of a regular file in a checked folder, or null when there is none; a link or a folder in its place is refused. */
+function fileShaAt(folder, name) {
+  const abs = path.join(folder, name);
+  let st;
+  try { st = fs.lstatSync(abs); } catch (error) { if (error.code === "ENOENT") return null; throw error; }
+  if (st.isSymbolicLink() || !st.isFile()) throw new HubError("conflict", `${name} nu e un fișier obișnuit; Hub-ul nu îl atinge`, { code: "HUB_WRITE_CONFLICT" });
+  return sha256File(abs);
+}
+
+/**
+ * Writes `text` at the project-relative `rel` through a temporary file created exclusively (flag "wx") in the same checked folder, then
+ * renamed over the target. A first write needs the target absent; an overwrite replaces ONLY the exact bytes the Hub wrote there last
+ * (`previousSha`) — anything else is someone else's file and stops the step. Idempotent: the same bytes already there are left alone.
+ * Returns { sha, written }.
+ */
+function hubWriteFile(root, rel, text, { previousSha = null } = {}) {
+  const folder = safeFolder(root, path.posix.dirname(rel));
+  const name = path.posix.basename(rel);
+  const want = sha256(text);
+  const have = fileShaAt(folder, name);
+  if (have === want) return { sha: want, written: false };
+  if (have !== null && have !== previousSha) throw new HubError("conflict", `${rel} există deja cu alt conținut decât ultima scriere a Hub-ului; nu îl suprascriu`, { code: "HUB_WRITE_CONFLICT" });
+  const temp = path.join(folder, `.${name}.${crypto.randomBytes(6).toString("hex")}.tmp`);
+  fs.writeFileSync(temp, text, { flag: "wx" });
+  try {
+    // Checked again right before the rename: nothing replaced the target in between.
+    if (fileShaAt(folder, name) !== have) throw new HubError("conflict", `${rel} s-a schimbat în timpul scrierii; nu îl suprascriu`, { code: "HUB_WRITE_CONFLICT" });
+    fs.renameSync(temp, path.join(folder, name));
+  } catch (error) {
+    fs.rmSync(temp, { force: true });
+    throw error;
+  }
+  if (fileShaAt(folder, name) !== want) throw new HubError("conflict", `${rel}: conținutul scris nu corespunde (sha diferit)`, { code: "HUB_WRITE_CONFLICT" });
+  return { sha: want, written: true };
+}
+
+/**
+ * Moves the Hub's file `fromRel` → `toRel` (both folders checked like a write): `fromRel` must hold exactly `sha` and `toRel` must be
+ * absent; already done (target holds `sha`, source gone: a crash after the rename) is a no-op. Re-hashed after the rename. Returns { moved }.
+ */
+function hubMoveFile(root, fromRel, toRel, sha) {
+  const fromFolder = safeFolder(root, path.posix.dirname(fromRel));
+  const toFolder = safeFolder(root, path.posix.dirname(toRel));
+  const fromName = path.posix.basename(fromRel);
+  const toName = path.posix.basename(toRel);
+  const there = fileShaAt(toFolder, toName);
+  const here = fileShaAt(fromFolder, fromName);
+  if (there === sha && here === null) return { moved: false };
+  if (there !== null) throw new HubError("conflict", `${toRel} există deja în proiect; testul nu înlocuiește un fișier existent`, { code: "HUB_WRITE_CONFLICT" });
+  if (here !== sha) throw new HubError("conflict", `${fromRel} nu mai are conținutul verificat (sha diferit sau lipsă)`, { code: "HUB_WRITE_CONFLICT" });
+  fs.renameSync(path.join(fromFolder, fromName), path.join(toFolder, toName));
+  if (fileShaAt(toFolder, toName) !== sha) throw new HubError("conflict", `${toRel}: conținutul mutat nu corespunde (sha diferit)`, { code: "HUB_WRITE_CONFLICT" });
+  return { moved: true };
+}
 
 /** Owner-facing Markdown of a delivery bundle (Romanian), next to the JSON manifest. */
 function bundleMarkdown(m, sha) {
@@ -1431,6 +3388,8 @@ function bundleMarkdown(m, sha) {
     `Status: READY_FOR_OWNER_ACCEPTANCE (nu înseamnă publicat). Hash: \`${sha}\``,
     `Proiect: ${m.mission.project} · Tip: ${m.mission.workType} · Specificația v${m.spec.version} (\`${m.spec.sha256.slice(0, 12)}\`) · Change set ${m.changeSet.seq} (\`${m.changeSet.sha256.slice(0, 12)}\`)`, "",
     "## Criterii de acceptanță", ...m.spec.criteria.map((c) => `- ${c.id} — ${c.status}: ${c.text}${c.note ? ` (${c.note})` : ""}`), "",
+    // M11 L5 (§5.5): where the protected acceptance test came from, when the Hub wrote it.
+    ...(m.acceptanceTest ? ["## Testul de acceptanță (scris de Hub)", `- ${m.acceptanceTest.line}`, ...(m.acceptanceTest.summary ? [`- ${m.acceptanceTest.summary}`] : []), ""] : []),
     "## Fișiere", ...m.changeSet.files.map((f) => `- ${f.status} \`${f.path}\`${f.sha256 ? ` (${f.sha256.slice(0, 12)})` : ""}`), "",
     "## Review", ...(m.reviews.length ? m.reviews.map((r) => `- ${r.id}: ${r.verdict} pe \`${r.changeSet}\` (${r.status})${r.problems.length ? ` — ${r.problems.join("; ")}` : ""}`) : ["- niciunul"]), "",
     "## Findings", ...(m.findings.length ? m.findings.map((f) => `- ${f.code} [${f.severity}, ${f.status}] ${f.file}: ${f.observation}`) : ["- niciunul"]), "",
@@ -1441,4 +3400,72 @@ function bundleMarkdown(m, sha) {
     "## Migrare", m.migration, "",
     "## Revenire", ...m.rollback.files.map((f) => `- ${f}`), m.rollback.note, "",
   ].join("\n");
+}
+
+function restoredHistoricTest(db, project, r) {
+  const missionId = r.retiredBy || r.to?.split("/")[2];
+  const journal = readRetireJournal(project, missionId);
+  const rows = db.prepare("SELECT protected_json FROM factory_specs WHERE mission_id = ?").all(missionId);
+  const recorded = rows.some((row) => (parse(row.protected_json, {}).restored || []).some((x) => x.from === r.from && x.to === r.to && x.sha256 === r.sha256));
+  const item = journal?.items?.some((x) => x.from === r.from && x.to === r.to && x.sha256 === r.sha256);
+  if (!(recorded || journal?.status === "RESTORED" && item)) return false;
+  const folder = safeFolder(project.path, path.posix.dirname(r.from), { create: false });
+  return folder && fileShaAt(folder, path.posix.basename(r.from)) === r.sha256;
+}
+
+// One journal/approved-plan/DB-record check for integrity facts and historic readers.
+export function retirementEvidence(row, project) {
+  const p = parse(row.protected_json, {}), s = parse(row.spec_json, {}), journal = readRetireJournal(project, row.mission_id);
+  const plan = retirementPlan(row.mission_id, s);
+  const matches = (x, r) => x.from === r.from && x.to === r.to && x.sha256 === r.sha256;
+  const samePlan = items => Array.isArray(items) && items.length === plan.length && plan.every(r => items.some(x => matches(x, r)));
+  const recorded = (records, r) => (records || []).some(x => matches(x, r) && (x.cycle || 1) === (journal?.cycle || 1));
+  const valid = journal && row.status === "APPROVED" && samePlan(journal.items) && (!p.pendingRetire || samePlan(p.pendingRetire))
+    && (journal.status === "MOVED" ? plan.every(r => recorded(p.retired, r) && !recorded(p.restored, r)) : journal.status === "RESTORED" && plan.every(r => recorded(p.restored, r)));
+  return { journal, valid };
+}
+
+export function historicViolations(db, project, protectedRecord, provenance) {
+  const h = protectedRecord?.historic || { active: [], retired: [] };
+  if (!h.active?.length && !h.retired?.length) return [];
+  const restoredTest = (project, r) => restoredHistoricTest(db, project, r);
+  const shaOf = (rel) => { const folder = safeFolder(project.path, path.posix.dirname(rel), { create: false }); return folder ? fileShaAt(folder, path.posix.basename(rel)) : null; };
+  const out = [];
+  try {
+    const suite = safeFolder(project.path, HUB_TEST_DIR, { create: false });
+    if (suite) fs.readdirSync(suite);
+    for (const a of h.active || []) {
+      const now2 = shaOf(a.ref);
+      if (now2 === a.sha256) continue;
+      if (now2 === null) {
+        const proof = provenance?.[a.ref];
+        if (proof?.valid && proof.provenance === "retired_by_hub" && proof.record.sha256 === a.sha256) continue;
+        // buildBundle also uses this reader, before a bundle exists to gather its facts.
+        if (!provenance) {
+          const rows = db.prepare("SELECT fs.* FROM factory_specs fs JOIN missions m ON m.id = fs.mission_id WHERE m.project_id = ?").all(project.id);
+          if (rows.some(row => {
+            const { journal, valid } = retirementEvidence(row, project);
+            return valid && journal.status === "MOVED" && journal.items.some(x => x.from === a.ref && x.sha256 === a.sha256 && shaOf(x.to) === a.sha256);
+          })) continue;
+        }
+      }
+      out.push(`testul Hub anterior ${a.ref} (misiunea ${a.missionId}) a fost ${now2 === null ? "șters" : "modificat"}`);
+    }
+    for (const r of h.retired || []) {
+      if (restoredTest(project, r)) continue;
+      if (shaOf(r.to) !== r.sha256) out.push(`copia retrasă ${r.to} a fost ${shaOf(r.to) === null ? "ștearsă" : "modificată"}`);
+      if (shaOf(r.from) !== null) out.push(`testul retras ${r.from} a fost recreat`);
+    }
+    // Review #6: the retired bytes back in the active Hub suite under another name (on disk, whatever the snapshot identity).
+    const retiredShas = new Map((h.retired || []).filter((r) => !restoredTest(project, r)).map((r) => [r.sha256, r.from]));
+    if (retiredShas.size) {
+      const folder = safeFolder(project.path, HUB_TEST_DIR, { create: false });
+      for (const name of folder ? fs.readdirSync(folder).filter((n) => /\.(?:test|spec)\.[cm]?[jt]sx?$/i.test(n)).slice(0, 200) : []) {
+        const digest = fileShaAt(folder, name);
+        const from = digest ? retiredShas.get(digest) : null;
+        if (from && `${HUB_TEST_DIR}/${name}`.toLowerCase() !== from.toLowerCase()) out.push(`octeții testului retras ${from} au reapărut ca ${HUB_TEST_DIR}/${name}`);
+      }
+    }
+  } catch (error) { out.push(`test/hub nu poate fi verificat: ${error.message}`); }
+  return out;
 }

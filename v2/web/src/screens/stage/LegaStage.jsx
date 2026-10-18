@@ -1,17 +1,15 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { AudioLines, Mic, Square, X, ShieldCheck, Activity, Building2, Target } from "lucide-react";
 import { useHub, onLive, setState } from "../../store.js";
 import { buildStageGraph, project } from "../../lib/stageGraph.js";
-import { legaLevels, sendLegaCommand } from "../../lib/legaLevels.js";
+import { legaLevels } from "../../lib/legaLevels.js";
 import { deriveCoreState } from "../../lib/coreState.js";
 import { isAppShortcut } from "../../lib/uiLogic.js";
-import { StopAllButton } from "../../shell/Shell.jsx";
 
 /**
- * Lega stage — the full-screen "JARVIS" view of the company. A living network drawn from real Hub state:
+ * Lega stage — the "JARVIS" map of the company, drawn behind the one Lega screen (#/lega). A living network from real Hub state:
  * departments and their roles, missions, active runs (bright) and pending approvals (amber) around Lega at the centre.
  * The ambient plexus is decorative. Energy follows the REAL audio levels (your microphone, Lega's voice) and the core state.
- * Captions show what you and Lega say. Everything with effects still needs a click (approvals) or goes through the gate.
+ * Everything with effects still needs a click (approvals, the plan's one confirmation) or goes through the gate.
  */
 const TONES = { accent: [101, 217, 255], approval: [233, 181, 109], ok: [134, 220, 187], danger: [255, 143, 133], dim: [120, 140, 160] };
 const rgba = (tone, a) => { const [r, g, b] = TONES[tone] || TONES.accent; return `rgba(${r},${g},${b},${Math.max(0, Math.min(1, a)).toFixed(3)})`; };
@@ -103,92 +101,37 @@ function useStageRenderer(canvasRef, graph, coreState) {
   }, [canvasRef]);
 }
 
-export function LegaStage({ onClose, go }) {
+/**
+ * One L3ga screen (2026-10-18): the living company map is the BACKGROUND of the Lega screen (#/lega), no longer a modal over it.
+ * The same renderer and the same real data (departments and roles, missions, active runs, pending approvals around Lega); the energy
+ * follows the real audio levels and the core state. Decorative for assistive technology (the panels next to it say the same in text).
+ */
+export function StageCanvas({ className = "" }) {
   const hub = useHub((s) => s.hub);
   const connection = useHub((s) => s.connection);
   const legaPhase = useHub((s) => s.legaPhase);
-  const legaStatus = useHub((s) => s.legaStatus || "off");
   const core = deriveCoreState({ hub, connection, legaPhase });
   const graph = useMemo(() => buildStageGraph(hub, { ambient: 260 }), [hub]);
   const canvasRef = useRef(null);
-  const closeRef = useRef(null);
-  const [caption, setCaption] = useState({ user: "", lega: "", legaFinal: false });
   useStageRenderer(canvasRef, graph, core.state);
+  return <canvas ref={canvasRef} className={`lega-stage-canvas ${className}`} aria-hidden="true" />;
+}
 
-  // Captions from the live transcript (redacted by the Hub).
+/** The live captions of the voice session (redacted by the Hub): what you said and what Lega is saying, over the map. */
+export function useVoiceCaption() {
+  const [caption, setCaption] = useState({ user: "", lega: "", legaFinal: false });
   useEffect(() => onLive((e) => {
     if (e.type !== "lega.transcript.partial" && e.type !== "lega.transcript.done") return;
     const final = e.type === "lega.transcript.done";
     setCaption((c) => (e.role === "user" ? { ...c, user: e.text } : { ...c, lega: e.text, legaFinal: final }));
   }), []);
-
-  // Esc closes; focus starts on the close button (the stage is a modal region).
-  useEffect(() => {
-    closeRef.current?.focus();
-    const onKey = (e) => { if (e.key === "Escape") onClose(); };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [onClose]);
-
-  const words = String(caption.lega || "").trim().split(/\s+/).filter(Boolean);
-  const lastWord = words.length ? words[words.length - 1].replace(/[.,!?;:]+$/, "") : "";
-  const running = ["preparing", "connecting", "active"].includes(legaStatus);
-  const departments = hub?.company?.departments || [];
-  const approvals = hub?.approvals || [];
-  const runs = hub?.activeRuns || [];
-  const open = (path) => { onClose(); go(path); };
-
-  return (
-    <div className="lega-stage" role="dialog" aria-modal="true" aria-label="Lega — ecran complet">
-      <canvas ref={canvasRef} className="lega-stage-canvas" aria-hidden="true" />
-      <header className="stage-top">
-        <div className="stage-brand"><AudioLines size={16} aria-hidden="true" /> LEGA · IFRIM DIGITAL</div>
-        <div className="stage-chips">
-          <span className="stage-chip">{hub?.mode || "—"}</span>
-          <span className={`stage-chip ${hub?.executionGate?.status === "open" ? "ok" : ""}`}>poarta {hub?.executionGate?.status === "open" ? "deschisă" : "suspendată"}</span>
-          <span className="stage-chip">{core.label}</span>
-        </div>
-        <div className="stage-actions">
-          <StopAllButton compact />
-          <button ref={closeRef} className="btn sm ghost" onClick={onClose} aria-label="Închide ecranul Lega (Esc)"><X size={15} /></button>
-        </div>
-      </header>
-
-      <aside className="stage-col left" aria-label="Compania">
-        <div className="stage-title"><Building2 size={13} aria-hidden="true" /> Compania</div>
-        <ul>{departments.map((d) => <li key={d.key} className={d.status === "active" ? "on" : ""}><span>{d.name}</span><span className="faint">{d.roles} roluri</span></li>)}</ul>
-        <p className="faint small">Structură configurată, nu muncă făcută. Execuții active: {runs.length}.</p>
-        <button className="btn sm ghost" onClick={() => open("/company")}>Deschide Compania</button>
-      </aside>
-
-      <aside className="stage-col right" aria-label="Decizii și execuții">
-        <div className="stage-title"><ShieldCheck size={13} aria-hidden="true" /> Decizii ({hub?.pendingApprovals || 0})</div>
-        <ul>{approvals.slice(0, 5).map((a) => <li key={a.id} className="amber"><button className="link-btn" onClick={() => open("/approvals")}>{a.actionKind}</button></li>)}</ul>
-        {approvals.length === 0 && <p className="faint small">Nimic de aprobat.</p>}
-        <div className="stage-title"><Activity size={13} aria-hidden="true" /> Execuții</div>
-        <ul>{runs.map((r) => <li key={r.runId}><button className="link-btn" onClick={() => open(`/conversations/${r.conversationId}`)}>{r.provider} · {r.phase === "streaming" ? "lucrează" : "așteaptă"}</button></li>)}</ul>
-        {runs.length === 0 && <p className="faint small">Nicio execuție activă.</p>}
-        <button className="btn sm ghost" onClick={() => open("/missions")}><Target size={13} />Misiuni</button>
-      </aside>
-
-      <div className="stage-captions" aria-live="polite">
-        {caption.user && <p className="stage-user">Tu: {caption.user}</p>}
-        {caption.lega && <p className="stage-lega">{caption.lega}</p>}
-        {lastWord && !caption.legaFinal && <p className="stage-word" aria-hidden="true">{lastWord.toUpperCase()}</p>}
-        {!caption.lega && !caption.user && <p className="stage-hint">{running ? "Vorbește cu Lega: „Lega, ce se întâmplă?”, „Lega, pregătește o analiză pe proiectul de test”, „Lega, oprește tot”." : "Pornește Lega ca să controlezi compania cu vocea. Tot ce are efecte se confirmă prin click."}</p>}
-      </div>
-
-      <footer className="stage-bottom">
-        {running
-          ? <button className="btn danger stage-mic" onClick={() => sendLegaCommand("stop")}><Square size={16} />Oprește Lega</button>
-          : <button className="btn primary stage-mic" onClick={() => sendLegaCommand("start")}><Mic size={16} />Pornește Lega</button>}
-        <span className="faint small">{core.reason}</span>
-      </footer>
-    </div>
-  );
+  return caption;
 }
 
-/** Opens/closes the stage (Alt+J, plain Alt only: AltGr+J types a character on the Romanian layout); rendered by the Shell. */
+/**
+ * „Ecran complet” (Alt+J, plain Alt only: AltGr+J types a character on the Romanian layout): the Lega screen without the Hub's bars.
+ * `stageOpen` keeps its old name (start view „ecran complet”, the voice intent, toasts that close it); the Shell opens #/lega for it.
+ */
 export function useStageToggle() {
   const open = useHub((s) => Boolean(s.stageOpen));
   useEffect(() => {

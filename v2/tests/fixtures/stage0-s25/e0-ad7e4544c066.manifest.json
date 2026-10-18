@@ -1,0 +1,40 @@
+{
+  "testSlot": "689f51f90b64",
+  "needs": [],
+  "api": "GET /api/bookings?date=YYYY-MM-DD returnează lista zilei; POST /api/bookings creează o programare cu phone obligatoriu; ambele accesate direct prin http pe 127.0.0.1",
+  "cases": [
+    {
+      "name": "AC-1: Lista publică a zilei nu conține câmpul phone",
+      "criterion": "AC-1",
+      "kind": "check",
+      "today": "fail"
+    },
+    {
+      "name": "AC-2: Parametri anonimi nu expun telefonul în lista publică",
+      "criterion": "AC-2",
+      "kind": "check",
+      "today": "fail"
+    },
+    {
+      "name": "AC-3 control: programare refuzată când telefonul lipsește, e gol sau doar spații",
+      "criterion": "AC-3",
+      "kind": "control",
+      "today": "pass"
+    },
+    {
+      "name": "AC-4 control: telefonul trimis se păstrează exact în datele salvate",
+      "criterion": "AC-4",
+      "kind": "control",
+      "today": "pass"
+    },
+    {
+      "name": "AC-5 control: programare validă cu telefon și date corecte este acceptată",
+      "criterion": "AC-5",
+      "kind": "control",
+      "today": "pass"
+    }
+  ],
+  "newApi": [],
+  "removed": [],
+  "amends": null
+}

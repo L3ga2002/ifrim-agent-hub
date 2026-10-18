@@ -1,0 +1,187 @@
+// Test de acceptanță scris de Ifrim Agent Hub din criteriile proprietarului (misiunea mis_mv3wfpyy_d440c4ec5c, spec v1 88d3db5091a9).
+// Protejat după review: se repară implementarea, nu testul. Nu îl modifica manual.
+import test from "node:test";
+import assert from "node:assert/strict";
+import path from "node:path";
+import os from "node:os";
+import fs from "node:fs";
+import * as sqlite from "node:sqlite";
+import http from "node:http";
+const load = async (rel) => { try { return await import(new URL(rel, import.meta.url)); } catch (e) { assert.fail(`HUB_LOAD ${rel}: ${e?.code || e?.name || "eroare"}`); } };
+const need = (m, name) => { if (typeof m[name] === "function") return m[name]; assert.fail(`HUB_SETUP export ${name}: ${name in m ? typeof m[name] : "lipsește"}`); };
+const setup = async (label, fn) => { try { return await fn(); } catch (e) { assert.fail(`HUB_SETUP ${label}: ${e?.code || e?.name || "eroare"}`); } };
+// ---- corpul testului ----
+function httpGet(urlStr) {
+  return new Promise((resolve, reject) => {
+    http.get(urlStr, (res) => {
+      let body = "";
+      res.on("data", (c) => { body += c; });
+      res.on("end", () => resolve({ status: res.statusCode, body }));
+      res.on("error", reject);
+    }).on("error", reject);
+  });
+}
+
+function httpPost(urlStr, payload) {
+  return new Promise((resolve, reject) => {
+    const bodyStr = JSON.stringify(payload);
+    const u = new URL(urlStr);
+    const opts = {
+      hostname: u.hostname,
+      port: Number(u.port),
+      path: u.pathname,
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "content-length": Buffer.byteLength(bodyStr),
+      },
+    };
+    const req = http.request(opts, (res) => {
+      let body = "";
+      res.on("data", (c) => { body += c; });
+      res.on("end", () => resolve({ status: res.statusCode, body }));
+      res.on("error", reject);
+    });
+    req.on("error", reject);
+    req.write(bodyStr);
+    req.end();
+  });
+}
+
+const PHONE = "0712 345 678";
+const SEED_PHONE = "0700 123 456";
+const DATE_KEY = "2026-10-11";
+const clockFn = () => new Date("2026-10-11T08:00:00");
+const BASE_BOOKING = {
+  serviceId: "spalare-exterior",
+  start: "2026-10-11T09:00",
+  name: "Ion Popescu",
+  vehicle: "Dacia Logan",
+  phone: PHONE,
+};
+
+test("AC-1: Lista publică a zilei nu expune câmpul phone și valoarea telefonului", async () => {
+  const tmpDir = await setup("tmpDir", () => fs.mkdtempSync(path.join(os.tmpdir(), "det-ac1-")));
+  const dbPath = path.join(tmpDir, "db.sqlite");
+  const m = await load("../../src/server-app.js");
+  const startSrv = need(m, "startServer");
+  const srv = await setup("server", () => startSrv({ port: 0, dbPath, now: clockFn, seed: true }));
+  try {
+    const postRes = await httpPost(srv.url + "api/bookings", BASE_BOOKING);
+    assert.equal(postRes.status, 201, "programarea a fost creată");
+    const created = JSON.parse(postRes.body);
+    const bookingId = created.booking.id;
+    const getRes = await httpGet(srv.url + "api/bookings?date=" + DATE_KEY);
+    assert.equal(getRes.status, 200, "lista zilei returnată cu succes");
+    assert.ok(getRes.body.includes(bookingId), "programarea creată apare în lista zilei după id");
+    assert.ok(!getRes.body.includes('"phone"'), 'câmpul "phone" nu trebuie să apară în corpul listei publice');
+    assert.ok(!getRes.body.includes(PHONE), "valoarea telefonului nu trebuie să apară în corpul listei publice");
+    const listJson = JSON.parse(getRes.body);
+    assert.ok(Array.isArray(listJson.bookings), "lista zilei conține câmpul bookings ca array");
+    assert.ok(listJson.bookings.some(b => b.id === bookingId), "programarea creată este în array-ul bookings al listei publice");
+    for (const b of listJson.bookings) {
+      assert.ok(!Object.hasOwn(b, "phone"), "niciun element din lista publică nu expune câmpul phone (JSON parsat, inclusiv înregistrări existente)");
+    }
+    assert.ok(!getRes.body.includes(SEED_PHONE), "valoarea telefonului înregistrărilor existente (seed) nu apare în corpul listei publice");
+  } finally {
+    await srv.close();
+  }
+});
+
+test("AC-2: Parametrii publici suplimentari nu scot telefonul din lista zilei", async () => {
+  const tmpDir = await setup("tmpDir", () => fs.mkdtempSync(path.join(os.tmpdir(), "det-ac2-")));
+  const dbPath = path.join(tmpDir, "db.sqlite");
+  const m = await load("../../src/server-app.js");
+  const startSrv = need(m, "startServer");
+  const srv = await setup("server", () => startSrv({ port: 0, dbPath, now: clockFn, seed: true }));
+  try {
+    const postRes = await httpPost(srv.url + "api/bookings", BASE_BOOKING);
+    assert.equal(postRes.status, 201, "programarea a fost creată");
+    const created = JSON.parse(postRes.body);
+    const bookingId = created.booking.id;
+    const extraParams = ["includePhone=1", "phone=1", "fields=phone", "debug=1", "all=1"];
+    for (const param of extraParams) {
+      const getRes = await httpGet(srv.url + "api/bookings?date=" + DATE_KEY + "&" + param);
+      assert.equal(getRes.status, 200, "lista returnată cu param " + param);
+      assert.ok(getRes.body.includes(bookingId), "programarea apare în lista cu param " + param);
+      assert.ok(!getRes.body.includes('"phone"'), "câmpul phone absent cu param " + param);
+      assert.ok(!getRes.body.includes(PHONE), "valoarea telefonului absentă cu param " + param);
+      const parsed = JSON.parse(getRes.body);
+      assert.ok(Array.isArray(parsed.bookings) && parsed.bookings.some(b => b.id === bookingId), "programarea e în array-ul bookings cu param " + param);
+      for (const b of parsed.bookings) {
+        assert.ok(!Object.hasOwn(b, "phone"), "câmpul phone absent în programare parsată cu param " + param);
+      }
+      assert.ok(!getRes.body.includes(SEED_PHONE), "valoarea telefonului din seed absentă cu param " + param);
+    }
+  } finally {
+    await srv.close();
+  }
+});
+
+test("AC-3 control: Programarea e refuzată fără telefon, cu telefon gol sau doar spații, fără a se salva nimic", async () => {
+  const tmpDir = await setup("tmpDir", () => fs.mkdtempSync(path.join(os.tmpdir(), "det-ac3-")));
+  const dbPath = path.join(tmpDir, "db.sqlite");
+  const m = await load("../../src/server-app.js");
+  const startSrv = need(m, "startServer");
+  const srv = await setup("server", () => startSrv({ port: 0, dbPath, now: clockFn, seed: false }));
+  const { serviceId, start, name, vehicle } = BASE_BOOKING;
+  const invalidCases = [
+    { serviceId, start, name, vehicle },
+    { serviceId, start, name, vehicle, phone: "" },
+    { serviceId, start, name, vehicle, phone: "   " },
+  ];
+  try {
+    for (const payload of invalidCases) {
+      const res = await httpPost(srv.url + "api/bookings", payload);
+      assert.equal(res.status, 400, "server refuză cererea fără telefon valid");
+      const json = JSON.parse(res.body);
+      assert.ok(json.errors && typeof json.errors.phone === "string", "eroare returnată pentru câmpul Telefon");
+      assert.ok(json.errors.phone.length > 0, "mesajul de eroare pentru Telefon nu este gol");
+      const db = new sqlite.DatabaseSync(dbPath);
+      const row = db.prepare("SELECT COUNT(*) AS n FROM bookings").get();
+      db.close();
+      assert.equal(row["n"], 0, "nicio înregistrare nu a fost salvată după refuz");
+    }
+  } finally {
+    await srv.close();
+  }
+});
+
+test("AC-4 control: Telefonul trimis e salvat exact în stocarea internă a aplicației", async () => {
+  const tmpDir = await setup("tmpDir", () => fs.mkdtempSync(path.join(os.tmpdir(), "det-ac4-")));
+  const dbPath = path.join(tmpDir, "db.sqlite");
+  const m = await load("../../src/server-app.js");
+  const startSrv = need(m, "startServer");
+  const srv = await setup("server", () => startSrv({ port: 0, dbPath, now: clockFn, seed: false }));
+  try {
+    const postRes = await httpPost(srv.url + "api/bookings", BASE_BOOKING);
+    assert.equal(postRes.status, 201, "programarea creată cu succes");
+    const created = JSON.parse(postRes.body);
+    const bookingId = created.booking.id;
+    const db = new sqlite.DatabaseSync(dbPath);
+    const row = db.prepare("SELECT phone FROM bookings WHERE id = ?").get(bookingId);
+    db.close();
+    assert.ok(row, "înregistrarea există în baza de date");
+    assert.equal(row["phone"], PHONE, "telefonul e salvat exact în stocarea internă");
+  } finally {
+    await srv.close();
+  }
+});
+
+test("AC-5 control: O programare validă cu telefon pe interval liber e acceptată de server", async () => {
+  const tmpDir = await setup("tmpDir", () => fs.mkdtempSync(path.join(os.tmpdir(), "det-ac5-")));
+  const dbPath = path.join(tmpDir, "db.sqlite");
+  const m = await load("../../src/server-app.js");
+  const startSrv = need(m, "startServer");
+  const srv = await setup("server", () => startSrv({ port: 0, dbPath, now: clockFn, seed: false }));
+  try {
+    const res = await httpPost(srv.url + "api/bookings", BASE_BOOKING);
+    assert.equal(res.status, 201, "server acceptă programarea validă cu telefon");
+    const json = JSON.parse(res.body);
+    assert.ok(json.booking && typeof json.booking.id === "string", "răspuns conține booking cu id");
+    assert.equal(json.booking.name, BASE_BOOKING.name, "numele e prezent în răspuns");
+    assert.equal(json.booking.vehicle, BASE_BOOKING.vehicle, "vehiculul e prezent în răspuns");
+  } finally {
+    await srv.close();
+  }
+});

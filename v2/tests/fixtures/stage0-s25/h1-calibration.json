@@ -1,0 +1,579 @@
+[
+  {
+    "name": "CORRECT",
+    "status": "PASS",
+    "pass": 5,
+    "tests": 5,
+    "failed": [],
+    "ms": 1250,
+    "hung": false,
+    "cleanupOk": true,
+    "asExpected": true
+  },
+  {
+    "name": "original",
+    "status": "FAIL",
+    "pass": 3,
+    "tests": 5,
+    "failed": [
+      "AC-1:EXPUNERE",
+      "AC-2:EXPUNERE"
+    ],
+    "ms": 376,
+    "hung": false,
+    "cleanupOk": true,
+    "asExpected": true
+  },
+  {
+    "name": "refuse-all",
+    "status": "FAIL",
+    "pass": 1,
+    "tests": 5,
+    "failed": [
+      "AC-1:ID API",
+      "AC-2:ID API",
+      "AC-4 control:other",
+      "AC-5 control:other"
+    ],
+    "ms": 1055,
+    "hung": false,
+    "cleanupOk": true,
+    "asExpected": true
+  },
+  {
+    "name": "phone lost on save",
+    "status": "FAIL",
+    "pass": 2,
+    "tests": 5,
+    "failed": [
+      "AC-1:DATE MARTOR",
+      "AC-2:DATE MARTOR",
+      "AC-4 control:other"
+    ],
+    "ms": 614,
+    "hung": false,
+    "cleanupOk": true,
+    "asExpected": true
+  },
+  {
+    "name": "browser-only validation",
+    "status": "FAIL",
+    "pass": 4,
+    "tests": 5,
+    "failed": [
+      "AC-3 control:other"
+    ],
+    "ms": 1254,
+    "hung": false,
+    "cleanupOk": true,
+    "asExpected": true
+  },
+  {
+    "name": "masked value",
+    "status": "FAIL",
+    "pass": 3,
+    "tests": 5,
+    "failed": [
+      "AC-1:EXPUNERE",
+      "AC-2:EXPUNERE"
+    ],
+    "ms": 561,
+    "hung": false,
+    "cleanupOk": true,
+    "asExpected": true
+  },
+  {
+    "name": "includePhone bypass",
+    "status": "FAIL",
+    "pass": 4,
+    "tests": 5,
+    "failed": [
+      "AC-2:EXPUNERE"
+    ],
+    "ms": 1123,
+    "hung": false,
+    "cleanupOk": true,
+    "asExpected": true
+  },
+  {
+    "name": "debug other key",
+    "status": "FAIL",
+    "pass": 4,
+    "tests": 5,
+    "failed": [
+      "AC-2:EXPUNERE"
+    ],
+    "ms": 476,
+    "hung": false,
+    "cleanupOk": true,
+    "asExpected": true
+  },
+  {
+    "name": "empty list",
+    "status": "FAIL",
+    "pass": 3,
+    "tests": 5,
+    "failed": [
+      "AC-1:ID API",
+      "AC-2:ID API"
+    ],
+    "ms": 1128,
+    "hung": false,
+    "cleanupOk": true,
+    "asExpected": true
+  },
+  {
+    "name": "invalid request saved",
+    "status": "FAIL",
+    "pass": 4,
+    "tests": 5,
+    "failed": [
+      "AC-3 control:other"
+    ],
+    "ms": 533,
+    "hung": false,
+    "cleanupOk": true,
+    "asExpected": true
+  },
+  {
+    "name": "missing-property accepted",
+    "status": "FAIL",
+    "pass": 4,
+    "tests": 5,
+    "failed": [
+      "AC-3 control:other"
+    ],
+    "ms": 1198,
+    "hung": false,
+    "cleanupOk": true,
+    "asExpected": true
+  },
+  {
+    "name": "id only in metadata",
+    "status": "FAIL",
+    "pass": 3,
+    "tests": 5,
+    "failed": [
+      "AC-1:ID API",
+      "AC-2:ID API"
+    ],
+    "ms": 476,
+    "hung": false,
+    "cleanupOk": true,
+    "asExpected": true
+  },
+  {
+    "name": "fields=phone other key",
+    "status": "FAIL",
+    "pass": 4,
+    "tests": 5,
+    "failed": [
+      "AC-2:EXPUNERE"
+    ],
+    "ms": 1155,
+    "hung": false,
+    "cleanupOk": true,
+    "asExpected": true
+  },
+  {
+    "name": "phone in text",
+    "status": "FAIL",
+    "pass": 3,
+    "tests": 5,
+    "failed": [
+      "AC-1:EXPUNERE",
+      "AC-2:EXPUNERE"
+    ],
+    "ms": 434,
+    "hung": false,
+    "cleanupOk": true,
+    "asExpected": true
+  },
+  {
+    "name": "phone as key",
+    "status": "FAIL",
+    "pass": 3,
+    "tests": 5,
+    "failed": [
+      "AC-1:EXPUNERE",
+      "AC-2:EXPUNERE"
+    ],
+    "ms": 975,
+    "hung": false,
+    "cleanupOk": true,
+    "asExpected": true
+  },
+  {
+    "name": "escaped key and value",
+    "status": "FAIL",
+    "pass": 3,
+    "tests": 5,
+    "failed": [
+      "AC-1:EXPUNERE",
+      "AC-2:EXPUNERE"
+    ],
+    "ms": 478,
+    "hung": false,
+    "cleanupOk": true,
+    "asExpected": true
+  },
+  {
+    "name": "escaped value other key",
+    "status": "FAIL",
+    "pass": 3,
+    "tests": 5,
+    "failed": [
+      "AC-1:EXPUNERE",
+      "AC-2:EXPUNERE"
+    ],
+    "ms": 1004,
+    "hung": false,
+    "cleanupOk": true,
+    "asExpected": true
+  },
+  {
+    "name": "existing records only",
+    "status": "FAIL",
+    "pass": 3,
+    "tests": 5,
+    "failed": [
+      "AC-1:EXPUNERE",
+      "AC-2:EXPUNERE"
+    ],
+    "ms": 644,
+    "hung": false,
+    "cleanupOk": true,
+    "asExpected": true
+  },
+  {
+    "name": "escape in text other key",
+    "status": "FAIL",
+    "pass": 3,
+    "tests": 5,
+    "failed": [
+      "AC-1:EXPUNERE",
+      "AC-2:EXPUNERE"
+    ],
+    "ms": 457,
+    "hung": false,
+    "cleanupOk": true,
+    "asExpected": true
+  },
+  {
+    "name": "seed ignored, leak only before restart",
+    "status": "FAIL",
+    "pass": 3,
+    "tests": 5,
+    "failed": [
+      "AC-1:DATE MARTOR",
+      "AC-2:DATE MARTOR"
+    ],
+    "ms": 1039,
+    "hung": false,
+    "cleanupOk": true,
+    "asExpected": true
+  },
+  {
+    "name": "existing record absent after restart",
+    "status": "FAIL",
+    "pass": 3,
+    "tests": 5,
+    "failed": [
+      "AC-1:DATE MARTOR",
+      "AC-2:DATE MARTOR"
+    ],
+    "ms": 485,
+    "hung": false,
+    "cleanupOk": true,
+    "asExpected": true
+  },
+  {
+    "name": "existing record on another day",
+    "status": "FAIL",
+    "pass": 3,
+    "tests": 5,
+    "failed": [
+      "AC-1:DATE MARTOR",
+      "AC-2:DATE MARTOR"
+    ],
+    "ms": 1185,
+    "hung": false,
+    "cleanupOk": true,
+    "asExpected": true
+  },
+  {
+    "name": "existing phone not persisted",
+    "status": "FAIL",
+    "pass": 3,
+    "tests": 5,
+    "failed": [
+      "AC-1:DATE MARTOR",
+      "AC-2:DATE MARTOR"
+    ],
+    "ms": 480,
+    "hung": false,
+    "cleanupOk": true,
+    "asExpected": true
+  },
+  {
+    "name": "empty list, base",
+    "status": "FAIL",
+    "pass": 3,
+    "tests": 5,
+    "failed": [
+      "AC-1:ID API",
+      "AC-2:ID API"
+    ],
+    "ms": 1134,
+    "hung": false,
+    "cleanupOk": true,
+    "asExpected": true
+  },
+  {
+    "name": "empty list, debug",
+    "status": "FAIL",
+    "pass": 4,
+    "tests": 5,
+    "failed": [
+      "AC-2:ID API"
+    ],
+    "ms": 565,
+    "hung": false,
+    "cleanupOk": true,
+    "asExpected": true
+  },
+  {
+    "name": "existing omitted, base",
+    "status": "FAIL",
+    "pass": 3,
+    "tests": 5,
+    "failed": [
+      "AC-1:ID API",
+      "AC-2:ID API"
+    ],
+    "ms": 863,
+    "hung": false,
+    "cleanupOk": true,
+    "asExpected": true
+  },
+  {
+    "name": "existing omitted, debug",
+    "status": "FAIL",
+    "pass": 4,
+    "tests": 5,
+    "failed": [
+      "AC-2:ID API"
+    ],
+    "ms": 437,
+    "hung": false,
+    "cleanupOk": true,
+    "asExpected": true
+  },
+  {
+    "name": "ids only in metadata, base",
+    "status": "FAIL",
+    "pass": 3,
+    "tests": 5,
+    "failed": [
+      "AC-1:ID API",
+      "AC-2:ID API"
+    ],
+    "ms": 1163,
+    "hung": false,
+    "cleanupOk": true,
+    "asExpected": true
+  },
+  {
+    "name": "ids only in metadata, debug",
+    "status": "FAIL",
+    "pass": 4,
+    "tests": 5,
+    "failed": [
+      "AC-2:ID API"
+    ],
+    "ms": 399,
+    "hung": false,
+    "cleanupOk": true,
+    "asExpected": true
+  },
+  {
+    "name": "seed rows only",
+    "status": "FAIL",
+    "pass": 3,
+    "tests": 5,
+    "failed": [
+      "AC-1:EXPUNERE",
+      "AC-2:EXPUNERE"
+    ],
+    "ms": 1192,
+    "hung": false,
+    "cleanupOk": true,
+    "asExpected": true
+  },
+  {
+    "name": "initial data not created",
+    "status": "FAIL",
+    "pass": 3,
+    "tests": 5,
+    "failed": [
+      "AC-1:DATE MARTOR",
+      "AC-2:DATE MARTOR"
+    ],
+    "ms": 438,
+    "hung": false,
+    "cleanupOk": true,
+    "asExpected": true
+  },
+  {
+    "name": "initial data without phone",
+    "status": "FAIL",
+    "pass": 3,
+    "tests": 5,
+    "failed": [
+      "AC-1:DATE MARTOR",
+      "AC-2:DATE MARTOR"
+    ],
+    "ms": 1282,
+    "hung": false,
+    "cleanupOk": true,
+    "asExpected": true
+  },
+  {
+    "name": "initial rows omitted",
+    "status": "FAIL",
+    "pass": 3,
+    "tests": 5,
+    "failed": [
+      "AC-1:ID API",
+      "AC-2:ID API"
+    ],
+    "ms": 581,
+    "hung": false,
+    "cleanupOk": true,
+    "asExpected": true
+  },
+  {
+    "name": "kept row omitted",
+    "status": "FAIL",
+    "pass": 3,
+    "tests": 5,
+    "failed": [
+      "AC-1:ID API",
+      "AC-2:ID API"
+    ],
+    "ms": 1172,
+    "hung": false,
+    "cleanupOk": true,
+    "asExpected": true
+  },
+  {
+    "name": "new row omitted",
+    "status": "FAIL",
+    "pass": 3,
+    "tests": 5,
+    "failed": [
+      "AC-1:ID API",
+      "AC-2:ID API"
+    ],
+    "ms": 1205,
+    "hung": false,
+    "cleanupOk": true,
+    "asExpected": true
+  },
+  {
+    "name": "seed rows only under any parameter",
+    "status": "FAIL",
+    "pass": 4,
+    "tests": 5,
+    "failed": [
+      "AC-2:EXPUNERE"
+    ],
+    "ms": 596,
+    "hung": false,
+    "cleanupOk": true,
+    "asExpected": true
+  },
+  {
+    "name": "threshold only under any parameter",
+    "status": "FAIL",
+    "pass": 4,
+    "tests": 5,
+    "failed": [
+      "AC-2:EXPUNERE"
+    ],
+    "ms": 1046,
+    "hung": false,
+    "cleanupOk": true,
+    "asExpected": true
+  },
+  {
+    "name": "seed rows only under all=1",
+    "status": "FAIL",
+    "pass": 4,
+    "tests": 5,
+    "failed": [
+      "AC-2:EXPUNERE"
+    ],
+    "ms": 522,
+    "hung": false,
+    "cleanupOk": true,
+    "asExpected": true
+  },
+  {
+    "name": "returned id differs",
+    "status": "FAIL",
+    "pass": 2,
+    "tests": 5,
+    "failed": [
+      "AC-1:DATE MARTOR",
+      "AC-2:DATE MARTOR",
+      "AC-4 control:other"
+    ],
+    "ms": 419,
+    "hung": false,
+    "cleanupOk": true,
+    "asExpected": false
+  },
+  {
+    "name": "second returned id differs",
+    "status": "FAIL",
+    "pass": 3,
+    "tests": 5,
+    "failed": [
+      "AC-1:ID API",
+      "AC-2:ID API"
+    ],
+    "ms": 999,
+    "hung": false,
+    "cleanupOk": true,
+    "asExpected": true
+  },
+  {
+    "name": "historical phone filled",
+    "status": "FAIL",
+    "pass": 3,
+    "tests": 5,
+    "failed": [
+      "AC-1:DATE MARTOR",
+      "AC-2:DATE MARTOR"
+    ],
+    "ms": 383,
+    "hung": false,
+    "cleanupOk": true,
+    "asExpected": true
+  },
+  {
+    "name": "historical row omitted",
+    "status": "FAIL",
+    "pass": 3,
+    "tests": 5,
+    "failed": [
+      "AC-1:ID API",
+      "AC-2:ID API"
+    ],
+    "ms": 739,
+    "hung": false,
+    "cleanupOk": true,
+    "asExpected": true
+  }
+]

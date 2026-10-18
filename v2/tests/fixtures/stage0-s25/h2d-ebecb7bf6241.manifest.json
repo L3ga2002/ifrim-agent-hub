@@ -1,0 +1,93 @@
+{
+  "testSlot": "2875f7425632",
+  "needs": [
+    "node:path",
+    "node:os",
+    "node:fs",
+    "node:sqlite",
+    "node:http"
+  ],
+  "api": "GET /api/bookings?date=AAAA-LL-ZZ returnează lista publică a zilei; testul verifică că răspunsul nu conține câmpul phone",
+  "cases": [
+    {
+      "name": "AC-1: Lista publică a zilei nu expune câmpul phone",
+      "criterion": "AC-1",
+      "kind": "check",
+      "today": "fail"
+    },
+    {
+      "name": "AC-2: Parametri anonimi nu produc scurgere de phone",
+      "criterion": "AC-2",
+      "kind": "check",
+      "today": "fail"
+    },
+    {
+      "name": "AC-3 control: Refuz la phone lipsă, gol, spații",
+      "criterion": "AC-3",
+      "kind": "control",
+      "today": "pass"
+    },
+    {
+      "name": "AC-4 control: Telefon salvat exact în stocare",
+      "criterion": "AC-4",
+      "kind": "control",
+      "today": "pass"
+    },
+    {
+      "name": "AC-5 control: Programare validă cu telefon acceptată",
+      "criterion": "AC-5",
+      "kind": "control",
+      "today": "pass"
+    }
+  ],
+  "newApi": [],
+  "removed": [],
+  "amends": "87a6755f97fb296a49dcc8bdd536d8e209ad0f3f28e70965e5735d32e909745c",
+  "completes": [
+    {
+      "ref": "T-001",
+      "by": "buildEnv (AC-1/AC-2): după repornire, seed-urile pe coloanele declarate = contract, setul zilei = seed + pre + istoric, pre recitit după id"
+    },
+    {
+      "ref": "T-002",
+      "by": "AC-1/AC-2: rândul istoric complet (SELECT *) = instantaneul de după inserare, imediat după cererea de bază și după FIECARE parametru"
+    },
+    {
+      "ref": "T-003",
+      "by": "buildEnv: slots pentru spalare-exterior confirmă 2026-10-11T13:00 free înainte de închiderea sesiunii și de inserarea istorică"
+    }
+  ],
+  "needsDeclared": [],
+  "needsCompleted": [
+    {
+      "module": "node:path",
+      "binding": "path",
+      "line": 41,
+      "reason": "„path” e folosit liber în corp (linia 41), fără declarație în needs"
+    },
+    {
+      "module": "node:os",
+      "binding": "os",
+      "line": 41,
+      "reason": "„os” e folosit liber în corp (linia 41), fără declarație în needs"
+    },
+    {
+      "module": "node:fs",
+      "binding": "fs",
+      "line": 41,
+      "reason": "„fs” e folosit liber în corp (linia 41), fără declarație în needs"
+    },
+    {
+      "module": "node:sqlite",
+      "binding": "sqlite",
+      "line": 45,
+      "reason": "„sqlite” e folosit liber în corp (linia 45), fără declarație în needs"
+    },
+    {
+      "module": "node:http",
+      "binding": "http",
+      "line": 16,
+      "reason": "„http” e folosit liber în corp (linia 16), fără declarație în needs"
+    }
+  ]
+}

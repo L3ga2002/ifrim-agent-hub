@@ -33,7 +33,7 @@ const untilStage = (t, id, stages, ms = 90000) => waitFor(() => (stages.includes
 test("M03-FI-01 handoff after delivery carries the factory context (spec, criteria, exact change set, findings); a changed workspace makes the bundle STALE at acceptance", async () => {
   const t = await factoryHub();
   try {
-    const { mission } = (await dispatch(t.hub, "factory.prepare", { projectId: t.project.id, ...demoSpec("bug-demo") })).result;
+    const { mission } = (await dispatch(t.hub, "factory.prepare", { projectId: t.project.id, ...demoSpec("bug-demo"), limits: { writerModel: "gpt-fake-sol", reviewerModel: "sonnet" } })).result;
     t.queue("codex", "factory-write:bug-fix");
     t.queue("claude", "review:pass");
     await approveAndStart(t, mission.id);
@@ -53,7 +53,7 @@ test("M03-FI-01 handoff after delivery carries the factory context (spec, criter
 
     // The workspace changes after QA: the bundle no longer describes it, acceptance is refused.
     fs.appendFileSync(path.join(t.dir, "src", "requests.js"), "\n// modificare după QA\n");
-    await assert.rejects(dispatch(t.hub, "factory.accept", { missionId: mission.id, note: "ok" }), /STALE/);
+    await assert.rejects(dispatch(t.hub, "factory.accept", { missionId: mission.id, bundleId: ready.bundles.at(-1).id, bundleSha: ready.bundles.at(-1).sha256, note: "ok" }), /STALE/);
     const after = t.hub.factory.view(mission.id);
     assert.equal(after.bundles.at(-1).status, "STALE");
     assert.equal(after.factory.stage, "DELIVERY_READY", "nothing is accepted on a changed workspace");
@@ -63,7 +63,7 @@ test("M03-FI-01 handoff after delivery carries the factory context (spec, criter
 test("M03-FI-02 no manual handoff while the factory's writer is active (never two writers); stop first", async () => {
   const t = await factoryHub();
   try {
-    const { mission } = (await dispatch(t.hub, "factory.prepare", { projectId: t.project.id, ...demoSpec("bug-demo") })).result;
+    const { mission } = (await dispatch(t.hub, "factory.prepare", { projectId: t.project.id, ...demoSpec("bug-demo"), limits: { writerModel: "gpt-fake-sol", reviewerModel: "sonnet" } })).result;
     t.queue("codex", "hang");
     await approveAndStart(t, mission.id);
     await waitFor(() => t.hub.factory.view(mission.id).factory.stage === "IMPLEMENTING" && t.hub.runs.activeRuns().length === 1, 60000);

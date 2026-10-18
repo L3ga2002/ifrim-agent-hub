@@ -139,7 +139,8 @@ function Rollback({ batch, onDone }) {
   const [reason, setReason] = useState("");
   const base = `/api/sales/imports/${encodeURIComponent(batch.id)}`;
   const look = useAction(async () => setPreview(await api(`${base}/rollback-preview`, { method: "POST", body: {} })));
-  const cmd = useSalesCommand(async () => { pushToast("sales-rollback", "ok", "Rollback executat"); setPreview(null); setReason(""); onDone(); });
+  // 2.15.2: the rollback is the owner's decision (owner session; the page unlocks with Windows Hello / the key when needed).
+  const cmd = useSalesCommand(async () => { pushToast("sales-rollback", "ok", "Rollback executat"); setPreview(null); setReason(""); onDone(); }, { owner: true });
   const removable = listOf(preview, "removable");
   const conflicts = listOf(preview, "conflicts");
   return (

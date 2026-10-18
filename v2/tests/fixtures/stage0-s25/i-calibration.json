@@ -1,0 +1,840 @@
+{
+ "schema": "s25-calibration-2.14.16/v1",
+ "candidateSha": "92e3b0409760688d26e4bb8ee93845752cfbd02fdd58ca21d33529d69f12a838",
+ "specSha": "6b6101adb4e2182657d099c20c9a77643210217be27a4a3de61e5baa67224ba1",
+ "node": "v24.14.0",
+ "timeoutMs": 20000,
+ "isolation": "none (one file, one owned child)",
+ "lintOk": true,
+ "proof": {
+  "verdict": "PROVEN",
+  "cause": "proven"
+ },
+ "ok": true,
+ "matrix": [
+  {
+   "name": "CORRECT",
+   "verdict": "PASS",
+   "status": "PASS",
+   "pass": 6,
+   "tests": 6,
+   "failed": [],
+   "errorClasses": [],
+   "cleanupOk": true,
+   "processesGone": true,
+   "durationMs": 1787
+  },
+  {
+   "name": "original",
+   "verdict": "ASSERTION_REJECTION",
+   "status": "FAIL",
+   "pass": 3,
+   "tests": 6,
+   "failed": [
+    "AC-1: Toate înregistrările zilei rămân în lista publică fără telefon:exposure:assertion",
+    "AC-2: Fiecare parametru anonim păstrează toate înregistrările fără telefon:exposure:assertion",
+    "AC-1: Înregistrarea istorică fără telefon rămâne listată și neschimbată:exposure:assertion"
+   ],
+   "errorClasses": [
+    "ERR_ASSERTION"
+   ],
+   "cleanupOk": true,
+   "processesGone": true,
+   "durationMs": 2519
+  },
+  {
+   "name": "refuse-all",
+   "verdict": "ASSERTION_REJECTION",
+   "status": "FAIL",
+   "pass": 2,
+   "tests": 6,
+   "failed": [
+    "AC-1: Toate înregistrările zilei rămân în lista publică fără telefon:ids:assertion",
+    "AC-2: Fiecare parametru anonim păstrează toate înregistrările fără telefon:ids:assertion",
+    "AC-4 control: Telefonul trimis se păstrează exact în stocare:ids:assertion",
+    "AC-5 control: O programare validă pe un interval liber este acceptată:other:assertion"
+   ],
+   "errorClasses": [
+    "ERR_ASSERTION"
+   ],
+   "cleanupOk": true,
+   "processesGone": true,
+   "durationMs": 1979
+  },
+  {
+   "name": "phone lost on save",
+   "verdict": "ASSERTION_REJECTION",
+   "status": "FAIL",
+   "pass": 3,
+   "tests": 6,
+   "failed": [
+    "AC-1: Toate înregistrările zilei rămân în lista publică fără telefon:ids:assertion",
+    "AC-2: Fiecare parametru anonim păstrează toate înregistrările fără telefon:ids:assertion",
+    "AC-4 control: Telefonul trimis se păstrează exact în stocare:ids:assertion"
+   ],
+   "errorClasses": [
+    "ERR_ASSERTION"
+   ],
+   "cleanupOk": true,
+   "processesGone": true,
+   "durationMs": 1759
+  },
+  {
+   "name": "browser-only validation",
+   "verdict": "ASSERTION_REJECTION",
+   "status": "FAIL",
+   "pass": 5,
+   "tests": 6,
+   "failed": [
+    "AC-3 control: Fiecare refuz păstrează stocarea integrală neschimbată:other:assertion"
+   ],
+   "errorClasses": [
+    "ERR_ASSERTION"
+   ],
+   "cleanupOk": true,
+   "processesGone": true,
+   "durationMs": 1794
+  },
+  {
+   "name": "masked value",
+   "verdict": "ASSERTION_REJECTION",
+   "status": "FAIL",
+   "pass": 3,
+   "tests": 6,
+   "failed": [
+    "AC-1: Toate înregistrările zilei rămân în lista publică fără telefon:exposure:assertion",
+    "AC-2: Fiecare parametru anonim păstrează toate înregistrările fără telefon:exposure:assertion",
+    "AC-1: Înregistrarea istorică fără telefon rămâne listată și neschimbată:exposure:assertion"
+   ],
+   "errorClasses": [
+    "ERR_ASSERTION"
+   ],
+   "cleanupOk": true,
+   "processesGone": true,
+   "durationMs": 1916
+  },
+  {
+   "name": "includePhone bypass",
+   "verdict": "ASSERTION_REJECTION",
+   "status": "FAIL",
+   "pass": 4,
+   "tests": 6,
+   "failed": [
+    "AC-2: Fiecare parametru anonim păstrează toate înregistrările fără telefon:exposure:assertion",
+    "AC-1: Înregistrarea istorică fără telefon rămâne listată și neschimbată:exposure:assertion"
+   ],
+   "errorClasses": [
+    "ERR_ASSERTION"
+   ],
+   "cleanupOk": true,
+   "processesGone": true,
+   "durationMs": 1953
+  },
+  {
+   "name": "debug other key",
+   "verdict": "ASSERTION_REJECTION",
+   "status": "FAIL",
+   "pass": 4,
+   "tests": 6,
+   "failed": [
+    "AC-2: Fiecare parametru anonim păstrează toate înregistrările fără telefon:exposure:assertion",
+    "AC-1: Înregistrarea istorică fără telefon rămâne listată și neschimbată:exposure:assertion"
+   ],
+   "errorClasses": [
+    "ERR_ASSERTION"
+   ],
+   "cleanupOk": true,
+   "processesGone": true,
+   "durationMs": 1688
+  },
+  {
+   "name": "empty list",
+   "verdict": "ASSERTION_REJECTION",
+   "status": "FAIL",
+   "pass": 3,
+   "tests": 6,
+   "failed": [
+    "AC-1: Toate înregistrările zilei rămân în lista publică fără telefon:ids:assertion",
+    "AC-2: Fiecare parametru anonim păstrează toate înregistrările fără telefon:ids:assertion",
+    "AC-1: Înregistrarea istorică fără telefon rămâne listată și neschimbată:historical:assertion"
+   ],
+   "errorClasses": [
+    "ERR_ASSERTION"
+   ],
+   "cleanupOk": true,
+   "processesGone": true,
+   "durationMs": 1740
+  },
+  {
+   "name": "invalid request saved",
+   "verdict": "ASSERTION_REJECTION",
+   "status": "FAIL",
+   "pass": 5,
+   "tests": 6,
+   "failed": [
+    "AC-3 control: Fiecare refuz păstrează stocarea integrală neschimbată:other:assertion"
+   ],
+   "errorClasses": [
+    "ERR_ASSERTION"
+   ],
+   "cleanupOk": true,
+   "processesGone": true,
+   "durationMs": 2069
+  },
+  {
+   "name": "missing-property accepted",
+   "verdict": "ASSERTION_REJECTION",
+   "status": "FAIL",
+   "pass": 5,
+   "tests": 6,
+   "failed": [
+    "AC-3 control: Fiecare refuz păstrează stocarea integrală neschimbată:other:assertion"
+   ],
+   "errorClasses": [
+    "ERR_ASSERTION"
+   ],
+   "cleanupOk": true,
+   "processesGone": true,
+   "durationMs": 2459
+  },
+  {
+   "name": "id only in metadata",
+   "verdict": "ASSERTION_REJECTION",
+   "status": "FAIL",
+   "pass": 3,
+   "tests": 6,
+   "failed": [
+    "AC-1: Toate înregistrările zilei rămân în lista publică fără telefon:ids:assertion",
+    "AC-2: Fiecare parametru anonim păstrează toate înregistrările fără telefon:ids:assertion",
+    "AC-1: Înregistrarea istorică fără telefon rămâne listată și neschimbată:historical:assertion"
+   ],
+   "errorClasses": [
+    "ERR_ASSERTION"
+   ],
+   "cleanupOk": true,
+   "processesGone": true,
+   "durationMs": 1865
+  },
+  {
+   "name": "fields=phone other key",
+   "verdict": "ASSERTION_REJECTION",
+   "status": "FAIL",
+   "pass": 4,
+   "tests": 6,
+   "failed": [
+    "AC-2: Fiecare parametru anonim păstrează toate înregistrările fără telefon:exposure:assertion",
+    "AC-1: Înregistrarea istorică fără telefon rămâne listată și neschimbată:exposure:assertion"
+   ],
+   "errorClasses": [
+    "ERR_ASSERTION"
+   ],
+   "cleanupOk": true,
+   "processesGone": true,
+   "durationMs": 1858
+  },
+  {
+   "name": "phone in text",
+   "verdict": "ASSERTION_REJECTION",
+   "status": "FAIL",
+   "pass": 3,
+   "tests": 6,
+   "failed": [
+    "AC-1: Toate înregistrările zilei rămân în lista publică fără telefon:exposure:assertion",
+    "AC-2: Fiecare parametru anonim păstrează toate înregistrările fără telefon:exposure:assertion",
+    "AC-1: Înregistrarea istorică fără telefon rămâne listată și neschimbată:exposure:assertion"
+   ],
+   "errorClasses": [
+    "ERR_ASSERTION"
+   ],
+   "cleanupOk": true,
+   "processesGone": true,
+   "durationMs": 1773
+  },
+  {
+   "name": "phone as key",
+   "verdict": "ASSERTION_REJECTION",
+   "status": "FAIL",
+   "pass": 3,
+   "tests": 6,
+   "failed": [
+    "AC-1: Toate înregistrările zilei rămân în lista publică fără telefon:exposure:assertion",
+    "AC-2: Fiecare parametru anonim păstrează toate înregistrările fără telefon:exposure:assertion",
+    "AC-1: Înregistrarea istorică fără telefon rămâne listată și neschimbată:exposure:assertion"
+   ],
+   "errorClasses": [
+    "ERR_ASSERTION"
+   ],
+   "cleanupOk": true,
+   "processesGone": true,
+   "durationMs": 1847
+  },
+  {
+   "name": "escaped key and value",
+   "verdict": "ASSERTION_REJECTION",
+   "status": "FAIL",
+   "pass": 3,
+   "tests": 6,
+   "failed": [
+    "AC-1: Toate înregistrările zilei rămân în lista publică fără telefon:exposure:assertion",
+    "AC-2: Fiecare parametru anonim păstrează toate înregistrările fără telefon:exposure:assertion",
+    "AC-1: Înregistrarea istorică fără telefon rămâne listată și neschimbată:exposure:assertion"
+   ],
+   "errorClasses": [
+    "ERR_ASSERTION"
+   ],
+   "cleanupOk": true,
+   "processesGone": true,
+   "durationMs": 1808
+  },
+  {
+   "name": "escaped value other key",
+   "verdict": "ASSERTION_REJECTION",
+   "status": "FAIL",
+   "pass": 3,
+   "tests": 6,
+   "failed": [
+    "AC-1: Toate înregistrările zilei rămân în lista publică fără telefon:exposure:assertion",
+    "AC-2: Fiecare parametru anonim păstrează toate înregistrările fără telefon:exposure:assertion",
+    "AC-1: Înregistrarea istorică fără telefon rămâne listată și neschimbată:exposure:assertion"
+   ],
+   "errorClasses": [
+    "ERR_ASSERTION"
+   ],
+   "cleanupOk": true,
+   "processesGone": true,
+   "durationMs": 1812
+  },
+  {
+   "name": "existing records only",
+   "verdict": "ASSERTION_REJECTION",
+   "status": "FAIL",
+   "pass": 3,
+   "tests": 6,
+   "failed": [
+    "AC-1: Toate înregistrările zilei rămân în lista publică fără telefon:exposure:assertion",
+    "AC-2: Fiecare parametru anonim păstrează toate înregistrările fără telefon:exposure:assertion",
+    "AC-1: Înregistrarea istorică fără telefon rămâne listată și neschimbată:exposure:assertion"
+   ],
+   "errorClasses": [
+    "ERR_ASSERTION"
+   ],
+   "cleanupOk": true,
+   "processesGone": true,
+   "durationMs": 2019
+  },
+  {
+   "name": "escape in text other key",
+   "verdict": "ASSERTION_REJECTION",
+   "status": "FAIL",
+   "pass": 3,
+   "tests": 6,
+   "failed": [
+    "AC-1: Toate înregistrările zilei rămân în lista publică fără telefon:exposure:assertion",
+    "AC-2: Fiecare parametru anonim păstrează toate înregistrările fără telefon:exposure:assertion",
+    "AC-1: Înregistrarea istorică fără telefon rămâne listată și neschimbată:exposure:assertion"
+   ],
+   "errorClasses": [
+    "ERR_ASSERTION"
+   ],
+   "cleanupOk": true,
+   "processesGone": true,
+   "durationMs": 2128
+  },
+  {
+   "name": "seed ignored, leak only before restart",
+   "verdict": "ASSERTION_REJECTION",
+   "status": "FAIL",
+   "pass": 3,
+   "tests": 6,
+   "failed": [
+    "AC-1: Toate înregistrările zilei rămân în lista publică fără telefon:dataset:assertion",
+    "AC-2: Fiecare parametru anonim păstrează toate înregistrările fără telefon:dataset:assertion",
+    "AC-1: Înregistrarea istorică fără telefon rămâne listată și neschimbată:dataset:assertion"
+   ],
+   "errorClasses": [
+    "ERR_ASSERTION"
+   ],
+   "cleanupOk": true,
+   "processesGone": true,
+   "durationMs": 1786
+  },
+  {
+   "name": "existing record absent after restart",
+   "verdict": "ASSERTION_REJECTION",
+   "status": "FAIL",
+   "pass": 3,
+   "tests": 6,
+   "failed": [
+    "AC-1: Toate înregistrările zilei rămân în lista publică fără telefon:ids:assertion",
+    "AC-2: Fiecare parametru anonim păstrează toate înregistrările fără telefon:ids:assertion",
+    "AC-1: Înregistrarea istorică fără telefon rămâne listată și neschimbată:historical:assertion"
+   ],
+   "errorClasses": [
+    "ERR_ASSERTION"
+   ],
+   "cleanupOk": true,
+   "processesGone": true,
+   "durationMs": 1735
+  },
+  {
+   "name": "existing record on another day",
+   "verdict": "ASSERTION_REJECTION",
+   "status": "FAIL",
+   "pass": 3,
+   "tests": 6,
+   "failed": [
+    "AC-1: Toate înregistrările zilei rămân în lista publică fără telefon:dataset:assertion",
+    "AC-2: Fiecare parametru anonim păstrează toate înregistrările fără telefon:dataset:assertion",
+    "AC-1: Înregistrarea istorică fără telefon rămâne listată și neschimbată:dataset:assertion"
+   ],
+   "errorClasses": [
+    "ERR_ASSERTION"
+   ],
+   "cleanupOk": true,
+   "processesGone": true,
+   "durationMs": 1913
+  },
+  {
+   "name": "existing phone not persisted",
+   "verdict": "ASSERTION_REJECTION",
+   "status": "FAIL",
+   "pass": 3,
+   "tests": 6,
+   "failed": [
+    "AC-1: Toate înregistrările zilei rămân în lista publică fără telefon:dataset:assertion",
+    "AC-2: Fiecare parametru anonim păstrează toate înregistrările fără telefon:dataset:assertion",
+    "AC-1: Înregistrarea istorică fără telefon rămâne listată și neschimbată:dataset:assertion"
+   ],
+   "errorClasses": [
+    "ERR_ASSERTION"
+   ],
+   "cleanupOk": true,
+   "processesGone": true,
+   "durationMs": 1755
+  },
+  {
+   "name": "empty list, base",
+   "verdict": "ASSERTION_REJECTION",
+   "status": "FAIL",
+   "pass": 3,
+   "tests": 6,
+   "failed": [
+    "AC-1: Toate înregistrările zilei rămân în lista publică fără telefon:ids:assertion",
+    "AC-2: Fiecare parametru anonim păstrează toate înregistrările fără telefon:ids:assertion",
+    "AC-1: Înregistrarea istorică fără telefon rămâne listată și neschimbată:historical:assertion"
+   ],
+   "errorClasses": [
+    "ERR_ASSERTION"
+   ],
+   "cleanupOk": true,
+   "processesGone": true,
+   "durationMs": 1757
+  },
+  {
+   "name": "empty list, debug",
+   "verdict": "ASSERTION_REJECTION",
+   "status": "FAIL",
+   "pass": 4,
+   "tests": 6,
+   "failed": [
+    "AC-2: Fiecare parametru anonim păstrează toate înregistrările fără telefon:ids:assertion",
+    "AC-1: Înregistrarea istorică fără telefon rămâne listată și neschimbată:historical:assertion"
+   ],
+   "errorClasses": [
+    "ERR_ASSERTION"
+   ],
+   "cleanupOk": true,
+   "processesGone": true,
+   "durationMs": 1870
+  },
+  {
+   "name": "existing omitted, base",
+   "verdict": "ASSERTION_REJECTION",
+   "status": "FAIL",
+   "pass": 3,
+   "tests": 6,
+   "failed": [
+    "AC-1: Toate înregistrările zilei rămân în lista publică fără telefon:ids:assertion",
+    "AC-2: Fiecare parametru anonim păstrează toate înregistrările fără telefon:ids:assertion",
+    "AC-1: Înregistrarea istorică fără telefon rămâne listată și neschimbată:historical:assertion"
+   ],
+   "errorClasses": [
+    "ERR_ASSERTION"
+   ],
+   "cleanupOk": true,
+   "processesGone": true,
+   "durationMs": 1920
+  },
+  {
+   "name": "existing omitted, debug",
+   "verdict": "ASSERTION_REJECTION",
+   "status": "FAIL",
+   "pass": 4,
+   "tests": 6,
+   "failed": [
+    "AC-2: Fiecare parametru anonim păstrează toate înregistrările fără telefon:ids:assertion",
+    "AC-1: Înregistrarea istorică fără telefon rămâne listată și neschimbată:historical:assertion"
+   ],
+   "errorClasses": [
+    "ERR_ASSERTION"
+   ],
+   "cleanupOk": true,
+   "processesGone": true,
+   "durationMs": 1748
+  },
+  {
+   "name": "ids only in metadata, base",
+   "verdict": "ASSERTION_REJECTION",
+   "status": "FAIL",
+   "pass": 3,
+   "tests": 6,
+   "failed": [
+    "AC-1: Toate înregistrările zilei rămân în lista publică fără telefon:ids:assertion",
+    "AC-2: Fiecare parametru anonim păstrează toate înregistrările fără telefon:ids:assertion",
+    "AC-1: Înregistrarea istorică fără telefon rămâne listată și neschimbată:historical:assertion"
+   ],
+   "errorClasses": [
+    "ERR_ASSERTION"
+   ],
+   "cleanupOk": true,
+   "processesGone": true,
+   "durationMs": 1964
+  },
+  {
+   "name": "ids only in metadata, debug",
+   "verdict": "ASSERTION_REJECTION",
+   "status": "FAIL",
+   "pass": 4,
+   "tests": 6,
+   "failed": [
+    "AC-2: Fiecare parametru anonim păstrează toate înregistrările fără telefon:ids:assertion",
+    "AC-1: Înregistrarea istorică fără telefon rămâne listată și neschimbată:historical:assertion"
+   ],
+   "errorClasses": [
+    "ERR_ASSERTION"
+   ],
+   "cleanupOk": true,
+   "processesGone": true,
+   "durationMs": 1919
+  },
+  {
+   "name": "seed rows only",
+   "verdict": "ASSERTION_REJECTION",
+   "status": "FAIL",
+   "pass": 3,
+   "tests": 6,
+   "failed": [
+    "AC-1: Toate înregistrările zilei rămân în lista publică fără telefon:exposure:assertion",
+    "AC-2: Fiecare parametru anonim păstrează toate înregistrările fără telefon:exposure:assertion",
+    "AC-1: Înregistrarea istorică fără telefon rămâne listată și neschimbată:exposure:assertion"
+   ],
+   "errorClasses": [
+    "ERR_ASSERTION"
+   ],
+   "cleanupOk": true,
+   "processesGone": true,
+   "durationMs": 1723
+  },
+  {
+   "name": "initial data not created",
+   "verdict": "ASSERTION_REJECTION",
+   "status": "FAIL",
+   "pass": 3,
+   "tests": 6,
+   "failed": [
+    "AC-1: Toate înregistrările zilei rămân în lista publică fără telefon:dataset:assertion",
+    "AC-2: Fiecare parametru anonim păstrează toate înregistrările fără telefon:dataset:assertion",
+    "AC-1: Înregistrarea istorică fără telefon rămâne listată și neschimbată:dataset:assertion"
+   ],
+   "errorClasses": [
+    "ERR_ASSERTION"
+   ],
+   "cleanupOk": true,
+   "processesGone": true,
+   "durationMs": 1686
+  },
+  {
+   "name": "initial data without phone",
+   "verdict": "ASSERTION_REJECTION",
+   "status": "FAIL",
+   "pass": 3,
+   "tests": 6,
+   "failed": [
+    "AC-1: Toate înregistrările zilei rămân în lista publică fără telefon:dataset:assertion",
+    "AC-2: Fiecare parametru anonim păstrează toate înregistrările fără telefon:dataset:assertion",
+    "AC-1: Înregistrarea istorică fără telefon rămâne listată și neschimbată:dataset:assertion"
+   ],
+   "errorClasses": [
+    "ERR_ASSERTION"
+   ],
+   "cleanupOk": true,
+   "processesGone": true,
+   "durationMs": 1956
+  },
+  {
+   "name": "initial rows omitted",
+   "verdict": "ASSERTION_REJECTION",
+   "status": "FAIL",
+   "pass": 3,
+   "tests": 6,
+   "failed": [
+    "AC-1: Toate înregistrările zilei rămân în lista publică fără telefon:ids:assertion",
+    "AC-2: Fiecare parametru anonim păstrează toate înregistrările fără telefon:ids:assertion",
+    "AC-1: Înregistrarea istorică fără telefon rămâne listată și neschimbată:historical:assertion"
+   ],
+   "errorClasses": [
+    "ERR_ASSERTION"
+   ],
+   "cleanupOk": true,
+   "processesGone": true,
+   "durationMs": 1766
+  },
+  {
+   "name": "kept row omitted",
+   "verdict": "ASSERTION_REJECTION",
+   "status": "FAIL",
+   "pass": 3,
+   "tests": 6,
+   "failed": [
+    "AC-1: Toate înregistrările zilei rămân în lista publică fără telefon:ids:assertion",
+    "AC-2: Fiecare parametru anonim păstrează toate înregistrările fără telefon:ids:assertion",
+    "AC-1: Înregistrarea istorică fără telefon rămâne listată și neschimbată:historical:assertion"
+   ],
+   "errorClasses": [
+    "ERR_ASSERTION"
+   ],
+   "cleanupOk": true,
+   "processesGone": true,
+   "durationMs": 1999
+  },
+  {
+   "name": "new row omitted",
+   "verdict": "ASSERTION_REJECTION",
+   "status": "FAIL",
+   "pass": 4,
+   "tests": 6,
+   "failed": [
+    "AC-1: Toate înregistrările zilei rămân în lista publică fără telefon:ids:assertion",
+    "AC-2: Fiecare parametru anonim păstrează toate înregistrările fără telefon:ids:assertion"
+   ],
+   "errorClasses": [
+    "ERR_ASSERTION"
+   ],
+   "cleanupOk": true,
+   "processesGone": true,
+   "durationMs": 1948
+  },
+  {
+   "name": "seed rows only under any parameter",
+   "verdict": "ASSERTION_REJECTION",
+   "status": "FAIL",
+   "pass": 4,
+   "tests": 6,
+   "failed": [
+    "AC-2: Fiecare parametru anonim păstrează toate înregistrările fără telefon:exposure:assertion",
+    "AC-1: Înregistrarea istorică fără telefon rămâne listată și neschimbată:exposure:assertion"
+   ],
+   "errorClasses": [
+    "ERR_ASSERTION"
+   ],
+   "cleanupOk": true,
+   "processesGone": true,
+   "durationMs": 1816
+  },
+  {
+   "name": "threshold only under any parameter",
+   "verdict": "ASSERTION_REJECTION",
+   "status": "FAIL",
+   "pass": 4,
+   "tests": 6,
+   "failed": [
+    "AC-2: Fiecare parametru anonim păstrează toate înregistrările fără telefon:exposure:assertion",
+    "AC-1: Înregistrarea istorică fără telefon rămâne listată și neschimbată:exposure:assertion"
+   ],
+   "errorClasses": [
+    "ERR_ASSERTION"
+   ],
+   "cleanupOk": true,
+   "processesGone": true,
+   "durationMs": 1787
+  },
+  {
+   "name": "seed rows only under all=1",
+   "verdict": "ASSERTION_REJECTION",
+   "status": "FAIL",
+   "pass": 4,
+   "tests": 6,
+   "failed": [
+    "AC-2: Fiecare parametru anonim păstrează toate înregistrările fără telefon:exposure:assertion",
+    "AC-1: Înregistrarea istorică fără telefon rămâne listată și neschimbată:exposure:assertion"
+   ],
+   "errorClasses": [
+    "ERR_ASSERTION"
+   ],
+   "cleanupOk": true,
+   "processesGone": true,
+   "durationMs": 2423
+  },
+  {
+   "name": "returned id differs",
+   "verdict": "ASSERTION_REJECTION",
+   "status": "FAIL",
+   "pass": 3,
+   "tests": 6,
+   "failed": [
+    "AC-1: Toate înregistrările zilei rămân în lista publică fără telefon:ids:assertion",
+    "AC-2: Fiecare parametru anonim păstrează toate înregistrările fără telefon:ids:assertion",
+    "AC-4 control: Telefonul trimis se păstrează exact în stocare:ids:assertion"
+   ],
+   "errorClasses": [
+    "ERR_ASSERTION"
+   ],
+   "cleanupOk": true,
+   "processesGone": true,
+   "durationMs": 1805
+  },
+  {
+   "name": "second returned id differs",
+   "verdict": "ASSERTION_REJECTION",
+   "status": "FAIL",
+   "pass": 4,
+   "tests": 6,
+   "failed": [
+    "AC-1: Toate înregistrările zilei rămân în lista publică fără telefon:ids:assertion",
+    "AC-2: Fiecare parametru anonim păstrează toate înregistrările fără telefon:ids:assertion"
+   ],
+   "errorClasses": [
+    "ERR_ASSERTION"
+   ],
+   "cleanupOk": true,
+   "processesGone": true,
+   "durationMs": 1920
+  },
+  {
+   "name": "historical phone filled",
+   "verdict": "ASSERTION_REJECTION",
+   "status": "FAIL",
+   "pass": 5,
+   "tests": 6,
+   "failed": [
+    "AC-1: Înregistrarea istorică fără telefon rămâne listată și neschimbată:historical:assertion"
+   ],
+   "errorClasses": [
+    "ERR_ASSERTION"
+   ],
+   "cleanupOk": true,
+   "processesGone": true,
+   "durationMs": 1944
+  },
+  {
+   "name": "historical row omitted",
+   "verdict": "ASSERTION_REJECTION",
+   "status": "FAIL",
+   "pass": 5,
+   "tests": 6,
+   "failed": [
+    "AC-1: Înregistrarea istorică fără telefon rămâne listată și neschimbată:historical:assertion"
+   ],
+   "errorClasses": [
+    "ERR_ASSERTION"
+   ],
+   "cleanupOk": true,
+   "processesGone": true,
+   "durationMs": 1754
+  }
+ ],
+ "originalRuns": [
+  {
+   "name": "original",
+   "verdict": "ASSERTION_REJECTION",
+   "status": "FAIL",
+   "pass": 3,
+   "tests": 6,
+   "failed": [
+    "AC-1: Toate înregistrările zilei rămân în lista publică fără telefon:exposure:assertion",
+    "AC-2: Fiecare parametru anonim păstrează toate înregistrările fără telefon:exposure:assertion",
+    "AC-1: Înregistrarea istorică fără telefon rămâne listată și neschimbată:exposure:assertion"
+   ],
+   "errorClasses": [
+    "ERR_ASSERTION"
+   ],
+   "cleanupOk": true,
+   "processesGone": true,
+   "durationMs": 1763
+  },
+  {
+   "name": "original",
+   "verdict": "ASSERTION_REJECTION",
+   "status": "FAIL",
+   "pass": 3,
+   "tests": 6,
+   "failed": [
+    "AC-1: Toate înregistrările zilei rămân în lista publică fără telefon:exposure:assertion",
+    "AC-2: Fiecare parametru anonim păstrează toate înregistrările fără telefon:exposure:assertion",
+    "AC-1: Înregistrarea istorică fără telefon rămâne listată și neschimbată:exposure:assertion"
+   ],
+   "errorClasses": [
+    "ERR_ASSERTION"
+   ],
+   "cleanupOk": true,
+   "processesGone": true,
+   "durationMs": 1885
+  }
+ ],
+ "correctionProbes": {
+  "defects": [
+   {
+    "name": "initial data phone lost at restart",
+    "verdict": "ASSERTION_REJECTION",
+    "status": "FAIL",
+    "pass": 3,
+    "tests": 6,
+    "failed": [
+     "AC-1: Toate înregistrările zilei rămân în lista publică fără telefon:dataset:assertion",
+     "AC-2: Fiecare parametru anonim păstrează toate înregistrările fără telefon:dataset:assertion",
+     "AC-1: Înregistrarea istorică fără telefon rămâne listată și neschimbată:dataset:assertion"
+    ],
+    "errorClasses": [
+     "ERR_ASSERTION"
+    ],
+    "cleanupOk": true,
+    "processesGone": true,
+    "durationMs": 1809
+   },
+   {
+    "name": "historical row changed by debug, restored by next request",
+    "verdict": "ASSERTION_REJECTION",
+    "status": "FAIL",
+    "pass": 5,
+    "tests": 6,
+    "failed": [
+     "AC-1: Înregistrarea istorică fără telefon rămâne listată și neschimbată:historical:assertion"
+    ],
+    "errorClasses": [
+     "ERR_ASSERTION"
+    ],
+    "cleanupOk": true,
+    "processesGone": true,
+    "durationMs": 1795
+   }
+  ],
+  "preconditions": [
+   {
+    "name": "13:00 not free before historical insertion",
+    "verdict": "PRECONDITION_STOP",
+    "status": "FAIL",
+    "pass": 5,
+    "tests": 6,
+    "failed": [
+     "AC-1: Înregistrarea istorică fără telefon rămâne listată și neschimbată:historical:assertion"
+    ],
+    "errorClasses": [
+     "ERR_ASSERTION"
+    ],
+    "cleanupOk": true,
+    "processesGone": true,
+    "durationMs": 1780
+   }
+  ]
+ }
+}

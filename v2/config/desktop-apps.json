@@ -1,0 +1,34 @@
+{
+  "version": 1,
+  "note": "M10 Desktop Operator catalog. Discovery uses standard sources only (App Paths, Start Menu shortcuts two levels deep, known paths, the app's own versioned folder) and the publisher's Authenticode signature; never a disk scan. A discovered app is NOT authorized: the owner authorizes it once (activation card). Capabilities list what the Hub implements per operation; the verification level is recorded per app from real runs (desktop_apps.verified_json).",
+  "apps": [
+    {
+      "id": "notepad", "displayName": "Notepad", "processNames": ["Notepad"], "publisher": "Microsoft",
+      "launch": { "kind": "aumid", "aumid": "Microsoft.WindowsNotepad_8wekyb3d8bbwe!App" },
+      "discover": { "appPaths": ["notepad.exe"] },
+      "profile": "notepad",
+      "capabilities": { "launch": "IMPLEMENTED", "focus": "IMPLEMENTED", "observe": "IMPLEMENTED", "setText": "IMPLEMENTED", "shortcuts": "IMPLEMENTED", "saveAs": "IMPLEMENTED", "cancel": "IMPLEMENTED" }
+    },
+    {
+      "id": "explorer", "displayName": "File Explorer", "processNames": ["explorer"], "publisher": "Microsoft",
+      "launch": { "kind": "explorer" },
+      "discover": { "knownPaths": ["%WINDIR%\\explorer.exe"] },
+      "profile": "explorer",
+      "capabilities": { "launch": "IMPLEMENTED", "focus": "IMPLEMENTED", "observe": "IMPLEMENTED", "select": "UNSUPPORTED", "import": "IMPLEMENTED" }
+    },
+    {
+      "id": "obs", "displayName": "OBS Studio", "processNames": ["obs64"], "publisher": "OBS Project",
+      "launch": { "kind": "exe" },
+      "discover": { "startMenu": ["OBS Studio"], "knownPaths": ["%ProgramFiles%\\obs-studio\\bin\\64bit\\obs64.exe"] },
+      "profile": "obs",
+      "capabilities": { "launch": "IMPLEMENTED", "focus": "IMPLEMENTED", "observe": "IMPLEMENTED", "capture": "IMPLEMENTED_API", "cancel": "IMPLEMENTED_API" }
+    },
+    {
+      "id": "capcut", "displayName": "CapCut", "processNames": ["CapCut"], "publisher": "Bytedance",
+      "launch": { "kind": "exe" },
+      "discover": { "startMenu": ["CapCut"], "versionedDir": "%LOCALAPPDATA%\\CapCut\\Apps", "versionedExe": "CapCut.exe" },
+      "profile": "capcut",
+      "capabilities": { "launch": "IMPLEMENTED", "focus": "IMPLEMENTED", "observe": "IMPLEMENTED", "invokeControl": "UNVERIFIED", "import": "UNVERIFIED", "export": "ASSISTED_ONLY" }
+    }
+  ]
+}

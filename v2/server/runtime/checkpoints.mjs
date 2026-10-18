@@ -57,7 +57,7 @@ export function createCheckpoints({ db, bus, clock, projects, conversations, mis
       pendingApprovals: approvals.list("pending").map((a) => ({ id: a.id, actionKind: a.actionKind, scope: `${a.scopeType}:${a.scopeId}`, expiresAt: a.expiresAt })),
       locks: leases.list().map((l) => ({ id: l.id, resource: l.resource, holder: l.holder, status: l.status })),
       activeRuns: db.prepare("SELECT id, provider, status, surface_id AS surfaceId FROM agent_runs WHERE status IN ('starting','running','waiting_approval')").all(),
-      tests: db.prepare("SELECT tool, status, finished_at AS finishedAt FROM tool_calls WHERE tool LIKE 'process.test%' ORDER BY started_at DESC LIMIT 5").all(),
+      tests: db.prepare("SELECT tool, status, finished_at AS finishedAt FROM tool_calls WHERE tool LIKE 'process.test%' AND json_extract(args_json, '$.projectId') = ? ORDER BY started_at DESC LIMIT 5").all(project.id),
       artifacts: db.prepare("SELECT id, kind, title, source, native_ref AS nativeRef, version FROM artifacts WHERE project_id = ? ORDER BY created_at DESC LIMIT 20").all(project.id),
       externalEffects: db.prepare("SELECT id, tool, status, effects FROM tool_calls WHERE effects NOT IN ('none','none (proposal only)') ORDER BY started_at DESC LIMIT 20").all(),
       git: { untrackedCount: git.untracked?.length || 0 },

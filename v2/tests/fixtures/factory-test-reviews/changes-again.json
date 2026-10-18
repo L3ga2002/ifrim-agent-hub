@@ -1,0 +1,27 @@
+{
+  "comment": "M11 L5 test-review fixture (fake-codex test-review:changes): the reviewer finds that the test could never pass and asks for changes (one high finding).",
+  "verdict": "CHANGES_REQUESTED",
+  "summary": "Testul cere un mesaj pe care cerința nu îl conține, deci nu poate trece după o implementare corectă.",
+  "criteria": "ALL",
+  "criterion": {
+    "covered": true,
+    "failsForRightReason": true,
+    "canEverPass": false,
+    "contradictsOwner": false,
+    "trivialPassRisk": "low",
+    "plain": "Testul cere un text de eroare pe care nu l-ai cerut; trebuie rescris."
+  },
+  "findings": [
+    {
+      "severity": "high",
+      "file": "test/hub",
+      "area": "testul de acceptanță",
+      "observation": "Aserțiunea cere un mesaj care nu apare în cerința proprietarului",
+      "impact": "Testul nu poate trece niciodată după o implementare corectă",
+      "evidence": "assert.equal(r.errors.name, ...)",
+      "reproduction": "Compară mesajul cerut cu cuvintele proprietarului"
+    }
+  ],
+  "missingContext": [],
+  "previousFindings": "ALL_STILL_OPEN"
+}

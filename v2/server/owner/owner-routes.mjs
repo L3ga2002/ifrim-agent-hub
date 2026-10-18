@@ -4,6 +4,7 @@ import { validateLayout, defaultLayout, CARD_TYPES } from "./layout.mjs";
 import { AUTONOMY_LEVELS, AUTONOMY_LABELS, DENIED_EFFECTS } from "./envelopes.mjs";
 import { PROJECT_STATES } from "./cockpit.mjs";
 import { decodeDelegation } from "../runtime/commands.mjs";
+import { isLoopback, DEV_SESSION_HOURS } from "./dev-profile.mjs";
 
 /**
  * HTTP adapter for M06. The owner session travels in an HttpOnly, SameSite=Strict cookie scoped to /api; the database keeps
@@ -15,13 +16,15 @@ export function registerOwnerRoutes(router, hub) {
   const get = (p, h) => router.add("GET", p, h);
   const post = (p, h, o) => router.add("POST", p, h, o);
 
-  const cookies = (req) => Object.fromEntries(String(req.headers.cookie || "").split(";").map((c) => c.trim()).filter(Boolean).map((c) => { const i = c.indexOf("="); return [c.slice(0, i), decodeURIComponent(c.slice(i + 1))]; }));
+  // Cookies are shared by every app on localhost: a malformed one ("%" alone) must not break these routes (unlock, interrupt, logout).
+  const safeDecode = (v) => { try { return decodeURIComponent(v); } catch { return v; } };
+  const cookies = (req) => Object.fromEntries(String(req.headers.cookie || "").split(";").map((c) => c.trim()).filter(Boolean).map((c) => { const i = c.indexOf("="); return i < 0 ? [c, ""] : [c.slice(0, i), safeDecode(c.slice(i + 1))]; }));
   const originOf = (req) => req.headers.origin || `http://${String(req.headers.host || "").toLowerCase()}`;
   const tokenOf = (req) => cookies(req)[SESSION_COOKIE] || null;
   const sessionOf = (req, touch = true) => trust.resolveSession(tokenOf(req), { origin: originOf(req), touch });
   const setCookie = (res, token, maxAgeS) => res.setHeader("Set-Cookie", `${SESSION_COOKIE}=${token ? encodeURIComponent(token) : ""}; Path=/api; HttpOnly; SameSite=Strict; Max-Age=${token ? maxAgeS : 0}`);
 
-  async function dispatch(req, type, payload, { requireOwner = false } = {}) {
+  async function dispatch(req, type, payload, { requireOwner = false, created = false } = {}) {
     // These routes act for the owner (session) or the owner's UI; a request that declares itself an agent or a script is refused
     // here instead of being recorded as the owner's click.
     const declared = String(req.headers["x-hub-channel"] || "").toLowerCase();
@@ -29,12 +32,20 @@ export function registerOwnerRoutes(router, hub) {
     const session = sessionOf(req);
     if (requireOwner && !session) throw new HubError("authentication", "Deschide sesiunea de proprietar (Windows Hello / cheia ta) pentru această acțiune", { data: { needSession: true } });
     const result = await commands.dispatch({ type, payload, actor: session ? `owner:${session.id}` : "user", channel: session ? "owner" : "ui", ownerSession: session,
-      idempotencyKey: req.headers["idempotency-key"] || null, intentText: type === "owner.intent" ? String(payload.text || "").slice(0, 500) : "" });
+      idempotencyKey: type === "factory.accept" || type === "factory.reject" ? null : req.headers["idempotency-key"] || null, intentText: type === "owner.intent" ? String(payload.text || "").slice(0, 500) : "" });
     if (result.approvalRequired) return { __status: 202, body: { approvalRequired: true, approval: result.approval, commandId: result.command.id } };
-    return result.result;
+    return created ? { __status: 201, body: result.result } : result.result;
   }
 
   // ---------- trusted session ----------
+  post("/api/factory/:id/accept", ({ req, params, body }) => dispatch(req, "factory.accept", {
+    missionId: params.id, bundleId: body?.bundleId, bundleSha: body?.bundleSha, via: "factory_panel", note: body?.note || "",
+  }, { requireOwner: true }));
+  // 2.15.1: the rejection names the exact target the page showed (view.rejectTarget): the mission version and the waiting bundle, or none.
+  // No idempotency-key replay (above): a repeat re-checks the session and returns the recorded decision from the factory.
+  post("/api/factory/:id/reject", ({ req, params, body }) => dispatch(req, "factory.reject", {
+    missionId: params.id, note: body?.note, displayedVersion: body?.displayedVersion, bundleId: body?.bundleId ?? null, bundleSha: body?.bundleSha ?? null,
+  }, { requireOwner: true }));
   get("/api/owner/status", ({ req }) => ({ ...trust.status(sessionOf(req, false)), origin: originOf(req), webauthnOrigin: `http://localhost:${config.port}`,
     autonomyLevels: AUTONOMY_LEVELS.map((l) => ({ level: l, label: AUTONOMY_LABELS[l] })), deniedEffects: DENIED_EFFECTS, projectStates: PROJECT_STATES }));
   post("/api/owner/register/begin", ({ req, body }) => dispatch(req, "owner.register.begin", { origin: originOf(req), setupText: body.setupText || "" }));
@@ -45,11 +56,29 @@ export function registerOwnerRoutes(router, hub) {
     if (result?.token) setCookie(res, result.token, SESSION_DEFAULTS.maxHours * 3600);
     return { sessionId: result.sessionId, expiresAt: result.expiresAt, reauthAt: result.reauthAt, renewed: result.renewed };
   }, { maxBytes: 64 * 1024 });
+  // Stage before M12: the local development profile opens the owner session without a ceremony — only when the INSTANCE's profile
+  // is on (a file in its private data folder), only for the canonical localhost origin, a same-origin request from a loopback peer, never
+  // on the agent or CLI channels. The session says authority local_dev_profile and userVerified false; no WebAuthn result is written.
+  post("/api/owner/dev-session", async ({ req, res }) => {
+    const declared = String(req.headers["x-hub-channel"] || "").toLowerCase();
+    if (declared === "agent" || declared === "cli") throw new HubError("policy", `Profilul de dezvoltare nu se deschide pe canalul ${declared}`, { code: "DEV_PROFILE_CHANNEL" });
+    if (!isLoopback(req.socket?.remoteAddress)) throw new HubError("policy", "Profilul de dezvoltare se deschide doar de pe acest calculator", { code: "DEV_PROFILE_REMOTE" });
+    if (req.headers.origin !== config.canonicalOrigin) throw new HubError("policy", `Profilul de dezvoltare se deschide doar din pagina Hub-ului (${config.canonicalOrigin})`, { code: "DEV_PROFILE_ORIGIN" });
+    const site = req.headers["sec-fetch-site"];
+    if (site && site !== "same-origin") throw new HubError("policy", "Cerere din alt site refuzată", { code: "DEV_PROFILE_ORIGIN" });
+    const result = await dispatch(req, "owner.dev_session.open", { origin: originOf(req), currentToken: tokenOf(req) || "", userAgent: String(req.headers["user-agent"] || "").slice(0, 200) });
+    if (result?.token) setCookie(res, result.token, DEV_SESSION_HOURS * 3600);
+    return { sessionId: result.sessionId, expiresAt: result.expiresAt, renewed: result.renewed, authority: result.authority };
+  });
   post("/api/owner/logout", async ({ req, res }) => { const r = sessionOf(req) ? await dispatch(req, "owner.logout", {}) : { ended: false }; setCookie(res, null, 0); return r; });
   post("/api/owner/sessions/revoke-all", ({ req, body }) => dispatch(req, "owner.sessions.revoke_all", { reason: body.reason || "revocare" }));
   post("/api/owner/credentials/:id/revoke", ({ req, params }) => dispatch(req, "owner.credential.revoke", { credentialId: params.id }, { requireOwner: true }));
   post("/api/owner/policy/activate", ({ req, body }) => dispatch(req, "owner.policy.activate", { text: body.text }, { requireOwner: true }));
   post("/api/owner/policy/deactivate", ({ req, body }) => dispatch(req, "owner.policy.deactivate", { reason: body.reason || "" }));
+  // M09-A2: the billing declaration (owner session, re-authenticated, bound to the displayed account) and its fail-safe withdrawal.
+  post("/api/owner/billing/declare", ({ req, body }) => dispatch(req, "billing.declare", { provider: body.provider, confirmText: body.confirmText, displayedIdentity: body.displayedIdentity,
+    route: body.route || undefined }, { requireOwner: true }));
+  post("/api/owner/billing/withdraw", ({ req, body }) => dispatch(req, "billing.withdraw", { provider: body.provider, reason: body.reason || "", stopRunning: body.stopRunning !== false }));
 
   // ---------- cockpit, explain, replay, company map ----------
   get("/api/cockpit/:projectId", async ({ params }) => {
@@ -67,17 +96,40 @@ export function registerOwnerRoutes(router, hub) {
   });
   get("/api/missions/:id/replay", ({ params }) => { const r = cockpit.replay(params.id); if (!r) throw new HubError("not_found", "Misiunea nu e o misiune Software Factory"); return r; });
   get("/api/company/map", () => cockpit.companyMap());
+  // Stage before M12: what Lega knows about the system (read-only; the same answer as the typed or spoken question).
+  get("/api/knowledge", async ({ query }) => {
+    if (!hub.knowledge) throw new HubError("not_found", "Registrul sistemului nu e disponibil");
+    const topic = String(query.topic || "overview");
+    const [snapshot, answer] = await Promise.all([hub.knowledge.snapshot(topic), hub.knowledge.answer(topic)]);
+    return { ...snapshot, answer: answer.text, screen: answer.screen || null };
+  });
 
   // ---------- natural language, envelopes, autonomy, interruptions ----------
-  post("/api/owner/intent", ({ req, body }) => dispatch(req, "owner.intent", { text: body.text || "", projectId: body.projectId || undefined, source: body.source || "typed", utteranceId: body.utteranceId || undefined, presented: body.presented || undefined, layout: body.layout || undefined }));
+  post("/api/owner/intent", ({ req, body }) => dispatch(req, "owner.intent", { text: body.text || "", projectId: body.projectId || undefined, source: body.source || "typed", utteranceId: body.utteranceId || undefined, presented: body.presented || undefined, layout: body.layout || undefined,
+    // M08: the Lega session the plan is shown in (the Hub arms the short voice window only for it; review M08: it was dropped here).
+    legaSessionId: typeof body.legaSessionId === "string" && body.legaSessionId ? body.legaSessionId.slice(0, 80) : undefined,
+    // M10.2: a clarification button answers with the option id the Hub offered (checked against the server-held question).
+    choice: body.choice && typeof body.choice === "object" && !Array.isArray(body.choice) ? { forIntent: String(body.choice.forIntent || "").slice(0, 40), id: String(body.choice.id || "").slice(0, 80) } : undefined }));
   get("/api/envelopes", ({ query }) => ({ envelopes: query.projectId ? envelopes.forProject(projects.get(query.projectId)?.id || query.projectId, 20).map((e) => envelopes.view(e.id)) : envelopes.pending().map((e) => envelopes.view(e.id)) }));
   get("/api/envelopes/:id", ({ params }) => { const v = envelopes.view(params.id); if (!v) throw new HubError("not_found", "Plan necunoscut"); return v; });
   post("/api/envelopes", ({ req, body }) => dispatch(req, "envelope.propose", { projectId: body.projectId, missionIds: body.missionIds || [], level: body.level || undefined, constraints: body.constraints || {} }));
   post("/api/envelopes/:id/confirm", ({ req, params, body }) => dispatch(req, "envelope.confirm", { envelopeId: params.id, nonce: body.nonce, displayedHash: body.displayedHash, modality: body.modality || "click", utteranceId: body.utteranceId || undefined }, { requireOwner: true }));
   post("/api/envelopes/:id/delta", ({ req, params, body }) => dispatch(req, "envelope.confirm_delta", { envelopeId: params.id, missionId: body.missionId, modality: body.modality || "click" }, { requireOwner: true }));
   post("/api/envelopes/:id/revoke", ({ req, params, body }) => dispatch(req, "envelope.revoke", { envelopeId: params.id, reason: body.reason || "Revocat de proprietar" }));
-  post("/api/owner/autonomy", ({ req, body }) => dispatch(req, "owner.autonomy.set", { projectId: body.projectId, level: body.level }));
+  // M10.2: the preserved requests (cockpit card) — give one up, or confirm once the plan of a request blocked only by automatic
+  // readiness steps (owner session, the exact nonce + hash shown); and the per-project model defaults (owner session, Windows Hello).
+  post("/api/work-requests/:id/cancel", ({ req, params }) => dispatch(req, "work.request.cancel", { workRequestId: params.id }));
+  post("/api/work-requests/:id/confirm-readiness", ({ req, params, body }) => dispatch(req, "work.request.confirm_readiness", { workRequestId: params.id, envelopeId: body.envelopeId,
+    nonce: body.nonce, displayedHash: body.displayedHash, modality: body.modality || "click" }, { requireOwner: true }));
+  post("/api/projects/:id/model-defaults", ({ req, params, body }) => dispatch(req, "factory.defaults.set", { projectId: params.id, writerModel: body.writerModel || "", writerEffort: body.writerEffort || "",
+    reviewerModel: body.reviewerModel || "", reviewerEffort: body.reviewerEffort || "", clear: Boolean(body.clear) }, { requireOwner: true }));
+  post("/api/owner/autonomy", ({ req, body }) => dispatch(req, "owner.autonomy.set", { projectId: body.projectId, level: body.level, ...(body.atLeast === true ? { atLeast: true } : {}) }));
   post("/api/owner/interrupt", ({ req, body }) => dispatch(req, "owner.interrupt", { kind: body.kind, projectId: body.projectId || undefined, provider: body.provider || undefined, reason: body.reason || "" }));
+  // M10.2.1 (D14): the contextual gate rearm — the card (what stopped, what stays stopped) and the rearm itself, both in the owner
+  // session; the rearm also needs a fresh Windows Hello (the UI's withReauth retries once with the same body).
+  post("/api/owner/gate/rearm/card", ({ req, body }) => dispatch(req, "gate.rearm.card", { requestId: typeof body.requestId === "string" && body.requestId ? body.requestId.slice(0, 80) : undefined }, { requireOwner: true }));
+  post("/api/owner/gate/rearm", ({ req, body }) => dispatch(req, "gate.rearm", { nonce: body.nonce, hash: body.hash, requestId: typeof body.requestId === "string" && body.requestId ? body.requestId.slice(0, 80) : undefined,
+    ackSecurity: body.ackSecurity === true, ackLeases: body.ackLeases === true, modality: typeof body.modality === "string" ? body.modality.slice(0, 20) : "click" }, { requireOwner: true }));
   post("/api/owner/unfreeze", ({ req, body }) => dispatch(req, "owner.unfreeze", { projectId: body.projectId }));
   get("/api/owner/attention", ({ query }) => advisor.attention({ afterSeq: Number(query.after) || 0 }));
   post("/api/owner/prefs", ({ req, body }) => dispatch(req, "owner.prefs", body || {}));
@@ -106,9 +158,13 @@ export function registerOwnerRoutes(router, hub) {
   const ownerOnly = (req) => { const s = sessionOf(req); if (!s) throw new HubError("authentication", "Vocea se verifică doar în sesiunea ta de proprietar (Windows Hello / cheia ta)", { data: { needSession: true } }); return s; };
   const voiceFlags = (req) => { try { const v = JSON.parse(String(req.headers["x-voice-flags"] || "{}").slice(0, 1000)); return v && typeof v === "object" && !Array.isArray(v) ? v : {}; } catch { return {}; } };
   const SEGMENT_BYTES = 600 * 1024; // 15 s of 16 kHz PCM16 is 480 KB
+  // M11: how the page cut the segment (pre-roll, voiced time, levels); numbers only, for the owner's local diagnostic, never a decision input.
+  const voiceSeg = (req) => { try { const v = JSON.parse(String(req.headers["x-voice-seg"] || "null").slice(0, 600)); return v && typeof v === "object" && !Array.isArray(v) ? v : null; } catch { return null; } };
   get("/api/voice", ({ req }) => voice.status(sessionOf(req, false)));
   post("/api/voice/utterances", ({ req, query, body }) => voice.analyzeUtterance({ session: ownerOnly(req), buffer: body, purpose: String(query.purpose || ""),
-    legaSessionId: query.legaSession || null, envelopeId: query.envelope || null, flags: voiceFlags(req) }), { raw: true, maxBytes: SEGMENT_BYTES });
+    legaSessionId: query.legaSession || null, envelopeId: query.envelope || null, flags: voiceFlags(req), seg: voiceSeg(req) }), { raw: true, maxBytes: SEGMENT_BYTES });
+  get("/api/voice/diagnostics", ({ req }) => voice.diagnostics({ session: ownerOnly(req) }));
+  post("/api/voice/diagnostics", ({ req, body }) => voice.diagnose({ session: ownerOnly(req), buffer: body, flags: voiceFlags(req), seg: voiceSeg(req) }), { raw: true, maxBytes: SEGMENT_BYTES });
   get("/api/voice/utterances/:id", ({ req, params }) => voice.getUtterance({ id: params.id, session: ownerOnly(req) }));
   post("/api/voice/enroll/sample", ({ req, query, body }) => voice.enrollSample({ session: ownerOnly(req), buffer: body, phraseIndex: query.phrase }), { raw: true, maxBytes: SEGMENT_BYTES });
   post("/api/voice/enroll/finish", ({ req, body }) => dispatch(req, "voice.enroll.finish", { consentText: body.consentText }, { requireOwner: true }));
@@ -131,4 +187,8 @@ export function registerOwnerRoutes(router, hub) {
 
   // The factory list per project, for the cockpit's mission picker (read-only).
   get("/api/cockpit/:projectId/missions", ({ params }) => ({ missions: factory.list().filter((f) => f.projectId === (projects.get(params.projectId)?.id || params.projectId)) }));
+
+  // M10: the owner-session resolver and dispatcher, for routes registered elsewhere that must carry the owner channel (Lega's
+  // start lives in routes.mjs; the first-match router keeps it there).
+  return { sessionOf, dispatch };
 }

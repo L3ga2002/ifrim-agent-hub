@@ -62,7 +62,10 @@ export function searchFiles(rootPath, { query, path: start = ".", maxResults = 1
       let stat;
       try { stat = fs.statSync(abs); } catch { skipped += 1; continue; }
       if (stat.size > 1024 * 1024) { skipped += 1; continue; }
-      const buffer = fs.readFileSync(abs);
+      // A file that cannot be read now (EBUSY / EPERM on Windows while another program holds it, removed meanwhile) is skipped and
+      // counted, like an unreadable folder: it never fails the whole search.
+      let buffer;
+      try { buffer = fs.readFileSync(abs); } catch { skipped += 1; continue; }
       if (buffer.includes(0)) { skipped += 1; continue; }
       scanned += 1;
       const lines = buffer.toString("utf8").split(/\r?\n/);
@@ -180,7 +183,8 @@ export function createTools({ db, bus, clock, projects, approvals, supervisor, c
     approvals.consume(approvalId, { actionKind: "process.run", target: p.path, payload: { command: `npm run ${script}` },
       codeVersion: state.head || "unknown", permissionTier: "DEVELOPMENT_TOOLS", scopeType: "project", scopeId: p.id });
     const npmCli = path.join(path.dirname(process.execPath), "node_modules", "npm", "bin", "npm-cli.js");
-    return record(script.startsWith("test") ? "process.test" : "process.build", { script }, null, "local process", () => new Promise((resolve) => {
+    // The project is recorded with the call: a handoff or a checkpoint reads the test results of ITS project only.
+    return record(script.startsWith("test") ? "process.test" : "process.build", { script, projectId: p.id }, null, "local process", () => new Promise((resolve) => {
       const started = Date.now();
       const out = [];
       const rec = supervisor.start({ key: `tool-${approvalId}`, label: `npm run ${script}`, executable: process.execPath, args: [npmCli, "run", script], cwd: p.path,

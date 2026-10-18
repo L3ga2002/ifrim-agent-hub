@@ -9,7 +9,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
-import { makeTestHub, tempDir } from "./helpers.mjs";
+import { makeTestHub, tempDir, WEB_DIST } from "./helpers.mjs";
 import { createHttpServer } from "../server/http/server.mjs";
 import { browserStatus, browserLaunchOptions } from "../server/tools/browser.mjs";
 import { generateSyntheticOrgs } from "../server/sales/synthetic.mjs";
@@ -17,7 +17,7 @@ import { MANUAL_CONTACT_TEXT, CLIENT_ACCEPTANCE_TEXT } from "../server/sales/sal
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const HUB_ROOT = path.resolve(here, "..", "..");
-const DIST = path.join(HUB_ROOT, "v2", "web", "dist", "index.html");
+const DIST = path.join(WEB_DIST, "index.html");
 const installed = browserStatus({ hubRoot: HUB_ROOT }).installed;
 const skip = !installed ? "SKIPPED_ENV: Playwright is not installed" : !fs.existsSync(DIST) ? "SKIPPED_ENV: the UI is not built (npm run build:v2)" : false;
 
@@ -38,7 +38,7 @@ async function startHub() {
   const t = await makeTestHub();
   const { server } = createHttpServer(t.hub);
   await new Promise((resolve) => server.listen(t.config.port, "127.0.0.1", resolve));
-  const base = `http://127.0.0.1:${t.config.port}`;
+  const base = `http://localhost:${t.config.port}`;
   return { ...t, base, stop: async () => { server.closeAllConnections?.(); await new Promise((r) => server.close(r)); await t.cleanup(); } };
 }
 
@@ -74,9 +74,12 @@ test("M04-BR-01 Sales UI end to end in a real browser: import → sheet + fixtur
     page.setDefaultTimeout(15000);
     const panel = page.locator("#sales-panel");
     const go = async (hash) => { await page.evaluate((h) => { window.location.hash = h; }, hash); };
-    const approveOnCard = async () => {
+    // 2.15.2: the draft text and the import rollback are owner decisions: the card names the decision and runs it in the owner session
+    // opened at step 5 (owner_decide, then the command with the same credential's fresh session).
+    const approveOnCard = async (name) => {
       const card = page.locator(".sales-approval").first();
-      await card.getByRole("button", { name: "Aprobă și pornește" }).click();
+      await card.getByText("Decizia se înregistrează în sesiunea verificată cu Windows Hello / cheia ta.").waitFor();
+      await card.getByRole("button", { name, exact: true }).click();
       await card.waitFor({ state: "detached" });
     };
 
@@ -137,13 +140,25 @@ test("M04-BR-01 Sales UI end to end in a real browser: import → sheet + fixtur
     const oppId = new URLSearchParams(new URL(page.url()).hash.split("?")[1]).get("id");
     assert.match(oppId || "", /^opp_/);
 
-    // ---------- 5. proposal approval: ready for review → ALWAYS_ASK card bound to the displayed hash → approved ----------
+    // ---------- 5. M12 declared change: exact target + owner session; old sessionless request stays negative ----------
     await page.getByRole("button", { name: "Marchează gata de revizuire" }).click();
-    await page.getByRole("button", { name: "Cere aprobarea acestei versiuni" }).click();
-    const pending = s.hub.approvals.list("pending").find((x) => x.actionKind === "sales.proposal_approve");
-    assert.ok(pending, "the approval was requested, nothing approved yet");
+    const displayed = s.hub.sales.getOpportunity(oppId).proposals[0];
+    const refused = await page.evaluate(async ({ id, sha }) => {
+      const { token } = await (await fetch("/api/session")).json();
+      const r = await fetch(`/api/sales/proposals/${id}/approve`, { method: "POST", credentials: "omit", headers: { "Content-Type": "application/json", "X-Hub-Token": token }, body: JSON.stringify({ displayedSha: sha }) });
+      return r.status;
+    }, { id: displayed.id, sha: displayed.contentSha });
+    assert.equal(refused, 401, "old sessionless approval is refused");
     assert.equal(s.hub.sales.getOpportunity(oppId).proposals[0].status, "DRAFT");
-    await approveOnCard();
+    const cdp = await context.newCDPSession(page);
+    await cdp.send("WebAuthn.enable");
+    await cdp.send("WebAuthn.addVirtualAuthenticator", { options: { protocol: "ctap2", transport: "internal", hasResidentKey: true, hasUserVerification: true, isUserVerified: true, automaticPresenceSimulation: true } });
+    await go("#/lega/setup");
+    await page.getByRole("button", { name: /Înregistrează acest calculator/ }).click();
+    await page.getByText(/sesiune deschisă până la/).waitFor();
+    await go(`#/sales?tab=opp&id=${oppId}`);
+    await panel.getByText(displayed.contentSha, { exact: true }).waitFor();
+    await page.getByRole("button", { name: "Aprob intern", exact: true }).click();
     await page.locator(".sales-sheet-head").getByText("Aprobată intern").waitFor();
     const approvedProposal = s.hub.sales.getOpportunity(oppId).proposals[0];
     assert.equal(approvedProposal.status, "APPROVED_INTERNAL");
@@ -157,7 +172,7 @@ test("M04-BR-01 Sales UI end to end in a real browser: import → sheet + fixtur
     assert.equal(await send.isDisabled(), true, "Send is disabled (OUTREACH_DISABLED)");
     assert.match(await draftCard.innerText(), /OUTREACH_DISABLED/);
     await draftCard.getByRole("button", { name: "Aprobă conținutul" }).click();
-    await approveOnCard();
+    await approveOnCard("Aprob textul");
     await page.locator(".sales-draft").first().getByText("Conținut aprobat", { exact: true }).waitFor();
     assert.equal(await page.locator(".sales-draft").first().getByRole("button", { name: "Trimite" }).isDisabled(), true, "still disabled after the content approval");
     assert.equal(s.hub.db.prepare("SELECT COUNT(*) AS n FROM sales_sends").get().n, 0, "nothing was sent");
@@ -239,7 +254,7 @@ test("M04-BR-01 Sales UI end to end in a real browser: import → sheet + fixtur
     await rollbackPanel.getByText(/Firme păstrate/).waitFor();
     await rollbackPanel.getByLabel(/Motivul rollback-ului/).fill("Import de test anulat (date sintetice)");
     await rollbackPanel.getByRole("button", { name: "Cere rollback-ul" }).click();
-    await approveOnCard();
+    await approveOnCard("Aprob rollback-ul");
     await page.locator(".panel").getByText(/Motiv: Import de test anulat/).waitFor();
     const rolled = s.hub.sales.listBatches().find((x) => x.id === batch.id);
     assert.equal(rolled.status, "ROLLED_BACK");

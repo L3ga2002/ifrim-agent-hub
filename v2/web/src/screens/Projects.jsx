@@ -19,13 +19,13 @@ function ExecutionPanel({ project, onChange }) {
       {isHub ? <p className="muted" style={{ margin: 0 }}>Hub-ul rămâne mereu activat; îl oprești cu Stop All sau suspendând poarta de execuție.</p>
         : project.executionAllowed ? (
           <div className="stack tight">
-            <p className="muted" style={{ margin: 0 }}>Agenții (Codex, Claude Code) pot lucra aici prin poarta de execuție: mod LIVE_VALIDATION, grant pentru acest proiect și backup verificat făcut automat în <span className="mono">.ifrim/BACKUPS/v2</span> înainte de prima execuție. Retragerea oprește execuțiile noi și revocă grant-urile proiectului; o execuție deja pornită o oprești cu Întrerupe sau Stop All.</p>
+            <p className="muted" style={{ margin: 0 }}>Agenții (Codex, Claude Code) pot lucra aici prin poarta de execuție. Sub politica voice-first lucrul real e un plan pe care îl confirmi o singură dată în cockpit (granturile le derivă Hub-ul din plan, iar Hub-ul rămâne în BUILD_SAFE); pe calea manuală, mod LIVE_VALIDATION și un grant pentru acest proiect. Backup-ul verificat se face automat în <span className="mono">.ifrim/BACKUPS/v2</span> înainte de prima execuție. Retragerea oprește execuțiile noi și revocă grant-urile proiectului; o execuție deja pornită o oprești cu Întrerupe sau Stop All.</p>
             <div className="row"><button className="btn sm danger" disabled={disable.pending} onClick={disable.run}><PauseCircle size={14} />{disable.pending ? "Se retrag…" : "Retrage execuțiile"}</button></div>
             <ErrorNotice error={disable.error} />
           </div>
         ) : (
           <div className="stack tight">
-            <p className="muted" style={{ margin: 0 }}>Acum proiectul e doar context: Lega și agenții îl pot citi, dar nu lucrează în el. Dacă permiți execuții, fiecare rulare cere în continuare grant, poarta deschisă și un backup verificat, care se scrie în proiect (<span className="mono">.ifrim/BACKUPS/v2</span>). Fișierele .env, .ifrim/private și credențialele rămân blocate pentru agenți.</p>
+            <p className="muted" style={{ margin: 0 }}>Acum proiectul e doar context: Lega și agenții îl pot citi, dar nu lucrează în el. Dacă permiți execuții, fiecare rulare trece în continuare prin poartă (deschisă), cu autorizarea ei — planul confirmat o dată în cockpit sau, pe calea manuală, un grant — și un backup verificat, care se scrie în proiect (<span className="mono">.ifrim/BACKUPS/v2</span>). Fișierele .env, .ifrim/private și credențialele rămân blocate pentru agenți.</p>
             <label className="field"><span>Tastează numele exact: <strong>{project.name}</strong></span><input className="input" value={name} onChange={(e) => setName(e.target.value)} autoComplete="off" /></label>
             <div className="row"><button className="btn sm primary" disabled={name !== project.name || enable.pending} onClick={enable.run}><PlayCircle size={14} />{enable.pending ? "Se activează…" : "Permite execuții"}</button></div>
             <ErrorNotice error={enable.error} />

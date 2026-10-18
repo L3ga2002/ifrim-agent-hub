@@ -1,6 +1,678 @@
 # Open Issues - Ifrim Agent Hub
 
-## 2026-10-03 — Open items after M07 (version `2.8.0-m07`; supersede every section below where they overlap)
+## 2026-10-18 afternoon (2) — the full Lega screen (code `2.15.4-m12`, UI only) + the live M12 probe (detail: `.ifrim/STAGE_2026-10-18_L3GA_UNIC.md` §7–§8)
+
+This section takes precedence over the next one where they overlap. 2.15.3 is LIVE (owner's CMD ~12:00 UTC, GET VERIFY OK). The single live M12
+probe ran through #/lega with the owner's two decisions: dossier `sdo_12cec46b1e_7ce44b92b4` READY (Word APP_VERIFIED, 10/10 files = manifest,
+draft DRAFT_ONLY unsent, nothing sent / CONTACTED / WON / handed off); both decisions recorded as `local_dev_profile` (the live dev profile is on).
+2.15.4 (commit `533cb57`): „Ecran complet” like the old stage (remembered, „Tot monitorul”) + a fix for a plan announced before the layout loaded
+(no card); 13 test files 86/86.
+
+Open:
+1. Owner: run C:\Users\mihai\lega-one-stage\release\owner-release.cmd (now 2.15.4: BASE 00f27bf).
+2. Owner decision: the offer explains no concrete benefit while the service catalog is empty — define the service (Vânzări → Servicii,
+   owner session) or decide another rule; then a new revision through the continuation card.
+3. Owner decision: turn the local dev profile off on live (`node v2\scripts\dev-profile.mjs off`) if decisions must be Windows Hello.
+
+## 2026-10-18 afternoon — one L3ga screen (code `2.15.3-m12`, UI only, API contract 17, schema 13, no migration; detail: `.ifrim/STAGE_2026-10-18_L3GA_UNIC.md`)
+
+This section takes precedence over every older one where they overlap. Closed in code (commit `289dc63` on `claude/project-thread-dx5843`,
+dev clone C:\Users\mihai\hub-ui): `#/lega` is the one Lega interface (company map behind; figure, conversation + unsent text per project,
+docked voice panel of the one session, controls, decisions / executions, plan cards, Sales offer + dossier card); the cockpit's small column
+and the modal stage are retired; „Ecran complet” = the same screen without the bars; old links land on it; one audio capture at a time.
+Independent read-only review: 0 critical; 2 important (immersive z-order / hidden bars; Esc in a dialog left the full screen) and 5 medium
+(dismissed offers taking turns, stale option buttons after a remount, the copy of an exchange into another project, controls out of view
+in a short window, duplicate Stop All target) — all fixed or covered, with browser checks in R-LEGA-ONE-04. Tests: the 66 files that read
+the web UI or drive a browser, on the pre-review build: 630 = 627 pass, 3 fail (R3-UI-09/10 pinned the work column's class name → kept;
+R-LEGA-ONE-04's new checks on the pre-fix build → expected; RM-10 real capture under 97 % CPU → intermittent, as before); rerun on the
+final build: 290/290 (31 files incl. every browser suite, RM-10 passed) + 66/66 (8 UI-logic files). No full suite: no server code changed.
+
+Open:
+1. Owner: run C:\Users\mihai\lega-one-stage\release\owner-release.cmd (verified backup → ff v2-milestone-01 → managed upgrade, which
+   rebuilds the UI → GET verify 2.15.3-m12 / 17 / schema 13 + the served UI's one-screen markers → push). Until then live stays 2.15.2-m12.
+2. Then the single live M12 Sales probe through #/lega (the owner types or says the request, confirms the sales.prepare card, inspects and
+   approves the exact offer id + SHA); result and files recorded in the stage document §7.
+3. Unchanged, separate: the backup interrupted by a Hub stop; the local dev profile; real prices / services; RM-10 intermittent under load;
+   the 2 V1 real-registry tests; the Mini-asistent (Alt+M) stays a separate compact view (not the cockpit column).
+
+## 2026-10-18 — 13 defects fixed + Sales decisions bound to the owner session (code `2.15.2-m12`, API contract 17, schema 13, no migration; detail: `.ifrim/STAGE_2026-10-18_FIX13_SALES.md`)
+
+This section takes precedence over every older one where they overlap. Closed in code (branch `claude/project-thread-pcocmw` in the dev clone
+C:\Users\mihai\hub-fix, commits `f56d64b` … `b461eb2` + docs): the 13 verified defects (B2 conversation freeze on "```js title"; B9/B22 Factory
+spec editor; A16 PASS review quoting code; A26/A27 redaction; A36/A35/A3 Lega autonomy / freeze / unfreeze on the wrong project and unfreeze
+on a question / condition / negation; A12 failed backup left running; A10 one unreadable file failing the search; A38 handoff / checkpoint
+test results of every project; B42 retry dropping task and effort; B39 verification note on another task), each with a regression test
+(`v2/tests/r-fix13.test.mjs`, all failing on 3d9b3e8). Sales: sales.draft.approve_content, sales.suppression.lift and sales.import.rollback are
+reserved owner decisions like sales.proposal.approve; sales.service.save only in a fresh owner session re-read in the transaction
+(`v2/tests/r-sales-owner.test.mjs`). Independent review: 0 critical / 0 important; its 5 minor findings fixed (`b1a2bdb`). Final gate on
+`b461eb2` (fresh clone C:\Users\mihai\hub-fix-gate, logs C:\Users\mihai\fix-stage\gate\run-final): test:v2 exit 0, **2566 = 2565 pass, 0 fail,
+1 skip (T25)**; V1 552 = 549 pass, 2 fail (the 2 real-registry tests), 1 skip. The first gate run (5134314) had 1 fail caused by the stage
+(M04-BR-01 looked for the old button), fixed in b461eb2.
+
+Open:
+1. Owner: run C:\Users\mihai\fix-stage\release\owner-release.cmd (verified backup → ff v2-milestone-01 → managed upgrade → GET verify
+   2.15.2-m12 / 17 / schema 13 → push v2-milestone-01 + claude/project-thread-pcocmw). Until then live stays 2.15.1-m12, where the four Sales
+   commands still accept ui (live Sales is empty: 0 orgs, 0 services, 0 pending approvals).
+2. Unchanged, separate: a backup interrupted by a Hub stop (process killed, not an error) is not reconciled at boot; the local dev profile;
+   real prices / services; RM-10 intermittent; the 2 V1 real-registry tests; the remaining ~70 report items (cosmetic, unreachable, not bugs, V1).
+
+## 2026-10-17 evening — factory.reject owner authority (code `2.15.1-m12`, API contract 16, schema 13, no migration; LIVE since 2026-10-17 ~18:01 UTC; detail: `.ifrim/STAGE_2026-10-17_FACTORY_REJECT.md`)
+
+This section takes precedence over every older one where they overlap. Closed in code (commit `6aa8575` on `claude/project-thread-esyt99`,
+dev clone C:\Users\mihai\hub-reject): `factory.reject` only on the owner channel (fresh session at the command, re-read before and after
+the preview stop) or the bounded test channel; POST /api/factory/:id/reject moved to the owner routes (no idempotency replay); the exact
+displayed target (`view.rejectTarget`: mission factory version + waiting bundle id and full sha, or none) checked by compare-and-swap in the
+final transaction; one recorded decision (event `factory.rejected`, authority webauthn / local_dev_profile / test); repeats return it,
+another reason or target is refused. Synthetic reproduction on 161fdf2: sessionless reject → 200 REJECTED; on 6aa8575 → 401/401/403, nothing
+written. Gate on 6aa8575 (fresh clone C:\Users\mihai\hub-reject-gate, logs C:\Users\mihai\reject-stage\gate\run-final): test:v2 exit 0,
+**2539 = 2538 pass, 0 fail, 0 cancelled, 1 skip (T25)**; V1 552 = 549 pass, 2 fail (the 2 real-registry tests), 1 skip. Independent
+read-only review: 0 critical / 0 important (1 medium: the preview stops before the final check, as for accept).
+
+Open:
+1. Done: the owner ran C:\Users\mihai\reject-stage\release\owner-release.cmd (~18:01 UTC): verified backup bkp_mvcpdvsa_450d87ca39,
+   fast-forward of v2-milestone-01 to 5b08866, managed upgrade (boot boot_mvcpeczj_834544baf3, BUILD_SAFE), GET verify 2.15.1-m12 / 16 /
+   schema 13 / factory.reject channels owner + test with displayedVersion required, push v2-milestone-01 + claude/project-thread-esyt99
+   (both 5b08866). Live missions unchanged (3 DELIVERY_READY, 4 NEEDS_OWNER_DECISION, 0 factory.rejected events); nothing was rejected.
+2. Unchanged, separate: M04 sessionless approvals and the catalog, real prices / services, the local dev profile (a loopback process can
+   open a session; a rejection made so is recorded local_dev_profile), RM-10 (passed in this gate), the 2 V1 real-registry tests, step-0
+   author and minor display items.
+
+## 2026-10-17 — M12 Sales LIVE (code and live `2.15.0-m12`, API contract 15, schema 13; detail: `.ifrim/STAGE_2026-10-17_M12_SALES.md`)
+
+This section takes precedence over every older one where they overlap. The owner activated `.ifrim/M12_PROMPT.md` (2fa81a9) with
+clarifications 1–6 on 2026-10-16 20:21 UTC. Part 1 by Codex; Codex usage limit at 21:41 UTC (reset 2026-10-22); the owner moved parts 2–4
+to Claude at 21:45 UTC. Merge `dc4500f` on `v2-milestone-01` (tree = gated `d311980`); verified backup `bkp_mvcejgzd_fb1915d20d`.
+Final gate on `d311980` (fresh clone C:\Users\mihai\hub-m12-gate, logs C:\Users\mihai\m12-sales\gate\run-final2): test:v2
+2512 = 2510 pass, **1 fail (RM-10, real capture, outside M12; passes alone 11/11)**, 1 skip (T25); V1 549/552 (the 2 real-registry tests).
+LIVE since 2026-10-17 13:29 UTC: the owner ran owner-release.cmd (managed upgrade, boot boot_mvcfoc6g_ecc68eea7c, BUILD_SAFE; storage.pre_migration_backup event 8710; GET /api/health 2.15.0-m12 / contract 15, /api/diagnostics schemaVersion 13; pushed v2-milestone-01 = 5a6082e and claude/project-thread-azwsjr = d311980). Boot events: only the 6 known delivery.stale_reconcile_refused, no sales.* event; live Sales: 0 orgs, 0 services, outreach and live research DISABLED.
+
+Open:
+1. Owner: run C:\Users\mihai\m12-sales\owner-release.cmd (plan → apply upgrade → GET verify 2.15.0-m12 / 15 / schema 13 → push
+   v2-milestone-01 + claude/project-thread-azwsjr), or ask for a new full gate first because of RM-10.
+2. Catalog and real prices: BLOCKED BY EVIDENCE (offers say "De stabilit (neconfigurat)").
+3. factory.reject without an owner session — still the priority fix before any new Factory project (M12 never calls the Factory).
+4. M04 approvals not used by M12 still sessionless on ui: sales.draft_content (also accepts a whitespace-only sha),
+   sales.suppression_lift, sales.import_rollback, catalog writes.
+5. Local dev profile: any loopback process can open an owner session (approved; not redesigned). New consequence: such a process can
+   retire an owner's WebAuthn Sales decision (no authority gained).
+6. Outreach refusal rule: known residual phrasings (C:\Users\mihai\m12-sales\impl\last-report.md); sending stays impossible
+   (OUTREACH_DISABLED transport).
+7. No owner route / button for sales.preparation.cancel; RM-10 intermittent under load; the 2 V1 real-registry tests; media, step-0
+   author and minor display items as in the sections below.
+
+## 2026-10-16 night — one coherent full regression on the final code; M12 prompt updated, still DRAFT (live `2.14.19-m11`, contract 14, schema 12; detail: `.ifrim/STAGE_2026-10-16_STABILITATE_M12.md`)
+
+This section takes precedence over every older one where they overlap. No code change, no live upgrade. One run on a fresh synthetic
+clone `C:\Users\mihai\hub-gate` at `ee6c93a` (executable tree = `7074ab5`), Studio built for the test with `HUB_V2_STUDIO_DIST`,
+logs in `C:\Users\mihai\hub-gate-logs\run-20261016T1809Z\`: `npm run test:v2` exit 0, **2311 = 2310 pass, 0 fail, 0 cancelled, 1 skip
+(T25)**, 0 own processes left → the V2 gate is met. The 7074ab5 gate stays recorded as it was (2311 = 2306 pass, 4 fail, 0 cancelled,
+1 skip; the affected tests passed later alone). Its M09-SB-01 cause was a stale Studio build (2.14.17 / contract 13 → `UI_STALE`), not a
+missing one; the shutdown failures were the 18 s `execFile` limit (CPU cause presumed, not demonstrated).
+
+Open:
+1. V1 in the isolated clone: 552 = 549 pass, **2 fail**, 1 skip. `tests/conversation-api.test.mjs` and `tests/workflow-refresh-api.test.mjs`
+   resolve `projectSlug: "ifrim-agent-hub"` through `..\PROJECTS.md` (`apps/api/src/server.mjs:21–22`), the owner's real registry in the
+   parent folder; the clone's parent has none. Not synthetic; a fixture registry (and cleanup of `.env.hub016-*` in `finally`) is a test
+   change for a separate stage. No green fully isolated V1 run exists on this code.
+2. `factory.reject` has no owner session (default `ui`/`test`, `command-catalog.mjs:235–236`; handler `factory.mjs:2330–2345`): a terminal
+   decision; separate fix, priority before any new project goes through the Factory.
+3. Local development profile: any loopback process with the canonical Origin can open an owner session (`user_verified = 0`, always
+   fresh); approved behaviour unchanged.
+4. Unchanged, separate: media follow-ups and Word / campaign claims (next sections), step-0 author simplification, the minor display items
+   (section 2026-10-16 evening, item 3; next section, item 4). None reopens the §25 acceptance.
+5. M12: `.ifrim/M12_PROMPT.md` updated to the real state (baseline, §25 closure, isolation rule, authority / provenance / integrity
+   mechanisms, this regression); still DRAFT. New finding for the owner (§4c): all `sales.*` commands run on `ui`/`test` without an owner
+   session, and `approveProposal` checks the sha only when one is passed (`sales.mjs:1080`). Live catalog: 0 services; prices unknown.
+
+## 2026-10-16 evening (live) — 2.14.19 live; §25 software ACCEPTED by the owner (17:49:43 UTC); mission COMPLETED (live `2.14.19-m11`, contract 14, schema 12; detail: `.ifrim/STAGE_2026-10-16_ACCEPTARE_LOCALA_S25.md` §9)
+
+This section takes precedence over every older one where they overlap. Closed in code (2.14.19-m11, contract 14, schema 12): the
+acceptance authority (owner channel refused since M11; Factory route sessionless on `ui`), the displayed-bundle identity, the race /
+repeat behaviour and the two divergent integrity rules (item 1 of the next section). Gate on `7074ab5`: build 0, build:v2 0, test:v2
+2306/2311 (3 shutdown timing + M09-SB-01 clone dist, all passing alone on the same commit; T25 skip), V1 551/552 (0 fail). Backups
+`bkp_mvb8o87f_4e43830bff` (Hub) and `bkp_mvb8ovp1_05f5adebd7` (demo project), 17:26 UTC.
+
+Open:
+1. Done: the owner ran `owner-release.cmd` (17:44 UTC: preflight exit 0, upgrade, push `1e72aca` / `7074ab5`) and clicked „Accept local”
+   once in `dlv_mva09x21_b0b0cbfb2a` (17:49:43 UTC): one OWNER_ACCEPTED for `bnd_mva0hc23_b3d65a8da9` (sha `43ad3531…`, channel owner,
+   `local_dev_profile`, integrity decision `842fd89a…`), mission COMPLETED, the clip / summary approvals unchanged. Push of the closing
+   docs commit is the owner's.
+2. Pre-existing residuals for the owner's decision: with the local dev profile on, `POST /api/owner/dev-session` opens an owner session for
+   any loopback process with the canonical Origin (acceptances are still recorded as `local_dev_profile`); `factory.reject` stays on
+   `ui` without a session (a reject is terminal for the bundle and stales the delivery).
+3. Low follow-ups (documented, not fixed to avoid a new gate): the Room shows „snapshot identic ✓” without listing the provenance-accepted
+   difference; non-path integrity problems are recorded but displayed as a workspace difference; the preflight does not read
+   `cancel_requested_at` / `decided_at`; the off-localhost notice and revision answers still mention Windows Hello under the dev profile;
+   some new test assertions lack preconditions. RL-06: an attestation alone no longer heals a repair whose DB event was lost.
+4. Unchanged from the next section: media QA follow-ups (9:16 desktop band, text timing), uncurated Word / campaign phrases, README-v2
+   status column, step-0 author simplification; M12 stays DRAFT.
+
+## 2026-10-16 (live) — 2.14.18 live; §25 corrected; clips v2 + summary v2 approved by the owner (11:19 UTC); software acceptance blocked by a Hub defect (live `2.14.18-m11`, contract 13, schema 12; detail: `.ifrim/STAGE_2026-10-16_AFIRMATII_DOVEZI_S25.md` §10–§12)
+
+This section takes precedence over every older one where they overlap. Closed: claims bound to the approved spec (2.14.17), the retire-journal
+STALE defect (2.14.18), the correction of `dlv_mva09x21_b0b0cbfb2a` (owner-confirmed card `opp_mvarvq2w_d8aaea73a9`, 13/13 DONE 09:48 UTC).
+
+Open:
+1. **Software acceptance blocked by two Hub defects (stage doc §12).** The owner approved both v2 clips and summary v2 at 11:19 UTC, but
+   `delivery.software.accept` failed twice: it forwards `factory.accept` on the `owner` channel, which `factory.accept` (default `ui`/`test`)
+   refuses (since M11, `2a58e9d`; tests use `test`). The Factory-panel „Accept local” is NOT a safe workaround: `factory.accept`
+   compares snapshots strictly, and the Hub-repaired journal `.ifrim-hub/retired/mis_mv2ql0fp_ee35f8071e/journal.json` differs, so it would
+   mark `bnd_mva0hc23_b3d65a8da9` STALE. Fix (2.14.19, owner's decision): channel of the delivery acceptance + the same Hub-provenance
+   exception the delivery verification already applies, with `owner`-channel tests. Push of `79abea2` and later docs is the owner's.
+   QA WARN as listed in the stage doc §11 (unjustified freezes with timecodes; rights: platform unspecified; 9:16 layout: 4-line caption).
+2. **9:16 desktop segment** renders the desktop capture as a thin band (~15 % of the height, left edge cropped) and QA does not flag it;
+   technical texts claiming „programare confirmată” appear before the confirmation frame; tone „both” shows AC ids on screen. Follow-up:
+   variant framing for landscape captures, text placement on the proof shot, a QA check for content height in variants.
+3. Word / campaign keep uncurated phrases („fără suprapuneri”, five services vs three in the footage) and cut criteria at 160 chars.
+4. Low: README-v2 has no CURRENT/SUPERSEDED column; delivery `status_reason` not updated after a correction; new claim items have no
+   supersedes link; boot emits duplicate `delivery.stale_reconcile_refused` events; `delivery.package.propose` never binds its plan.
+5. Unchanged: step-0 author design (`.ifrim/DESIGN_2026-10-16_AUTOR_PAS0_HUB_TEMPLATE.md`, not implemented); sandbox-user processes not
+   identifiable without elevation; M12 stays DRAFT.
+
+## 2026-10-16 — 2.14.17 live (owner, 06:38 UTC); 2.14.18 merged (`3e887c4`), NOT yet live: the §25 delivery went STALE through a retire-journal defect (detail: `.ifrim/STAGE_2026-10-16_AFIRMATII_DOVEZI_S25.md` §10)
+
+This section takes precedence over every older one where they overlap. Closed in code (not yet live): items 1 and 4 of the 2026-10-15
+night section — clip and summary claims are bound to the approved spec's criteria by canonical fingerprint and proven per method on the
+delivery's own bundle; the presentation is frozen in the template; factual QA checks every displayed text; the replacement link shows only
+a valid descendant; the AC-7/AC-8 duplicate clause is fixed at its source (two revision generations, not a double merge). Item 3 (step-0
+author) is documented as a design for a separate stage: `.ifrim/DESIGN_2026-10-16_AUTOR_PAS0_HUB_TEMPLATE.md` (not implemented).
+
+Open:
+1. **Release 2.14.18 (owner):** run `C:\Users\mihai\s25-claims\owner-release-2.cmd` (managed upgrade + push; both refused to the agent).
+   2.14.17 is live since 06:38 UTC (`upg_mvalk291`). `dlv_mva09x21_b0b0cbfb2a` is STALE since 00:50 UTC: every boot rewrote the retire journal
+   of the old final mission `mis_mv2ql0fp_ee35f8071e` after §25 legitimately retired the same test (first triggered at 00:48 UTC by a
+   review agent that booted Hub code over a copy of the live DB whose project paths point to the real folders). 2.14.18 repairs the
+   journal at boot and the audited reconciliation returns the delivery to READY. Verified backup `bkp_mvaq511v_2b957e0eff`.
+2. **Correction of `dlv_mva09x21_b0b0cbfb2a` (owner):** after the upgrade the Hub proposes the card „Corectură afirmații (clip + rezumat)”
+   (once per version). Confirm it in the Delivery Room. It re-captures both flows (the v1 footage shows the phone typed twice), builds
+   master v2 + vertical v2, `rezumat-v2`, Word/campaign v2 (or kept by proof), `manifest-v2`. Then: creative approvals, summary approval
+   and software acceptance stay the owner's. Do NOT approve the v1 summary/clips (the Room now blocks it).
+3. Curated claims exist only for the fixture's own spec and the exact §25 spec (pinned fingerprints, including the per-request test path);
+   any other refresh spec gets generated, criterion-bound texts (honest but plain). Follow-up: per-kind phrase table for Hub-derived
+   criteria.
+4. Word / campaign keep constant, uncurated phrases („fără suprapuneri”) and cut criteria at 160 chars; the campaign lists only the first 6
+   PASS criteria. Owner's decision whether these generators get the same claim binding.
+5. Low: `delivery.package.propose` never binds its plan to the delivery, so a confirmed re-package card would fail at step 1
+   (CAPTURE_NOT_BOUND); with the new replacement link no live delivery shows that offer. The Inbox chip for the correction row shows the raw
+   kind (`DecisionInbox.jsx` is the owner's locally modified file; untouched).
+6. Unchanged: sandbox-user processes not identifiable without elevation; M12 stays DRAFT.
+
+## 2026-10-15 night — 2.14.16 live; §25 delivered READY and verified; summary/clip criterion citations wrong (live `2.14.16-m11`, contract 13, schema 12; detail: `.ifrim/STAGE_2026-10-15_CORECTII_S25.md` §8–§10)
+
+This section takes precedence over every older one where they overlap. Closed: items 1–4 of the 2026-10-14 evening section (release,
+§25 card, author limits: the live author finished in 92 s; the r-turn hang was the cleanup defect fixed in 2.14.16; the live Hub now runs
+the managed 2.14.16 upgrade `upg_mv9zgbrl`, so the working tree and the live code match).
+
+Open:
+1. **Refresh delivery cites the original spec's criterion ids (medium, owner's decision for the fix).** The summary's „Ce demonstrăm” /
+   „Ce beneficii putem afirma” and the clip's technical texts come from the fixture's delivery block
+   (`v2/server/factory/booking-demo-def.mjs:94-113`), gated on AC ids written for the original booking spec. The §25 spec renumbers its
+   criteria, so every gate passes and the texts cite unrelated checks (e.g. „Corectura a fost verificată de un reviewer independent.
+   (verificat: AC-4)” while AC-4 is now „telefon salvat exact”; clip „AC-1 + AC-6: interval ocupat → indisponibil (390 px)”). The
+   factual QA only checks that the ids exist. The Word/PDF document and the campaign list the new criteria correctly. Fix direction:
+   map gated texts by criterion meaning (or regenerate them from the delivery's spec) and make factual QA refuse a citation whose
+   criterion text changed from the fixture's reference spec. Until then the owner should not approve the summary / clip of
+   `dlv_mva09x21_b0b0cbfb2a`.
+2. **Owner decisions pending in the Delivery Room** of `dlv_mva09x21_b0b0cbfb2a`: local acceptance of bundle `bnd_mva0hc23_b3d65a8da9`,
+   creative approval (PENDING), summary approval. Media QA WARN: 16:9 has 8 frozen-image segments not covered by capture holds and a
+   rights warning (platform unspecified); 9:16 has 5 frozen segments.
+3. **The step-0 author adds nothing to the Hub skeleton** (rehearsal and live: 150 lines, 0 added, 0 removed when comments and blank
+   lines are ignored). The test's strength comes from the Hub-owned skeleton (calibrated) and the Codex review, not from the author.
+   Design question for the owner (keep the author step, or let the Hub write the skeleton directly for dataset FEATURE plans).
+4. Low: the red banner's „Deschide livrarea care o înlocuiește” links the newest child even when it is EXPIRED / CANCELLED; AC-7 and
+   AC-8 repeat the clause „câmpul „Telefon” are etichetă și se completează” (inherited demo criteria merged twice).
+5. Unchanged: sandbox-user processes cannot be identified without elevation (limitation); M12 stays DRAFT.
+
+## 2026-10-14 evening — 2.14.15 author turn limit; real isolated rehearsal reached a PROVEN rewrite but not Codex PASS (code on `claude/project-thread-5c9bak` = `b111d1c`, NOT released; live `2.14.10-m11`; detail: `.ifrim/STAGE_2026-10-13_DATE_MARTOR.md` §9)
+
+This section takes precedence over every older one where they overlap. 2.14.15 (`015d266`) adds the 45-min turn limit only for the step-0
+author of the §25 hub-test plan (`authoring.authorLimits.turnTimeoutMin`, dispatch-recorded, runtime-checked, card-visible) and R-PARITY deadline
+evidence; the manual driver `v2/tests/manual/s25-isolated-rehearsal.mjs` runs a real rehearsal through the Factory dispatch + runtime in a
+throwaway test Hub (grants sized like the plan, real Hub probes, Codex review via codex exec read-only, no credential reads, CreationDate-checked
+process cleanup). Independent reviews PASS.
+
+Open:
+1. **No release, no §25 card**: rehearsal h2 (16:38–17:09 UTC) — cycle 0 rejected by lint (reserved `hubAdd`, project load outside a test)
+   consumed the rewrite; the rewrite was PROVEN and calibrated 41/41 by assertions, but Codex stayed CHANGES_REQUESTED (post-restart full-set
+   revalidation, historical row per anonymous parameter, slots check for 13:00). Rewrite exhausted; owner's decision.
+2. **64000**: a message of 58 417 output tokens (h1) proves the old 32 000 cap was exceeded; a message reached 64 000 (h2); the exact cap is not
+   observed separately (no stop_reason recorded for that message).
+3. **Regression on `d096459` stuck** in r-turn since 19:17 UTC: under 84–100 % CPU 7 r-turn tests timed out and one left its fake "hang" child
+   alive (PID 30364), keeping the suite open; the agent's kill was refused by the permission layer. Test defect to fix (kill fake children on a
+   timeout failure). Previous full regression on `0bf94aa`: 1979/1981 (RF-02 flaky under load, 1 skip T25).
+4. Live Hub started seven times without upgrade/backup (logon task); parent delivery STALE; historic §25 test protected; M12 DRAFT.
+
+## 2026-10-14 — Content gaps closed in code, step-0 author still blocked (code `2.14.14-m11` on branch `claude/project-thread-5c9bak` = `854e3fc`, NOT released; live `2.14.10-m11`, contract 13, schema 12; detail: `.ifrim/STAGE_2026-10-13_DATE_MARTOR.md`)
+
+This section takes precedence over every older one where they overlap. Baseline: `v2-milestone-01` = `c1db213` (+ this docs commit);
+2.14.13 `53132ed` + 2.14.14 `6a9d174` + evidence `854e3fc` over `53fe75e` (2.14.12) on `claude/project-thread-5c9bak`, fetched from the
+isolated clone `C:Usersmihaihub-rc` (outside AppData), not merged (the logon autostart loads the working tree).
+
+Closed (in code, not released): items 1 (content part) and 3 of the section below — R-DATASET (Hub-owned experiment contract for the
+booking-demo fixture, sha-bound provenance, step-0 hold kind `dataset`), R-VALUES / R-IDS / historical positive control in the briefs and the
+new reference `dataset-reference` (rejects all 41 defective sources with categories; the two initial-data variants are initialisation
+regressions, not leaks), R-CODES (one finding code end to end), R-OUTPUT (`CLAUDE_CODE_MAX_OUTPUT_TOKENS=64000` only for the TEST_AUTHORING
+Claude process of a new plan carrying `authoring.authorLimits`, cause `output_token_limit`, requested / override / effective recorded apart).
+Two independent reviews (two rounds each, final PASS); affected 35/35; full V2 regression on `6a9d174`: 1956 tests, 1955 pass, 0 fail,
+1 skip (T25 symlink privilege). The 8 clone-location failures of the previous stage: 26/26 on the same tree outside AppData (cause:
+import-access refuses %USERPROFILE%AppData).
+
+Open:
+1. **No step-0 candidate → no release, no §25 card.** The author (Claude sonnet, medium) produced no test in any launch: 2.14.13 twice hit
+   the CLI's 32000 output-token maximum (thinking only); with 64000 one launch died with the Remote Control session, the single relaunch
+   (my decision on the owner's "continuă", written before my Da/Nu question) ended in a transport failure after 10 API retries; effective
+   limit not demonstrated.
+2. **Author turn limit (new, owner's decision)**: TEST_AUTHORING uses the reviewer role's per-turn limit (15 min BALANCED); every failed
+   author launch ran 30–58 min (the one success 8 min), so live the Hub would stop them as `turn_timeout` first; the rehearsal scripts did
+   not apply that limit. 64000 alone cannot make the live flow pass.
+3. **Live Hub started seven times without upgrade/backup** (now also 2026-10-14 06:39 and 06:49 UTC after a reboot), all 2.14.10-m11 by
+   the logon task. Parent delivery STALE; historic §25 test protected; M12 stays DRAFT; validated-release autostart stays DRAFT.
+
+## 2026-10-13 (afternoon) — Mechanical step-0 blockers closed (code `2.14.12-m11` on local branch `claude/project-thread-wn8xqf`, NOT released; live `2.14.10-m11`, contract 13, schema 12; detail: `.ifrim/STAGE_2026-10-13_BLOCARI_MECANICE.md`)
+
+This section takes precedence over every older one where they overlap. Baseline: HEAD = origin = `eeeb136` on `v2-milestone-01`; 2.14.12 is
+`614c42e` + evidence `53fe75e` on the local branch `claude/project-thread-wn8xqf` (base `88cb6c6` = 2.14.11), fetched from the isolated clone,
+not merged (the logon autostart loads the working tree; five unmanaged starts recorded by 2026-10-13 07:55 UTC); push by the owner.
+
+Closed (in code, not released):
+- **Item 1 of the section below, the mechanical part**: R-NEEDS (the Hub completes `needs` deterministically from the free uses of the six
+  permitted built-ins before lint and assembly; declared / completed / effective kept apart in one manifest), R-CLEANUP (test header v2:
+  resources returned by `setup()` are registered at once and closed on pass and on fail, `# HUB_CLEANUP` TAP report per case, forgery-
+  resistant collector, `classifyProof` INCONCLUSIVE `cleanup`, lint `harness_reserved` + extended `builtin_patched`; header v1 byte-identical
+  for historic candidates), R-BASELINE (`baselineGate` refuses the writer after a timeout, stop, crash, incomplete summary, missing or
+  cancelled cases, name mismatch or unconfirmed cleanup, even on a matching signature). Three independent review rounds (last PASS),
+  affected 27/27 suites 515/515, full V2 regression 1923/1933 (8 clone-location failures of the folder-import / Studio family, 26/26 in the
+  main tree). Demonstrated in the rehearsal: `needs: []` completed twice without consuming the rewrite; the failing test exited normally in
+  0.3 s with the resources closed (proof PROVEN without `--test-force-exit`).
+
+Open:
+1. **Isolated rehearsal stopped at the content gate → no release, no §25 card.** The Codex review (gpt-6.1-sol) was CHANGES_REQUESTED at
+   cycle 0 and again after the one completion (every previous check `kept`, none lost; AC-1/AC-2 open: non-string phones excluded from the
+   assertion and from `values`, the initial rows' identity and phones not fixed before the restart, the second created id not captured);
+   the matrix rejects 29/29 inventory variants but the test passes the extra calibration variant "initial data without phone". Candidate
+   fix (owner's approval, no new rewrites, same models): the author brief / criteria state explicitly that every initial record has a
+   non-empty phone that enters `values`, that both created records are identified by the id the API returned, and that every refusal
+   compares a full storage snapshot; then one new rehearsal, release (backup + upgrade), one §25 card.
+2. **Residual, low (documented by review round 3)**: `builtin_patched` does not follow aliases (`const E = Error; E.prototype.code = …`);
+   a body may misreport its own resource as already closed by construction; the sandbox, not the cleanup, stays the security boundary.
+3. **Author model loop**: the first rehearsal author attempt (sonnet, medium) looped in thinking (4 × max_tokens, no text, $2.09); the Hub
+   would count it as an unreadable answer (new attempt). Observed once; no Hub change (the Hub passes only `--effort`).
+4. **Live Hub started five times without upgrade/backup** (10-12 06:32, 15:55, 21:35 UTC; 10-13 02:44, 07:55 UTC), all by the logon task;
+   provenance `570ced3` + docs. DRAFT: autostart starts only a validated release. Parent delivery `dlv_mv1eo8oo_d120460140` stays STALE;
+   historic §25 test active; M12 stays DRAFT.
+
+## 2026-10-13 — Existing-data coverage (code `2.14.11-m11` on local branch `claude/project-thread-c7i593`, NOT released; live `2.14.10-m11`, contract 13, schema 12; detail: `.ifrim/STAGE_2026-10-12_ACOPERIRE_DATE_EXISTENTE.md`)
+
+This section takes precedence over every older one where they overlap. Baseline: HEAD = origin = `570ced3` on `v2-milestone-01`; 2.14.11 is
+`189241b` + evidence `88cb6c6` on the local branch `claude/project-thread-c7i593` (not merged into `v2-milestone-01`, so the logon autostart
+cannot load unreleased code); push by the owner.
+
+Closed (in code, not released):
+- **Item 1 below, the R-EXISTING part**: criteria and briefs require the app's own initial data (normal start), the record kept across a
+  restart and the new record, proven in storage and present by id in the list for every anonymous parameter; the new reference
+  `existing-reference` rejects all 29 defective variants of the fixed inventory (json-reference passes "seed rows only", rh1 also
+  "existing records only"); T-EXIST-ALL-01…06. R-INVENTORY defect fixed: assertions in a top-level helper were always "removed" at cycle 1.
+  Two independent Claude reviews PASS; affected suites 26/26, 502/502 on the clone aligned byte for byte with the working tree.
+
+Open:
+1. **Isolated rehearsal did not pass the gates → no release, no §25 card.** The real author's test (Claude sonnet) has the right content
+   (diagnostic with forced exit: correct app PASS, 29/29 + 8 calibration variants rejected), but the Hub stopped it twice for mechanical
+   reasons: cycle 0 lint `needs_missing` (the manifest kept `"needs": []` from the template), cycle 1 (the one rewrite) proof INCONCLUSIVE
+   timeout (servers closed after the expected failing assertion without try/finally, so the test process never exits; runner limit 180 s).
+   Codex review never reached. Candidate fix (owner's approval, no new rewrites): proof runs with `--test-force-exit` (open handle = reviewer
+   signal) and `needs` completed by the Hub from the body; then one new rehearsal, release (backup + upgrade), one §25 card.
+2. **Live Hub started three times without upgrade/backup** (06:32 UTC uncommitted 2.14.10; 15:55 and 21:35 UTC committed `570ced3`), all by the
+   logon task. Provenance now clear (`570ced3`, UI built 2026-10-12 07:05 UTC). DRAFT: autostart starts only a validated release.
+3. **Full V2 regression not run** (no release); an attempt in the clone was stopped on a CRLF clone artifact. Parent delivery
+   `dlv_mv1eo8oo_d120460140` stays STALE; historic §25 test active; M12 stays DRAFT.
+
+## 2026-10-12 — Deterministic "does not expose" checks (code `2.14.10-m11`, contract 13, schema 12; detail: `.ifrim/STAGE_2026-10-12_NEEXPUNERE_JSON.md`)
+
+This section takes precedence over every older one where they overlap. Baseline: HEAD = origin = `c168283`; the 2.14.10 commit is local (push by the owner).
+
+Closed:
+- **Item 1 below, the helper part**: the Hub-owned header helper `exposes` (decoded JSON, keys at any depth, values as substrings incl. escaped text and keys; invalid input = setup) detects the c8 miss; lint rejects vacuous/shadowed/literal uses and patched built-ins; the proof records the helper identity. Two review rounds (Claude, separate session), final verification PASS. Affected suites 494/494, build green.
+- The plan `env_mv49pmjs_74958c8740` expired (closed at the 06:32 UTC boot); nothing revived.
+
+Open:
+1. **Isolated rehearsal incomplete → §25 not released or probed**: Claude cycle 0 PROVEN, Codex CHANGES_REQUESTED (saved phone not compared to the sent one), cycle-1 completion PROVEN with nothing lost and Codex PASS; but the test passes two defective variants (phone exposed only for 11:00+ bookings / only for seeded synthetic bookings) because R-EXISTING lets the test create its own existing record with `seed: false`. Candidate fix (owner's approval): R-EXISTING also covers the app's own existing data (seeded bookings identified in storage and found in the list) + the "seed only" variant in the matrix and the reference; then one new rehearsal.
+2. **Live Hub on unreleased code**: the 06:31 UTC reboot autostarted the Hub from the working tree (`2.14.10-m11` with the round-1 lint; no upgrade run, no backup). No migration, no active mission. The next restart loads the committed code; a formal upgrade/backup belongs to the next release.
+3. **Parent delivery `dlv_mv1eo8oo_d120460140` stays STALE**; `git push` stays the owner's. M12 stays DRAFT.
+
+## 2026-10-11 (evening) — Test completion without losing checks (code and live `2.14.9-m11`, contract 13, schema 12; detail: `.ifrim/STAGE_2026-10-11_COMPLETARE_TESTE.md`)
+
+This section takes precedence over every older one where they overlap. `8a91d3f` (2.14.9) pushed by the owner (origin verified 20:21 UTC); live upgrade `upg_mv487hiw` (19:38 UTC) after verified backups `bkp_mv486gvm_fe29fa3bd1` (Hub) and `bkp_mv486kzh_4e6ef724dc` (§25 project). Full `test:v2`: 1848, 1847 pass, 1 skip (T25), 0 fail (CPU avg 93 %).
+
+Closed:
+- **Item 1 below (rewrite replaced insufficient checks)**: R-AMEND / R-INVENTORY in 2.14.9; live fourth attempt kept every previous check (reviewer: all `kept`, no `lost`).
+- **Item 3 below (regression not green)**: final regression green on 2.14.9 (RM-10 passed in this run; still load-sensitive by nature).
+- The 15:28 plan `env_mv3wfqmy_e139f9baef` expired by itself at 18:58 UTC.
+
+Open:
+1. **§25 still not past step 0** (fourth attempt, `env_mv49pmjs_74958c8740` / `mis_mv49pj8t_91920fa038`, stopped 20:34 UTC, exhausted): the cycle-1 completion kept everything but stayed incomplete — its decoded helper compares strings exactly (the phone escaped inside a longer text under another key passes; verified locally), and existing records rely on `seed: true` without proof. Candidate fix (needs the owner's approval): Hub-provided header helpers for "does not expose" checks (decoded keys/values, substring) + an explicit "create or prove the existing record" rule. A second completion would be one more rewrite (not done). The plan expires by itself 23:50 UTC; the automatic refinement cancelled itself (same criteria).
+2. **Parent delivery `dlv_mv1eo8oo_d120460140` stays STALE** (reconciliation refused again at the 2.14.9 boot: no path inventory, no byte hashes).
+3. **Agent refusals**: `git push` stays the owner's (refused again); `upgrade.mjs --apply` was NOT refused this time. M12 stays DRAFT.
+
+## 2026-10-11 (afternoon) — Step-0 repair and §25 recovery (code and live `2.14.8-m11`, contract 13, schema 12; detail: `.ifrim/STAGE_2026-10-11_REPARARE_PAS0.md`)
+
+This section takes precedence over every older one where they overlap. Push of `529cb83` DONE by the owner (origin verified 14:08 UTC).
+
+Closed:
+- **Item 2 below (§25 step-0 rejections)**: causes reproduced locally (invented export accepted as proof; rewrite without the previous candidate; R-SUP retirement at start). Fixed in 2.14.8 (R-PROOF, R-REWRITE, R-LIFECYCLE, R-STALE).
+- **Item 3 below (retirement not undone)**: the old §25 test was restored at the 2.14.8 boot (sha `8d944644…`, journal RESTORED with history).
+- **LightingService**: Running / Automatic after the 08:02 UTC reboot; nothing to restore.
+
+Open:
+1. **§25 still not executed past step 0** (third live attempt, `env_mv3wfqmy_e139f9baef` / `mis_mv3wfpyy_d440c4ec5c`, confirmed 15:28 UTC): both candidates PROVEN on behaviour; the rewrite replaced substring value checks with exact-value checks and the Codex review marked two of them `lost` (confirmed locally: phone leaked in a text field or as a key passes the rewrite). Nothing retired, no code touched. Candidate fix (needs the owner's approval before any new plan): a check criticised as insufficient is supplemented, not replaced. The plan expires by itself 18:58 UTC.
+2. **Parent delivery `dlv_mv1eo8oo_d120460140` stays STALE**: audited reconciliation refused (legacy bundle and E2E screenshots have no recorded byte hash; legacy STALE event has no path inventory), although its software drift is now zero.
+3. **Final V2 regression not green**: 1836 tests, 1832 pass, 1 skip (T25), 3 fail — two fixtures fixed afterwards (14/14), RM-10 load-sensitive (fails under load, passes alone). V1 not rerun.
+4. **Agent refusals**: `upgrade.mjs --apply` ([Production Deploy]) and `git push` stay the owner's. CPU: WmiPrvSE ≈ 2.7 cores, source unidentified. M12 stays DRAFT.
+
+## 2026-10-11 — Finalizing the M11 probes (no code change; code and live `2.14.7-m11`, HEAD = origin = `d7aeeb5`; detail: `.ifrim/STAGE_2026-10-11_FINALIZARE_PROBE_M11.md`)
+
+This section takes precedence over every older one where they overlap. The push of `8b2a76b` + `d7aeeb5` is DONE (origin verified 2026-10-10 21:18 UTC); item 1 below is closed.
+
+Closed:
+- **D4-02, RM-10, OFF-06**: all PASS in the final regression. RM-10 fails only above ~99 % CPU (correct `HOLD_LATENCY_EXCEEDED` refusal, cap kept); OFF-06 failed only on the disk reserve (C: now ~400 GiB free, reserve 15 GiB kept).
+
+Open:
+1. **Final regression not green** (2026-10-10 23:59 → 2026-10-11 02:06 UTC, CPU 99.6 % in the first hour): V1 `npm run test` 549/552 (2 API timeouts), V2 `test:v2` 1752/1757 + 1 SKIP T25, 4 FAIL (M03-FAC-04/06/07, RF-02). All six pass in isolation (0.4–6 s). Load, not code; rerun after a PC restart.
+2. **§25 privacy revision not executed past step 0** (twice, owner-confirmed): Codex's test review rejected Claude's acceptance test 4/4 times; auto refinement correctly refused (same criteria); no "one more attempt" exists in step 0. Plan `env_mv3b262d_3d5e47db62` expires by itself 2026-10-11 07:43 UTC. Needs a diagnosis of the step-0 proof/review before another try.
+3. **R-SUP retirement not undone after a stopped step 0**: the old §25 test sits in `.ifrim-hub/retired/mis_mv2ql0fp_ee35f8071e/`; parent delivery `dlv_mv1eo8oo_d120460140` is STALE although no code changed (`restoreRetired` only on a failed start / boot recovery).
+4. **CPU**: WmiPrvSE ~4 cores constantly (CIMWin32 + nettcpip providers), source unidentified (not the uninstaller, LightingService or the V1 tray). `LightingService` was stopped by the owner during the diagnosis (`net start LightingService` restores it).
+5. M12 prompt stays DRAFT (probes not closed). `.ifrim/tmp/v2-tests` holds ~8.1 GB of test leftovers (not removed; not needed for space).
+
+## 2026-10-10 (evening) — Closure of the M11 corrections (code and live `2.14.7-m11`, contract 13, schema 12; detail: `.ifrim/STAGE_2026-10-10_INCHIDERE_M11.md`)
+
+This section takes precedence over every older one where they overlap. Closed in code and tested (R-HIST, R-SUP, R-ROLL, R-PACK; 24 new tests, 10/10 mutations killed; full regression 1757: 1753 PASS, 1 SKIP T25, 3 FAIL from the environment, see the stage report). Live upgrade `upg_mv2qfbs5` done; verified backup `hub-dataackups2hub-v2.closure-2.14.7.2026-10-10T18-34-21-868Z.sqlite`.
+
+Open:
+1. **Push** of `8b2a76b` and the docs commit: refused to the agent by the session permission layer; the owner runs `git push origin v2-milestone-01`.
+2. **§25 privacy revision live**: card `env_mv2ql6ls_9f08b50ab6` PROPOSED (confirm by 2026-10-11 18:37 UTC); the owner confirms it once. Before that, free space on C: (14.7 GiB free < the 15 GiB media reserve: the capture step fails with DISK_RESERVE).
+3. **Load-sensitive tests**: D4-02 (Lega, 121 s timeout under 100 % CPU, passes alone) and RM-10 (real capture holds over their latency cap under 100 % CPU, fails again while the CPU stays at 100 %); OFF-06 fails on the same disk reserve as item 2.
+4. Earlier missions started before 2.14.7 have no historic record (their bundle says so); the Excel proof still covers the generic demo workbook only.
+5. Items 3–5 of the section below are unchanged (CapCut/OBS, voice probe, old bundles).
+
+## 2026-10-10 — Corrections after M11 + M12 handoff (code `2.14.6-m11`, contract 13, schema 12; detail: `.ifrim/STAGE_2026-10-10_CORECTII_M11.md`)
+
+This section takes precedence over every older one where they overlap. Baseline at start: HEAD = `origin/v2-milestone-01` = `49a6032`;
+live `2.14.5-m11` (the owner had already upgraded); the owner's uncommitted changes are line endings only.
+
+Closed in code (tested in isolation, full regression 1731/1733 PASS + 1 SKIP + 1 load timeout that passes alone):
+- **Frozen-frame warnings in the delivery clips** (item 2 of the 10-09 section): captures now record measured holds; QA justifies only a
+  freeze inside holds the capture session stored. Old clips keep their reports (nothing retroactive).
+- **Phone in the public list of the §25 demo** (owner's product observation of 10-09): the Hub now plans that revision with distinct
+  checks and supersedes the old §25 test without rewriting it.
+- **Selective revision**: the Excel workbook of a refresh is kept only by proof (live data check: `Programari demo.xlsx` of
+  `dlv_mv16dsp8_491116ae10`, sha `9ce060d8…`, reusable).
+
+Open:
+1. **Upgrade to `2.14.6-m11` and push of the stage commit**: see the thread report (the Claude Code classifier refused them before).
+2. **The §25 privacy revision live**: after the upgrade, the sentence goes to the §25 delivery; the owner confirms the card; Codex
+   implements; the refresh delivery then films the new version and keeps the Excel by proof. Not run yet.
+3. Limits stated by the review: the Excel proof covers the generic demo workbook (not project data); the reused file stays in the source
+   delivery's folder; the conflicting-test detection is a heuristic shown on the card; earlier Hub tests of other missions are still not
+   protected from a later writer (integrity reports `test_modified` medium / `test_deleted` high) — candidate for M12+.
+4. U06-BL-06 can time out under heavy CPU load (130 s in the full run, 9,9 s alone).
+5. Items 3–4 of the 10-09 section (CapCut/OBS, the owner's voice probe, old bundles) are unchanged.
+
+## 2026-10-09 (evening) — Closure of the stage before M12 (code `2.14.5-m11`, commits `b15f3d6`…`bff5c68`, live `2.14.4-m11`; detail: `.ifrim/STAGE_2026-10-09_LEGA_AUTONOMIE.md` → „Închiderea etapei”)
+
+This section takes precedence over every older one where they overlap. Reconciled facts (checked 2026-10-09 18:05 UTC): `origin/v2-milestone-01`
+= `7407301` (= local HEAD then), so 62f5788 / 95465c8 / 7407301 are pushed; the live Hub served `2.14.1-m11` (contract 13, BUILD_SAFE, upgrade
+`upg_mv0yn13c`) with the local development profile on.
+
+Closed (with evidence in the stage report):
+- **Plans stopping when the confirming page closes** (item 1 of the 10-09 section below): fixed in `62f5788` (`trust.confirmedAuthority`,
+  `ops/plans.mjs`); DP-06 PASS (one confirmation, session closed at once, mission → review → QA → derived delivery → READY).
+- **Windows Hello in local development** (item 2 below): the local development profile is live (`dev_fc41496f2663`); the §24 and combined
+  confirmations of 2026-10-09 needed 0 Hello prompts.
+- **§24 and the combined delivery** (item 3 below): DONE live (`opp_mv123umo_a22d4eeb67`, `opp_mv16dspo_101aa9677c` / `dlv_mv16dsp8_491116ae10`).
+- **§25 test rejected twice**: cause = one criterion (the owner's sentence) proven by a server test; fixed by derived criteria + guard criteria
+  + browser checks + bounded refinement (`b15f3d6`). The stuck mission `mis_mv16l212_a6e1053492` waited at NEEDS_OWNER_DECISION; its plan
+  `env_mv16l8fa_e03c6bdee4` EXPIRED at 19:59:59 UTC (its 3.5 h authority) and its child delivery `dlv_mv16l88c_f3ffac3ae1` EXPIRED with it.
+- **V1 blank page on 3004** („504 Outdated Optimize Dep” after the node_modules accident): `dev:web` restarted, 0 console errors.
+- **Office artifacts without their own state** (item 4 below): each office file now carries its dependency and state in the delivery view.
+
+Open:
+1. **Push and the last upgrade**: the Claude Code auto-mode classifier refuses `node v2/scripts/upgrade.mjs --apply` („[Production Deploy]”)
+   and `git push origin v2-milestone-01` from the agent; the owner ran the upgrades (live `2.14.4-m11`) and runs the push. Code `2.14.5-m11`
+   only narrows the automatic refinement; it goes live with the next upgrade. §25 itself is DONE live (stage report, „Probe live”).
+2. **Frozen-frame warnings in the delivery clips**: analysed against the capture markers (stage report): every freeze ≥ 1 s of the desktop
+   part lies in a highlight hold, the typing or the proof hold; no stalled capture found. The QA verdict stays WARN because the clip IR does not
+   mark those holds `holdIntentional` (QA justifies only marked clips); marking them from the capture markers is the remaining fix.
+3. **CapCut / OBS**: discovered, never authorized or operated live (only Notepad was operated live, 2026-10-04 and 10-06). Operating them needs
+   the owner's app authorization card. The FFmpeg route stays the editor path.
+4. **The owner's real voice probe** and the old bundles (ProDelivery, Factory Demo M07, the accidental Factory Demo M10.2 mission): owner's.
+
+## 2026-10-09 — Etapa „Lega: autonomie și lucru pe PC” (ISTORIC: items 1–4 superseded by the section above)
+
+This section takes precedence over the older ones where they overlap. Reconciled facts: M11 is pushed (`origin/v2-milestone-01` = `209b020`
+on 2026-10-09) and live (`2.14.0-m11`); the detailing pilot RAN on 2026-10-08 (software 7/7, accepted; clips approved; summary ready; nothing
+published). Items 1, 3 of the M11 section below are closed; item 2 (voice probe) stays open.
+
+1. **Plans stop when the confirming owner session closes** (`v2/server/ops/plans.mjs:324`, `:292`): an idle browser (30 min) stops a running
+   plan (SESSION_CLOSED → NEEDS_OWNER) and refuses the derived delivery plan. Contradicts the owner's requirement that a confirmed mission
+   continues when he leaves. The fix was refused by the session's permission layer ([Security Weaken]); open.
+2. **Windows Hello in local development**: the local development profile was refused by the same layer; open (design in the stage report).
+3. **§24 / §25 live**: pass end to end on the test Hub (DF-01); the live cards need the owner's confirmation until item 2 exists.
+4. **Office artifacts are not delivery items**: Word / Excel / campaign are recorded as package-plan step results (the `delivery_items` kind
+   CHECK has no `office` kind); a software change makes the whole delivery STALE, but the Room does not mark each office file stale on its own.
+
+## 2026-10-07 — M11 „Ifrim Delivery” (code `2.14.0-m11`, contract 13, migration 12; LOCAL commits on `v2-milestone-01`, not pushed, not live). Detail: `.ifrim/HANDOFF_2026-10-07_M11.md`, `.ifrim/M11_REPORT.md`
+
+This section takes precedence over the older ones where they overlap.
+
+1. **Not live.** The live Hub serves `2.13.1-m11`. The upgrade to `2.14.0`, the detailing test project and the pilot need the owner's ONE approval of `.ifrim/M11_PILOT_SHEET.md`. The logon autostart now refuses to start the Hub while the code holds migration 12 and the database does not (`v2/scripts/boot-guard.mjs`); after a reboot, start through the approved upgrade.
+2. **Voice: M11_VOICE_READY not declared.** Segmentation fixed and the local diagnostic built (PASS on synthetic signals); the owner's probe (positives and negatives) is NOT_RUN. The filter stays off until the owner turns it on.
+3. **Software revision (§25) does not yet create a parent-linked „refresh” delivery.** The planner shows the difference and proposes the engineering plan; when the new mission starts, the old delivery becomes STALE (software_revision); after its DELIVERY_READY the owner says „pregătește demo-ul” again. Decide whether the refresh section should ride on the engineering envelope (design: mode 'refresh', parentDeliveryId).
+4. **Delivery Room creative approval** stays the existing Studio decision (fresh Windows Hello); the Room links to it.
+5. **Open design decisions kept at their defaults** (`.ifrim/M11_DESIGN.md` OPEN DECISIONS): session-bound delivery phase, one card per clip revision, „Accept local” needs the displayed bundle sha, Windows route only, phone width = 390 px viewport in Chromium (no device emulation), first tone „both”, CTA „Hai să discutăm”, price/term „De stabilit (neconfigurat)” until a CONFIGURED catalog service is bound.
+
+## 2026-10-05 — P0 closure of M10.2 (code `2.12.1-m10.2`, contract 12, no migration; **committed locally as `e1a2d0d`, not pushed**; **live since 2026-10-06 03:03 UTC**, run `upg_muw3g5tp`; test project `prj_muw3gnxo_52bfc7470f`; probe marker S0 = 4522). Detail: `.ifrim/M10_2_REPORT.md` §11, `.ifrim/HANDOFF_2026-10-05_P0.md`
+
+This section takes precedence over the M10.2 section below where they overlap. The code is on `v2-milestone-01` over `e8a55ce`, in the same files as M10.2. Decisions D14–D23 are described in the report.
+
+Evidence:
+- Integration set: 506/506 twice, plus 132/132 extra. PASS_SIMULATED: throwaway test Hubs, fixture providers, simulated distro; the browser E2Es ran in headless Chromium.
+- Full regression: V2 **1246 tests · 1245 PASS · 0 FAIL · 1 SKIP** (T25 symlink, unchanged; 128 files without `m11-*`, UI built separately, 55 min, 2026-10-06 00:21–01:17 UTC); V1 **552 · 551 PASS · 0 FAIL · 1 SKIP**.
+- Live: NOT_RUN. Nothing live was run for `2.12.1`: no upgrade, no model, no Lega session.
+
+1. **M10 still closes only after the owner's guided probe A–G.** Sheet: `.ifrim/M10_2_PROBE_SHEET.md`, approved by the owner on 2026-10-05 (~16:30 UTC).
+   - Nothing of the probe has run yet. Steps A–G are NOT_RUN.
+   - The approval covers the sheet and nothing wider: one local commit (M10.2 + P0), the upgrade to `2.12.1-m10.2`, the test project „Factory Demo M10.2”, one Lega session of at most 20 min, one Engineering plan, the Studio import and one edit.
+   - It does not cover a push, the M11 pilot or the historical bundles (ProDelivery, D6, Demo B).
+   - Order: full regression → local commit → `upgrade.mjs --plan`, then `--apply` → test project → `probe-m10-2.mjs --mark` → the owner's steps A–G.
+2. **Closed from the M10.2 list: the two leftovers of the old flow.**
+   - **Reopening after „Oprește tot” was an admin path** (the typed OPEN GATE in Integrări → Avansat; M10.2's D13). Now it is the rearm card in the cockpit (D14–D17, `v2/server/owner/gate-rearm.mjs`). With it, Stop All closes the waiting engineering and run plan cards (envelopes; D15, `v2/server/owner/envelopes.mjs:1565-1575`; also at a shutdown that interrupts a run, and at boot while the gate is still suspended by a stop, `v2/server/owner/stop-scope.mjs:162-196`; operation-plan cards are not closed, they still need their own confirmation and expire), and what the stop itself paused resumes only after the rearm, on every path (D22, `stop-scope.mjs:125-133`; `v2/server/ops/plans.mjs:384`; `v2/server/desktop/operator.mjs:269`).
+   - **„Continuă” worked only typed.** No client sent the locally verified segment, and Lega refused the provider's word (voice-path map). Now the owner's locally verified spoken „Continuă” runs the same executor as the typed one, once per utterance, and the provider transcript can only veto (D18, `v2/server/owner/intake.mjs:1345-1404`; `v2/server/owner/voice.mjs:53`, `:394`). PASS_SIMULATED only: live it needs the voice filter on.
+3. **Open, not fixed in this closure.**
+   - **A retained lease blocks every reopening path and has no release in the cockpit (SM-04; older than P0).**
+     - A lease is retained when a stopped run's provider process does not confirm its exit (`v2/server/runtime/runs.mjs:516`) or when the Hub restarts mid-run (`v2/server/runtime/recovery.mjs:30`).
+     - While one exists, the rearm card answers LEASES (`v2/server/owner/gate-rearm.mjs:175-176`), „Continuă” after the owner's own pause is refused (`v2/server/owner/interrupts.mjs:143-144`) and the typed OPEN GATE is refused (`v2/server/runtime/command-catalog.mjs:318-319`).
+     - The only release command is `computer.release` (`command-catalog.mjs:589-590`). Its only caller in the UI is the computer-locks panel (`v2/web/src/screens/Tools.jsx:55`).
+     - **Decide:** a reconcile step on the rearm card (run ended and process gone → release, under the same fresh verification).
+   - **Sentences that name Stop All after „după” without a reopen verb still resolve to `stop_all`.**
+     - Checked with the pure resolver: „Ce urmează după Stop All?” and „Ce s-a oprit după Stop All” both give `stop_all`.
+     - The round-2 defence applies only when the clause also holds a reopen or resume verb (`v2/server/owner/intents.mjs:278-279`, pattern at `:287`).
+     - The effect is one more Stop All: it closes the waiting plan cards and makes a shown rearm card stale. Nothing starts.
+     - **Decide:** should „stop all” right after „după” never be read as the command?
+   - **The legacy typed OPEN GATE needs only the per-boot token for a non-security stop (AS-03; owner decision).**
+     - `gate.set open` takes the `ui` channel and the typed `OPEN GATE` (`command-catalog.mjs:312-317`). A request without `X-Hub-Channel` counts as `ui` (`v2/server/http/routes.mjs:35`), and its only credential is the per-boot token (`v2/server/http/server.mjs:63`, `:89`).
+     - It has no owner session, no fresh Windows Hello, no compare-and-set and no BUILD_SAFE reset. It records `via: "open_gate"` (`command-catalog.mjs:341`), so the sweep of preserved requests is not skipped (`v2/server/owner/work-requests.mjs:313` skips only a rearm).
+     - It does refuse retained leases and a stop next to a security event (`command-catalog.mjs:318-333`). D14 keeps it as the diagnostic path.
+     - **Decide:** require the owner session there under voice-first, or leave it as it is.
+   - **The agent channel can attest a new WSL fingerprint (PF-07; owner decision).**
+     - `environment.attest` is delegated to agents (`v2/server/runtime/commands.mjs:14`). Outside the `automation` channel the fingerprint pin is optional (`v2/server/environments/environment-commands.mjs:61`). A delegated call, or the manual UI button, therefore attests whatever a fresh inspection finds.
+     - It cannot approve (b): that command is owner-only (`environment-commands.mjs:85`). For a hub-test project, though, a valid attestation alone satisfies the environment route (`v2/server/policy/isolation.mjs:264-266`).
+     - D21 guards only the setup's automatic step and the `automation` channel.
+     - **Decide:** on `agent`, require the fingerprint of the latest PASS, or remove the delegation.
+   - **No per-turn wall-clock timeout for writer or reviewer turns.** A turn is bounded only by the mission deadline (set at `v2/server/factory/factory.mjs:416-418`, enforced at dispatch `:587`, `:695` and by the tick `:1469-1474`) and by the plan's expiry. `run.stale` is only a flag after 10 min without provider events (`v2/server/runtime/recovery.mjs:54`, `:71-73`). In the probe a hung turn ends at the 120-min deadline or at the owner's Stop (sheet §3).
+   - **Two labels for the same closure.** The boot defence closes a stale PROPOSED plan through `envelopes.revoke` (`stop-scope.mjs:189`), which records CANCELLED (`envelopes.mjs:1455`). The live stop records REVOKED (`envelopes.mjs:1574`). Both are owner closures for the preserved requests (`work-requests.mjs:46`), so only the history label differs. A fix needs a closure helper in `envelopes.mjs`.
+   - **A restart with only a no-model operation plan running records no stop (observation on D17/D22).** `stopForShutdown` calls `runs.stopAll` only when a model run is active or in admission (`stop-scope.mjs:164`; `runs.mjs:602`). Otherwise no `shutdown` suspension is written; the boot sets the plan to NEEDS_OWNER (`v2/server/ops/plans.mjs:508-513`) and nothing holds it. **Decide:** should a shutdown without model runs count as a stop too?
+   - **The voice filter is off on the live Hub** (last recorded state, not re-read for this section; the default is off, `v2/server/domain/settings.mjs:51`). The verified spoken „Continuă” (D18) and the spoken plan confirmation therefore cannot be validated live until the filter is on. The owner's spoken pause (D19) does not need the filter, only a Lega session started from the owner session. All three are NOT_RUN live and PASS_SIMULATED in tests (fixture voice worker). The owner approved turning the filter on for the probe (sheet option V) and does it himself; without it, the spoken „Continuă” of step F1 stays NOT_RUN.
+4. **WSL attestation: still invalid (`canary_changed`, same fingerprint `8f9e9eeb934b6c01` as last recorded).** The probe does not need it.
+   - **Real cause.** M09 added an opt-in `streamPaths` option to the request guard in `v2/server/tools/browser-core.mjs` (`:44-48`, `:78-82`). That file is one of the preview-host files copied into the sandbox (`v2/server/environments/sandbox-profiles.mjs:93-97`), and their contents are hashed into `CANARY_VERSION` (`v2/server/environments/canary.mjs:30-33`).
+     - Attested version: `m05-canary-1+e1fde725` (the inputs of `09f50b4`…`ae3aa48`, as measured by the attestation analysis). Current version: `m05-canary-1+0491ff30` (`72d6964` and `e8a55ce` in the same analysis; re-computed from the working tree for this section, so `2.12.1` does not change it again).
+     - The only caller that passes `streamPaths` is the Windows Studio capture (`v2/server/media/capture.mjs:844`). The sandboxed E2E path does not (`browser-core.mjs:231`), so the new branch is not reached inside ifrim-runner.
+   - **What a re-attestation needs.** The same fingerprint, no model and no new approval (b): (b) is bound to the fingerprint, not to the canary version (`isolation.mjs:267`).
+     - By hand, in System → Medii: first „Inspectează” and check that the fingerprint is unchanged (the manual route passes no fingerprint pin, `v2/server/http/routes.mjs:432`), then „Rulează atestarea C1–C17”, then „Verifică contul prin mediu (C16)” (`v2/web/src/screens/system/Environments.jsx:46`, `:70`, `:67`). The attestation's own C16 refreshes only the Codex check (`v2/server/environments/wsl-runner.mjs:283`).
+     - Or automatically (D3), as a pre-step of the first plan confirmed on a wsl-routed project.
+     - It restarts the distro at C15 and is a live-Hub operation of its own. The probe sheet does not cover it (sheet §6).
+     - The current attestation would also expire around 2026-10-16 (14 days, `wsl-runner.mjs:31`).
+   - **Known weaknesses.**
+     - **The `CANARY_VERSION` scope is narrower than the launch path.** It hashes `canary.sh`, `c14.mjs`, `reap.sh`, `canary.mjs`, `sandbox-profiles.mjs`, the three host files and the generated prelude (`canary.mjs:30-33`). It does not hash `wsl.mjs`, `wsl-runner.mjs`, `wsl-factory-runner.mjs`, `tar.mjs`, `workspace.mjs` or the other scripts (`inspect.sh`, `prepare.sh`, `release.sh`, `reviewer-cleanup.sh`). A change there neither invalidates the attestation nor is measured again. Example: this closure edited `wsl-runner.mjs` and the version did not move.
+     - **C18–C20 are optional** (`canary.mjs:39`, `:214`; `wsl-runner.mjs:60-65`). A failure there still gives PASS_LOCAL with fewer stages, and the automatic re-attestation accepts any `PASS*` status (`v2/server/owner/readiness-runner.mjs:210`). Coverage can shrink without a new decision. Real-project factory plans are then blocked by the stage check (`v2/server/factory/routed-runner.mjs:88`, `envelopes.mjs:171`); hub-test projects are not.
+     - **Line endings.** The hash is over raw bytes. This machine has `core.autocrlf=true`, and `.gitattributes` pins only the fixtures and `*.sh` to LF (`.gitattributes:1-6`), not the hashed `.mjs` files. They are LF in the working tree now. A re-checkout could flip them to CRLF and change the version with no code change.
+     - **TOCTOU between the label and the scripts.** The version label and the host files are fixed when the module loads (`canary.mjs:30-33`, `sandbox-profiles.mjs:93-97`), but `canary.sh` and `reap.sh` are read again from disk at attestation time (`canary.mjs:63`, `:90`). The live Hub runs from the working tree, so an edit made after the Hub started is attested under the old label until the next restart.
+   - **The probe runs on the Windows route.** A new hub-test project has no environment route, so `routeFor` returns `windows` (`v2/server/environments/registry.mjs:14-21`). It needs neither the attestation nor C16. That route is the weaker boundary (R2 open; test data only).
+5. **M11 wave 0 exists as new, unwired files.** They are uncommitted, not loaded by the Hub or the built UI, and not part of the P0 commit: the booking demo fixture, `v2/server/delivery/*`, the Delivery Room screens and the `m11-*` tests. Design, file list and the post-probe checklist: `.ifrim/M11_DESIGN.md` (appendices A and B). M11 units that change existing files start only after the owner's probe A–G.
+
+## 2026-10-05 — M10.2 (code `2.12.0-m10.2`, contract 11, migration 11; **uncommitted**; **live since 2026-10-05 04:57 UTC**, run `upg_muus3hq2`). Detail: `.ifrim/M10_2_REPORT.md`
+
+1. **M10 closes only after the owner's live probe** (prompt §14–§15). The automated suites pass: V2 1110 · 1109 PASS · 0 FAIL · 1 SKIP; V1 552 · 551 PASS. The single guided probe sheet (A–G, scope, budget) is in the closure report.
+2. **WSL attestation is invalid (`canary_changed`, same fingerprint).** Since M10.2 it is announced at boot. The re-attestation runs automatically as a pre-step after the owner confirms a plan on a wsl-runner project (D3), or by hand through System → Medii → „Rulează atestarea C1–C17”. Corrected on 2026-10-05: the button „Rulează pașii automați” is on Lega → Configurare (`#/lega/setup`), not in System → Medii, and from `2.12.1` it re-attests only the same fingerprint (D21). A new fingerprint is never approved automatically. Cause, steps and known weaknesses: the P0 closure section above, item 4.
+3. **The voice filter is off.** With it off, spoken confirmation („Da, execută planul”) is unavailable, so plans are confirmed by click, Enter or typed „Da”. Enabling it is one owner decision. From `2.12.1` the spoken „Continuă” (D18) needs it too. The spoken pause counted as the owner's own (D19) does not: it needs only a Lega session started from the owner session. See the P0 closure section above, item 3.
+4. **Lega web search is `live`** (owner setting). Every start now needs the server-side confirmation (D9). The setting was not changed.
+5. **Dead drafts from the old flow**, left for the owner (D11): `mis_muu64evt` (promo video, project_management on the Hub), `mis_muppcs5g` (AROBS) and `mis_mupy0no5` (phone validation, SPEC_DRAFT).
+6. **Not done (documented):**
+   - an expiring owner-only live-search setting and the taint rule (decision 9 follow-up);
+   - the media AI role / generated plates (D5);
+   - a plan offer drawn inside the Lega stage for plans from another tab;
+   - a MEDIA_A card button for acknowledging a changed tool (the Studio → Unelte panel has it).
+
+## 2026-10-04 — Open items after M10 (code `2.11.1-m10`, contract 10, migration 10; **committed as `72d6964`** on `v2-milestone-01`, together with M09, over `ae3aa48`; push pending: the owner runs `git push origin v2-milestone-01`; **the live Hub runs `2.11.0-m10` since 2026-10-04 13:53 UTC**). Detail: `.ifrim/M10_REPORT.md` (takes precedence over the M09 section below where they overlap)
+
+0. **M10.1 — Lega one-click start (`2.11.1-m10`, no migration) is LIVE since 2026-10-04 18:12 UTC.** Owner's approval: "abrob upgrade la 2 11 1". Claude ran `upgrade.mjs --apply`, run `upg_muu51x09`, verified: `2.11.1-m10`, BUILD_SAFE, 0 active grants, 0 runs.
+   - The PC had rebooted at 18:07 UTC and the Hub was down, so it was an offline upgrade.
+   - **Done (owner's request):** the per-user logon task "Ifrim Agent Hub V2" (`v2/scripts/autostart.ps1 -Install`, action `autostart-run.ps1`) starts the Hub 45 s after logon when nothing answers on 8011.
+     - Verified: run while up → "deja pornit"; run after `stop.mjs` → up in ~6 s, BUILD_SAFE.
+     - The real logon trigger is confirmed at the next restart (log: `%USERPROFILE%\IfrimHub\autostart.log`).
+     - The V1 tray task is separate.
+   - **The owner's Lega web-search setting is `live`** (higher risk). A stage or cockpit start opens the panel first and asks for one more click (by design).
+   - **Deliberate behaviour change on the old path:** withdrawing the Codex billing declaration now also stops a voice session started with a hand grant. Before, only the derived path stopped. This is fail-safe: a new start would be refused anyway.
+   - **Left by design:**
+     - hand-made "Lega (voce)" grants from the old path stay valid until they expire (nothing deletes them);
+     - a voice session's `maxDurationS` is fixed at start, from the owner session's time left. Activity during the voice session does not extend it; the owner session idling out stops it (tick ~15 s and before every Lega tool).
+   - **Owner session rotation (`v2/server/owner/trust.mjs`):** a re-authentication in the last 10 minutes of an owner session now opens a new session (new cookie, full 8 h) and ends the old one (`rotated`). Before, it renewed the same session in place. Whatever was bound to the old session stops as it would at expiry, at most 10 min earlier: a derived Lega voice, a running ops plan (→ NEEDS_OWNER, "confirmed in another session") or an envelope continuation. A plan confirmed in those last minutes now gets the new session instead of dying minutes later.
+   - Detail: `.ifrim/M10_LEGA_ZERO_FORM.md`.
+1. **Done 2026-10-04 13:53 UTC (owner's approval "aprob upgrade ul la m10"):** `node v2/scripts/upgrade.mjs --apply` by Claude, run `upg_mutvrr79`. Verified backup `hub-v2.pre-migration.v9-to-v10.2026-10-04T13-53-14-962Z.sqlite` (sha256 `bef36396…fb50`, integrity ok); BUILD_SAFE, 0 grants, 0 runs, log clean; the helper is built in `hub-data\work\desktop`. Two runner defects were fixed first (dry-run copy inside OneDrive; 40 s start wait). The M09 manual dry run had also copied the live DB into `.ifrim/tmp` (OneDrive) for a moment before deleting it.
+   - The server now takes and verifies the pre-migration backup itself.
+   - No GUI action on the owner's desktop and no model were run.
+   - The only real-desktop contact was a **read-only** discovery with the real helper: all four apps DISCOVERED, trusted signatures.
+2. **M09 items closed by M10:**
+   - **M09 #5** (the clip's project could not be imported): a project bundle `proiect-studio.json` + preview + ONE import + reconstruction from an older delivery. The bundle now sits in the clip folder.
+   - **M09 #6** (capture scope approval): `media.capture.scope.approve` (owner, fresh re-auth) + plan steps that approve the exact scope.
+   - **M09 #8, partly** (import roots without UI): contextual folders (once / persistent with fresh re-auth) from the Studio import panel, the Operator page and „Importă din folderul acesta”.
+3. **Live GUI verification is pending:**
+   - D1 (open / focus) and D2 (Notepad edit + Save As) are verified against the deterministic helper fixture.
+   - The real helper is verified automatically only through non-desktop operations (protocol, MAC, replay, authority, fail-closed scope, JSON arrays).
+   - The owner runs the real GUI demos (`m10-desktop-real.mjs --open / --notepad / --capcut-inspect --watching`).
+4. **CapCut's real UI Automation exposure is unknown** until the first `--capcut-inspect`. Until then:
+   - `invokeControl` and `import` stay UNVERIFIED;
+   - export stays ASSISTED_ONLY;
+   - publishing / exporting to platforms is refused (sensitive control).
+5. **Windows may refuse to bring a window to the foreground** (focus-stealing prevention). The result then says „open but not in front”; it is never reported as success. No `AllowSetForegroundWindow` / `AttachThreadInput` tricks are used.
+6. **A failed project import leaves the partially created content project.** The import row is marked FAILED; a retry creates a new project.
+   - **Decide:** archive the partial project automatically on failure, or keep it for inspection.
+7. **`ops.plan.propose` accepts any registered step kind from the owner-facing channels** (UI included). It only proposes: confirmation needs the owner session. No UI exists yet for composing arbitrary plans (only Lega's intents build them).
+8. **OBS through a plan needs:** MB1 (live capture), OBS WebSocket enabled with a password, and the Hub's OBS configuration (Operator page → OBS). The password is typed at each plan's confirmation and never stored.
+9. **Defects found and fixed during M10** (each with a test; detail in `M10_TEST_REPORT.md`):
+   - **helper arrays + fail-open scope:** the C# helper read JSON arrays only as `ArrayList`. Real discovery returned nothing, `listWindows`/`waitWindow` never matched, and the `auth.apps` scope check was skipped (fail-open). Now arrays are read through one function and the scope is fail-closed.
+   - **helper build encoding:** the C# source was compiled without UTF-8; now `/codepage:65001`.
+   - **policy diacritics:** JavaScript's ASCII `\b` let „Postează” / „Șterge” slip past the sensitive-control check.
+   - **protected process names:** compared with „.exe”, while the helper reports them without it.
+   - **plan desktop session:** left ACTIVE after the plan ended.
+   - **implicitly approved folders:** folders a step merely described were treated as approved, so there was no step-up decision.
+   - **bundle export:** refused a destination that did not exist yet.
+   - **translucent plates:** a style box at 0.75 opacity let busy UI text show through (the M09 LinkedIn ~21 s issue), and QA could not see it. Now the plate is reinforced (≥ 0.9, guaranteed in the ffmpeg filter, test M10-ST-13) in narrow variants, and the legibility QA measures around the real glyphs. A frame-based „plate too transparent” check was tried and removed: anti-aliased glyph edges made it fire falsely on the real clip.
+10. **Unchanged and still the owner's:**
+    - pilot ProDelivery/F-001, D6, Demo B;
+    - MEDIA_A / MB1 / MEDIA_C;
+    - the clip's creative approval;
+    - Claude billing re-declaration (M09 #2).
+    - Autostart, remote access and permanent listening stay off; M10 adds none of them.
+
+## 2026-10-04 — Open items after M09 (code `2.10.0-m09`, contract 9, migration 9; **committed in `72d6964`** with M10 on `v2-milestone-01` over `ae3aa48`; **the live Hub runs `2.10.0-m09` since 2026-10-04 07:23 UTC**). Detail: `.ifrim/M09_REPORT.md` (takes precedence over the M08 section below where they overlap)
+
+1. **Done 2026-10-04 07:20–07:24 UTC (owner's request "fă tu pașii de trecere pe M09"):** live upgrade to M09.
+   - Steps: dry run 8 → 9 clean → stop → coherent DB backup → `npm run build:v2` → start → read-only checks.
+   - The backup: `hub-data\private\pre-upgrade\hub-v2.pre-m09.2026-10-04T07-23-05-815Z.sqlite`, sha256 `3f90d2bc…5651`, integrity ok. The Hub does not back up by itself before a migration.
+   - State after: BUILD_SAFE, 0 grants, 0 runs, log clean.
+   - The execution gate stayed `open` as before (BUILD_SAFE blocks inference anyway).
+   - Rollback: `M09_LIVE_VALIDATION_PLAN.md` §1.
+2. **Claude inference is blocked until the owner re-declares billing.** Live state confirmed after the upgrade: `reverify_required`, `latched` + `legacy_unbound`, route blocked. This is intended.
+   - Codex stays valid until its declaration expires.
+   - Re-declaring needs the owner session + fresh Windows Hello + a probe ≤ 24 h (plan §2).
+   - The Hub still cannot verify Claude credits automatically and does not try.
+3. **M08 items closed by M09** (as code, PASS_SIMULATED; live after the upgrade):
+   - M08 #2, package/autopilot plans now pin models end to end (`policy/model-binding.mjs`);
+   - M08 #7, skill bodies are injected through the composer and recorded per run (`run_skill_usage`).
+   - The skill-evolution league and monitor now count only runs that actually received a skill (review R30/R31).
+4. **Unchanged and still waiting for the owner:**
+   - pilot bundle `bnd_musqo7xj_1a204a2e55` + F-001;
+   - D6 `bnd_murl82o1_00afe726c3`, Demo B `bnd_mupwze7b_e03f70f2d7`;
+   - the ProDelivery working tree (not touched by M09).
+5. **First clip awaits the owner's creative decision.** Files: `C:\Users\mihai\Videos\Ifrim Studio\M09 - Un plan, o confirmare\`. CREATIVE_OWNER_ACCEPTED is not recorded (it needs the Studio on the live Hub + Windows Hello). Its manifest stays DRAFT.
+   - The edit project exists only on the test hub that produced it.
+   - To approve it in the live Studio, the project must be re-created there:
+     1. import `surse/capture.mp4` + `surse/end-card.png` (+ rights);
+     2. `media.edit.create` with `plan-de-montaj_v1.json`, its `assetVersionId`s remapped to the new library ids;
+     3. final render.
+   - **Missing:** a small import helper (OWNER/test command or manual script) that remaps the plan's asset ids; today it would be a manual JSON edit.
+   - The sources were copied out of the session scratchpad into `surse/` (sha of `capture.mp4` verified).
+6. **Live capture cannot be approved yet even with MB1.** `captureBrowserDemo` on the live Hub (8011 or the 3011 dev proxy) and OBS recording both require the owner's approval of the session's exact scope (`consent_json.scopeApproval`, via `owner_session`). M09 has no command or screen that writes it.
+   - **Next step:** an OWNER command `media.capture.scope.approve` (fresh re-auth, scope sha bound, expiry) + a Studio button.
+7. **`media.capture.demo` (the command) always refuses** (review R9, unverified). `mediaPolicy.demoOrigins` has no writer.
+   - The manual harness (`tests/manual/m09-clip-capture.mjs`) calls the capture service directly with its own `allowOrigin`.
+   - **Decide:** add an OWNER `media.policy.demo_origins` writer limited to loopback test ports, or drop the command.
+8. **Import roots have no form in the UI.**
+   - Only `POST /api/media/policy/import-roots` (owner session) exists.
+   - Unset, the default is `%USERPROFILE%\Videos` (production only; tests use none).
+   - Browser upload works without import roots.
+9. **No media AI runs exist.** Brief, script and storyboard of the first clip were written by the development session and labelled `dev_session`. MB2 (max 4 runs, Claude `sonnet · medium`, no fallback) is a budget decision only.
+10. **Simplifications stated in `M09_IMPLEMENTATION_STATUS.md` §4:** circular capture buffer, AI generation/TTS, Remotion/Blender/Computer Use/Premiere UXP, speed ramps, noise cleanup and live social connectors are not implemented. The render queue has no separate heartbeat.
+11. **whisper-server `--inference-path` is implemented but OFF and unverified on the real binary** (needs starting whisper-server). The port is still callable by another local process while the server runs. The restriction is verifiable (listener check, 127.0.0.1, bounded reads), not authentication.
+12. **Residual review findings, documented, not fixed** (numbers = `review/findings.json`, R1..R39; none was confirmed by a verifier; R1 was rejected):
+    - **R4:** re-requesting a transcription after cancelling returns the cancelled job; cancelled queued jobs count toward the queue cap.
+    - **R25:** preset tamper detection is self-consistency only. A code/DB preset conflict is reported at boot, but the DB body is still used.
+    - **R28:** a withdrawal or overage latch does not touch the retained legacy `billingAttestations`. Rolling back to M08 code would re-admit Claude on the old declaration. Withdraw in M08's UI too, or clear it, before any rollback.
+    - **R29:** an overage report latches the provider but stops only the run that reported it. Concurrent Claude runs (max 2) continue to their end.
+    - **R32–R34:** skill approval facts are cached per content hash (a restore of older approved content is not re-checked against git); `importAll` reuses one git snapshot (TOCTOU); a `SKILL.md` symlink is read through but left out of the hash.
+    - **R36:** after MATERIAL_CHANGE a started mission cannot be re-bound to the same model. Under an envelope it can only be stopped and re-proposed.
+    - **R38:** the gate preview omits the composer's model/effort and shows a Claude refusal the real run would not hit.
+    - **R39:** the Focus screen's run retry drops the original effort (profile default used).
+13. **Review fixes made in this session** (all with regression tests):
+    - the 19 confirmed findings: R2, R3, R5, R6, R10–R14, R17–R23, R26, R27, R37;
+    - additionally: R7, R8, R15, R16, R24, R30, R31, R35;
+    - the regression tests themselves caught two more defects: the first R6 fix never ran (it read `rights.revoke`'s result wrongly, RF-07), and R5 accepted a default "now" as "before the withdrawal" (DS-16).
+    - Details: `M09_TEST_REPORT.md` §3.
+
+## 2026-10-03 — Open items after M08 (code `2.9.0-m08`, `8b277c5` + `ae3aa48` pushed to `origin/v2-milestone-01`; `origin/main` still `17921ac`; the live Hub runs `2.9.0-m08`). Current detail: `.ifrim/M08_SESSION_REPORT.md` (takes precedence)
+
+1. **Pilot bundle `bnd_musqo7xj_1a204a2e55` awaits the owner.** ProDelivery mission `mis_musq9hl4_1e9726b3fd` reached DELIVERY_READY live on 2026-10-03 (18:36–18:42 UTC; baseline 0/3, checks 27/27, review PASS, QA 3/3).
+   - Review finding F-001 (medium) is a behaviour change in `driver_ranking.py`: `punctuality_rate = 0` no longer defaults to 0.85. It needs the owner's decision (AC-3: no public contract change).
+   - Accept re-snapshots and goes STALE if the tree changed. Reject does not restore files.
+2. **Defect: package/autopilot plans do not pin models.** B4 promised reviewer Claude `sonnet · medium`, but `preparePilot` (`v2/server/intel/intel-commands.mjs`) passes only limits. The plan had an empty `requestedModel`, and the reviewer ran on the account default `claude-opus-5-5`.
+   - Fix: pin writer/reviewer model and effort, show them in the plan, and refuse a mismatch.
+3. **A pre-run backup is written inside the project.** `ProDelivery/.ifrim/BACKUPS/v2/…bkp_musqh5hy_7dd0d21d67.zip` (~5 MB) is git-ignored there but synced by OneDrive. It contains the owner's uncommitted work too.
+4. **Billing declaration vs the owner's $100.** The Claude declaration (2026-09-30) says usage credits are disabled. If extra usage is enabled on claude.ai, Hub Claude reviews could consume it after the weekly limit. The Hub checks credits automatically only for Codex.
+5. **Still on after the pilot:** ProDelivery ASSISTED + `wsl-runner`, `factoryExtraCommands: ["python-unittest"]`, policy `voice_first`. One plan confirmation starts models again.
+6. **Attestation `att_murgupen_3459ee8157` expires ~2026-10-16** (14 days). After that, wsl-runner missions are refused until re-attested.
+7. **Done on 2026-10-03:** push (owner); R3 re-consent 18:29 UTC; package A decided (A1/A2 executed by Claude, A3 acknowledged, nothing deleted); package B decided.
+   - Rollback of the relocation now needs `--rollback --copy-back` (Hub stopped): the new DB changed after the move.
+8. **The Hub does not start at logon.** After a Windows restart: `Ifrim Hub V2.cmd` or `v2\scripts\start-detached.ps1`. OpenClaw's global gateway (18789) did not come back after the reboot; owner decision.
+4. **Voice UX is verified only with synthetic voice** (the armed window included). To verify live after the upgrade, with the owner's voice.
+5. **Personal Mission Control on a real phone is BLOCKED.**
+   - The Hub binds 127.0.0.1 only; no remote exposure is configured.
+   - A LAN or tunnel connection would be a separate security decision (TLS, origin, pairing over that channel).
+6. **The board's AI summary is not enabled.** The agenda is deterministic. A model summary would consume the subscription and needs its own budget decision.
+7. **Skill bodies are not injected into worker prompts** (neither base nor candidate versions; skills are a registry since M01). Skill evolution therefore manages versions only: an activated candidate is recorded, not applied, and the league/auto-rollback no longer attribute outcomes to it. Injecting skill content would change every existing prompt, so it needs its own decision. There is no model evaluation either (`modelEvaluation: NOT_RUN`).
+9. **Python stdlib shadowing guard is heuristic** (integrity finding `stdlib_shadowed` for writer-created top-level `.py` modules named like standard-library modules; `__init__.py` on the protected test path is HIGH, not blocking). The reviewer still reads every change set.
+10. **A conditional sentence without a teach prefix that contains "oprește tot" is treated as Stop All** (M06 fail-safe bias: stopping only reduces activity).
+8. **Lessons reach worker prompts as text** under the Hub rules. A lesson that widens access is refused at confirmation (security parts), but the parser is heuristic: the owner reviews every proposal before confirming.
+
+## 2026-10-03 — Open items after M07 (version `2.8.0-m07`; superseded by M08 above where they overlap)
 
 1. **OneDrive sync (pre-existing; owner decision).** The project lives under OneDrive Desktop, including `.ifrim/private` (Hub database, logs, V1/V2 backups), and is synced to the cloud. Voice confirmation transcripts and history land there.
    - Options: move `HUB_V2_DATA_DIR` outside OneDrive, or exclude the folder from sync.

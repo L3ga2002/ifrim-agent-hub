@@ -1,6 +1,7 @@
 import { useState, useCallback } from "react";
 import { CheckCircle2, XCircle, AlertTriangle, ShieldAlert, CircleDashed, Info, FlaskConical, ChevronLeft, ChevronRight } from "lucide-react";
 import { api } from "../../api.js";
+import { withReauth } from "../../lib/ownerSession.js";
 import { useAction, useResource } from "../../store.js";
 import { Notice, ErrorNotice, Chip } from "../../components/ui.jsx";
 import { ApprovalCard } from "../Approvals.jsx";
@@ -45,15 +46,16 @@ export function useSalesResource(path, deps = []) {
  * Runs a Sales mutation. A 202 answer (ALWAYS_ASK: rollback, proposal approval, …) is kept as `approval` and rendered by
  * <ApprovalGate>; otherwise `onSuccess(result, meta)` runs. Duplicate clicks are ignored while a request is in flight.
  */
-export function useSalesCommand(onSuccess) {
+export function useSalesCommand(onSuccess, { owner = false } = {}) {
   const [approval, setApproval] = useState(null);
   const action = useAction(useCallback(async (path, body = {}, meta) => {
-    const result = await api(path, { method: "POST", body });
+    const send = () => api(path, { method: "POST", body });
+    const result = await (owner ? withReauth(send) : send());
     const gate = approvalFrom(result);
     if (gate) { setApproval({ ...gate, meta }); return result; }
     await onSuccess?.(result, meta);
     return result;
-  }, [onSuccess]));
+  }, [onSuccess, owner]));
   return { run: action.run, busy: action.pending, error: action.error, clearError: action.clearError, approval, clearApproval: () => setApproval(null) };
 }
 

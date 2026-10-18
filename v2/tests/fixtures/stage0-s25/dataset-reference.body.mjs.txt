@@ -1,0 +1,377 @@
+function httpGet(urlStr) {
+  return new Promise((resolve, reject) => {
+    http.get(urlStr, (res) => {
+      let body = "";
+      res.on("data", (c) => { body += c; });
+      res.on("end", () => resolve({ status: res.statusCode, body }));
+      res.on("error", reject);
+    }).on("error", reject);
+  });
+}
+
+function httpPost(urlStr, payload) {
+  return new Promise((resolve, reject) => {
+    const bodyStr = JSON.stringify(payload);
+    const u = new URL(urlStr);
+    const opts = {
+      hostname: u.hostname,
+      port: Number(u.port),
+      path: u.pathname,
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "content-length": Buffer.byteLength(bodyStr),
+      },
+    };
+    const req = http.request(opts, (res) => {
+      let body = "";
+      res.on("data", (c) => { body += c; });
+      res.on("end", () => resolve({ status: res.statusCode, body }));
+      res.on("error", reject);
+    });
+    req.on("error", reject);
+    req.write(bodyStr);
+    req.end();
+  });
+}
+
+const EXPECTED = [
+  {
+    "id": "seed-2026-10-11-1000",
+    "service_id": "spalare-exterior",
+    "day": "2026-10-11",
+    "start_min": 600,
+    "end_min": 630,
+    "name": "Client Demo A",
+    "vehicle": "Autoturism test",
+    "phone": "0700 123 456",
+    "synthetic": 1
+  },
+  {
+    "id": "seed-2026-10-11-1130",
+    "service_id": "curatare-interior",
+    "day": "2026-10-11",
+    "start_min": 690,
+    "end_min": 750,
+    "name": "Client Demo B",
+    "vehicle": "Autoturism test",
+    "phone": "0700 123 456",
+    "synthetic": 1
+  },
+  {
+    "id": "seed-2026-10-11-1500",
+    "service_id": "polish-faruri",
+    "day": "2026-10-11",
+    "start_min": 900,
+    "end_min": 930,
+    "name": "Client Demo C",
+    "vehicle": "Autoturism test",
+    "phone": "0700 123 456",
+    "synthetic": 1
+  }
+];
+
+const DATE_KEY = "2026-10-11";
+const clockFn = () => new Date("2026-10-11T08:00:00");
+const SERVICE = "spalare-exterior";
+const PRE_PHONE = "0799 111 222";
+const PHONE = "0712 345 678";
+const PARAMS = ["includePhone=1", "phone=1", "fields=phone", "debug=1", "all=1"];
+const NAME = "Client Nou";
+const VEHICLE = "Dacia Test";
+
+function dayRows(dbPath) {
+  const db = new sqlite.DatabaseSync(dbPath);
+  try { return db.prepare("SELECT id, service_id, day, start_min, end_min, name, vehicle, phone, synthetic FROM bookings WHERE day = ? ORDER BY start_min, id").all(DATE_KEY).map((row) => ({ ...row })); }
+  finally { db.close(); }
+}
+
+function allRows(dbPath) {
+  const db = new sqlite.DatabaseSync(dbPath);
+  try { return db.prepare("SELECT * FROM bookings ORDER BY id").all(); }
+  finally { db.close(); }
+}
+
+async function freeStart(baseUrl) {
+  const res = await httpGet(baseUrl + "api/slots?date=" + DATE_KEY + "&service=" + SERVICE);
+  assert.equal(res.status, 200, "grila aplicației rămâne funcțională");
+  const slot = JSON.parse(res.body).slots.find((s) => s.status === "free");
+  assert.ok(slot, "aplicația oferă un interval liber fără suprapunere");
+  return slot.start;
+}
+
+test("AC-1: Toate înregistrările zilei rămân în lista publică fără telefon", async () => {
+  const m = await load("../../src/server-app.js");
+  const startSrv = need(m, "startServer");
+  const tmpDir = await setup("tmpDir", () => fs.mkdtempSync(path.join(os.tmpdir(), "existing-ac1-")));
+  const dbPath = path.join(tmpDir, "db.sqlite");
+  let srv;
+  const responses = new Map();
+  let values;
+  try {
+    srv = await setup("server", () => startSrv({ port: 0, dbPath, now: clockFn }));
+    const initial = dayRows(dbPath);
+    assert.deepEqual(initial, EXPECTED, "DATE MARTOR: inițializarea exactă înainte de primul POST");
+    const preStart = await freeStart(srv.url);
+    const previous = await httpPost(srv.url + "api/bookings", { serviceId: SERVICE, start: preStart, name: "Client Păstrat", vehicle: VEHICLE, phone: PRE_PHONE });
+    assert.equal(previous.status, 201, "ID API: programarea anterioară repornirii este creată prin API");
+    const preId = JSON.parse(previous.body).booking.id;
+    assert.equal(typeof preId, "string", "ID API: programarea anterioară are id");
+    const db = new sqlite.DatabaseSync(dbPath);
+    try {
+      const row = db.prepare("SELECT id, day, phone FROM bookings WHERE id = ?").get(preId);
+      assert.ok(row, "ID API: programarea anterioară există în stocare înainte de repornire");
+      assert.equal(row.id, preId, "ID API: primul id este cel stocat");
+      assert.equal(row.day, DATE_KEY, "ID API: ziua trimisă");
+      assert.equal(row.phone, PRE_PHONE, "ID API: primul telefon este cel trimis");
+    } finally { db.close(); }
+    await srv.close();
+    srv = await setup("repornire", () => startSrv({ port: 0, dbPath, now: clockFn }));
+    const kept = dayRows(dbPath);
+    assert.deepEqual(kept.filter((row) => EXPECTED.some((expected) => expected.id === row.id)), EXPECTED, "DATE MARTOR: inițializarea exactă după repornire");
+    for (const expected of [...initial, { id: preId, day: DATE_KEY, phone: PRE_PHONE }]) {
+      const row = kept.find((r) => r.id === expected.id);
+      assert.ok(row, "ID API: fiecare înregistrare este păstrată după repornire");
+      assert.equal(row.day, DATE_KEY, "ID API: ziua exactă este păstrată după repornire");
+      assert.equal(row.phone, expected.phone, "ID API: telefonul exact este păstrat după repornire");
+    }
+    const newStart = await freeStart(srv.url);
+    const created = await httpPost(srv.url + "api/bookings", { serviceId: SERVICE, start: newStart, name: NAME, vehicle: VEHICLE, phone: PHONE });
+    assert.equal(created.status, 201, "ID API: programarea nouă este creată prin API");
+    const newId = JSON.parse(created.body).booking.id;
+    assert.equal(typeof newId, "string", "ID API: programarea nouă are id");
+    assert.notEqual(newId, preId, "ID API: programările create sunt distincte");
+    const newDb = new sqlite.DatabaseSync(dbPath);
+    try {
+      const row = newDb.prepare("SELECT id, day, phone FROM bookings WHERE id = ?").get(newId);
+      assert.ok(row, "ID API: a doua creare există după id-ul returnat");
+      assert.equal(row.id, newId, "ID API: al doilea id este cel stocat");
+      assert.equal(row.day, DATE_KEY, "ID API: a doua zi este cea trimisă");
+      assert.equal(row.phone, PHONE, "ID API: al doilea telefon este cel trimis");
+    } finally { newDb.close(); }
+    const relevant = dayRows(dbPath);
+    assert.deepEqual(new Set(relevant.map((r) => r.id)), new Set([...initial.map((r) => r.id), preId, newId]), "stocarea zilei păstrează toate înregistrările, fără rânduri în plus");
+    for (const expected of [...initial, { id: preId, phone: PRE_PHONE }, { id: newId, phone: PHONE }]) {
+      const row = relevant.find((r) => r.id === expected.id);
+      assert.ok(row, "fiecare înregistrare relevantă există în stocare");
+      assert.equal(row.day, DATE_KEY, "ID API: ziua trimisă");
+      assert.equal(row.phone, expected.phone, "telefonul exact al fiecărei înregistrări relevante este păstrat");
+    }
+    values = [...new Set([...EXPECTED.map((r) => r.phone), PRE_PHONE, PHONE])];
+    assert.ok(values.includes(PRE_PHONE), "values conține telefonul păstrat");
+    assert.ok(values.includes(PHONE), "values conține telefonul nou");
+    const res = await httpGet(srv.url + "api/bookings?date=" + DATE_KEY);
+    assert.equal(res.status, 200, "lista publică rămâne funcțională");
+    const data = JSON.parse(res.body);
+    assert.ok(Array.isArray(data.bookings), "bookings este tabloul listei publice");
+    assert.equal(data.bookings.length, relevant.length, "ID API: lista nu are rânduri lipsă sau în plus");
+    for (const row of relevant) assert.ok(data.bookings.some((b) => b.id === row.id), "ID API: fiecare id relevant este prezent în tabloul listei");
+    responses.set("base", res);
+  } finally {
+    try { if (srv) await srv.close(); }
+    finally { fs.rmSync(tmpDir, { recursive: true, force: true }); }
+  }
+  const res = responses.get("base");
+  assert.deepEqual(exposes(res.body, { keys: ["phone"], values }), [], "EXPUNERE: lista nu expune telefoanele tuturor înregistrărilor relevante");
+});
+
+test("AC-2: Fiecare parametru anonim păstrează toate înregistrările fără telefon", async () => {
+  const m = await load("../../src/server-app.js");
+  const startSrv = need(m, "startServer");
+  const tmpDir = await setup("tmpDir", () => fs.mkdtempSync(path.join(os.tmpdir(), "existing-ac2-")));
+  const dbPath = path.join(tmpDir, "db.sqlite");
+  let srv;
+  const responses = new Map();
+  let values;
+  try {
+    srv = await setup("server", () => startSrv({ port: 0, dbPath, now: clockFn }));
+    const initial = dayRows(dbPath);
+    assert.deepEqual(initial, EXPECTED, "DATE MARTOR: inițializarea exactă înainte de primul POST");
+    const preStart = await freeStart(srv.url);
+    const previous = await httpPost(srv.url + "api/bookings", { serviceId: SERVICE, start: preStart, name: "Client Păstrat", vehicle: VEHICLE, phone: PRE_PHONE });
+    assert.equal(previous.status, 201, "ID API: programarea anterioară repornirii este creată prin API");
+    const preId = JSON.parse(previous.body).booking.id;
+    assert.equal(typeof preId, "string", "ID API: programarea anterioară are id");
+    const db = new sqlite.DatabaseSync(dbPath);
+    try {
+      const row = db.prepare("SELECT id, day, phone FROM bookings WHERE id = ?").get(preId);
+      assert.ok(row, "ID API: programarea anterioară există în stocare înainte de repornire");
+      assert.equal(row.id, preId, "ID API: primul id este cel stocat");
+      assert.equal(row.day, DATE_KEY, "ID API: ziua trimisă");
+      assert.equal(row.phone, PRE_PHONE, "ID API: primul telefon este cel trimis");
+    } finally { db.close(); }
+    await srv.close();
+    srv = await setup("repornire", () => startSrv({ port: 0, dbPath, now: clockFn }));
+    const kept = dayRows(dbPath);
+    assert.deepEqual(kept.filter((row) => EXPECTED.some((expected) => expected.id === row.id)), EXPECTED, "DATE MARTOR: inițializarea exactă după repornire");
+    for (const expected of [...initial, { id: preId, day: DATE_KEY, phone: PRE_PHONE }]) {
+      const row = kept.find((r) => r.id === expected.id);
+      assert.ok(row, "ID API: fiecare înregistrare este păstrată după repornire");
+      assert.equal(row.day, DATE_KEY, "ID API: ziua exactă este păstrată după repornire");
+      assert.equal(row.phone, expected.phone, "ID API: telefonul exact este păstrat după repornire");
+    }
+    const newStart = await freeStart(srv.url);
+    const created = await httpPost(srv.url + "api/bookings", { serviceId: SERVICE, start: newStart, name: NAME, vehicle: VEHICLE, phone: PHONE });
+    assert.equal(created.status, 201, "ID API: programarea nouă este creată prin API");
+    const newId = JSON.parse(created.body).booking.id;
+    assert.equal(typeof newId, "string", "ID API: programarea nouă are id");
+    assert.notEqual(newId, preId, "ID API: programările create sunt distincte");
+    const newDb = new sqlite.DatabaseSync(dbPath);
+    try {
+      const row = newDb.prepare("SELECT id, day, phone FROM bookings WHERE id = ?").get(newId);
+      assert.ok(row, "ID API: a doua creare există după id-ul returnat");
+      assert.equal(row.id, newId, "ID API: al doilea id este cel stocat");
+      assert.equal(row.day, DATE_KEY, "ID API: a doua zi este cea trimisă");
+      assert.equal(row.phone, PHONE, "ID API: al doilea telefon este cel trimis");
+    } finally { newDb.close(); }
+    const relevant = dayRows(dbPath);
+    assert.deepEqual(new Set(relevant.map((r) => r.id)), new Set([...initial.map((r) => r.id), preId, newId]), "stocarea zilei păstrează toate înregistrările, fără rânduri în plus");
+    for (const expected of [...initial, { id: preId, phone: PRE_PHONE }, { id: newId, phone: PHONE }]) {
+      const row = relevant.find((r) => r.id === expected.id);
+      assert.ok(row, "fiecare înregistrare relevantă există în stocare");
+      assert.equal(row.day, DATE_KEY, "ID API: ziua trimisă");
+      assert.equal(row.phone, expected.phone, "telefonul exact al fiecărei înregistrări relevante este păstrat");
+    }
+    values = [...new Set([...EXPECTED.map((r) => r.phone), PRE_PHONE, PHONE])];
+    assert.ok(values.includes(PRE_PHONE), "values conține telefonul păstrat");
+    assert.ok(values.includes(PHONE), "values conține telefonul nou");
+    for (const param of PARAMS) {
+      const res = await httpGet(srv.url + "api/bookings?date=" + DATE_KEY + "&" + param);
+      assert.equal(res.status, 200, "lista publică rămâne funcțională");
+      const data = JSON.parse(res.body);
+      assert.ok(Array.isArray(data.bookings), "bookings este tabloul listei publice");
+      assert.equal(data.bookings.length, relevant.length, "ID API: lista nu are rânduri lipsă sau în plus");
+      for (const row of relevant) assert.ok(data.bookings.some((b) => b.id === row.id), "ID API: fiecare id relevant este prezent în tabloul listei");
+      responses.set(param, res);
+    }
+  } finally {
+    try { if (srv) await srv.close(); }
+    finally { fs.rmSync(tmpDir, { recursive: true, force: true }); }
+  }
+  for (const param of PARAMS) {
+    const res = responses.get(param);
+    assert.deepEqual(exposes(res.body, { keys: ["phone"], values }), [], "EXPUNERE: parametrul anonim nu expune telefoanele tuturor înregistrărilor relevante");
+  }
+});
+
+test("AC-1: Înregistrarea istorică fără telefon rămâne listată și neschimbată", async () => {
+  const m = await load("../../src/server-app.js");
+  const startSrv = need(m, "startServer");
+  const tmpDir = await setup("tmpDir", () => fs.mkdtempSync(path.join(os.tmpdir(), "dataset-history-")));
+  const dbPath = path.join(tmpDir, "db.sqlite");
+  const id = "hist-2026-10-11-1300";
+  const responses = [];
+  let srv;
+  let values;
+  try {
+    srv = await setup("server", () => startSrv({ port: 0, dbPath, now: clockFn }));
+    assert.deepEqual(dayRows(dbPath), EXPECTED, "DATE MARTOR: inițializarea controlului istoric");
+    values = [...new Set(EXPECTED.map((row) => row.phone))];
+    const slots = await httpGet(srv.url + "api/slots?date=" + DATE_KEY + "&service=" + SERVICE);
+    assert.equal(slots.status, 200, "CONTROL ISTORIC: grila este disponibilă");
+    assert.ok(JSON.parse(slots.body).slots.some((slot) => slot.start === DATE_KEY + "T13:00" && slot.status === "free"), "CONTROL ISTORIC: 13:00 este liber");
+    await srv.close();
+    const db = new sqlite.DatabaseSync(dbPath);
+    let before;
+    try {
+      db.prepare("INSERT INTO bookings (id, service_id, day, start_min, end_min, name, vehicle, synthetic, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)").run(id, SERVICE, DATE_KEY, 780, 810, "Client Istoric", "Autoturism istoric", 0, clockFn().toISOString());
+      before = db.prepare("SELECT * FROM bookings WHERE id = ?").get(id);
+      assert.equal(before.phone, "", "CONTROL ISTORIC: implicitul schemei se aplică fără phone");
+    } finally { db.close(); }
+    srv = await setup("repornire", () => startSrv({ port: 0, dbPath, now: clockFn }));
+    assert.deepEqual(dayRows(dbPath).filter((row) => EXPECTED.some((expected) => expected.id === row.id)), EXPECTED, "DATE MARTOR: inițializarea după repornirea controlului istoric");
+    for (const query of ["", ...PARAMS]) {
+      const res = await httpGet(srv.url + "api/bookings?date=" + DATE_KEY + (query ? "&" + query : ""));
+      assert.equal(res.status, 200, "CONTROL ISTORIC: lista răspunde");
+      const list = JSON.parse(res.body).bookings;
+      assert.ok(Array.isArray(list), "CONTROL ISTORIC: bookings este tablou");
+      assert.ok(list.some((row) => row.id === id), "CONTROL ISTORIC: id-ul istoric este listat");
+      for (const expected of EXPECTED) assert.ok(list.some((row) => row.id === expected.id), "CONTROL ISTORIC: id-ul inițial este listat");
+      const stored = new sqlite.DatabaseSync(dbPath);
+      try {
+        const after = stored.prepare("SELECT * FROM bookings WHERE id = ?").get(id);
+        assert.deepEqual(after, before, "CONTROL ISTORIC: rândul întreg rămâne neschimbat după fiecare cerere");
+        assert.equal(after.phone, "", "CONTROL ISTORIC: telefonul rămâne gol");
+      } finally { stored.close(); }
+      responses.push(res);
+    }
+  } finally {
+    try { if (srv) await srv.close(); }
+    finally { fs.rmSync(tmpDir, { recursive: true, force: true }); }
+  }
+  for (const res of responses) {
+    assert.deepEqual(exposes(res.body, { keys: ["phone"], values }), [], "EXPUNERE: controlul istoric nu expune telefoane în corpul brut");
+  }
+});
+
+test("AC-3 control: Fiecare refuz păstrează stocarea integrală neschimbată", async () => {
+  const m = await load("../../src/server-app.js");
+  const startSrv = need(m, "startServer");
+  const tmpDir = await setup("tmpDir", () => fs.mkdtempSync(path.join(os.tmpdir(), "existing-ac3-")));
+  const dbPath = path.join(tmpDir, "db.sqlite");
+  let srv;
+  try {
+    srv = await setup("server", () => startSrv({ port: 0, dbPath, now: clockFn }));
+    const before = allRows(dbPath);
+    for (const invalid of [{}, { phone: "" }, { phone: "   " }]) {
+      const start = await freeStart(srv.url);
+      const res = await httpPost(srv.url + "api/bookings", { serviceId: SERVICE, start, name: NAME, vehicle: VEHICLE, ...invalid });
+      assert.equal(res.status, 400, "serverul refuză cererea fără telefon valid");
+      const json = JSON.parse(res.body);
+      assert.ok(json.errors, "refuzul conține erori de validare");
+      assert.equal(typeof json.errors.phone, "string", "refuzul are eroare pentru Telefon");
+      assert.deepEqual(allRows(dbPath), before, "niciun rând adăugat sau modificat după fiecare refuz");
+    }
+  } finally {
+    try { if (srv) await srv.close(); }
+    finally { fs.rmSync(tmpDir, { recursive: true, force: true }); }
+  }
+});
+
+test("AC-4 control: Programarea nouă păstrează ziua și telefonul exact în stocare", async () => {
+  const m = await load("../../src/server-app.js");
+  const startSrv = need(m, "startServer");
+  const tmpDir = await setup("tmpDir", () => fs.mkdtempSync(path.join(os.tmpdir(), "existing-ac4-")));
+  const dbPath = path.join(tmpDir, "db.sqlite");
+  let srv;
+  try {
+    srv = await setup("server", () => startSrv({ port: 0, dbPath, now: clockFn }));
+    const start = await freeStart(srv.url);
+    const res = await httpPost(srv.url + "api/bookings", { serviceId: SERVICE, start, name: NAME, vehicle: VEHICLE, phone: PHONE });
+    assert.equal(res.status, 201, "serverul acceptă programarea validă");
+    const booking = JSON.parse(res.body).booking;
+    assert.equal(typeof booking.id, "string", "programarea acceptată are id");
+    const db = new sqlite.DatabaseSync(dbPath);
+    try {
+      const row = db.prepare("SELECT id, day, phone FROM bookings WHERE id = ?").get(booking.id);
+      assert.ok(row, "programarea există în stocarea internă");
+      assert.equal(row.id, booking.id);
+      assert.equal(row.phone, PHONE, "telefonul exact este salvat");
+      assert.equal(row.day, DATE_KEY, "ziua testată este salvată");
+    } finally { db.close(); }
+  } finally {
+    try { if (srv) await srv.close(); }
+    finally { fs.rmSync(tmpDir, { recursive: true, force: true }); }
+  }
+});
+
+test("AC-5 control: Programarea validă pe un interval disponibil este acceptată", async () => {
+  const m = await load("../../src/server-app.js");
+  const startSrv = need(m, "startServer");
+  const tmpDir = await setup("tmpDir", () => fs.mkdtempSync(path.join(os.tmpdir(), "existing-ac5-")));
+  const dbPath = path.join(tmpDir, "db.sqlite");
+  let srv;
+  try {
+    srv = await setup("server", () => startSrv({ port: 0, dbPath, now: clockFn }));
+    const start = await freeStart(srv.url);
+    const res = await httpPost(srv.url + "api/bookings", { serviceId: SERVICE, start, name: NAME, vehicle: VEHICLE, phone: PHONE });
+    assert.equal(res.status, 201, "serverul acceptă programarea validă");
+    const booking = JSON.parse(res.body).booking;
+    assert.equal(typeof booking.id, "string", "programarea acceptată are id");
+    assert.equal(booking.name, NAME, "numele este păstrat în răspuns");
+    assert.equal(booking.vehicle, VEHICLE, "vehiculul este păstrat în răspuns");
+  } finally {
+    try { if (srv) await srv.close(); }
+    finally { fs.rmSync(tmpDir, { recursive: true, force: true }); }
+  }
+});

@@ -1,0 +1,8 @@
+{
+  "comment": "M11 L5 test-review fixture (fake-codex test-review:inconclusive): a PASS without the per-criterion answers: INCONCLUSIVE (the Hub never protects an unverified test).",
+  "verdict": "PASS",
+  "summary": "Pare în regulă.",
+  "criteria": [],
+  "findings": [],
+  "missingContext": []
+}

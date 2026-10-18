@@ -1,9 +1,10 @@
-import { AudioLines, LayoutDashboard, MessageSquare, Target, Bot, FolderGit2, Brain, ShieldCheck, Wrench, Plug, Activity, Building2, Network, Cpu, Settings, Briefcase } from "lucide-react";
+import { AudioLines, LayoutDashboard, MessageSquare, Target, Bot, FolderGit2, Brain, ShieldCheck, Wrench, Plug, Activity, Building2, Network, Cpu, Settings, Briefcase, Radar, Clapperboard, MonitorCog } from "lucide-react";
 
 export const navigate = (path) => { window.location.hash = path; };
 
 export const NAV = [
-  { id: "lega", label: "Lega", long: "Lega · cockpit (conduci prin intenție)", icon: AudioLines },
+  { id: "lega", label: "Lega", long: "Lega · ecranul unic (conversație, comenzi, decizii, rezultate)", icon: AudioLines },
+  { id: "intel", label: "Pilot", long: "Pilot automat & inteligența companiei", icon: Radar },
   { id: "control", label: "Control", long: "Control Room", icon: LayoutDashboard, key: "1" },
   { id: "conversations", label: "Conversații", long: "Conversații", icon: MessageSquare, key: "2" },
   { id: "missions", label: "Misiuni", long: "Misiuni", icon: Target, key: "3" },
@@ -15,6 +16,8 @@ export const NAV = [
   { id: "integrations", label: "Integrări", long: "Integrări & abonamente", icon: Plug, key: "9" },
   { id: "health", label: "Sănătate", long: "Utilizare & sănătate", icon: Activity },
   { id: "sales", label: "Vânzări", long: "Vânzări & lead-uri", icon: Briefcase },
+  { id: "studio", label: "Studio", long: "Content Studio", icon: Clapperboard },
+  { id: "desktop", label: "Operator", long: "Operator desktop: aplicații, foldere, planuri", icon: MonitorCog },
   { id: "company", label: "Companie", long: "Companie & Chief of Staff", icon: Building2 },
   { id: "ecosystem", label: "Ecosisteme", long: "Ecosisteme AI: audit, suprafețe, rutare", icon: Network },
   { id: "system", label: "Sistem", long: "Sistem: diagnostic, programări, politici", icon: Cpu },

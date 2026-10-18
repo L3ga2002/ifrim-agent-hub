@@ -1,0 +1,135 @@
+// Test de acceptanță scris de Ifrim Agent Hub din criteriile proprietarului (misiunea mis_mv1eo6il_104584123d, spec v1 b04b875f0edd).
+// Protejat după review: se repară implementarea, nu testul. Nu îl modifica manual.
+import test from "node:test";
+import assert from "node:assert/strict";
+import http from "node:http";
+const load = async (rel) => { try { return await import(new URL(rel, import.meta.url)); } catch (e) { assert.fail(`HUB_LOAD ${rel}: ${e?.code || e?.name || "eroare"}`); } };
+// ---- corpul testului ----
+function httpPost(baseUrl, body) {
+  return new Promise((resolve, reject) => {
+    const data = JSON.stringify(body);
+    const u = new URL(baseUrl);
+    const req = http.request({
+      hostname: u.hostname,
+      port: Number(u.port),
+      path: u.pathname + u.search,
+      method: "POST",
+      headers: { "Content-Type": "application/json", "Content-Length": Buffer.byteLength(data) },
+    }, (res) => {
+      const parts = [];
+      res.on("data", (c) => parts.push(c));
+      res.on("end", () => {
+        try { resolve({ status: res.statusCode, body: JSON.parse(Buffer.concat(parts).toString("utf8")) }); }
+        catch (e) { reject(e); }
+      });
+    });
+    req.on("error", reject);
+    req.write(data);
+    req.end();
+  });
+}
+
+function httpGet(baseUrl) {
+  return new Promise((resolve, reject) => {
+    const u = new URL(baseUrl);
+    const req = http.request({
+      hostname: u.hostname,
+      port: Number(u.port),
+      path: u.pathname + u.search,
+      method: "GET",
+    }, (res) => {
+      const parts = [];
+      res.on("data", (c) => parts.push(c));
+      res.on("end", () => {
+        try { resolve({ status: res.statusCode, body: JSON.parse(Buffer.concat(parts).toString("utf8")) }); }
+        catch (e) { reject(e); }
+      });
+    });
+    req.on("error", reject);
+    req.end();
+  });
+}
+
+const FIXED_CLOCK = () => new Date(2026, 9, 9, 8, 0);
+
+test("AC-1: programare fără telefon e refuzată și nu se salvează nimic", async () => {
+  const m = await load("../../src/server-app.js");
+  assert.equal(typeof m.createApp, "function", "AC-1: lipsește createApp");
+  const srv = await m.startServer({ port: 0, dbPath: ":memory:", seed: false, now: FIXED_CLOCK });
+  try {
+    const r1 = await httpPost(`http://127.0.0.1:${srv.port}/api/bookings`, {
+      serviceId: "spalare-exterior",
+      start: "2026-10-09T09:00",
+      name: "Test Client",
+      vehicle: "Dacia Logan",
+    });
+    assert.equal(r1.status, 400, "AC-1: fără telefon serverul trebuie să returneze 400");
+    assert.equal(typeof r1.body.errors, "object", "AC-1: răspunsul trebuie să conțină câmpul errors");
+    assert.equal(typeof r1.body.errors.phone, "string", "AC-1: errors trebuie să conțină eroare pentru câmpul phone");
+    assert.ok(r1.body.errors.phone.length > 0, "AC-1: mesajul de eroare pentru phone nu trebuie să fie gol");
+
+    const g1 = await httpGet(`http://127.0.0.1:${srv.port}/api/bookings?date=2026-10-09`);
+    assert.equal(g1.status, 200, "AC-1: GET bookings trebuie să returneze 200");
+    assert.equal(g1.body.bookings.length, 0, "AC-1: nicio programare nu trebuie salvată după cererea refuzată fără telefon");
+
+    const r2 = await httpPost(`http://127.0.0.1:${srv.port}/api/bookings`, {
+      serviceId: "spalare-exterior",
+      start: "2026-10-09T09:00",
+      name: "Test Client",
+      vehicle: "Dacia Logan",
+      phone: "   ",
+    });
+    assert.equal(r2.status, 400, "AC-1: telefon format doar din spații trebuie să returneze 400");
+    assert.equal(typeof r2.body.errors.phone, "string", "AC-1: errors.phone trebuie să existe pentru telefon din spații");
+
+    const g2 = await httpGet(`http://127.0.0.1:${srv.port}/api/bookings?date=2026-10-09`);
+    assert.equal(g2.body.bookings.length, 0, "AC-1: tot nicio programare după cererea refuzată cu telefon din spații");
+  } finally {
+    await srv.close();
+  }
+});
+
+test("AC-2: telefonul se păstrează în programarea salvată și se poate citi înapoi", async () => {
+  const m = await load("../../src/server-app.js");
+  assert.equal(typeof m.createApp, "function", "AC-2: lipsește createApp");
+  const srv = await m.startServer({ port: 0, dbPath: ":memory:", seed: false, now: FIXED_CLOCK });
+  try {
+    const phone = "0712345678";
+    const r = await httpPost(`http://127.0.0.1:${srv.port}/api/bookings`, {
+      serviceId: "spalare-exterior",
+      start: "2026-10-09T09:00",
+      name: "Test Client",
+      vehicle: "Dacia Logan",
+      phone,
+    });
+    assert.equal(r.status, 201, "AC-2: programarea cu telefon valid trebuie acceptată cu 201");
+    assert.equal(r.body.booking.phone, phone, "AC-2: telefonul trebuie returnat în răspunsul de creare");
+
+    const g = await httpGet(`http://127.0.0.1:${srv.port}/api/bookings?date=2026-10-09`);
+    assert.equal(g.status, 200, "AC-2: GET bookings trebuie să returneze 200");
+    assert.equal(g.body.bookings.length, 1, "AC-2: trebuie să existe exact o programare salvată");
+    assert.equal(g.body.bookings[0].phone, phone, "AC-2: telefonul trebuie regăsit la citirea înapoi din datele salvate");
+  } finally {
+    await srv.close();
+  }
+});
+
+test("AC-3 control: programare validă cu telefon pe interval liber e acceptată", async () => {
+  const m = await load("../../src/server-app.js");
+  assert.equal(typeof m.createApp, "function", "AC-3 control: lipsește createApp");
+  const srv = await m.startServer({ port: 0, dbPath: ":memory:", seed: false, now: FIXED_CLOCK });
+  try {
+    const r = await httpPost(`http://127.0.0.1:${srv.port}/api/bookings`, {
+      serviceId: "spalare-exterior",
+      start: "2026-10-09T09:30",
+      name: "Alt Client",
+      vehicle: "Toyota Yaris",
+      phone: "0722111222",
+    });
+    assert.equal(r.status, 201, "AC-3 control: programarea completă cu telefon pe slot liber trebuie acceptată cu 201");
+    assert.equal(typeof r.body.booking.id, "string", "AC-3 control: răspunsul trebuie să conțină id-ul programării");
+    assert.ok(r.body.booking.id.length > 0, "AC-3 control: id-ul programării nu trebuie să fie gol");
+  } finally {
+    await srv.close();
+  }
+});

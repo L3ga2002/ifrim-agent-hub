@@ -1,0 +1,2713 @@
+[
+  {
+    "variant": "correct",
+    "dataset": {
+      "status": "PASS",
+      "counts": {
+        "tests": 6,
+        "pass": 6,
+        "fail": 0,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0
+      },
+      "failures": []
+    },
+    "f1": {
+      "status": "PASS",
+      "counts": {
+        "tests": 5,
+        "pass": 5,
+        "fail": 0,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0
+      },
+      "failures": []
+    },
+    "existing": {
+      "status": "PASS",
+      "counts": {
+        "tests": 5,
+        "pass": 5,
+        "fail": 0,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0
+      },
+      "failures": []
+    }
+  },
+  {
+    "variant": "original",
+    "dataset": {
+      "status": "FAIL",
+      "counts": {
+        "tests": 6,
+        "pass": 3,
+        "fail": 3,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0
+      },
+      "failures": [
+        {
+          "case": "AC-1: Toate înregistrările zilei rămân în lista publică fără telefon",
+          "category": "exposure"
+        },
+        {
+          "case": "AC-2: Fiecare parametru anonim păstrează toate înregistrările fără telefon",
+          "category": "exposure"
+        },
+        {
+          "case": "AC-1: Înregistrarea istorică fără telefon rămâne listată și neschimbată",
+          "category": "exposure"
+        }
+      ]
+    },
+    "f1": {
+      "status": "FAIL",
+      "counts": {
+        "tests": 5,
+        "pass": 3,
+        "fail": 2,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0
+      },
+      "failures": [
+        {
+          "case": "AC-1: lista publica a zilei nu contine campul phone sau vreo valoare a lui",
+          "category": "other"
+        },
+        {
+          "case": "AC-2: lista publica nu expune telefonul la niciun parametru anonim",
+          "category": "other"
+        }
+      ]
+    },
+    "existing": {
+      "status": "FAIL",
+      "counts": {
+        "tests": 5,
+        "pass": 3,
+        "fail": 2,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0
+      },
+      "failures": [
+        {
+          "case": "AC-1: Toate înregistrările zilei rămân în lista publică fără telefon",
+          "category": "other"
+        },
+        {
+          "case": "AC-2: Fiecare parametru anonim păstrează toate înregistrările fără telefon",
+          "category": "other"
+        }
+      ]
+    }
+  },
+  {
+    "variant": "refuse-all",
+    "dataset": {
+      "status": "FAIL",
+      "counts": {
+        "tests": 6,
+        "pass": 2,
+        "fail": 4,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0
+      },
+      "failures": [
+        {
+          "case": "AC-1: Toate înregistrările zilei rămân în lista publică fără telefon",
+          "category": "ids"
+        },
+        {
+          "case": "AC-2: Fiecare parametru anonim păstrează toate înregistrările fără telefon",
+          "category": "ids"
+        },
+        {
+          "case": "AC-4 control: Programarea nouă păstrează ziua și telefonul exact în stocare",
+          "category": "other"
+        },
+        {
+          "case": "AC-5 control: Programarea validă pe un interval disponibil este acceptată",
+          "category": "other"
+        }
+      ]
+    },
+    "f1": {
+      "status": "FAIL",
+      "counts": {
+        "tests": 5,
+        "pass": 1,
+        "fail": 4,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0
+      },
+      "failures": [
+        {
+          "case": "AC-1: lista publica a zilei nu contine campul phone sau vreo valoare a lui",
+          "category": "other"
+        },
+        {
+          "case": "AC-2: lista publica nu expune telefonul la niciun parametru anonim",
+          "category": "other"
+        },
+        {
+          "case": "AC-4 control: telefonul din programarea valida e salvat exact in stocarea interna",
+          "category": "other"
+        },
+        {
+          "case": "AC-5 control: o programare cu date valide si telefon completat este acceptata",
+          "category": "other"
+        }
+      ]
+    },
+    "existing": {
+      "status": "FAIL",
+      "counts": {
+        "tests": 5,
+        "pass": 1,
+        "fail": 4,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0
+      },
+      "failures": [
+        {
+          "case": "AC-1: Toate înregistrările zilei rămân în lista publică fără telefon",
+          "category": "other"
+        },
+        {
+          "case": "AC-2: Fiecare parametru anonim păstrează toate înregistrările fără telefon",
+          "category": "other"
+        },
+        {
+          "case": "AC-4 control: Programarea nouă păstrează ziua și telefonul exact în stocare",
+          "category": "other"
+        },
+        {
+          "case": "AC-5 control: Programarea validă pe un interval disponibil este acceptată",
+          "category": "other"
+        }
+      ]
+    }
+  },
+  {
+    "variant": "phone lost on save",
+    "dataset": {
+      "status": "FAIL",
+      "counts": {
+        "tests": 6,
+        "pass": 3,
+        "fail": 3,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0
+      },
+      "failures": [
+        {
+          "case": "AC-1: Toate înregistrările zilei rămân în lista publică fără telefon",
+          "category": "ids"
+        },
+        {
+          "case": "AC-2: Fiecare parametru anonim păstrează toate înregistrările fără telefon",
+          "category": "ids"
+        },
+        {
+          "case": "AC-4 control: Programarea nouă păstrează ziua și telefonul exact în stocare",
+          "category": "other"
+        }
+      ]
+    },
+    "f1": {
+      "status": "FAIL",
+      "counts": {
+        "tests": 5,
+        "pass": 2,
+        "fail": 3,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0
+      },
+      "failures": [
+        {
+          "case": "AC-1: lista publica a zilei nu contine campul phone sau vreo valoare a lui",
+          "category": "other"
+        },
+        {
+          "case": "AC-2: lista publica nu expune telefonul la niciun parametru anonim",
+          "category": "other"
+        },
+        {
+          "case": "AC-4 control: telefonul din programarea valida e salvat exact in stocarea interna",
+          "category": "other"
+        }
+      ]
+    },
+    "existing": {
+      "status": "FAIL",
+      "counts": {
+        "tests": 5,
+        "pass": 2,
+        "fail": 3,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0
+      },
+      "failures": [
+        {
+          "case": "AC-1: Toate înregistrările zilei rămân în lista publică fără telefon",
+          "category": "other"
+        },
+        {
+          "case": "AC-2: Fiecare parametru anonim păstrează toate înregistrările fără telefon",
+          "category": "other"
+        },
+        {
+          "case": "AC-4 control: Programarea nouă păstrează ziua și telefonul exact în stocare",
+          "category": "other"
+        }
+      ]
+    }
+  },
+  {
+    "variant": "browser-only validation",
+    "dataset": {
+      "status": "FAIL",
+      "counts": {
+        "tests": 6,
+        "pass": 5,
+        "fail": 1,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0
+      },
+      "failures": [
+        {
+          "case": "AC-3 control: Fiecare refuz păstrează stocarea integrală neschimbată",
+          "category": "other"
+        }
+      ]
+    },
+    "f1": {
+      "status": "FAIL",
+      "counts": {
+        "tests": 5,
+        "pass": 4,
+        "fail": 1,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0
+      },
+      "failures": [
+        {
+          "case": "AC-3 control: programarile fara telefon, cu telefon gol sau numai spatii sunt refuzate iar stocarea ramane neschimbata",
+          "category": "other"
+        }
+      ]
+    },
+    "existing": {
+      "status": "FAIL",
+      "counts": {
+        "tests": 5,
+        "pass": 4,
+        "fail": 1,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0
+      },
+      "failures": [
+        {
+          "case": "AC-3 control: Fiecare refuz păstrează stocarea integrală neschimbată",
+          "category": "other"
+        }
+      ]
+    }
+  },
+  {
+    "variant": "masked value",
+    "dataset": {
+      "status": "FAIL",
+      "counts": {
+        "tests": 6,
+        "pass": 3,
+        "fail": 3,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0
+      },
+      "failures": [
+        {
+          "case": "AC-1: Toate înregistrările zilei rămân în lista publică fără telefon",
+          "category": "exposure"
+        },
+        {
+          "case": "AC-2: Fiecare parametru anonim păstrează toate înregistrările fără telefon",
+          "category": "exposure"
+        },
+        {
+          "case": "AC-1: Înregistrarea istorică fără telefon rămâne listată și neschimbată",
+          "category": "exposure"
+        }
+      ]
+    },
+    "f1": {
+      "status": "FAIL",
+      "counts": {
+        "tests": 5,
+        "pass": 3,
+        "fail": 2,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0
+      },
+      "failures": [
+        {
+          "case": "AC-1: lista publica a zilei nu contine campul phone sau vreo valoare a lui",
+          "category": "other"
+        },
+        {
+          "case": "AC-2: lista publica nu expune telefonul la niciun parametru anonim",
+          "category": "other"
+        }
+      ]
+    },
+    "existing": {
+      "status": "FAIL",
+      "counts": {
+        "tests": 5,
+        "pass": 3,
+        "fail": 2,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0
+      },
+      "failures": [
+        {
+          "case": "AC-1: Toate înregistrările zilei rămân în lista publică fără telefon",
+          "category": "other"
+        },
+        {
+          "case": "AC-2: Fiecare parametru anonim păstrează toate înregistrările fără telefon",
+          "category": "other"
+        }
+      ]
+    }
+  },
+  {
+    "variant": "includePhone bypass",
+    "dataset": {
+      "status": "FAIL",
+      "counts": {
+        "tests": 6,
+        "pass": 4,
+        "fail": 2,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0
+      },
+      "failures": [
+        {
+          "case": "AC-2: Fiecare parametru anonim păstrează toate înregistrările fără telefon",
+          "category": "exposure"
+        },
+        {
+          "case": "AC-1: Înregistrarea istorică fără telefon rămâne listată și neschimbată",
+          "category": "exposure"
+        }
+      ]
+    },
+    "f1": {
+      "status": "FAIL",
+      "counts": {
+        "tests": 5,
+        "pass": 4,
+        "fail": 1,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0
+      },
+      "failures": [
+        {
+          "case": "AC-2: lista publica nu expune telefonul la niciun parametru anonim",
+          "category": "other"
+        }
+      ]
+    },
+    "existing": {
+      "status": "FAIL",
+      "counts": {
+        "tests": 5,
+        "pass": 4,
+        "fail": 1,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0
+      },
+      "failures": [
+        {
+          "case": "AC-2: Fiecare parametru anonim păstrează toate înregistrările fără telefon",
+          "category": "other"
+        }
+      ]
+    }
+  },
+  {
+    "variant": "debug other key",
+    "dataset": {
+      "status": "FAIL",
+      "counts": {
+        "tests": 6,
+        "pass": 4,
+        "fail": 2,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0
+      },
+      "failures": [
+        {
+          "case": "AC-2: Fiecare parametru anonim păstrează toate înregistrările fără telefon",
+          "category": "exposure"
+        },
+        {
+          "case": "AC-1: Înregistrarea istorică fără telefon rămâne listată și neschimbată",
+          "category": "exposure"
+        }
+      ]
+    },
+    "f1": {
+      "status": "FAIL",
+      "counts": {
+        "tests": 5,
+        "pass": 4,
+        "fail": 1,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0
+      },
+      "failures": [
+        {
+          "case": "AC-2: lista publica nu expune telefonul la niciun parametru anonim",
+          "category": "other"
+        }
+      ]
+    },
+    "existing": {
+      "status": "FAIL",
+      "counts": {
+        "tests": 5,
+        "pass": 4,
+        "fail": 1,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0
+      },
+      "failures": [
+        {
+          "case": "AC-2: Fiecare parametru anonim păstrează toate înregistrările fără telefon",
+          "category": "other"
+        }
+      ]
+    }
+  },
+  {
+    "variant": "empty list",
+    "dataset": {
+      "status": "FAIL",
+      "counts": {
+        "tests": 6,
+        "pass": 3,
+        "fail": 3,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0
+      },
+      "failures": [
+        {
+          "case": "AC-1: Toate înregistrările zilei rămân în lista publică fără telefon",
+          "category": "ids"
+        },
+        {
+          "case": "AC-2: Fiecare parametru anonim păstrează toate înregistrările fără telefon",
+          "category": "ids"
+        },
+        {
+          "case": "AC-1: Înregistrarea istorică fără telefon rămâne listată și neschimbată",
+          "category": "historical"
+        }
+      ]
+    },
+    "f1": {
+      "status": "FAIL",
+      "counts": {
+        "tests": 5,
+        "pass": 3,
+        "fail": 2,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0
+      },
+      "failures": [
+        {
+          "case": "AC-1: lista publica a zilei nu contine campul phone sau vreo valoare a lui",
+          "category": "other"
+        },
+        {
+          "case": "AC-2: lista publica nu expune telefonul la niciun parametru anonim",
+          "category": "other"
+        }
+      ]
+    },
+    "existing": {
+      "status": "FAIL",
+      "counts": {
+        "tests": 5,
+        "pass": 3,
+        "fail": 2,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0
+      },
+      "failures": [
+        {
+          "case": "AC-1: Toate înregistrările zilei rămân în lista publică fără telefon",
+          "category": "other"
+        },
+        {
+          "case": "AC-2: Fiecare parametru anonim păstrează toate înregistrările fără telefon",
+          "category": "other"
+        }
+      ]
+    }
+  },
+  {
+    "variant": "invalid request saved",
+    "dataset": {
+      "status": "FAIL",
+      "counts": {
+        "tests": 6,
+        "pass": 5,
+        "fail": 1,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0
+      },
+      "failures": [
+        {
+          "case": "AC-3 control: Fiecare refuz păstrează stocarea integrală neschimbată",
+          "category": "other"
+        }
+      ]
+    },
+    "f1": {
+      "status": "FAIL",
+      "counts": {
+        "tests": 5,
+        "pass": 4,
+        "fail": 1,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0
+      },
+      "failures": [
+        {
+          "case": "AC-3 control: programarile fara telefon, cu telefon gol sau numai spatii sunt refuzate iar stocarea ramane neschimbata",
+          "category": "other"
+        }
+      ]
+    },
+    "existing": {
+      "status": "FAIL",
+      "counts": {
+        "tests": 5,
+        "pass": 4,
+        "fail": 1,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0
+      },
+      "failures": [
+        {
+          "case": "AC-3 control: Fiecare refuz păstrează stocarea integrală neschimbată",
+          "category": "other"
+        }
+      ]
+    }
+  },
+  {
+    "variant": "missing-property accepted",
+    "dataset": {
+      "status": "FAIL",
+      "counts": {
+        "tests": 6,
+        "pass": 5,
+        "fail": 1,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0
+      },
+      "failures": [
+        {
+          "case": "AC-3 control: Fiecare refuz păstrează stocarea integrală neschimbată",
+          "category": "other"
+        }
+      ]
+    },
+    "f1": {
+      "status": "FAIL",
+      "counts": {
+        "tests": 5,
+        "pass": 4,
+        "fail": 1,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0
+      },
+      "failures": [
+        {
+          "case": "AC-3 control: programarile fara telefon, cu telefon gol sau numai spatii sunt refuzate iar stocarea ramane neschimbata",
+          "category": "other"
+        }
+      ]
+    },
+    "existing": {
+      "status": "FAIL",
+      "counts": {
+        "tests": 5,
+        "pass": 4,
+        "fail": 1,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0
+      },
+      "failures": [
+        {
+          "case": "AC-3 control: Fiecare refuz păstrează stocarea integrală neschimbată",
+          "category": "other"
+        }
+      ]
+    }
+  },
+  {
+    "variant": "id only in metadata",
+    "dataset": {
+      "status": "FAIL",
+      "counts": {
+        "tests": 6,
+        "pass": 3,
+        "fail": 3,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0
+      },
+      "failures": [
+        {
+          "case": "AC-1: Toate înregistrările zilei rămân în lista publică fără telefon",
+          "category": "ids"
+        },
+        {
+          "case": "AC-2: Fiecare parametru anonim păstrează toate înregistrările fără telefon",
+          "category": "ids"
+        },
+        {
+          "case": "AC-1: Înregistrarea istorică fără telefon rămâne listată și neschimbată",
+          "category": "historical"
+        }
+      ]
+    },
+    "f1": {
+      "status": "FAIL",
+      "counts": {
+        "tests": 5,
+        "pass": 3,
+        "fail": 2,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0
+      },
+      "failures": [
+        {
+          "case": "AC-1: lista publica a zilei nu contine campul phone sau vreo valoare a lui",
+          "category": "other"
+        },
+        {
+          "case": "AC-2: lista publica nu expune telefonul la niciun parametru anonim",
+          "category": "other"
+        }
+      ]
+    },
+    "existing": {
+      "status": "FAIL",
+      "counts": {
+        "tests": 5,
+        "pass": 3,
+        "fail": 2,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0
+      },
+      "failures": [
+        {
+          "case": "AC-1: Toate înregistrările zilei rămân în lista publică fără telefon",
+          "category": "other"
+        },
+        {
+          "case": "AC-2: Fiecare parametru anonim păstrează toate înregistrările fără telefon",
+          "category": "other"
+        }
+      ]
+    }
+  },
+  {
+    "variant": "fields=phone other key",
+    "dataset": {
+      "status": "FAIL",
+      "counts": {
+        "tests": 6,
+        "pass": 4,
+        "fail": 2,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0
+      },
+      "failures": [
+        {
+          "case": "AC-2: Fiecare parametru anonim păstrează toate înregistrările fără telefon",
+          "category": "exposure"
+        },
+        {
+          "case": "AC-1: Înregistrarea istorică fără telefon rămâne listată și neschimbată",
+          "category": "exposure"
+        }
+      ]
+    },
+    "f1": {
+      "status": "FAIL",
+      "counts": {
+        "tests": 5,
+        "pass": 4,
+        "fail": 1,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0
+      },
+      "failures": [
+        {
+          "case": "AC-2: lista publica nu expune telefonul la niciun parametru anonim",
+          "category": "other"
+        }
+      ]
+    },
+    "existing": {
+      "status": "FAIL",
+      "counts": {
+        "tests": 5,
+        "pass": 4,
+        "fail": 1,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0
+      },
+      "failures": [
+        {
+          "case": "AC-2: Fiecare parametru anonim păstrează toate înregistrările fără telefon",
+          "category": "other"
+        }
+      ]
+    }
+  },
+  {
+    "variant": "phone in text",
+    "dataset": {
+      "status": "FAIL",
+      "counts": {
+        "tests": 6,
+        "pass": 3,
+        "fail": 3,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0
+      },
+      "failures": [
+        {
+          "case": "AC-1: Toate înregistrările zilei rămân în lista publică fără telefon",
+          "category": "exposure"
+        },
+        {
+          "case": "AC-2: Fiecare parametru anonim păstrează toate înregistrările fără telefon",
+          "category": "exposure"
+        },
+        {
+          "case": "AC-1: Înregistrarea istorică fără telefon rămâne listată și neschimbată",
+          "category": "exposure"
+        }
+      ]
+    },
+    "f1": {
+      "status": "FAIL",
+      "counts": {
+        "tests": 5,
+        "pass": 3,
+        "fail": 2,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0
+      },
+      "failures": [
+        {
+          "case": "AC-1: lista publica a zilei nu contine campul phone sau vreo valoare a lui",
+          "category": "other"
+        },
+        {
+          "case": "AC-2: lista publica nu expune telefonul la niciun parametru anonim",
+          "category": "other"
+        }
+      ]
+    },
+    "existing": {
+      "status": "FAIL",
+      "counts": {
+        "tests": 5,
+        "pass": 3,
+        "fail": 2,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0
+      },
+      "failures": [
+        {
+          "case": "AC-1: Toate înregistrările zilei rămân în lista publică fără telefon",
+          "category": "other"
+        },
+        {
+          "case": "AC-2: Fiecare parametru anonim păstrează toate înregistrările fără telefon",
+          "category": "other"
+        }
+      ]
+    }
+  },
+  {
+    "variant": "phone as key",
+    "dataset": {
+      "status": "FAIL",
+      "counts": {
+        "tests": 6,
+        "pass": 3,
+        "fail": 3,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0
+      },
+      "failures": [
+        {
+          "case": "AC-1: Toate înregistrările zilei rămân în lista publică fără telefon",
+          "category": "exposure"
+        },
+        {
+          "case": "AC-2: Fiecare parametru anonim păstrează toate înregistrările fără telefon",
+          "category": "exposure"
+        },
+        {
+          "case": "AC-1: Înregistrarea istorică fără telefon rămâne listată și neschimbată",
+          "category": "exposure"
+        }
+      ]
+    },
+    "f1": {
+      "status": "FAIL",
+      "counts": {
+        "tests": 5,
+        "pass": 3,
+        "fail": 2,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0
+      },
+      "failures": [
+        {
+          "case": "AC-1: lista publica a zilei nu contine campul phone sau vreo valoare a lui",
+          "category": "other"
+        },
+        {
+          "case": "AC-2: lista publica nu expune telefonul la niciun parametru anonim",
+          "category": "other"
+        }
+      ]
+    },
+    "existing": {
+      "status": "FAIL",
+      "counts": {
+        "tests": 5,
+        "pass": 3,
+        "fail": 2,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0
+      },
+      "failures": [
+        {
+          "case": "AC-1: Toate înregistrările zilei rămân în lista publică fără telefon",
+          "category": "other"
+        },
+        {
+          "case": "AC-2: Fiecare parametru anonim păstrează toate înregistrările fără telefon",
+          "category": "other"
+        }
+      ]
+    }
+  },
+  {
+    "variant": "escaped key and value",
+    "dataset": {
+      "status": "FAIL",
+      "counts": {
+        "tests": 6,
+        "pass": 3,
+        "fail": 3,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0
+      },
+      "failures": [
+        {
+          "case": "AC-1: Toate înregistrările zilei rămân în lista publică fără telefon",
+          "category": "exposure"
+        },
+        {
+          "case": "AC-2: Fiecare parametru anonim păstrează toate înregistrările fără telefon",
+          "category": "exposure"
+        },
+        {
+          "case": "AC-1: Înregistrarea istorică fără telefon rămâne listată și neschimbată",
+          "category": "exposure"
+        }
+      ]
+    },
+    "f1": {
+      "status": "FAIL",
+      "counts": {
+        "tests": 5,
+        "pass": 3,
+        "fail": 2,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0
+      },
+      "failures": [
+        {
+          "case": "AC-1: lista publica a zilei nu contine campul phone sau vreo valoare a lui",
+          "category": "other"
+        },
+        {
+          "case": "AC-2: lista publica nu expune telefonul la niciun parametru anonim",
+          "category": "other"
+        }
+      ]
+    },
+    "existing": {
+      "status": "FAIL",
+      "counts": {
+        "tests": 5,
+        "pass": 3,
+        "fail": 2,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0
+      },
+      "failures": [
+        {
+          "case": "AC-1: Toate înregistrările zilei rămân în lista publică fără telefon",
+          "category": "other"
+        },
+        {
+          "case": "AC-2: Fiecare parametru anonim păstrează toate înregistrările fără telefon",
+          "category": "other"
+        }
+      ]
+    }
+  },
+  {
+    "variant": "escaped value other key",
+    "dataset": {
+      "status": "FAIL",
+      "counts": {
+        "tests": 6,
+        "pass": 3,
+        "fail": 3,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0
+      },
+      "failures": [
+        {
+          "case": "AC-1: Toate înregistrările zilei rămân în lista publică fără telefon",
+          "category": "exposure"
+        },
+        {
+          "case": "AC-2: Fiecare parametru anonim păstrează toate înregistrările fără telefon",
+          "category": "exposure"
+        },
+        {
+          "case": "AC-1: Înregistrarea istorică fără telefon rămâne listată și neschimbată",
+          "category": "exposure"
+        }
+      ]
+    },
+    "f1": {
+      "status": "FAIL",
+      "counts": {
+        "tests": 5,
+        "pass": 3,
+        "fail": 2,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0
+      },
+      "failures": [
+        {
+          "case": "AC-1: lista publica a zilei nu contine campul phone sau vreo valoare a lui",
+          "category": "other"
+        },
+        {
+          "case": "AC-2: lista publica nu expune telefonul la niciun parametru anonim",
+          "category": "other"
+        }
+      ]
+    },
+    "existing": {
+      "status": "FAIL",
+      "counts": {
+        "tests": 5,
+        "pass": 3,
+        "fail": 2,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0
+      },
+      "failures": [
+        {
+          "case": "AC-1: Toate înregistrările zilei rămân în lista publică fără telefon",
+          "category": "other"
+        },
+        {
+          "case": "AC-2: Fiecare parametru anonim păstrează toate înregistrările fără telefon",
+          "category": "other"
+        }
+      ]
+    }
+  },
+  {
+    "variant": "existing records only",
+    "dataset": {
+      "status": "FAIL",
+      "counts": {
+        "tests": 6,
+        "pass": 3,
+        "fail": 3,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0
+      },
+      "failures": [
+        {
+          "case": "AC-1: Toate înregistrările zilei rămân în lista publică fără telefon",
+          "category": "exposure"
+        },
+        {
+          "case": "AC-2: Fiecare parametru anonim păstrează toate înregistrările fără telefon",
+          "category": "exposure"
+        },
+        {
+          "case": "AC-1: Înregistrarea istorică fără telefon rămâne listată și neschimbată",
+          "category": "exposure"
+        }
+      ]
+    },
+    "f1": {
+      "status": "FAIL",
+      "counts": {
+        "tests": 5,
+        "pass": 3,
+        "fail": 2,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0
+      },
+      "failures": [
+        {
+          "case": "AC-1: lista publica a zilei nu contine campul phone sau vreo valoare a lui",
+          "category": "other"
+        },
+        {
+          "case": "AC-2: lista publica nu expune telefonul la niciun parametru anonim",
+          "category": "other"
+        }
+      ]
+    },
+    "existing": {
+      "status": "FAIL",
+      "counts": {
+        "tests": 5,
+        "pass": 3,
+        "fail": 2,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0
+      },
+      "failures": [
+        {
+          "case": "AC-1: Toate înregistrările zilei rămân în lista publică fără telefon",
+          "category": "other"
+        },
+        {
+          "case": "AC-2: Fiecare parametru anonim păstrează toate înregistrările fără telefon",
+          "category": "other"
+        }
+      ]
+    }
+  },
+  {
+    "variant": "escape in text other key",
+    "dataset": {
+      "status": "FAIL",
+      "counts": {
+        "tests": 6,
+        "pass": 3,
+        "fail": 3,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0
+      },
+      "failures": [
+        {
+          "case": "AC-1: Toate înregistrările zilei rămân în lista publică fără telefon",
+          "category": "exposure"
+        },
+        {
+          "case": "AC-2: Fiecare parametru anonim păstrează toate înregistrările fără telefon",
+          "category": "exposure"
+        },
+        {
+          "case": "AC-1: Înregistrarea istorică fără telefon rămâne listată și neschimbată",
+          "category": "exposure"
+        }
+      ]
+    },
+    "f1": {
+      "status": "FAIL",
+      "counts": {
+        "tests": 5,
+        "pass": 3,
+        "fail": 2,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0
+      },
+      "failures": [
+        {
+          "case": "AC-1: lista publica a zilei nu contine campul phone sau vreo valoare a lui",
+          "category": "other"
+        },
+        {
+          "case": "AC-2: lista publica nu expune telefonul la niciun parametru anonim",
+          "category": "other"
+        }
+      ]
+    },
+    "existing": {
+      "status": "FAIL",
+      "counts": {
+        "tests": 5,
+        "pass": 3,
+        "fail": 2,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0
+      },
+      "failures": [
+        {
+          "case": "AC-1: Toate înregistrările zilei rămân în lista publică fără telefon",
+          "category": "other"
+        },
+        {
+          "case": "AC-2: Fiecare parametru anonim păstrează toate înregistrările fără telefon",
+          "category": "other"
+        }
+      ]
+    }
+  },
+  {
+    "variant": "seed ignored, leak only before restart",
+    "dataset": {
+      "status": "FAIL",
+      "counts": {
+        "tests": 6,
+        "pass": 3,
+        "fail": 3,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0
+      },
+      "failures": [
+        {
+          "case": "AC-1: Toate înregistrările zilei rămân în lista publică fără telefon",
+          "category": "dataset"
+        },
+        {
+          "case": "AC-2: Fiecare parametru anonim păstrează toate înregistrările fără telefon",
+          "category": "dataset"
+        },
+        {
+          "case": "AC-1: Înregistrarea istorică fără telefon rămâne listată și neschimbată",
+          "category": "dataset"
+        }
+      ]
+    },
+    "f1": {
+      "status": "FAIL",
+      "counts": {
+        "tests": 5,
+        "pass": 3,
+        "fail": 2,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0
+      },
+      "failures": [
+        {
+          "case": "AC-1: lista publica a zilei nu contine campul phone sau vreo valoare a lui",
+          "category": "other"
+        },
+        {
+          "case": "AC-2: lista publica nu expune telefonul la niciun parametru anonim",
+          "category": "other"
+        }
+      ]
+    },
+    "existing": {
+      "status": "FAIL",
+      "counts": {
+        "tests": 5,
+        "pass": 3,
+        "fail": 2,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0
+      },
+      "failures": [
+        {
+          "case": "AC-1: Toate înregistrările zilei rămân în lista publică fără telefon",
+          "category": "other"
+        },
+        {
+          "case": "AC-2: Fiecare parametru anonim păstrează toate înregistrările fără telefon",
+          "category": "other"
+        }
+      ]
+    }
+  },
+  {
+    "variant": "existing record absent after restart",
+    "dataset": {
+      "status": "FAIL",
+      "counts": {
+        "tests": 6,
+        "pass": 3,
+        "fail": 3,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0
+      },
+      "failures": [
+        {
+          "case": "AC-1: Toate înregistrările zilei rămân în lista publică fără telefon",
+          "category": "ids"
+        },
+        {
+          "case": "AC-2: Fiecare parametru anonim păstrează toate înregistrările fără telefon",
+          "category": "ids"
+        },
+        {
+          "case": "AC-1: Înregistrarea istorică fără telefon rămâne listată și neschimbată",
+          "category": "historical"
+        }
+      ]
+    },
+    "f1": {
+      "status": "FAIL",
+      "counts": {
+        "tests": 5,
+        "pass": 3,
+        "fail": 2,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0
+      },
+      "failures": [
+        {
+          "case": "AC-1: lista publica a zilei nu contine campul phone sau vreo valoare a lui",
+          "category": "other"
+        },
+        {
+          "case": "AC-2: lista publica nu expune telefonul la niciun parametru anonim",
+          "category": "other"
+        }
+      ]
+    },
+    "existing": {
+      "status": "FAIL",
+      "counts": {
+        "tests": 5,
+        "pass": 3,
+        "fail": 2,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0
+      },
+      "failures": [
+        {
+          "case": "AC-1: Toate înregistrările zilei rămân în lista publică fără telefon",
+          "category": "other"
+        },
+        {
+          "case": "AC-2: Fiecare parametru anonim păstrează toate înregistrările fără telefon",
+          "category": "other"
+        }
+      ]
+    }
+  },
+  {
+    "variant": "existing record on another day",
+    "dataset": {
+      "status": "FAIL",
+      "counts": {
+        "tests": 6,
+        "pass": 3,
+        "fail": 3,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0
+      },
+      "failures": [
+        {
+          "case": "AC-1: Toate înregistrările zilei rămân în lista publică fără telefon",
+          "category": "dataset"
+        },
+        {
+          "case": "AC-2: Fiecare parametru anonim păstrează toate înregistrările fără telefon",
+          "category": "dataset"
+        },
+        {
+          "case": "AC-1: Înregistrarea istorică fără telefon rămâne listată și neschimbată",
+          "category": "dataset"
+        }
+      ]
+    },
+    "f1": {
+      "status": "FAIL",
+      "counts": {
+        "tests": 5,
+        "pass": 3,
+        "fail": 2,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0
+      },
+      "failures": [
+        {
+          "case": "AC-1: lista publica a zilei nu contine campul phone sau vreo valoare a lui",
+          "category": "other"
+        },
+        {
+          "case": "AC-2: lista publica nu expune telefonul la niciun parametru anonim",
+          "category": "other"
+        }
+      ]
+    },
+    "existing": {
+      "status": "FAIL",
+      "counts": {
+        "tests": 5,
+        "pass": 3,
+        "fail": 2,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0
+      },
+      "failures": [
+        {
+          "case": "AC-1: Toate înregistrările zilei rămân în lista publică fără telefon",
+          "category": "other"
+        },
+        {
+          "case": "AC-2: Fiecare parametru anonim păstrează toate înregistrările fără telefon",
+          "category": "other"
+        }
+      ]
+    }
+  },
+  {
+    "variant": "existing phone not persisted",
+    "dataset": {
+      "status": "FAIL",
+      "counts": {
+        "tests": 6,
+        "pass": 3,
+        "fail": 3,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0
+      },
+      "failures": [
+        {
+          "case": "AC-1: Toate înregistrările zilei rămân în lista publică fără telefon",
+          "category": "dataset"
+        },
+        {
+          "case": "AC-2: Fiecare parametru anonim păstrează toate înregistrările fără telefon",
+          "category": "dataset"
+        },
+        {
+          "case": "AC-1: Înregistrarea istorică fără telefon rămâne listată și neschimbată",
+          "category": "dataset"
+        }
+      ]
+    },
+    "f1": {
+      "status": "FAIL",
+      "counts": {
+        "tests": 5,
+        "pass": 3,
+        "fail": 2,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0
+      },
+      "failures": [
+        {
+          "case": "AC-1: lista publica a zilei nu contine campul phone sau vreo valoare a lui",
+          "category": "other"
+        },
+        {
+          "case": "AC-2: lista publica nu expune telefonul la niciun parametru anonim",
+          "category": "other"
+        }
+      ]
+    },
+    "existing": {
+      "status": "FAIL",
+      "counts": {
+        "tests": 5,
+        "pass": 3,
+        "fail": 2,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0
+      },
+      "failures": [
+        {
+          "case": "AC-1: Toate înregistrările zilei rămân în lista publică fără telefon",
+          "category": "other"
+        },
+        {
+          "case": "AC-2: Fiecare parametru anonim păstrează toate înregistrările fără telefon",
+          "category": "other"
+        }
+      ]
+    }
+  },
+  {
+    "variant": "empty list, base",
+    "dataset": {
+      "status": "FAIL",
+      "counts": {
+        "tests": 6,
+        "pass": 3,
+        "fail": 3,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0
+      },
+      "failures": [
+        {
+          "case": "AC-1: Toate înregistrările zilei rămân în lista publică fără telefon",
+          "category": "ids"
+        },
+        {
+          "case": "AC-2: Fiecare parametru anonim păstrează toate înregistrările fără telefon",
+          "category": "ids"
+        },
+        {
+          "case": "AC-1: Înregistrarea istorică fără telefon rămâne listată și neschimbată",
+          "category": "historical"
+        }
+      ]
+    },
+    "f1": {
+      "status": "FAIL",
+      "counts": {
+        "tests": 5,
+        "pass": 3,
+        "fail": 2,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0
+      },
+      "failures": [
+        {
+          "case": "AC-1: lista publica a zilei nu contine campul phone sau vreo valoare a lui",
+          "category": "other"
+        },
+        {
+          "case": "AC-2: lista publica nu expune telefonul la niciun parametru anonim",
+          "category": "other"
+        }
+      ]
+    },
+    "existing": {
+      "status": "FAIL",
+      "counts": {
+        "tests": 5,
+        "pass": 3,
+        "fail": 2,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0
+      },
+      "failures": [
+        {
+          "case": "AC-1: Toate înregistrările zilei rămân în lista publică fără telefon",
+          "category": "other"
+        },
+        {
+          "case": "AC-2: Fiecare parametru anonim păstrează toate înregistrările fără telefon",
+          "category": "other"
+        }
+      ]
+    }
+  },
+  {
+    "variant": "empty list, debug",
+    "dataset": {
+      "status": "FAIL",
+      "counts": {
+        "tests": 6,
+        "pass": 4,
+        "fail": 2,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0
+      },
+      "failures": [
+        {
+          "case": "AC-2: Fiecare parametru anonim păstrează toate înregistrările fără telefon",
+          "category": "ids"
+        },
+        {
+          "case": "AC-1: Înregistrarea istorică fără telefon rămâne listată și neschimbată",
+          "category": "historical"
+        }
+      ]
+    },
+    "f1": {
+      "status": "FAIL",
+      "counts": {
+        "tests": 5,
+        "pass": 4,
+        "fail": 1,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0
+      },
+      "failures": [
+        {
+          "case": "AC-2: lista publica nu expune telefonul la niciun parametru anonim",
+          "category": "other"
+        }
+      ]
+    },
+    "existing": {
+      "status": "FAIL",
+      "counts": {
+        "tests": 5,
+        "pass": 4,
+        "fail": 1,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0
+      },
+      "failures": [
+        {
+          "case": "AC-2: Fiecare parametru anonim păstrează toate înregistrările fără telefon",
+          "category": "other"
+        }
+      ]
+    }
+  },
+  {
+    "variant": "existing omitted, base",
+    "dataset": {
+      "status": "FAIL",
+      "counts": {
+        "tests": 6,
+        "pass": 3,
+        "fail": 3,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0
+      },
+      "failures": [
+        {
+          "case": "AC-1: Toate înregistrările zilei rămân în lista publică fără telefon",
+          "category": "ids"
+        },
+        {
+          "case": "AC-2: Fiecare parametru anonim păstrează toate înregistrările fără telefon",
+          "category": "ids"
+        },
+        {
+          "case": "AC-1: Înregistrarea istorică fără telefon rămâne listată și neschimbată",
+          "category": "historical"
+        }
+      ]
+    },
+    "f1": {
+      "status": "FAIL",
+      "counts": {
+        "tests": 5,
+        "pass": 3,
+        "fail": 2,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0
+      },
+      "failures": [
+        {
+          "case": "AC-1: lista publica a zilei nu contine campul phone sau vreo valoare a lui",
+          "category": "other"
+        },
+        {
+          "case": "AC-2: lista publica nu expune telefonul la niciun parametru anonim",
+          "category": "other"
+        }
+      ]
+    },
+    "existing": {
+      "status": "FAIL",
+      "counts": {
+        "tests": 5,
+        "pass": 3,
+        "fail": 2,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0
+      },
+      "failures": [
+        {
+          "case": "AC-1: Toate înregistrările zilei rămân în lista publică fără telefon",
+          "category": "other"
+        },
+        {
+          "case": "AC-2: Fiecare parametru anonim păstrează toate înregistrările fără telefon",
+          "category": "other"
+        }
+      ]
+    }
+  },
+  {
+    "variant": "existing omitted, debug",
+    "dataset": {
+      "status": "FAIL",
+      "counts": {
+        "tests": 6,
+        "pass": 4,
+        "fail": 2,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0
+      },
+      "failures": [
+        {
+          "case": "AC-2: Fiecare parametru anonim păstrează toate înregistrările fără telefon",
+          "category": "ids"
+        },
+        {
+          "case": "AC-1: Înregistrarea istorică fără telefon rămâne listată și neschimbată",
+          "category": "historical"
+        }
+      ]
+    },
+    "f1": {
+      "status": "FAIL",
+      "counts": {
+        "tests": 5,
+        "pass": 4,
+        "fail": 1,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0
+      },
+      "failures": [
+        {
+          "case": "AC-2: lista publica nu expune telefonul la niciun parametru anonim",
+          "category": "other"
+        }
+      ]
+    },
+    "existing": {
+      "status": "FAIL",
+      "counts": {
+        "tests": 5,
+        "pass": 4,
+        "fail": 1,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0
+      },
+      "failures": [
+        {
+          "case": "AC-2: Fiecare parametru anonim păstrează toate înregistrările fără telefon",
+          "category": "other"
+        }
+      ]
+    }
+  },
+  {
+    "variant": "ids only in metadata, base",
+    "dataset": {
+      "status": "FAIL",
+      "counts": {
+        "tests": 6,
+        "pass": 3,
+        "fail": 3,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0
+      },
+      "failures": [
+        {
+          "case": "AC-1: Toate înregistrările zilei rămân în lista publică fără telefon",
+          "category": "ids"
+        },
+        {
+          "case": "AC-2: Fiecare parametru anonim păstrează toate înregistrările fără telefon",
+          "category": "ids"
+        },
+        {
+          "case": "AC-1: Înregistrarea istorică fără telefon rămâne listată și neschimbată",
+          "category": "historical"
+        }
+      ]
+    },
+    "f1": {
+      "status": "FAIL",
+      "counts": {
+        "tests": 5,
+        "pass": 3,
+        "fail": 2,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0
+      },
+      "failures": [
+        {
+          "case": "AC-1: lista publica a zilei nu contine campul phone sau vreo valoare a lui",
+          "category": "other"
+        },
+        {
+          "case": "AC-2: lista publica nu expune telefonul la niciun parametru anonim",
+          "category": "other"
+        }
+      ]
+    },
+    "existing": {
+      "status": "FAIL",
+      "counts": {
+        "tests": 5,
+        "pass": 3,
+        "fail": 2,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0
+      },
+      "failures": [
+        {
+          "case": "AC-1: Toate înregistrările zilei rămân în lista publică fără telefon",
+          "category": "other"
+        },
+        {
+          "case": "AC-2: Fiecare parametru anonim păstrează toate înregistrările fără telefon",
+          "category": "other"
+        }
+      ]
+    }
+  },
+  {
+    "variant": "ids only in metadata, debug",
+    "dataset": {
+      "status": "FAIL",
+      "counts": {
+        "tests": 6,
+        "pass": 4,
+        "fail": 2,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0
+      },
+      "failures": [
+        {
+          "case": "AC-2: Fiecare parametru anonim păstrează toate înregistrările fără telefon",
+          "category": "ids"
+        },
+        {
+          "case": "AC-1: Înregistrarea istorică fără telefon rămâne listată și neschimbată",
+          "category": "historical"
+        }
+      ]
+    },
+    "f1": {
+      "status": "FAIL",
+      "counts": {
+        "tests": 5,
+        "pass": 4,
+        "fail": 1,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0
+      },
+      "failures": [
+        {
+          "case": "AC-2: lista publica nu expune telefonul la niciun parametru anonim",
+          "category": "other"
+        }
+      ]
+    },
+    "existing": {
+      "status": "FAIL",
+      "counts": {
+        "tests": 5,
+        "pass": 4,
+        "fail": 1,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0
+      },
+      "failures": [
+        {
+          "case": "AC-2: Fiecare parametru anonim păstrează toate înregistrările fără telefon",
+          "category": "other"
+        }
+      ]
+    }
+  },
+  {
+    "variant": "seed rows only",
+    "dataset": {
+      "status": "FAIL",
+      "counts": {
+        "tests": 6,
+        "pass": 3,
+        "fail": 3,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0
+      },
+      "failures": [
+        {
+          "case": "AC-1: Toate înregistrările zilei rămân în lista publică fără telefon",
+          "category": "exposure"
+        },
+        {
+          "case": "AC-2: Fiecare parametru anonim păstrează toate înregistrările fără telefon",
+          "category": "exposure"
+        },
+        {
+          "case": "AC-1: Înregistrarea istorică fără telefon rămâne listată și neschimbată",
+          "category": "exposure"
+        }
+      ]
+    },
+    "f1": {
+      "status": "FAIL",
+      "counts": {
+        "tests": 5,
+        "pass": 3,
+        "fail": 2,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0
+      },
+      "failures": [
+        {
+          "case": "AC-1: lista publica a zilei nu contine campul phone sau vreo valoare a lui",
+          "category": "other"
+        },
+        {
+          "case": "AC-2: lista publica nu expune telefonul la niciun parametru anonim",
+          "category": "other"
+        }
+      ]
+    },
+    "existing": {
+      "status": "FAIL",
+      "counts": {
+        "tests": 5,
+        "pass": 3,
+        "fail": 2,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0
+      },
+      "failures": [
+        {
+          "case": "AC-1: Toate înregistrările zilei rămân în lista publică fără telefon",
+          "category": "other"
+        },
+        {
+          "case": "AC-2: Fiecare parametru anonim păstrează toate înregistrările fără telefon",
+          "category": "other"
+        }
+      ]
+    }
+  },
+  {
+    "variant": "initial data not created",
+    "dataset": {
+      "status": "FAIL",
+      "counts": {
+        "tests": 6,
+        "pass": 3,
+        "fail": 3,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0
+      },
+      "failures": [
+        {
+          "case": "AC-1: Toate înregistrările zilei rămân în lista publică fără telefon",
+          "category": "dataset"
+        },
+        {
+          "case": "AC-2: Fiecare parametru anonim păstrează toate înregistrările fără telefon",
+          "category": "dataset"
+        },
+        {
+          "case": "AC-1: Înregistrarea istorică fără telefon rămâne listată și neschimbată",
+          "category": "dataset"
+        }
+      ]
+    },
+    "f1": {
+      "status": "FAIL",
+      "counts": {
+        "tests": 5,
+        "pass": 3,
+        "fail": 2,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0
+      },
+      "failures": [
+        {
+          "case": "AC-1: lista publica a zilei nu contine campul phone sau vreo valoare a lui",
+          "category": "other"
+        },
+        {
+          "case": "AC-2: lista publica nu expune telefonul la niciun parametru anonim",
+          "category": "other"
+        }
+      ]
+    },
+    "existing": {
+      "status": "FAIL",
+      "counts": {
+        "tests": 5,
+        "pass": 3,
+        "fail": 2,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0
+      },
+      "failures": [
+        {
+          "case": "AC-1: Toate înregistrările zilei rămân în lista publică fără telefon",
+          "category": "other"
+        },
+        {
+          "case": "AC-2: Fiecare parametru anonim păstrează toate înregistrările fără telefon",
+          "category": "other"
+        }
+      ]
+    }
+  },
+  {
+    "variant": "initial data without phone",
+    "dataset": {
+      "status": "FAIL",
+      "counts": {
+        "tests": 6,
+        "pass": 3,
+        "fail": 3,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0
+      },
+      "failures": [
+        {
+          "case": "AC-1: Toate înregistrările zilei rămân în lista publică fără telefon",
+          "category": "dataset"
+        },
+        {
+          "case": "AC-2: Fiecare parametru anonim păstrează toate înregistrările fără telefon",
+          "category": "dataset"
+        },
+        {
+          "case": "AC-1: Înregistrarea istorică fără telefon rămâne listată și neschimbată",
+          "category": "dataset"
+        }
+      ]
+    },
+    "f1": {
+      "status": "PASS",
+      "counts": {
+        "tests": 5,
+        "pass": 5,
+        "fail": 0,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0
+      },
+      "failures": []
+    },
+    "existing": {
+      "status": "FAIL",
+      "counts": {
+        "tests": 5,
+        "pass": 3,
+        "fail": 2,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0
+      },
+      "failures": [
+        {
+          "case": "AC-1: Toate înregistrările zilei rămân în lista publică fără telefon",
+          "category": "other"
+        },
+        {
+          "case": "AC-2: Fiecare parametru anonim păstrează toate înregistrările fără telefon",
+          "category": "other"
+        }
+      ]
+    }
+  },
+  {
+    "variant": "initial rows omitted",
+    "dataset": {
+      "status": "FAIL",
+      "counts": {
+        "tests": 6,
+        "pass": 3,
+        "fail": 3,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0
+      },
+      "failures": [
+        {
+          "case": "AC-1: Toate înregistrările zilei rămân în lista publică fără telefon",
+          "category": "ids"
+        },
+        {
+          "case": "AC-2: Fiecare parametru anonim păstrează toate înregistrările fără telefon",
+          "category": "ids"
+        },
+        {
+          "case": "AC-1: Înregistrarea istorică fără telefon rămâne listată și neschimbată",
+          "category": "historical"
+        }
+      ]
+    },
+    "f1": {
+      "status": "FAIL",
+      "counts": {
+        "tests": 5,
+        "pass": 3,
+        "fail": 2,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0
+      },
+      "failures": [
+        {
+          "case": "AC-1: lista publica a zilei nu contine campul phone sau vreo valoare a lui",
+          "category": "other"
+        },
+        {
+          "case": "AC-2: lista publica nu expune telefonul la niciun parametru anonim",
+          "category": "other"
+        }
+      ]
+    },
+    "existing": {
+      "status": "FAIL",
+      "counts": {
+        "tests": 5,
+        "pass": 3,
+        "fail": 2,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0
+      },
+      "failures": [
+        {
+          "case": "AC-1: Toate înregistrările zilei rămân în lista publică fără telefon",
+          "category": "other"
+        },
+        {
+          "case": "AC-2: Fiecare parametru anonim păstrează toate înregistrările fără telefon",
+          "category": "other"
+        }
+      ]
+    }
+  },
+  {
+    "variant": "kept row omitted",
+    "dataset": {
+      "status": "FAIL",
+      "counts": {
+        "tests": 6,
+        "pass": 3,
+        "fail": 3,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0
+      },
+      "failures": [
+        {
+          "case": "AC-1: Toate înregistrările zilei rămân în lista publică fără telefon",
+          "category": "ids"
+        },
+        {
+          "case": "AC-2: Fiecare parametru anonim păstrează toate înregistrările fără telefon",
+          "category": "ids"
+        },
+        {
+          "case": "AC-1: Înregistrarea istorică fără telefon rămâne listată și neschimbată",
+          "category": "historical"
+        }
+      ]
+    },
+    "f1": {
+      "status": "FAIL",
+      "counts": {
+        "tests": 5,
+        "pass": 3,
+        "fail": 2,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0
+      },
+      "failures": [
+        {
+          "case": "AC-1: lista publica a zilei nu contine campul phone sau vreo valoare a lui",
+          "category": "other"
+        },
+        {
+          "case": "AC-2: lista publica nu expune telefonul la niciun parametru anonim",
+          "category": "other"
+        }
+      ]
+    },
+    "existing": {
+      "status": "FAIL",
+      "counts": {
+        "tests": 5,
+        "pass": 3,
+        "fail": 2,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0
+      },
+      "failures": [
+        {
+          "case": "AC-1: Toate înregistrările zilei rămân în lista publică fără telefon",
+          "category": "other"
+        },
+        {
+          "case": "AC-2: Fiecare parametru anonim păstrează toate înregistrările fără telefon",
+          "category": "other"
+        }
+      ]
+    }
+  },
+  {
+    "variant": "new row omitted",
+    "dataset": {
+      "status": "FAIL",
+      "counts": {
+        "tests": 6,
+        "pass": 4,
+        "fail": 2,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0
+      },
+      "failures": [
+        {
+          "case": "AC-1: Toate înregistrările zilei rămân în lista publică fără telefon",
+          "category": "ids"
+        },
+        {
+          "case": "AC-2: Fiecare parametru anonim păstrează toate înregistrările fără telefon",
+          "category": "ids"
+        }
+      ]
+    },
+    "f1": {
+      "status": "FAIL",
+      "counts": {
+        "tests": 5,
+        "pass": 3,
+        "fail": 2,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0
+      },
+      "failures": [
+        {
+          "case": "AC-1: lista publica a zilei nu contine campul phone sau vreo valoare a lui",
+          "category": "other"
+        },
+        {
+          "case": "AC-2: lista publica nu expune telefonul la niciun parametru anonim",
+          "category": "other"
+        }
+      ]
+    },
+    "existing": {
+      "status": "FAIL",
+      "counts": {
+        "tests": 5,
+        "pass": 3,
+        "fail": 2,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0
+      },
+      "failures": [
+        {
+          "case": "AC-1: Toate înregistrările zilei rămân în lista publică fără telefon",
+          "category": "other"
+        },
+        {
+          "case": "AC-2: Fiecare parametru anonim păstrează toate înregistrările fără telefon",
+          "category": "other"
+        }
+      ]
+    }
+  },
+  {
+    "variant": "seed rows only under any parameter",
+    "dataset": {
+      "status": "FAIL",
+      "counts": {
+        "tests": 6,
+        "pass": 4,
+        "fail": 2,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0
+      },
+      "failures": [
+        {
+          "case": "AC-2: Fiecare parametru anonim păstrează toate înregistrările fără telefon",
+          "category": "exposure"
+        },
+        {
+          "case": "AC-1: Înregistrarea istorică fără telefon rămâne listată și neschimbată",
+          "category": "exposure"
+        }
+      ]
+    },
+    "f1": {
+      "status": "FAIL",
+      "counts": {
+        "tests": 5,
+        "pass": 4,
+        "fail": 1,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0
+      },
+      "failures": [
+        {
+          "case": "AC-2: lista publica nu expune telefonul la niciun parametru anonim",
+          "category": "other"
+        }
+      ]
+    },
+    "existing": {
+      "status": "FAIL",
+      "counts": {
+        "tests": 5,
+        "pass": 4,
+        "fail": 1,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0
+      },
+      "failures": [
+        {
+          "case": "AC-2: Fiecare parametru anonim păstrează toate înregistrările fără telefon",
+          "category": "other"
+        }
+      ]
+    }
+  },
+  {
+    "variant": "threshold only under any parameter",
+    "dataset": {
+      "status": "FAIL",
+      "counts": {
+        "tests": 6,
+        "pass": 4,
+        "fail": 2,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0
+      },
+      "failures": [
+        {
+          "case": "AC-2: Fiecare parametru anonim păstrează toate înregistrările fără telefon",
+          "category": "exposure"
+        },
+        {
+          "case": "AC-1: Înregistrarea istorică fără telefon rămâne listată și neschimbată",
+          "category": "exposure"
+        }
+      ]
+    },
+    "f1": {
+      "status": "FAIL",
+      "counts": {
+        "tests": 5,
+        "pass": 4,
+        "fail": 1,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0
+      },
+      "failures": [
+        {
+          "case": "AC-2: lista publica nu expune telefonul la niciun parametru anonim",
+          "category": "other"
+        }
+      ]
+    },
+    "existing": {
+      "status": "FAIL",
+      "counts": {
+        "tests": 5,
+        "pass": 4,
+        "fail": 1,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0
+      },
+      "failures": [
+        {
+          "case": "AC-2: Fiecare parametru anonim păstrează toate înregistrările fără telefon",
+          "category": "other"
+        }
+      ]
+    }
+  },
+  {
+    "variant": "seed rows only under all=1",
+    "dataset": {
+      "status": "FAIL",
+      "counts": {
+        "tests": 6,
+        "pass": 4,
+        "fail": 2,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0
+      },
+      "failures": [
+        {
+          "case": "AC-2: Fiecare parametru anonim păstrează toate înregistrările fără telefon",
+          "category": "exposure"
+        },
+        {
+          "case": "AC-1: Înregistrarea istorică fără telefon rămâne listată și neschimbată",
+          "category": "exposure"
+        }
+      ]
+    },
+    "f1": {
+      "status": "FAIL",
+      "counts": {
+        "tests": 5,
+        "pass": 4,
+        "fail": 1,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0
+      },
+      "failures": [
+        {
+          "case": "AC-2: lista publica nu expune telefonul la niciun parametru anonim",
+          "category": "other"
+        }
+      ]
+    },
+    "existing": {
+      "status": "FAIL",
+      "counts": {
+        "tests": 5,
+        "pass": 4,
+        "fail": 1,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0
+      },
+      "failures": [
+        {
+          "case": "AC-2: Fiecare parametru anonim păstrează toate înregistrările fără telefon",
+          "category": "other"
+        }
+      ]
+    }
+  },
+  {
+    "variant": "returned id differs",
+    "dataset": {
+      "status": "FAIL",
+      "counts": {
+        "tests": 6,
+        "pass": 3,
+        "fail": 3,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0
+      },
+      "failures": [
+        {
+          "case": "AC-1: Toate înregistrările zilei rămân în lista publică fără telefon",
+          "category": "ids"
+        },
+        {
+          "case": "AC-2: Fiecare parametru anonim păstrează toate înregistrările fără telefon",
+          "category": "ids"
+        },
+        {
+          "case": "AC-4 control: Programarea nouă păstrează ziua și telefonul exact în stocare",
+          "category": "other"
+        }
+      ]
+    },
+    "f1": {
+      "status": "FAIL",
+      "counts": {
+        "tests": 5,
+        "pass": 2,
+        "fail": 3,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0
+      },
+      "failures": [
+        {
+          "case": "AC-1: lista publica a zilei nu contine campul phone sau vreo valoare a lui",
+          "category": "other"
+        },
+        {
+          "case": "AC-2: lista publica nu expune telefonul la niciun parametru anonim",
+          "category": "other"
+        },
+        {
+          "case": "AC-4 control: telefonul din programarea valida e salvat exact in stocarea interna",
+          "category": "other"
+        }
+      ]
+    },
+    "existing": {
+      "status": "FAIL",
+      "counts": {
+        "tests": 5,
+        "pass": 2,
+        "fail": 3,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0
+      },
+      "failures": [
+        {
+          "case": "AC-1: Toate înregistrările zilei rămân în lista publică fără telefon",
+          "category": "other"
+        },
+        {
+          "case": "AC-2: Fiecare parametru anonim păstrează toate înregistrările fără telefon",
+          "category": "other"
+        },
+        {
+          "case": "AC-4 control: Programarea nouă păstrează ziua și telefonul exact în stocare",
+          "category": "other"
+        }
+      ]
+    }
+  },
+  {
+    "variant": "second returned id differs",
+    "dataset": {
+      "status": "FAIL",
+      "counts": {
+        "tests": 6,
+        "pass": 4,
+        "fail": 2,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0
+      },
+      "failures": [
+        {
+          "case": "AC-1: Toate înregistrările zilei rămân în lista publică fără telefon",
+          "category": "ids"
+        },
+        {
+          "case": "AC-2: Fiecare parametru anonim păstrează toate înregistrările fără telefon",
+          "category": "ids"
+        }
+      ]
+    },
+    "f1": {
+      "status": "PASS",
+      "counts": {
+        "tests": 5,
+        "pass": 5,
+        "fail": 0,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0
+      },
+      "failures": []
+    },
+    "existing": {
+      "status": "FAIL",
+      "counts": {
+        "tests": 5,
+        "pass": 3,
+        "fail": 2,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0
+      },
+      "failures": [
+        {
+          "case": "AC-1: Toate înregistrările zilei rămân în lista publică fără telefon",
+          "category": "other"
+        },
+        {
+          "case": "AC-2: Fiecare parametru anonim păstrează toate înregistrările fără telefon",
+          "category": "other"
+        }
+      ]
+    }
+  },
+  {
+    "variant": "historical phone filled",
+    "dataset": {
+      "status": "FAIL",
+      "counts": {
+        "tests": 6,
+        "pass": 5,
+        "fail": 1,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0
+      },
+      "failures": [
+        {
+          "case": "AC-1: Înregistrarea istorică fără telefon rămâne listată și neschimbată",
+          "category": "historical"
+        }
+      ]
+    },
+    "f1": {
+      "status": "PASS",
+      "counts": {
+        "tests": 5,
+        "pass": 5,
+        "fail": 0,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0
+      },
+      "failures": []
+    },
+    "existing": {
+      "status": "PASS",
+      "counts": {
+        "tests": 5,
+        "pass": 5,
+        "fail": 0,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0
+      },
+      "failures": []
+    }
+  },
+  {
+    "variant": "historical row omitted",
+    "dataset": {
+      "status": "FAIL",
+      "counts": {
+        "tests": 6,
+        "pass": 5,
+        "fail": 1,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0
+      },
+      "failures": [
+        {
+          "case": "AC-1: Înregistrarea istorică fără telefon rămâne listată și neschimbată",
+          "category": "historical"
+        }
+      ]
+    },
+    "f1": {
+      "status": "PASS",
+      "counts": {
+        "tests": 5,
+        "pass": 5,
+        "fail": 0,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0
+      },
+      "failures": []
+    },
+    "existing": {
+      "status": "PASS",
+      "counts": {
+        "tests": 5,
+        "pass": 5,
+        "fail": 0,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0
+      },
+      "failures": []
+    }
+  }
+]

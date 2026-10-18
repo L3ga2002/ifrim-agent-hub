@@ -3,7 +3,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { redactText, redactDeep } from "../security/redact.mjs";
 import { isAllowedCommand, isAllowedPreviewCommand } from "../factory/spec.mjs";
-import { parseTestOutput, testStatus, RUNNER_TIMEOUT_MS } from "../factory/runner.mjs";
+import { parseTestOutput, testStatus, createRunCaseReader, RUNNER_TIMEOUT_MS } from "../factory/runner.mjs";
 import { validateE2ESteps } from "../tools/browser-core.mjs";
 import { resolveWsl, wslArgs, runInDistro, runScript } from "./wsl.mjs";
 import { BWRAP, localOnlyArgs, HOST_FILES, heredocFiles, PW_IN_SANDBOX } from "./sandbox-profiles.mjs";
@@ -58,6 +58,9 @@ export function wslCommandArgv(command, env) {
   if (parts[0] === "node") return [env.node, ...parts.slice(1)];
   if (parts[0] === "npm" && parts[1] === "test") return [env.npm, "test"];
   if (parts[0] === "npm" && parts[1] === "run") return [env.npm, "run", parts[2]];
+  // M08 (owner-enabled, package B3): the standard library's unittest on relative .py files, nothing installed. Only when the spec
+  // check still allows it now (the setting can be turned off after the plan); verbose, so every test prints its own result line.
+  if (parts[0] === "python3" && parts[1] === "-m" && parts[2] === "unittest" && isAllowedCommand(command)) return ["/usr/bin/python3", "-m", "unittest", "-v", ...parts.slice(3)];
   return null;
 }
 
@@ -127,7 +130,8 @@ export function createWslFactoryRunner({ config, supervisor, environment, settin
    */
   function run({ key, ws: projectRoot, command, project = null, timeoutMs = RUNNER_TIMEOUT_MS, shouldStop = () => false }) {
     const started = Date.now();
-    const base = { command, runner: `codex-sandbox@${env.id}`, durationMs: 0, exitCode: null, counts: {}, failures: [], outputTail: "" };
+    // cases / fileLevelFailure / overflow: M11 L5, read from every line of the attempt that produced the result (createRunCaseReader).
+    const base = { command, runner: `codex-sandbox@${env.id}`, durationMs: 0, exitCode: null, counts: {}, failures: [], outputTail: "", cases: [], fileLevelFailure: null, overflow: 0 };
     if (!isAllowedCommand(command)) return Promise.resolve({ ...base, status: "BLOCKED", reason: "comandă în afara listei acceptate", isolation: "none" });
     const argv = wslCommandArgv(command, env);
     const binary = resolveWsl(config); // wsl.exe (or the test fixture): the environment's launcher
@@ -151,6 +155,7 @@ export function createWslFactoryRunner({ config, supervisor, environment, settin
         return { ...base, status: "BLOCKED", reason: "oprit înainte de pornirea comenzii", isolation, durationMs: Date.now() - started, stopped: true };
       }
       const out = [];
+      const reader = createRunCaseReader();
       let timedOut = false;
       try {
         let inner;
@@ -170,7 +175,12 @@ export function createWslFactoryRunner({ config, supervisor, environment, settin
         try {
           record = supervisor.start({ key, label: `runner@${env.id}${mode === "sandbox" ? "" : " (doar-local)"}: ${command}`, executable: binary.executable,
             args: [...binary.prefixArgs, ...wslArgs(env, { cwd: prepared.repo, argv: inner, vars })],
-            cwd: config.hubRoot, onStdoutLine: (line) => { out.push(redactText(line).slice(0, 500)); if (out.length > OUTPUT_LINES) out.shift(); } });
+            cwd: config.hubRoot, onStdoutLine: (line) => {
+              const clean = redactText(line).slice(0, 500);
+              reader.push(clean); // every line, before the tail window below can drop it
+              out.push(clean);
+              if (out.length > OUTPUT_LINES) out.shift();
+            } });
         } catch (error) { return { ...base, status: "BLOCKED", reason: `runner-ul nu a pornit: ${error.message}`, isolation }; }
         const timer = setTimeout(() => { timedOut = true; supervisor.stop(key, { graceMs: 500 }).catch(() => {}); }, timeoutMs);
         timer.unref?.();
@@ -180,7 +190,7 @@ export function createWslFactoryRunner({ config, supervisor, environment, settin
         const lines = [...out, ...record.stderrTail.map((l) => `[stderr] ${l}`)];
         const { counts, failures } = parseTestOutput(lines);
         const verdict = testStatus({ exitCode: exit.code, counts, timedOut });
-        return { ...base, ...verdict, runner: mode === "sandbox" ? base.runner : `bwrap-local-only@${env.id}`, exitCode: exit.code, counts, failures, durationMs: Date.now() - started,
+        return { ...base, ...verdict, runner: mode === "sandbox" ? base.runner : `bwrap-local-only@${env.id}`, exitCode: exit.code, counts, failures, ...reader.finish(record.stderrTail), durationMs: Date.now() - started,
           outputTail: lines.slice(-120).join("\n"), isolation, socketRefused: mode === "sandbox" && verdict.status !== "PASS" && environmentBlocked(lines) };
       } finally {
         owned.delete(key);

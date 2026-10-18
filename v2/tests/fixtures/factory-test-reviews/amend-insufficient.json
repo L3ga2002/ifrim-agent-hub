@@ -1,0 +1,26 @@
+{
+  "verdict": "CHANGES_REQUESTED",
+  "summary": "Verificările literale sunt insuficiente: se păstrează și se completează.",
+  "criteria": "ALL",
+  "criterion": {
+    "covered": false,
+    "failsForRightReason": true,
+    "canEverPass": true,
+    "contradictsOwner": false,
+    "trivialPassRisk": "low",
+    "plain": "Testul cere un text de eroare pe care nu l-ai cerut; trebuie rescris."
+  },
+  "findings": [
+    {
+      "severity": "high",
+      "file": "test/hub",
+      "area": "testul de acceptanță",
+      "observation": "Căutarea literală nu verifică JSON decodat.",
+      "impact": "Telefonul poate fi expus prin escape JSON.",
+      "evidence": "body.includes(PHONE)",
+      "reproduction": "Răspuns JSON cu secvențe Unicode."
+    }
+  ],
+  "missingContext": [],
+  "checks": "PHONE_INSUFFICIENT"
+}

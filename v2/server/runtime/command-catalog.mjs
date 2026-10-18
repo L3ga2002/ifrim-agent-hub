@@ -2,9 +2,13 @@ import path from "node:path";
 import { HubError } from "../core/errors.mjs";
 import { newId } from "../core/ids.mjs";
 import { ATTESTATION_TEXT } from "../policy/billing.mjs";
+import { buildDeclaration, applyDeclaration } from "../policy/billing-evidence.mjs";
+import { inspectionFromState } from "../policy/gate.mjs";
+import { nextSuspension, originFields, classifySuspension, suspensionKey } from "../policy/gate-state.mjs";
 import { CODEX_ACL_CONSENT_TEXT, R2_ACCEPT_TEXT, R2_MAX_ACCEPT_DAYS } from "../policy/isolation.mjs";
 import { LEGA_CONSENT_TEXT, LEGA_CONSENT_VERSION, LEGA_VOICES, LEGA_TASK_MAX, LEGA_WEB_SEARCH_MODES, LEGA_DEFAULTS } from "../policy/lega-policy.mjs";
 import { APPROVAL_POLICIES } from "../policy/approval-policy.mjs";
+import { OWNER_DECIDED } from "../policy/approvals.mjs";
 import { EFFORT_PROFILES } from "../policy/run-plan.mjs";
 import { MISSION_TEMPLATES } from "../domain/missions.mjs";
 import { MEMORY_SCOPES, MEMORY_TYPES } from "../domain/memory.mjs";
@@ -19,6 +23,10 @@ import { transitionTask } from "./state-machine.mjs";
 import { registerSalesCommands } from "../sales/sales-commands.mjs";
 import { registerEnvironmentCommands } from "../environments/environment-commands.mjs";
 import { registerOwnerCommands } from "../owner/owner-commands.mjs";
+import { registerIntelCommands } from "../intel/intel-commands.mjs";
+import { registerMediaCommands } from "../media/media-commands.mjs";
+import { registerOpsCommands } from "../ops/ops-commands.mjs";
+import { registerDeliveryCommands } from "../delivery/delivery-commands.mjs";
 import fs from "node:fs";
 
 /** Commands a LOCAL_HUB schedule may run (non-AI, no external effects). */
@@ -37,6 +45,15 @@ export function registerCommands(commands, hub) {
   const clock = config.now;
   const need = (value, what) => { if (!value) throw new HubError("not_found", `${what} not found`); return value; };
   const reg = (type, def) => commands.register(type, def);
+  /**
+   * M10.2.1 (D17): who suspends the gate, from the command context — the channel, the actor (a paired phone's device:<id>), and for
+   * the owner channel the credential behind the session, re-read from the database (an ended or expired session records none).
+   */
+  const suspensionOrigin = (ctx) => {
+    const s = ctx.ownerSession?.id ? db.prepare("SELECT credential_id, status, expires_at FROM owner_sessions WHERE id = ?").get(String(ctx.ownerSession.id)) : null;
+    const live = s && s.status === "active" && new Date(s.expires_at) > clock();
+    return originFields({ channel: ctx.channel, actor: ctx.channel === "voice" ? "voice" : ctx.actor, credentialId: live ? s.credential_id : null, sessionId: live ? ctx.ownerSession.id : null });
+  };
 
   /** When the owner asked (command log) and, for approved commands, when the approval was requested and decided (run timeline). */
   function requestTiming(ctx) {
@@ -104,7 +121,30 @@ export function registerCommands(commands, hub) {
   reg("run.interrupt", { describe: "Întrerupe o execuție activă", async: true, schema: { runId: { required: true } }, channels: ["ui", "test", "voice", "companion"],
     execute: (input, ctx) => runs.interrupt(input.runId, ctx.actor) });
   reg("system.stop_all", { describe: "Stop All: poartă suspendată, granturi revocate, execuții întrerupte", async: true, schema: { reason: { max: 300 } }, channels: ["ui", "test", "voice", "companion", "owner"],
-    execute: (input, ctx) => runs.stopAll(ctx.channel === "voice" ? "voice" : ctx.actor, input.reason || (ctx.channel === "voice" ? "Voice: Stop" : "Stop All")) });
+    execute: async (input, ctx) => {
+      const reason = input.reason || (ctx.channel === "voice" ? "Voice: Stop" : "Stop All");
+      // M10: Stop All also stops the desktop operator's input (held keys released) and pauses every running operation plan.
+      // Applications and unsaved projects stay open: nothing is force-closed to satisfy a stop.
+      // 2.12.1 (D22): this runs inside runs.stopAll (alsoStop), so the stop's own event records WHAT it stopped: the plans it paused
+      // and the desktop session it paused — only one that was ACTIVE; a session an intervention had already paused stays that
+      // intervention's. A later resume holds exactly these until the rearm (owner/stop-scope.mjs).
+      let desktopStop = null;
+      const plansPaused = [];
+      const alsoStop = async () => {
+        let before = null;
+        try { before = hub.desktop?.sessionStatus ? hub.desktop.sessionStatus() : null; } catch { before = null; }
+        desktopStop = hub.desktop ? await hub.desktop.stop({ actor: ctx.actor, reason }).catch((error) => ({ error: error.message })) : null;
+        for (const p of hub.opsPlans ? hub.opsPlans.active().filter((x) => ["RUNNING", "CONFIRMED"].includes(x.status)) : []) {
+          try { hub.opsPlans.pause(p.id, { reason, actor: ctx.actor }); plansPaused.push(p.id); } catch { /* reported by the plan's own status */ }
+        }
+        const after = desktopStop?.session || null;
+        return { plansPaused, desktopSessionId: before?.status === "ACTIVE" && after?.id === before.id && after.status === "PAUSED" ? after.id : null };
+      };
+      // M10.2.1 (D17): the stop records its origin (channel, actor, device, the owner's credential reference), so the cockpit can
+      // offer the contextual rearm and say who stopped what — never inferred from the reason text.
+      const out = await runs.stopAll(ctx.channel === "voice" ? "voice" : ctx.actor, reason, { kind: "stop_all", ...suspensionOrigin(ctx) }, { alsoStop });
+      return { ...out, desktop: desktopStop ? { stopped: Boolean(desktopStop.stopped), helperPaused: Boolean(desktopStop.helperPaused), error: desktopStop.error || null } : null, plansPaused };
+    } });
 
   // ---------- handoffs ----------
   reg("handoff.begin", { describe: "Handoff Codex ↔ Claude (pașii 1–6)", async: true, schema: { conversationId: { required: true }, toProvider: { enum: ["codex", "claude"], required: true }, taskId: { max: 80 } },
@@ -121,21 +161,42 @@ export function registerCommands(commands, hub) {
   // Preparing, revising and stopping are ordinary commands; starting is bound to the exact scope by an approval (ALWAYS_ASK),
   // and accepting/rejecting the result, extra repair cycles and owner overrides are UI-only decisions. Voice can stop/pause.
   const FACTORY_KINDS = { BUGFIX: "eng_bugfix", FEATURE: "eng_feature", REFACTOR: "eng_refactor" };
+  /**
+   * M10.2 (U09): the body of factory.prepare, shared by the command and by the intake's engineering planner (the same pattern as
+   * autopilot.prepare): a DRAFT mission + spec v1, nothing runs. `provenance` ({ createdBy, workRequestId, envelopeId, requestHash,
+   * source, channel }) is recorded as a `factory.provenance` event in the same transaction — factory_missions has no column for
+   * it, and the event is what lets the planner later cancel ONLY its own still-unstarted drafts (never one the owner made or ran).
+   */
+  function prepareFactoryMission(input, { actor = "owner", provenance = null } = {}) {
+    if (!FACTORY_KINDS[input.workType]) throw new HubError("validation", `Tip de lucrare necunoscut: ${String(input.workType).slice(0, 20)}`);
+    const acceptance = (Array.isArray(input.spec?.acceptance) ? input.spec.acceptance : []).map((a) => String(typeof a === "string" ? a : a?.text || "").slice(0, 300)).filter(Boolean).slice(0, 20);
+    return bus.transaction(() => {
+      const mission = createMission({ projectId: input.projectId, kind: FACTORY_KINDS[input.workType], title: input.title, objective: input.objective, acceptance, spec: input.spec || {}, limits: input.limits || {} }, actor);
+      if (provenance) {
+        bus.append({ type: "factory.provenance", scopeType: "mission", scopeId: mission.id, projectId: mission.projectId, source: actor,
+          payload: { createdBy: String(provenance.createdBy || "unknown").slice(0, 40), workRequestId: provenance.workRequestId || null, envelopeId: provenance.envelopeId || null,
+            requestHash: provenance.requestHash ? String(provenance.requestHash).slice(0, 64) : null, source: provenance.source ? String(provenance.source).slice(0, 40) : null,
+            channel: provenance.channel ? String(provenance.channel).slice(0, 20) : null } });
+      }
+      return hub.factory.view(mission.id);
+    });
+  }
+  // Late-bound for the intake's planners (owner/planners/engineering.mjs); the command below stays the UI's path, unchanged.
+  hub.prepareFactoryMission = prepareFactoryMission;
   reg("factory.prepare", { describe: "Software Factory: cerință → misiune de engineering cu specificație v1 (ciornă, nimic nu rulează)",
+    // M08: also from the owner's authenticated session (autopilot tasks, War Room remediation, package B4 — review M08).
+    channels: ["ui", "owner", "test"],
     schema: { projectId: { required: true, max: 80 }, workType: { enum: Object.keys(FACTORY_KINDS), required: true }, title: { required: true, min: 3, max: 160 },
       objective: { required: true, min: 10, max: 4000 }, spec: { type: "object", default: {} }, limits: { type: "object", default: {} } },
-    execute: (input, ctx) => {
-      const acceptance = (Array.isArray(input.spec?.acceptance) ? input.spec.acceptance : []).map((a) => String(typeof a === "string" ? a : a?.text || "").slice(0, 300)).filter(Boolean).slice(0, 20);
-      const mission = createMission({ projectId: input.projectId, kind: FACTORY_KINDS[input.workType], title: input.title, objective: input.objective, acceptance, spec: input.spec, limits: input.limits }, ctx.actor);
-      return hub.factory.view(mission.id);
-    } });
+    execute: (input, ctx) => prepareFactoryMission(input, { actor: ctx.actor }) });
   reg("factory.spec.revise", { describe: "Versiune nouă a specificației (o versiune aprobată nu se editează; scope-ul schimbat cere aprobare nouă)",
     schema: { missionId: { required: true, max: 80 }, spec: { type: "object", required: true } }, execute: (input, ctx) => hub.factory.reviseSpec(input.missionId, input.spec, ctx.actor) });
-  reg("factory.limits", { describe: "Limitele misiunii (cicluri de remediere ≤ 2, durată, încercări, profil de efort, model/efort pe rol)",
+  // M09: model + effort per role are fixed here (validated; an ineligible model is refused); also from the owner's session, like prepare.
+  reg("factory.limits", { describe: "Limitele misiunii (cicluri de remediere ≤ 2, durată, încercări, profil de efort, model/efort pe rol)", channels: ["ui", "owner", "test"],
     schema: { missionId: { required: true, max: 80 }, limits: { type: "object", required: true } }, execute: (input, ctx) => hub.factory.setLimits(input.missionId, input.limits, ctx.actor) });
   reg("factory.start", { describe: "Pornește misiunea pe scope-ul aprobat (specificație, plan, rute, limite, comenzi); fiecare pas trece apoi prin poarta de execuție",
     async: true, schema: { missionId: { required: true, max: 80 }, specVersion: { type: "integer", required: true }, specSha: { required: true, max: 64 }, planSha: { required: true, max: 64 },
-      limits: { type: "object", required: true }, routes: { type: "object", required: true }, commands: { type: "object", required: true } }, channels: ["ui", "test", "owner"],
+      limits: { type: "object", required: true }, routes: { type: "object", required: true }, bindings: { type: "object", required: true }, commands: { type: "object", required: true } }, channels: ["ui", "test", "owner"],
     action: (input) => ({ actionKind: "factory.scope", target: `${input.missionId}:v${input.specVersion}`, projectId: missions.get(input.missionId)?.projectId || "*" }),
     execute: async (input, ctx) => {
       const command = ctx.commandId ? commands.get(ctx.commandId) : null;
@@ -154,7 +215,8 @@ export function registerCommands(commands, hub) {
       // rest: a new time window, one more attempt, the end of the owner's pause).
       if (ctx.channel === "agent" && (input.allowExtraCycle || input.proceedToQa || input.reviewerModel)) throw new HubError("policy", "Ciclul suplimentar, trecerea la QA și alt model de review sunt decizii ale tale; agentul poate doar relua misiunea de unde a rămas");
       // The LIVE_VALIDATION the open plans held before a restart comes back with an explicit resume (M07); undone if refused.
-      const restored = hub.envelopes?.restoreModeHold?.(input.missionId, ctx.actor) || null;
+      // M10.2: only a hold written before envelope-scoped authority exists can be restored (new plans never write one).
+      const restored = (settings.get("envelopeModeHold") || {}).envelopeId ? hub.envelopes?.restoreModeHold?.(input.missionId, ctx.actor) || null : null;
       try {
         return await hub.factory.resume(input.missionId, { actor: ctx.actor, allowExtraCycle: input.allowExtraCycle, proceedToQa: input.proceedToQa, reviewerModel: input.reviewerModel, byAgent: ctx.channel === "agent" });
       } catch (error) {
@@ -162,10 +224,27 @@ export function registerCommands(commands, hub) {
         throw error;
       }
     } });
-  reg("factory.accept", { describe: "Accepți local pachetul de livrare (OWNER_ACCEPTED; fără commit, push sau deploy)", async: true,
-    schema: { missionId: { required: true, max: 80 }, note: { max: 500, default: "" } }, execute: (input, ctx) => hub.factory.accept(input.missionId, { note: input.note, actor: ctx.actor }) });
-  reg("factory.reject", { describe: "Respingi rezultatul (cu motiv)", async: true,
-    schema: { missionId: { required: true, max: 80 }, note: { required: true, min: 3, max: 500 } }, execute: (input, ctx) => hub.factory.reject(input.missionId, { note: input.note, actor: ctx.actor }) });
+  reg("factory.accept", { describe: "Accepți local pachetul de livrare (OWNER_ACCEPTED; fără commit, push sau deploy)", async: true, channels: ["owner", "test"],
+    schema: { missionId: { required: true, max: 80 }, bundleId: { required: true, max: 80, pattern: /^bnd_[A-Za-z0-9_-]+$/ }, bundleSha: { required: true, pattern: /^[0-9a-f]{64}$/, trim: false },
+      deliveryId: { max: 80 }, via: { enum: ["delivery_room", "factory_panel"] }, note: { max: 500, default: "" } },
+    execute: (input, ctx) => {
+      const authenticated = ctx.channel === "owner" || Boolean(ctx.ownerSession);
+      if (authenticated) hub.trust.requireFresh(ctx.ownerSession, "acceptarea software-ului");
+      return hub.factory.accept(input.missionId, { ...input, ...ctx,
+        sessionCheck: authenticated ? () => hub.trust.requireSession(ctx.ownerSession, "acceptarea software-ului") : null });
+    } });
+  // 2.15.1: a rejection is the owner's terminal decision like the acceptance: the owner channel with a fresh session (re-read again by the
+  // factory after the preview stops and right before the decision commits) or the bounded test channel, on the exact displayed target.
+  reg("factory.reject", { describe: "Respingi rezultatul afișat (cu motiv): versiunea misiunii și pachetul exact", async: true, channels: ["owner", "test"],
+    schema: { missionId: { required: true, max: 80 }, note: { required: true, min: 3, max: 500 }, displayedVersion: { type: "integer", required: true, min: 1 },
+      bundleId: { max: 80, pattern: /^bnd_[A-Za-z0-9_-]+$/ }, bundleSha: { pattern: /^[0-9a-f]{64}$/, trim: false } },
+    execute: (input, ctx) => {
+      const authenticated = ctx.channel === "owner" || Boolean(ctx.ownerSession);
+      if (authenticated) hub.trust.requireFresh(ctx.ownerSession, "respingerea rezultatului");
+      return hub.factory.reject(input.missionId, { note: input.note, displayedVersion: input.displayedVersion, bundleId: input.bundleId ?? null, bundleSha: input.bundleSha ?? null,
+        actor: ctx.actor, channel: ctx.channel, commandId: ctx.commandId, correlationId: ctx.correlationId,
+        sessionCheck: authenticated ? () => hub.trust.requireSession(ctx.ownerSession, "respingerea rezultatului") : null });
+    } });
   reg("factory.finding", { describe: "Marchezi un finding (fals pozitiv, contestat, acceptat ca atare) cu motiv",
     schema: { missionId: { required: true, max: 80 }, code: { required: true, max: 20 }, status: { enum: ["FALSE_POSITIVE", "DISPUTED", "OPEN", "WONTFIX"], required: true }, note: { required: true, min: 5, max: 500 } },
     execute: (input, ctx) => hub.factory.setFindingStatus(input.missionId, input.code, { status: input.status, note: input.note, actor: ctx.actor }) });
@@ -189,6 +268,12 @@ export function registerCommands(commands, hub) {
   reg("approval.decide", { describe: "Decizia ta asupra unei aprobări (doar din UI, cu hash-ul afișat)", async: true, schema: { approvalId: { required: true },
     decision: { enum: ["approved", "rejected"], required: true }, displayedHash: { required: true, max: 128 }, note: { max: 500, default: "" } },
     execute: async (input, ctx) => {
+      if (ctx.channel === "test" && !hub.config.testMode) throw new HubError("policy", "Canal de test în afara modului de test");
+      if (ctx.channel === "test" && hub.config.testMode && OWNER_DECIDED.has(approvals.get(input.approvalId)?.actionKind)) {
+        const approval = approvals.decideByOwner(input.approvalId, { ...input, channel: "test" });
+        runs.resolveApproval(input.approvalId, input.decision);
+        return approval;
+      }
       // The decision row records who decided: the owner's UI, or an agent on a recorded delegation (M07), never a fake click.
       // An agent decides only the kinds the owner delegated (the Software Factory start of a test mission), never sensitive,
       // external, sales or Lega approvals.
@@ -198,6 +283,17 @@ export function registerCommands(commands, hub) {
       }
       const via = ctx.channel === "agent" ? { channel: "agent", actor: "agent", note: `${input.note ? `${input.note} · ` : ""}[delegat] ${ctx.delegation}`.slice(0, 500) } : { channel: "ui", actor: "user", note: input.note };
       const approval = bus.transaction(() => approvals.decide(input.approvalId, { decision: input.decision, displayedHash: input.displayedHash, note: via.note, channel: via.channel, actor: via.actor }));
+      runs.resolveApproval(input.approvalId, input.decision);
+      return approval;
+    } });
+  reg("approval.owner_decide", { describe: "Decizia ta asupra unei aprobări rezervate proprietarului", channels: ["owner", "test"],
+    schema: { approvalId: { required: true, max: 80 }, decision: { enum: ["approved", "rejected"], required: true },
+      displayedHash: { required: true, pattern: /^[0-9a-f]{64}$/, trim: false }, note: { max: 500, default: "" } },
+    execute: (input, ctx) => {
+      const what = OWNER_DECIDED.get(approvals.get(input.approvalId)?.actionKind);
+      if (!what) throw new HubError("policy", "Doar aprobările rezervate proprietarului se decid aici");
+      const approval = approvals.decideByOwner(input.approvalId, { ...input, channel: ctx.channel,
+        sessionCheck: () => hub.trust.requireFresh(ctx.ownerSession, what) });
       runs.resolveApproval(input.approvalId, input.decision);
       return approval;
     } });
@@ -235,7 +331,9 @@ export function registerCommands(commands, hub) {
         }
         settings.set(key, value, ctx.actor);
       }
-      return settings.all();
+      // M09 review: the identity salt never leaves the Hub (not in this result, not in the commands log).
+      const { billingIdentitySecret, ...visible } = settings.all();
+      return visible;
     } });
   reg("mode.set", { describe: "Mod: BUILD_SAFE / LIVE_VALIDATION", schema: { mode: { enum: ["BUILD_SAFE", "LIVE_VALIDATION", "OPERATIONAL"], required: true }, confirm: { max: 40 } },
     execute: (input, ctx) => {
@@ -254,9 +352,30 @@ export function registerCommands(commands, hub) {
         if (ctx.channel !== "ui" && ctx.channel !== "test") throw new HubError("policy", "The gate can only be opened from the UI");
         if (input.confirm !== "OPEN GATE") throw new HubError("validation", "Type OPEN GATE to confirm");
         const retained = hub.leases.list().filter((l) => l.status === "retained");
-        if (retained.length) throw new HubError("gate", `Reconcile ${retained.length} retained lease(s) before opening the gate`);
+        // 2.12.2 (P0-R1): the owner's way out is the cockpit card, never a developer action.
+        if (retained.length) throw new HubError("gate", `${retained.length === 1 ? "Un spațiu de lucru e încă rezervat" : `${retained.length} spații de lucru sunt încă rezervate`} după o oprire neconfirmată (lease-uri reținute): ${retained.length === 1 ? "îl eliberezi" : "le eliberezi"} din cockpit, pe cardul „Redeschide poarta”, cu Windows Hello — oprește procesul rămas pornit de Hub sau eliberează rezervarea, apoi redeschide poarta.`);
+        // 2.12.1 (D16): a suspension next to a security event is never reopened by the typed admin path (a per-boot token is not the
+        // owner): only the cockpit rearm, in the owner session, with a fresh verification and the acknowledged events.
+        const security = settings.get("executionGate")?.status === "open" ? null : hub.gateRearm?.eligibility?.()?.security;
+        if (security) {
+          // REG-02: without any active authenticator (the legacy policy never required one) the cockpit card cannot open a session yet:
+          // the refusal names the step that comes first — enrolling Windows Hello / the key — and gives its place as data for the UI.
+          // The typed path itself stays refused (D16): a per-boot token is not the owner.
+          let bootstrapNeeded = false;
+          try { bootstrapNeeded = Boolean(hub.trust?.status?.()?.bootstrapNeeded); } catch { bootstrapNeeded = false; }
+          if (bootstrapNeeded) {
+            throw new HubError("policy", "Poarta a fost oprită lângă un eveniment de securitate și nu ai încă niciun autentificator înregistrat: înregistrează întâi Windows Hello / cheia ta (Lega → Configurare → Identitate), apoi redeschizi poarta din cockpit, în sesiunea ta, după ce confirmi că ai văzut evenimentele.",
+              { data: { code: "SECURITY_ACK", securityAckRequired: true, bootstrapNeeded: true, setup: { href: "#/lega/setup", panel: "identity", label: "Lega → Configurare → Identitate" } } });
+          }
+          throw new HubError("policy", "Poarta a fost oprită lângă un eveniment de securitate: o redeschizi din cockpit, în sesiunea ta, cu Windows Hello, după ce confirmi că ai văzut evenimentele.", { data: { code: "SECURITY_ACK", securityAckRequired: true } });
+        }
       }
       const value = { status: input.action === "open" ? "open" : "suspended", reason: input.reason || (input.action === "open" ? "Opened by user" : "Suspended by user"), changedAt: clock().toISOString(), changedBy: ctx.channel === "voice" ? "voice" : ctx.actor };
+      // M10.2.1 (D17): a suspension records its origin (kind "suspend"; a stronger record — Stop All, security — is kept); an opening
+      // carries no suspension record and names what it reopened (the typed OPEN GATE stays the legacy / diagnostic admin path).
+      const current = settings.get("executionGate");
+      if (input.action === "suspend") value.suspendedBy = nextSuspension(current, { kind: "suspend", at: value.changedAt, ...suspensionOrigin(ctx) });
+      else if (current?.status !== "open") value.reopenedAfter = { cls: classifySuspension(current).cls, key: suspensionKey(current), via: "open_gate", at: value.changedAt };
       settings.set("executionGate", value, ctx.actor, value.reason);
       return { executionGate: value };
     } });
@@ -269,12 +388,20 @@ export function registerCommands(commands, hub) {
       return grants.create({ ...input, projectId: project.id }, ctx.actor);
     } });
   reg("grant.revoke", { describe: "Revocă un grant", schema: { grantId: { required: true } }, channels: ["ui", "test", "voice", "companion"], execute: (input, ctx) => grants.revoke(input.grantId, ctx.actor) });
-  reg("billing.attest", { describe: "Verificarea ta manuală a setării de facturare peste plan", schema: { provider: { enum: ["codex", "claude"], required: true }, confirmText: { required: true, max: 400 } },
+  // M09-A2: the legacy attestation exists only for tests (channel "test"). The owner declares in the owner session
+  // (billing.declare, owner-commands.mjs); POST /api/billing/attest answers with a policy error naming that route. On the test
+  // channel it records a declaration bound to the account of the current fresh probe (or unbound when there is none).
+  reg("billing.attest", { describe: "Declarație de facturare de test (proprietarul declară în sesiunea lui: billing.declare)", channels: ["test"],
+    schema: { provider: { enum: ["codex", "claude"], required: true }, confirmText: { required: true, max: 400 } },
     execute: (input, ctx) => {
-      if (input.confirmText !== ATTESTATION_TEXT[input.provider]) throw new HubError("validation", "Confirmation text does not match");
-      const value = { ...settings.get("billingAttestations"), [input.provider]: { confirmedAt: clock().toISOString(), text: ATTESTATION_TEXT[input.provider] } };
-      settings.set("billingAttestations", value, ctx.actor, `Manual billing check recorded for ${input.provider}`);
-      return { attestations: value };
+      if (input.confirmText !== ATTESTATION_TEXT[input.provider]) throw new HubError("validation", "Textul declarației nu corespunde exact");
+      const now = clock();
+      const identity = inspectionFromState(providerState.get(input.provider), now)?.auth?.accountIdentity || null;
+      const declaration = buildDeclaration({ id: newId("bde"), provider: input.provider, text: ATTESTATION_TEXT[input.provider], identity, now, source: "test:legacy_attest",
+        recordedBy: { channel: ctx.channel, actor: ctx.actor, sessionId: null, credentialId10: null } });
+      const value = applyDeclaration(settings.get("billingEvidence"), input.provider, declaration);
+      settings.set("billingEvidence", value, ctx.actor, `Test billing declaration recorded for ${input.provider}`);
+      return { provider: input.provider, declaration: { id: declaration.id, recordedAt: declaration.recordedAt, expiresAt: declaration.expiresAt, bound: Boolean(declaration.accountIdentity) } };
     } });
   reg("isolation.consent", { describe: "Acordul tău pentru ACL-urile DENY persistente scrise de sandbox-ul Codex pe căile protejate", schema: { provider: { enum: ["codex"], required: true }, confirmText: { required: true, max: 600 }, fingerprint: { required: true, max: 64 } },
     execute: (input, ctx) => {
@@ -325,7 +452,8 @@ export function registerCommands(commands, hub) {
       surfaces.refreshAvailability();
       return { installed: installation.installed, version: installation.version };
     } });
-  reg("provider.probe", { describe: "Verifică contul (handshake/auth status, lista de modele; fără inferență)", async: true, schema: { provider: { enum: ["codex", "claude"], required: true }, withModels: { type: "boolean", default: true } },
+  // M10.2: `automation` = the readiness runner refreshing a stale account check before a plan step (actor readiness:<id>; no inference).
+  reg("provider.probe", { describe: "Verifică contul (handshake/auth status, lista de modele; fără inferență)", async: true, channels: ["ui", "test", "automation"], schema: { provider: { enum: ["codex", "claude"], required: true }, withModels: { type: "boolean", default: true } },
     execute: async (input, ctx) => {
       const adapter = providers[input.provider];
       const installation = await adapter.inspectInstallation();
@@ -387,6 +515,11 @@ export function registerCommands(commands, hub) {
   registerSalesCommands(reg, hub, { createMission });
   registerEnvironmentCommands(reg, hub);
   registerOwnerCommands(reg, hub);
+  registerIntelCommands(reg, hub);
+  registerMediaCommands(reg, hub);
+  registerOpsCommands(reg, hub);
+  // M11 „Ifrim Delivery”: the Delivery Room's commands (owner session for every decision; fail-safe verify / stop / cancel).
+  if (hub.deliveries) registerDeliveryCommands(reg, hub);
 
   // ---------- company runtime & chief of staff ----------
   reg("company.department_status", { describe: "Stare departament (active/planned/paused)", schema: { departmentKey: { required: true, max: 40 }, status: { enum: ["active", "planned", "paused"], required: true }, reason: { required: true, min: 3, max: 300 } },
@@ -495,6 +628,12 @@ export function registerCommands(commands, hub) {
   reg("computer.release", { describe: "Eliberează lock-urile de computer", schema: { leaseIds: { type: "array", max: 4, items: "string", required: true }, reason: { max: 200, default: "released" } },
     execute: (input) => computer.release(input.leaseIds, input.reason) });
   reg("skill.import", { describe: "Rescanează v2/skills (versiuni noi doar la schimbare de conținut)", async: true, schema: {}, execute: async (input, ctx) => skills.importAll(ctx.actor) });
+  // M10.2: re-checks the registry against v2/skills without a restart (a commit made after boot left a version 'untracked').
+  // It imports only drifted folders and never approves anything itself: approval stays the git facts of the owner's commit (or
+  // skill.candidate.approve on the owner channel). automation = the readiness runner (actor readiness:<id>).
+  reg("skill.reconcile", { describe: "Reconciliază registrul de skill-uri cu v2/skills (doar ce diferă; nu aprobă nimic)", async: true,
+    channels: ["ui", "owner", "test", "automation"], schema: { dryRun: { type: "boolean", default: false } },
+    execute: async (input, ctx) => skills.reconcile({ actor: ctx.actor, dryRun: input.dryRun === true }) });
   reg("skill.export", { describe: "Pachet local Claude Code plugin / Agent Skills (neinstalat)", async: true, schema: { format: { enum: ["claude-code-plugin", "agent-skills"], default: "claude-code-plugin" } },
     execute: async (input) => skills.exportBundle(input) });
 
@@ -519,19 +658,24 @@ export function registerCommands(commands, hub) {
       await hub.lega.stopAll("consent-revoked");
       return { revoked: true };
     } });
-  reg("lega.session.start", { describe: "Pornește o sesiune Lega (voce GPT-Live prin Codex); oferta SDP a browserului nu este jurnalizată", async: true,
-    schema: { sdp: { required: true, max: 65536, trim: false }, voice: { enum: [...LEGA_VOICES] } }, logPayload: (i) => ({ sdpLength: String(i.sdp || "").length, voice: i.voice || null }),
+  // M10: on the owner channel (the server-resolved owner session) the start derives its own one-session voice authority; the ui
+  // channel keeps the old path (LIVE_VALIDATION + a voice grant by hand). The session id comes only from ctx.ownerSession.
+  reg("lega.session.start", { describe: "Pornește o sesiune Lega (voce GPT-Live prin Codex); oferta SDP a browserului nu este jurnalizată", async: true, channels: ["ui", "owner", "test"],
+    schema: { sdp: { required: true, max: 65536, trim: false }, voice: { enum: [...LEGA_VOICES] }, expectWebSearch: { max: 20 } },
+    logPayload: (i) => ({ sdpLength: String(i.sdp || "").length, voice: i.voice || null, expectWebSearch: i.expectWebSearch || null }),
     // The SDP answer (remote candidates, DTLS fingerprint) goes back to the browser only; the command log keeps its length.
-    logResult: (r) => ({ sessionId: r?.sessionId, voice: r?.voice, maxDurationS: r?.maxDurationS, idleTimeoutS: r?.idleTimeoutS, answerSdpLength: String(r?.answerSdp || "").length }),
-    execute: async (input, ctx) => hub.lega.start({ sdp: input.sdp, voice: input.voice, actor: ctx.actor }) });
+    logResult: (r) => ({ sessionId: r?.sessionId, voice: r?.voice, maxDurationS: r?.maxDurationS, idleTimeoutS: r?.idleTimeoutS, authority: r?.authority, answerSdpLength: String(r?.answerSdp || "").length }),
+    execute: async (input, ctx) => hub.lega.start({ sdp: input.sdp, voice: input.voice, actor: ctx.actor, ownerSessionId: ctx.ownerSession?.id || null, expectWebSearch: input.expectWebSearch || null }) });
   reg("lega.session.connected", { describe: "Browserul confirmă conexiunea audio (pornește cronometrul sesiunii)", schema: { sessionId: { required: true, max: 80 } },
     execute: (input) => hub.lega.connected(input.sessionId) });
   reg("lega.session.stop", { describe: "Oprește sesiunea Lega", async: true, schema: { sessionId: { max: 80 }, reason: { max: 80, default: "user" } }, channels: ["ui", "test", "voice", "companion"],
     // "current" stops whatever session is live (the browser may not know the id yet while a start is in flight).
     execute: async (input, ctx) => (hub.lega.active() ? hub.lega.stop(input.sessionId && input.sessionId !== "current" ? input.sessionId : undefined, input.reason || "user", ctx.actor) : hub.lega.state()) });
   reg("lega.propose_run", { describe: "Execuție propusă de Lega: pornește doar după aprobarea ta prin click, apoi trece prin poarta de execuție", async: true,
+    // M09: the model is part of what the owner approves (Claude requires an explicit alias; an empty Codex model is the account
+    // default pinned at the start, as for a manual run).
     schema: { projectId: { required: true, max: 80 }, provider: { enum: ["codex", "claude"], required: true }, access: { enum: ["read-only", "workspace-write"], default: "read-only" },
-      task: { required: true, min: 3, max: LEGA_TASK_MAX }, legaSessionId: { max: 80 } },
+      task: { required: true, min: 3, max: LEGA_TASK_MAX }, legaSessionId: { max: 80 }, model: { max: 80, default: "" }, effort: { enum: ["low", "medium", "high", "xhigh", "max"] } },
     channels: ["voice", "test"],
     action: (input) => ({ actionKind: "lega.run_request", target: `${input.provider}:${input.projectId}:${input.access}` }),
     execute: async (input, ctx) => {
@@ -540,7 +684,7 @@ export function registerCommands(commands, hub) {
       const conversation = bus.transaction(() => conversations.create({ projectId: project.id, title: `Lega · ${input.task.replace(/\s+/g, " ").slice(0, 60)}` }, "lega"));
       bus.transaction(() => conversations.addMessage({ conversationId: conversation.id, role: "user", content: input.task }, "lega"));
       try {
-        const started = await runs.start({ conversationId: conversation.id, provider: input.provider, access: input.access, actor: "lega", correlationId: ctx.correlationId, ...requestTiming(ctx) });
+        const started = await runs.start({ conversationId: conversation.id, provider: input.provider, access: input.access, model: input.model || "", effort: input.effort || "", actor: "lega", correlationId: ctx.correlationId, ...requestTiming(ctx) });
         if (input.legaSessionId) hub.lega.trackRun(started.run.id, { sessionId: input.legaSessionId, task: input.task });
         return { conversationId: conversation.id, runId: started.run.id };
       } catch (error) {
@@ -566,6 +710,8 @@ export function registerCommands(commands, hub) {
       if (parsed.kind === "command" && parsed.command === "stop_all") return { ...parsed, result: (await commands.dispatch({ type: "system.stop_all", channel: "voice", actor: "voice", payload: {} })).result };
       if (parsed.kind === "command" && parsed.command === "pause") {
         const r = await commands.dispatch({ type: "gate.set", channel: "voice", actor: "voice", payload: { action: "suspend", reason: "Voice: pause (no new runs)" } });
+        // M10.2 (#7): every pause path pauses the running operation plans too (fail-safe; resuming still needs the owner session).
+        try { hub.interrupts?.pauseOpsPlans?.({ actor: "voice", reason: "Pauză (voce)" }); } catch { /* a pause never fails because of a plan */ }
         return { ...parsed, result: { gate: r.result.executionGate.status, activeRunsContinue: runs.activeRuns().length } };
       }
       return parsed;

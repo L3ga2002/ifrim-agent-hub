@@ -1,15 +1,43 @@
 import { useEffect, useRef, useState } from "react";
 import { Send, Paperclip, Play, ShieldCheck, X, Lock, FileText, Target, ArrowRightLeft, History } from "lucide-react";
 import { api, fmt, uploadWithProgress } from "../../api.js";
-import { useAction, usePref, useHub } from "../../store.js";
+import { useAction, usePref, useHub, useResource } from "../../store.js";
 import { ErrorNotice, Checks, Notice, Chip } from "../../components/ui.jsx";
-import { validateAttachment, composerOptions } from "../../lib/uiLogic.js";
+import { validateAttachment, composerOptions, runRequestBody, planCoversRefusal } from "../../lib/uiLogic.js";
 
 const PROVIDERS = [{ id: "codex", label: "Codex" }, { id: "claude", label: "Claude Code" }];
 const TOOLS_BY_ACCESS = {
   "read-only": { claude: "Read · Glob · Grep (fără shell)", codex: "comenzi în sandbox read-only (profil ifrim_hub_ro)" },
   "workspace-write": { claude: "Edit · Write · Bash limitat — blocat pe Windows nativ (SECURITY_BLOCKER)", codex: "scriere în proiect (profil ifrim_hub_rw)" },
 };
+
+/** M10.2 (U15): whether the voice-first policy is active (the plan path exists only under it); unknown → the old notice. */
+export function useVoiceFirst() {
+  const owner = useResource("/api/owner/status", { reloadOn: (e) => e.type === "settings.changed" && e.payload?.key === "ownerPolicy" });
+  return Boolean(owner.data?.policy?.active);
+}
+
+/**
+ * M10.2 (U15): a gate refusal / preview made ONLY of checks a plan arranges itself (mode, grant, lease, backup…) is not something to
+ * fix by hand: under voice-first it says „pregătește un plan” and links to the cockpit, where ONE confirmation derives what is
+ * needed while the Hub stays in BUILD_SAFE. A refusal with a real blocker (isolation, billing, the gate after Stop All) keeps the raw
+ * checks. The manual run (with a manual grant) stays possible as the advanced path.
+ */
+export function GateRefusal({ checks = [], project, title, voiceFirst, onHide, tone = "warn" }) {
+  if (voiceFirst && planCoversRefusal(checks)) {
+    return (
+      <Notice tone="info" title="Pregătește un plan">
+        Pentru asta nu ai nimic de completat: spune-i Lega ce vrei să ruleze pe {project?.name || "proiect"} și îți arăt un singur plan (modelul, accesul, limitele), confirmat o dată; Hub-ul rămâne în BUILD_SAFE.
+        <div className="row wrap" style={{ marginTop: 6 }}>
+          <a className="btn sm primary" href={`#/lega/${encodeURIComponent(project?.id || "")}`}>Deschide cockpit-ul</a>
+          <details><summary className="link-btn" style={{ cursor: "pointer" }}>Detalii (verificările porții)</summary><Checks checks={checks} /></details>
+          {onHide && <button className="btn sm ghost" onClick={onHide}>Ascunde</button>}
+        </div>
+      </Notice>
+    );
+  }
+  return <Notice tone={tone} title={title}><Checks checks={checks} />{onHide && <button className="btn sm ghost" onClick={onHide}>Ascunde</button>}</Notice>;
+}
 
 function readAsBase64(file) {
   return new Promise((resolve, reject) => { const r = new FileReader(); r.onload = () => resolve(String(r.result).split(",")[1]); r.onerror = () => reject(r.error); r.readAsDataURL(file); });
@@ -36,6 +64,7 @@ export function Composer({ conversation, project, handoffReady, onSent }) {
   const options = composerOptions({ provider, providerState, model, effort });
   const models = options.models;
   const buildSafe = hub?.mode === "BUILD_SAFE";
+  const voiceFirst = useVoiceFirst();
 
   useEffect(() => {
     const voice = sessionStorage.getItem("hub.v2.voiceDraft");
@@ -74,7 +103,8 @@ export function Composer({ conversation, project, handoffReady, onSent }) {
         setPreview(await api(`/api/gate/preview?provider=${provider}&access=${access}&projectId=${project.id}`));
       } else {
         try {
-          await api(`/api/conversations/${conversation.id}/runs`, { method: "POST", body: { provider, access, ...(model ? { model } : {}), ...(options.effort ? { effort: options.effort } : {}), ...(conversation.activeTaskId ? { taskId: conversation.activeTaskId } : {}) } });
+          // M09: Claude always sends an explicit model (options.model is never empty for Claude); Codex only when chosen.
+          await api(`/api/conversations/${conversation.id}/runs`, { method: "POST", body: runRequestBody({ provider, access, model: options.model, effort: options.effort, taskId: conversation.activeTaskId || null }) });
         } catch (error) {
           if (error.category === "gate") setRefusal(error.details?.checks || [{ id: "gate", ok: false, detail: error.message }]);
           else throw error;
@@ -126,15 +156,15 @@ export function Composer({ conversation, project, handoffReady, onSent }) {
         <input type="file" ref={fileRef} hidden multiple onChange={(e) => { addFiles([...(e.target.files || [])]); e.target.value = ""; }} accept=".txt,.md,.json,.csv,.png,.jpg,.jpeg,.webp,.pdf,.log" />
         <button className="btn sm icon ghost" onClick={() => fileRef.current?.click()} aria-label="Atașează fișiere (sau trage-le aici)"><Paperclip size={16} /></button>
         <button className="btn sm ghost composer-opt-toggle" aria-expanded={optsOpen} aria-controls="composer-options" onClick={() => setOptsOpen((v) => !v)}>
-          {PROVIDERS.find((p) => p.id === provider)?.label} · {access === "read-only" ? "doar citire" : "scriere"}{model ? ` · ${model}` : ""}
+          {PROVIDERS.find((p) => p.id === provider)?.label} · {access === "read-only" ? "doar citire" : "scriere"}{options.model ? ` · ${options.model}` : ""}
         </button>
         <div className="seg composer-opt" id="composer-options" role="group" aria-label="Provider">{PROVIDERS.map((p) => <button key={p.id} aria-pressed={provider === p.id} onClick={() => setProvider(p.id)}>{p.label}</button>)}</div>
         <div className="seg composer-opt" role="group" aria-label="Acces">
           <button aria-pressed={access === "read-only"} onClick={() => setAccess("read-only")}>Doar citire</button>
           <button aria-pressed={access === "workspace-write"} onClick={() => setAccess("workspace-write")}>Scriere</button>
         </div>
-        <select className="select compact composer-opt" value={model} onChange={(e) => setModel(e.target.value)} aria-label="Model" title={options.modelNote}>
-          <option value="">{options.modelSource === "unread" ? "Model implicit (listă necitită)" : options.modelSource === "unverified" ? "Model implicit (CLI)" : "Model implicit"}</option>
+        <select className="select compact composer-opt" value={options.modelRequired ? options.model : model} onChange={(e) => setModel(e.target.value)} aria-label="Model" title={options.modelNote}>
+          {!options.modelRequired && <option value="">{options.modelSource === "unread" ? "Model implicit (listă necitită)" : "Model implicit"}</option>}
           {(models || []).map((m) => <option key={m.id} value={m.id}>{m.label}</option>)}
         </select>
         <select className="select compact composer-opt" value={options.effort} onChange={(e) => setEffort(e.target.value)} aria-label="Efort" title={options.effortNote}
@@ -151,12 +181,10 @@ export function Composer({ conversation, project, handoffReady, onSent }) {
         </button>
       </div>
       <ErrorNotice error={send.error || checkGate.error} />
-      {refusal && <Notice tone="warn" title="Poarta a refuzat execuția; modelul nu a fost pornit"><Checks checks={refusal} /></Notice>}
-      {preview && !refusal && (
-        <Notice tone={preview.allowed ? "info" : "warn"} title={preview.allowed ? "Poarta ar admite execuția" : buildSafe ? "Execuția necesită autorizare (BUILD_SAFE)" : "Poarta ar refuza execuția"}>
-          <Checks checks={preview.checks} /><button className="btn sm ghost" onClick={() => setPreview(null)}>Ascunde</button>
-        </Notice>
-      )}
+      {refusal && <GateRefusal checks={refusal} project={project} voiceFirst={voiceFirst} title="Poarta a refuzat execuția; modelul nu a fost pornit" />}
+      {preview && !refusal && (preview.allowed
+        ? <Notice tone="info" title="Poarta ar admite execuția"><Checks checks={preview.checks} /><button className="btn sm ghost" onClick={() => setPreview(null)}>Ascunde</button></Notice>
+        : <GateRefusal checks={preview.checks} project={project} voiceFirst={voiceFirst} title={buildSafe ? "Execuția necesită autorizare (BUILD_SAFE)" : "Poarta ar refuza execuția"} onHide={() => setPreview(null)} />)}
       {dragOver && <div className="drop-hint" aria-hidden="true">Eliberează pentru a atașa (se verifică tipul și dimensiunea; nimic nu pleacă la un provider)</div>}
     </div>
   );

@@ -4,8 +4,15 @@ import http from "node:http";
 import { fileURLToPath } from "node:url";
 
 export const HUB_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
-// HUB_V2_DATA_DIR lets the simulator (npm run v2:sim) keep its own pid/log inside .ifrim/tmp.
-export const DATA_DIR = process.env.HUB_V2_DATA_DIR ? path.resolve(process.env.HUB_V2_DATA_DIR) : path.join(HUB_ROOT, ".ifrim", "private");
+// HUB_V2_DATA_DIR lets the simulator (npm run v2:sim) keep its own pid/log inside .ifrim/tmp. Otherwise the same resolution as the
+// server (M08): the relocation pointer .ifrim/data-location.json when present, else .ifrim/private.
+function resolveDataDir() {
+  if (process.env.HUB_V2_DATA_DIR) return path.resolve(process.env.HUB_V2_DATA_DIR);
+  const pointer = path.join(HUB_ROOT, ".ifrim", "data-location.json");
+  try { if (fs.existsSync(pointer)) { const root = JSON.parse(fs.readFileSync(pointer, "utf8")).dataRoot; if (root && path.isAbsolute(root)) return path.join(root, "private"); } } catch { /* the server reports an invalid pointer */ }
+  return path.join(HUB_ROOT, ".ifrim", "private");
+}
+export const DATA_DIR = resolveDataDir();
 export const PID_FILE = path.join(DATA_DIR, "v2-hub.pid.json");
 export const LOG_FILE = path.join(DATA_DIR, "v2-hub.log");
 export const PORT = Number(process.env.HUB_V2_PORT || 8011);

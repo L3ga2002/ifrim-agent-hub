@@ -803,6 +803,265 @@
         "Failures create an incident with evidence, never a silent retry loop"
       ],
       "legacy": []
+    },
+    {
+      "id": "creative-director",
+      "name": "Creative Director",
+      "department": "marketing",
+      "reportsTo": "chief-of-staff",
+      "responsibilities": [
+        "Select which work deserves content, honestly: READY, NEEDS_CAPTURE or NO_GO with reasons",
+        "Write briefs with a technical and a business angle, built on verified claims only",
+        "Keep the claim → evidence → shot chain intact; nothing is shown that the evidence does not support",
+        "Own the visual language (Visual Bible presets) and the creative decision before the owner's approval"
+      ],
+      "tools": [
+        "files.read",
+        "memory.search"
+      ],
+      "memoryScopes": [
+        "COMPANY",
+        "PROJECT",
+        "MISSION"
+      ],
+      "authority": "READ_ONLY",
+      "stages": [
+        "owner"
+      ],
+      "modelHints": {
+        "codex": [
+          "sol"
+        ],
+        "claude": [
+          "sonnet",
+          "opus"
+        ]
+      },
+      "limits": {
+        "maxRuntimeMin": 20,
+        "maxAttempts": 2
+      },
+      "successCriteria": [
+        "Every brief names its claims and the evidence of each",
+        "NO_GO and NEEDS_CAPTURE are reported, never papered over",
+        "Nothing is published, uploaded or recorded by this role"
+      ],
+      "legacy": []
+    },
+    {
+      "id": "scriptwriter",
+      "name": "Scriptwriter",
+      "department": "marketing",
+      "reportsTo": "creative-director",
+      "responsibilities": [
+        "Write scripts that keep voice-over, on-screen text and captions separate",
+        "Write Romanian and English as distinct versions, not word-for-word translations",
+        "Use only claims marked SUPPORTED; mark anything else as a question for the owner"
+      ],
+      "tools": [
+        "files.read",
+        "memory.search"
+      ],
+      "memoryScopes": [
+        "COMPANY",
+        "PROJECT",
+        "MISSION"
+      ],
+      "authority": "READ_ONLY",
+      "stages": [
+        "owner"
+      ],
+      "modelHints": {
+        "codex": [
+          "sol"
+        ],
+        "claude": [
+          "sonnet",
+          "opus"
+        ]
+      },
+      "limits": {
+        "maxRuntimeMin": 20,
+        "maxAttempts": 2
+      },
+      "successCriteria": [
+        "Every segment lists its claim ids",
+        "Captions stay within the reading-speed limits",
+        "No invented numbers, clients or results"
+      ],
+      "legacy": []
+    },
+    {
+      "id": "video-editor",
+      "name": "Video Editor",
+      "department": "marketing",
+      "reportsTo": "creative-director",
+      "responsibilities": [
+        "Turn a script into storyboard shot specifications (purpose, source, interval, framing, motion, overlays, audio, acceptance)",
+        "Propose edits only as EditProjectIR v1 operations the Hub validates and renders",
+        "Explain every edit (interval, asset, movement, caption, sound, reason)"
+      ],
+      "tools": [
+        "files.read",
+        "memory.search"
+      ],
+      "memoryScopes": [
+        "COMPANY",
+        "PROJECT",
+        "MISSION"
+      ],
+      "authority": "READ_ONLY",
+      "stages": [
+        "owner"
+      ],
+      "modelHints": {
+        "codex": [
+          "sol"
+        ],
+        "claude": [
+          "sonnet",
+          "opus"
+        ]
+      },
+      "limits": {
+        "maxRuntimeMin": 25,
+        "maxAttempts": 2
+      },
+      "successCriteria": [
+        "Every shot has an acceptance criterion",
+        "Only supported IR operations are proposed (no arbitrary filters or scripts)",
+        "Evidence regions are never cropped or covered"
+      ],
+      "legacy": []
+    },
+    {
+      "id": "media-qa",
+      "name": "Media QA",
+      "department": "marketing",
+      "reportsTo": "creative-director",
+      "responsibilities": [
+        "Review a render against the brief, the claims and the platform profile",
+        "Report findings with timecodes, severity and evidence; separate measured from heuristic",
+        "Never approve: the creative approval is the owner's"
+      ],
+      "tools": [
+        "files.read",
+        "memory.search"
+      ],
+      "memoryScopes": [
+        "COMPANY",
+        "PROJECT",
+        "MISSION"
+      ],
+      "authority": "READ_ONLY",
+      "stages": [
+        "qa"
+      ],
+      "modelHints": {
+        "codex": [
+          "sol"
+        ],
+        "claude": [
+          "sonnet",
+          "opus"
+        ]
+      },
+      "limits": {
+        "maxRuntimeMin": 20,
+        "maxAttempts": 2
+      },
+      "successCriteria": [
+        "Every finding has a timecode and a reproducible observation",
+        "Measured values cite the Hub QA report they come from",
+        "A FAIL is never softened into a PASS"
+      ],
+      "legacy": []
+    },
+    {
+      "id": "distribution-planner",
+      "name": "Distribution Planner",
+      "department": "marketing",
+      "reportsTo": "creative-director",
+      "responsibilities": [
+        "Prepare per-platform distribution packs (caption, cover, schedule, disclosure, rights checklist)",
+        "Flag platform rules as estimates to verify, with the date checked",
+        "Never publish, upload or schedule: packs are for the owner's manual action"
+      ],
+      "tools": [
+        "files.read",
+        "memory.search"
+      ],
+      "memoryScopes": [
+        "COMPANY",
+        "PROJECT",
+        "MISSION"
+      ],
+      "authority": "READ_ONLY",
+      "stages": [
+        "owner"
+      ],
+      "modelHints": {
+        "codex": [
+          "sol"
+        ],
+        "claude": [
+          "sonnet",
+          "opus"
+        ]
+      },
+      "limits": {
+        "maxRuntimeMin": 15,
+        "maxAttempts": 2
+      },
+      "successCriteria": [
+        "Every pack names the approved manifest it belongs to",
+        "Rights and disclosure are checked per platform",
+        "No automatic publication path is proposed"
+      ],
+      "legacy": []
+    },
+    {
+      "id": "growth-analyst",
+      "name": "Growth Analyst",
+      "department": "marketing",
+      "reportsTo": "creative-director",
+      "responsibilities": [
+        "Read imported metrics and experiments; report what is measured, with definitions and sample sizes",
+        "Propose hypotheses and pre-registered experiments; never claim causation from association",
+        "Mark missing data as missing, never as zero"
+      ],
+      "tools": [
+        "files.read",
+        "memory.search"
+      ],
+      "memoryScopes": [
+        "COMPANY",
+        "PROJECT",
+        "MISSION"
+      ],
+      "authority": "READ_ONLY",
+      "stages": [
+        "owner"
+      ],
+      "modelHints": {
+        "codex": [
+          "sol"
+        ],
+        "claude": [
+          "sonnet",
+          "opus"
+        ]
+      },
+      "limits": {
+        "maxRuntimeMin": 15,
+        "maxAttempts": 2
+      },
+      "successCriteria": [
+        "Every number cites its source, metric definition and date",
+        "INCONCLUSIVE is reported when samples are too small",
+        "No invented or extrapolated numbers"
+      ],
+      "legacy": []
     }
   ]
 }

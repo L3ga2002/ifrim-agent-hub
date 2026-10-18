@@ -79,7 +79,7 @@ test("M01-C02 org chart: chief of staff reports to the owner, engineering roles 
     const byId = Object.fromEntries(org.roles.map((r) => [r.id, r]));
     assert.equal(org.owner, COMPANY_SEED.owner);
     assert.equal(org.roles.length, roleIds.size);
-    assert.equal(roleIds.size, 18);
+    assert.equal(roleIds.size, 24); // 18 + the six M09 media roles (marketing department, READ_ONLY)
 
     assert.equal(byId["chief-of-staff"].reportsTo, "owner");
     assert.equal(byId["chief-of-staff"].department, "executive");

@@ -13,24 +13,33 @@ const TOKEN_PATTERNS = [
   [/\beyJ[A-Za-z0-9_-]{16,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\b/g, "[redacted:jwt]"],
   [/-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z ]*PRIVATE KEY-----/g, "[redacted:private-key]"],
 ];
-const SENSITIVE_ASSIGNMENT = /(\b[\w-]*(?:api[_-]?key|token|secret|password|passwd|pwd|authorization|cookie|credential)["']?\s*[:=]\s*)(["']?)(?!\[redacted)[^\s"',;]{4,}\2/gi;
+// The value: a quoted string (spaces and escaped quotes included: `password: "my secret pass"`) or an unquoted run of 4+ characters.
+const SENSITIVE_ASSIGNMENT = /(\b[\w-]*(?:api[_-]?key|token|secret|password|passwd|pwd|authorization|cookie|credential)["']?\s*[:=]\s*)(?:("(?!\[redacted)(?:[^"\\\n]|\\.)+")|('(?!\[redacted)(?:[^'\\\n]|\\.)+')|(?!\[redacted)[^\s"',;]{4,})/gi;
 export const SENSITIVE_KEY = /^(?:.*(?:api[_-]?key|token|secret|password|passwd|authorization|cookie|credential|private[_-]?key).*)$/i;
 
 export function redactText(value) {
   if (typeof value !== "string" || !value) return value;
   let text = value;
   for (const [pattern, replacement] of TOKEN_PATTERNS) text = text.replace(pattern, replacement);
-  return text.replace(SENSITIVE_ASSIGNMENT, (_, prefix) => `${prefix}[redacted]`);
+  return text.replace(SENSITIVE_ASSIGNMENT, (_, prefix, dq, sq) => `${prefix}${dq ? '"[redacted]"' : sq ? "'[redacted]'" : "[redacted]"}`);
 }
 
-export function redactDeep(value, depth = 0) {
+/**
+ * `secret` (internal): the value sits in a list under a sensitive key (`tokens: ["…"]`, `secrets: [{ value: "…" }]`), so every value in
+ * it is redacted, not only the ones that look like a credential. An object directly under a sensitive key is still judged by its own
+ * keys (`tokenUsage: { input: 3 }` stays readable).
+ */
+export function redactDeep(value, depth = 0, secret = false) {
   if (depth > 12) return "[truncated]";
+  if (secret && (value === null || value === undefined)) return value;
+  if (secret && typeof value !== "object") return "[redacted]";
   if (typeof value === "string") return redactText(value);
-  if (Array.isArray(value)) return value.map((item) => redactDeep(item, depth + 1));
+  if (Array.isArray(value)) return value.map((item) => redactDeep(item, depth + 1, secret));
   if (value && typeof value === "object") {
     const out = {};
     for (const [key, item] of Object.entries(value)) {
-      out[key] = SENSITIVE_KEY.test(key) && typeof item !== "object" ? "[redacted]" : redactDeep(item, depth + 1);
+      const sensitive = SENSITIVE_KEY.test(key);
+      out[key] = sensitive && typeof item !== "object" ? "[redacted]" : redactDeep(item, depth + 1, secret || (sensitive && Array.isArray(item)));
     }
     return out;
   }

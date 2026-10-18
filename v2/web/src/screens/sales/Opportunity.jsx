@@ -12,15 +12,17 @@ import {
 } from "../../lib/salesLogic.js";
 import { SalesChip, SyntheticTag, useSalesResource, useSalesCommand, ApprovalGate, SalesError, when, localNowInput, inputToIso } from "./common.jsx";
 
+import { ProposalDecision } from "./ProposalDecision.jsx";
+import { Preparation } from "./Preparation.jsx";
+
 const opPath = (id) => `/api/sales/opportunities/${encodeURIComponent(id)}`;
 
 /**
  * One proposal version: sections as plain text, claims to verify, warnings. The internal approval is ALWAYS_ASK and bound
  * to the displayed content hash (`displayedSha` = the server's `contentSha`); it is offered for the latest DRAFT version
- * once the opportunity is "ready for review".
+ * once the opportunity is "ready for review". Also shown on the Lega screen (one L3ga screen, 2026-10-18), the same view.
  */
-function ProposalView({ opp, proposal, proposals, onChanged }) {
-  const approve = useSalesCommand(useCallback(async () => { pushToast("sales-proposal", "ok", "Propunere aprobată intern"); onChanged(); }, [onChanged]));
+export function ProposalView({ opp, proposal, proposals, onChanged }) {
   const review = useSalesCommand(useCallback(async () => { pushToast("sales-proposal-review", "ok", "Propunerea e gata de revizuire"); onChanged(); }, [onChanged]));
   const ready = proposalApprovalReadiness(opp, proposal, proposals);
   const approved = proposalApproved(proposal);
@@ -43,10 +45,9 @@ function ProposalView({ opp, proposal, proposals, onChanged }) {
           <span className="faint small">Apoi ceri aprobarea internă a acestei versiuni.</span>
         </div>
       )}
-      {ready.ok && <div><button type="button" className="btn approve sm" disabled={approve.busy} onClick={() => approve.run(`/api/sales/proposals/${encodeURIComponent(proposal.id)}/approve`, { displayedSha: proposal.sha })}><ShieldCheck size={14} aria-hidden="true" />{approve.busy ? "Se cere…" : "Cere aprobarea acestei versiuni"}</button></div>}
+      <ProposalDecision opp={opp} proposal={proposal} proposals={proposals} onChanged={onChanged} />
       {!ready.ok && !ready.needsReview && ready.reason && <p className="faint small" style={{ margin: 0 }}>{ready.reason}</p>}
-      <ErrorNotice error={approve.error || review.error} />
-      <ApprovalGate gate={approve.approval} onDone={() => { approve.clearApproval(); onChanged(); }} onDismiss={approve.clearApproval} />
+      <ErrorNotice error={review.error} />
     </div>
   );
 }
@@ -82,7 +83,7 @@ function DraftCard({ draft, basis, onChanged }) {
   const [subject, setSubject] = useState(draft.subject);
   const [body, setBody] = useState(draft.body);
   const revise = useSalesCommand(useCallback(async () => { setEditing(false); pushToast("sales-draft", "ok", "Ciornă revizuită (versiune nouă; aprobările vechi nu se mai aplică)"); onChanged(); }, [onChanged]));
-  const approve = useSalesCommand(useCallback(async () => { pushToast("sales-draft-approve", "ok", "Conținut aprobat (nu s-a trimis nimic)"); onChanged(); }, [onChanged]));
+  const approve = useSalesCommand(useCallback(async () => { pushToast("sales-draft-approve", "ok", "Conținut aprobat (nu s-a trimis nimic)"); onChanged(); }, [onChanged]), { owner: true });
   // A draft built on a proposal that changed since (or of a closed opportunity) is no longer approved, revised or sent.
   const open = ["DRAFT", "CONTENT_APPROVED"].includes(draft.status) && basis.ok;
   const changed = subject.trim() !== draft.subject.trim() || body.trim() !== draft.body.trim();
@@ -443,6 +444,7 @@ export function Opportunity({ id, overview }) {
         {d.service?.name && <div className="faint small break">Serviciu: {d.service.name}</div>}
         {opp.need && <p className="muted small prewrap" style={{ margin: 0 }}>{opp.need}</p>}
       </div>
+      <Preparation oppId={opp.id || id} />
       {phone ? (
         <div className="stack">{draftsPanel}{proposalsPanel}{side}</div>
       ) : (
