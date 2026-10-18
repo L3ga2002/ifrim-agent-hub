@@ -74,9 +74,12 @@ test("M04-BR-01 Sales UI end to end in a real browser: import → sheet + fixtur
     page.setDefaultTimeout(15000);
     const panel = page.locator("#sales-panel");
     const go = async (hash) => { await page.evaluate((h) => { window.location.hash = h; }, hash); };
-    const approveOnCard = async () => {
+    // 2.15.2: the draft text and the import rollback are owner decisions: the card names the decision and runs it in the owner session
+    // opened at step 5 (owner_decide, then the command with the same credential's fresh session).
+    const approveOnCard = async (name) => {
       const card = page.locator(".sales-approval").first();
-      await card.getByRole("button", { name: "Aprobă și pornește" }).click();
+      await card.getByText("Decizia se înregistrează în sesiunea verificată cu Windows Hello / cheia ta.").waitFor();
+      await card.getByRole("button", { name, exact: true }).click();
       await card.waitFor({ state: "detached" });
     };
 
@@ -169,7 +172,7 @@ test("M04-BR-01 Sales UI end to end in a real browser: import → sheet + fixtur
     assert.equal(await send.isDisabled(), true, "Send is disabled (OUTREACH_DISABLED)");
     assert.match(await draftCard.innerText(), /OUTREACH_DISABLED/);
     await draftCard.getByRole("button", { name: "Aprobă conținutul" }).click();
-    await approveOnCard();
+    await approveOnCard("Aprob textul");
     await page.locator(".sales-draft").first().getByText("Conținut aprobat", { exact: true }).waitFor();
     assert.equal(await page.locator(".sales-draft").first().getByRole("button", { name: "Trimite" }).isDisabled(), true, "still disabled after the content approval");
     assert.equal(s.hub.db.prepare("SELECT COUNT(*) AS n FROM sales_sends").get().n, 0, "nothing was sent");
@@ -251,7 +254,7 @@ test("M04-BR-01 Sales UI end to end in a real browser: import → sheet + fixtur
     await rollbackPanel.getByText(/Firme păstrate/).waitFor();
     await rollbackPanel.getByLabel(/Motivul rollback-ului/).fill("Import de test anulat (date sintetice)");
     await rollbackPanel.getByRole("button", { name: "Cere rollback-ul" }).click();
-    await approveOnCard();
+    await approveOnCard("Aprob rollback-ul");
     await page.locator(".panel").getByText(/Motiv: Import de test anulat/).waitFor();
     const rolled = s.hub.sales.listBatches().find((x) => x.id === batch.id);
     assert.equal(rolled.status, "ROLLED_BACK");
