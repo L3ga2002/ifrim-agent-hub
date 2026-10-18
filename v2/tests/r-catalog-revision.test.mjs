@@ -48,6 +48,9 @@ test("R-CAT-01 a catalog service saved after a READY preparation → offer, prep
   assert.ok(Object.keys(rev1Files).length > 0);
 
   const svc = (await salesCommand(t, "sales.service.save", CARD)).result;
+  // A second save with the same fields is no new version (review): nothing more becomes STALE because of it.
+  const same = (await salesCommand(t, "sales.service.save", { ...CARD, serviceId: svc.id })).result;
+  assert.deepEqual([same.version, same.unchanged], [svc.version, true]);
   // The inputs of the bound offer changed: everything built on v1 is STALE, nothing is deleted, the approval stays recorded on v1.
   const afterSave = t.hub.sales.getOpportunity(oppId);
   assert.equal(afterSave.proposals[0].id, v1.id);
@@ -102,6 +105,9 @@ test("R-CAT-01 a catalog service saved after a READY preparation → offer, prep
   const dossiers = t.hub.salesPreparations.forOpportunity(oppId).dossiers;
   assert.deepEqual(dossiers.map((d) => [d.revision, d.status]), [[2, "READY"], [1, "STALE"]]);
   assert.equal(dossiers[0].inputsCurrent, true);
+  await salesCommand(t, "sales.service.save", { ...CARD, serviceId: svc.id });
+  assert.equal(prepStatus(t, preparationId), "READY", "an unchanged save keeps revision 2 current");
+  assert.equal(t.hub.salesPreparations.forOpportunity(oppId).dossiers[0].inputsCurrent, true);
   assert.notEqual(dossiers[0].folder, rev1.folder);
   assert.deepEqual(folderShas(rev1.folder), rev1Files, "revision 1 still unchanged");
   const offerMd = fs.readdirSync(dossiers[0].folder).find((f) => /^oferta-v2.*\.md$/.test(f));

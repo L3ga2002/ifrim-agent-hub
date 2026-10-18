@@ -1251,6 +1251,9 @@ export function createSales({ db, bus, clock, config, settings }) {
       if (id) {
         const existing = rowToService(db.prepare("SELECT * FROM sales_services WHERE id = ?").get(id));
         if (!existing) throw new HubError("not_found", "Serviciul nu există");
+        // 2.15.5 review: a save that changes nothing is no new version (and so invalidates no offer rendered from it).
+        const stored = db.prepare("SELECT name, description, scope_json, exclusions_json, tags_json, price_json, lead_time_json, materials_json, active FROM sales_services WHERE id = ?").get(id);
+        if (Object.values(stored).every((v, i) => String(v) === String(row[i]))) return { ...existing, unchanged: true };
         db.prepare("UPDATE sales_services SET name = ?, description = ?, scope_json = ?, exclusions_json = ?, tags_json = ?, price_json = ?, lead_time_json = ?, materials_json = ?, active = ?, version = version + 1, updated_at = ? WHERE id = ?")
           .run(...row, now(), id);
       } else {
