@@ -1,5 +1,19 @@
 # Open Issues - Ifrim Agent Hub
 
+## 2026-10-19 — catalog minim și o ofertă Sales utilă (code `2.15.5-m12`, no migration; detail: `.ifrim/STAGE_2026-10-19_CATALOG_OFERTA.md`)
+
+This section takes precedence over the next ones where they overlap. Two defects blocked the requested flow and are fixed in `db7cc0c` + `a20d77f`
+(dev clone C:Usersmihaihub-cat): a saved catalog service never reached the M12 offer and never made the READY preparation continuable;
+the service editor had no materials field and an edit dropped them. Tests: R-CAT-01..03 (3/3 FAIL before, PASS after) + 42 affected files 412/412.
+
+Open:
+1. Owner: run `C:Usersmihaicatalog-stageeleaseowner-release.cmd` (2.15.5 live + push).
+2. Owner: save „Programări online pe site” (Vânzări → Servicii, text in `catalog-stageservice-card.json`), „Pregătește continuarea” on
+   `opp_mvds4ouj_c6949c345f`, confirm the card, approve v2 (exact ID + SHA). Then the GET verification of revision 2.
+3. Known limit (not a defect): with two or more active services a bound offer without a service on its opportunity uses none (no guess);
+   choosing a service per opportunity in M12 is later work. Price and term stay „De stabilit” until the owner configures them.
+4. Unchanged: the live dev profile is ON (decisions recorded local_dev_profile); RM-10 intermittent under load; 2 V1 tests on the real registry.
+
 ## 2026-10-18 afternoon (2) — the full Lega screen (code `2.15.4-m12`, UI only) + the live M12 probe (detail: `.ifrim/STAGE_2026-10-18_L3GA_UNIC.md` §7–§8)
 
 This section takes precedence over the next one where they overlap. 2.15.3 is LIVE (owner's CMD ~12:00 UTC, GET VERIFY OK). The single live M12
