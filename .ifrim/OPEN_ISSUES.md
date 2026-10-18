@@ -1,5 +1,26 @@
 # Open Issues - Ifrim Agent Hub
 
+## 2026-10-18 afternoon — one L3ga screen (code `2.15.3-m12`, UI only, API contract 17, schema 13, no migration; detail: `.ifrim/STAGE_2026-10-18_L3GA_UNIC.md`)
+
+This section takes precedence over every older one where they overlap. Closed in code (commit `289dc63` on `claude/project-thread-dx5843`,
+dev clone C:\Users\mihai\hub-ui): `#/lega` is the one Lega interface (company map behind; figure, conversation + unsent text per project,
+docked voice panel of the one session, controls, decisions / executions, plan cards, Sales offer + dossier card); the cockpit's small column
+and the modal stage are retired; „Ecran complet” = the same screen without the bars; old links land on it; one audio capture at a time.
+Independent read-only review: 0 critical; 2 important (immersive z-order / hidden bars; Esc in a dialog left the full screen) and 5 medium
+(dismissed offers taking turns, stale option buttons after a remount, the copy of an exchange into another project, controls out of view
+in a short window, duplicate Stop All target) — all fixed or covered, with browser checks in R-LEGA-ONE-04. Tests: the 66 files that read
+the web UI or drive a browser, on the pre-review build: 630 = 627 pass, 3 fail (R3-UI-09/10 pinned the work column's class name → kept;
+R-LEGA-ONE-04's new checks on the pre-fix build → expected; RM-10 real capture under 97 % CPU → intermittent, as before); rerun on the
+final build: 290/290 (31 files incl. every browser suite, RM-10 passed) + 66/66 (8 UI-logic files). No full suite: no server code changed.
+
+Open:
+1. Owner: run C:\Users\mihai\lega-one-stage\release\owner-release.cmd (verified backup → ff v2-milestone-01 → managed upgrade, which
+   rebuilds the UI → GET verify 2.15.3-m12 / 17 / schema 13 + the served UI's one-screen markers → push). Until then live stays 2.15.2-m12.
+2. Then the single live M12 Sales probe through #/lega (the owner types or says the request, confirms the sales.prepare card, inspects and
+   approves the exact offer id + SHA); result and files recorded in the stage document §7.
+3. Unchanged, separate: the backup interrupted by a Hub stop; the local dev profile; real prices / services; RM-10 intermittent under load;
+   the 2 V1 real-registry tests; the Mini-asistent (Alt+M) stays a separate compact view (not the cockpit column).
+
 ## 2026-10-18 — 13 defects fixed + Sales decisions bound to the owner session (code `2.15.2-m12`, API contract 17, schema 13, no migration; detail: `.ifrim/STAGE_2026-10-18_FIX13_SALES.md`)
 
 This section takes precedence over every older one where they overlap. Closed in code (branch `claude/project-thread-pcocmw` in the dev clone
