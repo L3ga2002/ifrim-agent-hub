@@ -66,7 +66,20 @@ const clip = (value, max) => redactText(String(value ?? "").trim()).slice(0, max
 
 /** Finds the LAST ```json block of the reviewer's answer (raw text, or null). Exported for M11 L5's test review. */
 export function lastJsonBlock(text) {
-  const blocks = [...String(text || "").matchAll(/```json\s*([\s\S]*?)```/g)];
+  const s = String(text || "");
+  // A review may quote code with ``` inside a JSON string (an `evidence` field): the block then ends at a fence on its own line, not at
+  // the first ``` after the opener. From the last opener backwards, the first candidate that parses as a JSON object is the answer.
+  const openers = [...s.matchAll(/```json[^\S\n]*\n?/g)];
+  const closers = [...s.matchAll(/^[^\S\n]*```[^\S\n]*$/gm)].map((m) => m.index);
+  for (let k = openers.length - 1; k >= 0; k -= 1) {
+    const start = openers[k].index + openers[k][0].length;
+    for (const end of closers.filter((c) => c >= start)) {
+      const body = s.slice(start, end);
+      try { const data = JSON.parse(body); if (data && typeof data === "object" && !Array.isArray(data)) return body; } catch { /* a later fence may close it */ }
+    }
+  }
+  // Nothing parses: the last block as it was always read (the caller reports its JSON error).
+  const blocks = [...s.matchAll(/```json\s*([\s\S]*?)```/g)];
   return blocks.length ? blocks[blocks.length - 1][1] : null;
 }
 

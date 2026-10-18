@@ -252,6 +252,16 @@ export function runRequestBody({ provider, access, model = "", effort = "", task
   return { provider, access, ...(m ? { model: m } : {}), ...(effort ? { effort } : {}), ...(taskId ? { taskId } : {}) };
 }
 
+/**
+ * The body of a controlled retry of a run (the conversation's „Reîncearcă”): the same provider, access, model, effort AND task as the
+ * run retried, so a retry never loses the task it belonged to or falls back to the default effort. The model is sent as the run
+ * recorded it (never re-mapped to the composer's default).
+ */
+export function retryRunBody(run = {}) {
+  const model = String(run?.model || ""); const effort = String(run?.effort || ""); const taskId = run?.taskId || null;
+  return { provider: run?.provider, access: run?.access, ...(model ? { model } : {}), ...(effort ? { effort } : {}), ...(taskId ? { taskId } : {}) };
+}
+
 /** The body of POST /api/missions/:id/shadow: a shadow review names its model too (Claude: an explicit alias, never empty). */
 export function shadowReviewBody({ provider = "claude", model = "" } = {}) {
   const m = provider === "claude" ? claudeRunModel(model) : String(model || "");
@@ -439,12 +449,9 @@ export function formatMs(ms) {
 }
 
 /**
- * Acceptance criteria typed one per line: "text | verify | test/path.mjs". verify: test, review, manual, e2e, preview
- * (default test when a path is given, otherwise review). Returns the spec array the API expects.
- */
-/**
  * Keeps what the line editor cannot show (approved E2E steps, the expected baseline failure) on the criteria that keep their
- * id and verification kind, so saving a revision never drops them silently.
+ * id and verification kind, so saving a revision never drops them silently. The ids come from parseCriteriaLines(text, previous):
+ * a criterion keeps its id only when its line still names it, so a deleted line's steps never move to the line after it.
  */
 export function mergeCriteria(parsed = [], previous = []) {
   const byId = new Map(previous.map((a) => [a.id, a]));
@@ -455,14 +462,42 @@ export function mergeCriteria(parsed = [], previous = []) {
   });
 }
 
-export function parseCriteriaLines(text = "") {
-  const kinds = new Set(["test", "review", "manual", "e2e", "preview"]);
-  return String(text).split("\n").map((l) => l.trim()).filter(Boolean).slice(0, 20).map((line, i) => {
-    const [body, second = "", third = ""] = line.split("|").map((s) => s.trim());
-    const verify = kinds.has(second) ? second : third ? "test" : second && /[/.]/.test(second) ? "test" : second ? "review" : "review";
-    const testRef = kinds.has(second) ? third : second && /[/.]/.test(second) ? second : "";
-    return { id: `AC-${i + 1}`, text: body, verify, ...(testRef ? { testRef } : {}) };
+const CRITERION_KINDS = new Set(["test", "review", "manual", "e2e", "preview"]);
+const CRITERION_ID_PREFIX = /^(AC-\d{1,3})\s*:\s*/i;
+const looksLikePath = (s) => /^\S+$/.test(s) && /[/.]/.test(s);
+
+/** One criterion as an editor line: „AC-2: text | verify | test/path.mjs”. The id keeps its identity when lines are deleted or moved. */
+export function criterionLine(a) {
+  return `${a.id ? `${a.id}: ` : ""}${a.text} | ${a.verify}${a.testRef ? ` | ${a.testRef}` : ""}`;
+}
+
+/**
+ * Acceptance criteria typed one per line: "[AC-n:] text | verify | test/path.mjs". verify: test, review, manual, e2e, preview (default
+ * test when a path is given, otherwise review). Returns the spec array the API expects. The verification kind and the path are read
+ * from the END of the line, so a „|” inside the criterion's text stays part of the text. A line that names its id („AC-3: …”, as the
+ * editor writes it) keeps that id; a new line gets an id that no previous criterion (`previous`) and no other line used, so it never
+ * inherits a deleted criterion's E2E steps or expected failure. Without `previous` and without written ids the ids are AC-1, AC-2… in
+ * order, as before.
+ */
+export function parseCriteriaLines(text = "", previous = []) {
+  const rows = String(text).split("\n").map((l) => l.trim()).filter(Boolean).slice(0, 20).map((line) => {
+    const named = line.match(CRITERION_ID_PREFIX);
+    const parts = (named ? line.slice(named[0].length) : line).split("|").map((s) => s.trim());
+    const n = parts.length;
+    let verify = "review"; let testRef = ""; let used = 0;
+    if (n >= 3 && CRITERION_KINDS.has(parts[n - 2])) { verify = parts[n - 2]; testRef = parts[n - 1]; used = 2; }
+    else if (n >= 2 && CRITERION_KINDS.has(parts[n - 1])) { verify = parts[n - 1]; used = 1; }
+    else if (n >= 2 && looksLikePath(parts[n - 1])) { verify = "test"; testRef = parts[n - 1]; used = 1; }
+    return { id: named ? named[1].toUpperCase() : null, text: parts.slice(0, n - used).join(" | "), verify, testRef };
   });
+  const taken = new Set();
+  for (const r of rows) {
+    if (r.id && taken.has(r.id)) r.id = null;
+    else if (r.id) taken.add(r.id);
+  }
+  const number = (id) => Number(String(id || "").replace(/^AC-/i, "")) || 0;
+  let next = Math.max(0, ...previous.map((a) => number(a.id)), ...[...taken].map(number));
+  return rows.map((r) => ({ id: r.id || `AC-${++next}`, text: r.text, verify: r.verify, ...(r.testRef ? { testRef: r.testRef } : {}) }));
 }
 
 // ---------------------------------------------------------------- M10: Lega's one-click start

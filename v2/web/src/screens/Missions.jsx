@@ -122,7 +122,8 @@ function MissionDetail({ id, go, query }) {
                   {task.evidence && Object.keys(task.evidence).length > 0 && <><dt>Dovezi</dt><dd>{task.evidence.manualVerification || JSON.stringify(task.evidence).slice(0, 300)}</dd></>}
                 </dl>
                 {task.acceptance?.length > 0 && <div><div className="section-title">Criterii</div><ul className="plain-list">{task.acceptance.map((a) => <li key={a}>{a}</li>)}</ul></div>}
-                <TaskActions task={task} onDone={reload} />
+                {/* Keyed by the task: a verification note typed for one task is never carried to another task opened in the same panel. */}
+                <TaskActions key={task.id} task={task} onDone={reload} />
                 {task.runs.length > 0 && <div><div className="section-title">Execuții (dovezi separate)</div><ul className="list">{task.runs.map((r) => <li key={r.id}><div className="list-row" style={{ padding: "6px 0" }}><span className="grow">{r.provider} · {r.stage} · {fmt.dateTime(r.createdAt)}</span><StatusChip status={r.status} /></div></li>)}</ul></div>}
                 <div><div className="section-title">Tranziții</div><ul className="list">{task.transitions.map((tr) => <li key={tr.id}><div className="list-row" style={{ padding: "6px 0", flexWrap: "wrap" }}><span className="mono nowrap">{tr.from_status} → {tr.to_status}</span><span className="faint grow">{tr.reason}</span></div></li>)}</ul></div>
                 {task.status === "VERIFYING" && <Notice tone="info">Un răspuns terminat de model nu înseamnă COMPLETED. Finalizarea cere dovadă de verificare.</Notice>}

@@ -1092,6 +1092,13 @@ const INTERRUPT_FORMS = Object.freeze({
   freeze_project: { strict: false, start: /^ingheata\b/, command: /\bingheata\b/, verb: /\bingheat[a-z]*\b/, ask: null },
 });
 const INTERRUPT_INTENTS = new Set(Object.keys(INTERRUPT_FORMS));
+/**
+ * Moods judged with the same rule but which are NOT interruptions: the unfreeze („Dezgheață X”) permits work again, so it runs only as a
+ * clear imperative (strict: a mention, a question, a negation, a condition or a report never unfreezes). Kept apart from INTERRUPT_FORMS
+ * so nothing else in the interruption path (splits, kept requests, stop answers) treats it as a stop.
+ */
+const MOOD_FORMS = Object.freeze({ ...INTERRUPT_FORMS,
+  unfreeze_project: { strict: true, start: /^dezgheata\b/, command: /\bdezgheata\b/, verb: /\bdezghe(?:at|t)[a-z]*\b/, ask: null } });
 /** What leads into an interruption and makes it talk (a split never separates the two: „Dacă pică testele, oprește tot”). */
 function leadsIntoTalk(text) {
   const s = softTrim(text);
@@ -1105,7 +1112,7 @@ function leadsIntoTalk(text) {
  * clause's first verb was indicative („Oprești tot…”) before prepClause turned it into the imperative. Pure.
  */
 export function interruptMood(clause, { asks = false, modal = false, intent = "stop_all", conjugated = false } = {}) {
-  const form = INTERRUPT_FORMS[intent] || INTERRUPT_FORMS.stop_all;
+  const form = MOOD_FORMS[intent] || INTERRUPT_FORMS.stop_all;
   let s = softTrim(clause);
   if (!s) return "mention";
   // R2-F3: a bare lead-in that repeats the command („Ți-am zis, oprește tot!”, „Am zis oprește tot!”) — never with a time word,
@@ -1316,6 +1323,13 @@ export function stopTalkAnswer({ mood = "question", about = "stop_all", worker =
     return STOP_EXPLANATION;
   }
   const command = about === "stop_worker" ? `Oprește ${worker === "claude" ? "Claude" : worker === "codex" ? "Codex" : "agentul"}` : STOP_TALK_COMMAND[about] || "Oprește tot";
+  // The unfreeze is no stop: nothing is promised „imediat” (by voice it is refused anyway; it is done from the cockpit).
+  if (about === "unfreeze_project") {
+    if (mood === "negation") return "Bine, nu dezgheț nimic.";
+    if (mood === "conditional") return "Nu dezgheț condiționat, așa că nu am dezghețat nimic. Spune „Dezgheață” și numele proiectului când vrei.";
+    const why = { ask: "ai întrebat", question: "a fost o întrebare", reported: "ai povestit ce s-a spus", quote: "era un citat", mention: "comanda nu era la începutul frazei" }[mood] || "nu era o comandă";
+    return `Nu am dezghețat nimic: ${why}. Spune „Dezgheață” și numele proiectului când vrei.`;
+  }
   if (mood === "negation") return about === "pause" ? "Bine, nu pun nimic pe pauză." : about === "freeze_project" ? "Bine, nu îngheț nimic." : about === "stop_worker" ? "Bine, nu opresc niciun agent." : "Bine, nu opresc nimic.";
   if (mood === "conditional") return `Nu fac opriri condiționate, așa că nu am făcut nimic acum. Spune „${command}” când vrei.`;
   const because = { ask: "ai întrebat", question: "a fost o întrebare", reported: "ai povestit ce s-a spus", quote: "era un citat", mention: "comanda nu era la începutul frazei" }[mood] || "nu era o comandă";
@@ -2066,6 +2080,12 @@ export function resolveIntent(text, context = {}) {
     // R2-F3: whether the clause's first verb was indicative („Oprești tot, da?”) before prepClause made it the imperative.
     const conjugated = CONJUGATED_INTERRUPT.test(softTrim(stripFillers(clause)));
     if (t && !(found && (found.intent === "gate_rearm" || found.intent === "reopen_last" || found.args?.addressed))) found = imperativeOnly(found, t, { asks, modal, conjugated });
+    // The unfreeze runs only as a clear imperative („Dezgheață X”); „Dezgheață X?”, „Dacă pică testele, dezgheață X”, „Nu dezgheța X”,
+    // „Ieri am zis dezgheață X” are answered, and nothing is unfrozen.
+    if (t && found?.intent === "unfreeze_project") {
+      const mood = interruptMood(t, { asks, modal, intent: "unfreeze_project", conjugated });
+      if (mood !== "imperative") found = { intent: "explain_stop", args: { mood, about: "unfreeze_project" } };
+    }
     // R2-F6: a negated stop next to a request keeps the request and answers the negation as a second read („Bine, nu opresc nimic.”).
     const alsoExplain = found?.alsoExplain || null;
     if (alsoExplain) found = { intent: found.intent, args: found.args };
@@ -2315,6 +2335,7 @@ function missingNumberedPart(ref, item, { extra = () => [] } = {}) {
   return want.some((w) => !have.some((h) => h === w || (/^\d+$/.test(w) && h.endsWith(w) && /^[a-z]+$/.test(h.slice(0, -w.length)))));
 }
 
+const DEICTIC_PROJECT = /^(?:proiectul|tot proiectul|asta|acesta|proiectul (?:acesta|asta|curent|deschis))$/;
 function resolveRefs(step, context) {
   const projects = context.projects || [];
   // P0-R6 (L11): „Ce a rămas în ProDelivery?” (status) names its project like „Hai la ProDelivery” — the same matching, diacritics and
@@ -2356,8 +2377,13 @@ function resolveRefs(step, context) {
     else if (matches.length > 1) return { clarification: { question: `La care proiect te referi: ${matches.slice(0, 4).map((p) => p.name).join(" sau ")}?`, options: matches.slice(0, 4).map((p) => ({ id: p.id, label: p.name })), forIntent: step.intent } };
     else if (ref) step.args.unknownRef = ref;
   }
-  if (step.intent === "autonomy" && !step.args.projectId) step.args.projectId = context.currentProjectId || null;
-  if (step.intent === "freeze_project" && !step.args.projectId && /^(proiectul|tot proiectul|asta|acesta)$/.test(String(step.args.projectRef || "").trim())) step.args.projectId = context.currentProjectId || null;
+  // A named project that matched nothing (or several) is never replaced by the open one: the autonomy, the freeze and the unfreeze act
+  // only on the project the words named, the open one when they named none, or after the question. „Proiectul (acesta)” is the open one.
+  if (["autonomy", "freeze_project", "unfreeze_project"].includes(step.intent) && !step.args.projectId && DEICTIC_PROJECT.test(String(step.args.projectRef || "").trim())) {
+    step.args.projectId = context.currentProjectId || null;
+    delete step.args.unknownRef;
+  }
+  if (step.intent === "autonomy" && !step.args.projectId && !step.args.projectRef) step.args.projectId = context.currentProjectId || null;
   const projectMissions = () => (context.missions || []).filter((m) => !context.currentProjectId || m.projectId === context.currentProjectId);
   const missionQuestion = (matches, forIntent) => ({ clarification: { question: `Care misiune: ${matches.slice(0, 4).map((m) => `„${m.title}”`).join(" sau ")}?`, options: matches.slice(0, 4).map((m) => ({ id: m.id, label: m.title })), forIntent } });
   if (step.intent === "continue_work" && step.args.topic) {

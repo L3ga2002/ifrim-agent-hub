@@ -67,6 +67,14 @@ const CANCEL_WORDS = /\b(anuleaza|anulati|renunta|renunt|abandoneaza|arunca)\b/;
 const PROJECT_CHOICE = new Set(["open_project", "switch_project", "freeze_project", "unfreeze_project", "autonomy", "status", "show_preview"]);
 const MISSION_CHOICE = new Set(["continue_work", "start_mission", "resume_mission", "show_plan"]);
 /**
+ * The project a freeze / unfreeze / autonomy step acts on: the one its words named (resolved), the open one only when the words named
+ * none. A name that matched nothing or several projects gives null, never the open project.
+ */
+const namedProject = (step, openProjectId) => step.args.projectId || (step.args.projectRef ? null : openProjectId || null);
+/** What the Hub says when namedProject found nothing: the name it could not find, the question it asked, or its own question. */
+const unnamedProject = (step, question, nothingDone) => (step.args.unknownRef ? `Nu găsesc proiectul „${step.args.unknownRef}”; ${nothingDone}.`
+  : step.args.projectRef ? `Spune-mi exact proiectul; până atunci ${nothingDone}.` : question);
+/**
  * D3 review: the planner kinds whose request is answered as the preview read when the words are a pure preview read (a model run or a
  * mission: the live defect, „Rulează preview-ul Pro Delivery” → two Claude analyses). A Studio request („Fă un preview video…”) is a clip.
  */
@@ -1121,8 +1129,17 @@ export function createIntake(hub) {
       }
       // Review #6: the owner session that said „Oprește Codex” is recorded with the stop, so „Continuă” in that credential resumes it.
       else if (step.intent === "stop_worker") r.interrupt = await interrupts.stopWorker({ provider: step.args.worker, actor: ctx.actor, session: session(ctx) });
-      else if (step.intent === "freeze_project") r.interrupt = step.args.projectId || projectId ? await interrupts.freeze({ projectId: step.args.projectId || projectId, actor: ctx.actor }) : { summary: "Ce proiect îngheț?" };
-      else if (step.intent === "unfreeze_project") r.refused = ctx.channel === "voice" ? "Dezghețarea se face din cockpit (permite din nou munca)" : (r.interrupt = interrupts.unfreeze({ projectId: step.args.projectId || projectId, actor: ctx.actor }), undefined);
+      // A project the words named but the Hub could not identify (none or several matched) is never replaced by the open one: nothing is
+      // frozen, unfrozen or changed until the name is clear (the resolver's question, when it asked one, is answered with its options).
+      else if (step.intent === "freeze_project") {
+        const target = namedProject(step, projectId);
+        r.interrupt = target ? await interrupts.freeze({ projectId: target, actor: ctx.actor }) : { summary: unnamedProject(step, "Ce proiect îngheț?", "nu am înghețat nimic") };
+      }
+      else if (step.intent === "unfreeze_project") {
+        const target = namedProject(step, projectId);
+        if (ctx.channel === "voice") r.refused = "Dezghețarea se face din cockpit (permite din nou munca)";
+        else r.interrupt = target ? interrupts.unfreeze({ projectId: target, actor: ctx.actor }) : { summary: unnamedProject(step, "Ce proiect dezgheț?", "nu am dezghețat nimic") };
+      }
       else if (step.intent === "takeover") {
         // M10: "Preiau eu" first stops the desktop operator (and pauses its plans) when it is working; then the project, if any.
         const desk = ops && ops.busy() ? await ops.takeover({ ctx }) : null;
@@ -1132,7 +1149,11 @@ export function createIntake(hub) {
       else if (step.intent === "stop_all") r.interrupt = (await hub.commands.dispatch({ type: "system.stop_all", channel: ctx.channel === "owner" ? "owner" : ctx.channel === "voice" ? "voice" : ctx.channel === "test" ? "test" : "ui", ownerSession: ctx.ownerSession, actor: ctx.actor, payload: { reason: "Oprește tot (Lega)" } })).result;
       else if (step.intent === "quiet") r.prefs = advisor.setPrefs({ onlyDecisions: true }, ctx.actor);
       else if (step.intent === "notify_normal") r.prefs = advisor.setPrefs({ onlyDecisions: false }, ctx.actor);
-      else if (step.intent === "autonomy") r.autonomy = envelopes.setAutonomy({ projectId: step.args.projectId || projectId, level: step.args.level, session: session(ctx), actor: ctx.actor });
+      else if (step.intent === "autonomy") {
+        const target = namedProject(step, projectId);
+        if (target) r.autonomy = envelopes.setAutonomy({ projectId: target, level: step.args.level, session: session(ctx), actor: ctx.actor });
+        else r.message = unnamedProject(step, "Pe ce proiect schimb autonomia?", "nu am schimbat autonomia");
+      }
       // ---------- M08: company intelligence (read, propose, navigate; never start work) ----------
       else if (step.intent === "incident_open") {
         if (!projectId) r.message = "Pe ce proiect a apărut problema? Spune „Hai la <proiect>” și apoi ce nu merge.";

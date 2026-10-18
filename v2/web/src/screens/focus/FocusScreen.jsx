@@ -7,7 +7,7 @@ import { Markdown } from "../../components/Markdown.jsx";
 import { Splitter, useViewport } from "../../components/Layout.jsx";
 import { Core3D } from "../../components/core/Core3D.jsx";
 import { deriveCoreState, CORE_VISUALS } from "../../lib/coreState.js";
-import { fitLayout, DEFAULT_LAYOUT, errorStage } from "../../lib/uiLogic.js";
+import { fitLayout, DEFAULT_LAYOUT, errorStage, retryRunBody } from "../../lib/uiLogic.js";
 import { NewConversationDialog } from "../Conversations.jsx";
 import { Composer, GateRefusal, useVoiceFirst } from "./Composer.jsx";
 import { Inspector } from "./Inspector.jsx";
@@ -136,7 +136,7 @@ function Thread({ data, reload, layoutControls, go }) {
     const r = confirmRetry;
     setConfirmRetry(null);
     if (hub?.mode === "BUILD_SAFE") { setRetryRefusal((await api(`/api/gate/preview?provider=${r.provider}&access=${r.access}&projectId=${project.id}`)).checks); return; }
-    try { await api(`/api/conversations/${conversation.id}/runs`, { method: "POST", body: { provider: r.provider, access: r.access, ...(r.model ? { model: r.model } : {}) } }); }
+    try { await api(`/api/conversations/${conversation.id}/runs`, { method: "POST", body: retryRunBody(r) }); }
     catch (error) { if (error.category === "gate") setRetryRefusal(error.details?.checks || []); else throw error; }
     reload();
   });
@@ -176,12 +176,12 @@ function Thread({ data, reload, layoutControls, go }) {
       <div className="messages" ref={listRef} aria-live="polite">
         {timeline.length ? timeline.map((item) => (item.kind === "run" ? <RunCard key={item.r.id} run={item.r} /> : (
           <Message key={item.m.id} m={item.m} run={item.m.runId ? runById[item.m.runId] : null} liveText={item.m.runId ? live[item.m.runId] : null} highlight={q.trim()}
-            isLastAssistant={item.m === lastAssistant} onRetry={lastRun ? () => setConfirmRetry({ provider: lastRun.provider, access: lastRun.access, model: lastRun.model }) : null} />
+            isLastAssistant={item.m === lastAssistant} onRetry={lastRun ? () => setConfirmRetry(retryRunBody(lastRun)) : null} />
         ))) : <Empty title={q ? "Nicio potrivire" : "Conversație nouă"}>{q ? "Încearcă alt text." : "Scrie cererea mai jos. În BUILD_SAFE poți redacta și salva; execuția cu model cere autorizare."}</Empty>}
       </div>
       {confirmRetry && (
         <Notice tone="warn" title="Reîncercare controlată">
-          Pornește o execuție nouă cu {confirmRetry.provider} ({confirmRetry.access}{confirmRetry.model ? `, ${confirmRetry.model}` : ""}). Trece din nou prin poartă, grant și backup; nu repetă automat efecte externe.
+          Pornește o execuție nouă cu {confirmRetry.provider} ({confirmRetry.access}{confirmRetry.model ? `, ${confirmRetry.model}` : ""}{confirmRetry.effort ? `, efort ${confirmRetry.effort}` : ""}){confirmRetry.taskId ? ", pentru același task" : ""}. Trece din nou prin poartă, grant și backup; nu repetă automat efecte externe.
           <div className="row" style={{ marginTop: 8 }}><button className="btn sm primary" disabled={retry.pending} onClick={retry.run}>Confirmă reîncercarea</button><button className="btn sm ghost" onClick={() => setConfirmRetry(null)}>Renunță</button></div>
         </Notice>
       )}

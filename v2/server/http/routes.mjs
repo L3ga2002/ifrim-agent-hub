@@ -544,7 +544,9 @@ export function registerRoutes(router, hub, { token }) {
   post("/api/sales/imports/:id/preview", cmd("sales.import.preview", ({ params, body }) => ({ batchId: params.id, ...(body?.limit ? { limit: body.limit } : {}) })));
   post("/api/sales/imports/:id/confirm", cmd("sales.import.confirm", ({ params, body }) => ({ batchId: params.id, ...(body?.maxRows ? { maxRows: body.maxRows } : {}) })));
   post("/api/sales/imports/:id/rollback-preview", ({ params }) => sales.rollbackPreview(params.id));
-  post("/api/sales/imports/:id/rollback", cmd("sales.import.rollback", ({ params, body }) => ({ batchId: params.id, reason: body?.reason || "" })));
+  // 2.15.2: the import rollback, lifting DO_NOT_CONTACT, a draft's text approval and the catalog writes are the owner's decisions: owner
+  // dispatcher (401 needSession without the owner session; agent / cli refused; the generic /api/commands cannot issue them).
+  post("/api/sales/imports/:id/rollback", ({ req, params, body }) => owner.dispatch(req, "sales.import.rollback", { batchId: params.id, reason: body?.reason || "" }, { requireOwner: true }));
   get("/api/sales/review", ({ query }) => sales.reviewRows({ offset: query.offset, limit: query.limit }));
   post("/api/sales/import-rows/:id/resolve", cmd("sales.import_row.resolve", ({ params, body }) => ({ ...body, rowId: params.id })));
   get("/api/sales/orgs", ({ query }) => sales.listOrgs({ q: query.q || "", status: query.status || "", city: query.city || "", synthetic: query.synthetic || "",
@@ -557,12 +559,12 @@ export function registerRoutes(router, hub, { token }) {
   post("/api/sales/orgs/:id/qualify", cmd("sales.org.qualify", ({ params, body }) => ({ orgId: params.id, filters: body?.filters || {} })));
   post("/api/sales/orgs/:id/qualification/override", ({ req, params, body }) => owner.dispatch(req, "sales.qualification.override", { ...body, orgId: params.id }, { requireOwner: true }));
   post("/api/sales/orgs/:id/suppress", cmd("sales.org.suppress", ({ params, body }) => ({ orgId: params.id, reason: body?.reason })));
-  post("/api/sales/orgs/:id/suppression/lift", cmd("sales.suppression.lift", ({ params, body }) => ({ orgId: params.id, reason: body?.reason })));
+  post("/api/sales/orgs/:id/suppression/lift", ({ req, params, body }) => owner.dispatch(req, "sales.suppression.lift", { orgId: params.id, reason: body?.reason }, { requireOwner: true }));
   post("/api/sales/orgs/:id/merge", cmd("sales.org.merge", ({ params, body }) => ({ ...body, orgId: params.id })));
   post("/api/sales/merges/:id/revert", cmd("sales.merge.revert", ({ params }) => ({ mergeId: params.id })));
   get("/api/sales/services", ({ query }) => ({ services: sales.listServices({ activeOnly: query.all !== "1" }) }));
-  post("/api/sales/services", cmd("sales.service.save", ({ body }) => body, { created: true }));
-  post("/api/sales/services/:id", cmd("sales.service.save", ({ params, body }) => ({ ...body, serviceId: params.id })));
+  post("/api/sales/services", ({ req, body }) => owner.dispatch(req, "sales.service.save", { ...(body || {}) }, { requireOwner: true, created: true }));
+  post("/api/sales/services/:id", ({ req, params, body }) => owner.dispatch(req, "sales.service.save", { ...(body || {}), serviceId: params.id }, { requireOwner: true }));
   get("/api/sales/opportunities", ({ query }) => sales.listOpportunities({ status: query.status || "", offset: query.offset, limit: query.limit }));
   post("/api/sales/opportunities", cmd("sales.opportunity.create", ({ body }) => body, { created: true }));
   get("/api/sales/opportunities/:id", ({ params }) => sales.getOpportunity(params.id));
@@ -576,7 +578,7 @@ export function registerRoutes(router, hub, { token }) {
   post("/api/sales/proposals/:id/approve", ({ req, params, body }) => owner.dispatch(req, "sales.proposal.approve", { proposalId: params.id, displayedSha: body?.displayedSha }, { requireOwner: true }));
   post("/api/sales/opportunities/:id/drafts", cmd("sales.draft.create", ({ params, body }) => ({ ...body, opportunityId: params.id }), { created: true }));
   post("/api/sales/drafts/:id/revise", cmd("sales.draft.revise", ({ params, body }) => ({ ...body, draftId: params.id })));
-  post("/api/sales/drafts/:id/approve-content", cmd("sales.draft.approve_content", ({ params, body }) => ({ draftId: params.id, displayedSha: body?.displayedSha || body?.contentSha || body?.sha })));
+  post("/api/sales/drafts/:id/approve-content", ({ req, params, body }) => owner.dispatch(req, "sales.draft.approve_content", { draftId: params.id, displayedSha: body?.displayedSha }, { requireOwner: true }));
   post("/api/sales/drafts/:id/send", cmd("sales.draft.send", ({ params, body }) => ({ draftId: params.id, idempotencyKey: body?.idempotencyKey })));
   post("/api/sales/opportunities/:id/contact-events", cmd("sales.contact_event.record", ({ params, body }) => ({ ...body, confirmText: body?.confirmText ?? body?.confirmation, opportunityId: params.id })));
   post("/api/sales/opportunities/:id/acceptance", cmd("sales.acceptance.record", ({ params, body }) => ({ ...body, confirmText: body?.confirmText ?? body?.confirmation, opportunityId: params.id })));

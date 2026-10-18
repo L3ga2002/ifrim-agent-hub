@@ -11,7 +11,16 @@ export const PERMISSION_TIERS = Object.freeze(["READ_ONLY", "WORKSPACE_EDIT", "D
 const DECISION_CHANNELS = new Set(["ui", "agent"]);
 /** M06: the only action kinds a confirmed Mission Authorization Envelope may decide (the exact factory scope it bound). */
 export const ENVELOPE_DECIDABLE = Object.freeze(new Set(["factory.scope"]));
-export const OWNER_DECIDED = Object.freeze(new Map([["sales.proposal_approve", "aprobarea internă a ofertei"]]));
+/**
+ * Approvals decided only in the owner session (decideByOwner; never the generic UI decide): the internal offer approval (M12) and, since
+ * 2.15.2, the other Sales decisions — a draft's text, lifting DO_NOT_CONTACT and an import rollback.
+ */
+export const OWNER_DECIDED = Object.freeze(new Map([
+  ["sales.proposal_approve", "aprobarea internă a ofertei"],
+  ["sales.draft_content", "aprobarea textului ciornei"],
+  ["sales.suppression_lift", "ridicarea DO_NOT_CONTACT"],
+  ["sales.import_rollback", "rollback-ul importului"],
+]));
 
 export function approvalHash({ actionKind, target, payload, codeVersion, permissionTier, scopeType, scopeId }) {
   return hashCanonical({ actionKind, target, payload, codeVersion, permissionTier, scopeType, scopeId });

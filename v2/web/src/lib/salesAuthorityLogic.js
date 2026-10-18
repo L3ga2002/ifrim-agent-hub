@@ -1,6 +1,18 @@
 import { proposalApprovalReadiness } from "./salesLogic.js";
 
-export const ownerSalesKind = (approval) => approval?.actionKind === "sales.proposal_approve";
+/**
+ * The Sales approvals decided only in the owner session (server policy/approvals.mjs OWNER_DECIDED): the internal offer approval (M12)
+ * and, since 2.15.2, a draft's text, lifting DO_NOT_CONTACT and an import rollback. What each card says it does (and does not do).
+ */
+const OWNER_SALES = Object.freeze({
+  "sales.proposal_approve": { card: "Aprob intern — doar conținutul ofertei. Nu trimite nimic și nu marchează CONTACTED sau WON.", button: "Aprob intern", what: "aproba oferta", where: "pagina oportunității" },
+  "sales.draft_content": { card: "Aprobi doar textul acestei ciorne. Nu trimite nimic (trimiterea e dezactivată).", button: "Aprob textul", what: "aproba textul ciornei", where: "pagina oportunității" },
+  "sales.suppression_lift": { card: "Ridici „Nu contacta” pentru această firmă. Nu contactează pe nimeni.", button: "Ridic interdicția", what: "ridica „Nu contacta”", where: "fișa firmei" },
+  "sales.import_rollback": { card: "Arhivezi firmele neatinse create de acest lot. Nu șterge nimic; firmele modificate rămân.", button: "Aprob rollback-ul", what: "face rollback-ul lotului", where: "pagina importului" },
+});
+export const ownerSalesKind = (approval) => Object.hasOwn(OWNER_SALES, String(approval?.actionKind || ""));
+/** The approve button of a reserved Sales approval card. */
+export const salesApproveLabel = (approval) => OWNER_SALES[approval?.actionKind]?.button || "Aprobă exact această acțiune";
 export const salesAuthorityLabel = (session) => session?.authority === "webauthn"
   ? "Decizia se înregistrează în sesiunea verificată cu Windows Hello / cheia ta."
   : session?.authority === "local_dev_profile"
@@ -21,9 +33,7 @@ export const salesDecidedAuthorityLabel = (authority) => authority === "webauthn
 export const salesApprovalAuthorityText = (approval, session) => (["approved", "consumed", "rejected"].includes(approval?.status)
   ? salesDecidedAuthorityLabel(approval?.authority)
   : salesAuthorityLabel(session));
-export const salesApprovalCardText = (approval) => ownerSalesKind(approval)
-  ? "Aprob intern — doar conținutul ofertei. Nu trimite nimic și nu marchează CONTACTED sau WON."
-  : "Aprobă exact această acțiune";
+export const salesApprovalCardText = (approval) => (ownerSalesKind(approval) ? OWNER_SALES[approval.actionKind].card : "Aprobă exact această acțiune");
 
 /**
  * A reserved Sales approval that can no longer approve the offer (its authority was revoked, it belongs to another credential, the
@@ -31,8 +41,9 @@ export const salesApprovalCardText = (approval) => ownerSalesKind(approval)
  */
 export function salesApprovalStateText(approval) {
   if (!ownerSalesKind(approval)) return null;
-  if (approval.status === "invalidated") return "Această aprobare nu mai poate aproba oferta (autoritatea a fost revocată, aparține altei credențiale, versiunea s-a schimbat sau cererea e dinainte de actualizare). Cere din nou aprobarea din pagina oportunității.";
-  if (approval.status === "expired") return "Aprobarea a expirat. Cere din nou aprobarea din pagina oportunității.";
+  const { what, where } = OWNER_SALES[approval.actionKind];
+  if (approval.status === "invalidated") return `Această aprobare nu mai poate ${what} (autoritatea a fost revocată, aparține altei credențiale, versiunea s-a schimbat sau cererea e dinainte de actualizare). Cere din nou aprobarea din ${where}.`;
+  if (approval.status === "expired") return `Aprobarea a expirat. Cere din nou aprobarea din ${where}.`;
   return null;
 }
 

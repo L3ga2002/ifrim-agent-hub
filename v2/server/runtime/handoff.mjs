@@ -149,7 +149,8 @@ export function createHandoffs({ db, bus, clock, conversations, missions, projec
     const missionTasks = mission ? missions.tasks(mission.id) : [];
     const lastRun = db.prepare("SELECT * FROM agent_runs WHERE conversation_id = ? AND provider = ? ORDER BY created_at DESC LIMIT 1").get(conversation.id, handoff.fromProvider);
     const messageRange = db.prepare("SELECT MIN(position) AS first, MAX(position) AS last, COUNT(*) AS count FROM messages WHERE conversation_id = ?").get(conversation.id);
-    const tests = db.prepare("SELECT tool, status, result_json, finished_at FROM tool_calls WHERE tool LIKE 'process.test%' ORDER BY started_at DESC LIMIT 10").all()
+    // Only this project's test runs (the project is recorded with each call; an older call without it is not attributed to any project).
+    const tests = db.prepare("SELECT tool, status, result_json, finished_at FROM tool_calls WHERE tool LIKE 'process.test%' AND json_extract(args_json, '$.projectId') = ? ORDER BY started_at DESC LIMIT 10").all(project.id)
       .map((t) => ({ tool: t.tool, status: t.status, finishedAt: t.finished_at, summary: parse(t.result_json, {}).summary || null }));
     const latestUser = db.prepare("SELECT content FROM messages WHERE conversation_id = ? AND role = 'user' ORDER BY position DESC LIMIT 1").get(conversation.id);
     const pkg = {

@@ -32,11 +32,13 @@ export function parseMarkdown(src = "") {
   let i = 0;
   while (i < lines.length) {
     const line = lines[i];
-    const fence = line.match(/^\s*```\s*([\w+-]*)\s*$/);
+    // A fence may carry an info string after the language („```js title”, „``` js {1,3}”): only its first word is the language. An info
+    // string with a backtick („```x```” on one line) is not a fence; that line falls through to the paragraph below.
+    const fence = line.match(/^\s*```([^`]*)$/);
     if (fence) {
       const body = []; i += 1;
       while (i < lines.length && !/^\s*```\s*$/.test(lines[i])) { body.push(lines[i]); i += 1; }
-      blocks.push({ t: "code", lang: fence[1] || "", v: body.join("\n"), open: i >= lines.length });
+      blocks.push({ t: "code", lang: (fence[1].trim().match(/^[\w+-]*/) || [""])[0], v: body.join("\n"), open: i >= lines.length });
       i += 1; continue;
     }
     const heading = line.match(/^(#{1,4})\s+(.*)$/);
@@ -53,7 +55,9 @@ export function parseMarkdown(src = "") {
       blocks.push({ t: "quote", c: parseInline(body.join(" ")) }); continue;
     }
     if (!line.trim()) { i += 1; continue; }
-    const para = [];
+    // The current line starts no other block, so it always opens the paragraph: every pass consumes at least one line (a line the
+    // checks below would stop at, such as „```x```”, can never leave the parser on the same line forever).
+    const para = [line]; i += 1;
     while (i < lines.length && lines[i].trim() && !/^\s*```/.test(lines[i]) && !/^(#{1,4})\s/.test(lines[i]) && !/^\s*([-*]|\d+[.)])\s+/.test(lines[i]) && !/^>\s?/.test(lines[i])) { para.push(lines[i]); i += 1; }
     blocks.push({ t: "p", c: parseInline(para.join("\n")) });
   }

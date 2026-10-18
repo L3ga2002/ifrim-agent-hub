@@ -233,7 +233,7 @@ function Suppression({ org, suppression, onChanged }) {
   const [open, setOpen] = useState(false);
   const [liftReason, setLiftReason] = useState("");
   const cmd = useSalesCommand(useCallback(async () => { setReason(""); setOpen(false); pushToast("sales-suppress", "ok", "Firma e marcată „Nu contacta”"); onChanged(); }, [onChanged]));
-  const lift = useSalesCommand(useCallback(async () => { setLiftReason(""); pushToast("sales-lift", "ok", "Interdicția a fost ridicată; firma e „În așteptare”"); onChanged(); }, [onChanged]));
+  const lift = useSalesCommand(useCallback(async () => { setLiftReason(""); pushToast("sales-lift", "ok", "Interdicția a fost ridicată; firma e „În așteptare”"); onChanged(); }, [onChanged]), { owner: true });
   const blocked = org.status === "DO_NOT_CONTACT" || Boolean(suppression);
   return (
     <Panel title="Suprimare (Nu contacta)" icon={Ban}>

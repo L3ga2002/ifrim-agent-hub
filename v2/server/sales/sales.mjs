@@ -537,7 +537,7 @@ export function createSales({ db, bus, clock, config, settings }) {
     });
   }
 
-  function liftSuppression(orgId, { reason }, actor) {
+  function liftSuppression(orgId, { reason }, actor, decision = {}) {
     needOrg(orgId);
     if (String(reason || "").trim().length < 5) throw new HubError("validation", "Ridicarea DO_NOT_CONTACT cere un motiv (minimum 5 caractere)");
     const family = mergeFamily(orgId);
@@ -545,6 +545,8 @@ export function createSales({ db, bus, clock, config, settings }) {
     const active = db.prepare(`SELECT COUNT(*) AS n FROM sales_suppressions WHERE org_id IN ${marks} AND lifted_at IS NULL`).get(...family).n;
     if (!active && !family.some((id) => getOrgRow(id)?.status === "DO_NOT_CONTACT")) throw new HubError("conflict", "Firma nu e DO_NOT_CONTACT: nu e nimic de ridicat");
     return bus.transaction(() => {
+      // 2.15.2: only the owner's decision lifts it (the owner session re-read here, the approval of this exact firm consumed).
+      const auth = approvedDecision(decision, "sales.suppression_lift", "ridicarea DO_NOT_CONTACT", (p) => p.orgId === orgId);
       db.prepare(`UPDATE sales_suppressions SET lifted_at = ?, lifted_by = ?, lift_reason = ? WHERE org_id IN ${marks} AND lifted_at IS NULL`).run(now(), actor, clip(reason, 300), ...family);
       for (const id of family) {
         const org = getOrgRow(id);
@@ -552,7 +554,7 @@ export function createSales({ db, bus, clock, config, settings }) {
         db.prepare("UPDATE sales_orgs SET status = 'ON_HOLD', version = version + 1, updated_at = ? WHERE id = ?").run(now(), org.id);
         transition("org", org.id, org.status, "ON_HOLD", actor, `DO_NOT_CONTACT ridicat: ${reason}`);
       }
-      emit("sales.suppression_lifted", orgId, { reason: clip(reason, 120) }, actor);
+      emit("sales.suppression_lifted", orgId, { reason: clip(reason, 120), ...auth }, actor);
       return getOrg(orgId);
     });
   }
@@ -826,10 +828,12 @@ export function createSales({ db, bus, clock, config, settings }) {
     return { batchId, removable, conflicts, matchedContacts, note: "Rollback-ul arhivează (nu șterge) firmele neatinse create de lot; firmele modificate între timp rămân." };
   }
 
-  function rollback(batchId, actor, { reason = "" } = {}) {
+  function rollback(batchId, actor, { reason = "" } = {}, decision = {}) {
     const plan = rollbackPreview(batchId);
     const batch = needBatch(batchId);
     return bus.transaction(() => {
+      // 2.15.2: only the owner's decision rolls a batch back (the owner session re-read here, the approval of this exact batch consumed).
+      const auth = approvedDecision(decision, "sales.import_rollback", "rollback-ul importului", (p) => p.batchId === batchId);
       const t = now();
       for (const r of plan.removable) {
         db.prepare("UPDATE sales_orgs SET archived_at = ?, archive_reason = ?, updated_at = ? WHERE id = ? AND archived_at IS NULL").run(t, `rollback lot ${batch.fileName}`, t, r.orgId);
@@ -842,7 +846,7 @@ export function createSales({ db, bus, clock, config, settings }) {
         .run(json({ action: "skip", by: actor, reason: "rollback", at: t }), t, batchId);
       db.prepare("UPDATE sales_import_batches SET status = 'ROLLED_BACK', rolled_back_at = ?, counts_json = ?, updated_at = ? WHERE id = ?")
         .run(t, json({ ...batch.counts, rollback: { archived: plan.removable.length, kept: plan.conflicts.length, reason: clip(reason, 300), by: actor } }), t, batchId);
-      emit("sales.import.rolled_back", batchId, { archived: plan.removable.length, kept: plan.conflicts.length }, actor);
+      emit("sales.import.rolled_back", batchId, { archived: plan.removable.length, kept: plan.conflicts.length, ...auth }, actor);
       return { ...plan, batch: getBatch(batchId) };
     });
   }
@@ -1220,7 +1224,7 @@ export function createSales({ db, bus, clock, config, settings }) {
   }
 
   // ---------- services catalog ----------
-  function saveService(input, actor, id = null) {
+  function saveService(input, actor, id = null, { channel, sessionCheck } = {}) {
     const name = clip(input.name, 120);
     if (name.length < 3) throw new HubError("validation", "Numele serviciului are minimum 3 caractere");
     const list = (v, n = 20) => (Array.isArray(v) ? v : String(v || "").split("\n")).map((s) => clip(s, 200)).filter(Boolean).slice(0, n);
@@ -1230,6 +1234,9 @@ export function createSales({ db, bus, clock, config, settings }) {
     const leadTime = input.leadTime?.status === "CONFIGURED" && clip(input.leadTime.text, 80) ? { status: "CONFIGURED", text: clip(input.leadTime.text, 80) } : { status: "NOT_CONFIGURED" };
     const row = [name, clip(input.description, 1000), json(list(input.scope)), json(list(input.exclusions)), json(list(input.tags, 10).map((t) => t.toLowerCase())), json(price), json(leadTime), json(list(input.materials)), input.active === false ? 0 : 1];
     return bus.transaction(() => {
+      // 2.15.2: the catalog (names, scope, prices and lead times that offers are rendered from) is written only in the owner session,
+      // re-read in this transaction, or on the bounded test channel.
+      const auth = ownerAuthority(decisionSession(channel, sessionCheck, "o modificare a catalogului de servicii"), channel);
       if (id) {
         const existing = rowToService(db.prepare("SELECT * FROM sales_services WHERE id = ?").get(id));
         if (!existing) throw new HubError("not_found", "Serviciul nu există");
@@ -1240,7 +1247,7 @@ export function createSales({ db, bus, clock, config, settings }) {
         db.prepare("INSERT INTO sales_services (id, name, description, scope_json, exclusions_json, tags_json, price_json, lead_time_json, materials_json, active, synthetic, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
           .run(id, ...row, input.synthetic ? 1 : 0, now(), now());
       }
-      emit("sales.service.saved", id, { name }, actor);
+      emit("sales.service.saved", id, { name, ...auth }, actor);
       return rowToService(db.prepare("SELECT * FROM sales_services WHERE id = ?").get(id));
     });
   }
@@ -1405,6 +1412,20 @@ export function createSales({ db, bus, clock, config, settings }) {
     if (!testing && (!session?.id || !session.credentialId || !["webauthn", "local_dev_profile"].includes(session.authority))) throw new HubError("authentication", "Sesiune de proprietar invalidă");
     return session;
   }
+  /** What a Sales owner decision's event records about who decided (2.15.2): the authority, the session and authenticator, the channel. */
+  const ownerAuthority = (session, channel, extra = {}) => ({ ...extra, authority: session?.authority || "test", sessionId: session?.id || null, credentialId: session?.credentialId || null, channel });
+  /**
+   * 2.15.2: the authority of a Sales owner decision taken through a reserved approval (a draft's text, lifting DO_NOT_CONTACT, an import
+   * rollback), re-read inside the decision's own transaction: the owner session (or the bounded test channel) and the consumed approval
+   * of exactly this action, decided in the owner session. Any other caller is refused before anything is written.
+   */
+  function approvedDecision({ channel, sessionCheck, approvalId } = {}, kind, what, matches) {
+    const session = decisionSession(channel, sessionCheck, what);
+    const row = approvalId ? db.prepare("SELECT * FROM approvals WHERE id=?").get(approvalId) : null;
+    if (!row || row.action_kind !== kind || row.status !== "consumed" || !matches(parse(row.payload_json, {}))
+      || (channel === "owner" ? row.decided_via !== "owner_session" : row.decided_via !== "test")) throw new HubError("policy", `Lipsește aprobarea ta legată de ${what}`);
+    return ownerAuthority(session, channel, { approvalId, decidedVia: row.decided_via });
+  }
 
   function approveProposal(proposalId, { displayedSha } = {}, actor, { channel, sessionCheck, approvalId } = {}) {
     if (!/^spr_[A-Za-z0-9_]+$/.test(proposalId || "") || typeof displayedSha !== "string" || !/^[0-9a-f]{64}$/.test(displayedSha)) throw new HubError("validation", "Aprobarea cere ID-ul și SHA-ul complet al versiunii afișate");
@@ -1513,16 +1534,22 @@ export function createSales({ db, bus, clock, config, settings }) {
     }
   }
 
-  function approveDraftContent(draftId, { displayedSha }, actor) {
+  function approveDraftContent(draftId, { displayedSha }, actor, decision = {}) {
     const d = rowToDraft(db.prepare("SELECT * FROM sales_drafts WHERE id = ?").get(draftId));
     if (!d) throw new HubError("not_found", "Ciorna nu există");
     if (d.status !== "DRAFT") throw new HubError("conflict", `Ciorna e ${d.status}: doar o ciornă curentă se aprobă`);
-    if (displayedSha && displayedSha !== d.contentSha) throw new HubError("conflict", "Textul s-a schimbat față de ce ai văzut");
+    // 2.15.2: the exact text shown, by its full SHA (an empty or whitespace-only SHA no longer approves whatever the draft holds).
+    if (typeof displayedSha !== "string" || !/^[0-9a-f]{64}$/.test(displayedSha)) throw new HubError("validation", "Aprobarea cere SHA-ul complet al textului afișat");
+    if (displayedSha !== d.contentSha) throw new HubError("conflict", "Textul s-a schimbat față de ce ai văzut");
     if (contactSuppression(d.orgId, d.recipients)) throw new HubError("policy", "Firma, domeniul sau adresa e DO_NOT_CONTACT");
     assertDraftBasis(d);
     return bus.transaction(() => {
-      db.prepare("UPDATE sales_drafts SET status = 'CONTENT_APPROVED', approved_sha = ?, approved_at = ?, updated_at = ? WHERE id = ?").run(d.contentSha, now(), now(), d.id);
-      emit("sales.draft.content_approved", d.opportunityId, { draftId: d.id }, actor);
+      // Only the owner's decision approves the text (the owner session re-read here, the approval of this draft and SHA consumed).
+      const auth = approvedDecision(decision, "sales.draft_content", "aprobarea textului ciornei", (p) => p.draftId === draftId && p.displayedSha === displayedSha);
+      if (db.prepare("UPDATE sales_drafts SET status = 'CONTENT_APPROVED', approved_sha = ?, approved_at = ?, updated_at = ? WHERE id = ? AND status = 'DRAFT'").run(d.contentSha, now(), now(), d.id).changes !== 1) {
+        throw new HubError("conflict", "Ciorna s-a schimbat între timp");
+      }
+      emit("sales.draft.content_approved", d.opportunityId, { draftId: d.id, contentSha: d.contentSha, ...auth }, actor);
       // M12 review C3: a dossier states its draft's status; a READY dossier written from this draft is re-checked (STALE).
       notifyInvalidated(d.orgId, d.opportunityId, "statusul ciornei s-a schimbat (conținut aprobat)");
       return rowToDraft(db.prepare("SELECT * FROM sales_drafts WHERE id = ?").get(d.id));

@@ -2,7 +2,7 @@ import { useState } from "react";
 import { Factory, ShieldCheck, Square, Pause, Play, CheckCircle2, XCircle, FileDiff, ListChecks, Timer, Package, AlertTriangle } from "lucide-react";
 import { api, fmt } from "../../api.js";
 import { useResource, useAction, pushToast } from "../../store.js";
-import { FACTORY_STAGE_RO, factoryPathOf, factoryWaitLabel, factoryProgress, formatMs, parseCriteriaLines, mergeCriteria, evidenceResult, evidenceStageLabel, testFirstSummary } from "../../lib/uiLogic.js";
+import { FACTORY_STAGE_RO, factoryPathOf, factoryWaitLabel, factoryProgress, formatMs, parseCriteriaLines, mergeCriteria, criterionLine, evidenceResult, evidenceStageLabel, testFirstSummary } from "../../lib/uiLogic.js";
 import { Panel, Empty, Loading, ErrorNotice, StatusChip, Notice, Chip, DiffView, Dialog } from "../../components/ui.jsx";
 import { boundaryOf } from "../../lib/environmentLogic.js";
 import { withReauth } from "../../lib/ownerSession.js";
@@ -90,7 +90,7 @@ function PlanFromFactory({ view }) {
 function SpecEditor({ view, onClose, reload }) {
   const spec = view.spec.spec;
   const [form, setForm] = useState({
-    objective: spec.objective, criteria: spec.acceptance.map((a) => `${a.text} | ${a.verify}${a.testRef ? ` | ${a.testRef}` : ""}`).join("\n"),
+    objective: spec.objective, criteria: spec.acceptance.map(criterionLine).join("\n"),
     checks: spec.verification.checks.join("\n"), acceptance: spec.verification.acceptance.join("\n"),
     previewCommand: spec.verification.preview?.command || "", previewUrl: spec.verification.preview?.url || "",
     inScope: spec.inScope.join("\n"), outOfScope: spec.outOfScope.join("\n"), constraints: spec.constraints.join("\n"), ignore: (spec.workspace?.ignore || []).join("\n"),
@@ -98,7 +98,7 @@ function SpecEditor({ view, onClose, reload }) {
   const set = (key) => (e) => setForm((f) => ({ ...f, [key]: e.target.value }));
   const lines = (t) => t.split("\n").map((s) => s.trim()).filter(Boolean);
   const save = useAction(async () => {
-    await api(`/api/factory/${view.mission.id}/spec`, { method: "POST", body: { spec: { objective: form.objective, acceptance: mergeCriteria(parseCriteriaLines(form.criteria), spec.acceptance),
+    await api(`/api/factory/${view.mission.id}/spec`, { method: "POST", body: { spec: { objective: form.objective, acceptance: mergeCriteria(parseCriteriaLines(form.criteria, spec.acceptance), spec.acceptance),
       verification: { checks: lines(form.checks), acceptance: lines(form.acceptance), ...(form.previewCommand.trim() ? { preview: { command: form.previewCommand.trim(), url: form.previewUrl.trim() } } : {}) },
       inScope: lines(form.inScope), outOfScope: lines(form.outOfScope), constraints: lines(form.constraints), workspace: { ignore: lines(form.ignore) } } } });
     onClose(); reload();
@@ -106,7 +106,7 @@ function SpecEditor({ view, onClose, reload }) {
   return (
     <Dialog title={`Specificația v${view.spec.version + 1}`} onClose={onClose} footer={<><button className="btn ghost" onClick={onClose}>Renunță</button><button className="btn primary" disabled={save.pending} onClick={save.run}>Salvează versiunea nouă</button></>}>
       <label className="field"><span>Obiectiv</span><textarea className="textarea" rows={3} value={form.objective} onChange={set("objective")} /></label>
-      <label className="field"><span>Criterii (text | test/review/manual/e2e/preview | cale test); pașii E2E și eșecul așteptat al criteriilor existente se păstrează</span><textarea className="textarea mono" rows={5} value={form.criteria} onChange={set("criteria")} /></label>
+      <label className="field"><span>Criterii (AC-n: text | test/review/manual/e2e/preview | cale test); cât timp linia păstrează „AC-n:”, pașii E2E și eșecul așteptat ai criteriului rămân pe el; o linie nouă primește un id nou</span><textarea className="textarea mono" rows={5} value={form.criteria} onChange={set("criteria")} /></label>
       <div className="grid two">
         <label className="field"><span>Verificări locale (comenzi)</span><textarea className="textarea mono" rows={2} value={form.checks} onChange={set("checks")} placeholder="node --test" /></label>
         <label className="field"><span>Teste de acceptanță (comenzi)</span><textarea className="textarea mono" rows={2} value={form.acceptance} onChange={set("acceptance")} placeholder="node --test test/acceptance.test.mjs" /></label>

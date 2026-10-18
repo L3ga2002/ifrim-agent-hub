@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { Tags, Plus, Pencil } from "lucide-react";
 import { api } from "../../api.js";
+import { withReauth } from "../../lib/ownerSession.js";
 import { useAction, pushToast } from "../../store.js";
 import { Panel, Empty, Loading, ErrorNotice, Dialog } from "../../components/ui.jsx";
 import {
@@ -20,7 +21,8 @@ function ServiceEditor({ service, onClose, onSaved }) {
     setTouched(true);
     if (!check.ok) return;
     const path = service?.id ? `/api/sales/services/${encodeURIComponent(service.id)}` : "/api/sales/services";
-    const res = await api(path, { method: "POST", body: check.payload });
+    // 2.15.2: the catalog is written only in the owner session (the page unlocks with Windows Hello / the key when needed).
+    const res = await withReauth(() => api(path, { method: "POST", body: check.payload }));
     const g = approvalFrom(res); if (g) { setGate(g); return; }
     pushToast("sales-service", "ok", service?.id ? "Serviciu actualizat" : "Serviciu adăugat");
     onSaved(); onClose();

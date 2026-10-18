@@ -6,7 +6,7 @@ import ts from "typescript";
 import { hashCanonical, sha256 } from "../core/canonical.mjs";
 import { redactText } from "../security/redact.mjs";
 import { isTestPath, isControlPath, SNAPSHOT_SKIP_DIRS } from "./snapshot.mjs";
-import { changeSetMarker, parseReview } from "./review.mjs";
+import { changeSetMarker, parseReview, lastJsonBlock as reviewJsonBlock } from "./review.mjs";
 
 /**
  * M11 L5 — plans whose step 0 is the acceptance test written by the Hub (design: .ifrim/M11_L5_DESIGN.md §4–§8).
@@ -1036,11 +1036,8 @@ function lastFence(text, langs) {
   return blocks.length ? blocks[blocks.length - 1][1] : null;
 }
 
-/** The LAST ```json block of an answer (the same rule as review.mjs). */
-function lastJsonBlock(text) {
-  const blocks = [...String(text || "").matchAll(/```json\s*([\s\S]*?)```/g)];
-  return blocks.length ? blocks[blocks.length - 1][1] : null;
-}
+/** The LAST ```json block of an answer: review.mjs's rule itself (a ``` quoted inside a JSON string no longer cuts the block). */
+const lastJsonBlock = reviewJsonBlock;
 
 /**
  * Reads the author's answer: the last ```js block (the body) and the last ```json block (the manifest). Structural problems

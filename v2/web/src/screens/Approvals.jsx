@@ -4,7 +4,7 @@ import { api, fmt } from "../api.js";
 import { useResource, useAction, pushToast } from "../store.js";
 import { Panel, Empty, Loading, ErrorNotice, StatusChip, DiffView, Notice } from "../components/ui.jsx";
 import { isCommandApproval, approvedNotStarted, LOCAL_TOOL_APPROVALS } from "../lib/uiLogic.js";
-import { ownerSalesKind, salesApprovalCardText, salesApprovalAuthorityText, salesApprovalStateText } from "../lib/salesAuthorityLogic.js";
+import { ownerSalesKind, salesApprovalCardText, salesApprovalAuthorityText, salesApprovalStateText, salesApproveLabel } from "../lib/salesAuthorityLogic.js";
 import { approveSales } from "../lib/salesOwnerActions.js";
 
 /** Starts an approved command; a failure is also a toast, because the card may already have left the list (SSE reload). */
@@ -63,7 +63,7 @@ export function ApprovalCard({ approval, onDone }) {
           <>
             <label className="field"><span>Notă (obligatorie la respingere)</span><input className="input" value={note} onChange={(e) => setNote(e.target.value)} maxLength={500} /></label>
             <div className="row wrap">
-              <button className="btn approve" disabled={decide.pending} onClick={() => decide.run("approved")}>{decide.pending ? "Se pornește…" : reserved ? "Aprob intern" : commandScoped ? "Aprobă și pornește" : "Aprobă exact această acțiune"}</button>
+              <button className="btn approve" disabled={decide.pending} onClick={() => decide.run("approved")}>{decide.pending ? "Se pornește…" : reserved ? salesApproveLabel(approval) : commandScoped ? "Aprobă și pornește" : "Aprobă exact această acțiune"}</button>
               <button className="btn danger" disabled={decide.pending || note.trim().length < 3} onClick={() => decide.run("rejected")}>Respinge</button>
             </div>
             <p className="faint" style={{ margin: 0, fontSize: 12 }}>Aprobarea este legată de amprenta de mai sus. Dacă acțiunea, ținta, versiunea sau scope-ul se schimbă, aprobarea devine invalidă.</p>

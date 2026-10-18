@@ -83,7 +83,7 @@ function DraftCard({ draft, basis, onChanged }) {
   const [subject, setSubject] = useState(draft.subject);
   const [body, setBody] = useState(draft.body);
   const revise = useSalesCommand(useCallback(async () => { setEditing(false); pushToast("sales-draft", "ok", "Ciornă revizuită (versiune nouă; aprobările vechi nu se mai aplică)"); onChanged(); }, [onChanged]));
-  const approve = useSalesCommand(useCallback(async () => { pushToast("sales-draft-approve", "ok", "Conținut aprobat (nu s-a trimis nimic)"); onChanged(); }, [onChanged]));
+  const approve = useSalesCommand(useCallback(async () => { pushToast("sales-draft-approve", "ok", "Conținut aprobat (nu s-a trimis nimic)"); onChanged(); }, [onChanged]), { owner: true });
   // A draft built on a proposal that changed since (or of a closed opportunity) is no longer approved, revised or sent.
   const open = ["DRAFT", "CONTENT_APPROVED"].includes(draft.status) && basis.ok;
   const changed = subject.trim() !== draft.subject.trim() || body.trim() !== draft.body.trim();

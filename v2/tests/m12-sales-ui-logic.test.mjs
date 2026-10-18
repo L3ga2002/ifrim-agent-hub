@@ -25,7 +25,9 @@ test("M12-UI-02 authority labels and reserved-kind card text are truthful", () =
   assert.match(salesAuthorityLabel({ authority: "local_dev_profile" }), /sesiune locală de dezvoltare/);
   for (const session of [null, { authority: "test" }, { authority: "local_dev_profile" }]) assert.doesNotMatch(salesAuthorityLabel(session), /Windows Hello/);
   assert.match(salesApprovalCardText({ actionKind: "sales.proposal_approve" }), /Aprob intern.*Nu trimite.*CONTACTED.*WON/);
-  assert.equal(salesApprovalCardText({ actionKind: "sales.draft_content" }), "Aprobă exact această acțiune");
+  // 2.15.2: the draft text approval is a reserved owner decision too, with its own card text; any other kind keeps the generic one.
+  assert.match(salesApprovalCardText({ actionKind: "sales.draft_content" }), /doar textul.*Nu trimite nimic/);
+  assert.equal(salesApprovalCardText({ actionKind: "factory.scope" }), "Aprobă exact această acțiune");
 });
 test("M12-UI-03 one reauth retry resumes the three-stage action without requesting or deciding twice", async () => {
   for (const failedStage of [0, 1, 2]) {
@@ -116,7 +118,9 @@ test("M12-UI-05 (review F10) ApprovalCard: a reserved kind takes the owner path 
 
   // The card routes exactly the reserved kind through that owner action, on both buttons, before any /decide.
   assert.equal(ownerSalesKind(reserved), true);
-  for (const actionKind of ["sales.draft_content", "sales.suppression_lift", "factory.scope", "lega.run_request"]) assert.equal(ownerSalesKind({ ...reserved, actionKind }), false, actionKind);
+  // 2.15.2: the other Sales owner decisions take the same owner path; nothing else does.
+  for (const actionKind of ["sales.draft_content", "sales.suppression_lift", "sales.import_rollback"]) assert.equal(ownerSalesKind({ ...reserved, actionKind }), true, actionKind);
+  for (const actionKind of ["factory.scope", "lega.run_request", "process.run", ""]) assert.equal(ownerSalesKind({ ...reserved, actionKind }), false, actionKind);
   assert.match(source("web/src/lib/salesOwnerActions.js"), /export const approveSales = \(options\) => withReauth\(salesApprovalAction\(api, options\)\);/);
   const card = source("web/src/screens/Approvals.jsx");
   assert.match(card, /const reserved = ownerSalesKind\(approval\);/);
@@ -135,7 +139,8 @@ test("M12-UI-06 (review F8) a decision refused for good asks for no Windows Hell
   assert.match(salesApprovalStateText(reserved), /Cere din nou aprobarea/);
   assert.match(salesApprovalStateText({ ...reserved, status: "expired" }), /Cere din nou aprobarea/);
   for (const status of ["pending", "approved", "consumed", "rejected"]) assert.equal(salesApprovalStateText({ ...reserved, status }), null, status);
-  assert.equal(salesApprovalStateText({ actionKind: "sales.draft_content", status: "invalidated" }), null);
+  assert.match(salesApprovalStateText({ actionKind: "sales.draft_content", status: "invalidated" }), /textul ciornei.*Cere din nou aprobarea/);
+  assert.equal(salesApprovalStateText({ actionKind: "factory.scope", status: "invalidated" }), null);
 });
 
 test("M12-UI-07 (final review F20) a decided reserved approval shows the authority RECORDED on the decision, never the viewer's current session; a pending one the session it will be decided in", async () => {

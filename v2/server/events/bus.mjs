@@ -6,6 +6,10 @@ import { redactDeep } from "../security/redact.mjs";
 import { tx, json, parse } from "../storage/db.mjs";
 
 export const EVENT_SCHEMA_VERSION = 2;
+/** Owner decisions whose events name the deciding authenticator (policy/approvals.mjs OWNER_DECIDED and the Sales owner writes, 2.15.2). */
+const OWNER_DECIDED_KINDS = new Set(["sales.proposal_approve", "sales.draft_content", "sales.suppression_lift", "sales.import_rollback"]);
+const OWNER_DECISION_EVENTS = new Set(["sales.proposal.approved", "sales.qualification.override", "sales.draft.content_approved", "sales.suppression_lifted",
+  "sales.import.rolled_back", "sales.service.saved"]);
 
 /**
  * Versioned, append-only internal event bus. Events are written in the same transaction as the
@@ -64,7 +68,7 @@ export function createEventBus(db, clock = () => new Date()) {
     const safePayload = redactDeep(payload);
     // M12 decision provenance names a public authenticator id, never a credential secret. Resolve it from the stored
     // session on these events only; the general redactor remains fail-closed for all caller-supplied credential fields.
-    if (type === "sales.proposal.approved" || type === "sales.qualification.override" || (["approval.approved", "approval.rejected"].includes(type) && payload.actionKind === "sales.proposal_approve")) {
+    if (OWNER_DECISION_EVENTS.has(type) || (["approval.approved", "approval.rejected"].includes(type) && OWNER_DECIDED_KINDS.has(payload.actionKind))) {
       const session = payload.sessionId ? db.prepare("SELECT credential_id FROM owner_sessions WHERE id=?").get(payload.sessionId) : null;
       if (session && session.credential_id === payload.credentialId) safePayload.credentialId = session.credential_id;
     }
