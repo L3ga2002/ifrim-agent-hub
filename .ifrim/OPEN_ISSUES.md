@@ -9,7 +9,7 @@ draft DRAFT_ONLY unsent, nothing sent / CONTACTED / WON / handed off); both deci
 (no card); 13 test files 86/86.
 
 Open:
-1. Owner: run C:\Users\mihai\lega-one-stage\release\owner-release.cmd (now 2.15.4: BASE 00f27bf).
+1. Done: 2.15.4 LIVE (GET VERIFY OK 2026-10-18 22:15 UTC, boot boot_mvedo9xq_69194966b6; origin = 6cba12e).
 2. Owner decision: the offer explains no concrete benefit while the service catalog is empty — define the service (Vânzări → Servicii,
    owner session) or decide another rule; then a new revision through the continuation card.
 3. Owner decision: turn the local dev profile off on live (`node v2\scripts\dev-profile.mjs off`) if decisions must be Windows Hello.

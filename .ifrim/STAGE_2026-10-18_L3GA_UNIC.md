@@ -121,3 +121,10 @@ Linkuri vechi: `#/lega/<proiect>`, `#/lega/setup`, `stageOpen` (voce „Ecran co
   activitate, fără card (U15-E2E-01 pica reproductibil și pe build-ul 2.15.3) — cardul planului e acum mereu afișat.
 - Verificări: build; vizual pe simulator la 1920×1080, 1366×768, 1180×760 (fără scroll orizontal; reținerea după F5 / întoarcere; Esc reținut);
   13 fișiere de test (toate suitele de browser ale ecranului Lega, M12, M04, versiunea; încărcare medie 92 %): **86/86** (`run-affected-4`).
+
+## 9. Închidere
+- **2.15.4 LIVE**: proprietarul a rulat `owner-release.cmd` (2.15.4); verificare GET 2026-10-18 22:15 UTC: `2.15.4-m12` / 17 / schema 13 / BUILD_SAFE,
+  boot `boot_mvedo9xq_69194966b6`, UI-ul servit are markerii (ecran unic, „Ieși din ecran complet”, „Tot monitorul”, fără modalul vechi) — `VERIFY OK`.
+  `origin/v2-milestone-01` = `origin/claude/project-thread-dx5843` = `6cba12e` (PR #2 actualizat). Datele pilotului neschimbate (pregătire și dosar READY).
+- Rămase (decizii ale proprietarului): serviciul din catalog pentru beneficii concrete în ofertă; oprirea profilului de dezvoltare pe live dacă
+  deciziile trebuie să fie Windows Hello. Separat, neschimbat: RM-10 intermitent sub încărcare; cele 2 teste V1 pe registrul real.
