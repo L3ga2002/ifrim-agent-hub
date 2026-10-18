@@ -55,11 +55,13 @@ export function createBackupService({ db, bus, config, clock, projects }) {
         // A step that throws (git state, the archive writer, the restore check) ends the backup as failed with the reason; it never
         // stays „running” (which also counted as a backup in progress for the setup and diagnostics screens).
         const message = redactText(String(error?.message || error)).slice(0, 2000);
-        bus.transaction(() => {
-          if (db.prepare("UPDATE backups SET status = 'failed', error = ? WHERE id = ? AND status = 'running'").run(message, id).changes) {
-            bus.append({ type: "backup.failed", scopeType: "project", scopeId: projectId, projectId, source: "hub", payload: { backupId: id, status: "failed", error: message.slice(0, 500) } });
-          }
-        });
+        try {
+          bus.transaction(() => {
+            if (db.prepare("UPDATE backups SET status = 'failed', error = ? WHERE id = ? AND status = 'running'").run(message, id).changes) {
+              bus.append({ type: "backup.failed", scopeType: "project", scopeId: projectId, projectId, source: "hub", payload: { backupId: id, status: "failed", error: message.slice(0, 500) } });
+            }
+          });
+        } catch { /* the original error is the one reported */ }
         throw error;
       }
       return get(id);

@@ -2335,7 +2335,7 @@ function missingNumberedPart(ref, item, { extra = () => [] } = {}) {
   return want.some((w) => !have.some((h) => h === w || (/^\d+$/.test(w) && h.endsWith(w) && /^[a-z]+$/.test(h.slice(0, -w.length)))));
 }
 
-const DEICTIC_PROJECT = /^(?:proiectul|tot proiectul|asta|acesta|proiectul (?:acesta|asta|curent|deschis))$/;
+const DEICTIC_PROJECT = /^(?:proiectul|tot proiectul|asta|acesta|aceasta|aici|acest proiect|proiectul (?:acesta|asta|curent|deschis|de aici)|proiectul (?:pe care|la care) (?:sunt|suntem|lucram|lucrez))$/;
 function resolveRefs(step, context) {
   const projects = context.projects || [];
   // P0-R6 (L11): „Ce a rămas în ProDelivery?” (status) names its project like „Hai la ProDelivery” — the same matching, diacritics and

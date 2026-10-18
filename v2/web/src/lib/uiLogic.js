@@ -485,10 +485,12 @@ export function parseCriteriaLines(text = "", previous = []) {
     const parts = (named ? line.slice(named[0].length) : line).split("|").map((s) => s.trim());
     const n = parts.length;
     let verify = "review"; let testRef = ""; let used = 0;
-    if (n >= 3 && CRITERION_KINDS.has(parts[n - 2])) { verify = parts[n - 2]; testRef = parts[n - 1]; used = 2; }
-    else if (n >= 2 && CRITERION_KINDS.has(parts[n - 1])) { verify = parts[n - 1]; used = 1; }
+    // The kind written last wins („x | test | review” is the text „x | test”, verified by review); then „kind | path”; then a bare path.
+    if (n >= 2 && CRITERION_KINDS.has(parts[n - 1])) { verify = parts[n - 1]; used = 1; }
+    else if (n >= 3 && CRITERION_KINDS.has(parts[n - 2])) { verify = parts[n - 2]; testRef = parts[n - 1]; used = 2; }
     else if (n >= 2 && looksLikePath(parts[n - 1])) { verify = "test"; testRef = parts[n - 1]; used = 1; }
-    return { id: named ? named[1].toUpperCase() : null, text: parts.slice(0, n - used).join(" | "), verify, testRef };
+    const num = named ? Number(named[1].slice(3)) : 0;
+    return { id: num >= 1 && num <= 999 ? `AC-${num}` : null, text: parts.slice(0, n - used).join(" | "), verify, testRef };
   });
   const taken = new Set();
   for (const r of rows) {
@@ -496,8 +498,15 @@ export function parseCriteriaLines(text = "", previous = []) {
     else if (r.id) taken.add(r.id);
   }
   const number = (id) => Number(String(id || "").replace(/^AC-/i, "")) || 0;
-  let next = Math.max(0, ...previous.map((a) => number(a.id)), ...[...taken].map(number));
-  return rows.map((r) => ({ id: r.id || `AC-${++next}`, text: r.text, verify: r.verify, ...(r.testRef ? { testRef: r.testRef } : {}) }));
+  const used = new Set([...previous.map((a) => number(a.id)), ...[...taken].map(number)]);
+  let next = Math.max(0, ...used);
+  // A new id above every previous one; past AC-999 (the server's limit) the lowest id no previous criterion and no line has used.
+  const fresh = () => {
+    if (next < 999) { next += 1; used.add(next); return `AC-${next}`; }
+    for (let k = 1; k <= 999; k += 1) if (!used.has(k)) { used.add(k); return `AC-${k}`; }
+    return null;
+  };
+  return rows.map((r) => ({ id: r.id || fresh(), text: r.text, verify: r.verify, ...(r.testRef ? { testRef: r.testRef } : {}) }));
 }
 
 // ---------------------------------------------------------------- M10: Lega's one-click start

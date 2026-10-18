@@ -68,13 +68,15 @@ const clip = (value, max) => redactText(String(value ?? "").trim()).slice(0, max
 export function lastJsonBlock(text) {
   const s = String(text || "");
   // A review may quote code with ``` inside a JSON string (an `evidence` field): the block then ends at a fence on its own line, not at
-  // the first ``` after the opener. From the last opener backwards, the first candidate that parses as a JSON object is the answer.
-  const openers = [...s.matchAll(/```json[^\S\n]*\n?/g)];
-  const closers = [...s.matchAll(/^[^\S\n]*```[^\S\n]*$/gm)].map((m) => m.index);
-  for (let k = openers.length - 1; k >= 0; k -= 1) {
-    const start = openers[k].index + openers[k][0].length;
-    for (const end of closers.filter((c) => c >= start)) {
-      const body = s.slice(start, end);
+  // the first ``` after the opener. Only the LAST opener that starts a line counts (a ```json quoted inside a JSON string is never at a
+  // line start, since a string holds no raw newline): its first closing fence on a line of its own that makes it parse as a JSON object is
+  // the answer. An earlier block is never read instead of a broken last one.
+  const openers = [...s.matchAll(/^[^\S\n]*```json[^\S\n]*\n?/gm)];
+  const last = openers.at(-1);
+  if (last) {
+    const start = last.index + last[0].length;
+    for (const m of s.slice(start).matchAll(/^[^\S\n]*```[^\S\n]*$/gm)) {
+      const body = s.slice(start, start + m.index);
       try { const data = JSON.parse(body); if (data && typeof data === "object" && !Array.isArray(data)) return body; } catch { /* a later fence may close it */ }
     }
   }

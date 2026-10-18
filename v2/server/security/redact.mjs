@@ -14,14 +14,14 @@ const TOKEN_PATTERNS = [
   [/-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z ]*PRIVATE KEY-----/g, "[redacted:private-key]"],
 ];
 // The value: a quoted string (spaces and escaped quotes included: `password: "my secret pass"`) or an unquoted run of 4+ characters.
-const SENSITIVE_ASSIGNMENT = /(\b[\w-]*(?:api[_-]?key|token|secret|password|passwd|pwd|authorization|cookie|credential)["']?\s*[:=]\s*)(?:"(?!\[redacted)(?:[^"\\\n]|\\.)+"|'(?!\[redacted)(?:[^'\\\n]|\\.)+'|(?!\[redacted)[^\s"',;]{4,})/gi;
+const SENSITIVE_ASSIGNMENT = /(\b[\w-]*(?:api[_-]?key|token|secret|password|passwd|pwd|authorization|cookie|credential)["']?\s*[:=]\s*)(?:("(?!\[redacted)(?:[^"\\\n]|\\.)+")|('(?!\[redacted)(?:[^'\\\n]|\\.)+')|(?!\[redacted)[^\s"',;]{4,})/gi;
 export const SENSITIVE_KEY = /^(?:.*(?:api[_-]?key|token|secret|password|passwd|authorization|cookie|credential|private[_-]?key).*)$/i;
 
 export function redactText(value) {
   if (typeof value !== "string" || !value) return value;
   let text = value;
   for (const [pattern, replacement] of TOKEN_PATTERNS) text = text.replace(pattern, replacement);
-  return text.replace(SENSITIVE_ASSIGNMENT, (_, prefix) => `${prefix}[redacted]`);
+  return text.replace(SENSITIVE_ASSIGNMENT, (_, prefix, dq, sq) => `${prefix}${dq ? '"[redacted]"' : sq ? "'[redacted]'" : "[redacted]"}`);
 }
 
 /**

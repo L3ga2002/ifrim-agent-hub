@@ -82,6 +82,15 @@ test("FIX-B22 a „|” inside a criterion's text stays in the text (the kind an
   assert.deepEqual(parseCriteriaLines("Opțiunile A | B rămân vizibile")[0], { id: "AC-1", text: "Opțiunile A | B rămân vizibile", verify: "review" });
   assert.deepEqual(parseCriteriaLines("Raport X | Y | manual")[0], { id: "AC-1", text: "Raport X | Y", verify: "manual" });
   assert.deepEqual(parseCriteriaLines("Numele e validat | test/n.test.mjs")[0], { id: "AC-1", text: "Numele e validat", verify: "test", testRef: "test/n.test.mjs" });
+  // Review: a text that itself ends in „| test” round-trips (the kind written last wins).
+  const tail = { id: "AC-2", text: "Butonul arată x | test", verify: "review" };
+  assert.deepEqual(parseCriteriaLines(criterionLine(tail), [tail])[0], tail);
+  // Review: ids stay in the server's AC-1..AC-999 form (leading zeros normalised; past AC-999 the lowest free id).
+  assert.equal(parseCriteriaLines("AC-007: Text bun | review")[0].id, "AC-7");
+  const full = [{ id: "AC-999", text: "Ultimul criteriu", verify: "review" }, { id: "AC-1", text: "Primul criteriu", verify: "review" }];
+  const grown = parseCriteriaLines("AC-999: Ultimul criteriu | review\nAC-1: Primul criteriu | review\nCriteriu nou | review", full);
+  assert.deepEqual(grown.map((a) => a.id), ["AC-999", "AC-1", "AC-2"]);
+  assert.ok(grown.every((a) => /^AC-[1-9]\d{0,2}$/.test(a.id)));
 });
 
 // ---------------------------------------------------------------- A16: a PASS review quoting code
@@ -96,6 +105,10 @@ test("FIX-A16 a valid PASS review whose evidence quotes code with ``` is read as
   // The last block still wins; a block that never parses is still reported as invalid JSON.
   assert.equal(JSON.parse(lastJsonBlock("```json\n{\"a\":1}\n```\ntext\n```json\n{\"a\":2}\n```")).a, 2);
   assert.match(parseReview("```json\n{ nu e json\n```", { changeSetSha: sha }).problems.join(" "), /JSON invalid/);
+  // Review: a broken LAST block is never replaced by an earlier one (a quoted sample is not the verdict).
+  const sample = `Exemplu:\n\`\`\`json\n${JSON.stringify(answer)}\n\`\`\`\nRăspunsul meu:\n\`\`\`json\n{"verdict": "CHANGES_REQUESTED",\n\`\`\`\n`;
+  assert.equal(parseReview(sample, { changeSetSha: sha }).verdict, "INCONCLUSIVE");
+  assert.match(parseReview(sample, { changeSetSha: sha }).problems.join(" "), /JSON invalid/);
   // The test review of step 0 reads its block with the same rule.
   assert.match(source("server/factory/test-first.mjs"), /const lastJsonBlock = reviewJsonBlock;/);
 });
@@ -109,6 +122,8 @@ test("FIX-A26 a quoted secret with spaces is redacted whole", () => {
   }
   assert.equal(redactText("password=hunter22 ok"), "password=[redacted] ok");
   assert.equal(redactText('password: "[redacted]"'), 'password: "[redacted]"');
+  // Review: redacted JSON text stays JSON (the quotes are kept).
+  assert.deepEqual(JSON.parse(redactText(JSON.stringify({ password: "parola mea", user: "ana" }))), { password: "[redacted]", user: "ana" });
 });
 test("FIX-A27 secrets inside a list under a sensitive key are redacted; other lists and objects keep their values", () => {
   const out = redactDeep({ tokens: ["abc", "def"], secrets: [{ name: "db", value: "pw" }], credentials: [["x"]], apiKey: null, list: ["plain"], tokenUsage: { input: 3 } });
@@ -128,6 +143,10 @@ test("FIX-A36 / A35 (resolver) a named project that matches nothing or several i
   const both = resolve("Dezgheață Factory Demo acum");
   assert.equal(both.steps[0].args.projectId, undefined); assert.match(both.clarification?.question || "", /Factory Demo A sau Factory Demo B/);
   assert.equal(resolve("Dezgheață proiectul").steps[0].args.projectId, "p1");
+  // Review: the usual ways of saying „this project” still mean the open one.
+  for (const text of ["Îngheață acest proiect", "Îngheață aici", "Îngheață proiectul de aici", "Dezgheață acest proiect", "Setează autonomia pe trusted pe acest proiect"]) {
+    assert.equal(resolve(text).steps[0].args.projectId, "p1", text);
+  }
 });
 test("FIX-A3 the unfreeze runs only as a clear imperative: a question, a condition, a negation or a report unfreezes nothing", () => {
   assert.equal(resolve("Dezgheață Factory Demo A").steps[0].intent, "unfreeze_project");
