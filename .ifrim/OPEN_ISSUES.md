@@ -1,5 +1,26 @@
 # Open Issues - Ifrim Agent Hub
 
+## 2026-10-18 — 13 defects fixed + Sales decisions bound to the owner session (code `2.15.2-m12`, API contract 17, schema 13, no migration; detail: `.ifrim/STAGE_2026-10-18_FIX13_SALES.md`)
+
+This section takes precedence over every older one where they overlap. Closed in code (branch `claude/project-thread-pcocmw` in the dev clone
+C:\Users\mihai\hub-fix, commits `f56d64b` … `b461eb2` + docs): the 13 verified defects (B2 conversation freeze on "```js title"; B9/B22 Factory
+spec editor; A16 PASS review quoting code; A26/A27 redaction; A36/A35/A3 Lega autonomy / freeze / unfreeze on the wrong project and unfreeze
+on a question / condition / negation; A12 failed backup left running; A10 one unreadable file failing the search; A38 handoff / checkpoint
+test results of every project; B42 retry dropping task and effort; B39 verification note on another task), each with a regression test
+(`v2/tests/r-fix13.test.mjs`, all failing on 3d9b3e8). Sales: sales.draft.approve_content, sales.suppression.lift and sales.import.rollback are
+reserved owner decisions like sales.proposal.approve; sales.service.save only in a fresh owner session re-read in the transaction
+(`v2/tests/r-sales-owner.test.mjs`). Independent review: 0 critical / 0 important; its 5 minor findings fixed (`b1a2bdb`). Final gate on
+`b461eb2` (fresh clone C:\Users\mihai\hub-fix-gate, logs C:\Users\mihai\fix-stage\gate\run-final): test:v2 exit 0, **2566 = 2565 pass, 0 fail,
+1 skip (T25)**; V1 552 = 549 pass, 2 fail (the 2 real-registry tests), 1 skip. The first gate run (5134314) had 1 fail caused by the stage
+(M04-BR-01 looked for the old button), fixed in b461eb2.
+
+Open:
+1. Owner: run C:\Users\mihai\fix-stage\release\owner-release.cmd (verified backup → ff v2-milestone-01 → managed upgrade → GET verify
+   2.15.2-m12 / 17 / schema 13 → push v2-milestone-01 + claude/project-thread-pcocmw). Until then live stays 2.15.1-m12, where the four Sales
+   commands still accept ui (live Sales is empty: 0 orgs, 0 services, 0 pending approvals).
+2. Unchanged, separate: a backup interrupted by a Hub stop (process killed, not an error) is not reconciled at boot; the local dev profile;
+   real prices / services; RM-10 intermittent; the 2 V1 real-registry tests; the remaining ~70 report items (cosmetic, unreachable, not bugs, V1).
+
 ## 2026-10-17 evening — factory.reject owner authority (code `2.15.1-m12`, API contract 16, schema 13, no migration; LIVE since 2026-10-17 ~18:01 UTC; detail: `.ifrim/STAGE_2026-10-17_FACTORY_REJECT.md`)
 
 This section takes precedence over every older one where they overlap. Closed in code (commit `6aa8575` on `claude/project-thread-esyt99`,
