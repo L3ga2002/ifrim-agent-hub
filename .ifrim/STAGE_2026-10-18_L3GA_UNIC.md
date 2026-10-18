@@ -87,5 +87,37 @@ Linkuri vechi: `#/lega/<proiect>`, `#/lega/setup`, `stageOpen` (voce „Ecran co
   (GET: 2.15.3-m12 / 17 / schema 13 / BUILD_SAFE, deciziile Sales pe owner+test, markerii ecranului unic în UI-ul servit) → push.
 - Revenire: `git revert 289dc63` + `node v2\scripts\upgrade.mjs --apply` (schema neschimbată); nicio dată nu se schimbă la upgrade.
 
-## 7. Pilotul M12 live
-(completat la final)
+## 7. Instalarea 2.15.3 și pilotul M12 live
+- **Instalare**: proprietarul a rulat `lega-one-stage\release\owner-release.cmd` (~12:00 UTC). Verificare GET după: `2.15.3-m12` / 17 / schema 13 /
+  BUILD_SAFE, boot `boot_mvdrxjsn_1731e4d9b8`, UI-ul servit poartă markerii ecranului unic — `VERIFY OK`; folderul Hub = `00f27bf`, curat.
+- **Pilotul** (o singură probă, prin `#/lega`, cererea proprietarului scrisă cu sensul din brief). Verificat de agent DOAR prin GET și citirea fișierelor:
+  - decizia 1 — confirmarea planului `sales.prepare` (`opp_mvds47w5_79d2cf22a5`, modalitate click) la 12:06:10 UTC;
+  - decizia 2 — „Aprob intern” pe `spr_mvds4ow4_707666fdb3` v1, SHA `6a23d454a31db9d2254c136ecc3bdac66c8f6e088f18c93cf81f13503210f28b` (afișat = aprobat),
+    aprobarea `apr_mvds5n7l_b77aabb3e8` la 12:06:55 UTC, `decidedVia owner_session`;
+  - **autoritatea înregistrată la ambele: `local_dev_profile`** (profilul de dezvoltare locală e pornit pe live), nu Windows Hello;
+  - faza `sales.dossier` (`opp_mvds5n94_adcbb66eb4`) a rulat derivat, fără altă confirmare; pregătirea `spp_mvds47w1_d37ec6dc82` READY;
+  - firma sintetică `Lăstărel Auto Service Tăunel SRL` (`lastarel-auto-service-taunel.test`, CUI fictiv), oportunitatea `opp_mvds4ouj_c6949c345f` APPROVED_INTERNAL;
+  - dosarul `sdo_12cec46b1e_7ce44b92b4` revizia 1 READY, manifest `84b4b211fd8a851929bb3f82cb2d5ceda1ea1f2246cb19dead8170bd5f66c0df` în
+    `C:\Users\mihai\Videos\Ifrim Studio\Exporturi\vanzari\oferta-sintetic-lastarel-auto-service-taunel-srl-c6949c345f\revizia-1-7ce44b92b4`:
+    11 fișiere (oferta .md / .docx / .pdf, fișa firmei, dovezi .md / .json, calificare .md / .json, ciorna, README, manifest), toate cele 10 din
+    manifest identice SHA-256 pe disc; manifest `sent/published/spent: false`;
+  - **Word: APP_VERIFIED** (Microsoft Word 16.0, 2 pagini, 12 titluri, PDF exportat `oferta-v1.pdf`), executat efectiv de live (COM);
+  - ciorna `sdr_mvds5n9d_a209f72d62` „DRAFT_ONLY — NETRIMISĂ (OUTREACH_DISABLED)”, sent false, destinatar sintetic `.test`;
+  - proveniența: FIXTURE (nume, CUI, site, e-mail), STATEMENT (cererea: service auto, programări online, fără trimitere), INFERENCE (sector,
+    CAEN 4520, serviciul „programări online pe site”) — separate, inferențele nepunctate (q-v2 82/100, potrivirea cu serviciile necunoscută);
+  - prețul și termenul: „De stabilit (neconfigurat) (UNKNOWN: catalog neconfigurat)”;
+  - nimic trimis / publicat; 0 CONTACTED/WON, 0 handoff Engineering, 0 misiuni noi (24), 0 aprobări în așteptare.
+- **Constatare (nu e defect de cod)**: oferta NU explică beneficiile concret — „Soluție propusă: serviciul potrivit se stabilește după o discuție”.
+  Cauza: catalogul de servicii e gol (0 servicii); regula M12 interzice oferirii ce nu e configurat, iar inferența „programări online pe site”
+  nu devine afirmație. Beneficiile concrete cer un serviciu în catalog (decizie rezervată proprietarului, Vânzări → Servicii, sesiune proaspătă).
+- **Intervenții**: 2 decizii de produs (confirmarea planului, aprobarea ofertei); 1 intervenție tehnică (rularea comenzii de release 2.15.3).
+
+## 8. 2.15.4 — ecranul complet ca scena înlocuită (după observația proprietarului, 12:04 UTC)
+- Proprietarul: „nu mai am acel ecran complet care era pe tot desktopul”. Cod `533cb57` (doar UI): „Ecran complet” umple fereastra cu harta
+  (panouri subțiri de sticlă pentru Companie și Decizii, figura mare, ultimele replici peste hartă), se ține minte în browser (sau urmează
+  ecranul de pornire „ecran complet”), „Tot monitorul” folosește ecranul complet al browserului; conversația goală nu mai ocupă loc; coloana
+  de lucru nu mai derulează lateral; indicatorul de rulare sus; un plan vocal nu mai iese din ecranul complet.
+- **Defect găsit de teste și reparat** (exista și în 2.15.3): un plan anunțat înainte să se încarce layout-ul proiectului apărea doar în linia de
+  activitate, fără card (U15-E2E-01 pica reproductibil și pe build-ul 2.15.3) — cardul planului e acum mereu afișat.
+- Verificări: build; vizual pe simulator la 1920×1080, 1366×768, 1180×760 (fără scroll orizontal; reținerea după F5 / întoarcere; Esc reținut);
+  13 fișiere de test (toate suitele de browser ale ecranului Lega, M12, M04, versiunea; încărcare medie 92 %): **86/86** (`run-affected-4`).

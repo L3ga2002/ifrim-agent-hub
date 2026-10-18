@@ -1,5 +1,19 @@
 # Open Issues - Ifrim Agent Hub
 
+## 2026-10-18 afternoon (2) — the full Lega screen (code `2.15.4-m12`, UI only) + the live M12 probe (detail: `.ifrim/STAGE_2026-10-18_L3GA_UNIC.md` §7–§8)
+
+This section takes precedence over the next one where they overlap. 2.15.3 is LIVE (owner's CMD ~12:00 UTC, GET VERIFY OK). The single live M12
+probe ran through #/lega with the owner's two decisions: dossier `sdo_12cec46b1e_7ce44b92b4` READY (Word APP_VERIFIED, 10/10 files = manifest,
+draft DRAFT_ONLY unsent, nothing sent / CONTACTED / WON / handed off); both decisions recorded as `local_dev_profile` (the live dev profile is on).
+2.15.4 (commit `533cb57`): „Ecran complet” like the old stage (remembered, „Tot monitorul”) + a fix for a plan announced before the layout loaded
+(no card); 13 test files 86/86.
+
+Open:
+1. Owner: run C:\Users\mihai\lega-one-stage\release\owner-release.cmd (now 2.15.4: BASE 00f27bf).
+2. Owner decision: the offer explains no concrete benefit while the service catalog is empty — define the service (Vânzări → Servicii,
+   owner session) or decide another rule; then a new revision through the continuation card.
+3. Owner decision: turn the local dev profile off on live (`node v2\scripts\dev-profile.mjs off`) if decisions must be Windows Hello.
+
 ## 2026-10-18 afternoon — one L3ga screen (code `2.15.3-m12`, UI only, API contract 17, schema 13, no migration; detail: `.ifrim/STAGE_2026-10-18_L3GA_UNIC.md`)
 
 This section takes precedence over every older one where they overlap. Closed in code (commit `289dc63` on `claude/project-thread-dx5843`,
