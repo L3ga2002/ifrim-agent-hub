@@ -414,7 +414,7 @@ export function Lega({ go }) {
       const ref = planRefOfLive(e);
       if (!ref) return;
       const fx = shellPlanAction({ ref, mine: Boolean(mine), onCockpit: isCockpitHash(window.location.hash), stageOpen: Boolean(getState()?.stageOpen) });
-      if (fx.closeStage) setState({ stageOpen: false });
+      // One L3ga screen (2.15.4): the full screen IS the Lega screen and shows the plan's card; it is not closed for it any more.
       if (fx.navigate) { go(fx.navigate); setAnnounce("Lega a pregătit planul: îl vezi în cockpit și îl confirmi o singură dată."); }
       else if (fx.toast) pushToast(`plan-${ref.id}`, "info", "Un plan te așteaptă în cockpit (o singură confirmare)", { openPath: fx.toast, openLabel: "Deschide planul" });
       return;

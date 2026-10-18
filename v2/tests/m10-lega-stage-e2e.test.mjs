@@ -33,7 +33,10 @@ test("M10-LEGA-E2E-01 a start from the Lega screen in „Ecran complet”: a rea
   };
   const openStageAndStart = async (page) => {
     await page.goto(`${origin}/#/lega`);
-    await page.getByRole("button", { name: "Ecran complet" }).first().click();
+    // 2.15.4: the full screen is remembered in this browser — after the first part the page may already open in it.
+    await page.locator(".lega-one").waitFor({ timeout: 20000 });
+    await page.waitForTimeout(500);
+    if (!(await page.locator(".lega-one.is-immersive").count())) await page.getByRole("button", { name: "Ecran complet", exact: true }).click();
     await page.locator(".lega-one.is-immersive").waitFor({ timeout: 20000 });
     const dock = page.locator(".lega-one .lega-voice-dock #lega-panel");
     await dock.waitFor({ timeout: 20000 });

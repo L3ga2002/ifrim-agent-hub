@@ -9,7 +9,7 @@
 .lega-one-center { grid-area: center; min-height: 0; min-width: 0; display: flex; flex-direction: column; gap: var(--sp-2); }
 /* The figure and the conversation scroll; the voice panel, the composer and the controls stay visible at the bottom. */
 .lega-one-scroll { flex: 1 1 auto; min-height: 0; overflow-y: auto; overflow-x: hidden; display: flex; flex-direction: column; gap: var(--sp-2); }
-.lega-one .cockpit-main { grid-area: work; min-height: 0; min-width: 0; overflow: auto; display: flex; flex-direction: column; gap: var(--sp-3); padding-right: 2px; }
+.lega-one .cockpit-main { grid-area: work; min-height: 0; min-width: 0; overflow-y: auto; overflow-x: hidden; display: flex; flex-direction: column; gap: var(--sp-3); padding-right: 2px; }
 .lega-one .cockpit-main .cockpit-cards { grid-template-columns: minmax(0, 1fr); }
 .lega-one .cockpit-main .cockpit-toolbar { margin: 0; }
 
@@ -31,6 +31,7 @@
 .lega-one-caption .stage-lega { font-size: clamp(15px, 1.5vw, 20px); }
 
 .lega-one-center .lega-conv { flex: 1 1 auto; min-height: 110px; background: rgba(8, 11, 16, 0.62); backdrop-filter: blur(6px); }
+.lega-one-center .lega-conv.is-empty { flex: none; min-height: 0; background: transparent; border-color: transparent; backdrop-filter: none; text-align: center; }
 .lega-one-center .lega-composer { flex: none; }
 .lega-one-center .interrupt-bar { flex: none; justify-content: center; }
 .lega-voice-dock { flex: none; min-width: 0; }
@@ -38,6 +39,8 @@
 .lega-panel.docked { position: static; width: auto; max-height: 30vh; z-index: auto; box-shadow: none; padding: 10px 12px; gap: 8px; background: rgba(16, 23, 34, 0.82); backdrop-filter: blur(6px); }
 .lega-panel.docked .lega-lines { max-height: 160px; }
 
+.lega-one .cockpit-main > *, .lega-one-side > * { min-width: 0; max-width: 100%; }
+.lega-one-list.decisions strong { overflow-wrap: anywhere; min-width: 0; }
 /* The glass panels next to the map: the company, the decisions and the executions. */
 .lega-one-panel { display: flex; flex-direction: column; gap: 6px; padding: 12px; border: 1px solid rgba(101, 217, 255, 0.16); border-radius: var(--r-l);
   background: rgba(8, 11, 16, 0.66); backdrop-filter: blur(8px); min-width: 0; }
@@ -61,8 +64,21 @@
 .lega-one.is-immersive { position: fixed; inset: 0; z-index: 55; height: 100dvh; padding: var(--sp-3) var(--sp-5);
   background: radial-gradient(ellipse at center, #0b1622 0%, #05080c 70%); }
 .app.is-immersive > .topbar, .app.is-immersive > .rail, .app.is-immersive > .bottom-nav { visibility: hidden; }
+/* 2.15.4 — the full screen looks like the stage it replaces: the map fills the window; the company and the decisions are thin glass panels
+   at the sides; Lega's figure is large in the middle; the conversation shows its last lines over the map; the cards keep their own panels. */
+@media (min-width: 1281px) { .lega-one.is-immersive .lega-one-grid { grid-template-columns: minmax(190px, 240px) minmax(0, 1fr) minmax(300px, 400px); } }
+.lega-one.is-immersive .lega-one-panel { background: rgba(8, 11, 16, 0.5); font-size: var(--fs-s); }
+.lega-one.is-immersive .lega-one-side { align-self: center; max-height: 80vh; }
+.lega-one.is-immersive .lega-one-center .lega-face-canvas { max-height: min(40vh, 420px); max-width: min(40vh, 420px); }
+.lega-one.is-immersive .lega-one-scroll { justify-content: flex-end; }
+.lega-one.is-immersive .lega-one-center .lega-conv { flex: 0 1 auto; min-height: 0; max-height: 28vh; background: rgba(8, 11, 16, 0.42); }
+.lega-one.is-immersive .lega-one-center .lega-conv.is-empty { background: transparent; }
+.lega-one.is-immersive .cockpit-main .panel { background: rgba(16, 23, 34, 0.86); backdrop-filter: blur(6px); }
+.lega-one.is-immersive .cockpit-head { padding: 0 2px; }
 .app.is-immersive .overlay { z-index: 60; }
 .app.is-immersive .desktop-bar, .app.is-immersive .control-indicator { z-index: 58; }
+/* The run indicator sits at the top centre of the full screen, never over the composer and the controls at the bottom. */
+.app.is-immersive .control-indicator { top: 96px; bottom: auto; left: 50%; right: auto; transform: translateX(-50%); }
 @media (max-height: 760px) {
   .lega-one-center .lega-face-canvas { max-height: 16vh; max-width: 16vh; }
   .lega-one-center .face-box.discreet .lega-face-canvas { max-height: 10vh; max-width: 10vh; }

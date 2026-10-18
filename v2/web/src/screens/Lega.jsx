@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { AudioLines, Send, Settings2, Lock, LockOpen, VolumeX, Pause, Hand, Snowflake, Square, Undo2, Focus, Eye, EyeOff, Minimize2, Circle, Network, Maximize2, Radar } from "lucide-react";
+import { AudioLines, Send, Settings2, Lock, LockOpen, VolumeX, Pause, Hand, Snowflake, Square, Undo2, Focus, Eye, EyeOff, Minimize2, Circle, Network, Maximize2, Radar, Monitor } from "lucide-react";
 import { api } from "../api.js";
 import { useHub, useResource, onHubEvent, onLive, pushToast, usePref, refresh, setState, getState } from "../store.js";
 import { markArmed, looksLikeConfirmation } from "../lib/voiceContext.js";
@@ -423,7 +423,11 @@ function Cockpit({ projectId, go }) {
       default: return <Comp {...p} missionId={card.ref.id} />;
     }
   };
-  const cards = (layout?.cards || []).concat(replayMission && !(layout?.cards || []).some((x) => x.type === "Replay") ? [{ type: "Replay", ref: { kind: "mission", id: replayMission }, size: "l" }] : []);
+  // 2.15.4: a plan waiting for the owner always has its card, even when it was announced before this project's layout loaded (the layout
+  // then came without it and the plan was only counted in the activity line, never shown).
+  const planCard = plan?.envelope?.status === "PROPOSED" && plan.envelope.projectId === (c?.project?.id || null) && !(layout?.cards || []).some((x) => x.type === "DecisionCard")
+    ? [{ type: "DecisionCard", ref: { kind: "envelope", id: plan.envelope.id }, size: "l" }] : [];
+  const cards = planCard.concat(layout?.cards || []).concat(replayMission && !(layout?.cards || []).some((x) => x.type === "Replay") ? [{ type: "Replay", ref: { kind: "mission", id: replayMission }, size: "l" }] : []);
   // The one rearm card: the slot (an answer, an option, a refused resume) or, under voice-first, the standing banner while the gate is
   // suspended by anything but the owner's own pause (that one is „Continuă”). Never both. Rendered at ONE stable place (UI-02).
   const noAuthenticator = Boolean(owner.data?.bootstrapNeeded);
@@ -453,6 +457,37 @@ function Cockpit({ projectId, go }) {
     if (el) setState({ legaDock: el });
     else if (prev) setState((st) => (st.legaDock === prev ? { legaDock: null } : {}));
   }, []);
+  // 2.15.4: „Ecran complet” is how the owner uses this screen: his last choice on this screen is remembered in this browser (a view
+  // preference, never authority); with no choice yet, the start view „ecranul Lega, ecran complet” decides. Leaving #/lega for another
+  // screen is not a choice: coming back returns to the full screen.
+  const [fullPref, setFullPref] = usePref("lega.fullscreen", null);
+  const fullApplied = useRef(false);
+  useEffect(() => {
+    if (fullApplied.current) return;
+    if (fullPref === null && !startView.data) return; // wait for the start view
+    fullApplied.current = true;
+    const want = fullPref === null ? startView.data?.startView === "stage" : fullPref === true;
+    if (want && !getState()?.stageOpen) setState({ stageOpen: true });
+  }, [fullPref, startView.data]); // eslint-disable-line react-hooks/exhaustive-deps
+  const prevImmersive = useRef(immersive);
+  useEffect(() => {
+    if (prevImmersive.current === immersive) return;
+    prevImmersive.current = immersive;
+    if (fullApplied.current) setFullPref(immersive);
+  }, [immersive]); // eslint-disable-line react-hooks/exhaustive-deps
+  // „Tot monitorul”: the browser's own full screen (like F11, without the browser's bars); the browser's Esc leaves it.
+  const [monitorFull, setMonitorFull] = useState(() => Boolean(typeof document !== "undefined" && document.fullscreenElement));
+  useEffect(() => {
+    const onChange = () => setMonitorFull(Boolean(document.fullscreenElement));
+    document.addEventListener("fullscreenchange", onChange);
+    return () => document.removeEventListener("fullscreenchange", onChange);
+  }, []);
+  const toggleMonitor = async () => {
+    try {
+      if (document.fullscreenElement) await document.exitFullscreen();
+      else { if (!immersive) setState({ stageOpen: true }); await document.documentElement.requestFullscreen?.({ navigationUI: "hide" }); }
+    } catch (e) { pushToast("monitor-full", "warn", `Browserul nu a permis ecranul pe tot monitorul: ${e?.message || e}. Poți folosi F11.`); }
+  };
   // Esc leaves „Ecran complet” (never while typing, nor over a dialog that handles its own Esc).
   useEffect(() => {
     if (!immersive) return undefined;
@@ -489,8 +524,9 @@ function Cockpit({ projectId, go }) {
           <OwnerChip owner={owner.data} reload={owner.reload} />
           {/* „Ecran complet” = this same screen without the Hub's bars (also by voice or Alt+J); Esc or the button returns. */}
           {immersive
-            ? <button className="btn sm" onClick={() => setState({ stageOpen: false })} title="Înapoi la ecranul cu barele Hub-ului (Esc)"><Minimize2 size={14} />Ieși din ecran complet</button>
+            ? <button className="btn sm" onClick={() => { if (document.fullscreenElement) document.exitFullscreen?.().catch(() => {}); setState({ stageOpen: false }); }} title="Înapoi la ecranul cu barele Hub-ului (Esc)"><Minimize2 size={14} />Ieși din ecran complet</button>
             : <button className="btn sm" onClick={() => setState({ stageOpen: true })} title="Ecranul Lega fără barele Hub-ului (Alt+J)"><Maximize2 size={14} />Ecran complet</button>}
+          {typeof document !== "undefined" && document.fullscreenEnabled && <button className="btn sm ghost" aria-pressed={monitorFull} onClick={toggleMonitor} title="Ecranul Lega pe tot monitorul, fără bara browserului (ca F11)"><Monitor size={14} />{monitorFull ? "Ieși de pe tot monitorul" : "Tot monitorul"}</button>}
           <label className="start-view small" title="Ce se deschide când pornești Hub-ul fără o adresă anume">
             <span className="hide-mobile">La pornire</span>
             <select value={startView.data?.startView || "cockpit"} onChange={async (e) => { try { await api("/api/owner/start-view", { method: "POST", body: { view: e.target.value } }); startView.reload(); } catch (er) { setError(er); } }} aria-label="Ecranul de pornire">
@@ -544,7 +580,7 @@ function Cockpit({ projectId, go }) {
               {caption.lega && <p className="stage-lega">{caption.lega}</p>}
             </div>
           )}
-          <ol className="lega-conv" aria-label="Conversația cu Lega" aria-live="polite">
+          <ol className={`lega-conv${conversation.length ? "" : " is-empty"}`} aria-label="Conversația cu Lega" aria-live="polite">
             {!conversation.length && <li className="faint small">Spune sau scrie ce vrei; exemplele sunt la butonul „?” de lângă casetă. Citirea și planul nu pornesc nimic.</li>}
             {conversation.map((m, i) => (
               <li key={i} className={`lc-${m.role}`}><span className="who">{m.role === "user" ? "Tu" : "Lega"}</span><span className="lc-text">{m.text}</span>

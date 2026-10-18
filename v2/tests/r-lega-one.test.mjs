@@ -109,6 +109,9 @@ test("R-LEGA-ONE-03 static: no modal stage, one audio capture owner, the voice p
   // The controls keep their old commands and authority: the same /api/owner/interrupt kinds and the same Stop All.
   for (const kind of ["mute", "pause", "stop_worker", "freeze", "takeover"]) assert.match(screen, new RegExp(`interrupt\\("${kind}"`), kind);
   assert.match(screen, /<StopAllButton compact \/>/);
+  // 2.15.4: the full screen is remembered per browser (a view preference) and a voice plan no longer leaves it.
+  assert.match(screen, /const \[fullPref, setFullPref\] = usePref\("lega\.fullscreen", null\);/);
+  assert.doesNotMatch(lega, /if \(fx\.closeStage\) setState\(\{ stageOpen: false \}\);/);
 });
 
 test("R-LEGA-ONE-04 in a real browser: the M12 offer prepared, confirmed and approved from the one Lega screen; views, „Ecran complet” and visits keep the conversation and the unsent text; no duplicate request or plan; narrow window", { timeout: 300000 }, async (c) => {
@@ -252,8 +255,16 @@ test("R-LEGA-ONE-04 in a real browser: the M12 offer prepared, confirmed and app
     await page.waitForTimeout(300);
     const inView = await page.evaluate(() => [...document.querySelectorAll(".lega-one .interrupt-bar button, .lega-one .lega-composer input")].every((el) => { const r = el.getBoundingClientRect(); return r.top >= 0 && r.bottom <= window.innerHeight && r.width > 0; }));
     assert.ok(inView, "1280x650 full screen: the composer and every control are in view without scrolling");
-    await page.getByRole("button", { name: "Ieși din ecran complet" }).click();
+    // 2.15.4: the full screen is remembered in this browser: a reload comes back to it; leaving it (Esc) is remembered too.
+    await page.reload();
+    await page.locator(".lega-one.is-immersive").waitFor();
+    await page.locator(".lega-one-activity").click();
+    await page.keyboard.press("Escape");
     await page.locator(".lega-one.is-immersive").waitFor({ state: "detached" });
+    await page.reload();
+    await page.locator(".lega-one").waitFor();
+    await page.waitForTimeout(800);
+    assert.equal(await page.locator(".lega-one.is-immersive").count(), 0, "left by the owner: stays left after a reload");
     // A narrow window: one column, no horizontal page scroll, the composer and the emergency stop still reachable.
     await page.setViewportSize({ width: 800, height: 700 });
     await page.waitForTimeout(300);
