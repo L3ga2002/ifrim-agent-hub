@@ -20,9 +20,9 @@ const opPath = (id) => `/api/sales/opportunities/${encodeURIComponent(id)}`;
 /**
  * One proposal version: sections as plain text, claims to verify, warnings. The internal approval is ALWAYS_ASK and bound
  * to the displayed content hash (`displayedSha` = the server's `contentSha`); it is offered for the latest DRAFT version
- * once the opportunity is "ready for review".
+ * once the opportunity is "ready for review". Also shown on the Lega screen (one L3ga screen, 2026-10-18), the same view.
  */
-function ProposalView({ opp, proposal, proposals, onChanged }) {
+export function ProposalView({ opp, proposal, proposals, onChanged }) {
   const review = useSalesCommand(useCallback(async () => { pushToast("sales-proposal-review", "ok", "Propunerea e gata de revizuire"); onChanged(); }, [onChanged]));
   const ready = proposalApprovalReadiness(opp, proposal, proposals);
   const approved = proposalApproved(proposal);

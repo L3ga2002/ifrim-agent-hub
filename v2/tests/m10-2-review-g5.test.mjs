@@ -120,11 +120,13 @@ test("G5-41 the shell: this tab's own voice plan closes the stage; a plan from e
   assert.deepEqual(shellPlanAction({ ref: { ...own, sessionId: null }, mine: true, onCockpit: true, stageOpen: true }), { closeStage: false, navigate: null, toast: null }, "no session → not this voice session's plan");
   assert.deepEqual(shellPlanAction({ ref: own, mine: false, onCockpit: false, stageOpen: true }), { closeStage: false, navigate: null, toast: "/lega/prj_1" });
   assert.deepEqual(shellPlanAction({ ref: own, mine: false, onCockpit: true, stageOpen: true }), { closeStage: false, navigate: null, toast: null });
-  // The shell uses it BEFORE any cockpit early return; the cockpit never focuses while the stage is open.
+  // The shell uses it BEFORE any cockpit early return. One L3ga screen (2026-10-18): „Ecran complet” is the Lega screen itself (no modal
+  // covers the cards any more), so a plan this tab asked for is focused there too; the old guard is gone.
   const shell = source("web/src/shell/Lega.jsx");
   assert.match(shell, /shellPlanAction\(\{ ref, mine: Boolean\(mine\), onCockpit: isCockpitHash\(window\.location\.hash\), stageOpen: Boolean\(getState\(\)\?\.stageOpen\) \}\)/);
   assert.doesNotMatch(shell, /if \(!ref \|\| isCockpitHash\(window\.location\.hash\)\) return;/);
-  assert.match(source("web/src/screens/Lega.jsx"), /if \(getState\(\)\?\.stageOpen\) return;\n\s*setFocusTarget/);
+  assert.doesNotMatch(source("web/src/screens/Lega.jsx"), /if \(getState\(\)\?\.stageOpen\) return;\n\s*setFocusTarget/);
+  assert.doesNotMatch(source("web/src/shell/Shell.jsx"), /<LegaStage /, "no full-screen modal over the screens");
 });
 
 // ---------------------------------------------------------------- #40: OBS password (server)
@@ -389,12 +391,13 @@ test("G5-E2E focus belongs to the plan this tab asked for (#37/#38), no project 
     await page.waitForTimeout(800);
     assert.equal(await page.evaluate(() => window.location.hash), `#/lega/${A.project.id}`);
 
-    // #41 · The full-screen stage is open; a plan from elsewhere is announced: the stage stays, and no card hidden behind it is focused.
+    // #41 · „Ecran complet” is on (one L3ga screen: the Lega screen without the Hub's bars); a plan from elsewhere is announced: the full
+    // screen stays, and no card takes the focus for a plan this tab did not ask for.
     await page.getByRole("button", { name: /Ecran complet/ }).first().click();
-    await page.getByRole("dialog").first().waitFor({ timeout: 10000 });
+    await page.locator(".lega-one.is-immersive").waitFor({ timeout: 10000 });
     t.hub.live.publish({ type: "lega.plan", kind: "envelope", id: envA.id, projectId: A.project.id, sessionId: null });
     await page.waitForTimeout(1500);
-    assert.ok(await page.getByRole("dialog").first().isVisible(), "the stage stays open for a plan that is not this tab's");
+    assert.ok(await page.locator(".lega-one.is-immersive").isVisible(), "the full screen stays on for a plan that is not this tab's");
     const behind = await active();
     assert.equal(behind.decision || behind.ops, false, "no hidden card took the focus");
     assert.deepEqual(pageErrors, [], "no uncaught page errors");

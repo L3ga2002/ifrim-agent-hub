@@ -9,7 +9,7 @@ import { VoiceControl } from "./Voice.jsx";
 import { Lega } from "./Lega.jsx";
 import { Spotlight } from "./Spotlight.jsx";
 import { DesktopBar } from "./DesktopBar.jsx";
-import { LegaStage, useStageToggle } from "../screens/stage/LegaStage.jsx";
+import { useStageToggle } from "../screens/stage/LegaStage.jsx";
 import { Core3D } from "../components/core/Core3D.jsx";
 import { deriveCoreState, CORE_VISUALS } from "../lib/coreState.js";
 import { appShortcutKey, approvalToastTarget } from "../lib/uiLogic.js";
@@ -285,7 +285,20 @@ export function Shell({ route, go, children }) {
   // The floating run indicator must never cover the end of a page: main gets extra bottom room while it shows.
   const activeRunCount = useHub((s) => s.hub?.activeRuns?.length || 0);
   const mainRef = useRef(null);
-  const [stageOpen, setStageOpen] = useStageToggle();
+  const [stageOpen] = useStageToggle();
+  // One L3ga screen (2026-10-18): „Ecran complet” is the Lega screen itself without these bars, never a modal over another screen. Asked
+  // for anywhere else (Alt+J, the start view, the Control Room button, the voice intent), it opens #/lega; the screen keeps its state.
+  // Leaving #/lega (a link, a toast, „Deschide Compania”) ends the full-screen view, so no other screen ever bounces back to it.
+  const stageSeen = useRef({ open: false, route: route.name });
+  useEffect(() => {
+    const prev = stageSeen.current;
+    stageSeen.current = { open: stageOpen, route: route.name };
+    if (stageOpen && !prev.open && route.name !== "lega") go("/lega");
+    else if (stageOpen && prev.open && prev.route === "lega" && route.name !== "lega") setState({ stageOpen: false });
+  }, [stageOpen, route.name, go]);
+  const immersive = stageOpen && route.name === "lega" && route.id !== "setup";
+  // The setup page is not the Lega screen: the full-screen view ends there (going back never jumps into it unasked).
+  useEffect(() => { if (stageOpen && route.name === "lega" && route.id === "setup") setState({ stageOpen: false }); }, [stageOpen, route.name, route.id]);
   useEffect(() => {
     const onKey = (e) => {
       if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "k") { e.preventDefault(); setPalette(true); }
@@ -300,7 +313,7 @@ export function Shell({ route, go, children }) {
   const current = route.name === "focus" ? "conversations" : route.name;
   const mobileNav = ["lega", "missions", "approvals"];
   return (
-    <div className={`app ${simulation ? "is-sim" : ""}`}>
+    <div className={`app ${simulation ? "is-sim" : ""}${immersive ? " is-immersive" : ""}`}>
       <a className="skip-link" href="#main" onClick={(e) => { e.preventDefault(); mainRef.current?.focus(); }}>Sari la conținut</a>
       {simulation && <SimBanner />}
       <HubStatusBanner />
@@ -323,7 +336,6 @@ export function Shell({ route, go, children }) {
           </a>
         ))}
       </nav>
-      {stageOpen && <ErrorBoundary label="stage" fallback={() => null}><LegaStage onClose={() => setStageOpen(false)} go={go} /></ErrorBoundary>}
       <ErrorBoundary label="spotlight" fallback={() => null}><Spotlight /></ErrorBoundary>
       {/* M10: the Desktop Operator's permanent activity bar (Stop / Preiau eu always one click away while it works). */}
       <ErrorBoundary label="desktop-bar" fallback={() => null}><DesktopBar go={go} /></ErrorBoundary>

@@ -1,8 +1,9 @@
 // M10.1 in a REAL browser (headless Chromium through Playwright, the M10 build, a virtual authenticator — PASS_SIMULATED, never
-// Windows Hello): „Pornește Lega” pressed on the full-screen stage. A start failure is never hidden under the stage: the stage
-// closes, the Lega panel opens with the reason (plus a toast). (1) a real blocker (no consent) is named alone — never mode / grant;
-// (2) live web search never starts unseen from the stage: the start stops before the microphone and asks for one more click in the
-// visible panel. Nothing is started, no grant is derived. No microphone, no network, no model.
+// Windows Hello): „Pornește Lega” pressed on the Lega screen in „Ecran complet”. One L3ga screen (2026-10-18): the full screen is the
+// Lega screen itself and the voice panel is part of it, so a start failure is shown right there (no modal to close, no floating panel).
+// (1) a real blocker (no consent) is named alone — never mode / grant; (2) live web search never starts unseen: the start stops before the
+// microphone and the voice details open with the warning, for one more click. Nothing is started, no grant is derived. No microphone,
+// no network, no model.
 import test from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
@@ -18,7 +19,7 @@ const status = browserStatus({ hubRoot: HUB_ROOT });
 const built = fs.existsSync(path.join(WEB_DIST, "index.html"));
 const skip = !status.installed || !status.cachedBrowsers.length || !built ? "Playwright/Chromium or the built UI is missing" : false;
 
-test("M10-LEGA-E2E-01 a start from the full-screen stage: a real blocker closes the stage and is shown alone; live web search never starts unseen", { skip, timeout: 240000 }, async () => {
+test("M10-LEGA-E2E-01 a start from the Lega screen in „Ecran complet”: a real blocker is shown alone in the screen's voice panel; live web search never starts unseen", { skip, timeout: 240000 }, async () => {
   const t = await makeTestHub({ codex: "lega-ok" });
   const { server } = createHttpServer(t.hub);
   await new Promise((r) => server.listen(t.config.port, "127.0.0.1", r));
@@ -33,8 +34,17 @@ test("M10-LEGA-E2E-01 a start from the full-screen stage: a real blocker closes 
   const openStageAndStart = async (page) => {
     await page.goto(`${origin}/#/lega`);
     await page.getByRole("button", { name: "Ecran complet" }).first().click();
-    await page.locator(".lega-stage").waitFor({ timeout: 20000 });
-    await page.locator(".lega-stage .stage-mic").click();
+    await page.locator(".lega-one.is-immersive").waitFor({ timeout: 20000 });
+    const dock = page.locator(".lega-one .lega-voice-dock #lega-panel");
+    await dock.waitFor({ timeout: 20000 });
+    await dock.getByRole("button", { name: "Pornește Lega" }).click();
+  };
+  // The voice panel is the Lega screen's own (docked): never a floating panel, never a modal stage.
+  const docked = async (page) => {
+    assert.equal(await page.locator("#lega-panel").count(), 1, "one voice panel");
+    assert.equal(await page.locator(".lega-voice-dock #lega-panel").count(), 1, "rendered inside the Lega screen");
+    assert.equal(await page.locator(".lega-stage").count(), 0, "no modal stage");
+    assert.ok(await page.locator(".lega-one.is-immersive").isVisible(), "the full screen stays on: nothing was hidden under it");
   };
   try {
     const context = await browser.newContext({ viewport: { width: 1440, height: 900 } });
@@ -52,30 +62,27 @@ test("M10-LEGA-E2E-01 a start from the full-screen stage: a real blocker closes 
     t.hub.bus.transaction(() => t.hub.settings.set("ownerPolicy", { mode: "voice_first", version: OWNER_POLICY_VERSION, activatedAt: new Date().toISOString(), text: OWNER_POLICY_TEXT }, "test"));
     await prepareLiveWithoutGrants(t.hub);
 
-    // (1) A real blocker: the stage closes, the panel names the consent alone (never mode / grant / LIVE_VALIDATION).
+    // (1) A real blocker: the screen's voice panel names the consent alone (never mode / grant / LIVE_VALIDATION).
     await openStageAndStart(page);
-    await page.locator("#lega-panel").waitFor({ timeout: 20000 });
-    await page.locator(".lega-stage").waitFor({ state: "detached", timeout: 10000 });
     const panel = page.locator("#lega-panel");
     await panel.getByText(/Lega nu poate porni încă/).first().waitFor({ timeout: 10000 });
     await panel.getByText(/Înregistrează acordul/).first().waitFor();
     const panelText = await panel.innerText();
     assert.doesNotMatch(panelText, /LIVE_VALIDATION|grant „Lega \(voce\)”/, "the old manual path is not offered for a real blocker");
-    await page.getByText(/Lega nu a pornit/).first().waitFor({ timeout: 10000 }); // the toast (the panel was closed)
+    await docked(page);
     nothingStarted();
 
-    // (2) Consent recorded, web search set to live. A fresh page (nothing displayed yet): the stage start stops before the
-    // microphone, the stage closes and the visible panel asks for one more click.
+    // (2) Consent recorded, web search set to live. A fresh page (the voice details not shown yet): the start stops before the
+    // microphone and the voice details open with the warning, for one more click.
     t.hub.bus.transaction(() => {
       t.hub.settings.set("legaConsent", { version: LEGA_CONSENT_VERSION, confirmedAt: new Date().toISOString() }, "test");
       t.hub.settings.set("lega", { ...(t.hub.settings.get("lega") || {}), webSearch: "live" }, "test");
     });
     await page.reload();
     await openStageAndStart(page);
-    await page.locator("#lega-panel").waitFor({ timeout: 20000 });
-    await page.locator(".lega-stage").waitFor({ state: "detached", timeout: 10000 });
     await page.locator("#lega-panel").getByText(/Căutarea pe internet e pornită \(live\)/).first().waitFor({ timeout: 10000 });
     await page.locator("#lega-panel").getByText("Căutare live").first().waitFor(); // the warning the owner now sees
+    await docked(page);
     nothingStarted();
     assert.deepEqual(pageErrors, [], "no uncaught page errors");
   } finally {

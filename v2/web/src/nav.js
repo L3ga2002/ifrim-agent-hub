@@ -3,7 +3,7 @@ import { AudioLines, LayoutDashboard, MessageSquare, Target, Bot, FolderGit2, Br
 export const navigate = (path) => { window.location.hash = path; };
 
 export const NAV = [
-  { id: "lega", label: "Lega", long: "Lega · cockpit (conduci prin intenție)", icon: AudioLines },
+  { id: "lega", label: "Lega", long: "Lega · ecranul unic (conversație, comenzi, decizii, rezultate)", icon: AudioLines },
   { id: "intel", label: "Pilot", long: "Pilot automat & inteligența companiei", icon: Radar },
   { id: "control", label: "Control", long: "Control Room", icon: LayoutDashboard, key: "1" },
   { id: "conversations", label: "Conversații", long: "Conversații", icon: MessageSquare, key: "2" },

@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { AudioLines, Mic, MicOff, Square, X, Check, Ban, ShieldCheck, Volume2, VolumeX, Maximize2, Globe } from "lucide-react";
+import { createPortal } from "react-dom";
+import { AudioLines, Mic, MicOff, Square, X, Check, Ban, ShieldCheck, Volume2, VolumeX, Maximize2, Globe, ChevronDown, ChevronUp } from "lucide-react";
 import { api, ensureToken } from "../api.js";
 import { useHub, getState, setState, onLive, onHubEvent, pushToast, useResource, useAction, refresh } from "../store.js";
 import { Chip, Notice, Checks, ErrorNotice } from "../components/ui.jsx";
@@ -104,6 +105,19 @@ function readVoiceState() {
 
 export function Lega({ go }) {
   const [open, setOpen] = useState(false);
+  // One L3ga screen (2026-10-18): on #/lega the Lega screen offers a place (`legaDock`, its element in the app store) and this panel is
+  // rendered THERE, as part of that screen (a portal: still this one component, the one microphone, peer and session). Elsewhere it is
+  // the floating panel of the top bar. `expanded` is the docked panel's details (settings, consent, the transcript before a session).
+  const dockEl = useHub((s) => s.legaDock || null);
+  const [expanded, setExpanded] = useState(false);
+  const dockRef = useRef(dockEl); dockRef.current = dockEl;
+  // Docked, the floating panel is closed: leaving the Lega screen never pops up a panel the owner did not open there.
+  useEffect(() => { if (dockEl) setOpen(false); }, [dockEl]);
+  // What the owner must see now (a failure, a proposal, a pointer): the docked panel opens its details, the floating panel opens.
+  const reveal = useCallback(() => {
+    if (dockRef.current) { setExpanded(true); requestAnimationFrame(() => document.getElementById("lega-panel")?.scrollIntoView?.({ block: "nearest" })); }
+    else setOpen(true);
+  }, []);
   const [status, setStatus] = useState("off"); // off | preparing | connecting | active | stopping
   const [session, setSession] = useState(null);
   const [lines, setLines] = useState([]); // {id, role, text, final}
@@ -167,12 +181,13 @@ export function Lega({ go }) {
   }, [closeLocal]);
 
   // A failure is always shown: the full-screen stage covers the panel and the toasts, so it closes first; a toast when the panel was closed.
+  // One L3ga screen: docked on #/lega the reason is shown in the screen itself (also in „Ecran complet”, which no longer covers it).
   const showFailure = useCallback((error, prefix) => {
     setError(error);
-    if (getState()?.stageOpen) setState({ stageOpen: false });
+    if (dockRef.current) { reveal(); return; }
     if (!openRef.current) pushToast("lega-start", "error", `${prefix}: ${error?.message || error}`);
     setOpen(true);
-  }, []);
+  }, [reveal]);
 
   const start = useCallback(async (opts = {}) => {
     const r = refs.current;
@@ -185,6 +200,8 @@ export function Lega({ go }) {
     const dispose = () => { mic?.getTracks().forEach((t) => t.stop()); gate?.close(); try { pc?.close(); } catch { /* closed */ } };
     try {
       if (!navigator.mediaDevices?.getUserMedia || !window.RTCPeerConnection) throw new Error("Browserul nu permite microfon + WebRTC aici");
+      // One L3ga screen (2026-10-18): one audio capture at a time — the local push-to-talk button holds the microphone right now.
+      if (getState()?.voicePhase && getState().voicePhase !== "idle") throw new Error("Microfonul e folosit de butonul de voce locală („Ține apăsat”): eliberează-l, apoi pornește Lega (o singură captură audio).");
       // M10: one click. What the start needs, before any microphone prompt: with no owner session (voice-first policy) the click
       // opens it once (Windows Hello / your key) and the Hub derives the one-session authority itself; a real blocker (the gate
       // after Stop All, the consent, billing…) is named instead.
@@ -445,13 +462,13 @@ export function Lega({ go }) {
     else if (e.type === "lega.point" && e.target) {
       const path = legaPointPath(e.target, e.path || null);
       const action = legaPointAction({ path, presented: Boolean(presentedPlan()), hash: window.location.hash });
-      if (action === "hint") { setPointHint({ kind: "point", path, target: e.target, label: e.label || e.target }); setOpen(true); setAnnounce(`Lega îți poate arăta: ${e.label || e.target}. Apasă Deschide când vrei; planul rămâne pe ecran.`); }
+      if (action === "hint") { setPointHint({ kind: "point", path, target: e.target, label: e.label || e.target }); reveal(); setAnnounce(`Lega îți poate arăta: ${e.label || e.target}. Apasă Deschide când vrei; planul rămâne pe ecran.`); }
       else { if (action === "navigate") go(path); pointAt(e.target, e.label); setAnnounce(`Lega arată: ${e.label || e.target}`); }
     }
     // The grant form is only filled in; creating the grant stays the owner's click on "Creează grant" (legacy policy only).
     else if (e.type === "lega.prefill" && e.form) {
       const action = legaPointAction({ path: e.path || "/integrations", presented: Boolean(presentedPlan()), hash: window.location.hash });
-      if (action === "hint") { setPointHint({ kind: "prefill", path: e.path || "/integrations", target: e.target || "grant-create", label: e.label || "Creează grant", form: e.form }); setOpen(true); setAnnounce("Lega a pregătit valorile unui grant: apasă Deschide când vrei să le vezi."); }
+      if (action === "hint") { setPointHint({ kind: "prefill", path: e.path || "/integrations", target: e.target || "grant-create", label: e.label || "Creează grant", form: e.form }); reveal(); setAnnounce("Lega a pregătit valorile unui grant: apasă Deschide când vrei să le vezi."); }
       else {
         go(e.path || "/integrations"); offerGrantPrefill(e.form); pointAt(e.target || "grant-create", e.label);
         setAnnounce("Lega a completat formularul de grant: verifică valorile și apasă tu Creează grant.");
@@ -459,9 +476,9 @@ export function Lega({ go }) {
     }
     else if (e.type === "lega.web") setLines((ls) => [...ls.slice(-60), { id: `w-${Date.now()}-${ls.length}`, role: "system", text: `Caut pe internet${e.text ? `: „${e.text}”` : "…"}`, final: true }]);
     else if (e.type === "lega.silence") { if (r.audio) r.audio.muted = true; legaLevels.muted = true; setLegaMuted(true); }
-    else if (e.type === "lega.proposal") { reloadProposals.current(); setOpen(true); setAnnounce(e.kind === "mission" ? "Lega propune o misiune: verifică și aprobă sau refuză pe ecran." : "Lega propune o execuție: verifică și aprobă sau refuză pe ecran."); }
+    else if (e.type === "lega.proposal") { reloadProposals.current(); reveal(); setAnnounce(e.kind === "mission" ? "Lega propune o misiune: verifică și aprobă sau refuză pe ecran." : "Lega propune o execuție: verifică și aprobă sau refuză pe ecran."); }
     else if (e.type === "lega.notice") pushToast(`lega-notice-${Date.now()}`, e.level === "error" ? "error" : "warning", e.text);
-  }), [closeLocal, go]);
+  }), [closeLocal, go, reveal]);
 
   // Watchdog: if the Hub stream is lost, the peer is closed locally (the media must never outlive the Hub's control).
   useEffect(() => {
@@ -499,7 +516,7 @@ export function Lega({ go }) {
 
   // Alt+L toggles the panel (plain Alt only: AltGr+L types a character on the Romanian layout).
   useEffect(() => {
-    const onKey = (e) => { if (isAppShortcut(e, "l")) { e.preventDefault(); setOpen((o) => !o); } };
+    const onKey = (e) => { if (isAppShortcut(e, "l")) { e.preventDefault(); if (dockRef.current) setExpanded((x) => !x); else setOpen((o) => !o); } };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, []);
@@ -527,16 +544,60 @@ export function Lega({ go }) {
         const opts = { expectWebSearch: legaStartOptions.expectWebSearch };
         legaStartOptions.expectWebSearch = null; // read once
         if (statusRef.current === "off") start(opts);
-      } else if (e.detail === "stop") stop("user"); else if (e.detail === "open") setOpen(true);
+      } else if (e.detail === "stop") stop("user"); else if (e.detail === "open") reveal();
     };
     window.addEventListener("lega:command", onCommand);
     return () => window.removeEventListener("lega:command", onCommand);
-  }, [start, stop]);
+  }, [start, stop, reveal]);
 
   const running = status === "active" || status === "connecting" || status === "preparing";
+  const stateChip = <Chip tone={status === "active" ? "ok" : running ? "info" : "neutral"}>{status === "active" ? "activă" : status === "preparing" && startNote ? "verifică contul" : status === "connecting" || status === "preparing" ? "se conectează" : status === "stopping" ? "se oprește" : "oprită"}</Chip>;
+  const body = (
+    <>
+      {pointHint && (
+        <Notice tone="info" title={pointHint.kind === "prefill" ? "Lega a pregătit valorile unui grant" : `Lega îți poate arăta: ${pointHint.label}`}>
+          {presentedPlan() ? "Planul de pe ecran rămâne așa cum e; deschizi locul doar când vrei." : "Ești în ecranul Lega; deschizi locul doar când vrei."}
+          <div className="row wrap" style={{ marginTop: 6 }}>
+            <button className="btn sm" onClick={() => {
+              const h = pointHint; setPointHint(null);
+              go(h.path);
+              if (h.kind === "prefill") offerGrantPrefill(h.form);
+              pointAt(h.target, h.label);
+            }}>Deschide</button>
+            <button className="btn sm ghost" onClick={() => setPointHint(null)}>Rămân aici</button>
+          </div>
+        </Notice>
+      )}
+      {legaProposals.map((a) => <ProposalCard key={a.id} approval={a} voiceFirst={voiceFirst} onDone={() => { proposals.reload(); approvedLega.reload(); }} />)}
+      {running ? (
+        <ActiveView status={status} elapsed={elapsed} session={session} micMuted={micMuted} legaMuted={legaMuted} onMic={toggleMic} onSound={toggleLegaSound}
+          onStop={() => stop("user")} micBar={micBar} legaBar={legaBar} lines={lines} gateInfo={gateInfo} gateLog={gateLog} startNote={status === "preparing" ? startNote : null} />
+      ) : (
+        <ReadyView onStart={() => start()} disabled={status !== "off"} />
+      )}
+      <ErrorNotice error={error} />
+      <p className="faint small" style={{ margin: 0 }}>Vocea merge direct la OpenAI (GPT-Live), nu e locală. Hub-ul păstrează doar textul. Lega nu aprobă nimic: acțiunile cu efecte se confirmă prin click.</p>
+    </>
+  );
+  // Docked: the details open by themselves for what must be seen (a session, a failure, a proposal, a pointer); otherwise one line
+  // with the state and „Pornește Lega”, so the conversation keeps the room.
+  const dockBody = expanded || running || status === "stopping" || Boolean(error) || Boolean(pointHint) || legaProposals.length > 0;
+  const docked = dockEl ? createPortal(
+    <section id="lega-panel" className="lega-panel docked" role="region" aria-label="Vocea Lega">
+      <div className="row between wrap">
+        <div className="row"><AudioLines size={16} aria-hidden="true" /><strong>Vocea Lega</strong>{stateChip}
+          {status === "active" && <span className="mono small">{fmtClock(elapsed)}</span>}</div>
+        <div className="row">
+          {!dockBody && <button className="btn sm primary" disabled={status !== "off"} onClick={() => start()}><Mic size={14} />Pornește Lega</button>}
+          {!running && status !== "stopping" && <button className="btn sm ghost" aria-expanded={dockBody} onClick={() => { setExpanded(!dockBody); if (dockBody) { setError(null); setPointHint(null); } }}>
+            {dockBody ? <ChevronUp size={13} /> : <ChevronDown size={13} />}{dockBody ? "Ascunde detaliile vocii" : "Detaliile vocii"}</button>}
+        </div>
+      </div>
+      {dockBody && body}
+    </section>, dockEl) : null;
   return (
     <>
-      <button className={`btn sm lega-btn ${running ? "on" : ""}`} data-lega-target="lega-button" onClick={() => setOpen((o) => !o)} aria-expanded={open} {...(open ? { "aria-controls": "lega-panel" } : {})} title="Lega — asistentul vocal (Alt+L)">
+      <button className={`btn sm lega-btn ${running ? "on" : ""}`} data-lega-target="lega-button" onClick={() => { if (dockEl) reveal(); else setOpen((o) => !o); }} aria-expanded={dockEl ? dockBody : open} {...(open || dockEl ? { "aria-controls": "lega-panel" } : {})} title="Lega — asistentul vocal (Alt+L)">
         <AudioLines size={15} aria-hidden="true" />
         <span className="hide-mobile">Lega</span>
         {status === "active" && <span className="mono lega-clock">{fmtClock(elapsed)}</span>}
@@ -546,39 +607,17 @@ export function Lega({ go }) {
       {(running || status === "stopping") && <button className="btn sm danger lega-stop" disabled={status === "stopping"} onClick={() => stop("user")} aria-label={status === "preparing" ? "Anulează pornirea Lega" : "Oprește Lega"}><Square size={12} /><span className="hide-mobile">{status === "preparing" ? "Anulează" : "Oprește Lega"}</span></button>}
       <audio ref={(el) => { refs.current.audio = el; }} autoPlay hidden />
       <span className="sr-only" role="status" aria-live="polite">{announce}</span>
-      {open && (
+      {docked}
+      {open && !dockEl && (
         <section id="lega-panel" className="lega-panel" role="region" aria-label="Lega">
           <div className="row between">
-            <div className="row"><AudioLines size={16} aria-hidden="true" /><strong>Lega</strong>
-              <Chip tone={status === "active" ? "ok" : running ? "info" : "neutral"}>{status === "active" ? "activă" : status === "preparing" && startNote ? "verifică contul" : status === "connecting" || status === "preparing" ? "se conectează" : status === "stopping" ? "se oprește" : "oprită"}</Chip></div>
+            <div className="row"><AudioLines size={16} aria-hidden="true" /><strong>Lega</strong>{stateChip}</div>
             <div className="row">
-              <button className="btn sm ghost" onClick={() => setState({ stageOpen: true })} title="Ecran complet (Alt+J)"><Maximize2 size={13} />Ecran complet</button>
+              <button className="btn sm ghost" onClick={() => setState({ stageOpen: true })} title="Ecranul Lega, ecran complet (Alt+J)"><Maximize2 size={13} />Ecran complet</button>
               <button className="btn sm icon ghost" onClick={() => setOpen(false)} aria-label="Închide panoul Lega"><X size={14} /></button>
             </div>
           </div>
-          {pointHint && (
-            <Notice tone="info" title={pointHint.kind === "prefill" ? "Lega a pregătit valorile unui grant" : `Lega îți poate arăta: ${pointHint.label}`}>
-              {presentedPlan() ? "Planul de pe ecran rămâne așa cum e; deschizi locul doar când vrei." : "Ești în cockpit; deschizi locul doar când vrei."}
-              <div className="row wrap" style={{ marginTop: 6 }}>
-                <button className="btn sm" onClick={() => {
-                  const h = pointHint; setPointHint(null);
-                  go(h.path);
-                  if (h.kind === "prefill") offerGrantPrefill(h.form);
-                  pointAt(h.target, h.label);
-                }}>Deschide</button>
-                <button className="btn sm ghost" onClick={() => setPointHint(null)}>Rămân aici</button>
-              </div>
-            </Notice>
-          )}
-          {legaProposals.map((a) => <ProposalCard key={a.id} approval={a} voiceFirst={voiceFirst} onDone={() => { proposals.reload(); approvedLega.reload(); }} />)}
-          {running ? (
-            <ActiveView status={status} elapsed={elapsed} session={session} micMuted={micMuted} legaMuted={legaMuted} onMic={toggleMic} onSound={toggleLegaSound}
-              onStop={() => stop("user")} micBar={micBar} legaBar={legaBar} lines={lines} gateInfo={gateInfo} gateLog={gateLog} startNote={status === "preparing" ? startNote : null} />
-          ) : (
-            <ReadyView onStart={() => start()} disabled={status !== "off"} />
-          )}
-          <ErrorNotice error={error} />
-          <p className="faint small" style={{ margin: 0 }}>Vocea merge direct la OpenAI (GPT-Live), nu e locală. Hub-ul păstrează doar textul. Lega nu aprobă nimic: acțiunile cu efecte se confirmă prin click.</p>
+          {body}
         </section>
       )}
     </>
@@ -747,9 +786,9 @@ async function observeArmedConfirmation(decision) {
 /** Before a session: what is missing (gate checks), the consent form and the voice choice. */
 function ReadyView({ onStart, disabled }) {
   const status = useResource("/api/lega", { reloadOn: (e) => e.type.startsWith("grant.") || e.type === "settings.changed" || e.type.startsWith("lega.") || e.type.startsWith("provider.") || e.type.startsWith("owner.") });
-  // Only a panel the owner can see records what they saw (the full-screen stage covers it).
-  const stageOpen = useHub((s) => Boolean(s.stageOpen));
-  useEffect(() => { if (status.data?.settings && !stageOpen) shownWebSearch = status.data.settings.webSearch || "disabled"; }, [status.data, stageOpen]);
+  // Only a panel the owner can see records what they saw: this view is rendered only inside one (the Lega screen's voice details, or
+  // the open floating panel); the full-screen view no longer covers it (one L3ga screen, 2026-10-18).
+  useEffect(() => { if (status.data?.settings) shownWebSearch = status.data.settings.webSearch || "disabled"; }, [status.data]);
   // 2.12.1 (UI-05 / UI-06): the rearm card only for a suspension it can reopen (never the owner's own pause: that is „Continuă”), and
   // only with an enrolled authenticator (without one the card cannot work: the setup step instead).
   const executionGate = useHub((s) => s.hub?.executionGate || null);

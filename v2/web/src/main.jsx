@@ -5,6 +5,7 @@ import "./styles/m02.css";
 import "./styles/m06.css";
 import "./styles/m07.css";
 import "./styles/m10.css";
+import "./styles/lega-one.css";
 import { startHubConnection, useHub, setState } from "./store.js";
 import { api } from "./api.js";
 import { Shell } from "./shell/Shell.jsx";
