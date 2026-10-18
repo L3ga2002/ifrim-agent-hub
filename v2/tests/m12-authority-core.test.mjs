@@ -36,7 +36,8 @@ test("M12-CORE-01 service refuses malformed identity and caller authority withou
 
 test("M12-CORE-02 reserved kinds fail closed on ui, envelope and bare service; synthetic path stays bounded", async c => {
   const { t, b } = await fixture(c);
-  assert.deepEqual([...OWNER_DECIDED.keys()], ["sales.proposal_approve"]);
+  // 2.15.2: the other Sales owner decisions joined the offer approval (the same fail-closed checks apply to each of them).
+  assert.deepEqual([...OWNER_DECIDED.keys()], ["sales.proposal_approve", "sales.draft_content", "sales.suppression_lift", "sales.import_rollback"]);
   const r = await pending(t, b);
   const args = { decision: "approved", displayedHash: r.approval.payloadHash, channel: "ui" };
   assert.throws(() => t.hub.approvals.decide(r.approval.id, args), /sesiunea/);
