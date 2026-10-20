@@ -50,5 +50,23 @@ plată, sincronizare calendar, găzduire / întreținere) și la deciziile propr
 - Apoi, în sesiunea lui: salvează serviciul (Vânzări → Servicii), „Pregătește continuarea” pe oportunitate, confirmă cardul, inspectează
   oferta v2 și apasă „Aprob intern” pe ID-ul și SHA-ul afișate. Dosarul revizia 2 urmează derivat.
 
-## 5. Rezultat live
-(se completează după pașii proprietarului)
+## 5. Rezultat live (verificat doar prin GET și pe disc, 2026-10-20 00:33–00:40 UTC)
+- **2.15.5 LIVE**: proprietarul a rulat `owner-release.cmd`; `2.15.5-m12` / 17 / schema 13 / BUILD_SAFE, boot `boot_mvfy5813_c620e596e0`,
+  `VERIFY OK` (inclusiv câmpul „Ce trebuie să primim de la client” servit). `origin/v2-milestone-01` = `origin/claude/project-thread-buj7tz` = `3a3abdb`.
+- Pașii proprietarului (autoritate `local_dev_profile`, profilul de dezvoltare neschimbat): serviciul `svc_mvfy6xjo_0a4dbd077d` v1 salvat
+  00:31:25 UTC — câmpurile identice cu `service-card.json` (9 / 7 / 7 rânduri, preț și termen NOT_CONFIGURED); cardul de continuare confirmat
+  00:31:58 (planul `opp_mvfy7lcl_e196afa7ca`); „Aprob intern” pe `spr_mvfy7mq5_9ffac33cbc` v2, SHA
+  `458681c2b78a6f36091c944d07d6f513feb2f21fbe87ac96a1137b7f6f4bc637`, la 00:33:28 UTC.
+- Oferta v2: `serviceIds` = `svc_mvfy6xjo_0a4dbd077d@1`, baza o leagă de același serviciu; secțiunile Soluție / Ce include / Ce nu include /
+  Materiale conțin toate rândurile fișei; preț și termen UNKNOWN („De stabilit (neconfigurat)”, motiv „catalog neconfigurat”); 0 cifre comerciale.
+- Istoric: v1 `spr_mvds4ow4_707666fdb3` SUPERSEDED, cu aprobarea `6a23d454…f28b` păstrată; ciorna v1 SUPERSEDED; dosarul revizia 1 STALE
+  („catalogul de servicii s-a schimbat”), 10/10 fișiere = manifestul pe disc, neatinse.
+- Dosarul revizia 2 `sdo_b0b208ad82_5b5c17a433` READY, intrări curente: `…\vanzari\oferta-sintetic-lastarel-auto-service-taunel-srl-c6949c345f\revizia-2-5b5c17a433\`
+  — 10/10 fișiere cu SHA = manifest (manifest `76a5753a…ffaf`); Word APP_VERIFIED (Word 16.0, 3 pagini, PDF `oferta-v2.pdf`); textul din .docx,
+  .md și PDF conține serviciul, toate rândurile și „De stabilit (neconfigurat)”. Ciorna `sdr_mvfy9kp7_55e71f32b3` v2 DRAFT_ONLY — NETRIMISĂ
+  (OUTREACH_DISABLED), legată de SHA-ul v2, numește serviciul. 0 contacte, 0 acceptări, 0 handoff Engineering; nimic trimis sau publicat.
+- Limite rămase: oferta e utilizabilă pentru o discuție internă, dar nu e finală — prețul și termenul sunt neconfigurate; „Observații” e gol
+  (firma sintetică nu are un site fixture auditat); o pagină internă pentru echipă și mai multe mașini pe interval nu sunt construite.
+  Cu două servicii active, o ofertă M12 fără serviciu pe oportunitate nu alege niciunul (alegerea per oportunitate e lucru ulterior).
+- Intervenții: 1 tehnică (comanda de release), 3 decizii de produs (salvarea serviciului, cardul de continuare, aprobarea v2).
+- Următorul: propunerea M13 (`.ifrim/M13_PROPOSAL.md`), neîncepută.

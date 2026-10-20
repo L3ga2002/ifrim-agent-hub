@@ -7,9 +7,9 @@ This section takes precedence over the next ones where they overlap. Two defects
 the service editor had no materials field and an edit dropped them. Tests: R-CAT-01..03 (3/3 FAIL before, PASS after) + 42 affected files 412/412.
 
 Open:
-1. Owner: run `C:Usersmihaicatalog-stageeleaseowner-release.cmd` (2.15.5 live + push).
-2. Owner: save „Programări online pe site” (Vânzări → Servicii, text in `catalog-stageservice-card.json`), „Pregătește continuarea” on
-   `opp_mvds4ouj_c6949c345f`, confirm the card, approve v2 (exact ID + SHA). Then the GET verification of revision 2.
+1. Done: 2.15.5 LIVE (GET VERIFY OK 2026-10-20 00:33 UTC, boot boot_mvfy5813_c620e596e0; origin v2-milestone-01 = 3a3abdb).
+2. Done: service svc_mvfy6xjo_0a4dbd077d saved by the owner; offer v2 spr_mvfy7mq5_9ffac33cbc approved (sha 458681c2…c637); dossier
+   revision 2 sdo_b0b208ad82_5b5c17a433 READY (10/10 = manifest, Word APP_VERIFIED, draft unsent); v1 + revision 1 kept. M13 = proposal only.
 3. Known limit (not a defect): with two or more active services a bound offer without a service on its opportunity uses none (no guess);
    choosing a service per opportunity in M12 is later work. Price and term stay „De stabilit” until the owner configures them.
 4. Unchanged: the live dev profile is ON (decisions recorded local_dev_profile); RM-10 intermittent under load; 2 V1 tests on the real registry.
