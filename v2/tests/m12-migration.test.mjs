@@ -17,6 +17,8 @@ import { DATA_KINDS, PREPARATION_STATUSES, DOSSIER_STATUSES, PLAN_OP_STATUSES } 
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const UPTO12 = MIGRATIONS.filter((m) => m.version <= 12);
+// M13: these tests describe migration 13 exactly; migration 14 (m13-desk) is tested in m13-migration.test.mjs.
+const UPTO13 = MIGRATIONS.filter((m) => m.version <= 13);
 const NEW_TABLES = ["sales_dossiers", "sales_plan_ops", "sales_preparations"];
 const NEW_INDEXES = ["idx_sales_dossiers_opp", "idx_sales_plan_ops_root", "idx_sales_preparations_opp", "ux_sales_preparations_root"];
 const NOW = "2026-10-17T08:00:00.000Z";
@@ -50,10 +52,10 @@ function schema12Db(d) {
 }
 
 test("M12-MIG-01 fresh database: data kind on sales_evidence, the three M12 tables, CHECK lists equal to the sales.mjs constants, synthetic only", (t) => {
-  const db = openDatabase(path.join(dir(t, "m12-mig1"), "hub-v2.sqlite"));
+  const db = openDatabase(path.join(dir(t, "m12-mig1"), "hub-v2.sqlite"), { migrations: UPTO13 });
   try {
-    assert.equal(schemaState(db).current, 13);
-    assert.equal(MIGRATIONS.at(-1).name, "m12-sales-prep");
+    assert.equal(schemaState(db, UPTO13).current, 13);
+    assert.equal(UPTO13.at(-1).name, "m12-sales-prep");
     assert.deepEqual(columns(db, "sales_evidence").slice(-3), ["data_kind", "basis_json", "reasoning"]);
     assert.deepEqual(checkValues(db, "sales_evidence", "data_kind"), DATA_KINDS);
     for (const [table, cols] of Object.entries({
@@ -102,7 +104,7 @@ test("M12-MIG-02 schema 12 → 13: verified pre-migration backup first; legacy e
   const legacyRow = before.prepare("SELECT * FROM sales_evidence WHERE id = 'sev_m12mig_legacy'").get();
   before.close();
   const backups = path.join(d, "pre-upgrade");
-  const db = openDatabase(file, { preMigrationBackupDir: backups, appVersion: "test" });
+  const db = openDatabase(file, { preMigrationBackupDir: backups, appVersion: "test", migrations: UPTO13 });
   try {
     const b = preMigrationBackupOf(db);
     assert.ok(b, "a backup was taken before migration 13");
@@ -116,7 +118,7 @@ test("M12-MIG-02 schema 12 → 13: verified pre-migration backup first; legacy e
       assert.equal(columns(copy, "sales_evidence").includes("data_kind"), false, "the copy is the schema before the migration");
       assert.deepEqual(copy.prepare("SELECT * FROM sales_evidence WHERE id = 'sev_m12mig_legacy'").get(), legacyRow);
     } finally { copy.close(); }
-    assert.equal(schemaState(db).current, 13);
+    assert.equal(schemaState(db, UPTO13).current, 13);
     const after = db.prepare("SELECT * FROM sales_evidence WHERE id = 'sev_m12mig_legacy'").get();
     assert.deepEqual([after.data_kind, after.basis_json, after.reasoning], [null, null, null], "legacy evidence stays undeclared (nedeclarat M04)");
     for (const [key, value] of Object.entries(legacyRow)) assert.deepEqual(after[key], value, `legacy ${key} unchanged`);
@@ -131,12 +133,12 @@ test("M12-MIG-03 dry run on a copy: 12 → 13, only additions (three columns, th
   const before = master(db12);
   const evidenceBefore = columns(db12, "sales_evidence");
   db12.close();
-  const r = await dryRunMigration({ dbPath: file, tmpDir: path.join(d, "tmp") });
+  const r = await dryRunMigration({ dbPath: file, tmpDir: path.join(d, "tmp"), migrations: UPTO13 });
   assert.deepEqual([r.schemaBefore, r.schemaAfter, r.integrity, r.rowCountsUnchanged], [12, 13, "ok", true]);
   assert.deepEqual(r.pending, ["13:m12-sales-prep"]);
   const source = new DatabaseSync(file, { readOnly: true });
   try { assert.equal(source.prepare("SELECT MAX(version) AS v FROM schema_migrations").get().v, 12, "the dry run never touches the source"); } finally { source.close(); }
-  const db = openDatabase(file);
+  const db = openDatabase(file, { migrations: UPTO13 });
   try {
     const after = master(db);
     for (const [name, sql] of Object.entries(before)) if (name !== "sales_evidence") assert.equal(after[name], sql, `${name} unchanged`);
@@ -157,11 +159,13 @@ test("M12-MIG-04 the logon boot guard reports 13:m12-sales-prep pending on a sch
   const guard = () => spawnSync(process.execPath, [path.join(here, "..", "scripts", "boot-guard.mjs")], { env, encoding: "utf8", timeout: 30000 });
   const pending = guard();
   assert.equal(pending.status, 3, pending.stderr);
-  assert.deepEqual(JSON.parse(pending.stdout.trim().split("\n").pop()), { ok: false, applied: 12, latest: 13, pending: ["13:m12-sales-prep"] });
+  const later = MIGRATIONS.filter((m) => m.version > 12).map((m) => `${m.version}:${m.name}`);
+  assert.ok(later.includes("13:m12-sales-prep"));
+  assert.deepEqual(JSON.parse(pending.stdout.trim().split("\n").pop()), { ok: false, applied: 12, latest: MIGRATIONS.at(-1).version, pending: later });
   openDatabase(path.join(d, "hub-v2.sqlite")).close();
   const clear = guard();
   assert.equal(clear.status, 0, clear.stderr);
-  assert.deepEqual(JSON.parse(clear.stdout.trim().split("\n").pop()), { ok: true, applied: 13, latest: 13, pending: [] });
+  assert.deepEqual(JSON.parse(clear.stdout.trim().split("\n").pop()), { ok: true, applied: MIGRATIONS.at(-1).version, latest: MIGRATIONS.at(-1).version, pending: [] });
 });
 
 test("M12-MIG-05 additive: the schema-12 code's evidence insert still works on schema 13 (a revert of the release runs on the migrated database)", (t) => {

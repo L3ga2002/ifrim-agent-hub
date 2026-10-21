@@ -101,3 +101,9 @@
   .lega-one-center .lega-face-canvas { max-height: 160px; max-width: 160px; }
   .lega-one.is-immersive { overflow: auto; }
 }
+
+/* M13 „Birou intern” in the work column: one record per flow, wrapped text, no horizontal scroll at phone width. */
+.lega-desk .lega-desk-record { border-top: 1px solid var(--line); padding-top: var(--sp-2, 8px); min-width: 0; }
+.lega-desk .lega-desk-section:first-child .lega-desk-record { border-top: 0; padding-top: 0; }
+.lega-desk .lega-desk-decision { border-left: 3px solid var(--approval, #c98a1b); padding-left: var(--sp-3, 10px); }
+.lega-desk .table-wrap { max-width: 100%; }

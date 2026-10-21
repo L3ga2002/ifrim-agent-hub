@@ -2,10 +2,12 @@
 // helpers: none of them decides, confirms or starts anything.
 
 /** What each kind of „Deciziile mele” row is, in words (the same labels as the Delivery Room's inbox). */
-export const DECISION_KIND = Object.freeze({ software_bundle: "Pachet software", mission_decision: "Misiune oprită", delivery: "Livrare", sales_offer: "Ofertă de aprobat" });
+export const DECISION_KIND = Object.freeze({ software_bundle: "Pachet software", mission_decision: "Misiune oprită", delivery: "Livrare", sales_offer: "Ofertă de aprobat",
+  // M13 „Birou intern”: the exact reply / deviz waiting for the owner's internal approval (on the L3ga screen).
+  desk_support_reply: "Răspuns de suport de aprobat", desk_finance_doc: "Deviz de aprobat" });
 
 /** The decisions list is read again on the events that can add or remove a row. */
-export const decisionsReload = (e) => /^(approval|sales|factory|delivery|envelope|ops|mission)\./.test(String(e?.type || ""));
+export const decisionsReload = (e) => /^(approval|sales|factory|delivery|envelope|ops|mission|desk)\./.test(String(e?.type || ""));
 
 /** Examples for the help popover (they used to fill the empty conversation, taking the room of the work). */
 export const COMMAND_EXAMPLES = Object.freeze([
@@ -17,6 +19,9 @@ export const COMMAND_EXAMPLES = Object.freeze([
   "L3ga, pregătește o ofertă demonstrativă pentru un service auto fictiv care vrea programări online",
   "Arată-mi oferta",
   "Ce lipsește?",
+  "Pregătește dosarul de pornire a proiectului din oferta aprobată",
+  "Caz de suport pentru Demo Livrare: clienții pot anula singuri o programare?",
+  "Pregătește devizul din oferta aprobată",
   "Ce se întâmplă dacă luăm încă cinci clienți?",
   "Ține minte că…",
   "Deschide studioul",

@@ -319,3 +319,46 @@ test("M13-FIN-03 Word available (stubbed COM): APP_VERIFIED with the PDF Word ex
   assert.ok(exp.files.some((f) => f.path === "deviz-v1.pdf"));
   assert.equal(verifyPackageFolder(exp.folder).ok, true);
 });
+
+test("M13-INT-01 the owner's typed words through POST /api/owner/intent: the start dossier and the deviz each ONE card (a desk record); „Trimite devizul clientului” refused (OUTREACH_DISABLED), nothing planned", async (c) => {
+  const { t } = await approvedOfferHub(c);
+  const plans = () => countRows(t, "SELECT COUNT(*) AS n FROM ops_plans");
+  for (const [text, kind] of [[OPS_REQUEST, "desk.ops.prepare"], [FIN_REQUEST, "desk.finance.prepare"]]) {
+    const before = plans();
+    const r = await t.request("/api/owner/intent", { body: { text, source: "typed" } });
+    assert.equal(r.status, 200, JSON.stringify(r.json));
+    const step = r.json.results.find((x) => x.opsPlan);
+    assert.ok(step, `${text}: ${JSON.stringify(r.json.results).slice(0, 400)}`);
+    assert.equal(step.opsPlan.kind, kind);
+    assert.match(String(step.opsPlan.recordId || ""), /^dsk_/);
+    assert.equal(plans(), before + 1, "ONE card");
+  }
+  const before = plans();
+  const r = await t.request("/api/owner/intent", { body: { text: "Trimite devizul clientului", source: "typed" } });
+  assert.equal(r.status, 200);
+  assert.ok(r.json.results.some((x) => x.intent === "sales_send" && x.refused), JSON.stringify(r.json.results));
+  assert.equal(plans(), before, "nothing planned");
+  assert.equal(countRows(t, "SELECT COUNT(*) AS n FROM desk_records"), 2);
+});
+
+test("M13-AUTH-01 the reserved decision: without the owner session 401; on the UI channel refused; a document approved once cannot be approved again as new content; the old approval never approves the next version", async (c) => {
+  const { t, svc } = await approvedOfferHub(c);
+  const r = await propose(t, FIN_REQUEST, "desk_finance_prepare");
+  await confirmCard(t, r.opsPlan);
+  const waiting = await settleRecord(t, r.opsPlan.recordId);
+  const doc = t.hub.desk.latestArtifact(waiting.id);
+  const anon = await t.request(`/api/desk/artifacts/${doc.id}/approve`, { body: { displayedSha: doc.contentSha }, sessionCookie: "" });
+  assert.equal(anon.status, 401, JSON.stringify(anon.json));
+  const ui = await t.hub.commands.dispatch({ type: "desk.artifact.approve", payload: { artifactId: doc.id, displayedSha: doc.contentSha }, channel: "ui", actor: "user" }).catch((e) => e);
+  assert.ok(ui instanceof Error || ui?.error, "the UI channel cannot request the owner's decision");
+  // A request whose approval is decided, then the inputs change before the execution: the execution is refused (STALE), nothing approved.
+  const requested = await requestSalesApproval(t, { route: `/api/desk/artifacts/${doc.id}/approve`, body: { displayedSha: doc.contentSha } });
+  await t.request(`/api/approvals/${requested.approval.id}/owner_decide`, { body: { decision: "approved", displayedHash: requested.approval.payloadHash } });
+  await salesCommand(t, "sales.service.save", { ...SERVICE, serviceId: svc.id, materials: [...SERVICE.materials, "Logo"] });
+  await settle();
+  const exec = await t.request(`/api/commands/${requested.commandId}/execute`);
+  assert.notEqual(exec.status, 200, JSON.stringify(exec.json));
+  assert.equal(countRows(t, "SELECT COUNT(*) AS n FROM events WHERE type = 'desk.artifact.approved'"), 0);
+  assert.equal(t.hub.desk.artifact(doc.id).status, "STALE");
+  assert.equal(t.hub.desk.get(waiting.id).status, "STALE");
+});

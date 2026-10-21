@@ -494,8 +494,8 @@ test("R1-09 (REG-02) the typed OPEN GATE next to a security event with no authen
 });
 
 // ------------------------------------------------------------------------------------------------------------------------------ REG-04
-test("R1-10 (REG-04) the current API contract (17 since the 2.15.2 owner-only Sales decisions): reported by the server; a UI built for contract 11 is refused (409 UI_STALE) on the rearm routes", async () => {
-  assert.equal(API_CONTRACT, 17);
+test("R1-10 (REG-04) the current API contract (18 since the M13 desk routes): reported by the server; a UI built for contract 11 is refused (409 UI_STALE) on the rearm routes", async () => {
+  assert.equal(API_CONTRACT, 18);
   const t = await makeTestHub();
   const { server, token } = createHttpServer(t.hub);
   await new Promise((resolve) => server.listen(t.config.port, "127.0.0.1", resolve));
@@ -508,8 +508,8 @@ test("R1-10 (REG-04) the current API contract (17 since the 2.15.2 owner-only Sa
   });
   try {
     const session = await req("/api/session");
-    assert.equal(session.json.apiContract, 17);
-    assert.equal(session.headers["x-hub-contract"], "17");
+    assert.equal(session.json.apiContract, 18);
+    assert.equal(session.headers["x-hub-contract"], "18");
     for (const route of ["/api/owner/gate/rearm/card", "/api/owner/gate/rearm"]) {
       const stale = await req(route, { method: "POST", body: {}, headers: { "X-Hub-UI-Contract": "11" } });
       assert.equal(stale.status, 409, route);

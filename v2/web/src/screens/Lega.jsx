@@ -23,6 +23,7 @@ import { rearmSlotFrom, rearmBeforeNavigation, rearmOutcome, gateRearmHint } fro
 import { salesNavigation } from "../lib/salesCockpit.js";
 import { StageCanvas, useVoiceCaption } from "./stage/LegaStage.jsx";
 import { CompanyPanel, DecisionsPanel, SalesOfferCard, CommandHelp, useDecisionsInbox } from "./lega/OneScreen.jsx";
+import { DeskPanel } from "./lega/DeskPanel.jsx";
 import { conversationOf, withConversation, draftOf, withDraft, exchangeProject } from "../lib/legaConversation.js";
 import { salesOppFromPath, offerToShow, screenActivity } from "../lib/legaOneScreen.js";
 
@@ -613,6 +614,7 @@ function Cockpit({ projectId, go }) {
               or a project switch never unmounts (and never replays) it. */}
           {rearmView && <div className="rearm-slot">{rearmView}</div>}
           {offerOpp && <SalesOfferCard key={offerOpp} oppId={offerOpp} onClose={closeOffer} go={go} />}
+          <DeskPanel />
           {!pid ? <>
             {/* Company-level answers ("Ce avem azi?", a scenario, a lesson) are shown even before a project is open. */}
             {intel &&<IntelResult card={{ type: "IntelResult", size: "l" }} kind={intel.kind} result={intel.result} onDismiss={() => setIntel(null)} onDone={() => setIntel(null)} />}

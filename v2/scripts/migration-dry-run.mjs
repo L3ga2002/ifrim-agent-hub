@@ -47,12 +47,15 @@ try {
   // M11 (migration 12; the "M11" group above already means migration 11): deliveries, their items, documents and revisions.
   const M12 = ["deliveries", "delivery_items", "delivery_documents", "delivery_revisions"];
   const m12Tables = migrated.prepare(`SELECT name FROM sqlite_master WHERE type = 'table' AND name IN (${M12.map(() => "?").join(",")})`).all(...M12).map((r) => r.name);
+  // M13 (migration 14 m13-desk): the „Birou intern” records, documents, exports and plan ledger (new and empty after the migration).
+  const M13 = ["desk_records", "desk_artifacts", "desk_exports", "desk_plan_ops"];
+  const m13Tables = migrated.prepare(`SELECT name FROM sqlite_master WHERE type = 'table' AND name IN (${M13.map(() => "?").join(",")})`).all(...M13).map((r) => r.name);
   const integrity = migrated.prepare("PRAGMA integrity_check").get();
   const copyCounts = counts(migrated);
   migrated.close();
   console.log(JSON.stringify({
     schemaBefore: before, schemaAfter: after, latestKnown: MIGRATIONS.at(-1).version, durationMs: Date.now() - started,
-    agentRunsHasEnvironment: cols.includes("environment"), environmentTables: tables, ownerTables, liveGrantsHasEnvelope: grantCols.includes("envelope_id"), m08Tables, m09Tables, m09Complete: m09Tables.length === M09.length && missionCols.includes("bindings_json") && grantCols.includes("binding_json") && cols.includes("prompt_sha256"), m08Complete: m08Tables.length === M08.length, m10Tables, m10Complete: m10Tables.length === M10.length, m11Tables, m11Complete: m11Tables.length === M11.length, m12Tables, m12Complete: m12Tables.length === M12.length,
+    agentRunsHasEnvironment: cols.includes("environment"), environmentTables: tables, ownerTables, liveGrantsHasEnvelope: grantCols.includes("envelope_id"), m08Tables, m09Tables, m09Complete: m09Tables.length === M09.length && missionCols.includes("bindings_json") && grantCols.includes("binding_json") && cols.includes("prompt_sha256"), m08Complete: m08Tables.length === M08.length, m10Tables, m10Complete: m10Tables.length === M10.length, m11Tables, m11Complete: m11Tables.length === M11.length, m12Tables, m12Complete: m12Tables.length === M12.length, m13Tables, m13Complete: m13Tables.length === M13.length,
     integrity: Object.values(integrity)[0],
     rowCountsUnchanged: JSON.stringify(liveCounts) === JSON.stringify(copyCounts), rowCounts: copyCounts,
   }, null, 2));

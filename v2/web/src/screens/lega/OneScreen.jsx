@@ -47,7 +47,7 @@ export function DecisionsPanel({ go, onShowOffer, inbox }) {
         : <ul className="lega-one-list decisions">{items.map((it) => (
           <li key={`${it.kind}:${it.id}`} className="amber stack tight">
             <span className="row wrap"><Chip tone="approval">{DECISION_KIND[it.kind] || it.kind}</Chip><strong className="break">{it.title}</strong></span>
-            {it.target && <span className="faint small break">v{it.target.version} · SHA <code className="mono" style={{ overflowWrap: "anywhere" }}>{it.target.proposalSha}</code></span>}
+            {it.target && <span className="faint small break">v{it.target.version} · SHA <code className="mono" style={{ overflowWrap: "anywhere" }}>{it.target.proposalSha || it.target.sha}</code></span>}
             <span className="row wrap">
               {it.kind === "sales_offer" && it.opportunityId && <button type="button" className="btn sm approve" onClick={() => onShowOffer(it.opportunityId)}>Arată oferta aici</button>}
               <button type="button" className="btn sm ghost" onClick={() => go(it.link)}>Deschide locul deciziei</button>
