@@ -18,10 +18,12 @@ const FLOW_OF_INTENT = Object.freeze({ desk_ops_prepare: "ops_start", desk_suppo
 const WITH_SPEC = /\b(?:misiun|engineering|spec[_ -]?draft|specificati)/;
 /** The SPEC_DRAFT sketch is asked for: a mission / spec word that no „fără / nu / niciun / nici” governs just before it. */
 export function asksForSpec(folded) {
-  const m = String(folded || "").match(WITH_SPEC);
-  if (!m) return false;
-  const before = folded.slice(Math.max(0, m.index - 30), m.index);
-  return !/\b(?:fara|nu|niciun|nicio|nici|in afara)\b[^,.;]*$/.test(before);
+  const text = String(folded || "");
+  for (const m of text.matchAll(new RegExp(WITH_SPEC.source, "g"))) {
+    const before = text.slice(Math.max(0, m.index - 30), m.index).split(/[,.;]|\b(?:dar|insa|ci)\b/).pop();
+    if (!/\b(?:fara|nu|niciun|nicio|nici|in afara)\b/.test(before)) return true;
+  }
+  return false;
 }
 
 /** The text of a support request: the part after the first „:” or the quoted part; else the sentence without its command words. */
@@ -135,7 +137,7 @@ export function registerDeskPlanner(hub, intake) {
       const steps = [{ kind: "desk.support.case", params: { recordId: id, projectId: p.project.id, deliveryId: p.delivery.id, bundleSha: p.sources.delivery.bundleSha, requestSha } }, { kind: "desk.support.reply", params: { recordId: id } }];
       const plan = await hub.opsPlans.propose({ kind: DESK_FLOWS[flow].kind, title: `Caz de suport (cerere SINTETICĂ) pentru ${p.project.name}`.slice(0, 200), steps, limits: deskPhaseALimits(), actor, via: "intake" });
       const raced = desk.sameSubject({ kind: flow, projectId: p.project.id, requestSha });
-      if (raced) { try { hub.opsPlans.cancel(plan.id, { reason: "aceeași cerere are deja o înregistrare", actor: "hub" }); } catch { /* closed */ } const out = await existing(raced, ctx); if (out) return out; }
+      if (raced && raced.id !== same?.id) { try { hub.opsPlans.cancel(plan.id, { reason: "aceeași cerere are deja o înregistrare", actor: "hub" }); } catch { /* closed */ } const out = await existing(raced, ctx); if (out) return out; }
       const r = desk.createPlanned({ id, kind: flow, plan, title: `Caz de suport: ${request}`.slice(0, 200), request, pinned: { projectId: p.project.id, deliveryId: p.delivery.id },
         source: { requestSha, bundleId: p.sources.delivery.bundleId, bundleSha: p.sources.delivery.bundleSha }, actor });
       return cardOf(plan, r, `Un singur card, fără model: înregistrez cazul ${r.internalNo} (cerere SINTETICĂ, nu a unui client real), îl clasific după o regulă declarată, citesc doar criteriile verificate ale pachetului acceptat ${p.sources.delivery.bundleId} și pregătesc răspunsul în ciornă (DRAFT_ONLY — NETRIMIS). Aprobarea textului rămâne decizia ta, separat; după ea, exportul cazului se face fără altă întrebare. Clasificarea „defect raportat” nu dovedește un defect.`,
@@ -153,7 +155,7 @@ export function registerDeskPlanner(hub, intake) {
     const title = flow === "ops_start" ? `Dosarul de pornire a proiectului (intern, sintetic): ${o.org.displayName}` : `Devizul în ciornă (intern, sintetic): ${o.org.displayName}`;
     const plan = await hub.opsPlans.propose({ kind: DESK_FLOWS[flow].kind, title: title.slice(0, 200), steps, limits: deskPhaseALimits(), actor, via: "intake" });
     const raced = desk.sameSubject({ kind: flow, opportunityId: o.opportunity.id });
-    if (raced) { try { hub.opsPlans.cancel(plan.id, { reason: "aceeași cerere are deja o înregistrare", actor: "hub" }); } catch { /* closed */ } const out = await existing(raced, ctx); if (out) return out; }
+    if (raced && raced.id !== same?.id) { try { hub.opsPlans.cancel(plan.id, { reason: "aceeași cerere are deja o înregistrare", actor: "hub" }); } catch { /* closed */ } const out = await existing(raced, ctx); if (out) return out; }
     const r = desk.createPlanned({ id, kind: flow, plan, title, pinned: { opportunityId: o.opportunity.id, proposalId: o.proposal.id, proposalSha: o.proposal.contentSha }, source: { withSpec, proposalVersion: o.proposal.version }, actor });
     const offerLine = `oferta aprobată intern ${o.proposal.id} v${o.proposal.version} (SHA ${o.proposal.contentSha.slice(0, 12)}…)`;
     const note = flow === "ops_start"

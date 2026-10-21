@@ -309,7 +309,7 @@ export function createDesk({ db, bus, clock, settings, sales, deliveries = null,
       if (r.status !== "WAITING_OWNER" || r.awaited?.artifactId !== a.id || r.awaited?.sha !== a.contentSha) throw new HubError("conflict", `Înregistrarea e ${r.status}; documentul nu așteaptă aprobarea`, { code: "DESK_RECORD_STATE" });
       if (!inputsCurrent(r)) throw new HubError("conflict", "Intrările documentului s-au schimbat (STALE); o continuare îl pregătește din nou", { code: "DESK_STALE" });
       if (r.activateBy && new Date(r.activateBy) < clock()) throw new HubError("conflict", "Fereastra cardului confirmat a trecut; o continuare cere o confirmare nouă", { code: "DESK_EXPIRED" });
-      const anchor = anchors?.anchorOf ? anchors.anchorOf(opsPlans.view(r.consent?.planId)) : null;
+      const anchor = anchors?.anchorOf ? anchors.anchorOf(opsPlans.view(r.planId)) : null;
       if (anchor && anchors.stoppedSince(anchor.at, anchor.planId, { afterSeq: anchor.seq })) throw new HubError("conflict", "„Oprește tot” a venit după confirmarea cardului: aprobarea nu se mai aplică; o continuare cere o confirmare nouă", { code: "DESK_STOPPED" });
       if (anchor && trust.confirmedAuthority && !trust.confirmedAuthority(anchor.sessionId).ok) throw new HubError("conflict", "Autorizarea în care ai confirmat cardul a fost revocată; o continuare cere o confirmare nouă", { code: "DESK_STOPPED" });
       const ap = approvalId ? db.prepare("SELECT * FROM approvals WHERE id = ?").get(approvalId) : null;
@@ -679,7 +679,8 @@ export function createDesk({ db, bus, clock, settings, sales, deliveries = null,
   function sameSubject({ kind, opportunityId = null, projectId = null, requestSha = null }) {
     const rows = db.prepare(`SELECT * FROM desk_records WHERE kind = ? AND status <> 'CANCELLED' ${opportunityId ? "AND opportunity_id = ?" : "AND project_id = ?"} ORDER BY created_at DESC, rowid DESC`)
       .all(kind, opportunityId || projectId).map(view);
-    return rows.find((r) => (requestSha ? r.source?.requestSha === requestSha : true)) || null;
+    // A card never confirmed that expired or was replaced holds nothing (a new request gets its own record).
+    return rows.filter((r) => !(DESK_CONTINUABLE.includes(r.status) && !rootConfirmed(r))).find((r) => (requestSha ? r.source?.requestSha === requestSha : true)) || null;
   }
 
   return { flows: DESK_FLOWS, get, need, view, list, detail, register, pendingDecisions, sameSubject, createPlanned, enterPlan, enterPreparing, bound, saveState, setStatus, rootOf,

@@ -123,7 +123,7 @@ export const SUPPORT_CLASS_RO = Object.freeze({ QUESTION: "întrebare", DEFECT_R
 /** Words of the request that say nothing specific about a capability (the domain's own vocabulary is everywhere in the criteria). */
 const COMMON = new Set(["programare", "programarea", "programari", "programarile", "client", "clientul", "clientii", "clientilor", "site", "siteul", "pagina", "paginii", "aplicatia",
   "aplicatiei", "poate", "putem", "pentru", "dintr", "direct", "astfel", "foarte", "sintetic", "sintetica", "intreaba", "intrebare", "spune", "spun", "vrea", "doreste", "daca", "acum", "acest", "aceasta"]);
-const stemsOf = (text) => [...new Set(foldDiacritics(String(text || "")).toLowerCase().split(/[^a-z0-9]+/).filter((w) => w.length >= 6 && !COMMON.has(w)).map((w) => w.slice(0, 6)))];
+const stemsOf = (text) => [...new Set(foldDiacritics(String(text || "")).toLowerCase().split(/[^a-z0-9]+/).filter((w) => w.length >= 5 && !COMMON.has(w)).map((w) => (w.length === 5 ? w : w.slice(0, 6))))];
 /**
  * The sources a reply may use: the PASS criteria of the project's accepted package (id, text, status, fingerprint), pinned with the
  * delivery, the package and the spec sha. → { delivery, criteria[], sha }
@@ -137,18 +137,19 @@ export function supportSources({ project, delivery, binding }) {
 /** The criteria that share a specific word (5-letter stem) with the request; the rest of the request stays unconfirmed. */
 export function matchCriteria(request, sources) {
   const want = stemsOf(request);
-  const matched = arr(sources.criteria).map((c) => ({ c, hits: want.filter((s) => stemsOf(c.text).includes(s)) })).filter((x) => x.hits.length).map((x) => ({ ...x.c, hits: x.hits }));
+  const matched = arr(sources.criteria).map((c, i) => ({ c, i, hits: want.filter((s) => stemsOf(c.text).includes(s)) })).filter((x) => x.hits.length)
+    .sort((a, b) => b.hits.length - a.hits.length || a.i - b.i).map((x) => ({ ...x.c, hits: x.hits }));
   const covered = new Set(matched.flatMap((m) => m.hits));
   return { matched, unconfirmed: want.filter((s) => !covered.has(s)) };
 }
-const firstSentence = (t) => line(String(t || "").split(/(?<=[.;:])\s/)[0], 220);
+const firstSentence = (t) => { const x = line(String(t || "").split(/(?<=[.;])\s/)[0], 400); return x.length > 220 ? `${x.slice(0, 217).replace(/\s+\S*$/, "")}…` : x; };
 /**
  * The draft reply (DRAFT_ONLY, never sent): only what the project's accepted package verified, named by criterion; what the sources do
  * not confirm is said as such. A reported defect is acknowledged, never confirmed; a new request is called new. No figure, no promise.
  */
 export function supportReply({ request, classification, sources, caseNo }) {
   const m = matchCriteria(request, sources);
-  const facts = m.matched.map((c) => ({ id: c.id, text: firstSentence(c.text), status: c.status })).filter((f) => !findCommercialFigures(f.text).length).slice(0, 6);
+  const facts = m.matched.map((c) => ({ id: c.id, text: firstSentence(c.text), status: c.status })).filter((f) => !findCommercialFigures(f.text).length).slice(0, 3);
   const intro = { QUESTION: "Vă mulțumim pentru întrebare. Mai jos sunt doar lucrurile verificate în versiunea livrată și acceptată.",
     DEFECT_REPORTED: "Vă mulțumim pentru semnalare. Am înregistrat-o și o verificăm; nu confirmăm încă un defect.",
     NEW_REQUEST: "Vă mulțumim pentru propunere. Ce descrieți nu face parte din versiunea livrată; o putem discuta separat, ca o cerere nouă." }[classification.class];

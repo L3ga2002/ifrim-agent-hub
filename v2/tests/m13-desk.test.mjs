@@ -386,6 +386,7 @@ test("M13-R2-PURE the builders and the words: a deviz of an offer naming no serv
   assert.equal(asksForSpec("pregateste dosarul de pornire si schita misiunii engineering"), true);
   assert.equal(asksForSpec("pregateste dosarul de pornire, fara misiune engineering"), false);
   assert.equal(asksForSpec("pregateste dosarul de pornire si nu porni nicio misiune"), false);
+  assert.equal(asksForSpec("pregateste dosarul de pornire fara misiune, dar cu schita engineering"), true);
   assert.equal(classifySupport("Clienții pot adăuga mai multe servicii la o programare?").class, "QUESTION");
   const intent = (t) => resolveIntent(t, { projects: [], departments: [], source: "typed" }).steps.map((s) => s.intent);
   assert.deepEqual(intent("Pregătește devizul din oferta aprobată"), ["desk_finance_prepare"]);
@@ -403,6 +404,11 @@ test("M13-R2-01 a card never confirmed that expired holds nothing: the same requ
   const r2 = await propose(t, OPS_REQUEST, "desk_ops_prepare");
   assert.ok(r2.opsPlan?.id && r2.opsPlan.id !== r1.opsPlan.id, JSON.stringify(r2).slice(0, 300));
   assert.notEqual(r2.opsPlan.recordId, r1.opsPlan.recordId);
+  await settle();
+  assert.equal(t.hub.opsPlans.view(r2.opsPlan.id).status, "PROPOSED", "the new card stays shown (never withdrawn by the dead record)");
+  assert.equal(t.hub.desk.get(r2.opsPlan.recordId).status, "PLANNED");
+  const r3 = await propose(t, OPS_REQUEST, "desk_ops_prepare");
+  assert.equal(r3.opsPlan?.id, r2.opsPlan.id, "asked again: the same new card");
 });
 
 test("M13-R2-02 a material received then marked missing again (a round trip) → the continuation still exports a new revision and the record is READY", async (c) => {
@@ -451,4 +457,19 @@ test("M13-R1-03 „Oprește tot” after the card's confirmation and before the 
   await settle();
   assert.equal(t.hub.desk.get(waiting.id).status, "STOPPED");
   assert.equal(t.hub.desk.artifact(doc.id).status, "DRAFT", "the document stays a draft");
+});
+
+test("M13-R1-04 the confirmed card's window passed before the owner's approval: the approval is refused in its own transaction (nothing approved)", async (c) => {
+  const { t } = await approvedOfferHub(c);
+  const r = await propose(t, FIN_REQUEST, "desk_finance_prepare");
+  await confirmCard(t, r.opsPlan);
+  const waiting = await settleRecord(t, r.opsPlan.recordId);
+  const doc = t.hub.desk.latestArtifact(waiting.id);
+  const requested = await requestSalesApproval(t, { route: `/api/desk/artifacts/${doc.id}/approve`, body: { displayedSha: doc.contentSha } });
+  await t.request(`/api/approvals/${requested.approval.id}/owner_decide`, { body: { decision: "approved", displayedHash: requested.approval.payloadHash } });
+  t.hub.db.prepare("UPDATE desk_records SET activate_by = ? WHERE id = ?").run("2000-01-01T00:00:00.000Z", waiting.id);
+  const exec = await t.request(`/api/commands/${requested.commandId}/execute`);
+  assert.notEqual(exec.status, 200, JSON.stringify(exec.json));
+  assert.equal(countRows(t, "SELECT COUNT(*) AS n FROM events WHERE type = 'desk.artifact.approved'"), 0);
+  assert.equal(t.hub.desk.artifact(doc.id).status, "DRAFT");
 });
