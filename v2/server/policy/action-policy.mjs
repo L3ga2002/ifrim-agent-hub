@@ -31,6 +31,10 @@ export const OPERATIONS = Object.freeze({
   // The owner's decisions (offer approval, qualification override), the hand-off, sending and deletion are NOT operations: unknown
   // → SENSITIVE → a plan that names them is refused.
   "sales.synthetic": "PLAN_STEP", "sales.research": "PLAN_STEP", "sales.qualify": "PLAN_STEP", "sales.proposal.draft": "PLAN_STEP", "sales.draft": "PLAN_STEP", "sales.dossier": "PLAN_STEP",
+  // M13 „Birou intern”: the internal start dossier, the support case and its draft reply, the deviz in draft, and their local exports
+  // (one owner-confirmed card each; the exports of the reply and the deviz derived after the owner's approval of the exact text).
+  "desk.ops.record": "PLAN_STEP", "desk.ops.export": "PLAN_STEP", "desk.support.case": "PLAN_STEP", "desk.support.reply": "PLAN_STEP", "desk.support.export": "PLAN_STEP",
+  "desk.finance.document": "PLAN_STEP", "desk.finance.export": "PLAN_STEP",
   "access.newApp": "SENSITIVE", "access.newFolder": "SENSITIVE", "model.run": "SENSITIVE", "file.overwrite": "SENSITIVE", "capture.live.enable": "SENSITIVE",
   publish: "REFUSED", upload: "REFUSED", send: "REFUSED", purchase: "REFUSED", "delete.external": "REFUSED", "hub.admin": "REFUSED", "shell.exec": "REFUSED",
 });

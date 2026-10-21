@@ -37,7 +37,7 @@ const STUDIO_CLOSED_STAGES = new Set(["ARCHIVED", "PUBLISHED", "ANALYTICS"]);
 /** An open clarification (its options) is answerable for 2 minutes; a bare verb waits 5 s for its object. */
 export const INTAKE_LIMITS = Object.freeze({ clarificationTtlMs: 2 * 60 * 1000, verbSlotMs: 5000, transcriptTtlMs: 10 * 60 * 1000, transcriptMax: 500, conversationMax: 50 });
 /** Planner kinds the intake knows (U09/U10/U11 register theirs in their own files; a kind with no planner answers honestly). */
-export const PLANNER_KINDS = Object.freeze(["studio_create", "start_mission", "resume_mission", "engineering", "run", "delivery", "sales"]);
+export const PLANNER_KINDS = Object.freeze(["studio_create", "start_mission", "resume_mission", "engineering", "run", "delivery", "sales", "desk"]);
 /** The resolver intents that become ONE plan through a registered planner (intent → planner kind). */
 export const PLANNER_FOR_INTENT = Object.freeze({ studio_create: "studio_create", start_mission: "start_mission", resume_mission: "resume_mission",
   engineering_request: "engineering", analysis_request: "run",
@@ -47,6 +47,8 @@ export const PLANNER_FOR_INTENT = Object.freeze({ studio_create: "studio_create"
   sales_prepare: "sales",
   // M12 final review: „Continuă pregătirea ofertei” — the Sales planner proposes ONE continuation card (or says truthfully why not).
   sales_continue: "sales",
+  // M13 „Birou intern”: the start dossier, a support case and the deviz (owner/planners/desk.mjs): one card each, no model.
+  desk_ops_prepare: "desk", desk_support_prepare: "desk", desk_finance_prepare: "desk",
   // A planner question asked through lega.request_work has no resolver step: its answer (choice forIntent engineering/run) comes back here.
   engineering: "engineering", run: "run", sales: "sales" });
 /**

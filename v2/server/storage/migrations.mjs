@@ -1125,4 +1125,49 @@ export const MIGRATIONS = [
       `);
     },
   },
+  {
+    // M13 „Birou intern” (Operations / Customer Support / Finance-Admin): three internal flows over the operation plans. Purely additive:
+    // older code runs on this schema, so `git revert` of the release + the managed upgrade is a valid rollback without a database restore.
+    // - desk_records: one record per confirmed root plan (dsk_): the pinned inputs (offer id + sha, delivery, request), its state (checklist,
+    //   questions, risks, deadlines, classification, sources), status, owner, next action, the plan whose consent governs it and the exact
+    //   artifact it waits for (id + sha). Its status list equals RECORD_STATUSES in desk/desk.mjs.
+    // - desk_artifacts: the versioned texts the owner approves (the support reply, the deviz): content sha, status, the approval.
+    // - desk_exports: the local export folders (revisions), with their manifest and verification; never overwritten.
+    // - desk_plan_ops: the C-01 ledger of these plans (same shape as sales_plan_ops).
+    // Everything M13 writes is synthetic in this stage (CHECK synthetic = 1).
+    version: 14,
+    name: "m13-desk",
+    up(db) {
+      db.exec(`
+        CREATE TABLE desk_records (id TEXT PRIMARY KEY, kind TEXT NOT NULL CHECK (kind IN ('ops_start','support_case','finance_doc')),
+          department TEXT NOT NULL CHECK (department IN ('operations','customer-success','finance-admin')), internal_no TEXT NOT NULL UNIQUE, title TEXT NOT NULL,
+          project_id TEXT, opportunity_id TEXT, proposal_id TEXT, proposal_sha TEXT, delivery_id TEXT, request_text TEXT NOT NULL DEFAULT '',
+          source_json TEXT NOT NULL DEFAULT '{}', inputs_sha TEXT NOT NULL DEFAULT '', state_json TEXT NOT NULL DEFAULT '{}',
+          status TEXT NOT NULL CHECK (status IN ('PLANNED','PREPARING','WAITING_OWNER','PACKAGING','READY','STALE','STOPPED','EXPIRED','FAILED','CANCELLED')),
+          status_reason TEXT NOT NULL DEFAULT '', stale_reason TEXT NOT NULL DEFAULT '', owner TEXT NOT NULL DEFAULT 'proprietar', next_action TEXT NOT NULL DEFAULT '', next_action_at TEXT,
+          root_plan_id TEXT NOT NULL, root_plan_hash TEXT NOT NULL, plan_id TEXT, phase_b_plan_id TEXT, consent_json TEXT, activate_by TEXT,
+          awaited_artifact_id TEXT, awaited_sha TEXT, synthetic INTEGER NOT NULL DEFAULT 1 CHECK (synthetic = 1),
+          version INTEGER NOT NULL DEFAULT 1, created_by TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
+        CREATE UNIQUE INDEX ux_desk_records_root ON desk_records(root_plan_id);
+        CREATE INDEX idx_desk_records_kind ON desk_records(kind, status);
+        CREATE INDEX idx_desk_records_opp ON desk_records(opportunity_id);
+        CREATE TABLE desk_artifacts (id TEXT PRIMARY KEY, record_id TEXT NOT NULL REFERENCES desk_records(id),
+          kind TEXT NOT NULL CHECK (kind IN ('support_reply','deviz')), version INTEGER NOT NULL, content_json TEXT NOT NULL, content_sha TEXT NOT NULL,
+          inputs_sha TEXT NOT NULL DEFAULT '', status TEXT NOT NULL CHECK (status IN ('DRAFT','APPROVED_INTERNAL','SUPERSEDED','STALE')), status_reason TEXT NOT NULL DEFAULT '',
+          approval_id TEXT, approved_sha TEXT, approved_at TEXT, approval_json TEXT, synthetic INTEGER NOT NULL DEFAULT 1 CHECK (synthetic = 1),
+          created_by TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, UNIQUE (record_id, version));
+        CREATE TABLE desk_exports (id TEXT PRIMARY KEY, record_id TEXT NOT NULL REFERENCES desk_records(id), artifact_id TEXT, artifact_sha TEXT,
+          revision INTEGER NOT NULL, folder TEXT NOT NULL, files_json TEXT NOT NULL DEFAULT '[]', manifest_sha256 TEXT, verification_json TEXT NOT NULL DEFAULT '{}',
+          status TEXT NOT NULL CHECK (status IN ('WRITING','READY','STALE','SUPERSEDED','INCOMPLETE')), status_reason TEXT NOT NULL DEFAULT '',
+          op_key TEXT NOT NULL UNIQUE, inputs_json TEXT NOT NULL DEFAULT '{}', inputs_sha TEXT NOT NULL DEFAULT '', ops_plan_id TEXT,
+          synthetic INTEGER NOT NULL DEFAULT 1 CHECK (synthetic = 1), created_by TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+          UNIQUE (record_id, revision));
+        CREATE INDEX idx_desk_exports_record ON desk_exports(record_id, status);
+        CREATE TABLE desk_plan_ops (op_key TEXT PRIMARY KEY, root_plan_id TEXT NOT NULL, root_plan_hash TEXT NOT NULL, op TEXT NOT NULL,
+          params_json TEXT NOT NULL, status TEXT NOT NULL CHECK (status IN ('IN_PROGRESS','DONE','FAILED')), claim_token TEXT, result_json TEXT,
+          fixed_at TEXT NOT NULL, synthetic INTEGER NOT NULL DEFAULT 1 CHECK (synthetic = 1), created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
+        CREATE INDEX idx_desk_plan_ops_root ON desk_plan_ops(root_plan_id, op);
+      `);
+    },
+  },
 ];

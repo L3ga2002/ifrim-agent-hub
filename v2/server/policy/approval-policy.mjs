@@ -26,6 +26,8 @@ export const ACTION_CATALOG = Object.freeze([
   { actionKind: "sales.import_rollback", tier: "WORKSPACE_EDIT", effects: "local", policy: "ALWAYS_ASK", loosest: "ALWAYS_ASK", label: "Rollback import Sales (arhivare firme)" },
   { actionKind: "sales.proposal_approve", tier: "SENSITIVE_ACTIONS", effects: "local", policy: "ALWAYS_ASK", loosest: "ALWAYS_ASK", label: "Aprobarea internă a unei propuneri comerciale" },
   { actionKind: "sales.draft_content", tier: "SENSITIVE_ACTIONS", effects: "local", policy: "ALWAYS_ASK", loosest: "ALWAYS_ASK", label: "Aprobarea textului unui mesaj către o firmă" },
+  { actionKind: "desk.support_reply_approve", tier: "SENSITIVE_ACTIONS", effects: "local", policy: "ALWAYS_ASK", loosest: "ALWAYS_ASK", label: "Aprobarea internă a textului unui răspuns de suport (netrimis)" },
+  { actionKind: "desk.finance_doc_approve", tier: "SENSITIVE_ACTIONS", effects: "local", policy: "ALWAYS_ASK", loosest: "ALWAYS_ASK", label: "Aprobarea internă a unui deviz (nu e emitere fiscală)" },
   { actionKind: "sales.suppression_lift", tier: "SENSITIVE_ACTIONS", effects: "local", policy: "ALWAYS_ASK", loosest: "ALWAYS_ASK", label: "Ridicarea DO_NOT_CONTACT pentru o firmă" },
   { actionKind: "browser.inspect", tier: "DEVELOPMENT_TOOLS", effects: "local", policy: "ALWAYS_ASK", loosest: "ASK_ONCE_FOR_TASK", label: "Browser local structurat (Playwright)" },
   { actionKind: "browser.native", tier: "SENSITIVE_ACTIONS", effects: "external", policy: "ALWAYS_ASK", loosest: "ALWAYS_ASK", label: "Browser nativ (Claude in Chrome / Codex browser) pe conturile tale" },

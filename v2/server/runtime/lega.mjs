@@ -82,9 +82,11 @@ const TEST_PATH_IN_WORDS = /(?:^|[\s„"'(])(?:\.\/)?[\w-]+(?:\/[\w.-]+)*\.(?:te
 const WORK_KIND = Object.freeze({ engineering: "engineering", studio: "studio_create", run: "run", mission: "start_mission",
   // M12: an offer request („pregătește o ofertă pentru …”) → the Sales planner (ONE card; the approval stays the owner's).
   sales: "sales" });
-const PLANNER_OF_INTENT = new Set(["studio_create", "start_mission", "resume_mission", "engineering", "run", "sales_prepare", "sales_continue"]);
+const PLANNER_OF_INTENT = new Set(["studio_create", "start_mission", "resume_mission", "engineering", "run", "sales_prepare", "sales_continue", "desk_ops_prepare", "desk_support_prepare", "desk_finance_prepare"]);
+/** M13: the „Birou intern” requests (start dossier, support case, deviz) → the desk planner, with the flow named. */
+const DESK_FLOW_OF_INTENT = Object.freeze({ desk_ops_prepare: "ops_start", desk_support_prepare: "support_case", desk_finance_prepare: "finance_doc" });
 /** The intake planner kind of a resolver intent (the Sales request's intent is not its planner's name; a continuation is the Sales planner's too). */
-const plannerKindOf = (intent) => (intent === "sales_prepare" || intent === "sales_continue" ? "sales" : intent);
+const plannerKindOf = (intent) => (intent === "sales_prepare" || intent === "sales_continue" ? "sales" : Object.hasOwn(DESK_FLOW_OF_INTENT, intent) ? "desk" : intent);
 const ANALYSIS_WORDS = /^\s*(?:analizeaza|citeste|rezuma|revizuieste|evalueaza|explica)\b/;
 const STUDIO_WORDS = /\b(clip|clipul|clipuri|video|videoclip|videoclipul|promo|promovare|reel|short|shorts|montaj|teaser|trailer)\b/;
 /** Screens the browser can open from a path the intake returned (the cockpit path becomes the Lega screen of that project). */
@@ -1599,10 +1601,11 @@ export function createLega({ bus, live, clock, settings, gate, grants, projects,
     // M12: an offer request is the Sales planner's whatever hint the model chose (an offer is never code, a clip or an analysis); so is the
     // continuation of an offer's preparation (final review: ONE continuation card, or the truthful refusal).
     if (step?.intent === "sales_prepare" || step?.intent === "sales_continue") kind = "sales";
+    if (step && Object.hasOwn(DESK_FLOW_OF_INTENT, step.intent)) kind = "desk";
     // Reading / analysis verbs ask for one bounded read-only model step (run plan), not a code change.
     if (!kind) kind = step ? plannerKindOf(step.intent) : STUDIO_WORDS.test(normalizeWords(request)) ? "studio_create" : ANALYSIS_WORDS.test(normalizeWords(request)) ? "run" : "engineering";
     let args = { request };
-    if (step && plannerKindOf(step.intent) === kind) args = { ...step.args, request, ...(step.intent === "sales_continue" ? { continue: true } : {}) };
+    if (step && plannerKindOf(step.intent) === kind) args = { ...step.args, request, ...(step.intent === "sales_continue" ? { continue: true } : {}), ...(kind === "desk" ? { flow: DESK_FLOW_OF_INTENT[step.intent] } : {}) };
     else if (kind === "studio_create") args = { durationSec: durationOf(), topic: request.slice(0, 200), request };
     const projectId = project?.id || step?.args?.projectId || null;
     return { kind, args, projectId };

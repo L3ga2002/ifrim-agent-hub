@@ -7,9 +7,9 @@ import { tx, json, parse } from "../storage/db.mjs";
 
 export const EVENT_SCHEMA_VERSION = 2;
 /** Owner decisions whose events name the deciding authenticator (policy/approvals.mjs OWNER_DECIDED and the Sales owner writes, 2.15.2). */
-const OWNER_DECIDED_KINDS = new Set(["sales.proposal_approve", "sales.draft_content", "sales.suppression_lift", "sales.import_rollback"]);
+const OWNER_DECIDED_KINDS = new Set(["sales.proposal_approve", "sales.draft_content", "sales.suppression_lift", "sales.import_rollback", "desk.support_reply_approve", "desk.finance_doc_approve"]);
 const OWNER_DECISION_EVENTS = new Set(["sales.proposal.approved", "sales.qualification.override", "sales.draft.content_approved", "sales.suppression_lifted",
-  "sales.import.rolled_back", "sales.service.saved"]);
+  "sales.import.rolled_back", "sales.service.saved", "desk.artifact.approved", "desk.record.item"]);
 
 /**
  * Versioned, append-only internal event bus. Events are written in the same transaction as the

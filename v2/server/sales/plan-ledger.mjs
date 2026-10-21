@@ -45,11 +45,13 @@ export function opKeyOf(root, op, keyParams) {
   return sha256(canonicalJson({ v: PLAN_LEDGER_VERSION, root: { planId, planHash }, op: String(op), params: normalizeParams(keyParams ?? {}) }));
 }
 
-export function createPlanLedger({ db, bus, clock }) {
+export function createPlanLedger({ db, bus, clock, table = "sales_plan_ops" }) {
+  // M13: the same ledger for the internal desk plans (desk_plan_ops, migration 14); the table name is one of the two known ones.
+  if (!["sales_plan_ops", "desk_plan_ops"].includes(table)) throw new Error(`Unknown plan ledger table: ${table}`);
   const now = () => clock().toISOString();
   /** In-process claims: op_key → { token, promise, resolve } (a second caller in this process waits for the first). */
   const held = new Map();
-  const rowOf = (key) => db.prepare("SELECT * FROM sales_plan_ops WHERE op_key = ?").get(String(key || ""));
+  const rowOf = (key) => db.prepare(`SELECT * FROM ${table} WHERE op_key = ?`).get(String(key || ""));
   const view = (r) => r && ({ opKey: r.op_key, rootPlanId: r.root_plan_id, rootPlanHash: r.root_plan_hash, op: r.op, params: parse(r.params_json, {}), status: r.status,
     result: parse(r.result_json, null), fixedAt: r.fixed_at, createdAt: r.created_at, updatedAt: r.updated_at });
 
@@ -81,10 +83,10 @@ export function createPlanLedger({ db, bus, clock }) {
         return { duplicate: true, key, result, fixedAt: existing.fixed_at, after: out };
       }
       const at = now();
-      db.prepare(`INSERT INTO sales_plan_ops (op_key, root_plan_id, root_plan_hash, op, params_json, status, claim_token, result_json, fixed_at, synthetic, created_at, updated_at)
+      db.prepare(`INSERT INTO ${table} (op_key, root_plan_id, root_plan_hash, op, params_json, status, claim_token, result_json, fixed_at, synthetic, created_at, updated_at)
         VALUES (?, ?, ?, ?, ?, 'IN_PROGRESS', NULL, NULL, ?, 1, ?, ?)`).run(key, String(root.planId), String(root.planHash), op, paramsJson, at, at, at);
       const result = effect({ key, fixedAt: at });
-      db.prepare("UPDATE sales_plan_ops SET status = 'DONE', result_json = ?, updated_at = ? WHERE op_key = ? AND status = 'IN_PROGRESS'").run(json(result ?? null), now(), key);
+      db.prepare(`UPDATE ${table} SET status = 'DONE', result_json = ?, updated_at = ? WHERE op_key = ? AND status = 'IN_PROGRESS'`).run(json(result ?? null), now(), key);
       const out = after ? after(result, { duplicate: false, key, fixedAt: at }) : undefined;
       return { duplicate: false, key, result, fixedAt: at, after: out };
     });
@@ -106,13 +108,13 @@ export function createPlanLedger({ db, bus, clock }) {
       if (existing) {
         sameParams(existing, op, paramsJson);
         if (existing.status === "DONE") return { done: true, key, result: parse(existing.result_json, null), fixedAt: existing.fixed_at };
-        const n = db.prepare("UPDATE sales_plan_ops SET status = 'IN_PROGRESS', claim_token = ?, updated_at = ? WHERE op_key = ? AND status = ? AND claim_token IS ?")
+        const n = db.prepare(`UPDATE ${table} SET status = 'IN_PROGRESS', claim_token = ?, updated_at = ? WHERE op_key = ? AND status = ? AND claim_token IS ?`)
           .run(token, now(), key, existing.status, existing.claim_token).changes;
         if (n !== 1) throw new HubError("conflict", "Operația planului a fost preluată între timp", { code: "LEDGER_IN_PROGRESS", data: { opKey: key, op } });
         return { claimed: true, key, token, fixedAt: existing.fixed_at, takenOver: true };
       }
       const at = now();
-      db.prepare(`INSERT INTO sales_plan_ops (op_key, root_plan_id, root_plan_hash, op, params_json, status, claim_token, result_json, fixed_at, synthetic, created_at, updated_at)
+      db.prepare(`INSERT INTO ${table} (op_key, root_plan_id, root_plan_hash, op, params_json, status, claim_token, result_json, fixed_at, synthetic, created_at, updated_at)
         VALUES (?, ?, ?, ?, ?, 'IN_PROGRESS', ?, NULL, ?, 1, ?, ?)`).run(key, String(root.planId), String(root.planHash), op, paramsJson, token, at, at, at);
       return { claimed: true, key, token, fixedAt: at, takenOver: false };
     });
@@ -136,9 +138,9 @@ export function createPlanLedger({ db, bus, clock }) {
     const lost = () => new HubError("conflict", "Operația planului nu mai e a acestui pas (preluată sau încheiată)", { code: "LEDGER_CLAIM_LOST", data: { opKey: key } });
     try {
       return bus.transaction(() => {
-        if (!db.prepare("SELECT 1 FROM sales_plan_ops WHERE op_key = ? AND status = 'IN_PROGRESS' AND claim_token = ?").get(key, token)) throw lost();
+        if (!db.prepare(`SELECT 1 FROM ${table} WHERE op_key = ? AND status = 'IN_PROGRESS' AND claim_token = ?`).get(key, token)) throw lost();
         const result = effect();
-        const n = db.prepare("UPDATE sales_plan_ops SET status = 'DONE', result_json = ?, claim_token = NULL, updated_at = ? WHERE op_key = ? AND status = 'IN_PROGRESS' AND claim_token = ?")
+        const n = db.prepare(`UPDATE ${table} SET status = 'DONE', result_json = ?, claim_token = NULL, updated_at = ? WHERE op_key = ? AND status = 'IN_PROGRESS' AND claim_token = ?`)
           .run(json(result ?? null), now(), key, token).changes;
         if (n !== 1) throw lost();
         return result;
@@ -148,7 +150,7 @@ export function createPlanLedger({ db, bus, clock }) {
   /** The claim ends without an effect: FAILED (a refusal that stays recorded; a retry may take it over) or left IN_PROGRESS (`keep`). */
   function release({ key, token, failed = false, error = "" }) {
     try {
-      if (failed) bus.transaction(() => db.prepare("UPDATE sales_plan_ops SET status = 'FAILED', claim_token = NULL, result_json = ?, updated_at = ? WHERE op_key = ? AND status = 'IN_PROGRESS' AND claim_token = ?")
+      if (failed) bus.transaction(() => db.prepare(`UPDATE ${table} SET status = 'FAILED', claim_token = NULL, result_json = ?, updated_at = ? WHERE op_key = ? AND status = 'IN_PROGRESS' AND claim_token = ?`)
         .run(json({ error: String(error).slice(0, 300) }), now(), key, token));
     } finally { releaseHeld(key, token); }
   }
@@ -160,7 +162,7 @@ export function createPlanLedger({ db, bus, clock }) {
     return { key, status: r?.status || null, result: r ? parse(r.result_json, null) : null, fixedAt: r?.fixed_at || null, held: held.has(key) };
   }
   const get = (key) => view(rowOf(key));
-  const ofRoot = (rootPlanId) => db.prepare("SELECT * FROM sales_plan_ops WHERE root_plan_id = ? ORDER BY created_at, rowid").all(String(rootPlanId || "")).map(view);
+  const ofRoot = (rootPlanId) => db.prepare(`SELECT * FROM ${table} WHERE root_plan_id = ? ORDER BY created_at, rowid`).all(String(rootPlanId || "")).map(view);
 
   return { key: opKeyOf, runSync, claim, complete, release, status, get, ofRoot, isHeld: (key) => held.has(key) };
 }

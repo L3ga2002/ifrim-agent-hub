@@ -31,6 +31,7 @@ import { registerMediaRoutes } from "../media/media-routes.mjs";
 import { registerOpsRoutes } from "../ops/ops-routes.mjs";
 import { registerDeliveryRoutes } from "../delivery/delivery-routes.mjs";
 import { registerProbeRoutes } from "../owner/probe-routes.mjs";
+import { registerDeskRoutes } from "../desk/desk-commands.mjs";
 import { COMMAND_CHANNELS, AGENT_COMMANDS, decodeDelegation, checkDelegation } from "../runtime/commands.mjs";
 
 /** The channel a request declares: a local script ("cli"), a delegated agent ("agent", M07) or the owner's UI (default). */
@@ -588,6 +589,8 @@ export function registerRoutes(router, hub, { token }) {
   post("/api/sales/followups/:id/draft", cmd("sales.followup.draft", ({ params }) => ({ followupId: params.id })));
   post("/api/sales/followups/:id/:action", cmd("sales.followup.action", ({ params, body }) => ({ followupId: params.id, action: params.action, reason: body?.reason || "" })));
   get("/api/sales/owner", () => settings.get("salesOwner"));
+  // M13 „Birou intern”: records, register (reads), the owner's approval of the exact document, a checklist update, continue, cancel.
+  registerDeskRoutes({ get, post, hub, owner });
   post("/api/sales/owner", cmd("sales.owner.save"));
   // CSV export of the organization list: formula injection neutralized, filters as in the list.
   get("/api/sales/export/orgs.csv", ({ query }) => ({ __raw: true, contentType: "text/csv; charset=utf-8",

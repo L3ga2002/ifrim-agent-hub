@@ -20,6 +20,9 @@ export const OWNER_DECIDED = Object.freeze(new Map([
   ["sales.draft_content", "aprobarea textului ciornei"],
   ["sales.suppression_lift", "ridicarea DO_NOT_CONTACT"],
   ["sales.import_rollback", "rollback-ul importului"],
+  // M13 „Birou intern”: the internal approval of the exact support reply text and of the exact deviz (id + full sha).
+  ["desk.support_reply_approve", "aprobarea internă a răspunsului de suport"],
+  ["desk.finance_doc_approve", "aprobarea internă a devizului"],
 ]));
 
 export function approvalHash({ actionKind, target, payload, codeVersion, permissionTier, scopeType, scopeId }) {

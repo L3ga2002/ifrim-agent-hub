@@ -21,6 +21,7 @@ import { buildBriefing, briefingMarkdown } from "../domain/briefing.mjs";
 import { snapshotLegacy, applyImport, revertImport } from "../storage/v1-import.mjs";
 import { transitionTask } from "./state-machine.mjs";
 import { registerSalesCommands } from "../sales/sales-commands.mjs";
+import { registerDeskCommands } from "../desk/desk-commands.mjs";
 import { registerEnvironmentCommands } from "../environments/environment-commands.mjs";
 import { registerOwnerCommands } from "../owner/owner-commands.mjs";
 import { registerIntelCommands } from "../intel/intel-commands.mjs";
@@ -513,6 +514,8 @@ export function registerCommands(commands, hub) {
     execute: async (input) => leads.setStatus(input.leadId, input.status, input.notes ?? null) });
   // ---------- Sales & Lead Generation (M04): the department's commands; the M01 registry above stays for compatibility ----------
   registerSalesCommands(reg, hub, { createMission });
+  // M13 „Birou intern”: the owner's approval of the exact reply / deviz, the checklist update, continue and cancel.
+  registerDeskCommands(reg, hub);
   registerEnvironmentCommands(reg, hub);
   registerOwnerCommands(reg, hub);
   registerIntelCommands(reg, hub);

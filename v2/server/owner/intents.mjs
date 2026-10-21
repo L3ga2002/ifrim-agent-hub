@@ -86,6 +86,9 @@ export const INTENT_EFFECTS = Object.freeze({
   sales_prepare: "plan", sales_show: "navigate", sales_missing: "read", sales_approve_talk: "read", sales_send: "none",
   // M12 final review: „Continuă pregătirea ofertei” proposes ONE continuation card (the owner confirms it); nothing resumes from a sentence.
   sales_continue: "plan",
+  // M13 „Birou intern”: the start dossier of a project, a support case and the deviz from the approved offer — ONE card each
+  // (owner/planners/desk.mjs); the approval of a reply or a deviz stays the owner's own decision, on the exact text, in the L3ga screen.
+  desk_ops_prepare: "plan", desk_support_prepare: "plan", desk_finance_prepare: "plan",
 });
 
 // ---------------------------------------------------------------- M12 Sales: sending, contacting and publishing are refused
@@ -830,7 +833,7 @@ const ACK_LEAD = /^(?:(?:ok|okay|hai|haide|bine)(?:[\s,!.:;]+|$)|(?:(?:hei|hey|b
 const ACK_ONLY = /^(?:(?:ok|okay|hai|haide|bine|(?:(?:hei|hey|buna) )?lega)(?:[\s,!.:;]+|$))+$/;
 const ACK_REQUESTS = new Set(["studio_create", "engineering_request", "analysis_request", "start_mission", "resume_mission", "explain_mode", "sales_prepare", "sales_send",
   // M12 final review F17: the Sales reads and the continuation take a leading acknowledgement too („Ok, arată-mi oferta” was a project „oferta”).
-  "sales_show", "sales_missing", "sales_approve_talk", "sales_continue"]);
+  "sales_show", "sales_missing", "sales_approve_talk", "sales_continue", "desk_ops_prepare", "desk_support_prepare", "desk_finance_prepare"]);
 /**
  * F17: in front of a Sales read or request a leading „Da, …” / „Sigur, …” is an acknowledgement as well („Da, arată-mi oferta”) — only
  * there: every other clause keeps it (the confirmation grammar reads „da” as consent), and a Sales read or request is never a consent.
@@ -1515,6 +1518,11 @@ const SALES_MISSING_CTX = /^(?:(?:si|dar|deci) )?ce (?:mai )?lipseste (?:din|in|
 const SALES_CONTINUE = /^(?:(?:continua|continuam|reia|reluam|reporneste|relanseaza)(?: cu)? (?:(?:pregatirea|pregatirii|lucrul la|lucrul cu|munca la) )?(?:(?:ultimei|ultima|aceasta|asta|aceeasi) )?(?:ofertei|oferta|ofertele|ofertelor)|(?:pregateste|fa|da drumul la)(?:-mi)? continuarea (?:pregatirii )?(?:ofertei|ofertelor))(?: acum| te rog)?$/;
 const SALES_CONTINUE_CTX = /^(?:(?:continua|continuam|reia|reluam)(?: cu)? (?:pregatirea|pregatirii)|(?:pregateste|fa)(?:-mi)? continuarea(?: pregatirii)?)(?: acum| te rog)?$/;
 const SALES_SEND_SKIP = new Set(["sales_send"]);
+// M13 „Birou intern” (normalized clauses). A preparation verb heads the clause; „arată …” / a question stays a read.
+const DESK_VERB = String.raw`(?:te rog,? )?(?:pregateste|pregatesti|pregatiti|fa|faci|construieste|creeaza|genereaza|redacteaza|scrie|deschide|vreau|as vrea|as dori|am nevoie de)(?:-mi|-ne)? (?:si )?(?:un |o )?`;
+const DESK_OPS = new RegExp(String.raw`^${DESK_VERB}(?:dosar(?:ul)? de pornire|pornirea proiectului|demararea proiectului|startul proiectului)\b`);
+const DESK_FINANCE = new RegExp(String.raw`^${DESK_VERB}(?:deviz(?:ul)?|proforma|documentul comercial)\b(?=.*\b(?:aprobat|aprobata|aprobate|ofertei aprobate|din oferta|pe baza ofertei|registru|registrul)\b)`);
+const DESK_SUPPORT = new RegExp(String.raw`^(?:te rog,? )?(?:(?:inregistreaza|deschide|creeaza|fa|adauga|pregateste)(?:-mi)? (?:un |o )?)?(?:caz(?:ul)?|tichet(?:ul)?|solicitare(?:a)?|cerere(?:a)?|sesizare(?:a)?) (?:noua |nou )?de suport\b`);
 /** F4: the steps whose words a planner receives; one left with nothing else to ask once the outreach clause is cut out is dropped. */
 const OUTREACH_STRIPPED_PLANNERS = new Set(["engineering_request", "analysis_request", "studio_create", "sales_prepare", "delivery_prepare", "delivery_revise", "start_mission", "resume_mission", "continue_work"]);
 
@@ -1595,6 +1603,11 @@ const P = [
   // Sending, contacting or publishing (the verb STARTS the clause; send / publish only within the Sales scope, checked in resolveIntent) is
   // REFUSED with OUTREACH_DISABLED; preparing an offer is ONE plan card; showing it navigates; „aprobă oferta” and „ce lipsește din ofertă”
   // are reads the Hub answers (it never approves, it never creates an approval).
+  // M13 „Birou intern” — before the Sales rows: „pregătește devizul din oferta aprobată” is the deviz of an APPROVED offer (Finance), never a
+  // new offer; „dosarul de pornire a proiectului” is the Operations start dossier; „caz de suport …” a support case (its text kept whole).
+  ["desk_ops_prepare", DESK_OPS, (_m, clause) => ({ request: clause })],
+  ["desk_finance_prepare", DESK_FINANCE, (_m, clause) => ({ request: clause })],
+  ["desk_support_prepare", DESK_SUPPORT, (_m, clause) => ({ request: clause })],
   ["sales_send", SALES_SEND, salesSendArgs],
   ["sales_show", SALES_OFFER_QUESTION],
   ["sales_prepare", SALES_PREPARE],
@@ -1861,7 +1874,7 @@ const COND_LEAD = new RegExp(String.raw`^(?<word>${COND_WORDS}) (?<cond>[^,]+), 
 // Review M10.2 #21: a code change or an analysis is a start too ("Repară bug-ul de login doar dacă trec testele" read the tests and
 // dropped both the request and the condition; "… după review" planned with the condition only in free text).
 const START_LIKE = new Set(["confirm", "show_plan", "continue_work", "start_mission", "resume_mission", "ops_continue", "objective_plan", "studio_create", "studio_variant", "ops_capture_vertical", "studio_import_here",
-  "engineering_request", "analysis_request", "delivery_prepare", "sales_prepare", "sales_continue"]);
+  "engineering_request", "analysis_request", "delivery_prepare", "sales_prepare", "sales_continue", "desk_ops_prepare", "desk_support_prepare", "desk_finance_prepare"]);
 const START_VERB = /^(?:(?:ok|okay|hai|sigur|bine|da),? )*(?:executa|porneste|incepe|lanseaza|ruleaza|confirma|continua|reia|fa-l|fa-o|da drumul|repara|rezolva|corecteaza|implementeaza|refactorizeaza|adauga|scrie|analizeaza|revizuieste|evalueaza|investigheaza)\b/;
 /** Review M10.2 #19: a clause that STARTS with a plan-start verb (after acknowledgements) — the same list show_plan's catch-all excludes. */
 const PLAN_START = /^(?:(?:ok|okay|hai|sigur|bine|da),? )*(?:executa|porneste|incepe|lanseaza|ruleaza|confirma|confirm|fa-l|fa-o|da drumul)\b/;
@@ -1922,7 +1935,9 @@ function conditionOf(text) {
 const NEVER_SPLIT = new Set(["ops_capture_vertical", "studio_edit", "simulate", "reorder", "confirm", "not_yet", "reject_plan", "refuse_execute", "studio_publish", "quiet",
   "twin_impact", "twin_why", "objective_plan", "incident_open", "teach", "forget", "start_mission", "resume_mission", "studio_create", "gate_rearm", "delivery_prepare", "delivery_revise",
   // M12: an offer request is the owner's whole sentence (its brief); a send verb inside it is refused as a step of its own (resolveIntent).
-  "sales_prepare"]);
+  "sales_prepare",
+  // M13: a desk request (its support text included) is the owner's whole sentence.
+  "desk_ops_prepare", "desk_support_prepare", "desk_finance_prepare"]);
 /** A split never MANUFACTURES consent or authority: "Da, pornește misiunea" must not become "da" + a mission start. */
 const NEVER_A_HALF = new Set(["confirm", "lega_start", "autonomy", "unfreeze_project", "ops_continue"]);
 const RIGHT_VERB = /^(?:arata|deschide|porneste|continua|opreste|fa|pregateste|importa|treci|du-ma|mergi|adu|comuta|inregistreaza|spune|explica|reia|lanseaza|ruleaza|creeaza|genereaza|hai)\b/;

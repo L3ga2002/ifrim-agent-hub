@@ -87,6 +87,9 @@ import { createSalesPreparations, PREPARE_KIND, PREPARATION_PHASE_B_OPS } from "
 import { createSalesPlanExecutors } from "./sales/plan-executors.mjs";
 import { registerSalesPlanner } from "./owner/planners/sales.mjs";
 import { createSalesAnswers } from "./sales/sales-answers.mjs";
+import { createDesk, DESK_FLOWS, DESK_PHASE_B_OPS } from "./desk/desk.mjs";
+import { createDeskExecutors } from "./desk/executors.mjs";
+import { registerDeskPlanner } from "./owner/planners/desk.mjs";
 import { createKnowledge } from "./owner/knowledge.mjs";
 import { createDevProfileReader } from "./owner/dev-profile.mjs";
 import { setExtraCommands } from "./factory/spec.mjs";
@@ -342,6 +345,15 @@ export function createHub(config, { providerOverrides = {}, homeDir, browserLaun
   // M12 (S-07): the Hub's own answers to „Arată-mi oferta” / „Ce lipsește?” / „Aprobă oferta” (reads only; the intake and Lega's read tool).
   const salesAnswers = createSalesAnswers({ sales, preparations: salesPreparations, opsPlans });
   legaRead.salesAnswers = salesAnswers;
+  // M13 „Birou intern” (Operations / Customer Support / Finance-Admin): the same plan engine, its own C-01 ledger (desk_plan_ops), the
+  // derived exports of the support reply and the deviz after the owner's approval of the exact text, and the Sales invalidation hook (a
+  // changed approved offer makes a start dossier / deviz STALE). The Stop All / confirmation anchors are the M12 ones (same events).
+  const deskLedger = createPlanLedger({ db, bus, clock, table: "desk_plan_ops" });
+  const desk = createDesk({ db, bus, clock, settings, sales, deliveries, factory, projects, opsPlans, trust, ledger: deskLedger, media, config,
+    anchors: { anchorOf: (plan) => salesPreparations.anchorOf(plan), stoppedSince: (...args) => salesPreparations.stoppedSince(...args) } });
+  Object.assign(executors, createDeskExecutors({ desk, sales, ledger: deskLedger, opsPlans, media, config }));
+  for (const flow of Object.values(DESK_FLOWS)) if (flow.exportKind) opsPlans.registerParent(flow.kind, { allowedOps: DESK_PHASE_B_OPS[flow.exportKind], verify: (parent) => desk.verifyParent(parent) });
+  sales.onInvalidated((event) => desk.onSalesInvalidated(event));
 
   // M10.2 U13: Lega arms a plan it has just SPOKEN (its bridge or its plan tool); the plan's service re-checks everything. A plan already
   // armed in this Lega session keeps its window (re-arming would make a "Da" said in between count as said before the window).
@@ -358,7 +370,7 @@ export function createHub(config, { providerOverrides = {}, homeDir, browserLaun
     company, chiefOfStaff, surfaces, schedules, computer, skills, artifacts, integrations, nativeSessions, telemetry, router, commands, checkpoints,
     breakers, supervisor, backups, providers, gate, runs, handoffs, tools, roleConfig, skillConfig, capabilityConfig, codexIsolation, lega, refreshCodexConfig, factory, factoryRunner,
     environments, wslRunner, trust, envelopes, armedWindows, cockpit, interrupts, advisor, voice, voiceEngine,
-    twin, warroom, autopilot, simulations, league, skillEvolution, teach, packages, board, devices, media, desktop, opsPlans, executors, deliveries, salesPreparations, salesLedger, salesAnswers };
+    twin, warroom, autopilot, simulations, league, skillEvolution, teach, packages, board, devices, media, desktop, opsPlans, executors, deliveries, salesPreparations, salesLedger, salesAnswers, desk, deskLedger };
   registerCommands(commands, hub);
   // Stage before M12: what Lega knows about the system (read-only, from the real registries and tables).
   hub.knowledge = createKnowledge(hub);
@@ -369,6 +381,8 @@ export function createHub(config, { providerOverrides = {}, homeDir, browserLaun
   if (hub.intake) hub.deliveryPlanner = registerDeliveryPlanner(hub, hub.intake);
   // M12: the Sales planner (a natural offer request → ONE preparation card; no model).
   if (hub.intake) hub.salesPlanner = registerSalesPlanner(hub, hub.intake);
+  // M13: the „Birou intern” planner (start dossier, support case, deviz → ONE card each; no model).
+  if (hub.intake) hub.deskPlanner = registerDeskPlanner(hub, hub.intake);
   // Stage before M12 (§25 closure): the bounded recovery of a revision stopped at step 0 (planners/delivery.mjs refineTest). A technical
   // action of the Hub (or of the agent on the cli/agent channel), recorded as such; the new card still needs its own confirmation.
   commands.register("factory.refine_test", { describe: "Rafinează o singură dată testul unei revizii oprite la pasul 0 (aceleași cuvinte, aceleași efecte, doar verificările noi; cardul nou cere confirmare)",
@@ -451,7 +465,7 @@ export function createHub(config, { providerOverrides = {}, homeDir, browserLaun
     extraTick: () => Promise.all([schedules.tick((cmd) => commands.dispatch({ ...cmd, channel: "schedule", actor: "scheduler" }).then((r) => r.result)), factory.tick(), Promise.resolve().then(() => sales.tick()),
       Promise.resolve().then(() => envelopes.tick()), Promise.resolve().then(() => voice.tick()), Promise.resolve().then(() => media.tick()),
       Promise.resolve().then(() => lega.tick()), Promise.resolve().then(() => hub.workRequests.tick()), Promise.resolve().then(() => deliveries.tick()),
-      Promise.resolve().then(() => salesPreparations.tick())]) });
+      Promise.resolve().then(() => salesPreparations.tick()), Promise.resolve().then(() => desk.tick())]) });
   hub.scheduler = scheduler;
   // ---------------------------------------------------------------- 2.12.2 (P0-R1): retained-lease reconciliation
   // A workspace lease kept after an unconfirmed stop (runs.finalize) or a restart (recovery) is released once its run is finished and its
@@ -576,6 +590,8 @@ export function createHub(config, { providerOverrides = {}, homeDir, browserLaun
     try { deliveries.boot(); } catch (error) { bootReport.deliveries = { error: String(error?.message || error).slice(0, 300) }; }
     // M12: a Sales preparation's listeners (the owner's approval, the plan's end, Stop All); a deferred, silent reconciliation pass.
     try { salesPreparations.boot(); } catch (error) { bootReport.salesPreparations = { error: String(error?.message || error).slice(0, 300) }; }
+    // M13: the desk records' listeners (the owner's approval, the plan's end, Stop All) and a deferred, silent reconciliation pass.
+    try { desk.boot(); } catch (error) { bootReport.desk = { error: String(error?.message || error).slice(0, 300) }; }
     bootReport.factory = factory.recover();
     // M09: interrupted renders / captures / transcriptions / distribution attempts are marked, never resumed.
     try { bootReport.media = media.boot(); } catch (error) { bootReport.media = { error: String(error?.message || error).slice(0, 300) }; }
@@ -615,6 +631,7 @@ export function createHub(config, { providerOverrides = {}, homeDir, browserLaun
     sync("envelopes.close", () => envelopes.close());
     sync("deliveries.close", () => deliveries.close_());
     sync("salesPreparations.close", () => salesPreparations.close());
+    sync("desk.close", () => desk.close());
     sync("opsPlans.close", () => opsPlans.close());
     closePromise = (async () => {
       const step = async (name, fn) => {

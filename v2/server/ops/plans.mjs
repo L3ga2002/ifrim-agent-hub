@@ -23,7 +23,9 @@ export const PLAN_LIMITS = Object.freeze({ confirmWindowMin: 15, slackMin: 30, m
 export const NEVER_IN_PLANS = Object.freeze(["publicare pe platforme", "încărcare (upload)", "trimiterea de mesaje", "plăți sau cumpărături", "ștergeri externe", "schimbarea setărilor de securitate"]);
 const ACTIVE = new Set(["CONFIRMED", "RUNNING"]);
 /** Plan kinds whose newer card supersedes only the older cards of the same object (the step parameter naming it); every other kind is kind-wide. */
-const SUPERSEDE_SCOPE = Object.freeze({ "delivery.correct": "deliveryId", "sales.prepare": "preparationId" });
+const SUPERSEDE_SCOPE = Object.freeze({ "delivery.correct": "deliveryId", "sales.prepare": "preparationId",
+  // M13: a desk card supersedes only the older card of the SAME record.
+  "desk.ops.prepare": "recordId", "desk.support.prepare": "recordId", "desk.finance.prepare": "recordId" });
 /**
  * M10.2 review #40: the secrets a step needs at confirmation (typed in the plan card, memory only, never in the body, hash, DB or a log),
  * derived from the step kinds — the same list for the plan view, the card shape and confirm(), so a typed, spoken or armed-window

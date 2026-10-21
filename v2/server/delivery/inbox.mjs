@@ -3,6 +3,7 @@
 // links to the place where the existing owner-session command lives (the Software Factory's accept / reject, the Delivery Room's
 // creative and summary decisions). Never a list of grants.
 import { parse } from "../storage/db.mjs";
+import { deskDecisions } from "../desk/desk-commands.mjs";
 
 const lineOf = (c) => `${c.id}: ${String(c.status || "")}`;
 const minutesLeft = (min) => (min >= 60 ? `${Math.floor(min / 60)} h ${min % 60} min` : `${min} min`);
@@ -92,6 +93,8 @@ export function decisionsInbox(hub) {
       ifReject: "O poți lăsa așa sau o închizi; nimic nu se șterge.", effects: ["fișiere locale în folderul de exporturi; nimic publicat"], link: `/livrare/${d.id}` });
   }
   items.push(...salesOfferDecisions(hub, typeof hub.config?.now === "function" ? hub.config.now() : new Date()));
+  // M13: a support reply / deviz waiting for the owner's approval of exactly its current text.
+  items.push(...deskDecisions(hub));
   items.sort((a, b) => String(b.waitingSince || "").localeCompare(String(a.waitingSince || "")));
   return { items, total: items.length, note: "Doar citire: deciziile se iau din locul fiecăruia, în sesiunea ta de proprietar. Hub-ul nu acceptă nimic în locul tău." };
 }
