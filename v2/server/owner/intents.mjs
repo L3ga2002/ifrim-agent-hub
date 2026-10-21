@@ -1889,6 +1889,8 @@ const CLIP_INTENTS = new Set(["studio_create", "studio_variant"]);
 const CODE_INTENTS = new Set(["engineering_request", "analysis_request"]);
 /** M12: an offer request describes its client („pentru un service care vrea programări când sună clienții”): only an explicit condition holds it. */
 const SALES_INTENTS = new Set(["sales_prepare"]);
+/** M13: a desk request carries its own text (a support request „… întreabă dacă …”): only an explicit condition („doar dacă …”) holds it. */
+const DESK_INTENTS = new Set(["desk_ops_prepare", "desk_support_prepare", "desk_finance_prepare"]);
 const TOPIC_MARK = /\b(?:despre|pentru|cu tema|pe tema|cu subiectul)\b/;
 const RELATIVE_MARK = /\b(?:care|ce|unde|cum|atunci)\b/;
 const EXPLICIT_COND = { clip: /^(?<head>.+?)[\s,]+(?<word>doar daca|numai daca|doar dupa|numai dupa|dupa ce) (?<cond>.+)$/, code: /^(?<head>.+?)[\s,]+(?<word>doar daca|numai daca|doar dupa|numai dupa|doar cand|numai cand) (?<cond>.+)$/ };
@@ -1898,6 +1900,7 @@ function descriptiveCondition(intent, head, word) {
   if (CLIP_INTENTS.has(intent) && word !== "dupa ce" && (TOPIC_MARK.test(head) || /\bde$/.test(head))) return "clip";
   if (CODE_INTENTS.has(intent) && (RELATIVE_MARK.test(head) || /\bde$/.test(head))) return "code";
   if (SALES_INTENTS.has(intent) && (RELATIVE_MARK.test(head) || TOPIC_MARK.test(head) || /\bde$/.test(head))) return "code";
+  if (DESK_INTENTS.has(intent)) return "code";
   return null;
 }
 function conditionOf(text) {

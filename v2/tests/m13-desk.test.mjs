@@ -473,3 +473,13 @@ test("M13-R1-04 the confirmed card's window passed before the owner's approval: 
   assert.equal(countRows(t, "SELECT COUNT(*) AS n FROM events WHERE type = 'desk.artifact.approved'"), 0);
   assert.equal(t.hub.desk.artifact(doc.id).status, "DRAFT");
 });
+
+test("M13-INT-02 a support request typed through POST /api/owner/intent („… întreabă dacă …?” is the request's text, never a condition) → ONE case card with the text after the colon", async (c) => {
+  const { t } = await supportHub(c);
+  const r = await t.request("/api/owner/intent", { body: { text: SUP_REQUEST, source: "typed" } });
+  assert.equal(r.status, 200, JSON.stringify(r.json));
+  const step = r.json.results.find((x) => x.opsPlan);
+  assert.ok(step, JSON.stringify(r.json.results).slice(0, 500));
+  assert.equal(step.opsPlan.kind, "desk.support.prepare");
+  assert.equal(t.hub.desk.get(step.opsPlan.recordId).request, "un client (sintetic) întreabă dacă un nume format doar din spații este acceptat?");
+});
