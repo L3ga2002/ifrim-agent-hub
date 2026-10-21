@@ -218,8 +218,12 @@ export function createDesk({ db, bus, clock, settings, sales, deliveries = null,
     const p = sales.latestProposal(opportunityId);
     if (!view?.org?.synthetic || !view?.opportunity?.synthetic) return { ok: false, reason: "În M13 pregătirea internă se face doar pentru o ofertă sintetică." };
     if (!p || p.status !== "APPROVED_INTERNAL" || p.approvedSha !== p.contentSha || hashCanonical(p.content) !== p.contentSha) return { ok: false, reason: "Oferta nu e aprobată intern (ultima versiune, exact)." };
+    if (!sales.isPreparationBound(p.content) || !Array.isArray(p.content?.pricing)) return { ok: false, reason: "Oferta nu e pregătită prin planul M12 (fără prețuri și termene explicite); pregătește-o întâi în L3ga." };
     if (sales.isPreparationBound(p.content) && sales.boundStale(p)) return { ok: false, reason: "Oferta aprobată nu mai corespunde intrărilor ei (STALE)." };
-    if (view.opportunity.status !== "APPROVED_INTERNAL") return { ok: false, reason: `Oportunitatea e ${view.opportunity.status}.` };
+    // The approved offer stays the source through the M04 progression after it (a recorded contact, a discussion, the client's yes —
+    // written only by their own Sales writers); an opportunity sent back to a draft, put on hold or lost is not.
+    if (["IDENTIFIED", "PROPOSAL_DRAFT", "READY_FOR_OWNER_REVIEW", "ON_HOLD", "LOST"].includes(view.opportunity.status)) return { ok: false, reason: `Oportunitatea e ${view.opportunity.status}.` };
+    if (view.org.mergedInto || view.org.archivedAt || view.org.status === "DO_NOT_CONTACT" || view.suppression) return { ok: false, reason: "Firma nu mai poate fi lucrată (unită, arhivată sau DO_NOT_CONTACT)." };
     return { ok: true, proposal: p, opportunity: view.opportunity, org: view.org, facts: offerFacts({ proposal: p, opportunity: view.opportunity, org: view.org }) };
   }
   /** The accepted package of a project's delivery a support case reads (read only): the delivery READY, its package OWNER_ACCEPTED. */
@@ -297,13 +301,17 @@ export function createDesk({ db, bus, clock, settings, sales, deliveries = null,
       const r = need(a.recordId);
       const flow = DESK_FLOWS[r.kind];
       const latest = latestArtifact(r.id);
+      const session = decisionSession(channel, sessionCheck, `aprobarea internă a documentului ${r.internalNo}`);
       const result = (duplicate) => { const x = artifact(a.id); return { duplicate, approved: true, artifactId: x.id, recordId: r.id, kind: x.kind, version: x.version, contentSha: x.contentSha, status: x.status, approvedAt: x.approvedAt, approvalId: x.approvalId, record: { id: r.id, status: get(r.id).status } }; };
       if (a.status === "APPROVED_INTERNAL" && a.approvedSha === displayedSha) return result(true);
       if (latest?.id !== a.id || a.status !== "DRAFT") throw new HubError("conflict", `Documentul afișat nu mai e versiunea curentă (${a.status}); aprobarea nu se aplică`, { code: "DESK_STALE" });
       if (displayedSha !== a.contentSha || hashCanonical(a.content) !== a.contentSha) throw new HubError("conflict", "Conținutul s-a schimbat față de ce ai văzut");
       if (r.status !== "WAITING_OWNER" || r.awaited?.artifactId !== a.id || r.awaited?.sha !== a.contentSha) throw new HubError("conflict", `Înregistrarea e ${r.status}; documentul nu așteaptă aprobarea`, { code: "DESK_RECORD_STATE" });
       if (!inputsCurrent(r)) throw new HubError("conflict", "Intrările documentului s-au schimbat (STALE); o continuare îl pregătește din nou", { code: "DESK_STALE" });
-      const session = decisionSession(channel, sessionCheck, `aprobarea internă a documentului ${r.internalNo}`);
+      if (r.activateBy && new Date(r.activateBy) < clock()) throw new HubError("conflict", "Fereastra cardului confirmat a trecut; o continuare cere o confirmare nouă", { code: "DESK_EXPIRED" });
+      const anchor = anchors?.anchorOf ? anchors.anchorOf(opsPlans.view(r.consent?.planId)) : null;
+      if (anchor && anchors.stoppedSince(anchor.at, anchor.planId, { afterSeq: anchor.seq })) throw new HubError("conflict", "„Oprește tot” a venit după confirmarea cardului: aprobarea nu se mai aplică; o continuare cere o confirmare nouă", { code: "DESK_STOPPED" });
+      if (anchor && trust.confirmedAuthority && !trust.confirmedAuthority(anchor.sessionId).ok) throw new HubError("conflict", "Autorizarea în care ai confirmat cardul a fost revocată; o continuare cere o confirmare nouă", { code: "DESK_STOPPED" });
       const ap = approvalId ? db.prepare("SELECT * FROM approvals WHERE id = ?").get(approvalId) : null;
       const payload = parse(ap?.payload_json, {});
       if (!ap || ap.action_kind !== flow.decision || ap.status !== "consumed" || payload.artifactId !== a.id || payload.displayedSha !== displayedSha
@@ -481,10 +489,10 @@ export function createDesk({ db, bus, clock, settings, sales, deliveries = null,
       const text = clip(note, 300).trim();
       if (item.status === status && (item.note || "") === text) return { unchanged: true, record: r };
       const checklist = state.checklist.map((i) => (i.id === itemId ? { ...i, status, receivedAt: status === "RECEIVED" ? now() : null, note: text } : i));
-      const next = { ...state, checklist };
+      const next = { ...state, checklist, rev: (Number(state.rev) || 0) + 1 };
       Object.assign(next, opsProgress(next));
       const updated = saveState(r.id, next, { nextAction: "Actualizezi dosarul de pornire (un card nou exportă revizia următoare), apoi continui: " + next.nextAction, actor, event: "desk.record.item",
-        meta: { itemId, status, authority: session?.authority || "test", sessionId: session?.id || null } });
+        meta: { itemId, status, authority: session?.authority || "test", sessionId: session?.id || null, credentialId: session?.credentialId || null } });
       if (r.status === "READY") setStatus(r.id, "STALE", `Dosarul exportat nu mai reflectă starea: ${item.id} ${status === "RECEIVED" ? "primit" : "marcat lipsă"}`, { from: ["READY"] });
       return { unchanged: false, record: get(updated.id) };
     });
@@ -558,7 +566,8 @@ export function createDesk({ db, bus, clock, settings, sales, deliveries = null,
         if (r) setStatus(r.id, "CANCELLED", `Planul a fost anulat${p.reason ? `: ${clip(p.reason, 160)}` : ""}`, { from: ["PLANNED", "PREPARING", "WAITING_OWNER", "PACKAGING"] });
       } else if (e.type === "ops.plan.superseded" || e.type === "ops.plan.expired") {
         const r = db.prepare("SELECT id FROM desk_records WHERE root_plan_id = ? AND status = 'PLANNED'").get(e.scopeId);
-        if (r) setStatus(r.id, e.type === "ops.plan.expired" ? "EXPIRED" : "CANCELLED", e.type === "ops.plan.expired" ? "Cardul nu a fost confirmat la timp" : "Un card mai nou l-a înlocuit", { from: ["PLANNED"] });
+        if (r) setStatus(r.id, e.type === "ops.plan.expired" ? "EXPIRED" : "CANCELLED", e.type === "ops.plan.expired" ? "Cardul nu a fost confirmat la timp" : "Un card mai nou l-a înlocuit", { from: ["PLANNED"],
+          extra: { next_action: "Cardul nu mai e valabil (neconfirmat): ceri din nou, cu aceleași cuvinte; o cerere nouă primește un card nou." } });
       } else if (e.type === "system.stop_all") {
         const kind = ["stop_all", "shutdown", "security"].includes(p.stopKind) ? p.stopKind : e.source === "system" ? "shutdown" : "stop_all";
         if (kind === "shutdown") return;
@@ -576,9 +585,23 @@ export function createDesk({ db, bus, clock, settings, sales, deliveries = null,
       }
     } catch { /* a listener never breaks the publisher; the tick re-checks */ }
   }
+  function expireDead() {
+    let n = 0;
+    for (const row of db.prepare("SELECT id FROM desk_records WHERE status = 'PREPARING' OR (status = 'PACKAGING' AND phase_b_plan_id IS NOT NULL)").all()) {
+      const r = get(row.id);
+      const planId = r.status === "PREPARING" ? r.planId : r.phaseBPlanId;
+      const plan = planId ? opsPlans.view(planId) : null;
+      if (!plan || !["PAUSED", "NEEDS_OWNER"].includes(plan.status) || !plan.expiresAt || new Date(plan.expiresAt) > clock()) continue;
+      if (!setStatus(r.id, "EXPIRED", `Fereastra planului a trecut cât era oprit (${plan.status === "PAUSED" ? "pauză" : "aștepta decizia ta"}): o continuare (un card nou) îl reia de unde a rămas`, { from: [r.status] })) continue;
+      try { opsPlans.cancel(planId, { reason: "Fereastra planului a trecut; continuarea cere un card nou", actor: "hub" }); } catch { /* already closed */ }
+      n += 1;
+    }
+    return n;
+  }
   async function tick() {
     if (closing) return { checked: 0 };
     const stale = checkInputs();
+    expireDead();
     const rows = db.prepare("SELECT id FROM desk_records WHERE status = 'WAITING_OWNER' OR (status = 'PACKAGING' AND phase_b_plan_id IS NULL)").all();
     for (const r of rows) { if (closing) break; await activate(r.id); }
     return { checked: rows.length, stale };

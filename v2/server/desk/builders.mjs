@@ -64,7 +64,8 @@ export function opsStartState({ offer, proposal, withSpec = false }) {
   const checklist = materials.map((text, i) => ({ id: `M${i + 1}`, text, status: "MISSING", receivedAt: null, note: "" }));
   const questions = [...bullets(section(proposal, "questions")?.text).map((text) => ({ text, source: "oferta aprobată (întrebări)" })),
     ...offer.pricing.filter((p) => p.status !== "CONFIGURED").map((p) => ({ text: `${p.item === "price" ? "Prețul" : "Termenul"} serviciului: ${UNKNOWN_TEXT} — îl stabilești tu (catalogul nu îl are configurat)`, source: "regulă: valoare neconfigurată în oferta aprobată" })),
-    { text: "Când poate trimite clientul materialele?", source: "regulă: nicio dată primită" }];
+    { text: "Când poate trimite clientul materialele?", source: "regulă: nicio dată primită" },
+    ...(checklist.length ? [] : [{ text: `Ce materiale trebuie să primim de la client? (${UNKNOWN_TEXT}: oferta aprobată nu le enumeră)`, source: "regulă: listă goală" }])];
   const risks = [
     { text: "Aprobarea internă a ofertei nu e acceptarea clientului: pornirea rămâne internă, nu o vânzare încheiată.", rule: "M12: APPROVED_INTERNAL ≠ WON" },
     ...(checklist.length ? [{ text: `${checklist.length} materiale lipsesc de la client; fără ele lucrul nu poate începe.`, rule: "checklist: nimic primit" }] : []),
@@ -88,6 +89,7 @@ export function opsProgress(state) {
   const items = arr(state.checklist);
   const received = items.filter((i) => i.status === "RECEIVED").map((i) => i.id);
   const missing = items.filter((i) => i.status !== "RECEIVED").map((i) => i.id);
+  if (!items.length) return { received, missing, nextAction: `Stabilești cu clientul lista materialelor (oferta aprobată nu le enumeră: ${UNKNOWN_TEXT}); nimic nu se trimite de aici.` };
   const nextAction = missing.length
     ? `Ceri clientului ${missing.length === 1 ? "materialul lipsă" : `cele ${missing.length} materiale lipsă`} (în afara Hub-ului; de aici nu se trimite nimic), apoi le marchezi primite aici.`
     : "Toate materialele sunt primite: stabilești prețul, termenul și acordul clientului înainte de orice lucru Engineering (decizia ta, separat).";
@@ -103,7 +105,7 @@ export function opsSpecDraft(state) {
 
 // ---------------------------------------------------------------- Support: classification, sources, reply
 const DEFECT = /\b(?:nu (?:mai )?(?:merge|functioneaza|porneste|se (?:incarca|deschide|salveaza|afiseaza)|apare|pot|accepta|salveaza|afiseaza)|eroare|erori|greseala|gresit|gresita|bug|defect|se blocheaza|blocat|blocata|crapa|nu raspunde|a disparut|dispar)\b/;
-const NEW_REQUEST = /\b(?:adaugati|adauga|sa adaugati|se poate adauga|puteti adauga|o functie noua|functie noua|functionalitate noua|modul nou|am dori|as dori sa|vrem si|ne trebuie si|ar fi util|integrare cu|sa puteti face)\b/;
+const NEW_REQUEST = /\b(?:adaugati|sa adaugati|se poate adauga|puteti adauga|o functie noua|functie noua|functionalitate noua|modul nou|am dori|as dori sa|vrem si|ne trebuie si|ar fi util|integrare cu|sa puteti face)\b/;
 const QUESTION = /\?|\b(?:cum|unde|cand|se poate|pot|putem|poate|este posibil|e posibil|exista|ce se intampla|clientii pot)\b/;
 /**
  * The class of a support request, by a declared rule (no model): DEFECT_REPORTED (a reported malfunction — never proof of a defect),
@@ -121,7 +123,7 @@ export const SUPPORT_CLASS_RO = Object.freeze({ QUESTION: "întrebare", DEFECT_R
 /** Words of the request that say nothing specific about a capability (the domain's own vocabulary is everywhere in the criteria). */
 const COMMON = new Set(["programare", "programarea", "programari", "programarile", "client", "clientul", "clientii", "clientilor", "site", "siteul", "pagina", "paginii", "aplicatia",
   "aplicatiei", "poate", "putem", "pentru", "dintr", "direct", "astfel", "foarte", "sintetic", "sintetica", "intreaba", "intrebare", "spune", "spun", "vrea", "doreste", "daca", "acum", "acest", "aceasta"]);
-const stemsOf = (text) => [...new Set(foldDiacritics(String(text || "")).toLowerCase().split(/[^a-z0-9]+/).filter((w) => w.length >= 5 && !COMMON.has(w)).map((w) => w.slice(0, 5)))];
+const stemsOf = (text) => [...new Set(foldDiacritics(String(text || "")).toLowerCase().split(/[^a-z0-9]+/).filter((w) => w.length >= 6 && !COMMON.has(w)).map((w) => w.slice(0, 6)))];
 /**
  * The sources a reply may use: the PASS criteria of the project's accepted package (id, text, status, fingerprint), pinned with the
  * delivery, the package and the spec sha. → { delivery, criteria[], sha }
@@ -146,7 +148,7 @@ const firstSentence = (t) => line(String(t || "").split(/(?<=[.;:])\s/)[0], 220)
  */
 export function supportReply({ request, classification, sources, caseNo }) {
   const m = matchCriteria(request, sources);
-  const facts = m.matched.slice(0, 6).map((c) => ({ id: c.id, text: firstSentence(c.text), status: c.status }));
+  const facts = m.matched.map((c) => ({ id: c.id, text: firstSentence(c.text), status: c.status })).filter((f) => !findCommercialFigures(f.text).length).slice(0, 6);
   const intro = { QUESTION: "Vă mulțumim pentru întrebare. Mai jos sunt doar lucrurile verificate în versiunea livrată și acceptată.",
     DEFECT_REPORTED: "Vă mulțumim pentru semnalare. Am înregistrat-o și o verificăm; nu confirmăm încă un defect.",
     NEW_REQUEST: "Vă mulțumim pentru propunere. Ce descrieți nu face parte din versiunea livrată; o putem discuta separat, ca o cerere nouă." }[classification.class];
@@ -174,18 +176,20 @@ export function supportSpecDraft({ request, sources, caseNo }) {
  * is NOT taken: the offer is the source (a newer price makes the offer STALE, and the deviz with it).
  */
 export function devizContent({ offer, internalNo }) {
-  const priceOf = (svc, item) => offer.pricing.find((p) => p.item === item && (!p.serviceId || p.serviceId === svc)) || null;
-  const lines = offer.serviceIds.map((ref, i) => {
-    const svc = ref.split("@")[0];
+  const priceOf = (svc, item) => offer.pricing.find((p) => p.item === item && (!svc || !p.serviceId || p.serviceId === svc)) || null;
+  const refs = offer.serviceIds.length ? offer.serviceIds : [""];
+  const lines = refs.map((ref, i) => {
+    const svc = ref ? ref.split("@")[0] : null;
     const price = priceOf(svc, "price"), term = priceOf(svc, "leadTime");
     const v = (p) => (p && p.status === "CONFIGURED" ? { status: "KNOWN", text: p.text } : { status: "UNKNOWN", text: UNKNOWN_TEXT, reason: p?.reason || "neconfigurat în oferta aprobată" });
-    return { no: i + 1, service: offer.serviceNames[i] || svc, serviceRef: ref, quantity: "un serviciu", unitPrice: v(price), term: v(term), lineTotal: { status: "UNKNOWN", text: UNKNOWN_TEXT, reason: "nu se calculează pe valori necunoscute" } };
+    return { no: i + 1, service: offer.serviceNames[i] || svc || offer.title || "Lucrarea din ofertă", serviceRef: ref || null, quantity: "un serviciu", unitPrice: v(price), term: v(term), lineTotal: { status: "UNKNOWN", text: UNKNOWN_TEXT, reason: "nu se calculează pe valori necunoscute" } };
   });
   const unknown = lines.some((l) => l.unitPrice.status !== "KNOWN");
   return { schema: DESK_SCHEMA, kind: "deviz", docType: "Deviz", state: "CIORNĂ", internalNo, notFiscal: true, title: line(`[DATE SINTETICE] Deviz (ciornă) ${internalNo} — ${offer.orgName}`, 200),
     client: { orgId: offer.orgId, name: offer.orgName, synthetic: offer.synthetic }, source: { proposalId: offer.proposalId, version: offer.version, contentSha: offer.contentSha, approvedSha: offer.approvedSha, serviceIds: offer.serviceIds },
     lines, total: unknown ? { status: "UNKNOWN", text: UNKNOWN_TEXT, reason: "nu se calculează pe valori necunoscute" } : { status: "UNKNOWN", text: UNKNOWN_TEXT, reason: "totalul îl stabilești tu" },
-    currency: null, configured: lines.filter((l) => l.unitPrice.status === "KNOWN").map((l) => l.serviceRef), unknown: lines.filter((l) => l.unitPrice.status !== "KNOWN").map((l) => `${l.service}: preț și termen`),
+    currency: null, configured: lines.flatMap((l) => [...(l.unitPrice.status === "KNOWN" ? [`${l.service}: preț`] : []), ...(l.term.status === "KNOWN" ? [`${l.service}: termen`] : [])]),
+    unknown: lines.flatMap((l) => [...(l.unitPrice.status !== "KNOWN" ? [`${l.service}: preț`] : []), ...(l.term.status !== "KNOWN" ? [`${l.service}: termen`] : []), `${l.service}: valoare și total`]),
     notes: ["Document intern în ciornă: nu e factură, nu e emis fiscal, nu e trimis clientului și nu înseamnă acceptarea clientului sau o încasare.",
       `Valorile necunoscute rămân „${UNKNOWN_TEXT}”; niciun total nu e calculat pe valori presupuse.`,
       `Sursa: oferta aprobată intern ${offer.proposalId}, versiunea ${offer.version}.`], labels: ["SYNTHETIC_DATA", "DRAFT", "NOT_FISCAL", "NOT_SENT"] };
@@ -217,7 +221,7 @@ export function opsExportFiles({ record, state }) {
   add(out, "dosar-pornire.md", md([`# Dosarul de pornire a proiectului — ${line(record.internalNo, 20)}`, "",
     "> [DATE SINTETICE] Pregătire INTERNĂ: aprobarea internă a ofertei nu e acceptarea clientului; nimic nu a fost trimis; nicio lucrare Engineering nu a pornit.", "",
     `- Oferta: ${s.offer.proposalId}, versiunea ${s.offer.version}, SHA-256 ${s.offer.contentSha}`, `- Serviciul: ${s.offer.serviceNames.join(", ") || "—"} (${s.offer.serviceIds.join(", ") || "—"})`,
-    `- Clientul: ${s.offer.orgName}${s.offer.synthetic ? " (sintetic)" : ""}`, `- Responsabil: ${s.owner}`, `- Starea pregătirii: pregătire internă (nimic trimis; clientul nu a acceptat nimic prin acest dosar)`,
+    `- Clientul: ${s.offer.orgName}${s.offer.synthetic ? " (sintetic)" : ""}`, `- Responsabil: ${s.owner}`, `- Starea pregătirii: pregătire internă — materiale primite ${s.received.length} din ${s.checklist.length}${s.checklist.length ? "" : ` (lista e ${UNKNOWN_TEXT})`}, ${s.questions.length} întrebări deschise, ${s.risks.length} riscuri; nimic trimis, clientul nu a acceptat nimic prin acest dosar`,
     `- Următoarea acțiune: ${line(s.nextAction, 400)}`, "",
     "## Materiale necesare de la client", "", ...s.checklist.map((i) => `- [${i.status === "RECEIVED" ? "x" : " "}] ${i.id}. ${i.text} — ${i.status === "RECEIVED" ? `PRIMIT${i.receivedAt ? ` (${String(i.receivedAt).slice(0, 10)})` : ""}` : "LIPSEȘTE"}${i.note ? ` — ${line(i.note, 200)}` : ""}`), "",
     `Primit: ${s.received.length ? s.received.join(", ") : "nimic încă"} · Lipsește: ${s.missing.length ? s.missing.join(", ") : "nimic"}`, "",

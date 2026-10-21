@@ -1521,7 +1521,7 @@ const SALES_SEND_SKIP = new Set(["sales_send"]);
 // M13 „Birou intern” (normalized clauses). A preparation verb heads the clause; „arată …” / a question stays a read.
 const DESK_VERB = String.raw`(?:te rog,? )?(?:pregateste|pregatesti|pregatiti|fa|faci|construieste|creeaza|genereaza|redacteaza|scrie|deschide|vreau|as vrea|as dori|am nevoie de)(?:-mi|-ne)? (?:si )?(?:un |o )?`;
 const DESK_OPS = new RegExp(String.raw`^${DESK_VERB}(?:dosar(?:ul)? de pornire|pornirea proiectului|demararea proiectului|startul proiectului)\b`);
-const DESK_FINANCE = new RegExp(String.raw`^${DESK_VERB}(?:deviz(?:ul)?|proforma|documentul comercial)\b(?=.*\b(?:aprobat|aprobata|aprobate|ofertei aprobate|din oferta|pe baza ofertei|registru|registrul)\b)`);
+const DESK_FINANCE = new RegExp(String.raw`^${DESK_VERB}(?:deviz(?:ul)?|documentul comercial)\b(?=.*\b(?:ofert[a-z]* aprobat[a-z]*|din oferta|pe baza ofertei|registru|registrul)\b)`);
 const DESK_SUPPORT = new RegExp(String.raw`^(?:te rog,? )?(?:(?:inregistreaza|deschide|creeaza|fa|adauga|pregateste)(?:-mi)? (?:un |o )?)?(?:caz(?:ul)?|tichet(?:ul)?|solicitare(?:a)?|cerere(?:a)?|sesizare(?:a)?) (?:noua |nou )?de suport\b`);
 /** F4: the steps whose words a planner receives; one left with nothing else to ask once the outreach clause is cut out is dropped. */
 const OUTREACH_STRIPPED_PLANNERS = new Set(["engineering_request", "analysis_request", "studio_create", "sales_prepare", "delivery_prepare", "delivery_revise", "start_mission", "resume_mission", "continue_work"]);

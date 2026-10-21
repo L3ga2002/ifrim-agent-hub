@@ -16,15 +16,26 @@ const fold = (s) => foldDiacritics(String(s || "")).toLowerCase();
 const opsCard = (plan) => plan && ({ id: plan.id, kind: plan.kind, title: plan.title, status: plan.status, summary: plan.summary, hash: plan.hash, nonce: plan.nonce, confirmBy: plan.confirmBy, decisions: plan.body?.decisions || [] });
 const FLOW_OF_INTENT = Object.freeze({ desk_ops_prepare: "ops_start", desk_support_prepare: "support_case", desk_finance_prepare: "finance_doc" });
 const WITH_SPEC = /\b(?:misiun|engineering|spec[_ -]?draft|specificati)/;
+/** The SPEC_DRAFT sketch is asked for: a mission / spec word that no „fără / nu / niciun / nici” governs just before it. */
+export function asksForSpec(folded) {
+  const m = String(folded || "").match(WITH_SPEC);
+  if (!m) return false;
+  const before = folded.slice(Math.max(0, m.index - 30), m.index);
+  return !/\b(?:fara|nu|niciun|nicio|nici|in afara)\b[^,.;]*$/.test(before);
+}
 
 /** The text of a support request: the part after the first „:” or the quoted part; else the sentence without its command words. */
 export function supportRequestOf(text) {
   const raw = String(text || "").trim();
+  const i = raw.indexOf(":");
+  if (i > 0 && raw.slice(i + 1).trim().length >= 5) {
+    const after = raw.slice(i + 1).trim();
+    const q = after.match(/^[„"“]([^”"“„]{5,2000})[”"“]\s*$/);
+    return q ? q[1].trim() : after;
+  }
   const quoted = raw.match(/[„"“]([^”"“„]{5,2000})[”"“]/);
   if (quoted) return quoted[1].trim();
-  const i = raw.indexOf(":");
-  if (i > 0 && raw.slice(i + 1).trim().length >= 5) return raw.slice(i + 1).trim();
-  return raw.replace(/^\s*(?:te rog,?\s*)?(?:înregistrează|inregistreaza|deschide|creează|creeaza|fă|fa|adaugă|adauga)(?:-mi)?\s+(?:un|o)?\s*(?:caz|tichet|solicitare|cerere|sesizare)(?:\s+de\s+suport)?\s*/i, "").trim();
+  return raw.replace(/^\s*(?:te rog,?\s*)?(?:(?:înregistrează|inregistreaza|deschide|creează|creeaza|fă|fa|adaugă|adauga)(?:-mi)?\s+)?(?:un\s+|o\s+)?(?:caz|tichet|solicitare|cerere|sesizare)(?:ul|a)?(?:\s+nou[aă]?)?(?:\s+de\s+suport)?\s*/i, "").trim();
 }
 
 export function registerDeskPlanner(hub, intake) {
@@ -60,7 +71,7 @@ export function registerDeskPlanner(hub, intake) {
     const list = supportProjects();
     if (!list.length) return { message: "Nu găsesc niciun proiect cu un pachet livrat și acceptat de tine; un caz de suport citește doar sursele unei livrări acceptate." };
     const t = fold(text);
-    const named = list.filter((p) => fold(p.project.name).split(/[^a-z0-9]+/).filter((w) => w.length >= 4 && !["demo", "livrare"].includes(w)).some((w) => t.includes(w)) || t.includes(fold(p.project.slug || "~~")));
+    const named = list.filter((p) => fold(p.project.name).split(/[^a-z0-9]+/).filter((w) => w.length >= 4 && !["demo", "livrare"].includes(w)).some((w) => t.includes(w)) || t.includes(fold(p.project.slug || "~~")) || t.includes(fold(p.project.name)));
     const pool = named.length ? named : list;
     if (pool.length === 1) return { project: pool[0] };
     return { message: `Pentru care proiect e cazul? ${pool.map((p) => `„${p.project.name}”`).join(", ")}.` };
@@ -86,6 +97,8 @@ export function registerDeskPlanner(hub, intake) {
       decisionsLeft: desk.decisionsLeft(r.kind), never: [...NEVER_IN_PLANS, ...DESK_NEVER], ...extra }, note } });
   /** The same subject again: its pending card, ONE continuation card, or the truthful state (never a second record). */
   async function existing(r, ctx) {
+    // A card that expired or was replaced before you confirmed it holds nothing: the new request gets its own record and card.
+    if (DESK_CONTINUABLE.includes(r.status) && !desk.isContinuable(r) && !(r.consent?.rootCredential || hub.opsPlans.view(r.rootPlanId)?.consent?.credential)) return null;
     if (r.status === "PLANNED") {
       const plan = hub.opsPlans.view(r.planId);
       if (plan?.status === "PROPOSED") return cardOf(plan, r, `Cardul pentru ${r.internalNo} e deja pregătit; îl confirmi o dată (nimic nu a pornit).`);
@@ -121,6 +134,8 @@ export function registerDeskPlanner(hub, intake) {
       const id = newId("dsk");
       const steps = [{ kind: "desk.support.case", params: { recordId: id, projectId: p.project.id, deliveryId: p.delivery.id, bundleSha: p.sources.delivery.bundleSha, requestSha } }, { kind: "desk.support.reply", params: { recordId: id } }];
       const plan = await hub.opsPlans.propose({ kind: DESK_FLOWS[flow].kind, title: `Caz de suport (cerere SINTETICĂ) pentru ${p.project.name}`.slice(0, 200), steps, limits: deskPhaseALimits(), actor, via: "intake" });
+      const raced = desk.sameSubject({ kind: flow, projectId: p.project.id, requestSha });
+      if (raced) { try { hub.opsPlans.cancel(plan.id, { reason: "aceeași cerere are deja o înregistrare", actor: "hub" }); } catch { /* closed */ } const out = await existing(raced, ctx); if (out) return out; }
       const r = desk.createPlanned({ id, kind: flow, plan, title: `Caz de suport: ${request}`.slice(0, 200), request, pinned: { projectId: p.project.id, deliveryId: p.delivery.id },
         source: { requestSha, bundleId: p.sources.delivery.bundleId, bundleSha: p.sources.delivery.bundleSha }, actor });
       return cardOf(plan, r, `Un singur card, fără model: înregistrez cazul ${r.internalNo} (cerere SINTETICĂ, nu a unui client real), îl clasific după o regulă declarată, citesc doar criteriile verificate ale pachetului acceptat ${p.sources.delivery.bundleId} și pregătesc răspunsul în ciornă (DRAFT_ONLY — NETRIMIS). Aprobarea textului rămâne decizia ta, separat; după ea, exportul cazului se face fără altă întrebare. Clasificarea „defect raportat” nu dovedește un defect.`,
@@ -133,16 +148,20 @@ export function registerDeskPlanner(hub, intake) {
     if (same) { const out = await existing(same, ctx); if (out) return out; }
     const id = newId("dsk");
     const pin = { recordId: id, opportunityId: o.opportunity.id, proposalId: o.proposal.id, proposalSha: o.proposal.contentSha };
-    const withSpec = flow === "ops_start" && WITH_SPEC.test(fold(raw));
+    const withSpec = flow === "ops_start" && asksForSpec(fold(raw));
     const steps = flow === "ops_start" ? [{ kind: "desk.ops.record", params: { ...pin, withSpec } }, { kind: "desk.ops.export", params: { recordId: id } }] : [{ kind: "desk.finance.document", params: pin }];
     const title = flow === "ops_start" ? `Dosarul de pornire a proiectului (intern, sintetic): ${o.org.displayName}` : `Devizul în ciornă (intern, sintetic): ${o.org.displayName}`;
     const plan = await hub.opsPlans.propose({ kind: DESK_FLOWS[flow].kind, title: title.slice(0, 200), steps, limits: deskPhaseALimits(), actor, via: "intake" });
+    const raced = desk.sameSubject({ kind: flow, opportunityId: o.opportunity.id });
+    if (raced) { try { hub.opsPlans.cancel(plan.id, { reason: "aceeași cerere are deja o înregistrare", actor: "hub" }); } catch { /* closed */ } const out = await existing(raced, ctx); if (out) return out; }
     const r = desk.createPlanned({ id, kind: flow, plan, title, pinned: { opportunityId: o.opportunity.id, proposalId: o.proposal.id, proposalSha: o.proposal.contentSha }, source: { withSpec, proposalVersion: o.proposal.version }, actor });
     const offerLine = `oferta aprobată intern ${o.proposal.id} v${o.proposal.version} (SHA ${o.proposal.contentSha.slice(0, 12)}…)`;
     const note = flow === "ops_start"
       ? `Un singur card, fără model: din ${offerLine} pregătesc înregistrarea internă ${r.internalNo} (materialele de cerut clientului, ce e primit și ce lipsește, întrebări, riscuri, responsabil, termene — cele necunoscute marcate) și o export ca „Dosarul de pornire a proiectului”${withSpec ? ", cu o schiță de misiune Engineering SPEC_DRAFT (necreată în Fabrică, nepornită)" : ""}. Aprobarea internă nu e acceptarea clientului: nu marchez CONTACTED / WON și nu pornesc nicio lucrare Engineering.`
       : `Un singur card, fără model: din ${offerLine} pregătesc devizul ${r.internalNo} în ciornă (prețul și termenul exact ca în ofertă — „De stabilit”, fără total calculat) și îl înregistrez în registrul local. Aprobarea lui exactă (ID + SHA) rămâne decizia ta, separat; după ea, Word și PDF se fac fără altă întrebare. Nu e un document fiscal și nu se trimite.`;
-    return cardOf(plan, r, note, { offer: { proposalId: o.proposal.id, version: o.proposal.version, sha: o.proposal.contentSha, org: o.org.displayName } });
+    const other = flow === "ops_start" ? (/\bdeviz/.test(fold(raw)) ? " Ai pomenit și devizul: îl pregătesc când îl ceri separat (un card pe cerere)." : "")
+      : (/\bdosar(?:ul)? de pornire\b/.test(fold(raw)) ? " Ai pomenit și dosarul de pornire: îl pregătesc când îl ceri separat (un card pe cerere)." : "");
+    return cardOf(plan, r, note + other, { offer: { proposalId: o.proposal.id, version: o.proposal.version, sha: o.proposal.contentSha, org: o.org.displayName } });
   }
   intake.registerPlanner("desk", (args) => prepare(args));
   return { prepare, stepsFor };

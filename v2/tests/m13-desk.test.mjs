@@ -362,3 +362,93 @@ test("M13-AUTH-01 the reserved decision: without the owner session 401; on the U
   assert.equal(t.hub.desk.artifact(doc.id).status, "STALE");
   assert.equal(t.hub.desk.get(waiting.id).status, "STALE");
 });
+
+// ---------------------------------------------------------------- review round 1 (flows): regressions
+test("M13-R2-PURE the builders and the words: a deviz of an offer naming no service keeps its price / term rows; the unknowns per field; an empty material list is „De stabilit”, never „toate primite”; the colon before a quoted name; the SPEC_DRAFT sketch only when asked; „pot adăuga …?” is a question; the Finance words name an approved offer", async () => {
+  const { devizContent, opsStartState, opsProgress, classifySupport } = await import("../server/desk/builders.mjs");
+  const { supportRequestOf, asksForSpec } = await import("../server/owner/planners/desk.mjs");
+  const { resolveIntent } = await import("../server/owner/intents.mjs");
+  const offer = { proposalId: "spr_x", version: 1, contentSha: "a".repeat(64), approvedSha: "a".repeat(64), title: "Ofertă", serviceIds: [], serviceNames: [], orgId: "org_x", orgName: "Firma SRL", synthetic: true, opportunityId: "opp_x",
+    pricing: [{ item: "price", serviceId: null, status: "UNKNOWN", text: "De stabilit (neconfigurat)", reason: "catalog neconfigurat" }, { item: "leadTime", serviceId: null, status: "UNKNOWN", text: "De stabilit (neconfigurat)", reason: "catalog neconfigurat" }] };
+  const d = devizContent({ offer, internalNo: "DVZ-0001" });
+  assert.equal(d.lines.length, 1);
+  assert.deepEqual([d.lines[0].unitPrice.status, d.lines[0].term.status], ["UNKNOWN", "UNKNOWN"]);
+  assert.ok(d.unknown.includes("Ofertă: preț") && d.unknown.includes("Ofertă: termen"), JSON.stringify(d.unknown));
+  const termOnly = devizContent({ offer: { ...offer, serviceIds: ["svc_1@2"], serviceNames: ["Serviciu"], pricing: [{ item: "price", serviceId: "svc_1", status: "CONFIGURED", text: "configurat" }, { item: "leadTime", serviceId: "svc_1", status: "UNKNOWN", text: "De stabilit", reason: "x" }] }, internalNo: "DVZ-0002" });
+  assert.ok(termOnly.unknown.includes("Serviciu: termen") && !termOnly.unknown.includes("Serviciu: preț"));
+  const empty = opsStartState({ offer, proposal: { content: { sections: [{ id: "materials", text: "Le stabilim împreună după confirmarea nevoilor." }] } } });
+  assert.equal(empty.checklist.length, 0);
+  assert.match(empty.nextAction, /Stabilești cu clientul lista materialelor/);
+  assert.ok(empty.questions.some((q) => /Ce materiale trebuie/.test(q.text)));
+  assert.doesNotMatch(opsProgress({ checklist: [] }).nextAction, /primite/);
+  assert.equal(supportRequestOf("Caz de suport pentru „Demo Livrare”: clienții nu pot anula"), "clienții nu pot anula");
+  assert.equal(supportRequestOf("caz de suport clientul nu poate anula"), "clientul nu poate anula");
+  assert.equal(asksForSpec("pregateste dosarul de pornire si schita misiunii engineering"), true);
+  assert.equal(asksForSpec("pregateste dosarul de pornire, fara misiune engineering"), false);
+  assert.equal(asksForSpec("pregateste dosarul de pornire si nu porni nicio misiune"), false);
+  assert.equal(classifySupport("Clienții pot adăuga mai multe servicii la o programare?").class, "QUESTION");
+  const intent = (t) => resolveIntent(t, { projects: [], departments: [], source: "typed" }).steps.map((s) => s.intent);
+  assert.deepEqual(intent("Pregătește devizul din oferta aprobată"), ["desk_finance_prepare"]);
+  assert.deepEqual(intent("Pregătește devizul pentru oferta aprobată a firmei Lăstărel"), ["desk_finance_prepare"]);
+  assert.ok(!intent("Pregătește proforma din oferta aprobată").includes("desk_finance_prepare"), "a proforma is not made as a deviz");
+  assert.ok(!intent("Pregătește un deviz nou pentru un service auto după ce e aprobat bugetul").includes("desk_finance_prepare"));
+});
+
+test("M13-R2-01 a card never confirmed that expired holds nothing: the same request gets a new record and card", async (c) => {
+  const { t } = await approvedOfferHub(c);
+  const r1 = await propose(t, OPS_REQUEST, "desk_ops_prepare");
+  t.hub.opsPlans.cancel(r1.opsPlan.id, { reason: "test: expirat", actor: "test" });
+  await settle();
+  t.hub.db.prepare("UPDATE desk_records SET status = 'EXPIRED' WHERE id = ?").run(r1.opsPlan.recordId);
+  const r2 = await propose(t, OPS_REQUEST, "desk_ops_prepare");
+  assert.ok(r2.opsPlan?.id && r2.opsPlan.id !== r1.opsPlan.id, JSON.stringify(r2).slice(0, 300));
+  assert.notEqual(r2.opsPlan.recordId, r1.opsPlan.recordId);
+});
+
+test("M13-R2-02 a material received then marked missing again (a round trip) → the continuation still exports a new revision and the record is READY", async (c) => {
+  const { t } = await approvedOfferHub(c);
+  const r1 = await propose(t, OPS_REQUEST, "desk_ops_prepare");
+  await confirmCard(t, r1.opsPlan);
+  const rec = await settleRecord(t, r1.opsPlan.recordId);
+  for (const status of ["RECEIVED", "MISSING"]) assert.equal((await t.request(`/api/desk/records/${rec.id}/items`, { body: { itemId: "M1", status } })).status, 200);
+  const cont = await t.request(`/api/desk/records/${rec.id}/continue`);
+  await confirmCard(t, cont.json.plan);
+  const done = await settleRecord(t, rec.id);
+  assert.equal(done.status, "READY", done.statusReason);
+  assert.equal(t.hub.desk.latestExport(rec.id).revision, 2);
+  assert.equal(t.hub.desk.latestExport(rec.id).status, "READY");
+});
+
+// ---------------------------------------------------------------- review round 1 (authority): regressions
+test("M13-R1-01 a manual contact recorded after the start dossier keeps it READY (the approved offer is unchanged); DO_NOT_CONTACT makes it STALE", async (c) => {
+  const { t, oppId, prep } = await approvedOfferHub(c);
+  const r1 = await propose(t, OPS_REQUEST, "desk_ops_prepare");
+  await confirmCard(t, r1.opsPlan);
+  const rec = await settleRecord(t, r1.opsPlan.recordId);
+  assert.equal(rec.status, "READY");
+  await salesCommand(t, "sales.contact_event.record", { opportunityId: oppId, kind: "MANUAL_RECORDED", note: "contact sintetic (test)", confirmText: "Confirm că am contactat această firmă în afara Hub-ului" });
+  assert.equal(t.hub.sales.getOpportunity(oppId).opportunity.status, "CONTACTED", "the contact was recorded");
+  await t.hub.desk.tick();
+  assert.equal(t.hub.desk.get(rec.id).status, "READY", "a contact never invalidates the internal start dossier");
+  await salesCommand(t, "sales.org.suppress", { orgId: prep.orgId, reason: "test: nu contacta" });
+  await t.hub.desk.tick();
+  assert.equal(t.hub.desk.get(rec.id).status, "STALE");
+});
+
+test("M13-R1-03 „Oprește tot” after the card's confirmation and before the owner's approval: the approval is refused in its own transaction (nothing approved), the record STOPPED", async (c) => {
+  const { t } = await approvedOfferHub(c);
+  const r = await propose(t, FIN_REQUEST, "desk_finance_prepare");
+  await confirmCard(t, r.opsPlan);
+  const waiting = await settleRecord(t, r.opsPlan.recordId);
+  const doc = t.hub.desk.latestArtifact(waiting.id);
+  const requested = await requestSalesApproval(t, { route: `/api/desk/artifacts/${doc.id}/approve`, body: { displayedSha: doc.contentSha } });
+  await t.request(`/api/approvals/${requested.approval.id}/owner_decide`, { body: { decision: "approved", displayedHash: requested.approval.payloadHash } });
+  // The Stop All event lands; the approval runs before the deferred listener could move the record.
+  t.hub.bus.emit({ type: "system.stop_all", scopeType: "system", scopeId: "hub", source: "owner", payload: { stopKind: "stop_all" } });
+  const exec = await t.request(`/api/commands/${requested.commandId}/execute`);
+  assert.notEqual(exec.status, 200, JSON.stringify(exec.json));
+  assert.equal(countRows(t, "SELECT COUNT(*) AS n FROM events WHERE type = 'desk.artifact.approved'"), 0);
+  await settle();
+  assert.equal(t.hub.desk.get(waiting.id).status, "STOPPED");
+  assert.equal(t.hub.desk.artifact(doc.id).status, "DRAFT", "the document stays a draft");
+});

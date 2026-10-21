@@ -224,12 +224,12 @@ export function createDeskExecutors({ desk, sales, ledger, opsPlans, media, conf
     if (!ok.ok) throw stale(`Răspunsul nu e cel aprobat exact: ${ok.reason}`);
     const reply = ok.artifact;
     const state = supportClosedState(r.state || {});
-    const inputs = { recordId: r.id, artifactId: reply.id, artifactSha: reply.contentSha, approvedSha: reply.approvedSha, inputsSha: r.inputsSha, stateSha: hashCanonical(r.state || {}) };
+    const inputs = { recordId: r.id, artifactId: reply.id, artifactSha: reply.contentSha, approvedSha: reply.approvedSha, inputsSha: r.inputsSha };
     return { keyParams: { recordId: r.id, artifactId: reply.id, artifactSha: reply.contentSha, inputsSha: r.inputsSha }, inputs, artifact: reply, name: state.sources?.project?.name || r.title, subjectId: r.id,
       files: supportExportFiles({ record: r, state, reply }), title: `Cazul de suport ${r.internalNo}`, nextAction: state.nextAction, stateAfter: state,
       facts: [`Cererea: SINTETICĂ — „${String(state.request || "").slice(0, 200)}”`, `Răspunsul: ${reply.id} v${reply.version} (SHA-256 ${reply.contentSha}) — aprobat intern, NETRIMIS`, `Sursa: pachetul ${state.sources?.delivery?.bundleId} (OWNER_ACCEPTED), doar citire`],
       sources: { delivery: state.sources?.delivery, sourcesSha: state.sources?.sha },
-      currentInputs: () => { const cur = desk.get(r.id); const a = desk.approvedExactly(cur); return { recordId: cur.id, artifactId: a.ok ? a.artifact.id : null, artifactSha: a.ok ? a.artifact.contentSha : null, approvedSha: a.ok ? a.artifact.approvedSha : null, inputsSha: cur.inputsSha, stateSha: hashCanonical(cur.state || {}) }; } };
+      currentInputs: () => { const cur = desk.get(r.id); const a = desk.approvedExactly(cur); return { recordId: cur.id, artifactId: a.ok ? a.artifact.id : null, artifactSha: a.ok ? a.artifact.contentSha : null, approvedSha: a.ok ? a.artifact.approvedSha : null, inputsSha: cur.inputsSha }; } };
   };
   // ---------------------------------------------------------------- Finance
   const financePrepare = (r) => {

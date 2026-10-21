@@ -56,6 +56,7 @@ function DeskRecord({ id, onChange }) {
       <Decision detail={d} onChange={reload} />
       <Exports detail={d} />
       <Continue detail={d} onChange={reload} />
+      <Cancel record={r} onChange={reload} />
     </article>
   );
 }
@@ -100,7 +101,10 @@ function SupportState({ record, detail }) {
       {s.sources?.delivery && <span className="faint small break">Surse (doar citire): pachetul acceptat {s.sources.delivery.bundleId} · {s.sources.criteria?.length || 0} criterii verificate · proiectul {s.sources.project?.name}</span>}
       {s.caseStatusText && <span className="faint small break">Cazul: {s.caseStatusText}</span>}
       {a && <div className="stack tight"><div className="section-title">Răspunsul v{a.version} · {a.status === "APPROVED_INTERNAL" ? "aprobat intern, NETRIMIS" : a.status === "DRAFT" ? "ciornă, NETRIMIS" : a.status}</div>
-        <div className="prewrap small sales-draft-body">{a.content?.body}</div></div>}
+        <span className="faint small break">Subiect: {a.content?.subject}</span>
+        <div className="prewrap small sales-draft-body">{a.content?.body}</div>
+        {a.content?.unconfirmed?.length > 0 && <span className="faint small break">Fără sursă verificată: {a.content.unconfirmed.join(", ")}</span>}
+        <span className="faint small">SHA-ul acoperă subiectul, textul, faptele citate, clasificarea și sursele (pachetul și criteriile lui).</span></div>}
       {s.specDraft && <span className="faint small break">Propunere de corecție SPEC_DRAFT (text, necreată în Fabrică, nepornită): {s.specDraft.title}</span>}
     </div>
   );
@@ -149,6 +153,12 @@ function Exports({ detail }) {
       {list.length > 1 && <span className="faint small">Revizii anterioare păstrate: {list.slice(1).map((e) => `${e.revision} (${e.status})`).join(", ")}</span>}
     </div>
   );
+}
+
+function Cancel({ record, onChange }) {
+  const act = useAction(async () => { await api(`/api/desk/records/${encodeURIComponent(record.id)}/cancel`, { method: "POST", body: { reason: "Anulată de tine din L3ga" } }); onChange(); });
+  if (!["PLANNED", "WAITING_OWNER", "STALE", "STOPPED", "EXPIRED", "FAILED"].includes(record.status)) return null;
+  return <div><button type="button" className="btn sm ghost" disabled={act.pending} onClick={act.run}>{act.pending ? "Se anulează…" : "Anulează înregistrarea"}</button><ErrorNotice error={act.error} /></div>;
 }
 
 function Continue({ detail, onChange }) {
