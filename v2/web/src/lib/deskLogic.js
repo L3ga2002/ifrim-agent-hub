@@ -12,12 +12,16 @@ export const deskTone = (status) => TONES[status] || "neutral";
 export const DESK_CLASS_RO = Object.freeze({ QUESTION: "întrebare", DEFECT_REPORTED: "defect raportat (nedovedit)", NEW_REQUEST: "cerere nouă" });
 export const ITEM_RO = Object.freeze({ RECEIVED: "primit", MISSING: "lipsește" });
 
-/** The newest record of each kind (the one on screen) and how many older ones there are. */
-export function deskOverview(records = []) {
+/**
+ * The record on screen for each kind — the one a read opened (M14: „Arată devizul DVZ-0001” → focusId), else the newest — and how many
+ * others there are. A focus on a record that is not in the list (deleted, another hub) is ignored.
+ */
+export function deskOverview(records = [], focusId = null) {
   const list = Array.isArray(records) ? records : [];
   return DESK_SECTIONS.map((s) => {
     const mine = list.filter((r) => r?.kind === s.kind);
-    return { ...s, current: mine[0] || null, older: Math.max(0, mine.length - 1) };
+    const focused = focusId ? mine.find((r) => r.id === focusId) || null : null;
+    return { ...s, current: focused || mine[0] || null, focused: Boolean(focused), older: Math.max(0, mine.length - 1) };
   });
 }
 

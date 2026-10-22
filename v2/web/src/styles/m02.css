@@ -213,7 +213,7 @@
 /* Top bar at medium widths: nothing may overlap; less important items collapse first. */
 .topbar { overflow: hidden; }
 .status-chips { overflow: hidden; }
-@media (max-width: 1100px) { .project-switch { display: none; } .topbar .conn.live span:not(.sr-only) { display: none; } }
+@media (max-width: 1100px) { .project-switch:not(.lega-project-switch) { display: none; } .topbar .conn.live span:not(.sr-only) { display: none; } }
 @media (max-width: 900px) { .status-chips .hide-xs { display: none; } .brand-name { display: none; } }
 
 /* Active-run indicator: bottom-left, never over the top bar or the simulation banner. */

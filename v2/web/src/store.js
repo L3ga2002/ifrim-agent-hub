@@ -1,11 +1,25 @@
 import { useSyncExternalStore, useEffect, useState, useCallback, useRef } from "react";
 import { streamStartSeq, approvalToastTarget } from "./lib/uiLogic.js";
 import { api, openStream } from "./api.js";
+import { CONVERSATIONS_STORAGE_KEY, persistedConversations, restoredConversations } from "./lib/legaConversation.js";
 
 // Global Hub state: the /api/state projection, refreshed on relevant events (debounced).
 const listeners = new Set();
-let state = { hub: null, loading: true, error: null, connection: "connecting", toasts: [], voicePhase: "idle", legaPhase: "off", lastUpdate: null };
-const emit = () => { for (const l of listeners) l(); };
+// M14: Lega's conversations and unsent texts come back after a reload (kept in this browser, bounded; see lib/legaConversation.js).
+const readConversations = () => { try { return restoredConversations(globalThis.localStorage?.getItem(CONVERSATIONS_STORAGE_KEY) ?? null); } catch { return restoredConversations(null); } };
+let state = { hub: null, loading: true, error: null, connection: "connecting", toasts: [], voicePhase: "idle", legaPhase: "off", lastUpdate: null, ...readConversations() };
+let savedConversations = [state.legaConversations, state.legaDrafts];
+let saveTimer = null;
+function keepConversations() {
+  if (savedConversations[0] === state.legaConversations && savedConversations[1] === state.legaDrafts) return;
+  savedConversations = [state.legaConversations, state.legaDrafts];
+  clearTimeout(saveTimer);
+  saveTimer = setTimeout(() => {
+    try { globalThis.localStorage?.setItem(CONVERSATIONS_STORAGE_KEY, JSON.stringify(persistedConversations(state.legaConversations, state.legaDrafts))); } catch { /* storage unavailable or full */ }
+  }, 300);
+}
+if (typeof window !== "undefined") window.addEventListener("pagehide", () => { if (saveTimer) { clearTimeout(saveTimer); saveTimer = null; try { globalThis.localStorage?.setItem(CONVERSATIONS_STORAGE_KEY, JSON.stringify(persistedConversations(state.legaConversations, state.legaDrafts))); } catch { /* unavailable */ } } });
+const emit = () => { keepConversations(); for (const l of listeners) l(); };
 export const setState = (patch) => { state = { ...state, ...(typeof patch === "function" ? patch(state) : patch) }; emit(); };
 /** Current store snapshot for non-React code (e.g. an error boundary deciding whether a reload is safe). */
 export const getState = () => state;

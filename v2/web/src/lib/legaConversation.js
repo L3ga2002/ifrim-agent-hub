@@ -59,3 +59,44 @@ export function exchangeProject(askedIn, results = []) {
 /** The four views of the one screen: the shape of Lega's figure, plus the hidden figure (the map alone). */
 export const VIEW_SHAPES = Object.freeze(["CORE", "FACE", "GRAPH"]);
 export const VIEW_LABEL = Object.freeze({ CORE: "Nucleu", FACE: "Față", GRAPH: "Hartă" });
+
+// ---------------------------------------------------------------- M14: the conversation survives a reload
+/** Where the browser keeps the conversations and the unsent texts between reloads (this computer's browser only; never the Hub's data). */
+export const CONVERSATIONS_STORAGE_KEY = "hub.v2.lega.conversations";
+/** At most this many conversations are kept (the most recently used); each keeps its last CONVERSATION_MAX messages. */
+export const PERSIST_MAX_CONVERSATIONS = 12;
+const PERSIST_TEXT_MAX = 4000;
+
+/** A message as it is kept: who, what, when and its screen links — never the choice or blocker buttons (bound to the screen that showed them). */
+const keptMessage = (m) => {
+  if (!m || (m.role !== "user" && m.role !== "lega") || typeof m.text !== "string") return null;
+  const links = Array.isArray(m.links) ? m.links.filter((l) => l && typeof l.path === "string" && typeof l.label === "string").slice(0, 4).map((l) => ({ path: l.path.slice(0, 300), label: l.label.slice(0, 120) })) : [];
+  return { role: m.role, text: m.text.slice(0, PERSIST_TEXT_MAX), at: Number(m.at) || 0, ...(links.length ? { links } : {}) };
+};
+const lastAt = (list) => (Array.isArray(list) && list.length ? Number(list[list.length - 1]?.at) || 0 : 0);
+
+/** The JSON kept between reloads: { v: 1, conversations: { key: messages[] }, drafts: { key: text } }, bounded. */
+export function persistedConversations(conversations, drafts) {
+  const keys = Object.keys(conversations || {}).filter((k) => Array.isArray(conversations[k]) && conversations[k].length)
+    .sort((a, b) => lastAt(conversations[b]) - lastAt(conversations[a])).slice(0, PERSIST_MAX_CONVERSATIONS);
+  const out = {};
+  for (const k of keys) { const list = conversations[k].map(keptMessage).filter(Boolean).slice(-CONVERSATION_MAX); if (list.length) out[k] = list; }
+  const keptDrafts = {};
+  for (const [k, v] of Object.entries(drafts || {})) if (typeof v === "string" && v.length) keptDrafts[k] = v.slice(0, PERSIST_TEXT_MAX);
+  return { v: 1, conversations: out, drafts: keptDrafts };
+}
+
+/** The conversations and unsent texts read back after a reload; anything unreadable is dropped (an empty start, never an error). */
+export function restoredConversations(raw) {
+  let data = null;
+  try { data = typeof raw === "string" ? JSON.parse(raw) : raw; } catch { data = null; }
+  if (!data || data.v !== 1) return { legaConversations: {}, legaDrafts: {} };
+  const legaConversations = {};
+  for (const [k, list] of Object.entries(data.conversations || {}).slice(0, PERSIST_MAX_CONVERSATIONS)) {
+    const kept = Array.isArray(list) ? list.map(keptMessage).filter(Boolean).slice(-CONVERSATION_MAX) : [];
+    if (kept.length) legaConversations[k] = kept;
+  }
+  const legaDrafts = {};
+  for (const [k, v] of Object.entries(data.drafts || {})) if (typeof v === "string" && v.length) legaDrafts[k] = v.slice(0, PERSIST_TEXT_MAX);
+  return { legaConversations, legaDrafts };
+}

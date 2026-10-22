@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { ClipboardList, Play, Check, Undo2 } from "lucide-react";
 import { api } from "../../api.js";
 import { useAction, useResource } from "../../store.js";
@@ -14,19 +14,24 @@ import { OpsPlanCard } from "./OpsPlanCard.jsx";
  * M13 „Birou intern” in the one L3ga screen: the newest record of each flow (Operations start dossier, support case, deviz) with its state,
  * its next action, the exact document waiting for the owner („Aprob … intern” in the owner session, on the id and full SHA shown), the
  * exports (folder, manifest, Word level) and, when it stopped, ONE continuation card. Everything is read from the server (GET), so it is
- * the same after a reload. Nothing here sends, publishes, issues or starts anything.
+ * the same after a reload. Nothing here sends, publishes, issues or starts anything. M14: the record a Lega read opened („Arată devizul
+ * DVZ-0001”, `focus`) takes its kind's place, is brought into view and says so; „Cel mai nou” returns to the newest.
  */
-export function DeskPanel() {
+export function DeskPanel({ focus = null, onClearFocus = null }) {
   const res = useResource("/api/desk/records?limit=60", { reloadOn: deskReload });
-  const sections = deskOverview(res.data?.records || []);
+  const sections = deskOverview(res.data?.records || [], focus?.id || null);
+  const focusRef = useRef(null);
+  const focusShown = sections.some((s) => s.focused);
+  useEffect(() => { if (focusShown) focusRef.current?.scrollIntoView?.({ block: "nearest", behavior: "smooth" }); }, [focus?.id, focus?.at, focusShown]);
   return (
     <section className="panel lega-desk" aria-label="Birou intern">
       <div className="stage-title"><ClipboardList size={13} aria-hidden="true" /> Birou intern (Operations · Suport · Finance-Admin)</div>
       {res.loading && !res.data ? <Loading lines={3} /> : (
         <div className="stack">
           {sections.map((s) => (
-            <div key={s.kind} className="stack tight lega-desk-section">
-              <strong className="small">{s.title}{s.older ? ` · încă ${s.older} în istoric` : ""}</strong>
+            <div key={s.kind} className={`stack tight lega-desk-section${s.focused ? " is-focused" : ""}`} ref={s.focused ? focusRef : undefined}>
+              <strong className="small">{s.title}{s.focused ? " · deschis la cererea ta" : ""}{s.older ? ` · încă ${s.older} în istoric` : ""}
+                {s.focused && onClearFocus && <> <button type="button" className="btn sm ghost" onClick={onClearFocus}>Cel mai nou</button></>}</strong>
               {s.current ? <DeskRecord key={s.current.id} id={s.current.id} onChange={res.reload} />
                 : <p className="faint small break" style={{ margin: 0 }}>Nimic încă. Spune sau scrie, de exemplu: „{s.example}”.</p>}
             </div>

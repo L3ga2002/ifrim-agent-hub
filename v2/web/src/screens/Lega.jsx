@@ -104,6 +104,8 @@ function Cockpit({ projectId, go }) {
   // The synthetic offer on screen: the one the owner opened (here, or from an answer naming it), else the newest one waiting for him.
   const [salesOpp, setSalesOpp] = usePref("lega.salesOpp", null);
   const [salesDismissed, setSalesDismissed] = usePref("lega.salesDismissed", []);
+  // M14: the „Birou intern” record a read opened („Arată devizul DVZ-0001”): shown in the panel, kept across a reload.
+  const [deskFocus, setDeskFocus] = usePref("lega.deskFocus", null);
   const inbox = useDecisionsInbox();
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState(null);
@@ -334,6 +336,7 @@ function Cockpit({ projectId, go }) {
         if (r.confirmed?.plan) setOpsPlan((p) => (p && p.id === r.confirmed.plan.id ? { ...p, status: r.confirmed.plan.status } : p));
         if (r.confirmed?.envelope) setPlan((p) => p && { ...p, envelope: { ...p.envelope, status: r.confirmed.envelope.status } });
         if (r.explain) setExplain(r.explain);
+        if (r.desk?.recordId) setDeskFocus({ id: r.desk.recordId, at: Date.now() });
         if (r.replay) setReplayMission(r.replay.missionId);
         if (r.companyMap) { setDepartment(r.args?.departmentKey || null); changeLayout({ ...(layout || {}), cards: [{ type: "CompanyMap", ref: { kind: "company", id: "company" }, size: "l" }, ...((layout?.cards || []).filter((c) => c.type !== "CompanyMap"))] }); }
         if (r.layout) changeLayout(r.layout);
@@ -510,7 +513,7 @@ function Cockpit({ projectId, go }) {
       <header className="cockpit-head">
         <div className="row wrap">
           <AudioLines size={18} aria-hidden="true" /><h1>Lega</h1>
-          <label className="project-switch"><span className="sr-only">Proiect</span>
+          <label className="project-switch lega-project-switch"><span className="sr-only">Proiect</span>
             <select value={pid} onChange={(e) => { setCurrentProject(e.target.value); go(`/lega/${e.target.value}`); setPlan(null); }}>
               <option value="">— compania (fără proiect) —</option>
               {(projects.data?.projects || []).map((p) => <option key={p.id} value={p.id}>{p.name}{p.source === "hub-test" ? " (test)" : ""}</option>)}
@@ -640,7 +643,7 @@ function Cockpit({ projectId, go }) {
               </>
             )}
           {/* M13 „Birou intern”: the start dossier, the support case and the deviz, after the cockpit's own cards. */}
-          <DeskPanel />
+          <DeskPanel focus={deskFocus} onClearFocus={() => setDeskFocus(null)} />
         </main>
       </div>
     </div>

@@ -100,6 +100,19 @@
   .lega-one-center .lega-conv { max-height: 46vh; }
   .lega-one-center .lega-face-canvas { max-height: 160px; max-width: 160px; }
   .lega-one.is-immersive { overflow: auto; }
+  /* M14: the interruptions stay on screen while the page scrolls (Pauză, Preiau eu and Stop All were below the fold on a phone): fixed at
+     the bottom, over the bottom navigation when it is there, every button visible (wrapped, never scrolled away), Stop All first; the page
+     keeps room for them. */
+  .lega-one { padding-bottom: calc(var(--sp-3) + 104px); }
+  .lega-one-center .interrupt-bar { position: fixed; left: 0; right: 0; bottom: 0; z-index: 40; margin: 0; padding: 6px var(--sp-3) calc(6px + env(safe-area-inset-bottom));
+    flex-wrap: wrap; justify-content: center; gap: 6px; background: rgba(8, 11, 16, 0.94); border-top: 1px solid var(--line); backdrop-filter: blur(6px); }
+  .lega-one-center .interrupt-bar > * { flex: none; }
+  .lega-one-center .interrupt-bar > [data-lega-target="stop-all"] { order: -1; }
+  .lega-project-switch select { max-width: min(62vw, 260px); }
+}
+@media (max-width: 767px) {
+  .app:not(.is-immersive) .lega-one-center .interrupt-bar { bottom: calc(48px + env(safe-area-inset-bottom)); padding-bottom: 6px; }
+  .app:not(.is-immersive) .lega-one { padding-bottom: calc(var(--sp-3) + 104px); }
 }
 
 /* M13 „Birou intern” in the work column: one record per flow, wrapped text, no horizontal scroll at phone width. */
@@ -107,3 +120,5 @@
 .lega-desk .lega-desk-section:first-child .lega-desk-record { border-top: 0; padding-top: 0; }
 .lega-desk .lega-desk-decision { border-left: 3px solid var(--approval, #c98a1b); padding-left: var(--sp-3, 10px); }
 .lega-desk .table-wrap { max-width: 100%; }
+/* M14: the record a Lega read opened („Arată devizul DVZ-0001”) is marked where it is shown. */
+.lega-desk .lega-desk-section.is-focused { outline: 1px solid rgba(101, 217, 255, 0.45); outline-offset: 4px; border-radius: var(--r); }

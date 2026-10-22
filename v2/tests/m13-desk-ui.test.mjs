@@ -44,9 +44,10 @@ test("M13-UI-02 the panel sits in the work column after the offer card; the pinn
   const src = fs.readFileSync(path.join(V2, "web", "src", "screens", "Lega.jsx"), "utf8");
   const main = src.indexOf('<main className="cockpit-main"');
   const offer = src.indexOf("{offerOpp && <SalesOfferCard");
-  const desk = src.indexOf("<DeskPanel />");
+  // M14: the panel takes the record a Lega read opened (`focus`); still ONE panel, in the same place.
+  const desk = src.indexOf("<DeskPanel ");
   assert.ok(main > 0 && offer > main && desk > src.indexOf("{!pid ?", offer) && desk < src.indexOf("</main>", main), "inside cockpit-main, after the offer card and the cockpit's own cards");
-  assert.equal(src.split("<DeskPanel />").length - 1, 1);
+  assert.equal(src.split("<DeskPanel ").length - 1, 1);
   const panel = fs.readFileSync(path.join(V2, "web", "src", "screens", "lega", "DeskPanel.jsx"), "utf8");
   for (const forbidden of ["getUserMedia", "RTCPeerConnection", "new Audio(", "/send", "/publish"]) assert.ok(!panel.includes(forbidden), forbidden);
 });
