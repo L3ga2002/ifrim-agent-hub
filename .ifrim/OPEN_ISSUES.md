@@ -9,8 +9,11 @@ on its exact id + SHA in the owner session; derived exports; nothing sent / issu
 (T25 skip); V1 549/552 (the 2 known registry tests).
 
 Open:
-1. Owner: run `C:\Users\mihai\m13-evidence\release\owner-release.cmd` (2.16.0 live, migration 14, push), then the three probes
-   (`C:\Users\mihai\m13-evidence\PASII_PROPRIETAR.md`): Operations (1 decision), Support (2), Finance-Admin (2).
+1. Done: 2.16.0 LIVE 2026-10-22 16:43 UTC (GET VERIFY OK, boot boot_mvjrrvw0_cbcb393952, backup bkp_mvjrqvre_68afc3be84; origin = f328c3a). Probes done
+   16:46–16:47 UTC with the owner's 5 decisions: OPS-0001 READY, SUP-0001 READY (reply approved, unsent, case open), DVZ-0001 READY (Word
+   APP_VERIFIED + PDF); every export = its manifest; 0 sends / contacts / handoffs / missions / runs. Closing docs only in m13-stage (next release).
+   Minor: the support request text keeps an unmatched closing „”” when the owner quotes the sentence (strip unmatched quotes in supportRequestOf).
+   Not M13: the M12 dossier revision 2 is STALE since 2026-10-20 00:34 UTC (the owner approved the contact draft's text); a continuation makes rev 3.
 2. Known limits (not defects): flows are synthetic-only in M13 (CHECK synthetic = 1); the support reply cites the accepted package's
    criteria by shared words (no model: a question the criteria do not cover is answered „verificăm și revenim”); no Factory mission is
    created from a start dossier (the SPEC_DRAFT sketch stays text until the client's acceptance); a Lega read („arată dosarul de pornire”)
