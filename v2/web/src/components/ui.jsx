@@ -14,6 +14,8 @@ const STATUS = {
   pending: ["approval", ShieldAlert, "în așteptare"], approved: ["ok", CheckCircle2, "aprobat"], rejected: ["error", XCircle, "respins"],
   expired: ["neutral", Clock, "expirat"], invalidated: ["error", XCircle, "invalidat"], consumed: ["neutral", CheckCircle2, "folosit"],
   verified: ["ok", CheckCircle2, "verificat"], incomplete: ["error", AlertTriangle, "incomplet"], verification_failed: ["error", XCircle, "verificare eșuată"],
+  // M14: a backup a stopped Hub left behind (its process gone) / one whose owner could not be established — neither is a backup.
+  owner_unknown: ["warn", AlertTriangle, "proprietar necunoscut (nu e backup)"],
   open: ["ok", CheckCircle2, "deschisă"], suspended: ["warn", PauseCircle, "suspendată"],
   in_progress: ["info", Loader2, "în lucru"], waiting: ["warn", Clock, "așteaptă"], ready: ["ok", CheckCircle2, "pregătit"], cancelled: ["neutral", XCircle, "anulat"],
   active: ["info", CheckCircle2, "activ"], retained: ["warn", AlertTriangle, "reținut"], exhausted: ["neutral", Clock, "epuizat"], revoked: ["neutral", XCircle, "revocat"],

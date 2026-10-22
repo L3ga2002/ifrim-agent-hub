@@ -122,7 +122,8 @@ export function registerRoutes(router, hub, { token }) {
       breakers: { codex: hub.breakers.state("codex"), claude: hub.breakers.state("claude") },
       lastSeq: bus.lastSeq(), voiceSettings: settings.get("voice"), lega: hub.lega.state(),
       verifyingTasks: db.prepare("SELECT COUNT(*) AS n FROM tasks WHERE status = 'VERIFYING'").get().n,
-      backupRunning: db.prepare("SELECT COUNT(*) AS n FROM backups WHERE status = 'running'").get().n,
+      // M14: only a backup really in progress (this Hub's, or another's with a recent sign of life) — a row a stop left behind is not.
+      backupRunning: backups.runningNow(),
       recentFailures: db.prepare("SELECT id, provider, error_category AS category, error_message AS message, pre_inference AS preInference, created_at AS createdAt FROM agent_runs WHERE (status IN ('failed','interrupted_unknown','orphaned') OR (status = 'blocked' AND COALESCE(error_category, '') <> 'gate')) AND created_at >= ? ORDER BY created_at DESC LIMIT 5")
         .all(new Date(clock().getTime() - 30 * 60000).toISOString()),
       company: { name: company.company()?.name, activeDepartments: company.departments().filter((d) => d.status === "active").length,

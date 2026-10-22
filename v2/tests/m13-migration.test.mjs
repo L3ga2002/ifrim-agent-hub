@@ -35,8 +35,9 @@ function schema13Db(d) {
 test("M13-MIG-01 fresh database: schema 14 m13-desk, the four desk tables, the status list equal to RECORD_STATUSES, synthetic only, one record per root plan", (t) => {
   const db = openDatabase(path.join(dir(t, "m13-mig1"), "hub-v2.sqlite"));
   try {
-    assert.equal(schemaState(db).current, 14);
-    assert.equal(MIGRATIONS.at(-1).name, "m13-desk");
+    // M14 adds migration 15 (m14-backup-owner): migration 14 stays m13-desk, applied with every later one.
+    assert.equal(schemaState(db).current, MIGRATIONS.at(-1).version);
+    assert.equal(MIGRATIONS.find((m) => m.version === 14).name, "m13-desk");
     assert.deepEqual(checkValues(db, "desk_records", "status"), RECORD_STATUSES);
     assert.deepEqual(checkValues(db, "desk_records", "kind"), ["ops_start", "support_case", "finance_doc"]);
     assert.deepEqual(checkValues(db, "desk_records", "department"), ["operations", "customer-success", "finance-admin"]);
@@ -70,9 +71,9 @@ test("M13-MIG-02 schema 13 → 14: a verified pre-migration backup first; the M1
   try {
     const b = preMigrationBackupOf(db);
     assert.ok(b, "a backup was taken before migration 14");
-    assert.deepEqual([b.schemaVersion, b.toVersion, b.integrity], [13, 14, "ok"]);
-    assert.ok(path.basename(b.file).includes("v13-to-v14"));
-    assert.equal(schemaState(db).current, 14);
+    assert.deepEqual([b.schemaVersion, b.toVersion, b.integrity], [13, MIGRATIONS.at(-1).version, "ok"]);
+    assert.ok(path.basename(b.file).includes(`v13-to-v${MIGRATIONS.at(-1).version}`));
+    assert.equal(schemaState(db).current, MIGRATIONS.at(-1).version);
     assert.equal(db.prepare("SELECT COUNT(*) AS n FROM sales_plan_ops WHERE op_key = 'k13'").get().n, 1);
     for (const table of NEW_TABLES) assert.equal(db.prepare(`SELECT COUNT(*) AS n FROM ${table}`).get().n, 0, table);
   } finally { db.close(); }
@@ -85,14 +86,15 @@ test("M13-MIG-03 dry run on a copy: 13 → 14, only additions (four tables, five
   const before = master(db13);
   db13.close();
   const r = await dryRunMigration({ dbPath: file, tmpDir: path.join(d, "tmp") });
-  assert.deepEqual([r.schemaBefore, r.schemaAfter, r.integrity, r.rowCountsUnchanged], [13, 14, "ok", true]);
-  assert.deepEqual(r.pending, ["14:m13-desk"]);
+  // M14: migration 15 (m14-backup-owner) follows 14 in the same run; it only adds columns to backups and one index (M14-BKP-03).
+  assert.deepEqual([r.schemaBefore, r.schemaAfter, r.integrity, r.rowCountsUnchanged], [13, MIGRATIONS.at(-1).version, "ok", true]);
+  assert.deepEqual(r.pending, ["14:m13-desk", "15:m14-backup-owner"]);
   const source = new DatabaseSync(file, { readOnly: true });
   try { assert.equal(source.prepare("SELECT MAX(version) AS v FROM schema_migrations").get().v, 13); } finally { source.close(); }
   const db = openDatabase(file);
   try {
     const after = master(db);
-    for (const [name, sql] of Object.entries(before)) assert.equal(after[name], sql, `${name} unchanged`);
-    assert.deepEqual(Object.keys(after).filter((n) => !(n in before)).sort(), [...NEW_TABLES, ...NEW_INDEXES].sort());
+    for (const [name, sql] of Object.entries(before)) if (name !== "backups") assert.equal(after[name], sql, `${name} unchanged`);
+    assert.deepEqual(Object.keys(after).filter((n) => !(n in before)).sort(), [...NEW_TABLES, ...NEW_INDEXES, "idx_backups_status"].sort());
   } finally { db.close(); }
 });

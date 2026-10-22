@@ -1170,4 +1170,20 @@ export const MIGRATIONS = [
       `);
     },
   },
+  {
+    // M14: who runs a backup. A row left 'running' by a stopped Hub is reconciled at the next boot from these facts (the owning boot,
+    // its process and computer, the last sign of life) — never guessed: another live instance's backup is left alone, an undecidable one
+    // says so (owner_unknown). Additive: the old code ignores the columns; old rows keep them NULL (their owner is unknown).
+    version: 15,
+    name: "m14-backup-owner",
+    up(db) {
+      db.exec(`
+        ALTER TABLE backups ADD COLUMN owner_boot_id TEXT;
+        ALTER TABLE backups ADD COLUMN owner_pid INTEGER;
+        ALTER TABLE backups ADD COLUMN owner_host TEXT;
+        ALTER TABLE backups ADD COLUMN heartbeat_at TEXT;
+        CREATE INDEX idx_backups_status ON backups(status);
+      `);
+    },
+  },
 ];

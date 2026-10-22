@@ -96,7 +96,8 @@ export function createSetup(hub) {
     const hubProject = projects.hub();
     const lastBackup = hubProject ? backups.list(hubProject.id, 5).find((b) => b.status === "verified") : null;
     // A 'running' row left by a crash must not keep the step "in progress" forever: only a recent one counts.
-    const backupRunning = db.prepare("SELECT COUNT(*) AS n FROM backups WHERE status = 'running' AND created_at >= ?").get(new Date(config.now().getTime() - 30 * 60000).toISOString()).n > 0;
+    // M14: only a backup really in progress (its owner gave a sign of life recently), never a row a stop left behind.
+    const backupRunning = (backups.runningNow ? backups.runningNow() : db.prepare("SELECT COUNT(*) AS n FROM backups WHERE status = 'running' AND created_at >= ?").get(new Date(config.now().getTime() - 30 * 60000).toISOString()).n) > 0;
     add({ id: "backup", title: "Backup verificat al Hub-ului", auto: true,
       status: backupRunning || running("backup") ? "IN_PROGRESS" : lastBackup && ageH(lastBackup.createdAt) <= BACKUP_MAX_AGE_H ? "DONE_AUTO" : lastRun("backup")?.status === "error" ? "RECOVERABLE_ERROR" : "AUTO_PENDING",
       detail: lastBackup ? `ultimul: ${lastBackup.id} (${lastBackup.createdAt})` : lastRun("backup")?.detail || "niciun backup verificat în ultimele 24 h" });
