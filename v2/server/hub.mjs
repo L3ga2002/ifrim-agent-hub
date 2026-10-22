@@ -32,7 +32,7 @@ import { codexDeniedEntries, denyListFingerprint } from "./policy/isolation.mjs"
 import { createCodexRealtime } from "./providers/codex-realtime.mjs";
 import { createLega } from "./runtime/lega.mjs";
 import { createLeases } from "./runtime/leases.mjs";
-import { createSupervisor } from "./runtime/supervisor.mjs";
+import { createSupervisor, isPidAlive } from "./runtime/supervisor.mjs";
 import { createRunManager } from "./runtime/runs.mjs";
 import { createHandoffs } from "./runtime/handoff.mjs";
 import { createCheckpoints } from "./runtime/checkpoints.mjs";
@@ -89,6 +89,7 @@ import { registerSalesPlanner } from "./owner/planners/sales.mjs";
 import { createSalesAnswers } from "./sales/sales-answers.mjs";
 import { createDesk, DESK_FLOWS, DESK_PHASE_B_OPS } from "./desk/desk.mjs";
 import { createDeskExecutors } from "./desk/executors.mjs";
+import { createDeskAnswers } from "./desk/desk-answers.mjs";
 import { registerDeskPlanner } from "./owner/planners/desk.mjs";
 import { createKnowledge } from "./owner/knowledge.mjs";
 import { createDevProfileReader } from "./owner/dev-profile.mjs";
@@ -150,7 +151,9 @@ export function createHub(config, { providerOverrides = {}, homeDir, browserLaun
   const artifacts = createArtifacts({ db, bus, clock, projects });
   const breakers = createBreakers(clock);
   const supervisor = createSupervisor({ ...(config.testMode ? supervisorOptions : {}), config, onEvent: (event) => live.publish({ type: `supervisor.${event.type}`, data: event }) });
-  const backups = createBackupService({ db, bus, config, clock, projects });
+  // M14: the boot id names this process from the start: every backup it runs records it (with the pid and the computer).
+  const bootId = newId("boot");
+  const backups = createBackupService({ db, bus, config, clock, projects, instance: { bootId, pid: process.pid } });
   const nativeSessions = createNativeSessionMirror({ db, bus, clock, config, projects });
   // M09-A2: the random salt of the pseudonymous account identity, created once (at first use or at boot) and kept in settings.
   const identitySalt = () => {
@@ -354,6 +357,8 @@ export function createHub(config, { providerOverrides = {}, homeDir, browserLaun
   Object.assign(executors, createDeskExecutors({ desk, sales, ledger: deskLedger, opsPlans, media, config }));
   for (const flow of Object.values(DESK_FLOWS)) if (flow.exportKind) opsPlans.registerParent(flow.kind, { allowedOps: DESK_PHASE_B_OPS[flow.exportKind], verify: (parent) => desk.verifyParent(parent) });
   sales.onInvalidated((event) => desk.onSalesInvalidated(event));
+  // M14: „Arată dosarul OPS-0001 / cazul SUP-0001 / devizul DVZ-0001” — the existing record, read (never created) for the intake.
+  const deskAnswers = createDeskAnswers({ db, desk });
 
   // M10.2 U13: Lega arms a plan it has just SPOKEN (its bridge or its plan tool); the plan's service re-checks everything. A plan already
   // armed in this Lega session keeps its window (re-arming would make a "Da" said in between count as said before the window).
@@ -370,7 +375,7 @@ export function createHub(config, { providerOverrides = {}, homeDir, browserLaun
     company, chiefOfStaff, surfaces, schedules, computer, skills, artifacts, integrations, nativeSessions, telemetry, router, commands, checkpoints,
     breakers, supervisor, backups, providers, gate, runs, handoffs, tools, roleConfig, skillConfig, capabilityConfig, codexIsolation, lega, refreshCodexConfig, factory, factoryRunner,
     environments, wslRunner, trust, envelopes, armedWindows, cockpit, interrupts, advisor, voice, voiceEngine,
-    twin, warroom, autopilot, simulations, league, skillEvolution, teach, packages, board, devices, media, desktop, opsPlans, executors, deliveries, salesPreparations, salesLedger, salesAnswers, desk, deskLedger };
+    twin, warroom, autopilot, simulations, league, skillEvolution, teach, packages, board, devices, media, desktop, opsPlans, executors, deliveries, salesPreparations, salesLedger, salesAnswers, desk, deskLedger, deskAnswers };
   registerCommands(commands, hub);
   // Stage before M12: what Lega knows about the system (read-only, from the real registries and tables).
   hub.knowledge = createKnowledge(hub);
@@ -570,7 +575,6 @@ export function createHub(config, { providerOverrides = {}, homeDir, browserLaun
     });
   }
 
-  const bootId = newId("boot");
   let bootReport = null;
   async function boot() {
     projects.syncFromRegistry();
@@ -582,6 +586,8 @@ export function createHub(config, { providerOverrides = {}, homeDir, browserLaun
     const skillImport = skills.importAll("seed");
     surfaces.refreshAvailability();
     bootReport = await recoverOnBoot({ db, bus, clock, settings, approvals });
+    // M14: a backup another boot left 'running' — interrupted (its process is gone), protected (a live instance owns it) or owner unknown.
+    try { bootReport.backups = await backups.recover({ isPidAlive }); } catch (error) { bootReport.backups = { error: String(error?.message || error).slice(0, 300) }; }
     // M10.2 review #10: a run plan whose one turn died with the previous process frees the project's open-plan slot now (grant revoked).
     try { bootReport.runEnvelopes = envelopes.recoverRuns(); } catch (error) { bootReport.runEnvelopes = { error: String(error?.message || error).slice(0, 300) }; }
     // M10: a derived Lega authority whose voice session died with the previous process is closed in the audit (nothing starts).

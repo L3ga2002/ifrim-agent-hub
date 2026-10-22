@@ -89,6 +89,9 @@ export const INTENT_EFFECTS = Object.freeze({
   // M13 „Birou intern”: the start dossier of a project, a support case and the deviz from the approved offer — ONE card each
   // (owner/planners/desk.mjs); the approval of a reply or a deviz stays the owner's own decision, on the exact text, in the L3ga screen.
   desk_ops_prepare: "plan", desk_support_prepare: "plan", desk_finance_prepare: "plan",
+  // M14: „Arată dosarul de pornire OPS-0001”, „Arată cazul de suport SUP-0001”, „Arată devizul DVZ-0001” (or the number alone) — the
+  // EXISTING record, opened in the L3ga screen with its state and next action; it never creates a record, a plan or a document.
+  desk_show: "read",
 });
 
 // ---------------------------------------------------------------- M12 Sales: sending, contacting and publishing are refused
@@ -833,7 +836,7 @@ const ACK_LEAD = /^(?:(?:ok|okay|hai|haide|bine)(?:[\s,!.:;]+|$)|(?:(?:hei|hey|b
 const ACK_ONLY = /^(?:(?:ok|okay|hai|haide|bine|(?:(?:hei|hey|buna) )?lega)(?:[\s,!.:;]+|$))+$/;
 const ACK_REQUESTS = new Set(["studio_create", "engineering_request", "analysis_request", "start_mission", "resume_mission", "explain_mode", "sales_prepare", "sales_send",
   // M12 final review F17: the Sales reads and the continuation take a leading acknowledgement too („Ok, arată-mi oferta” was a project „oferta”).
-  "sales_show", "sales_missing", "sales_approve_talk", "sales_continue", "desk_ops_prepare", "desk_support_prepare", "desk_finance_prepare"]);
+  "sales_show", "sales_missing", "sales_approve_talk", "sales_continue", "desk_ops_prepare", "desk_support_prepare", "desk_finance_prepare", "desk_show"]);
 /**
  * F17: in front of a Sales read or request a leading „Da, …” / „Sigur, …” is an acknowledgement as well („Da, arată-mi oferta”) — only
  * there: every other clause keeps it (the confirmation grammar reads „da” as consent), and a Sales read or request is never a consent.
@@ -1523,6 +1526,21 @@ const DESK_VERB = String.raw`(?:te rog,? )?(?:pregateste|pregatesti|pregatiti|fa
 const DESK_OPS = new RegExp(String.raw`^${DESK_VERB}(?:dosar(?:ul)? de pornire|pornirea proiectului|demararea proiectului|startul proiectului)\b`);
 const DESK_FINANCE = new RegExp(String.raw`^${DESK_VERB}(?:deviz(?:ul)?|documentul comercial)\b(?=.*\b(?:ofert[a-z]* aprobat[a-z]*|din oferta|pe baza ofertei|registru|registrul)\b)`);
 const DESK_SUPPORT = new RegExp(String.raw`^(?:te rog,? )?(?:(?:inregistreaza|deschide|creeaza|fa|adauga|pregateste)(?:-mi)? (?:un |o )?)?(?:caz(?:ul)?|tichet(?:ul)?|solicitare(?:a)?|cerere(?:a)?|sesizare(?:a)?) (?:noua |nou )?de suport\b`);
+// M14: a desk READ. The internal number (OPS- / SUP- / DVZ-NNNN) names the record; without a number, „arată / afișează …” with the
+// record's noun and nothing after it is the newest of that kind (or a choice when there are several). „Deschide …” reads only with a number
+// („deschide cazul de suport pentru X: …” stays a new case). These rows come before the desk preparations and Sales („arată devizul” was the offer).
+const DESK_NOUN = String.raw`(?:dosar(?:ul)? de pornire(?: a(?:l)? proiectului)?|dosar(?:ul)?|caz(?:ul)? de suport|caz(?:ul)?|deviz(?:ul)?|inregistrarea)`;
+const DESK_NO = String.raw`(ops|sup|dvz)[ -]?0*(\d{1,6})`;
+const DESK_SHOW_NO = new RegExp(String.raw`^(?:(?:arata|deschide|afiseaza|vreau sa vad|adu|da|unde e|unde este|ce stare are|care e starea)(?:-mi|-ne)? (?:si )?)?(?:${DESK_NOUN} )?(?:(?:intern|sintetic) )?${DESK_NO}[.!?]*$`);
+const DESK_SHOW_KIND = new RegExp(String.raw`^(?:arata|afiseaza|vreau sa vad|adu|da)(?:-mi|-ne)? (?:(?:ultimul|ultima|cel mai nou|cea mai noua) )?(dosarul de pornire(?: a(?:l)? proiectului)?|cazul de suport|cazurile de suport|devizul|devizele)(?: (?:intern|sintetic|in ciorna))?[.!?]*$`);
+/** „Ce lipsește din devizul DVZ-0001?” — the record's own open items (its next action), never the Sales offer. */
+const DESK_MISSING_NO = new RegExp(String.raw`^(?:(?:si|dar|deci) )?ce (?:mai )?lipseste\b.*\b${DESK_NO}[.!?]*$`);
+const DESK_KIND_OF_PREFIX = Object.freeze({ ops: "ops_start", sup: "support_case", dvz: "finance_doc" });
+const deskKindOfNoun = (noun) => (/^dosar/.test(noun) ? "ops_start" : /^caz/.test(noun) ? "support_case" : /^deviz/.test(noun) ? "finance_doc" : null);
+function deskShowNoArgs(m, clause) {
+  const asked = clause.match(/\b(dosar(?:ul)? de pornire|caz(?:ul)? de suport|deviz(?:ul)?)\b/);
+  return { internalNo: `${m[1].toUpperCase()}-${m[2].padStart(4, "0")}`, kind: DESK_KIND_OF_PREFIX[m[1]], askedKind: asked ? deskKindOfNoun(asked[1]) : null };
+}
 /** F4: the steps whose words a planner receives; one left with nothing else to ask once the outreach clause is cut out is dropped. */
 const OUTREACH_STRIPPED_PLANNERS = new Set(["engineering_request", "analysis_request", "studio_create", "sales_prepare", "delivery_prepare", "delivery_revise", "start_mission", "resume_mission", "continue_work"]);
 
@@ -1605,6 +1623,9 @@ const P = [
   // are reads the Hub answers (it never approves, it never creates an approval).
   // M13 „Birou intern” — before the Sales rows: „pregătește devizul din oferta aprobată” is the deviz of an APPROVED offer (Finance), never a
   // new offer; „dosarul de pornire a proiectului” is the Operations start dossier; „caz de suport …” a support case (its text kept whole).
+  ["desk_show", DESK_SHOW_NO, deskShowNoArgs],
+  ["desk_show", DESK_SHOW_KIND, (m) => ({ kind: deskKindOfNoun(m[1]), internalNo: null })],
+  ["desk_show", DESK_MISSING_NO, (m, clause) => ({ ...deskShowNoArgs(m, clause), missing: true })],
   ["desk_ops_prepare", DESK_OPS, (_m, clause) => ({ request: clause })],
   ["desk_finance_prepare", DESK_FINANCE, (_m, clause) => ({ request: clause })],
   ["desk_support_prepare", DESK_SUPPORT, (_m, clause) => ({ request: clause })],
@@ -1961,7 +1982,9 @@ function splitClause(clause, context, depth = 0) {
     if (!left || !right) continue;
     const r = prepClause(right).text;
     // M12 final review F15: „Contactez eu firma, tu pregătește o ofertă …” — the right half addressed with „tu” is a request of its own.
-    if (!RIGHT_VERB.test(r) && !(/^tu /.test(r) && RIGHT_VERB.test(r.slice(3)))) continue;
+    // M14: „Arată dosarul OPS-0001 și devizul DVZ-0001” — two desk reads, each naming its record by number.
+    const deskPair = DESK_SHOW_NO.test(r) && DESK_SHOW_NO.test(prepClause(left).text);
+    if (!RIGHT_VERB.test(r) && !(/^tu /.test(r) && RIGHT_VERB.test(r.slice(3))) && !deskPair) continue;
     const l = prepClause(left).text;
     const rm = matchScoped(r, clause, null, context.salesContext === true);
     // Review F1: words that only talk about the stop („Nu opri tot, oprește doar Codex”) are a half of their own next to an interruption.

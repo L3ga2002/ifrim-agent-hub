@@ -76,6 +76,8 @@ export function createSalesAnswers({ sales, preparations, opsPlans = null }) {
     opportunityStatus: view?.opportunity?.status || null, synthetic: true,
     proposal: proposal ? { id: proposal.id, version: proposal.version, sha: proposal.contentSha, status: proposal.status, approvedSha: proposal.approvedSha || null } : null,
     dossier: dossier ? { id: dossier.id, revision: dossier.revision, status: dossier.status, manifestSha256: dossier.manifestSha256 || null, app: dossier.verification?.proposalDocx?.app || null } : null });
+  /** M14: the reason a stopped preparation gives (the server's own staleReason / statusReason), or null. */
+  const whyStopped = (p) => { const r = CONTINUABLE_STATUSES.includes(p?.status) ? clip(p.staleReason || p.statusReason || "", 240) : ""; return r ? `Motivul: ${/[.!?]$/.test(r) ? r : `${r}.`}` : null; };
   const none = () => ({ message: "Nu am încă o ofertă pregătită. Spune „pregătește o ofertă pentru …” (de exemplu: pregătește o ofertă pentru un service auto din Cluj care vrea programări online) și îți arăt un singur plan.", sales: null });
   const planned = (l) => {
     const next = nextOf(l.p);
@@ -90,6 +92,9 @@ export function createSalesAnswers({ sales, preparations, opsPlans = null }) {
     const { p, proposal, dossier } = l;
     const parts = [`Oferta sintetică v${proposal.version} (${proposal.id}), SHA ${proposal.contentSha}: ${PROPOSAL_STATUS_RO[proposal.status] || proposal.status}.`,
       `Pregătirea: ${PREPARATION_STATUS_RO[p.status] || p.status}.`];
+    // M14: why it stopped, in the server's own words (a STALE dossier said only „STALE” before).
+    const why = whyStopped(p);
+    if (why) parts.push(why);
     if (dossier) parts.push(`Dosarul ofertei, revizia ${dossier.revision}: ${dossier.status}${dossier.manifestSha256 ? ` (manifest SHA ${dossier.manifestSha256})` : ""}; ciorna e DRAFT_ONLY, netrimisă.`);
     const next = nextOf(p);
     if (next) parts.push(next.text);

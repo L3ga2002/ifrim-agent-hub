@@ -26,8 +26,8 @@ export function asksForSpec(folded) {
   return false;
 }
 
-/** The text of a support request: the part after the first „:” or the quoted part; else the sentence without its command words. */
-export function supportRequestOf(text) {
+/** M13's extraction, kept so a request asked again before M14 still finds its existing case (its request SHA was taken from this). */
+function supportRequestOfM13(text) {
   const raw = String(text || "").trim();
   const i = raw.indexOf(":");
   if (i > 0 && raw.slice(i + 1).trim().length >= 5) {
@@ -38,6 +38,39 @@ export function supportRequestOf(text) {
   const quoted = raw.match(/[„"“]([^”"“„]{5,2000})[”"“]/);
   if (quoted) return quoted[1].trim();
   return raw.replace(/^\s*(?:te rog,?\s*)?(?:(?:înregistrează|inregistreaza|deschide|creează|creeaza|fă|fa|adaugă|adauga)(?:-mi)?\s+)?(?:un\s+|o\s+)?(?:caz|tichet|solicitare|cerere|sesizare)(?:ul|a)?(?:\s+nou[aă]?)?(?:\s+de\s+suport)?\s*/i, "").trim();
+}
+
+// A closing quote → the opening quotes that pair with it (Romanian „…”, „…“, “…”, «…», "…"). A lone ' is left alone (apostrophes).
+const OPENERS_OF = Object.freeze({ "”": "„“", "“": "„", "\"": "\"", "»": "«" });
+const OPENERS = "„“\"«";
+/**
+ * Drops a quote the request does not close (or open): „cererea” around the whole text, a closing ” left after the „:” split, an
+ * opening „ never closed. Balanced quotes inside the request (clientul spune „nu pot”) stay as written.
+ */
+export function stripUnmatchedQuotes(text) {
+  let t = String(text || "").trim();
+  for (let round = 0; round < 3; round += 1) {
+    const before = t;
+    const tail = t.match(/([”“"»])([.!?…]*)$/);
+    if (tail) {
+      const body = t.slice(0, t.length - tail[0].length);
+      const openers = OPENERS_OF[tail[1]];
+      const inner = [...body.slice(1)].some((c) => OPENERS.includes(c) || c in OPENERS_OF);
+      if (openers.includes(body[0]) && !inner) t = body.slice(1).trim();
+      else if (![...body].some((c) => openers.includes(c))) t = `${body}${tail[2]}`.trim();
+    }
+    if (OPENERS.includes(t[0])) {
+      const closers = Object.keys(OPENERS_OF).filter((c) => OPENERS_OF[c].includes(t[0]) && c !== t[0]).concat(t[0] === "\"" ? ["\""] : []);
+      if (![...t.slice(1)].some((c) => closers.includes(c))) t = t.slice(1).trim();
+    }
+    if (t === before) break;
+  }
+  return t;
+}
+
+/** The text of a support request: the part after the first „:” or the quoted part; else the sentence without its command words. */
+export function supportRequestOf(text) {
+  return stripUnmatchedQuotes(supportRequestOfM13(text));
 }
 
 export function registerDeskPlanner(hub, intake) {
@@ -131,7 +164,10 @@ export function registerDeskPlanner(hub, intake) {
       if (!pick.project) return { kind: "message", text: pick.message };
       const p = pick.project;
       const requestSha = hashCanonical(request);
-      const same = desk.sameSubject({ kind: flow, projectId: p.project.id, requestSha });
+      // A case opened before M14 kept M13's text (a stray quote included): asked again, it is still the same case.
+      const m13Sha = hashCanonical(supportRequestOfM13(raw));
+      const same = desk.sameSubject({ kind: flow, projectId: p.project.id, requestSha })
+        || (m13Sha !== requestSha ? desk.sameSubject({ kind: flow, projectId: p.project.id, requestSha: m13Sha }) : null);
       if (same) { const out = await existing(same, ctx); if (out) return out; }
       const id = newId("dsk");
       const steps = [{ kind: "desk.support.case", params: { recordId: id, projectId: p.project.id, deliveryId: p.delivery.id, bundleSha: p.sources.delivery.bundleSha, requestSha } }, { kind: "desk.support.reply", params: { recordId: id } }];

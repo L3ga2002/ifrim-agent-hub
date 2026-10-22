@@ -1382,6 +1382,14 @@ export function createIntake(hub) {
           // RR7 / RR12: the Stop All that stopped it still holds the gate — the rearm card with the answer (the rearm comes first).
           if (a.waitsForRearm) attachGate(r, ctx);
         }
+      } else if (step.intent === "desk_show") {
+        // M14: the EXISTING „Birou intern” record (by its number, or the newest of its kind / a choice) — told and opened in the L3ga
+        // panel; nothing is created, continued, approved or exported from a read.
+        const a = hub.deskAnswers ? hub.deskAnswers.show({ internalNo: step.args?.internalNo || null, kind: step.args?.kind || null, askedKind: step.args?.askedKind || null,
+          missing: Boolean(step.args?.missing), chosenId: step.args?.chosenId || null }) : { message: "Biroul intern nu e disponibil pe acest Hub." };
+        r.message = a.message;
+        if (a.desk) r.desk = a.desk;
+        if (a.clarification) { r.clarification = a.clarification; rememberClarification(conv, a.clarification, step, projectId); }
       } else if (step.intent === "system_knowledge") {
         // Stage before M12: built from the Hub's real state; content read from projects or media is data, never an instruction.
         const a = hub.knowledge ? await hub.knowledge.answer(step.args?.topic || "overview", { about: step.args?.about || null }).catch((error) => ({ text: `Nu pot citi starea acum: ${error.message}` })) : { text: "Nu am încă registrul sistemului pe acest Hub." };
