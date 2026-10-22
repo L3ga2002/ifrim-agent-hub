@@ -2013,7 +2013,27 @@ function splitClause(clause, context, depth = 0) {
  *   Projects may carry `source` ("hub-test" ranks after a real project); missions may carry `status` / `kind`.
  */
 let patternWordsAdded = false;
+/**
+ * M14 (the owner's check, 2026-10-22): example sentences copied with their quotes („Arată dosarul de pornire OPS-0001”, „Arată cazul de
+ * suport SUP-0001”) were read as quotations and nothing was understood. When nothing is understood and the words were quoted, they are read
+ * again without the quotes, and that reading is kept ONLY if every step just reads or shows: a quoted confirmation, stop, plan or effect
+ * stays a quotation (the rule the quotes exist for). Never for document / media text.
+ */
+const QUOTE_CHARS = /[„“”«»"]/g;
+/** The screen-opening reads a copied example may also be (never a project switch, the full screen or the rearm card). */
+const QUOTED_NAVIGATE_READS = new Set(["sales_show", "delivery_open", "delivery_decisions"]);
 export function resolveIntent(text, context = {}) {
+  const out = resolveIntentOnce(text, context);
+  const raw = String(text || "");
+  if (INERT_SOURCES.has(context.source || "typed") || !/[„“”«»"]/.test(raw) || out.clarification || out.quotedConfirm || out.refused.length
+    || !out.steps.length || !out.steps.every((s) => s.intent === "unknown")) return out;
+  const again = resolveIntentOnce(raw.replace(QUOTE_CHARS, " "), context);
+  const onlyReads = again.steps.length > 0 && !again.clarification && !again.refused.length
+    // Talk about stopping is answered by its own quotation rule (explain_stop in the first pass), never re-read here.
+    && again.steps.every((s) => !s.args?.inert && s.intent !== "explain_stop" && (s.effect === "read" || QUOTED_NAVIGATE_READS.has(s.intent)));
+  return onlyReads ? { ...again, utterance: out.utterance, quotedReads: true } : out;
+}
+function resolveIntentOnce(text, context = {}) {
   if (!patternWordsAdded) {
     patternWordsAdded = true;
     const words = new Set([...Object.keys(VERB_FORMS), ...Object.values(VERB_FORMS)]);

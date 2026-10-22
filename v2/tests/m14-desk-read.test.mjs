@@ -188,3 +188,30 @@ test("M14-READ-REVIEW the review's cases: a number with „pentru …” is stil
   assert.equal(stripUnmatchedQuotes("ecranul de 5\""), "ecranul de 5\"");
   assert.equal(stripUnmatchedQuotes("nu merge\""), "nu merge");
 });
+
+test("M14-CHECK-01 the owner's check: example sentences copied with their quotes are read (only reads; a quoted confirmation, stop or plan stays a quotation)", () => {
+  const intent = (text, source = "typed") => resolveIntent(text, { projects: [{ id: "prj_2", name: "ProDelivery", slug: "prodelivery" }], source }).steps.map((s) => [s.intent, s.args?.internalNo || null]);
+  assert.deepEqual(intent("Arată dosarul de pornire OPS-0001”, „Arată cazul de suport SUP-0001”"), [["desk_show", "OPS-0001"], ["desk_show", "SUP-0001"]]);
+  assert.deepEqual(intent("„Arată devizul DVZ-0001”"), [["desk_show", "DVZ-0001"]]);
+  assert.deepEqual(intent("„Da, execută planul”"), [["unknown", null]], "a quoted confirmation is never consent");
+  assert.notDeepEqual(intent("„oprește tot”")[0][0], "stop_all", "a quoted stop is never the command");
+  assert.deepEqual(intent("„Pregătește devizul din oferta aprobată”"), [["unknown", null]], "a quoted plan is never proposed");
+  assert.deepEqual(intent("„Arată devizul DVZ-0001”", "document"), [["unknown", null]], "document text stays content");
+  // Review: a quoted command that would switch the project, open the full screen or the rearm card stays a quotation; a quoted „Da” keeps
+  // the whole sentence out of the fallback (its refusal is not lost).
+  for (const text of ["Am scris „deschide proiectul ProDelivery”", "„rearmează poarta”", "„ecran complet”", "„Da” „Arată cazul de suport SUP-0001”"]) {
+    assert.ok(!intent(text).some(([i]) => ["open_project", "gate_rearm", "fullscreen", "desk_show"].includes(i)), text);
+  }
+  assert.deepEqual(intent("„Arată-mi oferta”"), [["sales_show", null]]);
+});
+
+test("M14-CHECK-02 the owner's check: „Care e ultima livrare?” names the LAST delivery first (accepted by him), then the older one still waiting", async (c) => {
+  const t = await supportHub(c);
+  const last = t.hub.db.prepare("SELECT id, created_at FROM factory_bundles ORDER BY created_at DESC LIMIT 1").get();
+  t.hub.db.exec("CREATE TEMP TABLE m14_b AS SELECT * FROM factory_bundles WHERE id = '" + last.id + "'");
+  t.hub.db.prepare("UPDATE m14_b SET id = 'bnd_m14_older', status = 'READY_FOR_OWNER_ACCEPTANCE', created_at = ?, decided_at = NULL").run(new Date(Date.parse(last.created_at) - 86400000).toISOString());
+  t.hub.db.exec("INSERT INTO factory_bundles SELECT * FROM m14_b; DROP TABLE m14_b");
+  const out = await say(t, "Care e ultima livrare?", { projectId: t.project.id });
+  const r = out.results.find((x) => x.intent === "last_delivery");
+  assert.match(r.message, /^Ultima livrare: „[^”]+” — acceptată de tine \(\d{4}-\d{2}-\d{2}\)\. Mai așteaptă decizia ta o livrare mai veche: „[^”]+” \(\d{4}-\d{2}-\d{2}\)\.$/, r.message);
+});

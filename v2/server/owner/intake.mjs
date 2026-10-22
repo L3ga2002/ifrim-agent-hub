@@ -150,6 +150,9 @@ const heardQuote = (heard) => String(heard || "").replace(/[\s.!…]+$/u, "").sl
  * planner's, or the request it was asked for; since M11 L5 the engineering planner offers no test to pick).
  */
 const PICK_FOR = new Set(["engineering", "run", "engineering_request", "analysis_request"]);
+/** M14: a delivery bundle's state, said to the owner. */
+const DELIVERY_STATUS_RO = Object.freeze({ OWNER_ACCEPTED: "acceptată de tine", READY_FOR_OWNER_ACCEPTANCE: "așteaptă acceptarea ta", REJECTED: "respinsă de tine",
+  STALE: "depășită (s-a schimbat după pregătire)" });
 /** „Alege-l”, „Folosește-l”, „Primul”, „Pe acela”, „Da, alege-l” (normalized). Never a bare „Da”: that word confirms a plan. */
 const PLAIN_PICK = /^(?:(?:da|ok|okay|bine|sigur)[\s,]+)?(?:alege(?:-l|-o)?|foloseste(?:-l|-o)?|ia(?:-l|-o)|primul|prima|pe primul|pe prima|acela|acesta|pe acela|pe acesta|pe el|pe ala|asta|pe asta)(?:[\s,]+(?:pe el|pe ea|pe acela|pe acesta|pe asta|te rog|ca dovada))*$/;
 const PICK_WORDS = /\b(?:alege-l|alege-o|alege|foloseste-l|foloseste-o|foloseste|testul|test|fisierul|fisier|pe|cel|da|ok|te rog)\b/g;
@@ -1365,9 +1368,14 @@ export function createIntake(hub) {
         r.message = first ? `Ultima execuție: ${first.provider}${first.stage ? ` · ${first.stage}` : ""} · ${first.status}${first.projectName ? ` (${first.projectName})` : ""}.` : `Nu am nicio execuție înregistrată${projectId ? " pe acest proiect" : ""}.`;
       } else if (step.intent === "last_delivery") {
         r.deliveries = deliveries(projectId);
-        const waiting = r.deliveries.filter((d) => d.awaitingOwner);
-        r.message = waiting.length ? `${waiting.length === 1 ? "O livrare așteaptă" : `${waiting.length} livrări așteaptă`} decizia ta: ${waiting.slice(0, 3).map((d) => `„${d.title}”`).join(", ")}.`
-          : r.deliveries[0] ? `Ultima livrare: „${r.deliveries[0].title}” (${r.deliveries[0].status}).` : `Nu am nicio livrare înregistrată${projectId ? " pe acest proiect" : ""}.`;
+        // M14 (the owner's check): „Care e ultima livrare?” answers with the LAST one first (its state in words and its date), then what
+        // still waits for him — an older bundle waiting was said instead of the delivery he had accepted.
+        const last = r.deliveries[0] || null;
+        const waiting = r.deliveries.filter((d) => d.awaitingOwner && d !== last);
+        const day = (at) => { const d = new Date(at); return Number.isNaN(d.getTime()) ? "" : ` (${d.toISOString().slice(0, 10)})`; };
+        const parts = [last ? `Ultima livrare: „${last.title}” — ${DELIVERY_STATUS_RO[last.status] || last.status}${day(last.at)}.` : `Nu am nicio livrare înregistrată${projectId ? " pe acest proiect" : ""}.`];
+        if (waiting.length) parts.push(`${waiting.length === 1 ? "Mai așteaptă decizia ta o livrare mai veche" : `Mai așteaptă decizia ta ${waiting.length} livrări mai vechi`}: ${waiting.slice(0, 3).map((d) => `„${d.title}”${day(d.at)}`).join(", ")}.`);
+        r.message = parts.join(" ");
       } else if (step.intent === "sales_show" || step.intent === "sales_missing" || step.intent === "sales_approve_talk") {
         // M12 (S-07): reads the Hub answers from the latest synthetic preparation (sales/sales-answers.mjs). „Aprobă oferta” says WHERE the
         // owner approves the exact offer (id + full SHA, Vânzări → Oportunitate): nothing is approved, requested or created here.
