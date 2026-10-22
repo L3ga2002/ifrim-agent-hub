@@ -18,20 +18,30 @@ import { configuredAgentEntries, agentRoleDefault } from "./openclaw-config.mjs"
 
 const __filename = fileURLToPath(import.meta.url);
 const projectRoot = path.resolve(path.dirname(__filename), "../../..");
-const projectsRoot = path.resolve(projectRoot, "..");
+const port = Number(process.env.PORT || 8004);
+const testMode = process.env.NODE_ENV === "test";
+const isInsideTestTmp = (target) => {
+  const relative = path.relative(path.join(projectRoot, ".ifrim", "tmp"), target);
+  return Boolean(relative) && relative !== ".." && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative);
+};
+const dbPath = testMode && process.env.HUB_TEST_DB_PATH
+  ? path.resolve(process.env.HUB_TEST_DB_PATH)
+  : path.join(projectRoot, ".ifrim", "private", "agent-hub.sqlite");
+if (testMode && (!process.env.HUB_TEST_DB_PATH || !isInsideTestTmp(dbPath))) {
+  throw new Error("Tests require an isolated database inside .ifrim/tmp.");
+}
+// Tests never read the owner's real registry (..\PROJECTS.md, ..\.ifrim-system): they name a synthetic projects root inside
+// .ifrim/tmp, or get the isolated database's own folder (no registry, so no project).
+const projectsRoot = testMode
+  ? path.resolve(process.env.HUB_TEST_PROJECTS_ROOT || path.dirname(dbPath))
+  : path.resolve(projectRoot, "..");
+if (testMode && !isInsideTestTmp(projectsRoot)) {
+  throw new Error("Tests require an isolated projects root inside .ifrim/tmp.");
+}
 const registryPath = path.join(projectsRoot, "PROJECTS.md");
 const agentRegistryPath = path.join(projectsRoot, ".ifrim-system", "AGENT_TEAM_V2.json");
 const designSystemPath = path.join(projectsRoot, ".ifrim-system", "DESIGN_SYSTEM.md");
 const openClawConfigPath = path.join(process.env.USERPROFILE || "", ".openclaw", "openclaw.json");
-const port = Number(process.env.PORT || 8004);
-const testMode = process.env.NODE_ENV === "test";
-const dbPath = testMode && process.env.HUB_TEST_DB_PATH
-  ? path.resolve(process.env.HUB_TEST_DB_PATH)
-  : path.join(projectRoot, ".ifrim", "private", "agent-hub.sqlite");
-const testDbRelative = path.relative(path.join(projectRoot, ".ifrim", "tmp"), dbPath);
-if (testMode && (!process.env.HUB_TEST_DB_PATH || !testDbRelative || testDbRelative === ".." || testDbRelative.startsWith(`..${path.sep}`) || path.isAbsolute(testDbRelative))) {
-  throw new Error("Tests require an isolated database inside .ifrim/tmp.");
-}
 const execFileAsync = promisify(execFile);
 
 const textCache = new Map();

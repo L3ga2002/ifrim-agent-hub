@@ -10,6 +10,7 @@ import { access, mkdir, mkdtemp, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { modelPolicy } from "../apps/api/src/model-policy.mjs";
+import { writeSyntheticRegistry } from "./synthetic-registry.mjs";
 
 const projectRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const apiEntry = path.join(projectRoot, "apps", "api", "src", "server.mjs");
@@ -118,14 +119,18 @@ test("retry-ul workflow reîmprospătează packetul vechi o singură dată în D
   const relativeDbPath = path.relative(tmpRoot, dbPath);
   assert.ok(relativeDbPath && !relativeDbPath.startsWith(`..${path.sep}`) && !path.isAbsolute(relativeDbPath));
 
+  // A synthetic "Ifrim Agent Hub" project in a synthetic registry: the backup this retry takes archives it, never the real repository.
+  const projectsRoot = path.join(isolatedDir, "projects");
+  const { "Ifrim Agent Hub": hubProject } = await writeSyntheticRegistry(projectsRoot);
+  for (const [file, text] of [["apps/api/src/server.mjs", "// synthetic API source\n"], ["src/main.jsx", "// synthetic frontend source\n"],
+    ["node_modules/dep/index.js", "// dependency\n"], ["tmp/scratch.txt", "scratch\n"], [".env", "SYNTHETIC=1\n"]]) {
+    await mkdir(path.dirname(path.join(hubProject, file)), { recursive: true });
+    await writeFile(path.join(hubProject, file), text, "utf8");
+  }
   const fixtureName = `.env.hub016-${randomUUID()}`;
-  const fixturePath = path.join(projectRoot, fixtureName);
+  const fixturePath = path.join(hubProject, fixtureName);
   await mkdir(fixturePath);
   await writeFile(path.join(fixturePath, "marker.txt"), "Hub archive exclusion fixture; no secrets.\n", "utf8");
-  execFileSync("git", ["check-ignore", "--quiet", "--", fixtureName], {
-    cwd: projectRoot,
-    stdio: "ignore",
-  });
 
   const port = await findFreePort();
   const baseUrl = `http://127.0.0.1:${port}`;
@@ -135,6 +140,7 @@ test("retry-ul workflow reîmprospătează packetul vechi o singură dată în D
       ...process.env,
       NODE_ENV: "test",
       HUB_TEST_DB_PATH: dbPath,
+      HUB_TEST_PROJECTS_ROOT: projectsRoot,
       PORT: String(port),
     },
     windowsHide: true,
@@ -213,8 +219,8 @@ test("retry-ul workflow reîmprospătează packetul vechi o singură dată în D
       maxBuffer: 32 * 1024 * 1024,
     });
     const archiveEntries = archiveListing.split(/\r?\n/).filter(Boolean).map((entry) => entry.replaceAll("\\", "/"));
-    assert.ok(archiveEntries.includes("apps/api/src/server.mjs"), "backup must include the OneDrive API source");
-    assert.ok(archiveEntries.includes("src/main.jsx"), "backup must include the OneDrive frontend source");
+    assert.ok(archiveEntries.includes("apps/api/src/server.mjs"), "backup must include the project's API source");
+    assert.ok(archiveEntries.includes("src/main.jsx"), "backup must include the project's frontend source");
     for (const entry of archiveEntries) {
       const segments = entry.split("/");
       assert.ok(!segments.some((segment) => segment.toLowerCase().startsWith(".env")), `secret-like path included: ${entry}`);

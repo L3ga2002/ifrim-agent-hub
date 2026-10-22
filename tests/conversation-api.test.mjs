@@ -5,6 +5,7 @@ import { mkdtemp } from "node:fs/promises";
 import { spawn } from "node:child_process";
 import { createServer } from "node:net";
 import { fileURLToPath } from "node:url";
+import { writeSyntheticRegistry } from "./synthetic-registry.mjs";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const apiEntry = path.join(root, "apps", "api", "src", "server.mjs");
@@ -22,9 +23,11 @@ async function freePort() {
 
 test("conversation API persists messages and creates a local handoff without execution", async () => {
   const temporary = await mkdtemp(path.join(root, ".ifrim", "tmp", "conversation-api-"));
+  const projectsRoot = path.join(temporary, "projects");
+  await writeSyntheticRegistry(projectsRoot);
   const port = await freePort();
   const child = spawn(process.execPath, [apiEntry], { cwd: root, windowsHide: true,
-    env: { ...process.env, NODE_ENV: "test", HUB_TEST_DB_PATH: path.join(temporary, "hub.sqlite"), PORT: String(port) },
+    env: { ...process.env, NODE_ENV: "test", HUB_TEST_DB_PATH: path.join(temporary, "hub.sqlite"), HUB_TEST_PROJECTS_ROOT: projectsRoot, PORT: String(port) },
     stdio: ["ignore", "pipe", "pipe"] });
   let output = "";
   child.stdout.on("data", (chunk) => { output += chunk; });
@@ -82,5 +85,19 @@ test("conversation API persists messages and creates a local handoff without exe
   } finally {
     child.kill();
     await new Promise((resolve) => child.once("close", resolve));
+  }
+});
+
+test("test mode refuses a projects root outside .ifrim/tmp (never the owner's real registry)", async () => {
+  const temporary = await mkdtemp(path.join(root, ".ifrim", "tmp", "conversation-api-"));
+  for (const projectsRoot of [path.resolve(root, ".."), root]) {
+    const child = spawn(process.execPath, [apiEntry], { cwd: root, windowsHide: true,
+      env: { ...process.env, NODE_ENV: "test", HUB_TEST_DB_PATH: path.join(temporary, "hub.sqlite"), HUB_TEST_PROJECTS_ROOT: projectsRoot, PORT: "0" },
+      stdio: ["ignore", "pipe", "pipe"] });
+    let output = "";
+    child.stderr.on("data", (chunk) => { output += chunk; });
+    const code = await new Promise((resolve) => child.once("close", resolve));
+    assert.notEqual(code, 0);
+    assert.match(output, /isolated projects root inside \.ifrim\/tmp/);
   }
 });
