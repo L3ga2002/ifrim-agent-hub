@@ -57,7 +57,8 @@ export function stripUnmatchedQuotes(text) {
       const openers = OPENERS_OF[tail[1]];
       const inner = [...body.slice(1)].some((c) => OPENERS.includes(c) || c in OPENERS_OF);
       if (openers.includes(body[0]) && !inner) t = body.slice(1).trim();
-      else if (![...body].some((c) => openers.includes(c))) t = `${body}${tail[2]}`.trim();
+      // A lone straight " after a digit is an inch mark („ecran de 5"”) and stays.
+      else if (![...body].some((c) => openers.includes(c)) && !(tail[1] === "\"" && /\d$/.test(body))) t = `${body}${tail[2]}`.trim();
     }
     if (OPENERS.includes(t[0])) {
       const closers = Object.keys(OPENERS_OF).filter((c) => OPENERS_OF[c].includes(t[0]) && c !== t[0]).concat(t[0] === "\"" ? ["\""] : []);

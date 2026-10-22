@@ -179,3 +179,12 @@ test("M14-READ-04 Sales: the offer's dossier went STALE because the owner approv
   assert.equal(countRows(t, "SELECT COUNT(*) AS n FROM sales_dossiers"), dossiers, "no revision made by a read");
   assert.equal(t.hub.salesPreparations.get(prep.id).status, "STALE", "the state is left as it is");
 });
+
+test("M14-READ-REVIEW the review's cases: a number with „pentru …” is still the record; „Da, arată devizul” is a read; two numbers in one „ce lipsește” are not answered for one silently; an inch mark stays", () => {
+  const intent = (text) => resolveIntent(text, { projects: [], source: "typed" }).steps.map((s) => [s.intent, s.args?.internalNo || null]);
+  assert.deepEqual(intent("Arată devizul DVZ-0001 pentru client"), [["desk_show", "DVZ-0001"]]);
+  assert.deepEqual(intent("Da, arată devizul"), [["desk_show", null]]);
+  assert.ok(!intent("Ce lipsește din dosarul OPS-0001 și cazul SUP-0001").some(([i, no]) => i === "desk_show" && no === "SUP-0001"), "never one of the two silently");
+  assert.equal(stripUnmatchedQuotes("ecranul de 5\""), "ecranul de 5\"");
+  assert.equal(stripUnmatchedQuotes("nu merge\""), "nu merge");
+});

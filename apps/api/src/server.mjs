@@ -31,9 +31,9 @@ if (testMode && (!process.env.HUB_TEST_DB_PATH || !isInsideTestTmp(dbPath))) {
   throw new Error("Tests require an isolated database inside .ifrim/tmp.");
 }
 // Tests never read the owner's real registry (..\PROJECTS.md, ..\.ifrim-system): they name a synthetic projects root inside
-// .ifrim/tmp, or get the isolated database's own folder (no registry, so no project).
+// .ifrim/tmp, or get an empty folder next to the isolated database (no registry, so no project).
 const projectsRoot = testMode
-  ? path.resolve(process.env.HUB_TEST_PROJECTS_ROOT || path.dirname(dbPath))
+  ? path.resolve(process.env.HUB_TEST_PROJECTS_ROOT || path.join(path.dirname(dbPath), "no-projects"))
   : path.resolve(projectRoot, "..");
 if (testMode && !isInsideTestTmp(projectsRoot)) {
   throw new Error("Tests require an isolated projects root inside .ifrim/tmp.");

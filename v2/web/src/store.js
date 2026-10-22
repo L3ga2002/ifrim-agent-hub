@@ -1,7 +1,7 @@
 import { useSyncExternalStore, useEffect, useState, useCallback, useRef } from "react";
 import { streamStartSeq, approvalToastTarget } from "./lib/uiLogic.js";
 import { api, openStream } from "./api.js";
-import { CONVERSATIONS_STORAGE_KEY, persistedConversations, restoredConversations } from "./lib/legaConversation.js";
+import { CONVERSATIONS_STORAGE_KEY, persistedConversations, restoredConversations, mergeConversations } from "./lib/legaConversation.js";
 
 // Global Hub state: the /api/state projection, refreshed on relevant events (debounced).
 const listeners = new Set();
@@ -10,16 +10,41 @@ const readConversations = () => { try { return restoredConversations(globalThis.
 let state = { hub: null, loading: true, error: null, connection: "connecting", toasts: [], voicePhase: "idle", legaPhase: "off", lastUpdate: null, ...readConversations() };
 let savedConversations = [state.legaConversations, state.legaDrafts];
 let saveTimer = null;
+/** Writes this tab's copy, merged with what another tab wrote meanwhile (the newest conversation wins per project). */
+function writeConversations() {
+  saveTimer = null;
+  try {
+    const merged = mergeConversations(state, readConversations());
+    globalThis.localStorage?.setItem(CONVERSATIONS_STORAGE_KEY, JSON.stringify(persistedConversations(merged.legaConversations, merged.legaDrafts)));
+  } catch { /* storage unavailable or full */ }
+}
 function keepConversations() {
   if (savedConversations[0] === state.legaConversations && savedConversations[1] === state.legaDrafts) return;
   savedConversations = [state.legaConversations, state.legaDrafts];
   clearTimeout(saveTimer);
-  saveTimer = setTimeout(() => {
-    try { globalThis.localStorage?.setItem(CONVERSATIONS_STORAGE_KEY, JSON.stringify(persistedConversations(state.legaConversations, state.legaDrafts))); } catch { /* storage unavailable or full */ }
-  }, 300);
+  saveTimer = setTimeout(writeConversations, 300);
 }
-if (typeof window !== "undefined") window.addEventListener("pagehide", () => { if (saveTimer) { clearTimeout(saveTimer); saveTimer = null; try { globalThis.localStorage?.setItem(CONVERSATIONS_STORAGE_KEY, JSON.stringify(persistedConversations(state.legaConversations, state.legaDrafts))); } catch { /* unavailable */ } } });
-const emit = () => { keepConversations(); for (const l of listeners) l(); };
+const notify = () => { for (const l of listeners) l(); };
+if (typeof window !== "undefined") {
+  window.addEventListener("pagehide", () => { if (saveTimer) { clearTimeout(saveTimer); writeConversations(); } });
+  // Another tab wrote (or the owner locked the session there): this tab takes the newer conversations, or forgets them all.
+  window.addEventListener("storage", (e) => {
+    if (e.key !== CONVERSATIONS_STORAGE_KEY && e.key !== null) return;
+    const merged = e.newValue === null ? { legaConversations: {}, legaDrafts: {} } : mergeConversations(state, restoredConversations(e.newValue));
+    state = { ...state, ...merged };
+    savedConversations = [state.legaConversations, state.legaDrafts];
+    notify();
+  });
+}
+/** M14: locking the owner session forgets Lega's conversations and unsent texts in this browser (every tab). */
+export function forgetConversations() {
+  clearTimeout(saveTimer); saveTimer = null;
+  state = { ...state, legaConversations: {}, legaDrafts: {} };
+  savedConversations = [state.legaConversations, state.legaDrafts];
+  try { globalThis.localStorage?.removeItem(CONVERSATIONS_STORAGE_KEY); } catch { /* unavailable */ }
+  notify();
+}
+const emit = () => { keepConversations(); notify(); };
 export const setState = (patch) => { state = { ...state, ...(typeof patch === "function" ? patch(state) : patch) }; emit(); };
 /** Current store snapshot for non-React code (e.g. an error boundary deciding whether a reload is safe). */
 export const getState = () => state;

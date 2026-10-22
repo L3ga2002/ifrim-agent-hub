@@ -62,6 +62,8 @@ function SetupPage({ go }) {
 const CARD_COMPONENTS = { ProjectSummary, NextStepCard, DecisionCard, MissionPlan, AgentGraph, EnvironmentCard, DiffPanel, TestPanel, ReviewPanel, Replay, Preview, Briefing, Explain, CompanyMap, IntelResult };
 /** 2.12.1 (UI-02): the rearm slot's ids and one-shot trigger numbers — page-wide and monotonic, so a remounted cockpit never reuses one. */
 let rearmSlotCounter = 0;
+/** M14: a record a read opened stays in front for this long (then the panel shows the newest again). */
+const DESK_FOCUS_MS = 30 * 60 * 1000;
 let rearmTriggerCounter = 0;
 
 function Cockpit({ projectId, go }) {
@@ -589,6 +591,7 @@ function Cockpit({ projectId, go }) {
             {conversation.map((m, i) => (
               <li key={i} className={`lc-${m.role}`}><span className="who">{m.role === "user" ? "Tu" : "Lega"}</span><span className="lc-text">{m.text}</span>
                 {m.mount === mountRef.current && m.clarification?.options?.length > 0 && <span className="row wrap">{m.clarification.options.map((o) => <button key={o.id} className="btn sm" onClick={() => send(o.label, "typed", { choice: { forIntent: m.clarification.forIntent, id: o.id } })}>{o.label}</button>)}</span>}
+                {m.mount !== mountRef.current && (m.expiredOptions || m.clarification?.options?.length > 0 || m.blocker?.options?.length > 0) && <span className="faint small">Opțiunile acestei întrebări nu mai sunt active; cere din nou.</span>}
                 {m.links?.length > 0 && <span className="row wrap">{m.links.map((l) => <button key={l.path} className="btn sm" onClick={() => go(l.path)}>{l.label}</button>)}</span>}
                 {m.mount === mountRef.current && m.blocker?.options?.length > 0 && <BlockerActions options={m.blocker.options} projectId={pid || null} projectLevel={c?.autonomy?.level || null} requestId={m.blocker.requestId || null} onSay={(t) => send(t)} onDone={() => cockpit.reload()} onRearm={openRearm} />}</li>
             ))}
@@ -643,7 +646,7 @@ function Cockpit({ projectId, go }) {
               </>
             )}
           {/* M13 „Birou intern”: the start dossier, the support case and the deviz, after the cockpit's own cards. */}
-          <DeskPanel focus={deskFocus} onClearFocus={() => setDeskFocus(null)} />
+          <DeskPanel focus={deskFocus && Date.now() - Number(deskFocus.at || 0) < DESK_FOCUS_MS ? deskFocus : null} onClearFocus={() => setDeskFocus(null)} />
         </main>
       </div>
     </div>

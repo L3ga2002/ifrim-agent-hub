@@ -101,18 +101,25 @@
   .lega-one-center .lega-face-canvas { max-height: 160px; max-width: 160px; }
   .lega-one.is-immersive { overflow: auto; }
   /* M14: the interruptions stay on screen while the page scrolls (Pauză, Preiau eu and Stop All were below the fold on a phone): fixed at
-     the bottom, over the bottom navigation when it is there, every button visible (wrapped, never scrolled away), Stop All first; the page
-     keeps room for them. */
-  .lega-one { padding-bottom: calc(var(--sp-3) + 104px); }
-  .lega-one-center .interrupt-bar { position: fixed; left: 0; right: 0; bottom: 0; z-index: 40; margin: 0; padding: 6px var(--sp-3) calc(6px + env(safe-area-inset-bottom));
-    flex-wrap: wrap; justify-content: center; gap: 6px; background: rgba(8, 11, 16, 0.94); border-top: 1px solid var(--line); backdrop-filter: blur(6px); }
+     the bottom (beside the rail from 768 px, over the bottom navigation below), every button visible (wrapped, never scrolled away), Stop
+     All first. No backdrop filter: it would make the bar the containing block of the Stop All dialog it renders. The page, its scrolling and
+     the notifications / run indicator keep clear of it (--lega-bar-h). */
+  .app { --lega-bar-h: 132px; }
+  .lega-one { padding-bottom: calc(var(--sp-3) + var(--lega-bar-h)); }
+  .app:has(.lega-one) .main { scroll-padding-bottom: calc(var(--lega-bar-h) + 16px); }
+  .lega-one-center .interrupt-bar { position: fixed; left: var(--rail-w); right: 0; bottom: 0; z-index: 40; margin: 0; padding: 6px var(--sp-3) calc(6px + env(safe-area-inset-bottom));
+    flex-wrap: wrap; justify-content: center; gap: 6px; background: rgb(8, 11, 16); border-top: 1px solid var(--line); }
+  .app.is-immersive .lega-one-center .interrupt-bar { left: 0; }
   .lega-one-center .interrupt-bar > * { flex: none; }
   .lega-one-center .interrupt-bar > [data-lega-target="stop-all"] { order: -1; }
+  .app:has(.lega-one) .toasts { bottom: calc(var(--lega-bar-h) + 12px); }
+  .app:has(.lega-one) .control-indicator { top: calc(var(--top-h) + 8px); bottom: auto; }
   .lega-project-switch select { max-width: min(62vw, 260px); }
 }
 @media (max-width: 767px) {
-  .app:not(.is-immersive) .lega-one-center .interrupt-bar { bottom: calc(48px + env(safe-area-inset-bottom)); padding-bottom: 6px; }
-  .app:not(.is-immersive) .lega-one { padding-bottom: calc(var(--sp-3) + 104px); }
+  .app:not(.is-immersive) .lega-one-center .interrupt-bar { left: 0; bottom: calc(var(--bottom-h) + env(safe-area-inset-bottom)); padding-bottom: 6px; }
+  .app:not(.is-immersive):has(.lega-one) .toasts { bottom: calc(var(--bottom-h) + var(--lega-bar-h) + 12px); }
+  .app:not(.is-immersive):has(.lega-one) .mini-assistant { bottom: calc(var(--bottom-h) + var(--lega-bar-h) + 8px + env(safe-area-inset-bottom)); }
 }
 
 /* M13 „Birou intern” in the work column: one record per flow, wrapped text, no horizontal scroll at phone width. */

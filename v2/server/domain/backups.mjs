@@ -56,13 +56,17 @@ export function createBackupService({ db, bus, config, clock, projects, instance
         }
         const status = result.status === "created" ? (verification.ok ? "verified" : "verification_failed") : result.status;
         bus.transaction(() => {
+          const before = db.prepare("SELECT status FROM backups WHERE id = ?").get(id)?.status || null;
           db.prepare(`UPDATE backups SET status = ?, archive_path = ?, manifest_path = ?, sqlite_json = ?, file_count = ?, total_bytes = ?, archive_bytes = ?,
             duration_ms = ?, skipped_json = ?, manifest_sha256 = ?, git_head = ?, restore_verified_at = ?, restore_report_json = ?, error = ? WHERE id = ?`)
             .run(status, result.archivePath || null, result.manifestPath || null, json(result.databases || []), result.fileCount || 0,
               result.totalBytes || 0, result.archiveBytes || 0, result.durationMs || 0, json(result.skipped || []), result.manifestSha256 || "",
               git.head || "", verification?.ok ? verification.verifiedAt : null, json(verification || {}), result.error || null, id);
+          // M14: another instance's boot may have called this row owner_unknown while this process was busy (a live pid without a recent
+          // sign of life): the finished result is the evidence and is recorded; the event names the earlier verdict.
           bus.append({ type: status === "verified" ? "backup.verified" : "backup.failed", scopeType: "project", scopeId: projectId, projectId, source: "hub",
-            payload: { backupId: id, status, fileCount: result.fileCount || 0, skipped: (result.skipped || []).length, durationMs: result.durationMs, problems: verification?.problems?.slice(0, 20) || [], error: result.error } });
+            payload: { backupId: id, status, fileCount: result.fileCount || 0, skipped: (result.skipped || []).length, durationMs: result.durationMs, problems: verification?.problems?.slice(0, 20) || [], error: result.error,
+              ...(before && before !== "running" ? { reconciledAs: before } : {}) } });
         });
       } catch (error) {
         // A step that throws (git state, the archive writer, the restore check) ends the backup as failed with the reason; it never

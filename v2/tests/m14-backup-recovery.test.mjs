@@ -102,3 +102,17 @@ test("M14-BKP-03 migration 15 on a version-14 database: the four owner columns a
   assert.deepEqual({ ...db.prepare("SELECT id, status, owner_boot_id, heartbeat_at FROM backups").get() }, { id: "bkp_old", status: "running", owner_boot_id: null, heartbeat_at: null });
   db.close();
 });
+
+test("M14-BKP-04 review: a backup another boot called owner_unknown (its live owner was only busy) that then finishes is recorded with its real result, the earlier verdict named in the event", async () => {
+  const t = await makeTestHub();
+  try {
+    const { hub } = t;
+    const project = hub.projects.hub();
+    const off = hub.bus.subscribe((e) => { if (e.type === "backup.started") hub.db.prepare("UPDATE backups SET status = 'owner_unknown' WHERE id = ?").run(e.payload.backupId); });
+    const backup = await hub.backups.run(project.id, "test", "test");
+    off();
+    assert.equal(backup.status, "verified");
+    const done = hub.bus.since(0).find((e) => e.type === "backup.verified" && e.payload.backupId === backup.id);
+    assert.equal(done.payload.reconciledAs, "owner_unknown");
+  } finally { await t.cleanup(); }
+});

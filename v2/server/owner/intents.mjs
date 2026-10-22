@@ -842,7 +842,8 @@ const ACK_REQUESTS = new Set(["studio_create", "engineering_request", "analysis_
  * there: every other clause keeps it (the confirmation grammar reads „da” as consent), and a Sales read or request is never a consent.
  */
 const SALES_ACK_LEAD = /^(?:(?:ok|okay|hai|haide|bine|da|sigur)(?:[\s,!.:;]+|$)|(?:(?:hei|hey|buna) )?lega(?:[\s,!.:;]+|$))+/;
-const SALES_ACK_REQUESTS = new Set(["sales_prepare", "sales_send", "sales_show", "sales_missing", "sales_approve_talk", "sales_continue"]);
+// M14: a desk read is never a consent either („Da, arată devizul”).
+const SALES_ACK_REQUESTS = new Set(["sales_prepare", "sales_send", "sales_show", "sales_missing", "sales_approve_talk", "sales_continue", "desk_show"]);
 
 /**
  * One clause → { text, again, refIt }: fillers removed, "din nou / încă o dată / o dată" and a leading "mai / iar" before a verb
@@ -1531,10 +1532,12 @@ const DESK_SUPPORT = new RegExp(String.raw`^(?:te rog,? )?(?:(?:inregistreaza|de
 // („deschide cazul de suport pentru X: …” stays a new case). These rows come before the desk preparations and Sales („arată devizul” was the offer).
 const DESK_NOUN = String.raw`(?:dosar(?:ul)? de pornire(?: a(?:l)? proiectului)?|dosar(?:ul)?|caz(?:ul)? de suport|caz(?:ul)?|deviz(?:ul)?|inregistrarea)`;
 const DESK_NO = String.raw`(ops|sup|dvz)[ -]?0*(\d{1,6})`;
-const DESK_SHOW_NO = new RegExp(String.raw`^(?:(?:arata|deschide|afiseaza|vreau sa vad|adu|da|unde e|unde este|ce stare are|care e starea)(?:-mi|-ne)? (?:si )?)?(?:${DESK_NOUN} )?(?:(?:intern|sintetic) )?${DESK_NO}[.!?]*$`);
+// A trailing „pentru / din / de la …” after the number only describes it („Arată devizul DVZ-0001 pentru client”).
+const DESK_SHOW_NO = new RegExp(String.raw`^(?:(?:arata|deschide|afiseaza|vreau sa vad|adu|da|unde e|unde este|ce stare are|care e starea)(?:-mi|-ne)? (?:si )?)?(?:${DESK_NOUN} )?(?:(?:intern|sintetic) )?${DESK_NO}(?: (?:pentru|din|de la|al|a) [a-z0-9 -]{1,60})?[.!?]*$`);
 const DESK_SHOW_KIND = new RegExp(String.raw`^(?:arata|afiseaza|vreau sa vad|adu|da)(?:-mi|-ne)? (?:(?:ultimul|ultima|cel mai nou|cea mai noua) )?(dosarul de pornire(?: a(?:l)? proiectului)?|cazul de suport|cazurile de suport|devizul|devizele)(?: (?:intern|sintetic|in ciorna))?[.!?]*$`);
 /** „Ce lipsește din devizul DVZ-0001?” — the record's own open items (its next action), never the Sales offer. */
-const DESK_MISSING_NO = new RegExp(String.raw`^(?:(?:si|dar|deci) )?ce (?:mai )?lipseste\b.*\b${DESK_NO}[.!?]*$`);
+// One number only: with two („… din OPS-0001 și SUP-0001”) one of them would be dropped silently.
+const DESK_MISSING_NO = new RegExp(String.raw`^(?!.*\b(?:ops|sup|dvz)[ -]?\d.*\b(?:ops|sup|dvz)[ -]?\d)(?:(?:si|dar|deci) )?ce (?:mai )?lipseste\b.*\b${DESK_NO}[.!?]*$`);
 const DESK_KIND_OF_PREFIX = Object.freeze({ ops: "ops_start", sup: "support_case", dvz: "finance_doc" });
 const deskKindOfNoun = (noun) => (/^dosar/.test(noun) ? "ops_start" : /^caz/.test(noun) ? "support_case" : /^deviz/.test(noun) ? "finance_doc" : null);
 function deskShowNoArgs(m, clause) {

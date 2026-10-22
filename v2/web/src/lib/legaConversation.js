@@ -71,7 +71,9 @@ const PERSIST_TEXT_MAX = 4000;
 const keptMessage = (m) => {
   if (!m || (m.role !== "user" && m.role !== "lega") || typeof m.text !== "string") return null;
   const links = Array.isArray(m.links) ? m.links.filter((l) => l && typeof l.path === "string" && typeof l.label === "string").slice(0, 4).map((l) => ({ path: l.path.slice(0, 300), label: l.label.slice(0, 120) })) : [];
-  return { role: m.role, text: m.text.slice(0, PERSIST_TEXT_MAX), at: Number(m.at) || 0, ...(links.length ? { links } : {}) };
+  // A question whose buttons are not kept says so after a reload (its options were offered only by the screen that showed them).
+  const options = Boolean(m.expiredOptions || m.clarification?.options?.length || m.blocker?.options?.length);
+  return { role: m.role, text: m.text.slice(0, PERSIST_TEXT_MAX), at: Number(m.at) || 0, ...(links.length ? { links } : {}), ...(options ? { expiredOptions: true } : {}) };
 };
 const lastAt = (list) => (Array.isArray(list) && list.length ? Number(list[list.length - 1]?.at) || 0 : 0);
 
@@ -84,6 +86,17 @@ export function persistedConversations(conversations, drafts) {
   const keptDrafts = {};
   for (const [k, v] of Object.entries(drafts || {})) if (typeof v === "string" && v.length) keptDrafts[k] = v.slice(0, PERSIST_TEXT_MAX);
   return { v: 1, conversations: out, drafts: keptDrafts };
+}
+
+/**
+ * Two copies of the kept conversations (this tab's and another tab's): per conversation the one with the newest message wins; an unsent
+ * text is this tab's unless it has none. Neither copy is merged message by message (one project's history is never mixed).
+ */
+export function mergeConversations(mine, theirs) {
+  const legaConversations = { ...(mine?.legaConversations || {}) };
+  for (const [k, list] of Object.entries(theirs?.legaConversations || {})) if (lastAt(list) > lastAt(legaConversations[k])) legaConversations[k] = list;
+  const legaDrafts = { ...(theirs?.legaDrafts || {}), ...(mine?.legaDrafts || {}) };
+  return { legaConversations, legaDrafts };
 }
 
 /** The conversations and unsent texts read back after a reload; anything unreadable is dropped (an empty start, never an error). */

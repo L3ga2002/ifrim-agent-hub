@@ -2,6 +2,7 @@
 // key); this code only carries the Hub's challenge to navigator.credentials and the answer back. Nothing here decides who
 // you are: the Hub verifies the signature. The session itself lives in an HttpOnly cookie the page cannot read.
 import { api } from "../api.js";
+import { forgetConversations } from "../store.js";
 
 const toBuf = (b64url) => { const s = atob(String(b64url).replace(/-/g, "+").replace(/_/g, "/") + "===".slice((String(b64url).length + 3) % 4)); return Uint8Array.from(s, (c) => c.charCodeAt(0)).buffer; };
 const toB64 = (buf) => btoa(String.fromCharCode(...new Uint8Array(buf))).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
@@ -69,7 +70,8 @@ export async function unlockSession(purpose = "unlock") {
   return api("/api/owner/auth/finish", { method: "POST", body: { challengeId: begin.challengeId, credential } });
 }
 
-export const lockSession = () => api("/api/owner/logout", { method: "POST", body: {} });
+// M14: a locked session also forgets Lega's conversations kept in this browser.
+export const lockSession = async () => { const out = await api("/api/owner/logout", { method: "POST", body: {} }); forgetConversations(); return out; };
 
 /** Runs `fn`; if the Hub asks for a fresh re-authentication, runs the ceremony once and retries. */
 export async function withReauth(fn) {
