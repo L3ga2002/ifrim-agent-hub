@@ -1,5 +1,23 @@
 # Open Issues - Ifrim Agent Hub
 
+## 2026-10-22 — M14 stabilizare și acceptarea versiunii interne L3ga (code `2.17.0-m14`, migration 15, API contract 19; detail: `.ifrim/STAGE_2026-10-22_M14.md`, report `.ifrim/M14_RAPORT_FINAL.md`)
+
+This section takes precedence over the next ones where they overlap. Built in the dev clone C:\Users\mihai\m14-stage (branch
+`claude/project-thread-ljsgik`, code `1fe01c7`..`8368a78`, test `c3cb31b`). Gate on `8368a78`: V2 2608/2609 0 fail (T25 skip), V1 552/553 0 fail.
+
+Open:
+1. Owner: run `C:\Users\mihai\m14-evidence\release\owner-release.cmd` (live is still 2.16.0-m13 until then), then the daily check in
+   `m14-evidence\PASII_PROPRIETAR.md` §2, then his acceptance of the internal version (list in the final report).
+2. Owner decisions (not defects): V1 retirement (`m14-evidence\v1-retire\retire-v1.ps1`, reversible); the OpenClaw gateway (active, Telegram);
+   the local dev profile (decisions recorded `local_dev_profile`) vs Windows Hello; the 43 `.env.hub016-*` folders left in the Hub folder by the
+   old V1 test; the Sales dossier revision 2 stays STALE until he continues it (revision 3 is never made automatically).
+3. Minor, non-blocking: „Care e starea proiectului?” is not understood (use „Status”, „Care e ultima livrare?”); „Arată devizul DVZ-0001 și
+   trimite-l clientului” shows the offer (the send is refused correctly); the kept L3ga conversation is per browser (not across devices);
+   the Hub listens on 127.0.0.1 only, so a physical phone cannot open it (phone width verified only as a simulated viewport).
+4. RM-10: not reproduced in a bounded probe (3/3 alone at 72–83 % CPU; typing max 684 ms vs cap 880 ms) and passed in the gate at 84 % average
+   load; the historical failure (1025 ms at 99 % CPU) is the product's correct refusal under overload, not a demonstrated defect.
+5. Unchanged: flows synthetic-only; real outreach / publication disabled; n8n and the Opportunity Monitor kept (not proven unused by OpenClaw).
+
 ## 2026-10-22 — M13 „Birou intern”: Operations / Customer Support / Finance-Admin (code `2.16.0-m13`, migration 14, API contract 18; detail: `.ifrim/STAGE_2026-10-22_M13.md`)
 
 This section takes precedence over the next ones where they overlap. Built in the dev clone C:\Users\mihai\m13-stage (branch
