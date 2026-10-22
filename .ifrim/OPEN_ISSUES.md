@@ -6,8 +6,10 @@ This section takes precedence over the next ones where they overlap. Built in th
 `claude/project-thread-ljsgik`, code `1fe01c7`..`8368a78`, test `c3cb31b`). Gate on `8368a78`: V2 2608/2609 0 fail (T25 skip), V1 552/553 0 fail.
 
 Open:
-1. Owner: run `C:\Users\mihai\m14-evidence\release\owner-release.cmd` (live is still 2.16.0-m13 until then), then the daily check in
-   `m14-evidence\PASII_PROPRIETAR.md` §2, then his acceptance of the internal version (list in the final report).
+1. Done: 2.17.0 LIVE 2026-10-22 20:01 UTC (VERIFY OK, origin 96164ea). The owner's check found two defects, fixed in 2.17.1-m14 (`9ae1bae`,
+   no migration): quoted example sentences are read (reads only) and „Care e ultima livrare?” names the last delivery first. Owner: run
+   `C:\Users\mihai\m14-evidence\release-2.17.1\owner-release.cmd`, then the daily check again, then his acceptance of the internal version.
+   The Sales dossier is at revision 3 READY (the owner continued it himself on 2026-10-22 20:04 UTC).
 2. Owner decisions (not defects): V1 retirement (`m14-evidence\v1-retire\retire-v1.ps1`, reversible); the OpenClaw gateway (active, Telegram);
    the local dev profile (decisions recorded `local_dev_profile`) vs Windows Hello; the 43 `.env.hub016-*` folders left in the Hub folder by the
    old V1 test; the Sales dossier revision 2 stays STALE until he continues it (revision 3 is never made automatically).
