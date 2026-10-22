@@ -1,5 +1,22 @@
 # Open Issues - Ifrim Agent Hub
 
+## 2026-10-22 — M13 „Birou intern”: Operations / Customer Support / Finance-Admin (code `2.16.0-m13`, migration 14, API contract 18; detail: `.ifrim/STAGE_2026-10-22_M13.md`)
+
+This section takes precedence over the next ones where they overlap. Built in the dev clone C:\Users\mihai\m13-stage (branch
+`claude/project-thread-nslsrr`, code `fb7e3f2`..`8f93909`): the start dossier (Operations), the support case with a DRAFT_ONLY reply
+(Customer Support) and the deviz in draft with an internal register (Finance-Admin), each ONE card in L3ga; the reply / deviz approved
+on its exact id + SHA in the owner session; derived exports; nothing sent / issued / handed off / run. Gate on `8f93909`: V2 2595/2596 0 fail
+(T25 skip); V1 549/552 (the 2 known registry tests).
+
+Open:
+1. Owner: run `C:\Users\mihai\m13-evidence\release\owner-release.cmd` (2.16.0 live, migration 14, push), then the three probes
+   (`C:\Users\mihai\m13-evidence\PASII_PROPRIETAR.md`): Operations (1 decision), Support (2), Finance-Admin (2).
+2. Known limits (not defects): flows are synthetic-only in M13 (CHECK synthetic = 1); the support reply cites the accepted package's
+   criteria by shared words (no model: a question the criteria do not cover is answered „verificăm și revenim”); no Factory mission is
+   created from a start dossier (the SPEC_DRAFT sketch stays text until the client's acceptance); a Lega read („arată dosarul de pornire”)
+   is not added — the L3ga panel shows the records; the departments Customer Success / Finance-Admin keep their seeded „planned” status.
+3. Unchanged: the live dev profile is ON (decisions recorded local_dev_profile); RM-10 intermittent under load; 2 V1 tests on the real registry.
+
 ## 2026-10-19 — catalog minim și o ofertă Sales utilă (code `2.15.5-m12`, no migration; detail: `.ifrim/STAGE_2026-10-19_CATALOG_OFERTA.md`)
 
 This section takes precedence over the next ones where they overlap. Two defects blocked the requested flow and are fixed in `db7cc0c` + `a20d77f`
