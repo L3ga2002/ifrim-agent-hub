@@ -45,7 +45,7 @@ test("M13-UI-02 the panel sits in the work column after the offer card; the pinn
   const main = src.indexOf('<main className="cockpit-main"');
   const offer = src.indexOf("{offerOpp && <SalesOfferCard");
   const desk = src.indexOf("<DeskPanel />");
-  assert.ok(main > 0 && offer > main && desk > offer && desk < src.indexOf("{!pid ?", desk), "inside cockpit-main, after the offer card, before the project branch");
+  assert.ok(main > 0 && offer > main && desk > src.indexOf("{!pid ?", offer) && desk < src.indexOf("</main>", main), "inside cockpit-main, after the offer card and the cockpit's own cards");
   assert.equal(src.split("<DeskPanel />").length - 1, 1);
   const panel = fs.readFileSync(path.join(V2, "web", "src", "screens", "lega", "DeskPanel.jsx"), "utf8");
   for (const forbidden of ["getUserMedia", "RTCPeerConnection", "new Audio(", "/send", "/publish"]) assert.ok(!panel.includes(forbidden), forbidden);
@@ -102,6 +102,7 @@ test("M13-UI-03 in a real browser (#/lega, local development profile): the start
     const doc = t.hub.desk.latestArtifact(fin());
     const decision = desk.locator(".lega-desk-decision");
     await decision.waitFor();
+    await decision.getByText(/sesiune locală de dezvoltare/i).waitFor();
     const text = await decision.innerText();
     assert.ok(text.includes(doc.id) && text.includes(doc.contentSha), "the exact target: id + full SHA");
     assert.match(text, /sesiune locală de dezvoltare/i, "the authority said truthfully");

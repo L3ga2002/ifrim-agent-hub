@@ -614,7 +614,6 @@ function Cockpit({ projectId, go }) {
               or a project switch never unmounts (and never replays) it. */}
           {rearmView && <div className="rearm-slot">{rearmView}</div>}
           {offerOpp && <SalesOfferCard key={offerOpp} oppId={offerOpp} onClose={closeOffer} go={go} />}
-          <DeskPanel />
           {!pid ? <>
             {/* Company-level answers ("Ce avem azi?", a scenario, a lesson) are shown even before a project is open. */}
             {intel &&<IntelResult card={{ type: "IntelResult", size: "l" }} kind={intel.kind} result={intel.result} onDismiss={() => setIntel(null)} onDone={() => setIntel(null)} />}
@@ -640,6 +639,8 @@ function Cockpit({ projectId, go }) {
                 </div>
               </>
             )}
+          {/* M13 „Birou intern”: the start dossier, the support case and the deviz, after the cockpit's own cards. */}
+          <DeskPanel />
         </main>
       </div>
     </div>
