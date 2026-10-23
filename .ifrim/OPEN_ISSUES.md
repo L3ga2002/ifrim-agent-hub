@@ -1,5 +1,24 @@
 # Open Issues - Ifrim Agent Hub
 
+## 2026-10-23 — M15 experiența L3ga unificată (code `2.18.0-m15`, no migration, schema 15, API contract 20; detail: `.ifrim/STAGE_2026-10-23_M15.md`, report `.ifrim/M15_RAPORT_FINAL.md`)
+
+This section takes precedence over the next ones where they overlap. Built in the dev clone C:\Users\mihai\m15-stage (branch
+`claude/project-thread-c0q8ro`, code `63773a7`..`6eb54e7`). Gate on `a1d427f`: V2 2620/2624 (3 fail = a real M15 defect fixed in `6eb54e7`,
+T25 skip), V1 552/553 0 fail; targeted rerun on `6eb54e7` in `m15-evidence\setINBOX-1.log`.
+
+Open:
+1. Release = the owner's CMD `C:\Users\mihai\m15-evidence\release\owner-release.cmd` (backup, upgrade, GET verify, the test project
+   „M15 Demo Livrare”, push), then the integrated acceptance session `m15-evidence\PASII_PROPRIETAR.md` (7 owner decisions: plan, Accept
+   local, two creative approvals, summary ready, Sales card, Aprob intern). M14 acceptance is still the owner's (not declared).
+2. Real providers not yet exercised in M15: Codex writer and Claude reviewer run only in the owner's session (live provider probes on
+   10-15 / 10-18 are old; the plan's readiness re-checks them; a reset date does not prove availability). If one is unavailable the step is
+   recorded as blocked, nothing paid is activated.
+3. Minor, non-blocking: at 1024×768 the conversation is short (the strip of what waits and the voice panel take the height; use „Ecran
+   complet” or a larger window); „Unde e oferta?” / „Unde e dosarul de pornire?” still answer the system-knowledge help (use „Arată-mi
+   oferta”, „Arată dosarul de pornire OPS-0001”); „Ce lipsește?” without an open offer is not understood; the new delivery-row real / test
+   flag is covered by tests only for test projects (a real-project delivery row is checked by the GET verify of §25 only).
+4. Unchanged: flows synthetic-only for Sales / Desk; outreach and publication disabled; the phone is a simulated viewport (127.0.0.1 only).
+
 ## 2026-10-22 — M14 stabilizare și acceptarea versiunii interne L3ga (code `2.17.0-m14`, migration 15, API contract 19; detail: `.ifrim/STAGE_2026-10-22_M14.md`, report `.ifrim/M14_RAPORT_FINAL.md`)
 
 This section takes precedence over the next ones where they overlap. Built in the dev clone C:\Users\mihai\m14-stage (branch
