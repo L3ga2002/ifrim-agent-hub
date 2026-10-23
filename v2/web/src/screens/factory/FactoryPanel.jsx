@@ -7,6 +7,7 @@ import { Panel, Empty, Loading, ErrorNotice, StatusChip, Notice, Chip, DiffView,
 import { boundaryOf } from "../../lib/environmentLogic.js";
 import { withReauth } from "../../lib/ownerSession.js";
 import { rejectBody, rejectionAuthorityText } from "../../lib/factoryRejectLogic.js";
+import { TargetDetails } from "../../components/StatePill.jsx";
 
 const SEVERITY_TONE = { critical: "error", high: "error", medium: "warn", low: "neutral", info: "neutral" };
 const EVIDENCE_TONE = { PASS: "ok", FAIL: "error", INCONCLUSIVE: "warn", BLOCKED: "error", NOT_RUN: "neutral", NEEDS_INSTALL_APPROVAL: "warn" };
@@ -331,6 +332,7 @@ export function FactoryPanel({ missionId }) {
           <div className="stack tight">
             <div className="row wrap" style={{ gap: 8 }}><Chip tone={latestBundle.status === "OWNER_ACCEPTED" ? "ok" : latestBundle.status === "READY_FOR_OWNER_ACCEPTANCE" ? "info" : "neutral"}>{latestBundle.status}</Chip><span className="mono">{latestBundle.sha256.slice(0, 16)}</span><span className="faint" style={{ overflowWrap: "anywhere", minWidth: 0 }}>{latestBundle.file_path}</span></div>
             <Notice tone="info">READY_FOR_OWNER_ACCEPTANCE nu înseamnă publicat: commit, push, merge și deploy rămân acțiuni separate, cu aprobarea ta.</Notice>
+            {f.stage === "DELIVERY_READY" && latestBundle.status === "READY_FOR_OWNER_ACCEPTANCE" && <TargetDetails items={[{ label: "ID", value: latestBundle.id }, { label: "SHA", value: latestBundle.sha256 }]} />}
             {f.stage === "DELIVERY_READY" && (
               <div className="row wrap">
                 <input className="input" value={note} onChange={(e) => setNote(e.target.value)} placeholder="Notă (opțional la acceptare, obligatorie la respingere)" />

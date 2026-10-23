@@ -10,6 +10,7 @@ import { recordSegment, sendSegment } from "../../lib/voiceGate.js";
 import { setPresentedPlan, clearPresentedPlan, beginCapture, endCapture, preferredMic, armedUntil, onArmed } from "../../lib/voiceContext.js";
 import { RearmCard } from "./RearmCard.jsx";
 import { REARM_SHOW_LABEL } from "../../lib/rearmLogic.js";
+import { DecisionFacts, TargetDetails } from "../../components/StatePill.jsx";
 
 const EVIDENCE_TONE = { PASS: "ok", FAIL: "error", INCONCLUSIVE: "warn", BLOCKED: "error", NOT_RUN: "neutral", NEEDS_INSTALL_APPROVAL: "warn" };
 const NODE_TONE = { DONE: "ok", RUNNING: "info", WAITING: "neutral", FAILED: "error", BLOCKED: "warn" };
@@ -170,6 +171,11 @@ export function DecisionCard({ plan, owner, onConfirmed, onCancel, onReplan, det
             {current?.derivedGrants?.length > 0 && <><dt>Granturi derivate</dt><dd>{current.derivedGrants.map((g) => `${g.provider}${g.model ? ` ${g.model}` : ""} ${g.access} ${g.attemptsUsed}/${g.maxAttempts} (${g.status})`).join(" · ")}</dd></>}
           </dl>
         )}
+        {/* M15: the same four lines as every decision (object, version, action, consequence) and the exact target in full, before the click. */}
+        {awaiting && <DecisionFacts object={`Planul pentru ${env.body.missions.map((m) => `„${m.title}”`).join(", ")}`}
+          version={`${env.body.missions.map((m) => `spec v${m.specVersion}`).join(", ")} · propus ${fmt.time(env.createdAt || current?.createdAt)} · confirmare până la ${fmt.time(env.confirmBy)}`}
+          action="„Da, execută planul”: o singură confirmare pentru toți pașii de mai sus" consequence={summary.steps} never={summary.never} />}
+        {awaiting && <TargetDetails items={[{ label: "ID", value: env.id }, { label: "SHA", value: env.envelopeHash }]} />}
         {awaiting && (
           <div className="row wrap">
             <button className="btn primary" disabled={!eligible || !policyActive || confirm.pending} onClick={() => confirm.run("click")}><Check size={15} />{confirm.pending ? "Confirm…" : "Da, execută planul"}</button>

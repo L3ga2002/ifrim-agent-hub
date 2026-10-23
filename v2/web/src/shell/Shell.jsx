@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { Search, Square, ShieldCheck, Pause, CircleDot, X, MoreHorizontal, Plus, HardDrive, RefreshCw, WifiOff, Wifi, FlaskConical, Minimize2, FolderGit2, Target, Keyboard, MessageSquare } from "lucide-react";
-import { NAV } from "../nav.js";
+import { Search, Square, ShieldCheck, Pause, CircleDot, X, MoreHorizontal, Plus, HardDrive, RefreshCw, WifiOff, Wifi, FlaskConical, Minimize2, FolderGit2, Target, Keyboard, MessageSquare, ChevronDown, ChevronRight } from "lucide-react";
+import { NAV, NAV_GROUPS, navHref, navCurrent } from "../nav.js";
 import { useHub, dismissToast, refresh, pushToast, usePref, useResource, setState } from "../store.js";
 import { api, fmt, ensureToken, serverInfo, onServerInfo, contractState, UI_BUILD } from "../api.js";
 import { Chip, Dialog, Notice } from "../components/ui.jsx";
@@ -75,12 +75,17 @@ function StatusChips() {
   // M10.2 (U15): plans in force run their own steps live while the Hub stays in BUILD_SAFE ("BUILD_SAFE + 1 plan activ").
   const plans = (hub.liveScopes || []).filter((s) => s.scoped !== false).length;
   const plansText = plans ? ` + ${plans} ${plans === 1 ? "plan activ" : "planuri active"}` : "";
+  // M15: one sentence for the Hub's state; the mode, the gate and the stream are details on request (they stay one click away).
+  const safe = hub.mode === "BUILD_SAFE" && gate === "open";
+  const summary = legaOn ? "Lega activă" : safe ? (plans ? `În siguranță · ${plans} ${plans === 1 ? "plan activ" : "planuri active"}` : "Hub-ul e în siguranță") : gate !== "open" ? "Poarta e suspendată" : `Mod ${hub.mode}`;
   return (
-    <div className="row status-chips">
+    <details className="hub-state">
+      <summary className={`chip ${safe ? "ok" : "warn"}`} title="Starea Hub-ului: modul, poarta de execuție și fluxul de evenimente"><CircleDot aria-hidden="true" />{summary}</summary>
+      <div className="row status-chips hub-state-pop">
       <Chip tone={hub.mode === "BUILD_SAFE" ? "info" : "warn"} icon={CircleDot} title={legaOn ? legaTitle : plans ? "Modul Hub-ului; doar pașii planurilor confirmate rulează live, în limitele lor" : "Modul de lucru al Hub-ului"}>{hub.mode}{plansText}{legaOn ? " · Lega activă" : ""}</Chip>
-      <span className="hide-xs"><Chip tone={gate === "open" ? "ok" : "neutral"} icon={gate === "open" ? ShieldCheck : Pause} title={hub.executionGate?.reason}>poartă {gate === "open" ? "deschisă" : "suspendată"}</Chip></span>
-      <ConnectionChip />
-    </div>
+      <Chip tone={gate === "open" ? "ok" : "neutral"} icon={gate === "open" ? ShieldCheck : Pause} title={hub.executionGate?.reason}>poartă {gate === "open" ? "deschisă" : "suspendată"}</Chip>
+      </div>
+    </details>
   );
 }
 
@@ -111,7 +116,7 @@ function CommandPalette({ onClose, go, onMini }) {
   const items = useMemo(() => {
     const act = async (fn, label) => { try { await fn(); pushToast(`pal-${label}`, "ok", label); } catch (e) { pushToast("palette-error", "error", e.message); } };
     const actions = [
-      ...NAV.map((n) => ({ id: `go-${n.id}`, label: `Deschide ${n.long}`, icon: n.icon, run: () => go(`/${n.id}`), hint: n.key ? `Alt+${n.key}` : "" })),
+      ...NAV.map((n) => ({ id: `go-${n.id}`, label: `Deschide ${n.long}`, icon: n.icon, run: () => go(n.href || `/${n.id}`), hint: n.key ? `Alt+${n.key}` : "" })),
       { id: "focus", label: "Intră în Focus", icon: MessageSquare, run: () => go("/conversations") },
       { id: "new-mission", label: "Misiune nouă", icon: Plus, run: () => go("/missions?new=1") },
       { id: "mini", label: "Mini-asistent (compact)", icon: Minimize2, run: onMini, hint: "Alt+M" },
@@ -304,14 +309,19 @@ export function Shell({ route, go, children }) {
       if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "k") { e.preventDefault(); setPalette(true); }
       // Plain Alt only: AltGr (Ctrl+Alt on Windows) types characters on the Romanian layout and must not switch screens.
       const key = appShortcutKey(e);
-      if (key && /^[1-9]$/.test(key)) { const item = NAV.find((n) => n.key === key); if (item) { e.preventDefault(); go(`/${item.id}`); } }
+      if (key && /^[1-9]$/.test(key)) { const item = NAV.find((n) => n.key === key); if (item) { e.preventDefault(); go(item.href || `/${item.id}`); } }
       if (key === "m") { e.preventDefault(); setMini((m) => !m); }
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, [go, setMini]);
-  const current = route.name === "focus" ? "conversations" : route.name;
-  const mobileNav = ["lega", "missions", "approvals"];
+  const current = navCurrent(route);
+  // M15: the phone keeps L3ga, Decizii and Rezultate one tap away; everything else is under „Mai mult”.
+  const mobileNav = ["lega", "decizii", "rezultate"];
+  const [advancedOpen, setAdvancedOpen] = usePref("rail.advanced", false);
+  const decisions = useResource("/api/decisions/inbox", { reloadOn: (e) => /^(approval|sales|factory|delivery|envelope|ops|mission|desk)\./.test(String(e?.type || "")) });
+  const waiting = (decisions.data?.items?.length || 0) + pending;
+  const badgeOf = (id) => (id === "decizii" && waiting > 0 ? waiting : id === "approvals" && pending > 0 ? pending : 0);
   return (
     <div className={`app ${simulation ? "is-sim" : ""}${immersive ? " is-immersive" : ""}`}>
       <a className="skip-link" href="#main" onClick={(e) => { e.preventDefault(); mainRef.current?.focus(); }}>Sari la conținut</a>
@@ -319,8 +329,10 @@ export function Shell({ route, go, children }) {
       <HubStatusBanner />
       <header className="topbar">
         <a className="brand" href="#/control" aria-label="Control Room"><img src="/favicon.svg" alt="" className="brand-mark" /><span className="hide-mobile brand-name">IFRIM DIGITAL <b>AGENT HUB</b></span></a>
-        <ProjectSwitcher go={go} />
+        {/* M15: on the L3ga screen the project is chosen in the screen itself (one place says where you work). */}
+        {route.name !== "lega" && <ProjectSwitcher go={go} />}
         <StatusChips />
+        <ConnectionChip />
         <div className="spacer" />
         <button className="btn sm ghost" onClick={() => setPalette(true)} aria-label="Căutare și comenzi (Ctrl+K)"><Search size={15} /><span className="hide-mobile">Caută</span><span className="kbd hide-mobile">Ctrl K</span></button>
         <button className="btn sm ghost hide-mobile" onClick={() => setMini((m) => !m)} aria-pressed={mini} aria-label="Mini-asistent (Alt+M)"><Minimize2 size={15} /></button>
@@ -329,12 +341,23 @@ export function Shell({ route, go, children }) {
         <StopAllButton />
       </header>
       <nav className="rail" aria-label="Navigare principală">
-        {NAV.map((item) => (
-          <a key={item.id} href={`#/${item.id}`} aria-current={current === item.id ? "page" : undefined} title={item.key ? `${item.long} (Alt+${item.key})` : item.long}>
-            <item.icon size={19} aria-hidden="true" />{item.label}
-            {item.id === "approvals" && pending > 0 && <span className="badge" aria-label={`${pending} în așteptare`}>{pending}</span>}
-          </a>
-        ))}
+        {NAV_GROUPS.map(([group, heading]) => {
+          const items = NAV.filter((n) => n.group === group);
+          const folded = group === "adv" && !advancedOpen;
+          return (
+            <div key={group} className={`rail-group rail-${group}`} role="group" aria-label={heading || "Lucrul tău"}>
+              {group === "adv"
+                ? <button type="button" className="rail-heading rail-toggle" aria-expanded={!folded} onClick={() => setAdvancedOpen((o) => !o)} title="Ecranele tehnice și setările rare">{folded ? <ChevronRight size={12} aria-hidden="true" /> : <ChevronDown size={12} aria-hidden="true" />}{heading}</button>
+                : heading && <span className="rail-heading">{heading}</span>}
+              {items.filter((item) => !folded || current === item.id).map((item) => (
+                <a key={item.id} href={navHref(item)} aria-current={current === item.id ? "page" : undefined} title={item.key ? `${item.long} (Alt+${item.key})` : item.long}>
+                  <item.icon size={19} aria-hidden="true" />{item.label}
+                  {badgeOf(item.id) > 0 && <span className="badge" aria-label={`${badgeOf(item.id)} în așteptare`}>{badgeOf(item.id)}</span>}
+                </a>
+              ))}
+            </div>
+          );
+        })}
       </nav>
       <ErrorBoundary label="spotlight" fallback={() => null}><Spotlight /></ErrorBoundary>
       {/* M10: the Desktop Operator's permanent activity bar (Stop / Preiau eu always one click away while it works). */}
@@ -350,9 +373,9 @@ export function Shell({ route, go, children }) {
       </main>
       <nav className="bottom-nav" aria-label="Navigare mobilă">
         {mobileNav.map((id) => { const item = NAV.find((n) => n.id === id); return (
-          <a key={id} href={`#/${id}`} aria-current={current === id ? "page" : undefined}>
+          <a key={id} href={navHref(item)} aria-current={current === id ? "page" : undefined}>
             <item.icon size={20} aria-hidden="true" />{item.label}
-            {id === "approvals" && pending > 0 && <span className="badge">{pending}</span>}
+            {badgeOf(id) > 0 && <span className="badge">{badgeOf(id)}</span>}
           </a>
         ); })}
         <div className="bottom-stop"><StopAllButton compact /><span>Stop</span></div>
@@ -362,7 +385,7 @@ export function Shell({ route, go, children }) {
         <Dialog title="Ecrane" onClose={() => setMore(false)}>
           <ul className="list">
             {NAV.filter((n) => !mobileNav.includes(n.id)).map((n) => (
-              <li key={n.id}><a className="list-row" href={`#/${n.id}`} onClick={() => setMore(false)}><n.icon size={18} aria-hidden="true" /><span className="title">{n.long}</span></a></li>
+              <li key={n.id}><a className="list-row" href={navHref(n)} onClick={() => setMore(false)}><n.icon size={18} aria-hidden="true" /><span className="title">{n.long}</span></a></li>
             ))}
             <li><button className="list-row" onClick={() => { setMore(false); setMini(true); }}><Minimize2 size={18} aria-hidden="true" /><span className="title">Mini-asistent</span></button></li>
           </ul>

@@ -5,6 +5,7 @@ import { withReauth } from "../../lib/ownerSession.js";
 import { Notice, Chip, ErrorNotice } from "../../components/ui.jsx";
 import { INCIDENT_RO, OBJECTIVE_RO, intelHref } from "../../lib/intelLogic.js";
 import { CardShell } from "./cards.jsx";
+import { DECISION_KIND } from "../../lib/legaOneScreen.js";
 
 const META = {
   incident: ["Incident propus", Siren, "warroom"], changes: ["Ce s-a schimbat", History, "twin"], impact: ["Impactul schimbării", Crosshair, "twin"],
@@ -67,7 +68,10 @@ export function IntelResult({ result, kind, onDone, ...rest }) {
   } else if (kind === "today") {
     body = <ul className="plain small">{r.today.headline.slice(0, 6).map((h, i) => <li key={i}>{h.title}</li>)}{!r.today.headline.length && <li>Nimic care să ceară atenția ta.</li>}</ul>;
   } else if (kind === "decisions") {
-    body = <ul className="plain small">{r.decisions.slice(0, 6).map((d, i) => <li key={i}>{d.title}</li>)}{(r.packages || []).map((p) => <li key={p.id}>Pachet {p.kind}: {p.title}</li>)}{!r.decisions.length && !(r.packages || []).length && <li>Nicio decizie în așteptare.</li>}</ul>;
+    // M15: the results waiting for the owner („Deciziile mele”) first, each opening where it is decided; then the board's approvals and packages.
+    const inbox = Array.isArray(r.inbox) ? r.inbox : [];
+    body = <ul className="plain small">{inbox.slice(0, 8).map((it, i) => <li key={`in-${i}`}><strong>{DECISION_KIND[it.kind] || "Decizie"}:</strong> {it.title}{it.link && <> <a href={`#${it.link}`}>deschide</a></>}</li>)}
+      {r.decisions.slice(0, 6).map((d, i) => <li key={i}>{d.title}</li>)}{(r.packages || []).map((p) => <li key={p.id}>Pachet {p.kind}: {p.title}</li>)}{!inbox.length && !r.decisions.length && !(r.packages || []).length && <li>Nicio decizie în așteptare.</li>}</ul>;
   } else if (kind === "objectives") {
     body = r.objectives.length ? <ul className="plain small">{r.objectives.slice(0, 6).map((o) => <li key={o.id}>{o.title} <Chip tone="neutral">{OBJECTIVE_RO[o.status] || o.status}</Chip> {o.progress.delivered}/{o.progress.total}</li>)}</ul> : <p className="small">Niciun obiectiv pe acest proiect.</p>;
   }

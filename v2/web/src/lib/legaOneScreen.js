@@ -4,7 +4,9 @@
 /** What each kind of „Deciziile mele” row is, in words (the same labels as the Delivery Room's inbox). */
 export const DECISION_KIND = Object.freeze({ software_bundle: "Pachet software", mission_decision: "Misiune oprită", delivery: "Livrare", sales_offer: "Ofertă de aprobat",
   // M13 „Birou intern”: the exact reply / deviz waiting for the owner's internal approval (on the L3ga screen).
-  desk_support_reply: "Răspuns de suport de aprobat", desk_finance_doc: "Deviz de aprobat" });
+  desk_support_reply: "Răspuns de suport de aprobat", desk_finance_doc: "Deviz de aprobat",
+  // M15: the Hub's proposed correction of a delivery's claims had no label (the raw kind was shown).
+  delivery_correction: "Corectură de confirmat" });
 
 /** The decisions list is read again on the events that can add or remove a row. */
 export const decisionsReload = (e) => /^(approval|sales|factory|delivery|envelope|ops|mission|desk)\./.test(String(e?.type || ""));

@@ -6,6 +6,7 @@ import "./styles/m06.css";
 import "./styles/m07.css";
 import "./styles/m10.css";
 import "./styles/lega-one.css";
+import "./styles/m15.css";
 import { startHubConnection, useHub, setState } from "./store.js";
 import { api } from "./api.js";
 import { Shell } from "./shell/Shell.jsx";
@@ -41,6 +42,8 @@ const screens = {
   desktop: lazy(() => import("./screens/Desktop.jsx")),
   // M11: the Delivery Room (#/livrare/<dlv>, #/livrare?projectId=…) and „Deciziile mele” (#/livrare/decizii).
   livrare: lazy(() => import("./screens/DeliveryRoom.jsx")),
+  // M15: results and history by name and date (#/rezultate); „Decizii” in the rail is #/livrare/decizii.
+  rezultate: lazy(() => import("./screens/Results.jsx")),
 };
 
 export function parseRoute(hash) {

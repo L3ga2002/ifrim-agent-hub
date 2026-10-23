@@ -1,6 +1,24 @@
 // Cockpit logic (M06 §06, §12, §13, §19): pure functions shared by the Lega screen and its tests. Every sentence Lega shows
 // here is built from data the Hub returned; nothing is invented (no progress percentage, no test count that was not measured).
 import { opsReplyLines } from "./opsLogic.js";
+import { DECISION_KIND } from "./legaOneScreen.js";
+
+/**
+ * M15: „Ce decizii am?” in words — the results waiting for the owner (the „Deciziile mele” list: a package, a delivery, an offer, a deviz,
+ * a reply), then the technical approvals, plans and decision packages of the board. Never „none” while a list is not empty.
+ */
+export function decisionsLine(r) {
+  const inbox = Array.isArray(r?.inbox) ? r.inbox : [];
+  const other = (Array.isArray(r?.decisions) ? r.decisions.length : 0) + (Array.isArray(r?.packages) ? r.packages.length : 0);
+  if (!inbox.length && !other) return "Nicio decizie în așteptare.";
+  const parts = [];
+  if (inbox.length) {
+    const named = inbox.slice(0, 4).map((it) => `${DECISION_KIND[it.kind] || "decizie"}: „${String(it.title || "").slice(0, 80)}”`);
+    parts.push(`Te ${inbox.length === 1 ? "așteaptă o decizie" : `așteaptă ${inbox.length} decizii`}: ${named.join("; ")}${inbox.length > 4 ? `; încă ${inbox.length - 4}` : ""}.`);
+  }
+  if (other) parts.push(`${inbox.length ? "Pe lângă ele, " : "Te așteaptă "}${other === 1 ? "o aprobare tehnică sau un plan" : `${other} aprobări tehnice, planuri sau pachete`} (în Decizii).`);
+  return parts.join(" ");
+}
 
 export const STATE_TONE = Object.freeze({ NO_CONTEXT: "neutral", CONTEXT_AVAILABLE: "neutral", PLAN_READY: "info", PLAN_READY_AFTER_READINESS: "info", PLAN_BLOCKED: "warn", BLOCKED_BY_ISOLATION: "warn",
   AUTHORIZED: "ok", RUNNING: "info", WAITING_OWNER: "approval", READY_FOR_REVIEW: "ok" });
@@ -96,7 +114,7 @@ export function intelLines(r) {
   if (r.lesson) out.push(r.lesson.refused ? r.lesson.reason : `Am înțeles: ${r.lesson.lesson.parsed.trigger ? `${r.lesson.lesson.parsed.trigger}: ` : ""}${r.lesson.lesson.parsed.steps.join(", ")}. Devine regulă după ce o confirmi.`);
   if (r.forget) out.push(r.forget.effect || r.forget.question || r.forget.note);
   if (r.today) out.push(r.today.headline.length ? `Azi: ${r.today.headline.slice(0, 3).map((h) => h.title).join(" · ")}.` : "Azi nu e nimic care să ceară atenția ta.");
-  if (r.decisions) out.push(r.decisions.length || r.packages?.length ? `Te așteaptă ${r.decisions.length + (r.packages?.length || 0)} decizii.` : "Nicio decizie în așteptare.");
+  if (r.decisions) out.push(decisionsLine(r));
   if (r.objectives) out.push(r.objectives.length ? `${r.objectives.length} obiective pe proiect.` : "Niciun obiectiv pe acest proiect.");
   if (r.view === "stage") out.push("Ecran complet.");
   if (r.view === "cockpit") out.push("Înapoi la cockpit.");

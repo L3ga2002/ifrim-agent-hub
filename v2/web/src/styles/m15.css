@@ -1,0 +1,163 @@
+/* ---------- M15: one design vocabulary — the eight work states, the meanings of decisions, the exact target, the L3ga zones ---------- */
+:root {
+  --st-ready: #a9bccf;   --st-ready-bg: rgba(169, 188, 207, 0.12);
+  --st-run: var(--accent); --st-run-bg: rgba(101, 217, 255, 0.13);
+  --st-decide: var(--approval); --st-decide-bg: rgba(233, 181, 109, 0.15);
+  --st-block: #f4a865;   --st-block-bg: rgba(244, 168, 101, 0.14);
+  --st-error: var(--danger); --st-error-bg: rgba(255, 143, 133, 0.13);
+  --st-done: var(--ok);  --st-done-bg: rgba(134, 220, 187, 0.13);
+  --st-stale: #c9b0ff;   --st-stale-bg: rgba(201, 176, 255, 0.13);
+  --st-expired: var(--text-3); --st-expired-bg: rgba(135, 151, 169, 0.12);
+  --st-closed: var(--text-2); --st-closed-bg: rgba(168, 183, 199, 0.08);
+}
+
+/* A work state: word + icon + colour (never colour alone). */
+.state-pill { display: inline-flex; align-items: center; gap: 5px; min-height: 22px; padding: 1px 9px 1px 7px; border-radius: 999px; font-size: var(--fs-xs); font-weight: 650;
+  white-space: nowrap; line-height: 1.3; border: 1px solid transparent; color: var(--c); background: var(--b); }
+.state-pill svg { flex: none; }
+.state-pill.st-ready { --c: var(--st-ready); --b: var(--st-ready-bg); }
+.state-pill.st-run { --c: var(--st-run); --b: var(--st-run-bg); }
+.state-pill.st-run svg { animation: m15-spin 1.6s linear infinite; }
+.state-pill.st-decide { --c: var(--st-decide); --b: var(--st-decide-bg); border-color: rgba(233, 181, 109, 0.45); }
+.state-pill.st-block { --c: var(--st-block); --b: var(--st-block-bg); }
+.state-pill.st-error { --c: var(--st-error); --b: var(--st-error-bg); }
+.state-pill.st-done { --c: var(--st-done); --b: var(--st-done-bg); }
+.state-pill.st-stale { --c: var(--st-stale); --b: var(--st-stale-bg); }
+.state-pill.st-expired { --c: var(--st-expired); --b: var(--st-expired-bg); }
+.state-pill.st-closed { --c: var(--st-closed); --b: var(--st-closed-bg); }
+@keyframes m15-spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) { .state-pill.st-run svg { animation: none; } }
+
+/* The meaning of a decision already made: outlined and square, so it is never read as a work state. */
+.meaning-chip { display: inline-flex; align-items: center; gap: 6px; min-height: 22px; padding: 1px 8px; border-radius: var(--r-s); border: 1px solid var(--line-strong);
+  font-size: var(--fs-xs); font-weight: 600; color: var(--text); white-space: nowrap; }
+.meaning-chip .mn-mark { width: 7px; height: 7px; border-radius: 1px; background: var(--m, var(--text-3)); flex: none; }
+.mn-approved_internal { --m: var(--accent); } .mn-client_accepted { --m: var(--ok); } .mn-text_approved { --m: var(--approval); }
+.mn-doc_generated { --m: var(--st-ready); } .mn-doc_sent { --m: var(--st-stale); } .mn-result_accepted { --m: var(--ok); }
+
+/* The exact target of a decision, in full, selectable and copyable. */
+.target-details { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+.target-details > .btn { align-self: flex-start; }
+.target-box { display: flex; flex-direction: column; gap: 6px; padding: 8px 10px; background: var(--bg); border: 1px solid var(--line); border-radius: var(--r); min-width: 0; }
+.target-row { display: grid; grid-template-columns: 52px minmax(0, 1fr) auto; gap: 8px; align-items: center; min-width: 0; }
+.target-row code { overflow-wrap: anywhere; word-break: break-all; user-select: all; }
+.decision-facts { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 4px 12px; margin: 0; font-size: var(--fs-s); }
+.decision-facts dt { font-size: 11px; letter-spacing: 0.07em; text-transform: uppercase; color: var(--text-3); padding-top: 2px; }
+.decision-facts dd { margin: 0; overflow-wrap: anywhere; min-width: 0; }
+@media (max-width: 520px) { .decision-facts { grid-template-columns: minmax(0, 1fr); } .decision-facts dd { margin-bottom: 4px; } }
+
+/* ---------- the rail: the owner's work first, the departments, then „Avansat” (folded) ---------- */
+.rail { gap: 0; }
+.rail-group { display: flex; flex-direction: column; gap: 2px; padding-bottom: 6px; }
+.rail-group + .rail-group { border-top: 1px solid var(--line); padding-top: 6px; }
+.rail-heading { font-size: 9.5px; letter-spacing: 0.09em; text-transform: uppercase; color: var(--text-3); text-align: center; padding: 2px 0 4px; }
+.rail-toggle { display: flex; align-items: center; justify-content: center; gap: 2px; background: none; border: 0; cursor: pointer; border-radius: var(--r-s); width: 100%; }
+.rail-toggle:hover { color: var(--text); background: var(--surface); }
+
+/* ---------- the Hub's state in one chip (details on request) ---------- */
+.hub-state { position: relative; }
+.hub-state > summary { list-style: none; cursor: pointer; }
+.hub-state > summary::-webkit-details-marker { display: none; }
+.hub-state-pop { position: absolute; top: calc(100% + 6px); left: 0; z-index: var(--z-overlay, 60); padding: 8px; background: var(--raised); border: 1px solid var(--line-strong);
+  border-radius: var(--r-l); box-shadow: var(--shadow-pop); flex-wrap: wrap; width: max-content; max-width: min(420px, 86vw); }
+
+/* ---------- the one L3ga screen: what waits (left) · the conversation (centre) · the open activity (right) ---------- */
+.lega-one-grid { grid-template-columns: minmax(250px, 310px) minmax(380px, 1fr) minmax(360px, 520px); }
+/* The map stays the background, quieter: it never competes with the text; while the owner types it fades further. */
+.lega-one:not(.is-immersive) .lega-one-map { opacity: 0.55; transition: opacity var(--d-3) var(--ease); }
+.lega-one.is-typing:not(.is-immersive) .lega-one-map { opacity: 0.22; }
+@media (prefers-reduced-motion: reduce) { .lega-one-map { transition: none; } }
+.lega-one-panel { background: rgba(8, 11, 16, 0.86); }
+.lega-one-center .lega-conv { background: rgba(8, 11, 16, 0.94); backdrop-filter: none; }
+
+/* The figure: compact beside its controls and the activity line (large again in „Ecran complet”). */
+.lega-figure { display: flex; align-items: center; gap: var(--sp-3); flex: none; padding: 6px 10px; border-radius: var(--r-l); background: rgba(8, 11, 16, 0.6); border: 1px solid var(--line); }
+.lega-figure .face-box { flex: none; }
+.lega-one:not(.is-immersive) .lega-figure .lega-face-canvas { max-height: 96px; max-width: 96px; }
+.lega-one:not(.is-immersive) .lega-figure .face-box.discreet .lega-face-canvas { max-height: 56px; max-width: 56px; }
+.lega-one:not(.is-immersive) .lega-figure .face-box .core-svg { max-height: 96px; }
+.lega-figure-side { display: flex; flex-direction: column; gap: 6px; min-width: 0; flex: 1; }
+.lega-one-center .lega-figure .face-controls { justify-content: flex-start; }
+.lega-one-center .lega-figure .lega-one-activity { justify-content: flex-start; text-align: left; }
+.lega-one.is-immersive .lega-figure { flex-direction: column; background: transparent; border-color: transparent; }
+.lega-one.is-immersive .lega-figure .face-controls, .lega-one.is-immersive .lega-figure .lega-one-activity { justify-content: center; text-align: center; }
+
+/* The conversation: Tu on the right, Lega on the left, each a readable bubble with its time. */
+.lega-one .lega-conv { padding: var(--sp-3); gap: var(--sp-3); }
+.lega-one .lega-conv li { max-width: 92%; gap: 4px; }
+.lega-one .lega-conv li.lc-user { align-self: flex-end; align-items: flex-end; }
+.lega-one .lega-conv li.lc-lega { align-self: flex-start; }
+.lega-one .lega-conv .lc-text { padding: 8px 12px; border-radius: 10px; font-size: var(--fs-m); line-height: 1.55; color: var(--text); overflow-wrap: anywhere; }
+.lega-one .lega-conv .lc-user .lc-text { background: var(--raised-2); }
+.lega-one .lega-conv .lc-lega .lc-text { background: var(--surface-2); border: 1px solid var(--line); color: var(--text); }
+.lega-one .lega-conv.is-empty li { max-width: none; align-self: stretch; }
+.lega-draft-note { margin: 0; }
+
+/* „Ce te așteaptă”. */
+.attention { gap: 8px; }
+.attention-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
+.attention-item { display: flex; flex-direction: column; gap: 4px; padding: 8px 9px 8px 11px; border-radius: var(--r); background: var(--surface); border: 1px solid var(--line); box-shadow: inset 3px 0 0 var(--sc, var(--line-strong)); min-width: 0; }
+.attention-item.st-decide { --sc: var(--st-decide); } .attention-item.st-block { --sc: var(--st-block); } .attention-item.st-error { --sc: var(--st-error); }
+.attention-item.st-run { --sc: var(--st-run); } .attention-item.st-done { --sc: var(--st-done); } .attention-item.st-stale { --sc: var(--st-stale); }
+.attention-title { font-size: var(--fs-s); min-width: 0; flex: 1 1 140px; }
+.attention-sub { display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; }
+.company-fold .stage-title { display: inline-flex; align-items: center; gap: 4px; text-decoration: none; }
+
+/* The open activity: context, state, ONE primary action. */
+.activity-head { display: flex; flex-direction: column; gap: 6px; padding: 12px 14px; border-radius: var(--r-l); background: rgba(16, 23, 34, 0.94); border: 1px solid var(--line-strong);
+  box-shadow: inset 0 3px 0 var(--sc, var(--line-strong)); }
+.activity-head h2 { margin: 0; font-family: var(--font-display); font-size: var(--fs-l); font-weight: 600; min-width: 0; flex: 1 1 200px; text-wrap: balance; }
+.activity-head.st-decide { --sc: var(--st-decide); } .activity-head.st-block { --sc: var(--st-block); } .activity-head.st-error { --sc: var(--st-error); }
+.activity-head.st-run { --sc: var(--st-run); } .activity-head.st-done { --sc: var(--st-done); } .activity-head.st-stale { --sc: var(--st-stale); } .activity-head.st-expired { --sc: var(--st-expired); }
+.work-tabs { display: flex; gap: 2px; border-bottom: 1px solid var(--line); flex: none; }
+.work-tabs button { border: 0; background: transparent; color: var(--text-2); padding: 8px 12px; font-size: var(--fs-s); font-weight: 600; cursor: pointer; border-bottom: 2px solid transparent; }
+.work-tabs button[aria-selected="true"] { color: var(--text); border-bottom-color: var(--accent); }
+.work-now { display: flex; flex-direction: column; gap: var(--sp-3); min-width: 0; }
+.work-now[hidden] { display: none; }
+
+/* History: by name and date, no id to remember. */
+.history-search { display: flex; align-items: center; gap: 6px; }
+.history-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; }
+.history-list li { display: grid; grid-template-columns: 96px minmax(0, 1fr) auto; gap: 8px; align-items: center; padding: 7px 2px; border-bottom: 1px solid var(--line); font-size: var(--fs-s); }
+.history-list time { font-variant-numeric: tabular-nums; }
+@media (max-width: 520px) { .history-list li { grid-template-columns: minmax(0, 1fr); } }
+
+/* „Mai mult” in the screen's header: the rare settings, on request. */
+.lega-more { position: relative; }
+.lega-more > summary { list-style: none; }
+.lega-more > summary::-webkit-details-marker { display: none; }
+.lega-more-pop { position: absolute; right: 0; top: calc(100% + 6px); z-index: var(--z-overlay, 60); padding: 10px; width: max-content; max-width: min(360px, 86vw);
+  background: var(--raised); border: 1px solid var(--line-strong); border-radius: var(--r-l); box-shadow: var(--shadow-pop); }
+
+/* Narrower windows: the work column next to the conversation; what waits goes above both (a horizontal strip). */
+@media (max-width: 1280px) {
+  .lega-one-grid { grid-template-columns: minmax(340px, 1fr) minmax(320px, 460px); grid-template-rows: auto minmax(0, 1fr); grid-template-areas: "side side" "center work"; }
+  .lega-one-side { max-height: 30vh; flex-direction: row; overflow-x: auto; overflow-y: auto; align-items: flex-start; }
+  .lega-one-side > .attention { flex: 1 1 auto; min-width: min(560px, 100%); }
+  .lega-one-side > .company-fold { flex: none; }
+  .attention-list { flex-direction: row; flex-wrap: nowrap; overflow-x: auto; }
+  .attention-item { min-width: 250px; max-width: 320px; }
+}
+@media (max-width: 900px) {
+  .lega-one-side { max-height: none; flex-direction: column; overflow: visible; }
+  .attention-list { flex-direction: column; overflow: visible; }
+  .attention-item { min-width: 0; max-width: none; }
+  .lega-one-center { order: 1; } .lega-one .cockpit-main { order: 2; } .lega-one-side { order: 3; }
+  .lega-figure { padding: 4px 8px; }
+  .lega-one:not(.is-immersive) .lega-figure .lega-face-canvas { max-height: 72px; max-width: 72px; }
+  .hub-state-pop { left: auto; right: 0; }
+}
+
+/* Readability over the map: the figure's panel and the empty conversation's hint sit on solid ground (map labels never cross the text). */
+.lega-one:not(.is-immersive) .lega-figure { background: rgba(8, 11, 16, 0.92); }
+.lega-one:not(.is-immersive) .lega-conv.is-empty li { align-self: center; max-width: 520px; padding: 6px 12px; border-radius: var(--r); background: rgba(8, 11, 16, 0.9); }
+.rail-heading { text-transform: none; letter-spacing: 0.02em; font-size: 10px; overflow-wrap: anywhere; }
+@media (max-width: 1280px) {
+  .lega-one-side { max-height: 210px; }
+  .attention-item { max-height: 172px; overflow: hidden; }
+  .attention-sub { -webkit-line-clamp: 2; }
+  .lega-one:not(.is-immersive) .lega-figure .lega-face-canvas { max-height: 64px; max-width: 64px; }
+}
+@media (max-width: 900px) { .lega-one-side { max-height: none; } .attention-item { max-height: none; } }
+/* The local development profile badge never covers the phone navigation or the interruptions. */
+@media (max-width: 767px) { .dev-profile-badge { bottom: calc(var(--bottom-h) + var(--lega-bar-h, 0px) + 18px) !important; } }

@@ -10,6 +10,7 @@ import { PLAN_STATUS_LABELS, STEP_STATUS_LABELS, planTone, stepTone, planActions
 import { rearmRequiredOf, rearmOutcome } from "../../lib/rearmLogic.js";
 import { CardShell } from "./cards.jsx";
 import { RearmCard } from "./RearmCard.jsx";
+import { TargetDetails } from "../../components/StatePill.jsx";
 
 /**
  * M10 operation plan card: exactly what will happen (apps, folders, what is read, what leaves the computer, outputs, model, limits,
@@ -120,6 +121,8 @@ export function OpsPlanCard({ plan: shown, onClose, focusTarget = null, onRearm 
           <span id="obs-pass-help" className="faint small">Se trimite doar cu confirmarea, rămâne în memorie cât rulează planul și nu se salvează nicăieri.</span>
         </label>
       )}
+      {/* M15: the exact plan the confirmation is bound to, in full, before the click (the request still sends the displayed hash). */}
+      {actions.confirm && <TargetDetails items={[{ label: "ID", value: plan.id }, { label: "SHA", value: plan.hash }, { label: "Expiră", value: plan.confirmBy ? new Date(plan.confirmBy).toLocaleString("ro-RO") : null }]} />}
       <ErrorNotice error={confirm.error || act.error} />
       {rearmNeed && actions.resume && (
         <div className="stack tight">

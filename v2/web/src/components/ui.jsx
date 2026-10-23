@@ -55,12 +55,25 @@ export function Notice({ tone = "info", children, title }) {
   return <div className={`notice ${tone}`} role={tone === "error" ? "alert" : "status"}><Icon size={16} aria-hidden="true" /><div>{title && <strong>{title}. </strong>}{children}</div></div>;
 }
 
+/**
+ * M15: what an error kept and how to continue, from the HTTP answer only: a refusal (4xx) changed nothing; a lost connection or a Hub error
+ * (5xx) leaves what was saved, but a request in flight may or may not have arrived — the page's state, read again, says which.
+ */
+export function errorContinuation(error) {
+  const status = Number(error?.status);
+  if (status === 0) return "Ce era salvat rămâne. Dacă trimiteai ceva, uită-te la starea afișată (se reîncarcă la reconectare) înainte să repeți.";
+  if (status >= 400 && status < 500) return "Hub-ul a refuzat cererea: nu s-a schimbat nimic. Poți corecta și repeta.";
+  if (status >= 500) return "Datele salvate rămân. Verifică starea afișată înainte să repeți cererea.";
+  return "";
+}
+
 export function ErrorNotice({ error, onRetry }) {
   if (!error) return null;
   const offline = error.status === 0;
+  const next = errorContinuation(error);
   return (
     <Notice tone="error" title={offline ? "Offline" : error.category === "gate" ? "Refuzat de poartă" : error.category === "policy" ? "Permisiune refuzată" : "Eroare"}>
-      {error.message}{onRetry && <> <button className="btn sm ghost" onClick={onRetry}>Reîncearcă</button></>}
+      {error.message}{next && <span className="faint small error-next"> {next}</span>}{onRetry && <> <button className="btn sm ghost" onClick={onRetry}>Reîncearcă</button></>}
     </Notice>
   );
 }

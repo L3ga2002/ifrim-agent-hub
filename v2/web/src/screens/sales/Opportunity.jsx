@@ -11,6 +11,7 @@ import {
   hasRealContact, followupPayload, followupDraftable, FOLLOWUP_BASIS_RO, FOLLOWUP_DAYS, REASON_MIN, approvalFrom, draftReadiness, draftBasis,
 } from "../../lib/salesLogic.js";
 import { SalesChip, SyntheticTag, useSalesResource, useSalesCommand, ApprovalGate, SalesError, when, localNowInput, inputToIso } from "./common.jsx";
+import { TargetDetails } from "../../components/StatePill.jsx";
 
 import { ProposalDecision } from "./ProposalDecision.jsx";
 import { Preparation } from "./Preparation.jsx";
@@ -115,6 +116,8 @@ function DraftCard({ draft, basis, onChanged }) {
       </div>
       {draft.approvedSha && <div className="faint small">Conținut aprobat pentru amprenta <span className="mono">{draft.approvedSha.slice(0, 12)}</span></div>}
       {!basis.ok && <Notice tone="warn">{basis.reason}</Notice>}
+      {draft.status === "DRAFT" && basis.ok && !editing && <TargetDetails items={[{ label: "ID", value: draft.id }, { label: "Versiune", value: `v${draft.version}` }, { label: "SHA", value: draft.sha }]}
+        note="„Aprobă conținutul” aprobă exact acest text (nu îl trimite). Dacă textul se schimbă, aprobarea e refuzată și vezi versiunea nouă." />}
       <div className="row wrap">
         {open && !editing && <button type="button" className="btn sm" onClick={() => setEditing(true)}><PenLine size={14} aria-hidden="true" />Revizuiește</button>}
         {draft.status === "DRAFT" && basis.ok && !editing && <button type="button" className="btn sm approve" disabled={approve.busy} onClick={() => approve.run(`/api/sales/drafts/${encodeURIComponent(draft.id)}/approve-content`, { displayedSha: draft.sha })}><ShieldCheck size={14} aria-hidden="true" />{approve.busy ? "Se cere…" : "Aprobă conținutul"}</button>}

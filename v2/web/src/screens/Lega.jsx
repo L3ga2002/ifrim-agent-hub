@@ -6,7 +6,7 @@ import { markArmed, looksLikeConfirmation } from "../lib/voiceContext.js";
 import { planRefOfLive, cockpitPlanAction } from "../lib/uiLogic.js";
 import { intelResultKind } from "../lib/intelLogic.js";
 import { IntelResult } from "./lega/IntelCard.jsx";
-import { Chip, Notice, ErrorNotice, Loading } from "../components/ui.jsx";
+import { Chip, Notice, ErrorNotice, Loading, errorContinuation } from "../components/ui.jsx";
 import { LegaFace } from "../components/face/LegaFace.jsx";
 import { deriveCoreState } from "../lib/coreState.js";
 import { buildStageGraph } from "../lib/stageGraph.js";
@@ -22,8 +22,10 @@ import { RearmCard } from "./lega/RearmCard.jsx";
 import { rearmSlotFrom, rearmBeforeNavigation, rearmOutcome, gateRearmHint } from "../lib/rearmLogic.js";
 import { salesNavigation } from "../lib/salesCockpit.js";
 import { StageCanvas, useVoiceCaption } from "./stage/LegaStage.jsx";
-import { CompanyPanel, DecisionsPanel, SalesOfferCard, CommandHelp, useDecisionsInbox } from "./lega/OneScreen.jsx";
+import { SalesOfferCard, CommandHelp, useDecisionsInbox } from "./lega/OneScreen.jsx";
 import { DeskPanel } from "./lega/DeskPanel.jsx";
+import { AttentionPanel, CompanyFold, ActivityHeader, HistoryList, useAttentionSources, currentActivity } from "./lega/Attention.jsx";
+import { attentionItems } from "../lib/stateVocab.js";
 import { conversationOf, withConversation, draftOf, withDraft, exchangeProject } from "../lib/legaConversation.js";
 import { salesOppFromPath, offerToShow, screenActivity } from "../lib/legaOneScreen.js";
 
@@ -348,6 +350,8 @@ function Cockpit({ projectId, go }) {
         if (r.view === "stage") setState({ stageOpen: true });
         if (r.view === "cockpit") setState({ stageOpen: false });
         if (r.view === "details") setDetailsTick((t) => t + 1);
+        // M15: „Arată-mi rezultatele” / „Ce e gata?” open the history tab on this screen (a read; the work stays mounted behind it).
+        if (r.view === "history") setWorkTab("history");
         const kind = intelResultKind(r);
         if (kind) intelFound = { kind, result: r, at: Date.now() };
       }
@@ -378,7 +382,7 @@ function Cockpit({ projectId, go }) {
       setConversation((c) => [...c, { mount: mountRef.current, role: "lega", text: replyFor(res), at: Date.now(), clarification: clarificationOf(res), blocker, links: salesNav.links }]);
       if (salesNav.go) go(salesNav.go);
       refresh(); cockpit.reload();
-    } catch (e) { setError(e); setConversation((c) => [...c, { role: "lega", text: `Nu am putut: ${e.message}`, at: Date.now() }]); }
+    } catch (e) { setError(e); setConversation((c) => [...c, { role: "lega", text: `Nu am putut: ${e.message}. ${errorContinuation(e) || "Textul tău e mai sus; îl poți trimite din nou."}`, at: Date.now() }]); }
     finally {
       sendingRef.current = false; setBusy(false);
       // The plan this sentence produced keeps the focus (Enter confirms it); otherwise the composer is ready for the next sentence.
@@ -454,6 +458,35 @@ function Cockpit({ projectId, go }) {
   useEffect(() => { if (!salesOpp && offerOpp) setSalesOpp(offerOpp); }, [salesOpp, offerOpp]); // eslint-disable-line react-hooks/exhaustive-deps
   const closeOffer = () => { setSalesDismissed((d) => [...(Array.isArray(d) ? d : []).filter((x) => x !== offerOpp), offerOpp].slice(-20)); setSalesOpp(null); };
   const showDepartment = (key) => { setDepartment(key); changeLayout({ ...(layout || cockpit.data?.layout || {}), cards: [{ type: "CompanyMap", ref: { kind: "company", id: "company" }, size: "l" }, ...(((layout || cockpit.data?.layout)?.cards || []).filter((x) => x.type !== "CompanyMap"))] }); };
+  // M15: „Ce te așteaptă” (left), the open activity's header with ONE primary action and the tabs Acum / Istoric (right). Read-only views of
+  // the Hub's own lists; the primary action only focuses, scrolls or opens — the decision stays on its own card, in the owner's session.
+  const sources = useAttentionSources();
+  const [workTab, setWorkTab] = usePref("lega.workTab", "now");
+  const attention = useMemo(() => attentionItems({ inbox: inbox.data?.items, desk: sources.desk.data?.records, deliveries: sources.deliveries.data?.deliveries, runs: hub?.activeRuns || [], workRequests: c?.workRequests || [] }),
+    [inbox.data, sources.desk.data, sources.deliveries.data, hub?.activeRuns, c?.workRequests]);
+  const projectName = c?.project?.name || (projects.data?.projects || []).find((p) => p.id === pid)?.name || "";
+  const current = currentActivity({ projectName, plan, opsPlan, runs: hub?.activeRuns || [], workRequests: c?.workRequests || [], attention, deliveries: pid ? c?.deliveries || [] : [], error, busy });
+  // The plan on this screen that waits for the owner is the first thing in „Ce te așteaptă” (the Hub's inbox lists results, not plans).
+  const waitingPlans = useMemo(() => [
+    ...(plan?.envelope?.status === "PROPOSED" && !(plan.envelope.confirmBy && Date.parse(plan.envelope.confirmBy) <= Date.now())
+      ? [{ key: `plan:${plan.envelope.id}`, state: "decide", title: `Plan: ${plan.summary?.headline || "planul propus"}`, sub: "O singură confirmare pentru toți pașii; nimic nu pornește fără ea.", at: null, plan: { kind: "envelope", id: plan.envelope.id } }] : []),
+    ...(opsPlan?.status === "PROPOSED" ? [{ key: `ops:${opsPlan.id}`, state: "decide", title: `Plan: ${opsPlan.title || "operație"}`, sub: "O singură confirmare.", at: null, plan: { kind: "ops", id: opsPlan.id } }] : []),
+  ], [plan?.envelope?.id, plan?.envelope?.status, plan?.summary?.headline, opsPlan?.id, opsPlan?.status, opsPlan?.title]); // eslint-disable-line react-hooks/exhaustive-deps
+  const openDesk = (recordId) => { setDeskFocus({ id: recordId, at: Date.now() }); setWorkTab("now"); setTimeout(() => document.querySelector(".lega-one section[aria-label='Birou intern']")?.scrollIntoView({ block: "start", behavior: "smooth" }), 60); };
+  const onPrimary = (p) => {
+    if (!p) return;
+    if (p.kind === "focus-plan" && plan?.envelope?.id) { setWorkTab("now"); requestFocus("envelope", plan.envelope.id); }
+    else if (p.kind === "focus-ops" && opsPlan?.id) { setWorkTab("now"); requestFocus("ops", opsPlan.id); }
+    else if (p.kind === "replan") proposePlan(plan?.envelope?.missionIds?.[0]);
+    else if (p.kind === "requests") { setWorkTab("now"); setTimeout(() => document.querySelector(".lega-one .work-requests")?.scrollIntoView({ block: "start", behavior: "smooth" }), 60); }
+    else if (p.kind === "link" && p.link) { if (current.item?.deskRecordId) openDesk(current.item.deskRecordId); else go(p.link); }
+    else inputRef.current?.focus({ preventScroll: false });
+  };
+  // While the owner types, the map behind dims further (it never competes with the text being written).
+  const [typing, setTyping] = useState(false);
+  // A plan that arrives, a card asked into focus or a desk record opened by a read always shows the work, never the history behind it.
+  useEffect(() => { if (plan?.envelope?.status === "PROPOSED" || opsPlan?.status === "PROPOSED") setWorkTab("now"); }, [plan?.envelope?.id, opsPlan?.id]); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => { if (focusTarget || deskFocus?.id) setWorkTab("now"); }, [focusTarget?.tick, deskFocus?.id]); // eslint-disable-line react-hooks/exhaustive-deps
   // The voice panel of the top bar is rendered in this place while the screen is shown (one component, one microphone).
   // A remount (project switch) attaches the new place before or after the old one detaches: only the element that leaves is cleared.
   const dockElRef = useRef(null);
@@ -510,12 +543,13 @@ function Cockpit({ projectId, go }) {
   }, [immersive]);
 
   return (
-    <div className={`page cockpit lega-one ${layout?.focus ? "is-focus" : ""} ${immersive ? "is-immersive" : ""}`}>
+    <div className={`page cockpit lega-one ${layout?.focus ? "is-focus" : ""} ${immersive ? "is-immersive" : ""}${typing ? " is-typing" : ""}`}>
       <StageCanvas className="lega-one-map" />
       <header className="cockpit-head">
         <div className="row wrap">
           <AudioLines size={18} aria-hidden="true" /><h1>Lega</h1>
-          <label className="project-switch lega-project-switch"><span className="sr-only">Proiect</span>
+          {/* M15: the ONE place that says where you work (the top bar's own project picker is hidden on this screen). */}
+          <label className="project-switch lega-project-switch"><span className="faint small hide-mobile">Lucrezi la</span><span className="sr-only">Proiect</span>
             <select value={pid} onChange={(e) => { setCurrentProject(e.target.value); go(`/lega/${e.target.value}`); setPlan(null); }}>
               <option value="">— compania (fără proiect) —</option>
               {(projects.data?.projects || []).map((p) => <option key={p.id} value={p.id}>{p.name}{p.source === "hub-test" ? " (test)" : ""}</option>)}
@@ -523,8 +557,6 @@ function Cockpit({ projectId, go }) {
           </label>
           {c && <Chip tone={STATE_TONE[c.state.code] || "neutral"}>{c.state.label}</Chip>}
           {c?.frozen && <Chip tone="warn" icon={Snowflake}>înghețat</Chip>}
-          {hub && <Chip tone={hub.mode === "BUILD_SAFE" ? "info" : "warn"}>{hub.mode}</Chip>}
-          {hub && <Chip tone={hub.executionGate?.status === "open" ? "ok" : "neutral"}>poarta {hub.executionGate?.status === "open" ? "deschisă" : "suspendată"}</Chip>}
         </div>
         <div className="row wrap">
           <OwnerChip owner={owner.data} reload={owner.reload} />
@@ -532,15 +564,24 @@ function Cockpit({ projectId, go }) {
           {immersive
             ? <button className="btn sm" onClick={() => { if (document.fullscreenElement) document.exitFullscreen?.().catch(() => {}); setState({ stageOpen: false }); }} title="Înapoi la ecranul cu barele Hub-ului (Esc)"><Minimize2 size={14} />Ieși din ecran complet</button>
             : <button className="btn sm" onClick={() => setState({ stageOpen: true })} title="Ecranul Lega fără barele Hub-ului (Alt+J)"><Maximize2 size={14} />Ecran complet</button>}
-          {typeof document !== "undefined" && document.fullscreenEnabled && <button className="btn sm ghost" aria-pressed={monitorFull} onClick={toggleMonitor} title="Ecranul Lega pe tot monitorul, fără bara browserului (ca F11)"><Monitor size={14} />{monitorFull ? "Ieși de pe tot monitorul" : "Tot monitorul"}</button>}
-          <label className="start-view small" title="Ce se deschide când pornești Hub-ul fără o adresă anume">
-            <span className="hide-mobile">La pornire</span>
-            <select value={startView.data?.startView || "cockpit"} onChange={async (e) => { try { await api("/api/owner/start-view", { method: "POST", body: { view: e.target.value } }); startView.reload(); } catch (er) { setError(er); } }} aria-label="Ecranul de pornire">
-              <option value="cockpit">ecranul Lega</option><option value="stage">ecranul Lega, ecran complet</option>
-            </select>
-          </label>
-          <button className="btn sm ghost" onClick={() => go("/intel")} title="Pilot automat & inteligența companiei"><Radar size={14} />Pilot</button>
           <button className="btn sm ghost" onClick={() => go("/lega/setup")}><Settings2 size={14} />Configurare</button>
+          {/* M15: the rare settings and the technical state, on request (never in the way of the work). */}
+          <details className="lega-more">
+            <summary className="btn sm ghost">Mai mult</summary>
+            <div className="lega-more-pop stack tight">
+              {hub && <span className="row wrap"><Chip tone={hub.mode === "BUILD_SAFE" ? "info" : "warn"} title="Modul de lucru al Hub-ului">{hub.mode}</Chip><Chip tone={hub.executionGate?.status === "open" ? "ok" : "neutral"} title={hub.executionGate?.reason}>poarta {hub.executionGate?.status === "open" ? "deschisă" : "suspendată"}</Chip></span>}
+              {typeof document !== "undefined" && document.fullscreenEnabled && <button className="btn sm ghost" aria-pressed={monitorFull} onClick={toggleMonitor} title="Ecranul Lega pe tot monitorul, fără bara browserului (ca F11)"><Monitor size={14} />{monitorFull ? "Ieși de pe tot monitorul" : "Tot monitorul"}</button>}
+              <label className="start-view small" title="Ce se deschide când pornești Hub-ul fără o adresă anume">
+                <span>La pornire</span>
+                <select value={startView.data?.startView || "cockpit"} onChange={async (e) => { try { await api("/api/owner/start-view", { method: "POST", body: { view: e.target.value } }); startView.reload(); } catch (er) { setError(er); } }} aria-label="Ecranul de pornire">
+                  <option value="cockpit">ecranul Lega</option><option value="stage">ecranul Lega, ecran complet</option>
+                </select>
+              </label>
+              <button className="btn sm ghost" onClick={() => go("/intel")} title="Pilot automat & inteligența companiei"><Radar size={14} />Pilot</button>
+              {pid && c && <div className="row wrap"><button className="btn sm ghost" disabled={!history.length} onClick={undoLayout}><Undo2 size={13} />Anulează layout</button>
+                <button className="btn sm ghost" aria-pressed={Boolean(layout?.focus)} onClick={() => changeLayout({ ...layout, focus: !layout?.focus, cards: layout?.focus ? c.layout.cards : layout.cards.filter((x) => ["ProjectSummary", "NextStepCard", "DecisionCard"].includes(x.type) || x.pinned) })}><Focus size={13} />Focus pe carduri</button></div>}
+            </div>
+          </details>
           {immersive && legaStatus !== "off" && <button className="btn sm danger" onClick={() => sendLegaCommand("stop")}><Square size={13} />Oprește Lega</button>}
           {immersive && <StopAllButton compact />}
         </div>
@@ -548,38 +589,32 @@ function Cockpit({ projectId, go }) {
       {owner.error?.status === 404 && <Notice tone="warn" title="Hub-ul rulează o versiune mai veche">Serverul pornit ({hub?.version || "—"}) nu are rutele Lega 2.0. Repornește Hub-ul (v2\scripts\restart.ps1); până atunci folosește Control Room.</Notice>}
       {hub?.simulation && <Notice tone="info" title="Simulare">Instanță separată cu date sintetice și provideri fixture; nimic de aici nu e real.</Notice>}
       <div className="cockpit-grid lega-one-grid">
-        <aside className="lega-one-side" aria-label="Compania și proiectul">
-          <CompanyPanel onDepartment={showDepartment} go={go} />
-          {/* M11: the project's deliveries, in Lega's own words (the result, never ids or grants), one click from the Delivery Room. */}
-          {(cockpit.data?.deliveries || []).length > 0 && (
-            <div className="stack tight" aria-label="Livrări">
-              {cockpit.data.deliveries.slice(0, 2).map((d) => (
-                <Notice key={d.id} tone={d.status === "READY" ? "ok" : d.status === "STALE" || d.status === "FAILED" ? "warn" : "info"} title={`Camera de livrare: ${d.title}`}>
-                  <span>{d.sentence}</span>{" "}
-                  <button className="btn sm" onClick={() => go(d.href)}>Arată-mi ce ai pregătit</button>{" "}
-                  <button className="btn sm ghost" onClick={() => go("/livrare/decizii")}>Deciziile mele</button>
-                </Notice>
-              ))}
-            </div>
-          )}
+        <aside className="lega-one-side" aria-label="Ce te așteaptă și compania">
+          <AttentionPanel inbox={inbox} sources={sources} projectId={pid || null} workRequests={c?.workRequests || []} plans={waitingPlans} go={go} onShowOffer={(id) => { showOffer(id); setWorkTab("now"); }} onOpenDesk={openDesk}
+            onOpenPlan={(p) => onPrimary({ kind: p.kind === "ops" ? "focus-ops" : "focus-plan" })} />
+          <CompanyFold onDepartment={showDepartment} go={go} />
         </aside>
         <section className="lega-one-center" aria-label="Lega">
           <div className="lega-one-scroll">
-          {!faceHidden && (
-            <div className={`face-box ${discreet ? "discreet" : ""}`}>
-              <LegaFace shape={faceShape} state={core.state} nodes={graphNodes} compact={discreet} />
+          <div className="lega-figure">
+            {!faceHidden && (
+              <div className={`face-box ${discreet ? "discreet" : ""}`}>
+                <LegaFace shape={faceShape} state={core.state} nodes={graphNodes} compact={discreet} />
+              </div>
+            )}
+            <div className="lega-figure-side">
+              <div className="face-controls row wrap" role="group" aria-label="Forma Lega">
+                <button className="btn sm ghost" aria-pressed={!faceHidden && faceShape === "CORE"} onClick={() => { setFaceShape("CORE"); setFaceHidden(false); }}><Circle size={12} />Nucleu</button>
+                <button className="btn sm ghost" aria-pressed={!faceHidden && faceShape === "FACE"} onClick={() => { setFaceShape("FACE"); setFaceHidden(false); }}><Eye size={12} />Față</button>
+                <button className="btn sm ghost" aria-pressed={!faceHidden && faceShape === "GRAPH"} onClick={() => { setFaceShape("GRAPH"); setFaceHidden(false); }}><Network size={12} />Hartă</button>
+                <button className="btn sm ghost" aria-pressed={discreet} disabled={faceHidden} onClick={() => setDiscreet((d) => !d)}><Minimize2 size={12} />Discret</button>
+                {faceHidden
+                  ? <button className="btn sm ghost" onClick={() => setFaceHidden(false)}><Eye size={12} />Arată fața</button>
+                  : <button className="btn sm ghost" onClick={() => setFaceHidden(true)} title="Doar harta companiei, fără figura Legăi"><EyeOff size={12} />Ascunde</button>}
+              </div>
+              <p className={`lega-one-activity tone-${activity.tone}`} role="status" aria-live="polite"><span className="dot" aria-hidden="true" />{activity.text}<span className="faint"> · {core.label}</span></p>
             </div>
-          )}
-          <div className="face-controls row wrap" role="group" aria-label="Forma Lega">
-            <button className="btn sm ghost" aria-pressed={!faceHidden && faceShape === "CORE"} onClick={() => { setFaceShape("CORE"); setFaceHidden(false); }}><Circle size={12} />Nucleu</button>
-            <button className="btn sm ghost" aria-pressed={!faceHidden && faceShape === "FACE"} onClick={() => { setFaceShape("FACE"); setFaceHidden(false); }}><Eye size={12} />Față</button>
-            <button className="btn sm ghost" aria-pressed={!faceHidden && faceShape === "GRAPH"} onClick={() => { setFaceShape("GRAPH"); setFaceHidden(false); }}><Network size={12} />Hartă</button>
-            <button className="btn sm ghost" aria-pressed={discreet} disabled={faceHidden} onClick={() => setDiscreet((d) => !d)}><Minimize2 size={12} />Discret</button>
-            {faceHidden
-              ? <button className="btn sm ghost" onClick={() => setFaceHidden(false)}><Eye size={12} />Arată fața</button>
-              : <button className="btn sm ghost" onClick={() => setFaceHidden(true)} title="Doar harta companiei, fără figura Legăi"><EyeOff size={12} />Ascunde</button>}
           </div>
-          <p className={`lega-one-activity tone-${activity.tone}`} role="status" aria-live="polite"><span className="dot" aria-hidden="true" />{activity.text}<span className="faint"> · {core.label}</span></p>
           {(caption.user || caption.lega) && legaStatus !== "off" && (
             <div className="lega-one-caption" aria-hidden="true">
               {caption.user && <p className="stage-user">Tu: {caption.user}</p>}
@@ -589,7 +624,7 @@ function Cockpit({ projectId, go }) {
           <ol className={`lega-conv${conversation.length ? "" : " is-empty"}`} aria-label="Conversația cu Lega" aria-live="polite">
             {!conversation.length && <li className="faint small">Spune sau scrie ce vrei; exemplele sunt la butonul „?” de lângă casetă. Citirea și planul nu pornesc nimic.</li>}
             {conversation.map((m, i) => (
-              <li key={i} className={`lc-${m.role}`}><span className="who">{m.role === "user" ? "Tu" : "Lega"}</span><span className="lc-text">{m.text}</span>
+              <li key={i} className={`lc-${m.role}`}><span className="who">{m.role === "user" ? "Tu" : "Lega"}{m.at ? <span className="faint"> · {new Date(m.at).toLocaleTimeString("ro-RO", { hour: "2-digit", minute: "2-digit" })}</span> : null}</span><span className="lc-text">{m.text}</span>
                 {m.mount === mountRef.current && m.clarification?.options?.length > 0 && <span className="row wrap">{m.clarification.options.map((o) => <button key={o.id} className="btn sm" onClick={() => send(o.label, "typed", { choice: { forIntent: m.clarification.forIntent, id: o.id } })}>{o.label}</button>)}</span>}
                 {m.mount !== mountRef.current && (m.expiredOptions || m.clarification?.options?.length > 0 || m.blocker?.options?.length > 0) && <span className="faint small">Opțiunile acestei întrebări nu mai sunt active; cere din nou.</span>}
                 {m.links?.length > 0 && <span className="row wrap">{m.links.map((l) => <button key={l.path} className="btn sm" onClick={() => go(l.path)}>{l.label}</button>)}</span>}
@@ -599,23 +634,42 @@ function Cockpit({ projectId, go }) {
           </div>
           <div className="lega-voice-dock" ref={dockRef} />
           <form className="lega-composer" onSubmit={(e) => { e.preventDefault(); const v = text; setText(""); send(v); }}>
-            <input ref={inputRef} className="input" value={text} onChange={(e) => setText(e.target.value)} placeholder="Spune-i Lega ce vrei…" aria-label="Mesaj pentru Lega" disabled={busy} />
+            <input ref={inputRef} className="input" value={text} onChange={(e) => setText(e.target.value)} onFocus={() => setTyping(true)} onBlur={() => setTyping(false)} placeholder="Spune-i Lega ce vrei…" aria-label="Mesaj pentru Lega" aria-describedby={text ? "lega-draft-note" : undefined} disabled={busy} />
             <button className="btn primary icon" type="submit" disabled={busy || !text.trim()} aria-label="Trimite"><Send size={15} /></button>
             <button className="btn icon" type="button" onClick={() => sendLegaCommand(legaStatus === "off" ? "start" : "open")} aria-label={legaStatus === "off" ? "Pornește vocea Lega" : "Panoul vocii Lega"} title="Vocea Lega (GPT-Live)"><AudioLines size={15} /></button>
             <CommandHelp onPick={(x) => { setText(x); inputRef.current?.focus({ preventScroll: true }); }} />
           </form>
+          {text && <p className="faint small lega-draft-note" id="lega-draft-note">Textul netrimis rămâne pentru acest proiect (și după reîncărcare); se șterge la blocarea sesiunii.</p>}
           <ErrorNotice error={error} />
           <div className="interrupt-bar row wrap" role="group" aria-label="Întreruperi">
+            <StopAllButton compact />
             <button className="btn sm ghost" onClick={() => interrupt("mute")} title="Oprește vocea, nu munca"><VolumeX size={13} />Taci</button>
             <button className="btn sm ghost" onClick={() => interrupt("pause")} title="Niciun pas nou; pasul activ e întrerupt și reluat la Reia"><Pause size={13} />Pauză</button>
             <button className="btn sm ghost" onClick={() => interrupt("stop_worker", { provider: "any" })} title="Oprește agentul care rulează"><Square size={13} />Oprește agentul</button>
             {pid && <button className="btn sm ghost" onClick={() => interrupt("freeze")} title="Niciun pas nou pe acest proiect"><Snowflake size={13} />Îngheață</button>}
             {pid && <button className="btn sm ghost" onClick={() => interrupt("takeover")} title="Opresc, fac checkpoint și îți predau controlul"><Hand size={13} />Preiau eu</button>}
-            <StopAllButton compact />
           </div>
         </section>
-        <main className="cockpit-main" aria-label="Cockpit">
-          <DecisionsPanel go={go} onShowOffer={showOffer} inbox={inbox} />
+        <main className="cockpit-main" aria-label="Activitatea deschisă">
+          <ActivityHeader activity={current} onPrimary={onPrimary} />
+          <div className="work-tabs" role="tablist" aria-label="Activitatea">
+            <button type="button" role="tab" id="work-tab-now" aria-selected={workTab !== "history"} aria-controls="work-panel-now" onClick={() => setWorkTab("now")}>Acum</button>
+            <button type="button" role="tab" id="work-tab-history" aria-selected={workTab === "history"} aria-controls="work-panel-history" onClick={() => setWorkTab("history")}>Istoric și rezultate</button>
+          </div>
+          {workTab === "history" && <div id="work-panel-history" role="tabpanel" aria-labelledby="work-tab-history"><HistoryList projectId={pid || null} go={go} onOpenDesk={openDesk} compact /></div>}
+          {/* The work stays mounted while the history is shown (a plan, the rearm card and the desk keep their state and focus rules). */}
+          <div id="work-panel-now" role="tabpanel" aria-labelledby="work-tab-now" className="work-now" hidden={workTab === "history"}>
+          {/* M11: the project's latest delivery, in Lega's own words (the result, never ids or grants), one click from the Delivery Room. */}
+          {(cockpit.data?.deliveries || []).length > 0 && pid && (
+            <div className="stack tight" aria-label="Livrări">
+              {cockpit.data.deliveries.slice(0, 1).map((d) => (
+                <Notice key={d.id} tone={d.status === "READY" ? "ok" : d.status === "STALE" || d.status === "FAILED" ? "warn" : "info"} title={`Ultima livrare: ${d.title}`}>
+                  <span>{d.sentence}</span>{" "}
+                  <button className="btn sm" onClick={() => go(d.href)}>Arată-mi ce ai pregătit</button>
+                </Notice>
+              ))}
+            </div>
+          )}
           {/* 2.12.1 (UI-02): the ONE rearm card lives here, outside the loading / error / no-project branches, so a failed cockpit reload
               or a project switch never unmounts (and never replays) it. */}
           {rearmView && <div className="rearm-slot">{rearmView}</div>}
@@ -629,24 +683,19 @@ function Cockpit({ projectId, go }) {
           </>
             : cockpit.loading && !c ? <Loading lines={6} /> : cockpit.error ? <ErrorNotice error={cockpit.error} onRetry={cockpit.reload} /> : (
               <>
-                <div className="row between cockpit-toolbar">
-                  <span className="faint small">{layout?.focus ? "Focus: doar ce contează" : `${cards.length} carduri`} · un layout nu aprobă nimic</span>
-                  <div className="row">
-                    <button className="btn sm ghost" disabled={!history.length} onClick={undoLayout}><Undo2 size={13} />Anulează layout</button>
-                    <button className="btn sm ghost" aria-pressed={Boolean(layout?.focus)} onClick={() => changeLayout({ ...layout, focus: !layout?.focus, cards: layout?.focus ? c.layout.cards : layout.cards.filter((x) => ["ProjectSummary", "NextStepCard", "DecisionCard"].includes(x.type) || x.pinned) })}><Focus size={13} />Focus</button>
-                  </div>
-                </div>
                 <div className="cockpit-cards">
                   {opsPlan &&<OpsPlanCard plan={opsPlan} card={{ type: "OpsPlan", size: "l" }} focusTarget={focusTarget} onClose={() => setOpsPlan(null)} onRearm={revealRearm} />}
                   {/* M10.2: requests the Hub kept while blocked survive a reload; each cause shows ONE next action. */}
-                  {c.workRequests?.length > 0 && <WorkRequestsCard card={{ type: "WorkRequests", size: "m" }} requests={c.workRequests} projectId={c.project.id} projectLevel={c.autonomy?.level || null} onSay={(t) => send(t)} onDone={() => cockpit.reload()}
-                    onOpenPlan={(ref) => planHandler.current({ ...ref, projectId: ref.kind === "envelope" ? c.project.id : null }, { explicit: true })} onRearm={openRearm} />}
+                  {c.workRequests?.length > 0 && <div className="work-requests"><WorkRequestsCard card={{ type: "WorkRequests", size: "m" }} requests={c.workRequests} projectId={c.project.id} projectLevel={c.autonomy?.level || null} onSay={(t) => send(t)} onDone={() => cockpit.reload()}
+                    onOpenPlan={(ref) => planHandler.current({ ...ref, projectId: ref.kind === "envelope" ? c.project.id : null }, { explicit: true })} onRearm={openRearm} /></div>}
                   {cards.map(renderCard)}
                 </div>
+                <p className="faint small" style={{ margin: 0 }}>{layout?.focus ? "Focus: doar ce contează" : `${cards.length} carduri`} · un layout nu aprobă nimic</p>
               </>
             )}
           {/* M13 „Birou intern”: the start dossier, the support case and the deviz, after the cockpit's own cards. */}
           <DeskPanel focus={deskFocus && Date.now() - Number(deskFocus.at || 0) < DESK_FOCUS_MS ? deskFocus : null} onClearFocus={() => setDeskFocus(null)} />
+          </div>
         </main>
       </div>
     </div>

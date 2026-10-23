@@ -60,7 +60,7 @@ export const INTENT_EFFECTS = Object.freeze({
   // owner's one confirmation decides. "Ce s-a executat / ultima livrare / ce urmează" only read. "Deschide-l din nou" repeats the last
   // target the SERVER recorded: an app is a local action (the stricter class, kept here), a project or a clip only navigates (lowered
   // when resolved). Executing a downloaded file or an installer is refused from a sentence.
-  studio_create: "plan", start_mission: "plan", resume_mission: "plan", last_run: "read", last_delivery: "read", next_step: "read",
+  studio_create: "plan", start_mission: "plan", resume_mission: "plan", last_run: "read", last_delivery: "read", next_step: "read", results_show: "read",
   reopen_last: "local", refuse_execute: "none",
   // M10.2 integration: a code change ("repară testul X", "implementează Y") becomes ONE engineering plan (factory draft + envelope);
   // a reading/analysis ("analizează…", "rezumă…") becomes ONE run plan (one bounded read-only model step). Both only propose.
@@ -1498,7 +1498,7 @@ const SALES_PREPARE = {
  */
 const SALES_OFFER_QUESTION = /^(?:(?:ce|care|cate) (?:oferta|oferte|ofertele|propunere comerciala|propuneri comerciale)\b.*\b(?:ai|ati|a|au|s-a|s-au|am|e|este|sunt) (?:pregatit|facut|scris|gata|trimis|primit|aprobat|creat)\b|(?:oferta|ofertele|propunerea|propunerile) pentru(?! (?:clip|video|plan|misiun|proiect|corect))(?: (?!si\b)[a-z0-9-]+){1,8} (?:e|este|sunt|era|erau|a fost|au fost|s-a|s-au)\b|(?:oferta|ofertele)(?: (?!si\b)[a-z0-9-]+){0,8} (?:e|este|sunt|a fost|au fost|s-a|s-au) (?:deja )?(?:gata|aprobat\w*|trimis\w*|pregatit\w*|facut\w*|terminat\w*)\b)/;
 /** „Arată-mi oferta”, „Deschide dosarul ofertei”: the latest prepared offer (navigation + a read; nothing changes). */
-const SALES_SHOW = new RegExp(String.raw`^(?:(?:arata|deschide|afiseaza|vreau sa vad|adu|pune)(?:-mi|-ne)?|da-mi|da-ne)(?: si)?(?: (?:ultima|noua|cea mai noua|din nou))? (?:${OFFER_NOUN}|dosarul ofertei|dosarele ofertei)\b`);
+const SALES_SHOW = new RegExp(String.raw`^(?:(?:arata|deschide|afiseaza|vreau sa vad|adu|pune)(?:-mi|-ne)?|da-mi|da-ne|unde e|unde este|unde-i)(?: si)?(?: (?:ultima|noua|cea mai noua|din nou))? (?:${OFFER_NOUN}|dosarul ofertei|dosarele ofertei)\b`);
 /**
  * „Aprobă oferta”, „Aprob intern oferta”, „Poți să aprobi oferta?”: the Hub says WHERE the owner approves it; it never approves. Final review
  * C4: a „propunere” only as the commercial one („propunerea comercială / de preț”); a bare „Aprobă propunerea” only in a Sales conversation
@@ -1534,7 +1534,7 @@ const DESK_NOUN = String.raw`(?:dosar(?:ul)? de pornire(?: a(?:l)? proiectului)?
 const DESK_NO = String.raw`(ops|sup|dvz)[ -]?0*(\d{1,6})`;
 // A trailing „pentru / din / de la …” after the number only describes it („Arată devizul DVZ-0001 pentru client”).
 const DESK_SHOW_NO = new RegExp(String.raw`^(?:(?:arata|deschide|afiseaza|vreau sa vad|adu|da|unde e|unde este|ce stare are|care e starea)(?:-mi|-ne)? (?:si )?)?(?:${DESK_NOUN} )?(?:(?:intern|sintetic) )?${DESK_NO}(?: (?:pentru|din|de la|al|a) [a-z0-9 -]{1,60})?[.!?]*$`);
-const DESK_SHOW_KIND = new RegExp(String.raw`^(?:arata|afiseaza|vreau sa vad|adu|da)(?:-mi|-ne)? (?:(?:ultimul|ultima|cel mai nou|cea mai noua) )?(dosarul de pornire(?: a(?:l)? proiectului)?|cazul de suport|cazurile de suport|devizul|devizele)(?: (?:intern|sintetic|in ciorna))?[.!?]*$`);
+const DESK_SHOW_KIND = new RegExp(String.raw`^(?:arata|afiseaza|vreau sa vad|adu|da|unde e|unde este|unde-i)(?:-mi|-ne)? (?:(?:ultimul|ultima|cel mai nou|cea mai noua) )?(dosarul de pornire(?: a(?:l)? proiectului)?|cazul de suport|cazurile de suport|devizul|devizele)(?: (?:intern|sintetic|in ciorna))?[.!?]*$`);
 /** „Ce lipsește din devizul DVZ-0001?” — the record's own open items (its next action), never the Sales offer. */
 // One number only: with two („… din OPS-0001 și SUP-0001”) one of them would be dropped silently.
 const DESK_MISSING_NO = new RegExp(String.raw`^(?!.*\b(?:ops|sup|dvz)[ -]?\d.*\b(?:ops|sup|dvz)[ -]?\d)(?:(?:si|dar|deci) )?ce (?:mai )?lipseste\b.*\b${DESK_NO}[.!?]*$`);
@@ -1679,6 +1679,8 @@ const P = [
   // M10.2 reads (before status / open_project, which swallowed "Arată-mi ultima livrare" as a project named „ultima livrare”).
   // A bare "delivery" stays a project reference ("Hai la delivery"); only "ultima livrare", "ce s-a livrat" or the word alone read.
   ["last_run", /\bce (?:s-a|sa|a|am) (?:executat|rulat)\b|\bultim(?:a|ul|ele|ii) (?:executie|executia|executii|rulare|rularea|rulari|rularile|run|run-ul)\b|\bce a facut (?:ultima data|ultima oara)\b/],
+  // M15: „Arată-mi rezultatele”, „Arată istoricul”, „Ce e gata?” — the history of results by name and date on the L3ga screen (a read).
+  ["results_show", /^(?:(?:arata|deschide|afiseaza|vreau sa vad|unde sunt|unde e)(?:-mi|-ne)? )?(?:toate )?(?:rezultatele|istoricul|reviziile)(?: (?:noastre|mele|companiei|proiectului))?[.!?]*$|^ce (?:e|este|avem|am) gata\b/],
   ["last_delivery", /\bultim(?:a|ul|ele) (?:livrare|livrarea|livrari|livrarile|delivery|bundle|bundle-ul|pachet(?:ul)? de livrare)\b|\bce (?:s-a|sa|am|ai) livrat\b|^(?:delivery|bundle|bundle-ul|bundleul|livrarea|livrarile)$|\barata(?:-mi)? (?:bundle-ul|bundleul|bundle-urile|livrarea|livrarile|delivery-ul)\b|\bce (?:livrari|bundle-uri) (?:asteapta|am)\b/],
   ["next_step", /\bce urmeaza\b|\bcare (?:e|este) (?:urmatorul pas|pasul urmator|urmatorul)\b|\b(?:urmatorul pas|pasul urmator)\b|\bce (?:fac|facem) (?:mai departe|in continuare)\b/],
   // M10.2 integration: a code change ("repară testul X", "implementează Y") is ONE engineering plan. Review M10.2 #18: it sat at the
@@ -1688,6 +1690,9 @@ const P = [
   // Anchored on the verb AND a code object, so it only takes sentences that ARE a code request; the interruptions, the negation and
   // condition guards and refuse_execute above still win. The planner decides project, test and models; the owner confirms once.
   ["engineering_request", /^(?:repara|rezolva|corecteaza|implementeaza|refactorizeaza|adauga|scrie)\b.*\b(?:bug(?:-ul|ul|uri)?|eroarea|erori(?:le)?|testul|testele|teste|test|functia|functionalitatea|feature(?:-ul|ul)?|fix(?:-ul|ul)?|endpoint(?:-ul|ul)?|validarea|validare|pagina|componenta|modulul|codul|crash(?:-ul|ul)?|regresia|preview(?:-ul|ul)?|butonul|buton)\b/, (_m, clause) => ({ request: clause })],
+  // M15: the same request said plainly („Fă formularul de contact cu validarea emailului”, „Construiește pagina de programări”): a build verb
+  // and a part of an application. A video, a clip, an offer or a deviz never match (no such noun here).
+  ["engineering_request", /^(?:fa|fa-mi|creeaza|construieste|programeaza)\b.*\b(?:formular(?:ul)?|pagina|endpoint(?:-ul|ul)?|componenta|validarea|validare|butonul|buton|functia|functionalitatea|modulul|campul|campurile|ecranul de login|api-ul)\b/, (_m, clause) => ({ request: clause })],
   // An analysis moves up ONLY for the strong analysis verbs on a code object ("Analizează testele care pică" read the tests): the
   // reading verbs ("Explică-mi testele", "Citește planul", "Rezumă status-ul") keep their read intents below, and a sentence about
   // the plan or the status is never turned into a model run.
@@ -1704,7 +1709,7 @@ const P = [
   ["objective_plan", /\b(pregateste|propune) planul (pentru|obiectivului) (obiectivul )?(?<ref>.+)|\b(porneste|continua) obiectivul (?<ref2>.+)/, (m) => ({ objectiveRef: (m.groups.ref || m.groups.ref2 || "").trim() })],
   ["objectives", /\b(arata(-mi)?|care sunt|ce) obiective(le)?\b/],
   ["incident_open", /\b(avem|deschide) un incident\b|^(?<what>.+?) (a picat|a cazut|nu (mai )?(merge|functioneaza|raspunde|se incarca)|s-a stricat|e (jos|picat|cazut)|da (o )?eroare|da erori)\b|^nu (mai )?(merge|functioneaza|se incarca|raspunde) (?<what2>.{2,80})$/, (m) => ({ what: (m.groups.what || m.groups.what2 || "").trim() })],
-  ["status", /\bce face (acum|codex|claude)\b|\bce se intampla\b|\bunde (suntem|am ajuns)\b|\bcum merge\b|\bce faci acum\b|\bstatus\b/, (m, c) => ({ worker: /codex/.test(c) ? "codex" : /claude/.test(c) ? "claude" : null })],
+  ["status", /\bce face (acum|codex|claude)\b|\bce se intampla\b|\bunde (suntem|am ajuns)\b|\bcum merge\b|\bce faci acum\b|\bstatus\b|^(?:si )?(?:care e|care este|cum e|cum este|ce) (?:starea|stadiul) (?:proiectului|lucrului|lucrarii)\b|\bcum sta proiectul\b|\bce mai face proiectul\b/, (m, c) => ({ worker: /codex/.test(c) ? "codex" : /claude/.test(c) ? "claude" : null })],
   ["show_review", /\b(claude|reviewerul|review-ul|reviewul) ce (a gasit|zice|spune)\b|\bce (a gasit|zice|spune) (claude|reviewerul)\b|\bce zice review\b|\barata(-mi)? review/],
   ["show_changes", /\bce a schimbat\b|\barata(-mi)? (ce a schimbat|diff|modificarile|schimbarile)\b|\bce (fisiere|modificari) (a|au)\b/],
   ["show_tests", /\btestele\b|\bau trecut testele\b|\bce teste\b|\barata(-mi)? test/],

@@ -1,6 +1,21 @@
 import { Scale, ExternalLink, Ban } from "lucide-react";
 import { Panel, Chip, Notice, ErrorNotice } from "../../components/ui.jsx";
 import { confirmationHint, decisionGroups, decisionRows, PUBLISHING_ROW_TEXT } from "../../lib/deliveryLogic.js";
+import { TargetDetails } from "../../components/StatePill.jsx";
+
+/** M15: the full ids and SHA the decision's own request sends (shown in full before the click; the request is unchanged). */
+function fullTargetOf(row) {
+  const body = row.action?.request?.body || {};
+  const items = [];
+  if (body.bundleId) items.push({ label: "ID", value: body.bundleId });
+  if (body.displayedBundleSha) items.push({ label: "SHA", value: body.displayedBundleSha });
+  if (body.documentId) items.push({ label: "ID", value: body.documentId });
+  if (body.version !== undefined && body.version !== null) items.push({ label: "Versiune", value: `v${body.version}` });
+  if (body.displayedSha) items.push({ label: "SHA", value: body.displayedSha });
+  const edit = /edit-versions\/([^/]+)\//.exec(String(row.action?.request?.path || ""));
+  if (edit) items.push({ label: "ID", value: decodeURIComponent(edit[1]) });
+  return items;
+}
 
 const DONE_TOAST = {
   software: "Software acceptat local (doar acest pachet; nimic altceva nu a fost aprobat)",
@@ -67,6 +82,7 @@ function DecisionRow({ room, row, titled }) {
         </ul>
       )}
       {row.anomaly && <Notice tone="warn">{row.anomaly}</Notice>}
+      {row.action?.kind === "command" && row.action.request && <TargetDetails items={fullTargetOf(row)} />}
       <DecisionAction room={room} row={row} />
     </li>
   );

@@ -201,8 +201,8 @@ test("R-LEGA-ONE-04 in a real browser: the M12 offer prepared, confirmed and app
     for (let i = 0; i < 200 && !(prepId() && t.hub.salesPreparations.get(prepId())?.status === "WAITING_OWNER"); i += 1) await page.waitForTimeout(100);
     const prep = t.hub.salesPreparations.get(prepId());
     assert.equal(prep.status, "WAITING_OWNER", prep.statusReason);
-    // The pending decision is on the screen: in „Decizii” (full SHA) and as the offer card with its exact target and „Aprob intern”.
-    const decisions = page.getByRole("region", { name: "Decizii și execuții" }).or(page.locator("section[aria-label='Decizii și execuții']"));
+    // The pending decision is on the screen: in „Ce te așteaptă” (M15: the decisions panel, full SHA) and as the offer card with its exact target and „Aprob intern”.
+    const decisions = page.getByRole("region", { name: "Ce te așteaptă" }).or(page.locator("section[aria-label='Ce te așteaptă']"));
     await decisions.getByText("Ofertă de aprobat").first().waitFor();
     assert.ok((await decisions.innerText()).includes(prep.awaited.proposalSha), "the full SHA in the decisions");
     const offer = work.locator("section.panel", { hasText: "Ținta exactă: oferta" }).first();

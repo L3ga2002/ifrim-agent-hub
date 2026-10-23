@@ -22,6 +22,7 @@ import { resolveIntent, matchRef, normalize, stripFillers, INTENT_EFFECTS, CONTI
 import { layoutForIntent } from "./layout.mjs";
 import { localDayStart } from "../intel/twin.mjs";
 import { PACKAGE_KINDS } from "../intel/packages.mjs";
+import { decisionsInbox } from "../delivery/inbox.mjs";
 import { createOpsIntentActions, parseImportFolder, importWithoutFolder, IMPORT_FOLDER_HELP } from "../ops/intent-actions.mjs";
 import { classOfIntent, refusalReason } from "../policy/effect-class.mjs";
 import { classifySuspension, credentialTag, STOPPED_BY } from "../policy/gate-state.mjs";
@@ -1197,7 +1198,10 @@ export function createIntake(hub) {
       } else if (step.intent === "forget") { r.forget = hub.teach.proposeForget({ ref: step.args.ref, actor: ctx.actor }); r.navigate = "/intel/lessons"; }
       else if (step.intent === "today") r.today = hub.board.today();
       else if (step.intent === "decisions") { const a = hub.board.agenda({}); r.decisions = a.items.filter((i) => i.section === "decisions" && i.kind !== "info");
-        r.packages = PACKAGE_KINDS.map((k) => hub.packages.pending(k)).filter(Boolean).map((p) => ({ id: p.id, kind: p.kind, title: p.title, blockedBy: p.blockedBy || [] })); }
+        r.packages = PACKAGE_KINDS.map((k) => hub.packages.pending(k)).filter(Boolean).map((p) => ({ id: p.id, kind: p.kind, title: p.title, blockedBy: p.blockedBy || [] }));
+        // M15: the results waiting for the owner („Deciziile mele”: a package, a delivery, an offer, a deviz, a reply) are decisions too — the
+        // answer said „Nicio decizie în așteptare” while the screen listed five. Read-only, the same list as GET /api/decisions/inbox.
+        r.inbox = decisionsInbox(hub).items.map((it) => ({ kind: it.kind, title: it.title, link: it.link || null })); }
       // ---------- M09: Content Studio (navigate, show, PROPOSE a correction; never apply, render, capture or publish) ----------
       else if (step.intent === "studio_open") {
         const { matches } = findContentProject(step.args.clipRef);
@@ -1366,6 +1370,10 @@ export function createIntake(hub) {
         r.lastRuns = lastRuns(projectId);
         const first = r.lastRuns[0];
         r.message = first ? `Ultima execuție: ${first.provider}${first.stage ? ` · ${first.stage}` : ""} · ${first.status}${first.projectName ? ` (${first.projectName})` : ""}.` : `Nu am nicio execuție înregistrată${projectId ? " pe acest proiect" : ""}.`;
+      } else if (step.intent === "results_show") {
+        // M15: a read — the screen opens its „Istoric și rezultate” tab (results and revisions by name and date); nothing is created.
+        r.view = "history";
+        r.message = "Am deschis „Istoric și rezultate” în dreapta: livrările, ofertele, dosarele și devizele, cu data și starea lor. Caută după cuvinte, fără ID-uri.";
       } else if (step.intent === "last_delivery") {
         r.deliveries = deliveries(projectId);
         // M14 (the owner's check): „Care e ultima livrare?” answers with the LAST one first (its state in words and its date), then what
