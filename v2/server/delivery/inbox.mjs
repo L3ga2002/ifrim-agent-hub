@@ -47,6 +47,9 @@ export function salesOfferDecisions(hub, now = new Date()) {
 export function decisionsInbox(hub) {
   const { db, factory, deliveries, projects } = hub;
   const items = [];
+  // M15: a delivery row says real / test from its project (a fixed false was shown as „proiect de test” for a real delivery); a hub view
+  // without projects (some unit stubs) keeps the old answer.
+  const realProject = (projectId) => (typeof projects?.get === "function" ? projects.get(projectId)?.source !== "hub-test" : false);
   for (const f of factory.list()) {
     const project = projects.get(f.projectId);
     const real = project?.source !== "hub-test";
@@ -79,7 +82,7 @@ export function decisionsInbox(hub) {
     const v = deliveries.view(d.id);
     if (v.correction?.plan && v.revisions.some(r => r.planId === v.correction.plan.id && r.source === 'hub')) {
       const proposed = v.correction.plan.status === 'PROPOSED';
-      items.push({ kind: 'delivery_correction', id: v.correction.plan.id, projectId: d.projectId, projectName: v.delivery.projectName, real: projects.get(d.projectId)?.source !== "hub-test", title: 'Corectură afirmații (clip + rezumat)', waitingSince: d.updatedAt, what: 'Corectură propusă de Hub pentru afirmațiile livrării.', why: proposed ? 'Așteaptă confirmarea ta.' : 'Corectura rulează.', ifAccept: 'Scrie versiuni noi; păstrează software-ul și istoricul.', ifReject: proposed ? 'Nimic nu pornește.' : 'Corectura rulează; o poți opri din locul deciziei.', effects: v.correction.defects.map(f => f.plain), link: '/livrare/' + d.id });
+      items.push({ kind: 'delivery_correction', id: v.correction.plan.id, projectId: d.projectId, projectName: v.delivery.projectName, real: realProject(d.projectId), title: 'Corectură afirmații (clip + rezumat)', waitingSince: d.updatedAt, what: 'Corectură propusă de Hub pentru afirmațiile livrării.', why: proposed ? 'Așteaptă confirmarea ta.' : 'Corectura rulează.', ifAccept: 'Scrie versiuni noi; păstrează software-ul și istoricul.', ifReject: proposed ? 'Nimic nu pornește.' : 'Corectura rulează; o poți opri din locul deciziei.', effects: v.correction.defects.map(f => f.plain), link: '/livrare/' + d.id });
     }
     const pending = [];
     if (v.decisions.creativeMaster !== "APPROVED") pending.push("aprobarea creativă a clipului 16:9");
@@ -87,7 +90,7 @@ export function decisionsInbox(hub) {
     if (v.decisions.summaryReady !== "READY") pending.push("rezumatul „gata de prezentare”");
     if (v.decisions.software !== "ACCEPTED") pending.push("acceptarea locală a software-ului");
     if (!pending.length) continue;
-    items.push({ kind: "delivery", id: d.id, projectId: d.projectId, projectName: v.delivery.projectName, real: projects.get(d.projectId)?.source !== "hub-test", title: d.title, waitingSince: d.updatedAt,
+    items.push({ kind: "delivery", id: d.id, projectId: d.projectId, projectName: v.delivery.projectName, real: realProject(d.projectId), title: d.title, waitingSince: d.updatedAt,
       what: `Livrarea pregătită: ${d.title} (software, clip 16:9 + vertical, rezumat comercial).`, why: `Așteaptă: ${pending.join(", ")}.`,
       ifAccept: "Fiecare decizie e separată: acceptarea software-ului nu aprobă clipul, iar aprobarea clipului nu publică nimic.",
       ifReject: "O poți lăsa așa sau o închizi; nimic nu se șterge.", effects: ["fișiere locale în folderul de exporturi; nimic publicat"], link: `/livrare/${d.id}` });
