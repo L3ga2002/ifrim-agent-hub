@@ -1680,7 +1680,7 @@ const P = [
   // A bare "delivery" stays a project reference ("Hai la delivery"); only "ultima livrare", "ce s-a livrat" or the word alone read.
   ["last_run", /\bce (?:s-a|sa|a|am) (?:executat|rulat)\b|\bultim(?:a|ul|ele|ii) (?:executie|executia|executii|rulare|rularea|rulari|rularile|run|run-ul)\b|\bce a facut (?:ultima data|ultima oara)\b/],
   // M15: „Arată-mi rezultatele”, „Arată istoricul”, „Ce e gata?” — the history of results by name and date on the L3ga screen (a read).
-  ["results_show", /^(?:(?:arata|deschide|afiseaza|vreau sa vad|unde sunt|unde e)(?:-mi|-ne)? )?(?:toate )?(?:rezultatele|istoricul|reviziile)(?: (?:noastre|mele|companiei|proiectului))?[.!?]*$|^ce (?:e|este|avem|am) gata\b/],
+  ["results_show", /^(?:(?:arata|deschide|afiseaza|vreau sa vad)(?:-mi|-ne)? )?(?:toate )?(?:rezultatele|istoricul|reviziile)(?: (?:noastre|mele|companiei|proiectului))?[.!?]*$|^ce (?:e|este|avem|am) gata(?: (?:in proiect|de livrare|azi))?[.!?]*$/],
   ["last_delivery", /\bultim(?:a|ul|ele) (?:livrare|livrarea|livrari|livrarile|delivery|bundle|bundle-ul|pachet(?:ul)? de livrare)\b|\bce (?:s-a|sa|am|ai) livrat\b|^(?:delivery|bundle|bundle-ul|bundleul|livrarea|livrarile)$|\barata(?:-mi)? (?:bundle-ul|bundleul|bundle-urile|livrarea|livrarile|delivery-ul)\b|\bce (?:livrari|bundle-uri) (?:asteapta|am)\b/],
   ["next_step", /\bce urmeaza\b|\bcare (?:e|este) (?:urmatorul pas|pasul urmator|urmatorul)\b|\b(?:urmatorul pas|pasul urmator)\b|\bce (?:fac|facem) (?:mai departe|in continuare)\b/],
   // M10.2 integration: a code change ("repară testul X", "implementează Y") is ONE engineering plan. Review M10.2 #18: it sat at the
@@ -1692,7 +1692,7 @@ const P = [
   ["engineering_request", /^(?:repara|rezolva|corecteaza|implementeaza|refactorizeaza|adauga|scrie)\b.*\b(?:bug(?:-ul|ul|uri)?|eroarea|erori(?:le)?|testul|testele|teste|test|functia|functionalitatea|feature(?:-ul|ul)?|fix(?:-ul|ul)?|endpoint(?:-ul|ul)?|validarea|validare|pagina|componenta|modulul|codul|crash(?:-ul|ul)?|regresia|preview(?:-ul|ul)?|butonul|buton)\b/, (_m, clause) => ({ request: clause })],
   // M15: the same request said plainly („Fă formularul de contact cu validarea emailului”, „Construiește pagina de programări”): a build verb
   // and a part of an application. A video, a clip, an offer or a deviz never match (no such noun here).
-  ["engineering_request", /^(?:fa|fa-mi|creeaza|construieste|programeaza)\b.*\b(?:formular(?:ul)?|pagina|endpoint(?:-ul|ul)?|componenta|validarea|validare|butonul|buton|functia|functionalitatea|modulul|campul|campurile|ecranul de login|api-ul)\b/, (_m, clause) => ({ request: clause })],
+  ["engineering_request", /^(?:fa|fa-mi|creeaza|construieste|programeaza)\b.*\b(?:formular(?:ul)?|pagina|endpoint(?:-ul|ul)?|componenta|validarea|validare|butonul|buton|functia|functionalitatea|modulul|campul|campurile|ecranul de login|api-ul)\b\s+\S/, (_m, clause) => ({ request: clause })],
   // An analysis moves up ONLY for the strong analysis verbs on a code object ("Analizează testele care pică" read the tests): the
   // reading verbs ("Explică-mi testele", "Citește planul", "Rezumă status-ul") keep their read intents below, and a sentence about
   // the plan or the status is never turned into a model run.

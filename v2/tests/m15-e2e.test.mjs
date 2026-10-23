@@ -143,9 +143,13 @@ test("M15-E2E-E recovery in the new L3ga screen: F5 keeps the plan (no second re
     await page.goto(`${origin}/#/lega/${project.id}`);
     await page.locator(".lega-one").waitFor();
     const composer = page.getByLabel("Mesaj pentru Lega");
+    // The owner is reading the history when the plan arrives: the plan's card is shown AND focused (Enter confirms exactly it), never hidden.
+    await page.getByRole("tab", { name: "Istoric și rezultate" }).click();
     await composer.fill(BUG);
     await composer.press("Enter");
     await page.getByRole("button", { name: /Da, execută planul/ }).waitFor({ timeout: 30000 });
+    await page.getByRole("tab", { name: "Acum", selected: true }).waitFor();
+    await page.waitForFunction(() => Boolean(document.activeElement?.closest(".decision")), null, { timeout: 10000 });
     const intents = () => count(t, "SELECT COUNT(*) AS n FROM commands WHERE type = 'owner.intent'");
     const before = intents();
     await composer.fill("text netrimis M15");

@@ -9,7 +9,7 @@ export const STATES = Object.freeze({
   run: { label: "În lucru", hint: "Hub-ul lucrează; poți scrie în continuare, Stop All rămâne la un clic." },
   decide: { label: "Decizia ta", hint: "Așteaptă confirmarea ta pe ținta exactă; nimic nu pornește fără ea." },
   block: { label: "Lipsește ceva", hint: "Lipsesc informații sau o condiție; nimic nu e ghicit." },
-  error: { label: "Eroare · poți continua", hint: "Ce s-a făcut e păstrat; continui fără să repeți ce e gata." },
+  error: { label: "Eroare · poți continua", hint: "Ce era salvat e păstrat; motivul și următoarea acțiune sunt afișate." },
   done: { label: "Rezultat gata", hint: "Rezultatul e verificat și te așteaptă; gata nu înseamnă acceptat." },
   stale: { label: "Depășit", hint: "Ceva s-a schimbat după ce rezultatul a fost făcut; motivul și următoarea acțiune sunt afișate." },
   expired: { label: "Expirat", hint: "Fereastra deciziei a trecut; nimic nu s-a executat. Ceri din nou dacă vrei." },
@@ -84,7 +84,9 @@ export function attentionItems({ inbox = [], desk = [], deliveries = [], runs = 
     if (it.kind === "software_bundle" && String(it.link || "").startsWith("/livrare/")) seen.add(`delivery:${String(it.link).split("/")[2]}`);
     if (it.recordId) seen.add(`desk:${it.recordId}`);
     rows.push({ key, state: "decide", kind: it.kind, title: it.title || INBOX_LABEL[it.kind] || "Decizie", what: INBOX_LABEL[it.kind] || "Decizie",
-      sub: [it.projectName, it.why].filter(Boolean).join(" · "), link: it.link || null, deskRecordId: it.recordId || null, at: it.waitingSince || null, target: it.target || null, opportunityId: it.opportunityId || null, real: it.real !== false });
+      sub: [it.projectName, it.why].filter(Boolean).join(" · "), link: it.link || null, deskRecordId: it.recordId || null, at: it.waitingSince || null, target: it.target || null, opportunityId: it.opportunityId || null,
+      // „sintetic” where the Hub says the row is not about a real project (M15: delivery rows now say it from the project, not a fixed false).
+      synthetic: it.synthetic === true, testProject: it.synthetic !== true && it.real === false });
   }
   for (const r of Array.isArray(desk) ? desk : []) {
     if (!r || !inProject(r.projectId)) continue;

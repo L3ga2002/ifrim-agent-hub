@@ -2,8 +2,11 @@ import { useEffect, useState } from "react";
 import { Inbox, RefreshCw } from "lucide-react";
 import { api, fmt } from "../../api.js";
 import { Chip, Empty, ErrorNotice, Loading, Notice } from "../../components/ui.jsx";
+import { DECISION_KIND } from "../../lib/legaOneScreen.js";
+import { useHub } from "../../store.js";
 
-const KIND = { software_bundle: "Pachet software", mission_decision: "Misiune oprită", delivery: "Livrare", sales_offer: "Ofertă de aprobat" };
+// M15: the same words as the L3ga screen (desk replies, devize and the Hub's claim corrections had their raw kind shown here).
+const KIND = DECISION_KIND;
 
 /**
  * „Deciziile mele” (M11): every result that waits for the owner, one row each — what it is, why it waits, what accepting / rejecting
@@ -13,6 +16,7 @@ export function DecisionInbox({ go }) {
   const [data, setData] = useState(null);
   const [error, setError] = useState(null);
   const load = () => api("/api/decisions/inbox").then(setData, setError);
+  const pendingApprovals = useHub((s) => s.hub?.pendingApprovals || 0);
   useEffect(() => { load(); }, []);
   return (
     <div className="page delivery">
@@ -21,6 +25,9 @@ export function DecisionInbox({ go }) {
         <button className="btn sm ghost" onClick={load}><RefreshCw size={14} />Reîncarcă</button>
       </div>
       <ErrorNotice error={error} />
+      {/* M15: the technical approvals counted on the „Decizii” badge are reachable from here (their list stays in Aprobări). */}
+      {pendingApprovals > 0 && <Notice tone="warn" title={pendingApprovals === 1 ? "O aprobare tehnică te așteaptă" : `${pendingApprovals} aprobări tehnice te așteaptă`}>
+        Sunt cereri ale agenților sau ale Hub-ului (o comandă, un acces), separate de rezultatele de mai jos. <a href="#/approvals">Deschide Aprobări</a></Notice>}
       {!data ? <Loading lines={4} /> : !data.items.length ? <Empty title="Nimic nu așteaptă decizia ta">Când un pachet, o misiune oprită sau o livrare are nevoie de tine, apare aici.</Empty> : (
         <div className="stack">
           {data.items.map((it) => (

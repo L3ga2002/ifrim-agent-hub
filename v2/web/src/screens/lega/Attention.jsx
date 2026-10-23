@@ -41,7 +41,7 @@ export function AttentionPanel({ inbox, sources, projectId, workRequests = [], p
               <strong className="break attention-title">{it.title}</strong>
               <StatePill state={it.state} />
             </div>
-            <span className="row wrap small">{it.kind && DECISION_KIND[it.kind] && <Chip tone="approval">{DECISION_KIND[it.kind]}</Chip>}{it.real === false && <span className="faint">sintetic</span>}{it.at && <span className="faint">{fmt.ago(it.at)}</span>}</span>
+            <span className="row wrap small">{it.kind && DECISION_KIND[it.kind] && <Chip tone="approval">{DECISION_KIND[it.kind]}</Chip>}{it.synthetic && <span className="faint">date sintetice</span>}{it.testProject && <span className="faint">proiect de test</span>}{it.at && <span className="faint">{fmt.ago(it.at)}</span>}</span>
             {it.sub && <span className="faint small break attention-sub">{it.sub}</span>}
             {it.next && <span className="small break">Următoarea acțiune: {it.next}</span>}
             {it.target && <span className="faint small break">v{it.target.version} · SHA <code className="mono" style={{ overflowWrap: "anywhere" }}>{it.target.proposalSha || it.target.sha}</code></span>}
@@ -119,7 +119,7 @@ export function HistoryList({ projectId = null, go, onOpenDesk, compact = false 
       {loading ? <Loading lines={4} /> : rows.length === 0 ? <p className="faint small" style={{ margin: 0 }}>{query ? "Nimic găsit pentru aceste cuvinte." : "Încă nu există rezultate."}</p> : (
         <ul className="history-list">{rows.slice(0, compact ? 30 : 200).map((r) => (
           <li key={r.key}>
-            <time className="faint small" dateTime={r.at || undefined}>{r.at ? fmt.time(r.at) : "—"}</time>
+            <time className="faint small" dateTime={r.at || undefined}>{r.at ? fmt.dateTime(r.at) : "—"}</time>
             <span className="stack" style={{ gap: 2, minWidth: 0 }}><span className="break"><span className="faint small">{r.kind} · </span>{r.title}</span>{r.why && <span className="faint small break">{r.why}</span>}</span>
             <span className="row wrap" style={{ justifyContent: "flex-end" }}>
               {r.meaning ? <MeaningChip meaning={r.meaning} /> : <StatePill state={r.state} />}

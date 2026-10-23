@@ -154,7 +154,7 @@
 .rail-heading { text-transform: none; letter-spacing: 0.02em; font-size: 10px; overflow-wrap: anywhere; }
 @media (max-width: 1280px) {
   .lega-one-side { max-height: 210px; }
-  .attention-item { max-height: 172px; overflow: hidden; }
+  .attention-item { min-width: 260px; }
   .attention-sub { -webkit-line-clamp: 2; }
   .lega-one:not(.is-immersive) .lega-figure .lega-face-canvas { max-height: 64px; max-width: 64px; }
 }

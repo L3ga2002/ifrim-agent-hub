@@ -110,6 +110,9 @@ function Cockpit({ projectId, go }) {
   const [salesDismissed, setSalesDismissed] = usePref("lega.salesDismissed", []);
   // M14: the „Birou intern” record a read opened („Arată devizul DVZ-0001”): shown in the panel, kept across a reload.
   const [deskFocus, setDeskFocus] = usePref("lega.deskFocus", null);
+  // M15: the open activity's tabs (Acum / Istoric și rezultate). Declared here: a plan asked into focus switches to „Acum” in the SAME update
+  // (a card hidden behind the history cannot take the focus, and its focus request would be spent).
+  const [workTab, setWorkTab] = usePref("lega.workTab", "now");
   const inbox = useDecisionsInbox();
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState(null);
@@ -173,8 +176,9 @@ function Cockpit({ projectId, go }) {
   // A focus asked for during this send keeps the card focused: the end of the send does not put the focus back in the composer.
   const planFocusPending = useRef(false);
   const requestFocus = useCallback((kind, id) => {
+    setWorkTab("now");
     setFocusTarget({ kind, id, tick: ++focusSeq.current, at: Date.now() });
-  }, []);
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
   const loadOpsPlan = useCallback(async (id, { focus = false } = {}) => {
     try {
       const p = await api(`/api/ops/plans/${id}`);
@@ -461,7 +465,9 @@ function Cockpit({ projectId, go }) {
   // M15: „Ce te așteaptă” (left), the open activity's header with ONE primary action and the tabs Acum / Istoric (right). Read-only views of
   // the Hub's own lists; the primary action only focuses, scrolls or opens — the decision stays on its own card, in the owner's session.
   const sources = useAttentionSources();
-  const [workTab, setWorkTab] = usePref("lega.workTab", "now");
+  // A plan's confirmation window ends with time alone: the screen re-reads the clock every 20 s (expired plans stop showing as decisions).
+  const [clockTick, setClockTick] = useState(0);
+  useEffect(() => { const timer = setInterval(() => setClockTick((n) => n + 1), 20000); return () => clearInterval(timer); }, []);
   const attention = useMemo(() => attentionItems({ inbox: inbox.data?.items, desk: sources.desk.data?.records, deliveries: sources.deliveries.data?.deliveries, runs: hub?.activeRuns || [], workRequests: c?.workRequests || [] }),
     [inbox.data, sources.desk.data, sources.deliveries.data, hub?.activeRuns, c?.workRequests]);
   const projectName = c?.project?.name || (projects.data?.projects || []).find((p) => p.id === pid)?.name || "";
@@ -470,8 +476,8 @@ function Cockpit({ projectId, go }) {
   const waitingPlans = useMemo(() => [
     ...(plan?.envelope?.status === "PROPOSED" && !(plan.envelope.confirmBy && Date.parse(plan.envelope.confirmBy) <= Date.now())
       ? [{ key: `plan:${plan.envelope.id}`, state: "decide", title: `Plan: ${plan.summary?.headline || "planul propus"}`, sub: "O singură confirmare pentru toți pașii; nimic nu pornește fără ea.", at: null, plan: { kind: "envelope", id: plan.envelope.id } }] : []),
-    ...(opsPlan?.status === "PROPOSED" ? [{ key: `ops:${opsPlan.id}`, state: "decide", title: `Plan: ${opsPlan.title || "operație"}`, sub: "O singură confirmare.", at: null, plan: { kind: "ops", id: opsPlan.id } }] : []),
-  ], [plan?.envelope?.id, plan?.envelope?.status, plan?.summary?.headline, opsPlan?.id, opsPlan?.status, opsPlan?.title]); // eslint-disable-line react-hooks/exhaustive-deps
+    ...(opsPlan?.status === "PROPOSED" && !(opsPlan.confirmBy && Date.parse(opsPlan.confirmBy) <= Date.now()) ? [{ key: `ops:${opsPlan.id}`, state: "decide", title: `Plan: ${opsPlan.title || "operație"}`, sub: "O singură confirmare.", at: null, plan: { kind: "ops", id: opsPlan.id } }] : []),
+  ], [plan?.envelope?.id, plan?.envelope?.status, plan?.summary?.headline, opsPlan?.id, opsPlan?.status, opsPlan?.title, clockTick]); // eslint-disable-line react-hooks/exhaustive-deps
   const openDesk = (recordId) => { setDeskFocus({ id: recordId, at: Date.now() }); setWorkTab("now"); setTimeout(() => document.querySelector(".lega-one section[aria-label='Birou intern']")?.scrollIntoView({ block: "start", behavior: "smooth" }), 60); };
   const onPrimary = (p) => {
     if (!p) return;
@@ -486,7 +492,14 @@ function Cockpit({ projectId, go }) {
   const [typing, setTyping] = useState(false);
   // A plan that arrives, a card asked into focus or a desk record opened by a read always shows the work, never the history behind it.
   useEffect(() => { if (plan?.envelope?.status === "PROPOSED" || opsPlan?.status === "PROPOSED") setWorkTab("now"); }, [plan?.envelope?.id, opsPlan?.id]); // eslint-disable-line react-hooks/exhaustive-deps
-  useEffect(() => { if (focusTarget || deskFocus?.id) setWorkTab("now"); }, [focusTarget?.tick, deskFocus?.id]); // eslint-disable-line react-hooks/exhaustive-deps
+  // A desk record opened NOW (not the one kept from an earlier visit) shows the work; a visit never bounces the owner off the history.
+  const deskAtMount = useRef(deskFocus?.at || null);
+  useEffect(() => { if (focusTarget) setWorkTab("now"); }, [focusTarget?.tick]); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => { if (deskFocus?.at && deskFocus.at !== deskAtMount.current) setWorkTab("now"); }, [deskFocus?.at]); // eslint-disable-line react-hooks/exhaustive-deps
+  // The rearm card is always on screen when it is asked for (Stop All, a blocker's option, a refused resume, the standing banner).
+  useEffect(() => { if (rearmSlot || (gateHint?.kind === "rearm" && owner.data?.policy?.active)) setWorkTab("now"); }, [rearmSlot?.id, rearmSlot?.trigger, gateHint?.kind, owner.data?.policy?.active]); // eslint-disable-line react-hooks/exhaustive-deps
+  // A field disabled while a sentence is sent may never get its blur: the map's dimming ends with the send.
+  useEffect(() => { if (busy) setTyping(false); }, [busy]);
   // The voice panel of the top bar is rendered in this place while the screen is shown (one component, one microphone).
   // A remount (project switch) attaches the new place before or after the old one detaches: only the element that leaves is cleared.
   const dockElRef = useRef(null);
@@ -652,9 +665,16 @@ function Cockpit({ projectId, go }) {
         </section>
         <main className="cockpit-main" aria-label="Activitatea deschisă">
           <ActivityHeader activity={current} onPrimary={onPrimary} />
-          <div className="work-tabs" role="tablist" aria-label="Activitatea">
-            <button type="button" role="tab" id="work-tab-now" aria-selected={workTab !== "history"} aria-controls="work-panel-now" onClick={() => setWorkTab("now")}>Acum</button>
-            <button type="button" role="tab" id="work-tab-history" aria-selected={workTab === "history"} aria-controls="work-panel-history" onClick={() => setWorkTab("history")}>Istoric și rezultate</button>
+          {/* Tabs: one tab stop (the selected one); ← → switch and move the focus. */}
+          <div className="work-tabs" role="tablist" aria-label="Activitatea" onKeyDown={(e) => {
+            if (e.key !== "ArrowLeft" && e.key !== "ArrowRight") return;
+            e.preventDefault();
+            const next = workTab === "history" ? "now" : "history";
+            setWorkTab(next);
+            document.getElementById(next === "history" ? "work-tab-history" : "work-tab-now")?.focus();
+          }}>
+            <button type="button" role="tab" id="work-tab-now" aria-selected={workTab !== "history"} tabIndex={workTab !== "history" ? 0 : -1} aria-controls="work-panel-now" onClick={() => setWorkTab("now")}>Acum</button>
+            <button type="button" role="tab" id="work-tab-history" aria-selected={workTab === "history"} tabIndex={workTab === "history" ? 0 : -1} aria-controls={workTab === "history" ? "work-panel-history" : undefined} onClick={() => setWorkTab("history")}>Istoric și rezultate</button>
           </div>
           {workTab === "history" && <div id="work-panel-history" role="tabpanel" aria-labelledby="work-tab-history"><HistoryList projectId={pid || null} go={go} onOpenDesk={openDesk} compact /></div>}
           {/* The work stays mounted while the history is shown (a plan, the rearm card and the desk keep their state and focus rules). */}

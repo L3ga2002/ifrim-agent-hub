@@ -173,7 +173,7 @@ export function DecisionCard({ plan, owner, onConfirmed, onCancel, onReplan, det
         )}
         {/* M15: the same four lines as every decision (object, version, action, consequence) and the exact target in full, before the click. */}
         {awaiting && <DecisionFacts object={`Planul pentru ${env.body.missions.map((m) => `„${m.title}”`).join(", ")}`}
-          version={`${env.body.missions.map((m) => `spec v${m.specVersion}`).join(", ")} · propus ${fmt.time(env.createdAt || current?.createdAt)} · confirmare până la ${fmt.time(env.confirmBy)}`}
+          version={`${env.body.missions.map((m) => `spec v${m.specVersion}`).join(", ")} · propus ${fmt.dateTime(env.issuedAt || env.createdAt || current?.issuedAt)} · confirmare până la ${fmt.dateTime(env.confirmBy)}`}
           action="„Da, execută planul”: o singură confirmare pentru toți pașii de mai sus" consequence={summary.steps} never={summary.never} />}
         {awaiting && <TargetDetails items={[{ label: "ID", value: env.id }, { label: "SHA", value: env.envelopeHash }]} />}
         {awaiting && (

@@ -76,8 +76,10 @@ function StatusChips() {
   const plans = (hub.liveScopes || []).filter((s) => s.scoped !== false).length;
   const plansText = plans ? ` + ${plans} ${plans === 1 ? "plan activ" : "planuri active"}` : "";
   // M15: one sentence for the Hub's state; the mode, the gate and the stream are details on request (they stay one click away).
-  const safe = hub.mode === "BUILD_SAFE" && gate === "open";
-  const summary = legaOn ? "Lega activă" : safe ? (plans ? `În siguranță · ${plans} ${plans === 1 ? "plan activ" : "planuri active"}` : "Hub-ul e în siguranță") : gate !== "open" ? "Poarta e suspendată" : `Mod ${hub.mode}`;
+  // The mode is always said when it is not BUILD_SAFE; a suspended gate and a running Lega are added, never hiding the mode.
+  const safe = hub.mode === "BUILD_SAFE";
+  const summary = [safe ? (plans ? `În siguranță · ${plans} ${plans === 1 ? "plan activ" : "planuri active"}` : "Hub-ul e în siguranță") : `Mod ${hub.mode}`,
+    gate !== "open" ? "poarta suspendată" : "", legaOn ? "Lega activă" : ""].filter(Boolean).join(" · ");
   return (
     <details className="hub-state">
       <summary className={`chip ${safe ? "ok" : "warn"}`} title="Starea Hub-ului: modul, poarta de execuție și fluxul de evenimente"><CircleDot aria-hidden="true" />{summary}</summary>

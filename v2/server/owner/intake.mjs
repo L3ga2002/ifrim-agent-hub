@@ -1201,7 +1201,11 @@ export function createIntake(hub) {
         r.packages = PACKAGE_KINDS.map((k) => hub.packages.pending(k)).filter(Boolean).map((p) => ({ id: p.id, kind: p.kind, title: p.title, blockedBy: p.blockedBy || [] }));
         // M15: the results waiting for the owner („Deciziile mele”: a package, a delivery, an offer, a deviz, a reply) are decisions too — the
         // answer said „Nicio decizie în așteptare” while the screen listed five. Read-only, the same list as GET /api/decisions/inbox.
-        r.inbox = decisionsInbox(hub).items.map((it) => ({ kind: it.kind, title: it.title, link: it.link || null })); }
+        // Like the route, never on the agent / cli channels (refuseDeclared); a failure of that list never takes the answer down.
+        if (!["agent", "cli"].includes(ctx.channel)) {
+          try { r.inbox = decisionsInbox(hub).items.map((it) => ({ kind: it.kind, title: it.title, link: it.link || null })); }
+          catch (error) { r.inbox = []; r.inboxError = true; console.warn(`[intake] decisions inbox: ${error?.message || error}`); }
+        } }
       // ---------- M09: Content Studio (navigate, show, PROPOSE a correction; never apply, render, capture or publish) ----------
       else if (step.intent === "studio_open") {
         const { matches } = findContentProject(step.args.clipRef);

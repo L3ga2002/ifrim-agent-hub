@@ -162,7 +162,9 @@ test("M15-UI-01 source: the L3ga screen keeps its contracts (one composer, the i
   assert.ok(bar.indexOf("<StopAllButton compact />") < bar.indexOf('interrupt("mute")'), "Stop All first");
   for (const k of ["mute", "pause", "stop_worker", "freeze", "takeover"]) assert.ok(bar.includes(`interrupt("${k}"`), k);
   assert.equal((lega.match(/aria-label="Mesaj pentru Lega"/g) || []).length, 1, "one composer");
-  assert.match(lega, /if \(focusTarget \|\| deskFocus\?\.id\) setWorkTab\("now"\);/, "a plan or a record asked into focus is never hidden behind the history");
+  assert.match(lega, /const requestFocus = useCallback\(\(kind, id\) => \{\n    setWorkTab\("now"\);/, "a plan asked into focus switches to „Acum” in the same update (never focused while hidden)");
+  assert.match(lega, /if \(rearmSlot \|\| \(gateHint\?\.kind === "rearm"/, "the rearm card is never hidden behind the history");
+  assert.match(lega, /if \(deskFocus\?\.at && deskFocus\.at !== deskAtMount\.current\) setWorkTab\("now"\);/, "only a record opened now shows the work (a visit is never bounced off the history)");
   // The decisions show the exact target in full before the click (envelope, ops plan, Factory bundle, Delivery Room rows, Sales content).
   assert.match(source("web/src/screens/lega/cards.jsx"), /<TargetDetails items=\{\[\{ label: "ID", value: env\.id \}, \{ label: "SHA", value: env\.envelopeHash \}\]\} \/>/);
   assert.match(source("web/src/screens/lega/OpsPlanCard.jsx"), /\{ label: "SHA", value: plan\.hash \}/);
