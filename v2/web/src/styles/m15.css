@@ -161,3 +161,11 @@
 @media (max-width: 900px) { .lega-one-side { max-height: none; } .attention-item { max-height: none; } }
 /* The local development profile badge never covers the phone navigation or the interruptions. */
 @media (max-width: 767px) { .dev-profile-badge { bottom: calc(var(--bottom-h) + var(--lega-bar-h, 0px) + 18px) !important; } }
+/* 901–1280 px: the strip of what waits stays short and the figure small, so the conversation keeps its height. */
+@media (min-width: 901px) and (max-width: 1280px) {
+  .lega-one-side { max-height: 178px; }
+  .attention-sub { -webkit-line-clamp: 1; }
+  .lega-one:not(.is-immersive) .lega-figure .lega-face-canvas { max-height: 48px; max-width: 48px; }
+  .lega-one:not(.is-immersive) .lega-figure .face-box .core-svg { max-height: 48px; }
+  .lega-figure { padding: 4px 8px; }
+}
