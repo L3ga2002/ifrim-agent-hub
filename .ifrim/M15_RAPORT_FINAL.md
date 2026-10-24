@@ -107,3 +107,25 @@ Rezultatele sesiunii se adaugă aici (§9).
 
 ## 9. Sesiunea de acceptare
 (se completează după sesiunea ta: deciziile D1–D7 separat de intervențiile tehnice, rezultatele reale A–D, fișierele și livrările)
+
+## 10. Corecții finale 2.18.1-m15 (2026-10-24)
+
+Ce se schimbă pentru tine:
+- O lucrare software care scrie cod, își scrie testul, e verificată sau reparată apare „În lucru”, nu „Pregătit”. Pauza apare „În pauză”, oprirea în curs „Se oprește”, blocajul „Lipsește ceva”, iar specificația sau pachetul care te așteaptă apar „Decizia ta”.
+- O stare pe care interfața nu o cunoaște apare „Stare necunoscută”, împreună cu valoarea primită de la Hub. Nu mai apare ca „Pregătit”.
+- Dacă legătura cade sau Hub-ul răspunde cu o eroare internă, L3ga spune că nu știe dacă cererea a fost executată. Recitește singur starea salvată și îți oferă „Verifică starea salvată”, nu „Scrie din nou cererea”.
+- Mesajul „nu s-a schimbat nimic” apare doar când e dovedit: cererea nu a plecat din pagină sau Hub-ul a refuzat-o înainte de execuție.
+
+Autori și verificări:
+- Codul `1832977` a fost scris de Codex `gpt-6.1-sol` · medium, în 3 runde. Review-ul l-au făcut două sesiuni Claude separate, doar citire: primul a găsit un defect blocant (o ofertă contactată apărea „Decizia ta”) și 7 observații, al doilea nimic blocant. Toate au fost tratate.
+- Teste pe codul final:
+  - 18 fișiere afectate, inclusiv în browser: 152/152;
+  - poarta V2 completă: 2637/2638, 0 eșecuri, 1 omis (T25);
+  - V1 nu s-a schimbat față de `a1d427f`, unde a trecut 552/553.
+- Rulările anterioare rămân separate: `a1d427f` (V2 2620/2624, 3 eșecuri = defectul reparat) și re-rularea țintită 128/128 pe `6eb54e7`.
+
+Sesiunea reală, până acum:
+- D1 (planul) confirmată de tine pe 2026-10-23, la 23:41.
+- Codex real a scris corectura, iar Claude real a făcut review-ul: PASS. QA, preview și E2E pe mobil și desktop au trecut.
+- Livrarea e gata, cu clip 16:9, variantă verticală și rezumat.
+- D2–D7 și citirile Birou intern sunt încă ale tale.

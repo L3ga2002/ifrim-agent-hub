@@ -1,5 +1,21 @@
 # Open Issues - Ifrim Agent Hub
 
+## 2026-10-24 — M15 corecții finale (code `2.18.1-m15`, UI only, no migration, schema 15, API contract 20; detail: `.ifrim/STAGE_2026-10-24_M15_FINAL.md`)
+
+This section takes precedence over the next ones where they overlap. Code `1832977` in the dev clone C:\Users\mihai\m15-stage (branch
+`claude/project-thread-q6x9qp`, base `6fbb104`), authored by Codex (3 rounds), reviewed by two independent read-only Claude sessions.
+Gate on `1832977` (clone m15-gate): V2 2637/2638 0 fail (T25 skip); V1 unchanged since `a1d427f` (552/553 there).
+
+Open:
+1. Release = `C:\Users\mihai\m15-evidence\release-2.18.1\owner-release.cmd` (backup, managed upgrade 2.18.0 → 2.18.1, GET verify, push),
+   run by the agent if the session allows it, else by the owner.
+2. The integrated session: D1 done 2026-10-23 (real Codex gpt-6.1-sol writer + Claude sonnet reviewer, PASS, DELIVERY_READY, delivery
+   `dlv_mvlfr937_2c5f367d16` READY); D2–D5 (software, clip 16:9, vertical, summary), D6–D7 (a new synthetic offer, internal approval) and
+   the Birou intern reads are the owner's, in L3ga. M15 and M14 acceptance: only on the owner's explicit decision.
+3. Minor, non-blocking: the activity header shows „message. ” with a trailing space for a screen's own error without a status (cosmetic);
+   the recheck after a failed mutation proves only that the Hub answers (`/api/state`), then shows the Hub's lists; the clip's QA WARNs
+   (technical / rights) stay visible for the owner's creative decision.
+
 ## 2026-10-23 — M15 experiența L3ga unificată (code `2.18.0-m15`, no migration, schema 15, API contract 20; detail: `.ifrim/STAGE_2026-10-23_M15.md`, report `.ifrim/M15_RAPORT_FINAL.md`)
 
 This section takes precedence over the next ones where they overlap. Built in the dev clone C:\Users\mihai\m15-stage (branch
@@ -62,7 +78,7 @@ Open:
 ## 2026-10-19 — catalog minim și o ofertă Sales utilă (code `2.15.5-m12`, no migration; detail: `.ifrim/STAGE_2026-10-19_CATALOG_OFERTA.md`)
 
 This section takes precedence over the next ones where they overlap. Two defects blocked the requested flow and are fixed in `db7cc0c` + `a20d77f`
-(dev clone C:Usersmihaihub-cat): a saved catalog service never reached the M12 offer and never made the READY preparation continuable;
+(dev clone C:\Users\mihai\hub-cat): a saved catalog service never reached the M12 offer and never made the READY preparation continuable;
 the service editor had no materials field and an edit dropped them. Tests: R-CAT-01..03 (3/3 FAIL before, PASS after) + 42 affected files 412/412.
 
 Open:
@@ -319,7 +335,7 @@ Open:
 
 This section takes precedence over every older one where they overlap. Baseline: `v2-milestone-01` = `c1db213` (+ this docs commit);
 2.14.13 `53132ed` + 2.14.14 `6a9d174` + evidence `854e3fc` over `53fe75e` (2.14.12) on `claude/project-thread-5c9bak`, fetched from the
-isolated clone `C:Usersmihaihub-rc` (outside AppData), not merged (the logon autostart loads the working tree).
+isolated clone `C:\Users\mihai\hub-rc` (outside AppData), not merged (the logon autostart loads the working tree).
 
 Closed (in code, not released): items 1 (content part) and 3 of the section below — R-DATASET (Hub-owned experiment contract for the
 booking-demo fixture, sha-bound provenance, step-0 hold kind `dataset`), R-VALUES / R-IDS / historical positive control in the briefs and the
