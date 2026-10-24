@@ -131,7 +131,7 @@ După sesiune, citire GET: `verify.mjs` VERIFY OK (2.18.1-m15, contract 20, sche
 
 Observații mărunte, neblocante: răspunsul pentru deviz spune „Devizul DVZ-0001 (SINTETIC): pregătită” (acord de gen); numele firmei sintetice generate („Lăstărel Iepuraș SRL”) amintește de Lăstărel, deși e o ofertă nouă.
 
-**Acceptarea M15 și acceptarea M14 rămân deciziile tale explicite** și se consemnează separat.
+**M15 acceptat de tine** pe 2026-10-24 la 23:25 („accept m15”). Acceptarea M14 nu a fost declarată și rămâne separată.
 
 ## 10. Corecții finale 2.18.1-m15 (2026-10-24)
 
