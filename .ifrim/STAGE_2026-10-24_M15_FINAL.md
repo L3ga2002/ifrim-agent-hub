@@ -63,6 +63,5 @@ de deasupra; starea live → fetch din clonă (SHA exact, arbore executabil = CO
 deciziilor rezervate, OPS/SUP/DVZ READY, §25, oferta și dosarul Lăstărel neschimbate, markerii UI noi) → push fără force. Punct de
 revenire: `6fbb104` (`git revert 6fbb104..1832977` + `upgrade.mjs --apply`).
 
-## 5. Sesiunea integrată (de completat)
-D1 făcută (2026-10-23). D2–D5 (livrarea „M15 Demo Livrare”), D6–D7 (ofertă sintetică nouă) și citirile Birou intern rămân ale proprietarului,
-în L3ga (`m15-evidence\PASII_PROPRIETAR.md`). Acceptarea M15 și acceptarea M14 se consemnează separat, numai la decizia lui explicită.
+## 5. Sesiunea integrată (făcută)
+D1 2026-10-23 23:41; D2–D5 2026-10-24 23:02; citirile Birou intern 23:03; D6 23:09; D7 23:16 — toate în sesiunea proprietarului, verificate prin GET (detaliu: `M15_RAPORT_FINAL.md` §9). Push `c64593f` de proprietar (`push.cmd`). Acceptarea M15 și acceptarea M14 rămân deciziile lui explicite.

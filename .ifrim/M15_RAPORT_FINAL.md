@@ -105,8 +105,33 @@ Orele sunt în UTC; ora României = UTC+3.
 
 Rezultatele sesiunii se adaugă aici (§9).
 
-## 9. Sesiunea de acceptare
-(se completează după sesiunea ta: deciziile D1–D7 separat de intervențiile tehnice, rezultatele reale A–D, fișierele și livrările)
+## 9. Sesiunea de acceptare (rulări reale, live)
+
+Toate deciziile sunt ale tale, luate în sesiunea ta de proprietar (`osn_mvlfo3hx_8448c7a513`, profilul local de dezvoltare). Orele sunt ale României.
+
+| Decizie | Când | Ce s-a decis | Rezultat verificat prin citire |
+|---|---|---|---|
+| D1 | 23.10, 23:41 | Planul pentru „M15 Demo Livrare” (o confirmare) | Codex `gpt-6.1-sol` · medium a scris corectura (`run_mvlfvjkh_f789d4983a`); baseline FAIL, verificări PASS; Claude `sonnet` · medium review doar-citire PASS (`run_mvlfy0da_9efa939fbb`); QA 6/6, preview, E2E AC-6 (390 px) și AC-7 (1280×800) PASS; misiunea `mis_mvlfr8xr_f2968d4432` DELIVERY_READY la 23:48; livrarea `dlv_mvlfr937_2c5f367d16` cu capturi, clip 16:9, vertical și rezumat |
+| D2 | 24.10, 23:02 | „Accept local” pe `bnd_mvlfzq1v_c9c7ec2a96` (sha `9cc538d3…83f4`) | pachet OWNER_ACCEPTED, misiune ACCEPTED; nimic comis sau publicat |
+| D3 | 24.10, 23:02 | Aprobarea creativă a clipului 16:9 | APPROVED (avertizările QA tehnic / drepturi au rămas vizibile) |
+| D4 | 24.10, 23:02 | Aprobarea creativă a variantei verticale | APPROVED |
+| D5 | 24.10, 23:02 | Rezumatul „gata de prezentare” | READY; publicarea OFF |
+| D6 | 24.10, 23:09 | Cardul de pregătire a ofertei sintetice (salon de înfrumusețare) | planul `opp_mvmu1s6t_2c66de95ad` DONE (4/4 pași); oferta `spr_mvmu1x5e_6bb63a2197` v1 la revizia ta |
+| D7 | 24.10, 23:16 | „Aprob intern” pe `spr_mvmu1x5e_6bb63a2197` (sha `fbef6372…de09`) | APPROVED_INTERNAL; dosarul rev. 1 READY (Word + Markdown în `Videos\Ifrim Studio\Exporturi\vanzari\…`), ciorna de contact `sdr_mvmu9xl2_9c99b3cddc` DRAFT, 0 contacte, outreach DISABLED, nicio misiune Engineering nouă |
+
+Citiri D (23:03): „Arată dosarul de pornire OPS-0001”, „Arată cazul de suport SUP-0001”, „Unde e devizul?” s-au deschis în panoul Birou intern; nimic creat (tot 3 înregistrări, toate READY).
+
+Intervenții tehnice (separat de decizii):
+- 2026-10-23 seara: tu ai rulat comanda de instalare 2.18.0-m15.
+- 2026-10-24 22:28–22:29: Claude a instalat 2.18.1-m15 (backup verificat `bkp_mvmsk7k5_859bf1d048`, fast-forward, upgrade gestionat `upg_mvmslprc`, VERIFY OK, boot `boot_mvmsluum_a50caf329a`).
+- 2026-10-24, înainte de 23:04: tu ai rulat `push.cmd` (push-ul e refuzat sesiunii de setările proiectului); GitHub `v2-milestone-01` = `claude/project-thread-q6x9qp` = `c64593f`.
+- Ți s-au cerut doar deciziile D1–D7 și cele două comenzi; nicio alegere de granturi, agenți sau moduri.
+
+După sesiune, citire GET: `verify.mjs` VERIFY OK (2.18.1-m15, contract 20, schema 15, BUILD_SAFE; §25, Lăstărel și Birou intern neschimbate).
+
+Observații mărunte, neblocante: răspunsul pentru deviz spune „Devizul DVZ-0001 (SINTETIC): pregătită” (acord de gen); numele firmei sintetice generate („Lăstărel Iepuraș SRL”) amintește de Lăstărel, deși e o ofertă nouă.
+
+**Acceptarea M15 și acceptarea M14 rămân deciziile tale explicite** și se consemnează separat.
 
 ## 10. Corecții finale 2.18.1-m15 (2026-10-24)
 

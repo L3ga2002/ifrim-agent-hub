@@ -7,11 +7,8 @@ This section takes precedence over the next ones where they overlap. Code `18329
 Gate on `1832977` (clone m15-gate): V2 2637/2638 0 fail (T25 skip); V1 unchanged since `a1d427f` (552/553 there).
 
 Open:
-1. Release = `C:\Users\mihai\m15-evidence\release-2.18.1\owner-release.cmd` (backup, managed upgrade 2.18.0 → 2.18.1, GET verify, push),
-   run by the agent if the session allows it, else by the owner.
-2. The integrated session: D1 done 2026-10-23 (real Codex gpt-6.1-sol writer + Claude sonnet reviewer, PASS, DELIVERY_READY, delivery
-   `dlv_mvlfr937_2c5f367d16` READY); D2–D5 (software, clip 16:9, vertical, summary), D6–D7 (a new synthetic offer, internal approval) and
-   the Birou intern reads are the owner's, in L3ga. M15 and M14 acceptance: only on the owner's explicit decision.
+1. Done: 2.18.1-m15 LIVE 2026-10-24 19:29 UTC (agent-run verified backup + managed upgrade, VERIFY OK); push `c64593f` by the owner (`push.cmd`).
+2. Done: the integrated session D1–D7 + the Birou intern reads (real Codex + Claude; report §9). Open: the owner's explicit M15 acceptance and, separately, M14's.
 3. Minor, non-blocking: the activity header shows „message. ” with a trailing space for a screen's own error without a status (cosmetic);
    the recheck after a failed mutation proves only that the Hub answers (`/api/state`), then shows the Hub's lists; the clip's QA WARNs
    (technical / rights) stay visible for the owner's creative decision.
