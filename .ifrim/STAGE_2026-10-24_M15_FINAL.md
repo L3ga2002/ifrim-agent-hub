@@ -67,4 +67,4 @@ revenire: `6fbb104` (`git revert 6fbb104..1832977` + `upgrade.mjs --apply`).
 D1 2026-10-23 23:41; D2–D5 2026-10-24 23:02; citirile Birou intern 23:03; D6 23:09; D7 23:16 — toate în sesiunea proprietarului, verificate prin GET (detaliu: `M15_RAPORT_FINAL.md` §9). Push `c64593f` de proprietar (`push.cmd`). Acceptarea M15 și acceptarea M14 rămân deciziile lui explicite.
 
 ## 6. Acceptare
-**M15 acceptat de proprietar** pe 2026-10-24 la 23:25 ora României („accept m15” în thread). Acceptarea M14 nu a fost declarată și rămâne separată.
+**M15 acceptat de proprietar** pe 2026-10-24 la 23:25 ora României („accept m15” în thread). **M14 acceptat de proprietar**, separat, pe 2026-10-24 la 23:26 ora României („accept si m14” în thread).

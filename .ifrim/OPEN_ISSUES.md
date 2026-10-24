@@ -8,7 +8,7 @@ Gate on `1832977` (clone m15-gate): V2 2637/2638 0 fail (T25 skip); V1 unchanged
 
 Open:
 1. Done: 2.18.1-m15 LIVE 2026-10-24 19:29 UTC (agent-run verified backup + managed upgrade, VERIFY OK); push `c64593f` by the owner (`push.cmd`).
-2. Done: the integrated session D1–D7 + the Birou intern reads (real Codex + Claude; report §9). M15 ACCEPTED by the owner 2026-10-24 20:25 UTC („accept m15” in the thread). Open: M14 acceptance, separately (not declared).
+2. Done: the integrated session D1–D7 + the Birou intern reads (real Codex + Claude; report §9). M15 ACCEPTED by the owner 2026-10-24 20:25 UTC („accept m15” in the thread). M14 ACCEPTED by the owner 2026-10-24 20:26 UTC („accept si m14”), recorded separately from M15.
 3. Minor, non-blocking: the activity header shows „message. ” with a trailing space for a screen's own error without a status (cosmetic);
    the recheck after a failed mutation proves only that the Hub answers (`/api/state`), then shows the Hub's lists; the clip's QA WARNs
    (technical / rights) stay visible for the owner's creative decision.

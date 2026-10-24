@@ -76,3 +76,6 @@ notificările / bara laterală, ștergerea conversației la blocare, mai multe f
 - [ ] După F5 conversația e tot acolo; Stop All e vizibil în toate modurile.
 - [ ] Decizi separat: retragerea V1, OpenClaw, profilul local.
 Acceptarea e a ta; nu o declar eu și nu adaug alte milestone-uri.
+
+## Acceptare
+**M14 acceptat de proprietar** pe 2026-10-24 la 23:26 ora României („accept si m14”), separat de M15 (acceptat la 23:25). Live la acel moment: 2.18.1-m15.
