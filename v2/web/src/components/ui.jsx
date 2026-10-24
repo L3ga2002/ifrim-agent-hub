@@ -1,3 +1,4 @@
+import { errorContinuation } from "../lib/errorOutcome.js";
 import { useEffect, useRef } from "react";
 import { AlertTriangle, CheckCircle2, CircleDashed, Info, Loader2, XCircle, PauseCircle, Clock, ShieldAlert, X } from "lucide-react";
 
@@ -55,17 +56,8 @@ export function Notice({ tone = "info", children, title }) {
   return <div className={`notice ${tone}`} role={tone === "error" ? "alert" : "status"}><Icon size={16} aria-hidden="true" /><div>{title && <strong>{title}. </strong>}{children}</div></div>;
 }
 
-/**
- * M15: what an error kept and how to continue, from the HTTP answer only: a refusal (4xx) changed nothing; a lost connection or a Hub error
- * (5xx) leaves what was saved, but a request in flight may or may not have arrived — the page's state, read again, says which.
- */
-export function errorContinuation(error) {
-  const status = Number(error?.status);
-  if (status === 0) return "Ce era salvat rămâne. Dacă trimiteai ceva, uită-te la starea afișată (se reîncarcă la reconectare) înainte să repeți.";
-  if (status >= 400 && status < 500) return "Hub-ul a refuzat cererea: nu s-a schimbat nimic. Poți corecta și repeta.";
-  if (status >= 500) return "Datele salvate rămân. Verifică starea afișată înainte să repeți cererea.";
-  return "";
-}
+// M15: keep the shared continuation available to every notice and caller.
+export { errorContinuation } from "../lib/errorOutcome.js";
 
 export function ErrorNotice({ error, onRetry }) {
   if (!error) return null;

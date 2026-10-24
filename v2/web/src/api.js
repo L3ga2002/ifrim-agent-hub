@@ -64,20 +64,24 @@ export async function ensureToken() {
   return tokenPromise;
 }
 
-function staleRefusal(path, body = null) {
+function staleRefusal(path, body = null, method = "POST") {
   if (isFailsafePath(path, body)) return null;
   const state = contractState();
   if (state !== "ui_older" && state !== "server_older") return null;
   const message = state === "ui_older"
     ? `Interfața (${UI_BUILD.version}) e mai veche decât serverul (${server.version}): reîncarcă pagina.`
     : `Serverul rulează ${server.version}, interfața e ${UI_BUILD.version}: repornește Hub-ul (v2\\scripts\\restart.ps1).`;
-  return new ApiError(409, { error: { category: "conflict", code: "UI_STALE", message, details: { ui: UI_BUILD, server } } });
+  const error = new ApiError(409, { error: { category: "conflict", code: "UI_STALE", message, details: { ui: UI_BUILD, server } } });
+  error.method = method;
+  error.notSent = true;
+  return error;
 }
 
 export class ApiError extends Error {
-  constructor(status, body) {
+  constructor(status, body, method) {
     super(body?.error?.message || `HTTP ${status}`);
     this.status = status;
+    this.method = method;
     this.category = body?.error?.category || "internal";
     this.code = body?.error?.code || null;
     this.details = body?.error?.details;
@@ -90,7 +94,7 @@ export async function api(path, { method = "GET", body, signal } = {}) {
     headers["X-Hub-Token"] = await ensureToken();
     headers["Content-Type"] = "application/json";
     if (UI_BUILD.contract !== null) headers["X-Hub-UI-Contract"] = String(UI_BUILD.contract);
-    const stale = staleRefusal(path, body);
+    const stale = staleRefusal(path, body, method);
     if (stale) throw stale;
   }
   let res;
@@ -98,12 +102,12 @@ export async function api(path, { method = "GET", body, signal } = {}) {
     res = await fetch(path, { method, headers, body: body === undefined ? undefined : JSON.stringify(body), signal, credentials: "same-origin" });
   } catch (error) {
     if (error.name === "AbortError") throw error;
-    throw new ApiError(0, { error: { message: "Hub server is not reachable (offline)", category: "transport" } });
+    throw new ApiError(0, { error: { message: "Hub server is not reachable (offline)", category: "transport" } }, method);
   }
   if (res.status === 403 && method !== "GET") {
     const body403 = await res.json().catch(() => null);
     if (/session token/i.test(body403?.error?.message || "")) { token = null; return api(path, { method, body, signal }); }
-    throw new ApiError(403, body403);
+    throw new ApiError(403, body403, method);
   }
   const contract = Number(res.headers.get("x-hub-contract"));
   if (Number.isFinite(contract) && contract > 0 && server && contract !== server.apiContract) noteServer({ ...server, apiContract: contract, version: res.headers.get("x-hub-version") || server.version });
@@ -111,7 +115,7 @@ export async function api(path, { method = "GET", body, signal } = {}) {
   const payload = type.includes("json") ? await res.json().catch(() => null) : await res.text();
   if (!res.ok) {
     if (payload?.error?.code === "UI_STALE") noteServer({ ...server, apiContract: payload.error.details?.serverContract, version: payload.error.details?.serverVersion });
-    throw new ApiError(res.status, payload);
+    throw new ApiError(res.status, payload, method);
   }
   return payload;
 }
@@ -121,18 +125,19 @@ export async function api(path, { method = "GET", body, signal } = {}) {
  * api(); the owner's session cookie goes with it (same origin). Extra headers are plain ASCII (e.g. X-Voice-Flags JSON).
  */
 export async function apiRaw(path, bytes, { headers = {}, signal } = {}) {
-  const stale = staleRefusal(path);
+  const method = "POST";
+  const stale = staleRefusal(path, null, method);
   if (stale) throw stale;
   const send = async () => fetch(path, { method: "POST", body: bytes, signal, credentials: "same-origin",
     headers: { "Content-Type": "application/octet-stream", "X-Hub-Token": await ensureToken(), ...(UI_BUILD.contract !== null ? { "X-Hub-UI-Contract": String(UI_BUILD.contract) } : {}), ...headers } });
   let res;
-  try { res = await send(); } catch (error) { if (error.name === "AbortError") throw error; throw new ApiError(0, { error: { message: "Hub server is not reachable (offline)", category: "transport" } }); }
+  try { res = await send(); } catch (error) { if (error.name === "AbortError") throw error; throw new ApiError(0, { error: { message: "Hub server is not reachable (offline)", category: "transport" } }, method); }
   if (res.status === 403) {
     const body = await res.clone().json().catch(() => null);
     if (/session token/i.test(body?.error?.message || "")) { token = null; res = await send(); }
   }
   const payload = await res.json().catch(() => null);
-  if (!res.ok) throw new ApiError(res.status, payload);
+  if (!res.ok) throw new ApiError(res.status, payload, method);
   return payload;
 }
 
@@ -233,9 +238,9 @@ export function uploadWithProgress(path, body, onProgress) {
     xhr.upload.onprogress = (e) => { if (e.lengthComputable) onProgress?.(e.loaded / e.total); };
     xhr.onload = () => {
       let data = null; try { data = JSON.parse(xhr.responseText); } catch { /* not json */ }
-      if (xhr.status >= 200 && xhr.status < 300) resolve(data); else reject(new ApiError(xhr.status, data));
+      if (xhr.status >= 200 && xhr.status < 300) resolve(data); else reject(new ApiError(xhr.status, data, "POST"));
     };
-    xhr.onerror = () => reject(new ApiError(0, { error: { message: "Hub server is not reachable (offline)", category: "transport" } }));
+    xhr.onerror = () => reject(new ApiError(0, { error: { message: "Hub server is not reachable (offline)", category: "transport" } }, "POST"));
     xhr.onabort = () => reject(Object.assign(new Error("Încărcare anulată"), { name: "AbortError" }));
     xhr.send(JSON.stringify(body));
   }));

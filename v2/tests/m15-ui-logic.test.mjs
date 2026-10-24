@@ -15,7 +15,7 @@ const source = (rel) => fs.readFileSync(path.join(here, "..", rel), "utf8");
 const SHA = "a".repeat(64);
 
 test("M15-VOC-01 eight work states, each with its own word; the meanings of decisions are separate and never a work state", () => {
-  assert.deepEqual(STATE_KEYS, ["ready", "run", "decide", "block", "error", "done", "stale", "expired", "closed"]);
+  assert.deepEqual(STATE_KEYS, ["ready", "run", "decide", "block", "error", "done", "stale", "expired", "paused", "stopping", "unknown", "closed"]);
   const labels = STATE_KEYS.map((k) => STATES[k].label);
   assert.equal(new Set(labels).size, labels.length, "one word per state");
   for (const k of STATE_KEYS) assert.ok(STATES[k].hint.length > 20, k);
@@ -28,8 +28,8 @@ test("M15-VOC-01 eight work states, each with its own word; the meanings of deci
   assert.equal(stateOf("mission", "DELIVERY_READY"), "decide");
   assert.equal(stateOf("envelope", "PROPOSED"), "decide");
   assert.equal(stateOf("run", "RUNNING"), "run");
-  assert.equal(stateOf("x", ""), "ready");
-  assert.equal(stateOf("x", "SOMETHING_NEW"), "ready", "an unknown status is never shown as a result");
+  assert.equal(stateOf("x", ""), "unknown");
+  assert.equal(stateOf("x", "SOMETHING_NEW"), "unknown", "an unknown status is never shown as a result");
   assert.equal(meaningOf("proposal", "APPROVED_INTERNAL"), "approved_internal");
   assert.equal(meaningOf("opportunity", "WON"), "client_accepted");
   assert.equal(meaningOf("bundle", "OWNER_ACCEPTED"), "result_accepted");
@@ -80,8 +80,11 @@ test("M15-ACT-01 the open activity: ONE primary action, from real data only, in 
   assert.match(expired.sub, /nimic nu a pornit/);
   assert.equal(currentActivity({ opsPlan: { id: "op_1", status: "PROPOSED", title: "Captură" } }).primary.kind, "focus-ops");
   const err = currentActivity({ error: { message: "Proiect necunoscut" } });
-  assert.equal(err.state, "error");
-  assert.match(err.sub, /Ce era salvat a rămas neschimbat/);
+  assert.equal(err.state, "unknown");
+  assert.equal(err.primary.kind, "recheck");
+  assert.doesNotMatch(err.sub, /Ce era salvat a rămas neschimbat/);
+  assert.doesNotMatch(err.sub, /nu s-a schimbat nimic|Verifică starea salvată înainte să repeți/);
+  assert.notEqual(err.primary.label, "Scrie din nou cererea");
   assert.equal(currentActivity({ busy: true }).primary, null, "while the Hub only reads, no button");
   assert.equal(currentActivity({ workRequests: [{ id: "w", reason: "Poarta" }] }).state, "block");
   const run = currentActivity({ runs: [{ provider: "codex", phase: "streaming", conversationId: "conv_1" }, { provider: "claude" }] });
@@ -177,12 +180,11 @@ test("M15-UI-01 source: the L3ga screen keeps its contracts (one composer, the i
 });
 
 test("M15-ERR-01 an error says what was kept and how to continue, from the HTTP answer only", async () => {
-  const ui = source("web/src/components/ui.jsx");
-  const fn = ui.slice(ui.indexOf("export function errorContinuation"), ui.indexOf("export function ErrorNotice"));
-  const errorContinuation = new Function(`${fn.replace("export function", "return function").replace(/^\/\*\*[\s\S]*?\*\/\s*/, "")}`)();
-  assert.match(errorContinuation({ status: 409 }), /nu s-a schimbat nimic/);
-  assert.match(errorContinuation({ status: 0 }), /Ce era salvat rămâne/);
-  assert.match(errorContinuation({ status: 503 }), /Datele salvate rămân/);
+  const { errorContinuation } = await import("../web/src/lib/errorOutcome.js");
+  assert.doesNotMatch(errorContinuation({ status: 409 }), /nu s-a schimbat nimic/);
+  assert.match(errorContinuation({ status: 409 }), /Verifică starea salvată/);
+  assert.match(errorContinuation({ status: 0 }), /Legătura cu Hub-ul s-a întrerupt/);
+  assert.match(errorContinuation({ status: 503 }), /Verifică starea salvată înainte să repeți/);
   assert.equal(errorContinuation({}), "");
-  assert.match(source("web/src/screens/Lega.jsx"), /errorContinuation\(e\) \|\| "Textul tău e mai sus; îl poți trimite din nou\."/);
+  assert.match(source("web/src/screens/Lega.jsx"), /Nu am putut confirma rezultatul/);
 });

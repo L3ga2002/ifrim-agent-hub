@@ -239,8 +239,8 @@ test("INT-04 a deadline that fired on a turn whose answer never arrives (process
 });
 
 // ------------------------------------------------------------------------------------------------------------------------------ INT-05
-test("INT-05 the server reports 2.18.0-m15 with API contract 20 (M15: the results_show read, the decisions answer's inbox)", () => {
-  assert.equal(HUB_VERSION, "2.18.0-m15");
+test("INT-05 the server reports 2.18.1-m15 with API contract 20 (M15: the results_show read, the decisions answer's inbox)", () => {
+  assert.equal(HUB_VERSION, "2.18.1-m15");
   assert.equal(API_CONTRACT, 20);
 });
 
@@ -256,6 +256,6 @@ test("INT-05-HTTP the session route reports the pinned version and contract", as
       req.on("error", reject); req.end();
     });
     assert.equal(got.status, 200);
-    assert.deepEqual([got.json.version, got.json.apiContract, got.headers["x-hub-contract"]], ["2.18.0-m15", 20, "20"]);
+    assert.deepEqual([got.json.version, got.json.apiContract, got.headers["x-hub-contract"]], ["2.18.1-m15", 20, "20"]);
   } finally { await new Promise((r) => server.close(r)); await t.cleanup(); }
 });

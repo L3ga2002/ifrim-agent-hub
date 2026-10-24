@@ -1,14 +1,15 @@
 import { useState } from "react";
-import { Circle, Loader2, ShieldAlert, OctagonAlert, RotateCcw, CheckCircle2, History, TimerOff, Archive, Copy, Check, ChevronRight, ChevronDown } from "lucide-react";
+import { CirclePause, CircleStop, CircleHelp, Circle, Loader2, ShieldAlert, OctagonAlert, RotateCcw, CheckCircle2, History, TimerOff, Archive, Copy, Check, ChevronRight, ChevronDown } from "lucide-react";
 import { STATES, MEANINGS } from "../lib/stateVocab.js";
 
-const ICONS = { ready: Circle, run: Loader2, decide: ShieldAlert, block: OctagonAlert, error: RotateCcw, done: CheckCircle2, stale: History, expired: TimerOff, closed: Archive };
+const ICONS = { ready: Circle, run: Loader2, decide: ShieldAlert, block: OctagonAlert, error: RotateCcw, done: CheckCircle2, stale: History, expired: TimerOff, closed: Archive, paused: CirclePause, stopping: CircleStop, unknown: CircleHelp };
 
 /** M15: one work state — its word, its icon and its colour together (never colour alone). `text` replaces the word, never the state. */
-export function StatePill({ state = "ready", text, title }) {
-  const key = STATES[state] ? state : "ready";
+export function StatePill({ state = "ready", status, text, title }) {
+  const key = STATES[state] ? state : "unknown";
   const Icon = ICONS[key];
-  return <span className={`state-pill st-${key}`} title={title || STATES[key].hint} data-state={key}><Icon size={12} aria-hidden="true" />{text || STATES[key].label}</span>;
+  const showRawStatus = key === "unknown" && status !== undefined;
+  return <span className={`state-pill st-${key}`} title={showRawStatus ? STATES[key].hint : title || STATES[key].hint} data-state={key}><Icon size={12} aria-hidden="true" />{showRawStatus ? `${STATES[key].label} · ${String(status || "").slice(0, 40) || "fără stare"}` : text || STATES[key].label}</span>;
 }
 
 /** M15: the meaning of a decision already made (approved internally, accepted by the client, …): outlined, never a work state. */

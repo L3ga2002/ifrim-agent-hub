@@ -25,6 +25,7 @@ import { StageCanvas, useVoiceCaption } from "./stage/LegaStage.jsx";
 import { SalesOfferCard, CommandHelp, useDecisionsInbox } from "./lega/OneScreen.jsx";
 import { DeskPanel } from "./lega/DeskPanel.jsx";
 import { AttentionPanel, CompanyFold, ActivityHeader, HistoryList, useAttentionSources, currentActivity } from "./lega/Attention.jsx";
+import { errorOutcome, canRetryDirectly } from "../lib/errorOutcome.js";
 import { attentionItems } from "../lib/stateVocab.js";
 import { conversationOf, withConversation, draftOf, withDraft, exchangeProject } from "../lib/legaConversation.js";
 import { salesOppFromPath, offerToShow, screenActivity } from "../lib/legaOneScreen.js";
@@ -114,6 +115,13 @@ function Cockpit({ projectId, go }) {
   // (a card hidden behind the history cannot take the focus, and its focus request would be spent).
   const [workTab, setWorkTab] = usePref("lega.workTab", "now");
   const inbox = useDecisionsInbox();
+  const sources = useAttentionSources();
+  // M15: re-read existing resources after an uncertain mutation; never repeat the command to discover its result.
+  const recheck = useCallback(async () => {
+    await Promise.allSettled([refresh(), cockpit.reload(), inbox.reload(), sources.desk.reload(), sources.deliveries.reload()]);
+    try { await api("/api/state"); return true; } catch { return false; }
+  },
+    [cockpit.reload, inbox.reload, sources.desk.reload, sources.deliveries.reload]);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState(null);
   const inputRef = useRef(null);
@@ -160,8 +168,8 @@ function Cockpit({ projectId, go }) {
     try {
       const out = await api("/api/envelopes", { method: "POST", body: { projectId: pid, missionIds: missionId ? [missionId] : [] } });
       setPlan(out); changeLayout({ ...(layout || cockpit.data.layout), cards: [{ type: "DecisionCard", ref: { kind: "envelope", id: out.envelope?.id || "none" }, size: "l" }, ...(layout || cockpit.data.layout).cards.filter((c) => c.type !== "DecisionCard")] });
-    } catch (e) { setError(e); }
-  }, [pid, layout, cockpit.data, changeLayout]);
+    } catch (e) { setError(e); if (!canRetryDirectly(e)) recheck(); }
+  }, [pid, layout, cockpit.data, changeLayout, recheck]);
 
   // M10.2 (U15): a plan announced by the Hub (`lega.plan`: the voice bridge, a typed request in another tab, a kept request that
   // became plannable) is read back through its own route and shown here; only a PROPOSED plan is shown; nothing is confirmed here.
@@ -386,14 +394,19 @@ function Cockpit({ projectId, go }) {
       setConversation((c) => [...c, { mount: mountRef.current, role: "lega", text: replyFor(res), at: Date.now(), clarification: clarificationOf(res), blocker, links: salesNav.links }]);
       if (salesNav.go) go(salesNav.go);
       refresh(); cockpit.reload();
-    } catch (e) { setError(e); setConversation((c) => [...c, { role: "lega", text: `Nu am putut: ${e.message}. ${errorContinuation(e) || "Textul tău e mai sus; îl poți trimite din nou."}`, at: Date.now() }]); }
+    } catch (e) {
+      setError(e);
+      const outcome = errorOutcome(e);
+      setConversation((c) => [...c, { role: "lega", text: `${outcome === "unknown" ? "Nu am putut confirma rezultatul" : outcome === "refused" ? "Hub-ul a refuzat cererea" : "Nu am putut"}: ${e.message}. ${errorContinuation(e)}${!canRetryDirectly(e) ? " Recitesc starea salvată." : ""}`, at: Date.now() }]);
+      if (!canRetryDirectly(e)) recheck();
+    }
     finally {
       sendingRef.current = false; setBusy(false);
       // The plan this sentence produced keeps the focus (Enter confirms it); otherwise the composer is ready for the next sentence.
       if (!planFocusPending.current) inputRef.current?.focus({ preventScroll: true });
       planFocusPending.current = false;
     }
-  }, [busy, pid, plan, opsPlan, layout, go, changeLayout, cockpit, setCurrentProject, setFaceShape, setFaceHidden, setDiscreet, department, replayMission, history, legaStatus, legaSessionId, requestFocus, loadOpsPlan, setConversation, setConversationOf, setSalesOpp]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [busy, pid, plan, opsPlan, layout, go, changeLayout, cockpit, setCurrentProject, setFaceShape, setFaceHidden, setDiscreet, department, replayMission, history, legaStatus, legaSessionId, requestFocus, loadOpsPlan, setConversation, setConversationOf, setSalesOpp, recheck]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Lega's voice (GPT-Live) transcripts of YOUR words feed the same resolver, marked as provider transcripts: they can open,
   // show and stop, never confirm. M10.2 (U15): under the voice-first policy, or in a Lega session derived from the owner session, the
@@ -411,7 +424,7 @@ function Cockpit({ projectId, go }) {
 
   const interrupt = async (kind, extra = {}) => {
     try { const r = await api("/api/owner/interrupt", { method: "POST", body: { kind, projectId: pid || undefined, ...extra } }); pushToast(`int-${kind}`, kind === "mute" ? "info" : "warn", r.summary || kind); refresh(); cockpit.reload(); }
-    catch (e) { setError(e); }
+    catch (e) { setError(e); if (!canRetryDirectly(e)) recheck(); }
   };
 
   const c = cockpit.data;
@@ -464,7 +477,6 @@ function Cockpit({ projectId, go }) {
   const showDepartment = (key) => { setDepartment(key); changeLayout({ ...(layout || cockpit.data?.layout || {}), cards: [{ type: "CompanyMap", ref: { kind: "company", id: "company" }, size: "l" }, ...(((layout || cockpit.data?.layout)?.cards || []).filter((x) => x.type !== "CompanyMap"))] }); };
   // M15: „Ce te așteaptă” (left), the open activity's header with ONE primary action and the tabs Acum / Istoric (right). Read-only views of
   // the Hub's own lists; the primary action only focuses, scrolls or opens — the decision stays on its own card, in the owner's session.
-  const sources = useAttentionSources();
   // A plan's confirmation window ends with time alone: the screen re-reads the clock every 20 s (expired plans stop showing as decisions).
   const [clockTick, setClockTick] = useState(0);
   useEffect(() => { const timer = setInterval(() => setClockTick((n) => n + 1), 20000); return () => clearInterval(timer); }, []);
@@ -483,6 +495,7 @@ function Cockpit({ projectId, go }) {
     if (!p) return;
     if (p.kind === "focus-plan" && plan?.envelope?.id) { setWorkTab("now"); requestFocus("envelope", plan.envelope.id); }
     else if (p.kind === "focus-ops" && opsPlan?.id) { setWorkTab("now"); requestFocus("ops", opsPlan.id); }
+    else if (p.kind === "recheck") recheck().then((ok) => { if (ok) { setConversation((c) => [...c.slice(-40), { role: "lega", text: "Am recitit starea salvată din Hub; ce vezi acum pe ecran e starea ei.", at: Date.now() }]); setError(null); } else setConversation((c) => [...c.slice(-40), { role: "lega", text: "Nu am putut reciti starea: Hub-ul nu răspunde. Rezultatul rămâne necunoscut; încearcă din nou când revine legătura.", at: Date.now() }]); });
     else if (p.kind === "replan") proposePlan(plan?.envelope?.missionIds?.[0]);
     else if (p.kind === "requests") { setWorkTab("now"); setTimeout(() => document.querySelector(".lega-one .work-requests")?.scrollIntoView({ block: "start", behavior: "smooth" }), 60); }
     else if (p.kind === "link" && p.link) { if (current.item?.deskRecordId) openDesk(current.item.deskRecordId); else go(p.link); }
@@ -586,7 +599,7 @@ function Cockpit({ projectId, go }) {
               {typeof document !== "undefined" && document.fullscreenEnabled && <button className="btn sm ghost" aria-pressed={monitorFull} onClick={toggleMonitor} title="Ecranul Lega pe tot monitorul, fără bara browserului (ca F11)"><Monitor size={14} />{monitorFull ? "Ieși de pe tot monitorul" : "Tot monitorul"}</button>}
               <label className="start-view small" title="Ce se deschide când pornești Hub-ul fără o adresă anume">
                 <span>La pornire</span>
-                <select value={startView.data?.startView || "cockpit"} onChange={async (e) => { try { await api("/api/owner/start-view", { method: "POST", body: { view: e.target.value } }); startView.reload(); } catch (er) { setError(er); } }} aria-label="Ecranul de pornire">
+                <select value={startView.data?.startView || "cockpit"} onChange={async (e) => { try { await api("/api/owner/start-view", { method: "POST", body: { view: e.target.value } }); startView.reload(); } catch (er) { setError(er); if (!canRetryDirectly(er)) recheck(); } }} aria-label="Ecranul de pornire">
                   <option value="cockpit">ecranul Lega</option><option value="stage">ecranul Lega, ecran complet</option>
                 </select>
               </label>

@@ -169,8 +169,13 @@ export function usePref(key, initial) {
     try { const raw = localStorage.getItem(`hub.v2.${key}`); return raw === null ? initial : JSON.parse(raw); } catch { return initial; }
   });
   const update = useCallback((next) => {
+    if (typeof next !== "function") {
+      try { localStorage.setItem(`hub.v2.${key}`, JSON.stringify(next)); } catch { /* storage unavailable */ }
+      setValue(next);
+      return;
+    }
     setValue((prev) => {
-      const v = typeof next === "function" ? next(prev) : next;
+      const v = next(prev);
       try { localStorage.setItem(`hub.v2.${key}`, JSON.stringify(v)); } catch { /* storage unavailable */ }
       return v;
     });

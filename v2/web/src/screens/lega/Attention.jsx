@@ -39,7 +39,7 @@ export function AttentionPanel({ inbox, sources, projectId, workRequests = [], p
           <li key={it.key} className={`attention-item st-${it.state}`}>
             <div className="row between wrap" style={{ alignItems: "flex-start" }}>
               <strong className="break attention-title">{it.title}</strong>
-              <StatePill state={it.state} />
+              <StatePill state={it.state} status={it.status} />
             </div>
             <span className="row wrap small">{it.kind && DECISION_KIND[it.kind] && <Chip tone="approval">{DECISION_KIND[it.kind]}</Chip>}{it.synthetic && <span className="faint">date sintetice</span>}{it.testProject && <span className="faint">proiect de test</span>}{it.at && <span className="faint">{fmt.ago(it.at)}</span>}</span>
             {it.sub && <span className="faint small break attention-sub">{it.sub}</span>}
@@ -122,7 +122,7 @@ export function HistoryList({ projectId = null, go, onOpenDesk, compact = false 
             <time className="faint small" dateTime={r.at || undefined}>{r.at ? fmt.dateTime(r.at) : "—"}</time>
             <span className="stack" style={{ gap: 2, minWidth: 0 }}><span className="break"><span className="faint small">{r.kind} · </span>{r.title}</span>{r.why && <span className="faint small break">{r.why}</span>}</span>
             <span className="row wrap" style={{ justifyContent: "flex-end" }}>
-              {r.meaning ? <MeaningChip meaning={r.meaning} /> : <StatePill state={r.state} />}
+              {r.meaning ? <MeaningChip meaning={r.meaning} /> : <StatePill state={r.state} status={r.status} />}
               {r.deskRecordId && onOpenDesk ? <button type="button" className="btn sm ghost" onClick={() => onOpenDesk(r.deskRecordId)}>Arată</button>
                 : <button type="button" className="btn sm ghost" onClick={() => go(r.link)} aria-label={`Deschide: ${r.title}`}><ExternalLink size={13} /></button>}
             </span>

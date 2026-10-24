@@ -4,6 +4,8 @@
 // (approved internally, accepted by the client, text approved, document generated, document sent, result accepted) are separate MEANINGS:
 // a state says where the work is, a meaning says what a decision already made means. Pure functions: nothing here decides or starts anything.
 
+import { errorOutcome, errorContinuation, canRetryDirectly } from "./errorOutcome.js";
+
 export const STATES = Object.freeze({
   ready: { label: "Pregătit", hint: "Nu rulează nimic și nu așteaptă nimic de la tine." },
   run: { label: "În lucru", hint: "Hub-ul lucrează; poți scrie în continuare, Stop All rămâne la un clic." },
@@ -13,6 +15,9 @@ export const STATES = Object.freeze({
   done: { label: "Rezultat gata", hint: "Rezultatul e verificat și te așteaptă; gata nu înseamnă acceptat." },
   stale: { label: "Depășit", hint: "Ceva s-a schimbat după ce rezultatul a fost făcut; motivul și următoarea acțiune sunt afișate." },
   expired: { label: "Expirat", hint: "Fereastra deciziei a trecut; nimic nu s-a executat. Ceri din nou dacă vrei." },
+  paused: { label: "În pauză", hint: "Oprită (de tine, de Stop All sau de o repornire); nimic nu rulează și nu pornește singură. Continuă doar printr-o decizie a ta." },
+  stopping: { label: "Se oprește", hint: "Oprirea e cerută; Hub-ul încheie procesele în curs. Nimic nou nu pornește." },
+  unknown: { label: "Stare necunoscută", hint: "Interfața nu cunoaște starea raportată de Hub (afișată alături). Nu înseamnă pregătit, gata sau fără nimic de făcut: deschide detaliul." },
   closed: { label: "Încheiat", hint: "Încheiat sau acceptat; rămâne în istoric." },
 });
 export const STATE_KEYS = Object.freeze(Object.keys(STATES));
@@ -29,17 +34,30 @@ export const MEANINGS = Object.freeze({
 
 const up = (s) => String(s || "").toUpperCase();
 
+// M15: every Factory stage is explicit; a new server stage stays unknown until its meaning is mapped here.
+const MISSION_STATES = Object.freeze({
+  SPEC_DRAFT: "decide", TEST_AUTHORING: "run", TEST_PROVING: "run", TEST_REVIEW: "run", BASELINE: "run", IMPLEMENTING: "run",
+  CHECKING: "run", REVIEWING: "run", REPAIRING: "run", QA: "run", PREVIEW: "run", DELIVERY_READY: "decide",
+  ACCEPTED: "closed", REJECTED: "closed", PAUSED: "paused", BLOCKED: "block", NEEDS_OWNER_DECISION: "decide", CANCEL_REQUESTED: "stopping", CANCELLED: "closed",
+});
+
 /**
  * A domain status → one work state. `domain`: delivery, bundle, desk, sales_prep, dossier, proposal, opportunity, envelope, ops, run,
- * mission (factory stage), render. Unknown statuses fall back to "ready" only when nothing waits; never to "done".
+ * mission (factory stage), render. Unknown or absent statuses stay unknown, never a claim that nothing waits or a result is ready.
  */
 export function stateOf(domain, status) {
   const s = up(status);
-  if (!s) return "ready";
+  if (domain === "mission") return MISSION_STATES[s] || "unknown";
+  if (!s) return "unknown";
+  if (s === "PAUSED" || s === "STOPPED") return "paused";
+  if (s === "CANCEL_REQUESTED") return "stopping";
+  if (domain === "render" && ["REQUESTED", "CLAIMED", "VALIDATING", "RUNNING"].includes(s)) return "run";
+  if (domain === "opportunity" && ["CONTACTED", "IN_DISCUSSION"].includes(s)) return "ready";
+  if (domain === "opportunity" && s === "PROPOSAL_DRAFT") return "ready";
   if (s === "STALE" || s === "SUPERSEDED_STALE") return "stale";
   if (s === "EXPIRED") return "expired";
-  if (["FAILED", "FAILED_TO_START", "ERROR"].includes(s)) return "error";
-  if (["BLOCKED", "STOPPED", "INCOMPLETE", "MISSING_INPUT", "NEEDS_INPUT"].includes(s)) return "block";
+  if (["FAILED", "FAILED_TO_START", "ERROR", "INTERRUPTED"].includes(s)) return "error";
+  if (["BLOCKED", "INCOMPLETE", "MISSING_INPUT", "NEEDS_INPUT"].includes(s)) return "block";
   if (["WAITING_OWNER", "NEEDS_OWNER", "NEEDS_OWNER_DECISION", "READY_FOR_OWNER_ACCEPTANCE", "READY_FOR_OWNER_REVIEW", "PENDING_APPROVAL", "PROPOSED", "WAITING_APPROVAL", "PENDING"].includes(s)) return "decide";
   if (["OWNER_ACCEPTED", "APPROVED_INTERNAL", "WON", "CLOSED", "COMPLETED", "ACCEPTED", "DONE"].includes(s)) return domain === "proposal" || domain === "opportunity" ? "done" : "closed";
   if (["CANCELLED", "REVOKED", "REJECTED", "LOST", "SUPERSEDED", "RETIRED"].includes(s)) return "closed";
@@ -47,7 +65,7 @@ export function stateOf(domain, status) {
   if (s === "READY") return "done";
   if (["RUNNING", "ACTIVE", "ARMED", "CONFIRMED", "PREPARING", "PACKAGING", "WRITING", "PLANNING", "QUEUED", "VERIFYING", "STREAMING", "IN_PROGRESS", "WRITER", "CHECKS", "REVIEW", "REPAIR", "QA", "PREVIEW", "E2E", "APPLYING"].includes(s)) return "run";
   if (["PLANNED", "DRAFT", "SPEC_DRAFT", "IDENTIFIED", "QUALIFIED", "ON_HOLD"].includes(s)) return "ready";
-  return "ready";
+  return "unknown";
 }
 
 /** The meaning chip of a decided status, or null (a work state is shown instead). */
@@ -63,7 +81,7 @@ export function meaningOf(domain, status) {
   return null;
 }
 
-const PRIORITY = { decide: 0, block: 1, error: 2, run: 3, stale: 4, done: 5, expired: 6, ready: 7, closed: 8 };
+const PRIORITY = { decide: 0, block: 1, error: 2, unknown: 2.5, paused: 3.1, stopping: 3.2, run: 3, stale: 4, done: 5, expired: 6, ready: 7, closed: 8 };
 const ms = (iso) => { const n = Date.parse(iso || ""); return Number.isFinite(n) ? n : 0; };
 const INBOX_LABEL = { software_bundle: "Pachet software de acceptat", mission_decision: "Misiune oprită: decizia ta", delivery: "Livrare: deciziile tale", sales_offer: "Ofertă de aprobat intern",
   desk_support_reply: "Răspuns de suport de aprobat", desk_finance_doc: "Deviz de aprobat", delivery_correction: "Corectură propusă" };
@@ -92,16 +110,16 @@ export function attentionItems({ inbox = [], desk = [], deliveries = [], runs = 
     if (!r || !inProject(r.projectId)) continue;
     const state = stateOf("desk", r.status);
     if (seen.has(`desk:${r.id}`)) continue;
-    if (!["decide", "block", "error", "stale", "done"].includes(state)) continue;
+    if (!["decide", "block", "error", "stale", "done", "unknown", "paused", "stopping"].includes(state)) continue;
     if (state === "done" && now - ms(r.updatedAt) > 3 * 24 * 3600e3) continue;
-    rows.push({ key: `desk:${r.id}`, state, kind: `desk_${r.kind}`, title: `${r.internalNo ? `${r.internalNo} · ` : ""}${r.title || "Birou intern"}`, what: "Birou intern",
+    rows.push({ key: `desk:${r.id}`, state, status: r.status, kind: `desk_${r.kind}`, title: `${r.internalNo ? `${r.internalNo} · ` : ""}${r.title || "Birou intern"}`, what: "Birou intern",
       sub: r.statusReason || r.statusText || "", next: r.nextAction || "", link: "/lega", deskRecordId: r.id, at: r.updatedAt || r.createdAt || null, real: r.synthetic !== true });
   }
   for (const d of Array.isArray(deliveries) ? deliveries : []) {
     if (!d || !inProject(d.projectId) || seen.has(`delivery:${d.id}`)) continue;
     const state = stateOf("delivery", d.status);
-    if (!["decide", "error", "stale", "block"].includes(state)) continue; // READY: its pending decisions are already inbox rows
-    rows.push({ key: `delivery:${d.id}`, state, kind: "delivery", title: d.title || "Livrare", what: "Camera de livrare", sub: d.statusReason || "", link: `/livrare/${d.id}`, at: d.updatedAt || d.createdAt || null });
+    if (!["decide", "error", "stale", "block", "unknown", "paused", "stopping"].includes(state)) continue; // READY: its pending decisions are already inbox rows
+    rows.push({ key: `delivery:${d.id}`, state, status: d.status, kind: "delivery", title: d.title || "Livrare", what: "Camera de livrare", sub: d.statusReason || "", link: `/livrare/${d.id}`, at: d.updatedAt || d.createdAt || null });
   }
   for (const r of Array.isArray(runs) ? runs : []) {
     if (!r) continue;
@@ -123,6 +141,9 @@ export function attentionSummary(items = []) {
   if (n("decide")) parts.push(n("decide") === 1 ? "1 decizie" : `${n("decide")} decizii`);
   if (n("block")) parts.push(n("block") === 1 ? "1 blocaj" : `${n("block")} blocaje`);
   if (n("error")) parts.push(n("error") === 1 ? "1 eroare" : `${n("error")} erori`);
+  if (n("paused")) parts.push(`${n("paused")} în pauză`);
+  if (n("stopping")) parts.push(n("stopping") === 1 ? "1 se oprește" : `${n("stopping")} se opresc`);
+  if (n("unknown")) parts.push(n("unknown") === 1 ? "1 stare necunoscută" : `${n("unknown")} stări necunoscute`);
   if (n("run")) parts.push(n("run") === 1 ? "1 în lucru" : `${n("run")} în lucru`);
   if (n("stale")) parts.push(n("stale") === 1 ? "1 depășit" : `${n("stale")} depășite`);
   if (n("done")) parts.push(n("done") === 1 ? "1 rezultat" : `${n("done")} rezultate`);
@@ -143,7 +164,11 @@ export function currentActivity({ projectName = "", plan = null, opsPlan = null,
       : { state: "decide", context: ctx, title: plan.summary?.headline || "Planul propus", sub: "Un plan așteaptă confirmarea ta (o singură confirmare).", primary: { label: "Vezi planul și confirmă", kind: "focus-plan" } };
   }
   if (opsPlan?.status === "PROPOSED") return { state: "decide", context: ctx, title: opsPlan.title || "Planul operației", sub: "Un plan de operație așteaptă confirmarea ta.", primary: { label: "Vezi planul și confirmă", kind: "focus-ops" } };
-  if (error) return { state: "error", context: ctx, title: "Cererea nu a mers", sub: `${String(error?.message || error).slice(0, 160)}. Ce era salvat a rămas neschimbat; poți repeta cererea.`, primary: { label: "Scrie din nou cererea", kind: "composer" } };
+  if (error) {
+    const retry = canRetryDirectly(error), refused = errorOutcome(error) === "refused";
+    return { state: retry || refused ? "error" : "unknown", context: ctx, title: retry ? "Cererea nu a mers" : refused ? "Cererea a fost refuzată" : "Rezultat necunoscut",
+      sub: `${String(error?.message || error).slice(0, 160)}. ${errorContinuation(error)}`, primary: retry ? { label: "Scrie din nou cererea", kind: "composer" } : { label: "Verifică starea salvată", kind: "recheck" } };
+  }
   if (busy) return { state: "run", context: ctx, title: "Procesez cererea ta", sub: "Citirea și planul nu pornesc nimic.", primary: null };
   const req = (workRequests || [])[0];
   if (req) return { state: "block", context: ctx, title: "O cerere așteaptă o condiție", sub: req.blockedBy?.text || req.reason || "Cererea e păstrată; o continui când se poate.", primary: { label: "Arată ce lipsește", kind: "requests" } };
@@ -165,9 +190,9 @@ export function historyRows({ deliveries = [], desk = [], opportunities = [], re
   for (const m of missions || []) {
     if (projectId && m.projectId && m.projectId !== projectId) continue;
     const stage = up(m.stage);
-    const state = stage === "ACCEPTED" ? "closed" : stage === "REJECTED" || stage === "CANCELLED" ? "closed" : stage === "NEEDS_OWNER_DECISION" ? "decide" : stateOf("mission", stage);
+    const state = stateOf("mission", m.stage);
     rows.push({ key: `mis:${m.missionId}`, at: m.updatedAt || m.createdAt, kind: "Lucrare software", title: m.title || "Misiune", state, status: m.stage,
-      meaning: stage === "ACCEPTED" ? "result_accepted" : null, link: `/missions/${encodeURIComponent(m.missionId)}`, why: stage === "DELIVERY_READY" ? "Pachet gata: așteaptă acceptarea ta" : "" });
+      meaning: stage === "ACCEPTED" ? "result_accepted" : null, link: `/missions/${encodeURIComponent(m.missionId)}`, why: m.stageReason ? String(m.stageReason).slice(0, 160) : stage === "DELIVERY_READY" ? "Pachet gata: așteaptă acceptarea ta" : "" });
   }
   for (const d of deliveries || []) {
     if (projectId && d.projectId && d.projectId !== projectId) continue;

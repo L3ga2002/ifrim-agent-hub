@@ -8,6 +8,9 @@
   --st-done: var(--ok);  --st-done-bg: rgba(134, 220, 187, 0.13);
   --st-stale: #c9b0ff;   --st-stale-bg: rgba(201, 176, 255, 0.13);
   --st-expired: var(--text-3); --st-expired-bg: rgba(135, 151, 169, 0.12);
+  --st-paused: #dfc078; --st-paused-bg: rgba(223, 192, 120, 0.13);
+  --st-stopping: #ef9fc7; --st-stopping-bg: rgba(239, 159, 199, 0.13);
+  --st-unknown: #b5a7ed; --st-unknown-bg: rgba(181, 167, 237, 0.13);
   --st-closed: var(--text-2); --st-closed-bg: rgba(168, 183, 199, 0.08);
 }
 
@@ -169,3 +172,10 @@
   .lega-one:not(.is-immersive) .lega-figure .face-box .core-svg { max-height: 48px; }
   .lega-figure { padding: 4px 8px; }
 }
+
+.state-pill.st-paused { --c: var(--st-paused); --b: var(--st-paused-bg); }
+.attention-item.st-paused, .activity-head.st-paused { --sc: var(--st-paused); }
+.state-pill.st-stopping { --c: var(--st-stopping); --b: var(--st-stopping-bg); }
+.attention-item.st-stopping, .activity-head.st-stopping { --sc: var(--st-stopping); }
+.state-pill.st-unknown { --c: var(--st-unknown); --b: var(--st-unknown-bg); }
+.attention-item.st-unknown, .activity-head.st-unknown { --sc: var(--st-unknown); }
