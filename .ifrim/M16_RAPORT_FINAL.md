@@ -1,6 +1,6 @@
 # M16 „Ecranul de comandă L3ga” — raport final (P0 + P1, 2.19.0-m16)
 
-**Stare: READY_FOR_OWNER_ACCEPTANCE după release (lipsește doar sesiunea și decizia ta „Accept M16”).** Orele sunt ora României (din 2026-10-25 01:00 UTC ora de iarnă, UTC+2; înainte UTC+3).
+**Stare: READY_FOR_OWNER_ACCEPTANCE — 2.19.0-m16 rulează live (verificat); lipsește doar sesiunea și decizia ta „Accept M16”.** Orele sunt ora României (din 2026-10-25 01:00 UTC ora de iarnă, UTC+2; înainte UTC+3).
 Etichete: CONFIRMAT ÎN COD · RAPORTAT ÎN DOCUMENTAȚIE · TESTAT ACUM ÎN MEDIU IZOLAT · VERIFICAT ACUM LIVE · IPOTEZĂ · PROPUNERE · NEVERIFICAT.
 
 ## 0. Ce poți face acum
@@ -61,7 +61,7 @@ sintetic, furnizori simulați), apoi în poarta 3.
 | 10 Departamente: mouse / tastatură / voce; a11y | `screens/command/Company.jsx` | e2e (Enter, ← →, „Arată Vânzările”), m16-intents | PASS |
 | 11 Fișe: inventar, referințe, autonomie din politică | `process-sheets.mjs` | m16-server „every skill folder, every reference…” | PASS |
 | 12 Nicio autoritate nouă; Stop All / gărzi | rutele refuză canalele agent / cli | m16-hub (0 rulări / planuri / aprobări noi), e2e (niciun buton de decizie, Stop All vizibil) | PASS |
-| 13 ≥ 30 FPS la 1080p; ascuns; mișcare redusă | `LegaFace`, `m16.css` | `shots\perf\perf.json` (cod final): 60 FPS cu 1 și cu 2 ferestre, 0 cadre ascuns, 3 cadre/s statice la mișcare redusă | PASS |
+| 13 ≥ 30 FPS la 1080p; ascuns; mișcare redusă | `LegaFace`, `m16.css` | `shots\perf-final\perf.json` (cod final): 60 FPS cu 1 și cu 2 ferestre, 0 cadre ascuns, 3 cadre/s statice la mișcare redusă | PASS |
 | 14 Build + regresia V2 completă, 0 FAIL | — | poarta 3 (§4) | PASS (poarta 3: 2753 / 2754, 0 FAIL) |
 | 15 Varianta = alegerea ta | `m16.css`, `Command.jsx data-variant="A"` | e2e (A, fără selector) | PASS (A, „ok” la 08:31) |
 | 16 Probă reală pe live cu vocea ta; acceptarea separată | — | sesiunea ta (§9) | AȘTEPTĂ PROPRIETARUL |
@@ -117,8 +117,15 @@ Măsurat pe PC (i5-11400H, RTX 3050 Laptop + Intel UHD, Chromium cu GPU prin ANG
   migrare) → `verify.mjs` (doar GET: versiune, contract, schemă, BUILD_SAFE, canalele deciziilor rezervate, rutele și ecranele M16,
   canalul agent refuzat, apoi Birou intern, livrări, Fabrică, Vânzări, aprobări și inbox comparate cu instantaneul).
 - Pasul 8, separat: `git push origin v2-milestone-01 claude/project-thread-54wjea` (fără force), apoi verificarea SHA-ului pe GitHub.
-- Rezultatul efectiv (ore, backup, verificare, push) e consemnat în commitul de documentație de după release (`STAGE_2026-10-25_M16.md`
-  §5) și în mesajul din thread.
+- **Rezultatul (VERIFICAT ACUM LIVE, 2026-10-25):** 10:42:11 instantaneu `live-before.json` (2.18.1-m15, contract 20, BUILD_SAFE, boot
+  `boot_mvmsluum_a50caf329a`); backup `bkp_mvnkxbs1_6fe7c06f0e` **verified** (baza hub-v2 17,1 MB, integritate ok, restaurat de Hub într-un
+  folder separat); fast-forward `v2-milestone-01` `9b91bca` → `5e14529`; upgrade `upg_mvnky2rg` DONE la 10:42:52 (preflight, dry run,
+  stop, build, start, verify; fără migrare; numărătorile tabelelor neschimbate, evenimente 9391 → 9403 = evenimentele repornirii);
+  `verify.mjs`: **VERIFY OK** — 2.19.0-m16, contract 21, schema 15, BUILD_SAFE, boot nou `boot_mvnky61b_8bfca92638`; rezumatul are 6
+  capitole, 12 departamente, 23 de fișe, 7 etape în pâlnie, 9 noduri în harta sistemului, canalul agent refuzat (403); UI-ul servit are
+  ecranele M16 și pe cele M15; deciziile rezervate rămân pe canalele owner + test; Birou intern, livrări, Fabrică, Vânzări, aprobări și
+  inbox identice cu instantaneul (0 diferențe). Jurnal: `m16-evidence\release\release-run.log`.
+- Push: 10:43, fără force, din folderul Hub: `v2-milestone-01` 9b91bca → 5e14529 și ramura nouă `claude/project-thread-54wjea` = 5e14529, verificat cu `git ls-remote`; `main` neschimbat (`17921ac`). Commitul de consemnare de după (doar `.ifrim`) a urmat aceeași cale: fast-forward în folderul Hub, fără upgrade, apoi push.
 - **Revenire** (verificată în izolare pe o clonă: diff gol pe `v2/` și `package*.json`, rezultat 2.18.1-m15 / contract 20): în folderul
   Hub `git revert --no-edit 9b91bca..357dce0`, apoi `node v2\scripts\upgrade.mjs --plan` și `--apply`. Fără migrare și fără date noi în
   bază (rezumatele stau doar în memorie), deci baza nu se restaurează. Punctul de revenire: `9b91bca`.

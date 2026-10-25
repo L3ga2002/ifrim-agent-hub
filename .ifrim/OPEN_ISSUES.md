@@ -7,7 +7,10 @@ C:\Users\mihai\m16-stage (branch `claude/project-thread-54wjea`, base `9b91bca`)
 Claude reviews + one re-review, all findings fixed. Gate 3 on `357dce0` (clone m16-gate): V2 2753/2754, 0 fail (T25 skip); V1 not affected.
 
 Open:
-1. Release through `C:\Users\mihai\m16-evidence\release\release.mjs <RELEASE>` + push (results in the post-release docs commit).
+1. Done: 2.19.0-m16 LIVE 2026-10-25 08:42 UTC (`release.mjs`: verified backup `bkp_mvnkxbs1_6fe7c06f0e`, upgrade `upg_mvnky2rg`,
+   VERIFY OK, 0 state differences). Pushed 08:43 UTC without force: `v2-milestone-01` and the new branch
+   `claude/project-thread-54wjea` = `5e14529` (checked with `git ls-remote`); `main` unchanged (`17921ac`). The post-release docs commit
+   followed the same path (fast-forward of the Hub folder, no upgrade, push).
 2. The owner's acceptance session (`m16-evidence\PASII_PROPRIETAR_M16.md`): real voice, the recap commands, the TV / second monitor
    readability (AC-16). M16 stays READY_FOR_OWNER_ACCEPTANCE until the owner writes „Accept M16”.
 3. Minor, non-blocking: the decorative orbits stretch into ovals on the elliptical map (labelled decor, can be turned off); a stale
