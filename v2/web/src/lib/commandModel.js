@@ -1,4 +1,5 @@
 import { bucharestParts } from "./roText.js";
+import { hasChord } from "./uiLogic.js";
 export const VIEWS = Object.freeze(["idle", "recap", "company", "department", "sheet", "funnel", "trace", "result", "system"]);
 export const VIEW_LABELS = Object.freeze({ idle: "Repaus", recap: "Rezumat", company: "Companie", department: "Departament", sheet: "Fișă de proces", funnel: "Vânzări", trace: "Traseul lucrării", result: "Rezultat", system: "Sistem" });
 export const VIEW_OF_QUERY = Object.freeze({ repaus: "idle", rezumat: "recap", companie: "company", departament: "department", fisa: "sheet", palnie: "funnel", traseu: "trace", rezultat: "result", sistem: "system" });
@@ -45,7 +46,7 @@ export function recapStep(state, action, chapters = 6) {
 }
 export function keyAction(event, { view, typing = false, dialogOpen = false } = {}) {
   const t = event?.target;
-  if (!event || typing || dialogOpen || event.ctrlKey || event.altKey || event.metaKey || event.shiftKey || event.isComposing || event.keyCode === 229 || event.repeat || event.defaultPrevented || /^(INPUT|TEXTAREA|SELECT)$/i.test(t?.tagName || "") || t?.isContentEditable || t?.closest?.('[contenteditable="true"], [role="dialog"]')) return null;
+  if (!event || typing || dialogOpen || hasChord(event) || event.isComposing || event.keyCode === 229 || event.repeat || event.defaultPrevented || /^(INPUT|TEXTAREA|SELECT)$/i.test(t?.tagName || "") || t?.isContentEditable || t?.closest?.('[contenteditable="true"], [role="dialog"]')) return null;
   if (event.key === "ArrowRight") return "next";
   if (event.key === "ArrowLeft") return "prev";
   if (event.key === "Enter" && ["recap", "company", "department"].includes(view)) return "open";

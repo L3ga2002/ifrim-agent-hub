@@ -3,6 +3,10 @@ import { HubError } from "../core/errors.mjs";
 import { decisionsInbox } from "../delivery/inbox.mjs";
 import { ACTIVE_STAGES } from "../factory/factory.mjs";
 import { TZ, bucharestDayStart, hhmm, dateTimeRo, roCount, roList } from "./ro-text.mjs";
+import { OPPORTUNITY_TRANSITIONS } from "../sales/sales.mjs";
+
+/** Closed opportunities: the statuses with no outgoing transition in the Sales state machine (never retyped here: S-08). */
+const CLOSED_OPPORTUNITY = Object.freeze(Object.keys(OPPORTUNITY_TRANSITIONS).filter((status) => OPPORTUNITY_TRANSITIONS[status].length === 0));
 
 export const activeWork = (hub) => hub.factory.list().filter((m) => ACTIVE_STAGES.has(m.stage) && !["PAUSED", "CANCEL_REQUESTED"].includes(m.stage)).length;
 export function deepFreeze(value) { if (value && typeof value === "object" && !Object.isFrozen(value)) { Object.values(value).forEach(deepFreeze); Object.freeze(value); } return value; }
@@ -158,7 +162,7 @@ export function createRecap(hub) {
     r("results", "accepted", "Acceptate de tine", "interval", "Fabrica", "factory_bundles", () => projectRows(interval(bundles().filter((b) => b.status === "OWNER_ACCEPTED"), "decided_at")));
     r("results", "deliveries", "Livrări pregătite", "now", "Livrările", "deliveries", () => projectRows(all("SELECT * FROM deliveries WHERE status IN ('READY','NEEDS_OWNER')")));
     r("results", "qa_warn", "Avertismente QA la clipuri", "interval", "QA media", "media_qa_reports", () => projectRows(interval(all("SELECT q.*, (SELECT d.project_id FROM media_edit_versions v JOIN deliveries d ON d.edit_project_id = v.edit_project_id WHERE v.id = q.edit_version_id ORDER BY d.created_at DESC LIMIT 1) AS project_id FROM media_qa_reports q WHERE q.status IN ('WARN','FAIL')"))));
-    r("sales", "open", "Oportunități deschise", "now", "Vânzări", "sales_opportunities", () => all("SELECT o.*, CASE WHEN o.synthetic = 1 OR g.synthetic = 1 THEN 1 ELSE 0 END AS synthetic FROM sales_opportunities o JOIN sales_orgs g ON g.id = o.org_id WHERE o.status NOT IN ('WON','LOST')"));
+    r("sales", "open", "Oportunități deschise", "now", "Vânzări", "sales_opportunities", () => all(`SELECT o.*, CASE WHEN o.synthetic = 1 OR g.synthetic = 1 THEN 1 ELSE 0 END AS synthetic FROM sales_opportunities o JOIN sales_orgs g ON g.id = o.org_id WHERE o.status NOT IN (${CLOSED_OPPORTUNITY.map(() => "?").join(",")})`, ...CLOSED_OPPORTUNITY));
     r("sales", "prepared", "Oferte pregătite", "interval", "Vânzări", "sales_proposals", () => interval(salesRows("sales_proposals")));
     r("sales", "approved", "Aprobate intern", "interval", "Vânzări", "sales_proposals", () => interval(salesRows("sales_proposals"), "approved_at"));
     r("sales", "sent", "Trimise de Hub", "interval", "Vânzări", "sales_contact_events", () => {

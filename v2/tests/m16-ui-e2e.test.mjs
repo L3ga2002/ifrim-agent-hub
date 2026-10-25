@@ -30,6 +30,7 @@ async function commandChecks(page, view, width, height) {
  if(view==="system") assert.doesNotMatch(await page.locator(".system-nodes").innerText(),/\d{4}-\d{2}-\d{2}T\d{2}:\d{2}/);
  if(view==="department" && width>=1100) assert.equal(await page.locator(".command-department").evaluate(e=>{const stage=e.closest(".command-stage").getBoundingClientRect();return [...e.querySelectorAll(".sheet-sections > section")].every(x=>x.getBoundingClientRect().bottom<=stage.bottom);}),true,"department summaries fit without scrolling");
  if(view==="company" && width>=1100) assert.equal(await page.locator(".radial-map").evaluate(e=>{const stage=e.closest(".command-stage").getBoundingClientRect();return [...e.querySelectorAll(".department-label,.command-source")].every(x=>x.getBoundingClientRect().bottom<=stage.bottom);}),true,"map captions fit");
+ if(view==="company" && width>=1100) { const hits=await page.locator(".radial-map").evaluate(map=>{const m=map.getBoundingClientRect(),core=map.querySelector(".radial-core").getBoundingClientRect(),cards=[...map.querySelectorAll(".department-node")].map(e=>({name:e.querySelector("strong")?.textContent,r:e.getBoundingClientRect()})),cross=(a,b)=>a.left<b.right-1&&b.left<a.right-1&&a.top<b.bottom-1&&b.top<a.bottom-1,out=[];cards.forEach((a,i)=>{if(a.r.left<m.left-1||a.r.right>m.right+1||a.r.top<m.top-1||a.r.bottom>m.bottom+1)out.push(`${a.name} outside the map`);if(cross(a.r,core))out.push(`${a.name} over L3ga`);for(const b of cards.slice(i+1))if(cross(a.r,b.r))out.push(`${a.name} x ${b.name}`);});return out;});assert.deepEqual(hits,[],`company ${width}x${height}: department cards must not overlap`); }
  if(view==="trace" && width===1920) assert.equal(await page.locator(".trace-nodes > li").evaluateAll(es=>es.every(e=>{const r=e.getBoundingClientRect(),stage=e.closest(".command-stage").getBoundingClientRect();return r.left>=stage.left&&r.right<=stage.right+1&&r.top>=stage.top&&r.bottom<=stage.bottom;})),true,"all nine trace steps inside visible stage");
 }
 test("M16 round 3: Command, recap, configured graph, sheets and GET-only TV", { skip, timeout:300000 }, async (c) => {
@@ -144,8 +145,8 @@ test("M16 round 3: Command, recap, configured graph, sheets and GET-only TV", { 
     await page.goto(`${origin}/#/comanda`);await page.locator(".command").waitFor();
     const sizes=[[1920,1080],[1440,900],[1280,800],[3840,2160],[390,844]];
     const views=["idle","recap","company","department","sheet","funnel","trace","result","system"];
-    for(const variant of ["A","B","C"]) {
-      await page.locator(".command-bar details summary").click();await page.getByLabel("Aspect",{exact:true}).selectOption(variant);await page.locator(".command-bar details summary").click();
+    // AC-15: only the owner's variant A (Carbon și cyan) ships; there is no aspect selector.
+    assert.equal(await page.locator(".command").getAttribute("data-variant"),"A");assert.equal(await page.getByLabel("Aspect",{exact:true}).count(),0);
     for(const [width,height] of sizes) {
       await page.setViewportSize({width,height});
       for(const view of views) {
@@ -164,11 +165,9 @@ test("M16 round 3: Command, recap, configured graph, sheets and GET-only TV", { 
           assert.deepEqual(small,[],`${view}: text is at least 22 px`);
         }
         await commandChecks(page,view,width,height);
-        shots.push({name:`${variant}-${view}-${width}x${height}.png`,data:await page.screenshot({fullPage:true})});
+        shots.push({name:`A-${view}-${width}x${height}.png`,data:await page.screenshot({fullPage:true})});
       }
     }
-    }
-    for(const variant of ["A","B","C"]) { await page.locator(".command-bar details summary").click();await page.getByLabel("Aspect",{exact:true}).selectOption(variant);await page.locator(".command-bar details summary").click();shots.push({name:`variant-${variant}.png`,data:await page.screenshot({fullPage:true})}); }
     await page.setViewportSize({width:1920,height:1080});
     await page.goto(`${origin}/#/comanda?vedere=trace`);await page.getByLabel("Lucrare",{exact:true}).selectOption(prepared.mission.id);
     t.hub.db.prepare("UPDATE factory_missions SET stage='CLOSED' WHERE mission_id=?").run(prepared.mission.id);
@@ -185,119 +184,4 @@ test("M16 round 3: Command, recap, configured graph, sheets and GET-only TV", { 
     // The acceptance helper's write fence has now been released; evidence is copied outside the disposable Hub.
     const dir=process.env.M16_EVIDENCE_DIR || tempDir("m16-ui-e2e");fs.mkdirSync(dir,{recursive:true});for(const shot of shots)fs.writeFileSync(path.join(dir,shot.name),shot.data);
   }
-});
-
-// Supplemental visual probe: mocked HTTP data, never substitutes for the isolated-Hub acceptance above.
-// Opt in on restricted hosts where acceptanceHub cannot resolve the host's ancestors.
-import http from "node:http";
-import { funnelOf } from "../server/sales/funnel.mjs";
-import { traceOf } from "../server/factory/trace.mjs";
-test("M16 presentation fixture: layout and read-only P1 views (MOCKED API)", {skip:skip||!process.env.M16_LAYOUT_FIXTURE,timeout:300000}, async()=>{
- const now=new Date().toISOString(),dir=tempDir("m16-layout-r5");fs.mkdirSync(dir,{recursive:true});
- const depts=[['executive','Conducere','EX'],['product','Produs și strategie','PR'],['engineering','Engineering','EN'],['qa-security','Calitate și securitate','QA'],['devops','DevOps și infrastructură','DO'],['sales','Vânzări','VZ'],['marketing','Marketing și growth','MK'],['customer-success','Relația cu clienții','CS'],['project-management','Managementul proiectelor','PM'],['operations','Operațiuni','OP'],['research','Cercetare','CE'],['finance-admin','Financiar și administrativ','FA']];
- const graph={readAt:now,company:{name:"Hub sintetic · probă vizuală"},departments:depts.map(([key,labelRo],i)=>({key,labelRo,name:labelRo,purpose:"Structură configurată",status:[0,2,5].includes(i)?"active":"planned",color:i+1,counts:{roles:0,works:i===2?2:0,blocked:0,waiting:i===2?1:0,runningNow:0}})),roles:[],skills:[],tools:[],works:[],edges:[]};
- // Overflow fixture: summaries must account for omitted configured items.
- for(let i=0;i<6;i++) {
-   graph.roles.push({id:`role_${i}`,name:`Rol de vânzări ${i}`,authority:"READ_ONLY",reportsTo:"owner",runningNow:0,responsibilities:["Cercetare cu dovezi","Verificarea domeniului","Ciorne","Fără trimitere"]});
-   graph.edges.push({from:"dept:sales",to:`role:role_${i}`,kind:"dept_role"});
-   graph.tools.push({id:`tool_${i}`,name:`Unealtă ${i}`,status:"unregistered"});
-   graph.edges.push({from:`role:role_${i}`,to:`tool:tool_${i}`,kind:"role_tool"});
- }
- const indicator=(id,label,value)=>({id,label,value,display:String(value),state:value?"value":"zero",applies:"now",source:"Hub sintetic",sourceKey:"fixture",readAt:now,provenance:"none"});
- const snapshot={id:"rcp_layout",generatedAt:now,lastSeq:1,period:{kind:"today",label:"Azi, de la 00:00 la 03:00 — compania"},chapters:titles.map((title,i)=>({key:["waiting","work","results","sales","desk","system"][i],title,index:i,indicators:i===0?[{...indicator("waiting.decisions","Decizii",3),provenance:"synthetic",split:{real:0,synthetic:3}},indicator("waiting.blocked","Blocaje",0)]:i===1?[{...indicator("work.active","În lucru acum",3),display:"1 real + 2 sintetice",provenance:"mixed",split:{real:1,synthetic:2}}]:[],sentences:[i===1?"Date de test: 1 lucrare e în lucru acum. Azi: nicio lucrare nu a ajuns gata de livrare, niciun model nu a rulat.":"Te așteaptă trei decizii."],open:{view:null,path:"/lega"}}))};
- const funnel=funnelOf({opportunities:[{id:"opp_layout",title:"Ofertă sintetică",orgName:"Firmă de test",status:"READY_FOR_OWNER_REVIEW",synthetic:1,updated_at:now}],now:new Date(now)});
- const stages=["BASELINE","IMPLEMENTING","CHECKING","REVIEWING","REPAIRING","CHECKING","REVIEWING","PAUSED","IMPLEMENTING"];
- const trace=traceOf({mission:{missionId:"m_layout",title:"Lucrare sintetică",stage:"IMPLEMENTING",repairCycles:1,limits:{maxRepairCycles:2}},events:stages.map((stage,i)=>({seq:i,type:"factory.stage",created_at:new Date(Date.now()-(9-i)*60000).toISOString(),source:"test",payload:{stage,reason:stage==="REPAIRING"?"Ciclul 1/2":""}}))});
- const system={readAt:now,nodes:["pc","hub","db","backups","schedules","runner","codex","claude","voice"].map(id=>({id,label:id==="codex"?"Codex":id,state:"unknown",stateText:"Necunoscut",installed:null,configured:null,available:null,running:null,facts:[{label:"Observație",value:"Nicio verificare"}],source:"fixture",checkedAt:null})),edges:[{from:"pc",to:"hub"},...["db","backups","schedules","runner","codex","claude","voice"].map(to=>({from:"hub",to}))]};
- delete system.nodes[0].installed;delete system.nodes[0].configured;system.nodes[0].running=true;system.nodes[1].checkedAt=new Date(Date.now()-7200000).toISOString();
- const sheets={readAt:now,autonomy:{levels:[{level:"OBSERVE",label:"Observ"},{level:"ASSISTED",label:"Asistat"},{level:"TRUSTED",label:"De încredere"},{level:"HIGH_AUTONOMY_BOUNDED",label:"Autonomie mare, delimitată"}],project:null,defaultRule:"Fără proiect selectat"},alwaysOff:[{effect:"deploy",label:"Deploy",rule:"mereu oprit"}],sheets:[{id:"flow:offer",title:"Ofertă comercială",kind:"flow",what:"Pregătește oferta din brief.",takesOff:"Structurarea ofertei.",ownerRole:"proprietar",who:[{roleId:"sales",name:"Sales Assistant"}],steps:[{title:"Confirmi brief-ul",ref:"fixture"}],tools:[],autonomy:{max:{level:"HIGH_AUTONOMY_BOUNDED"}},result:{label:"Dosarul local",path:"/sales"},refs:[]}]};
- const delivery={delivery:{id:"d_layout",title:"Rezultat sintetic",projectId:"p_layout",projectName:"Proiect de test"},preview:{shots:[]},software:{spec:{version:1},bundle:{shaPrefix:"abcdef123456"},criteria:[{id:"AC-01"}]},summary:{sections:[{text:"Rezultat păstrat în Hub."}],warnings:["Verificare sintetică"]},observations:[],clip:{}};
- const server=http.createServer((req,res)=>{const requested=path.resolve(WEB_DIST,decodeURIComponent(req.url.split("?")[0]).replace(/^\//,""));const file=requested.startsWith(WEB_DIST)&&fs.existsSync(requested)&&fs.statSync(requested).isFile()?requested:path.join(WEB_DIST,"index.html");res.setHeader("Content-Type",file.endsWith(".js")?"text/javascript":file.endsWith(".css")?"text/css":"text/html");res.end(fs.readFileSync(file));});
- await new Promise(resolve=>server.listen(0,"127.0.0.1",resolve));const origin=`http://127.0.0.1:${server.address().port}`;let browser;
- try {
- browser=await pw.chromium.launch({...browserLaunchOptions(origin)});const context=await browser.newContext({viewport:{width:1920,height:1080}}),page=await context.newPage(),errors=[];page.on("pageerror",e=>errors.push(e.message));
- await page.route("**/api/**",async route=>{const u=new URL(route.request().url()),p=u.pathname;let value={};
- if(p==="/api/state")value={lastSeq:1,activeRuns:[],settings:{},projects:[]};else if(p==="/api/session")value={token:"fixture",bootId:"layout",contract:21};else if(p==="/api/owner/status")value={devProfile:{enabled:true},session:{authority:"local_dev_profile"},policy:{active:false}};else if(p==="/api/company/graph")value=graph;else if(p==="/api/process-sheets")value=sheets;else if(p.startsWith("/api/recap"))value=p.endsWith("/present")?{voice:{requested:false,handedOff:false,reason:"voice_off"}}:snapshot;else if(p==="/api/sales/funnel")value=funnel;else if(p==="/api/factory")value={missions:[{id:"m_layout",title:"Lucrare sintetică",stage:"IMPLEMENTING",updatedAt:now}]};else if(p.endsWith("/trace"))value=trace;else if(p==="/api/system/map")value=system;else if(p==="/api/deliveries")value={deliveries:[{id:"d_layout",status:"READY",updatedAt:now}]};else if(p==="/api/deliveries/d_layout")value=delivery;else if(p==="/api/projects")value={projects:[{id:"p_layout",name:"Proiect de test",source:"hub-test"}]};
- await route.fulfill({status:200,contentType:"application/json",headers:{"x-hub-contract":"21","x-hub-boot-id":"layout"},body:JSON.stringify(value)});});
- await page.goto(`${origin}/#/comanda`);await page.locator(".command-clock").waitFor();
- assert.equal(await page.locator(".command").evaluate(e=>getComputedStyle(e).fontSize),"22px");
- await page.locator(".dev-profile-badge").waitFor();
- assert.equal(await page.locator(".dev-profile-badge").evaluate(e=>getComputedStyle(e).top),"8px");
- assert.equal(await page.locator(".dev-profile-badge").evaluate(e=>e.getBoundingClientRect().height<40),true,"inline bottom no longer stretches the badge over the bar");
- assert.equal(await page.locator(".department-row").count(),12);
- assert.equal(await page.locator(".command-departments").evaluate(e=>e.scrollHeight<=e.clientHeight),true);
- for(const variant of ["A","B","C"]) {
- await page.locator(".command-bar details summary").click();await page.getByLabel("Aspect",{exact:true}).selectOption(variant);await page.locator(".command-bar details summary").click();
- for(const [width,height] of [[1920,1080],[1440,900],[1280,800],[3840,2160],[390,844]]) {
- await page.setViewportSize({width,height});
- for(const view of ["idle","recap","company","department","sheet","funnel","trace","result","system"]){
- await page.evaluate(view=>{location.hash=`#/comanda?vedere=${view}&departmentKey=sales&sheetId=flow:offer`;},view);
- const selector={idle:".command-clock",recap:".recap-title",company:".radial-map",department:".command-department",sheet:".command-sheet",funnel:".funnel-circle",trace:".trace-drawing",result:".result-shot",system:".system-node"}[view];await page.locator(selector).first().waitFor();
- assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth),true,`${variant}/${view}/${width}: no horizontal page scroll`);
- assert.equal(await page.locator(".command").evaluate(e=>e.scrollWidth<=e.clientWidth),true,`${variant}/${view}/${width}: no command horizontal overflow`);
- if(width===1920 || width===3840) {
-  const small=await page.locator(".command").evaluate(root=>{const w=document.createTreeWalker(root,NodeFilter.SHOW_TEXT),out=[];let n;while(n=w.nextNode()){const e=n.parentElement;if(!n.textContent.trim()||e.closest(".sr-only")||!e.getClientRects().length)continue;const c=getComputedStyle(e);if(c.display!=="none"&&c.visibility!=="hidden"&&parseFloat(c.fontSize)<21.99)out.push([n.textContent,c.fontSize]);}return out;});assert.deepEqual(small,[],`${variant}/${view}/${width}: 22px minimum`);
-  assert.equal(await page.locator(".department-row").last().evaluate(e=>e.getBoundingClientRect().bottom<=e.parentElement.getBoundingClientRect().bottom),true,`${variant}/${view}: last department fits`);
-  assert.equal(await page.locator(".department-code").evaluateAll(es=>es.every(e=>getComputedStyle(e).whiteSpace==="nowrap"&&e.getBoundingClientRect().height<parseFloat(getComputedStyle(e).fontSize)*1.6)),true);
- }
- if(view==="idle") {
-  assert.equal(await page.locator('[data-indicator="waiting.decisions"] .indicator-value').innerText(),"3");
-  assert.equal(await page.locator('[data-indicator="waiting.decisions"] .command-badge').innerText(),"SINTETIC");
-  assert.equal(await page.locator('[data-indicator="waiting.decisions"] .indicator-split').count(),0);
-  assert.equal(await page.locator('[data-indicator="work.active"] .indicator-value').innerText(),"1 real + 2 sintetice");
-  assert.equal(await page.locator('[data-indicator="work.active"] .command-badge').innerText(),"REAL + SINTETIC");
-  assert.match(await page.locator('.command-bar').innerText(),/Ultima ta frază: —/);
- }
- if(view==="company") {
-  const en=page.locator('.department-node').filter({hasText:"Engineering"});
-  assert.equal(await en.locator('.department-orb > strong').innerText(),"EN");
-  assert.equal(await en.locator('.dept-counts > span').count(),2);
-  assert.equal(await en.locator('.department-orb').evaluate(orb=>{const a=orb.getBoundingClientRect(),b=orb.querySelector('strong').getBoundingClientRect(),badge=orb.querySelector('.dept-counts').getBoundingClientRect();return b.top>=a.top&&b.bottom<=a.bottom&&badge.right>a.right;}),true);
-  const offsets=await page.locator('.department-node.planned').evaluateAll(es=>es.map(e=>e.querySelector('.command-source').getBoundingClientRect().top-e.querySelector('.department-label').getBoundingClientRect().bottom));
-  assert.ok(Math.max(...offsets)-Math.min(...offsets)<1,"planned status uses a consistent gap");
- }
- if(view==="trace") {
-  assert.equal(await page.locator('.trace-nodes > li').count(),9);
-  assert.equal(await page.locator('.trace-nodes .st-closed').count(),8);
-  assert.equal(await page.locator('.trace-nodes > li').last().locator('.st-run').count(),1);
-  assert.match(await page.locator('.trace-nodes > li').first().innerText(),/Încheiat/);
-  assert.match(await page.locator('.trace-nodes > li').first().innerText(),/fără dovezi/);
-  assert.ok(await page.locator('.trace-marker.pause').count());assert.ok(await page.locator('[data-edge="resume"]').count());
-
- }
- if(view==="department") assert.ok(await page.locator(".department-more").count(),"overflow is counted explicitly");
- if(view==="funnel") assert.equal(await page.getByText("Nicio oportunitate în această listă.",{exact:true}).count(),2);
- if(view==="system") {
-  assert.equal(await page.locator('.system-nodes svg').count(),0);
-  assert.equal(await page.locator('.system-diagram .system-chip').count(),9);
-  assert.equal(await page.locator('[data-node="pc"] [data-field="installed"]').count(),0);
-  assert.equal(await page.locator('[data-node="pc"] [data-field="configured"]').count(),0);
-  assert.equal(await page.locator('[data-node="pc"] [data-field="available"] dd').innerText(),"necunoscut");
-  assert.match(await page.locator('[data-node="hub"] .command-source').innerText(),/verificat acum 2 h/);
- }
- await commandChecks(page,view,width,height);
- await page.screenshot({path:path.join(dir,`${variant}-${view}-${width}x${height}.png`)});
- }
- }
- }
-
- assert.equal(await page.locator(".system-node").count(),9);await page.getByLabel("Caută în sistem").fill("Codex");assert.equal(await page.locator(".system-node").count(),1);await page.getByLabel("Caută în sistem").fill("");
- for(const variant of ["A","B","C"]){await page.goto(`${origin}/#/comanda`);await page.locator(".command-bar details summary").click();await page.getByLabel("Aspect",{exact:true}).selectOption(variant);await page.locator(".command-bar details summary").click();await page.screenshot({path:path.join(dir,`variant-${variant}.png`)});}
-
- await page.setViewportSize({width:1920,height:1080});
- await page.goto(`${origin}/#/comanda?vedere=company`);await page.locator(".radial-map").waitFor();
- assert.equal(await page.locator('.department-node[tabindex="0"]').count(),1);
- await page.locator('.department-node[tabindex="0"]').focus();await page.keyboard.press("ArrowRight");
- assert.equal(await page.locator('.department-node[tabindex="0"]:focus').count(),1);await page.keyboard.press("Enter");await page.locator(".command-department").waitFor();
- await page.getByRole("button",{name:"Scrie",exact:true}).click();await page.getByLabel("Mesaj pentru Lega").fill("123");await page.keyboard.press("Escape");assert.equal(await page.getByLabel("Mesaj pentru Lega").count(),0);assert.equal(await page.locator(".command-department").count(),1);
- trace.current.stage="CLOSED";
- await page.goto(`${origin}/#/comanda?vedere=trace`);await page.locator(".trace-nodes > li").last().getByText("Încheiat · final",{exact:true}).waitFor();assert.equal(await page.locator(".trace-nodes .st-run").count(),0);
- delivery.preview.shots=[{src:"data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' width='400' height='300'><rect width='400' height='300' fill='navy'/></svg>",viewportLabel:"Desktop",criterion:"AC-01"}];
- await page.goto(`${origin}/#/comanda?vedere=result`);const zoom=page.getByRole("button",{name:"Mărește captura Desktop"});await zoom.click();
- const dialog=page.getByRole("dialog",{name:"Captură mărită"});assert.equal(await dialog.getAttribute("aria-modal"),"true");assert.equal(await dialog.evaluate(e=>e.contains(document.activeElement)),true);
- await page.keyboard.press("Tab");assert.equal(await dialog.evaluate(e=>e.contains(document.activeElement)),true);await page.keyboard.press("Shift+Tab");assert.equal(await dialog.evaluate(e=>e.contains(document.activeElement)),true);await page.keyboard.press("Escape");assert.equal(await dialog.count(),0);assert.equal(await zoom.evaluate(e=>e===document.activeElement),true);
- await page.route("**/api/stream**",r=>r.abort());await page.reload();await page.locator(".command-status").waitFor();assert.doesNotMatch(await page.locator(".command-status").innerText(),/LIVE/);
- console.log(`M16 supplemental fixture evidence: ${dir}`);
- assert.deepEqual(errors,[]);
- } finally {await browser?.close();await new Promise(resolve=>server.close(resolve));}
 });

@@ -221,6 +221,8 @@ export function appShortcutKey(e) {
 }
 /** True when `e` is exactly the plain Alt+`key` app shortcut (see appShortcutKey). */
 export const isAppShortcut = (e, key) => appShortcutKey(e) === String(key).toLowerCase();
+/** M16: true when a key event carries any modifier (Ctrl, Alt or AltGr, Meta, Shift) — a plain-key screen shortcut never acts on a chord. */
+export const hasChord = (e) => Boolean(e && (e.ctrlKey || e.altKey || e.metaKey || e.shiftKey || (typeof e.getModifierState === "function" && e.getModifierState("AltGraph"))));
 
 /* ---------------- composer: model and effort ---------------- */
 /** Effort values run.start accepts (server/runtime/command-catalog.mjs); anything else is refused there, so it is never offered. */

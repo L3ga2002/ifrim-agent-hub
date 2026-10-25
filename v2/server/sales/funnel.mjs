@@ -1,7 +1,12 @@
 import { HubError } from "../core/errors.mjs";
 import { provenanceOf } from "../owner/recap.mjs";
+import { OPPORTUNITY_TRANSITIONS } from "./sales.mjs";
 
-export const PIPELINE = Object.freeze(["IDENTIFIED", "PROPOSAL_DRAFT", "READY_FOR_OWNER_REVIEW", "APPROVED_INTERNAL", "CONTACTED", "IN_DISCUSSION", "WON"]);
+// The statuses are read from the Sales state machine (never retyped: S-08 keeps every CONTACTED / WON literal inside sales.mjs). The side
+// stages are the hold and the loss; a closed opportunity is a status with no outgoing transition.
+export const SIDE = Object.freeze(["ON_HOLD", "LOST"]);
+export const PIPELINE = Object.freeze(Object.keys(OPPORTUNITY_TRANSITIONS).filter((status) => !SIDE.includes(status)));
+export const CLOSED = Object.freeze(Object.keys(OPPORTUNITY_TRANSITIONS).filter((status) => OPPORTUNITY_TRANSITIONS[status].length === 0));
 const LABELS = ["Identificate", "Ofertă în lucru", "De revizuit de tine", "Aprobate intern", "Contactate (de tine)", "În discuție", "Câștigate"];
 export function funnelThreshold(value = 21) { const n = Number(value); if (!Number.isInteger(n) || n < 1 || n > 365) throw new HubError("validation", "Pragul trebuie să fie un număr întreg între 1 și 365 de zile"); return n; }
 /** Cohorts use transition history, never ratios of current stage counts. */
@@ -14,7 +19,7 @@ export function funnelOf({ opportunities, transitions = [], proposals = [], cont
     const times = [[o.updated_at, "sales_opportunities.updated_at"], ...(history.get(o.id) || []).map((t) => [t.created_at, "sales_transitions.created_at"]), ...(contactIndex.get(o.id) || []).map((c) => [c.occurred_at, "sales_contact_events.occurred_at"]), ...(proposalIndex.get(o.id) || []).flatMap((p) => [[p.created_at, "sales_proposals.created_at"], [p.approved_at, "sales_proposals.approved_at"]]), ...(draftIndex.get(o.id) || []).map((d) => [d.updated_at, "sales_drafts.updated_at"])].filter(([at]) => Number.isFinite(Date.parse(at))).sort((a, b) => Date.parse(b[0]) - Date.parse(a[0]));
     const [lastActivityAt = null, lastActivitySource = null] = times[0] || [];
     const silentDays = lastActivityAt ? Math.floor((end - Date.parse(lastActivityAt)) / 86400000) : null;
-    const open = !["WON", "LOST"].includes(o.status);
+    const open = !CLOSED.includes(o.status);
     const list = open && silentDays !== null && silentDays >= threshold ? "cooling" : open && (o.status === "READY_FOR_OWNER_REVIEW" || o.next_action_at && Date.parse(o.next_action_at) <= end) ? "move_now" : null;
     return { id: o.id, title: o.title, orgName: o.orgName, status: o.status, synthetic: Boolean(o.synthetic), lastActivityAt, lastActivitySource, silentDays, nextAction: o.next_action || "", nextActionAt: o.next_action_at || null, list };
   });

@@ -8,7 +8,6 @@ export function sanitizeState(s) {
   if (Object.hasOwn(s, "recap") && /^rcp_[A-Za-z0-9_-]{1,80}$/.test(s.recap?.snapshotId || "") && Number.isInteger(s.recap.index) && s.recap.index >= 0 && s.recap.index <= 5 && typeof s.recap.stopped === "boolean") out.recap = { snapshotId: s.recap.snapshotId, index: s.recap.index, stopped: s.recap.stopped };
   for (const [k, re] of Object.entries({ departmentKey: /^[a-z-]{1,40}$/, sheetId: /^(flow|skill):[a-z0-9-]{1,40}$/, missionId: /^[A-Za-z0-9_-]{1,80}$/, deliveryId: /^[A-Za-z0-9_-]{1,80}$/ })) if (Object.hasOwn(s, k) && typeof s[k] === "string" && re.test(s[k])) out[k] = s[k];
   for (const k of ["hideNumbers", "decor"]) if (Object.hasOwn(s, k) && typeof s[k] === "boolean") out[k] = s[k];
-  if (Object.hasOwn(s, "variant") && ["A", "B", "C"].includes(s.variant)) out.variant = s.variant;
   if (Object.hasOwn(s,"resultShotIndex") && Number.isInteger(s.resultShotIndex) && s.resultShotIndex>=0 && s.resultShotIndex<=10000) out.resultShotIndex=s.resultShotIndex;
   if (Object.hasOwn(s,"coolingDays") && Number.isInteger(s.coolingDays) && s.coolingDays>=1 && s.coolingDays<=365) out.coolingDays=s.coolingDays;
   return out;

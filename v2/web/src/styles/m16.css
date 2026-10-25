@@ -1,4 +1,4 @@
-/* M16: presentation only, with readable sources and fixed semantic colours in every variant. */
+/* M16: presentation only, with readable sources and fixed semantic colours. Variant A „Carbon și cyan” (chosen by the owner, AC-15). */
 .app.is-command { grid-template-columns: 1fr; grid-template-rows: 1fr; }
 .app.is-command > .topbar, .app.is-command > .rail, .app.is-command > .bottom-nav, .app.is-command > .sim-banner, .app.is-command > .desktop-bar { display: none; }
 .app.is-command > .main { grid-column: 1 / -1; grid-row: 1 / -1; padding: 0; height: 100dvh; overflow: hidden; }
@@ -66,11 +66,6 @@
 .sheet-sections { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:1.5em; }
 .sheet-sections section { border-top:1px solid var(--command-line); padding-top:.6em; }
 .command-sheet ul,.command-department ul { padding-left:1.2em; }
-.command[data-variant="B"] { --command-card:rgba(10,24,52,.72); --command-line:rgba(127,227,255,.28); --accent:#7FE3FF; background:radial-gradient(ellipse,#0a1a3a,#040a1a); }
-.command[data-variant="B"] .command-face { background:radial-gradient(ellipse,rgba(101,217,255,.16),transparent 70%); }
-.command[data-variant="B"] .command-face > * { transform:scale(1.1); }
-.command[data-variant="C"] { --command-card:rgba(12,14,18,.9); --command-line:rgba(255,255,255,.12); --command-radius:4px; --accent:#B9A6FF; background-color:#06080b; background-image:linear-gradient(rgba(255,255,255,.035) 1px,transparent 1px),linear-gradient(90deg,rgba(255,255,255,.035) 1px,transparent 1px); background-size:2em 2em; }
-.command[data-variant="C"] :where(h2,h3) { font-family:var(--mono); text-transform:uppercase; }
 .recap-card .command-indicator { border:0; padding:.5em 0; }
 .recap-card .command-controls { justify-content:start; }
 @keyframes command-orbit { to { transform:rotate(360deg); } }
@@ -99,7 +94,6 @@
 
 .command :is(.small,.chip,.kv,.faint,.kbd) { font-size:1em; }
 
-@media(max-width:1099px) { .command[data-variant="B"] .command-face > * { transform:none; } }
 
 /* Round 2: TV composition and shared read-only data views. */
 .command { --accent:#65d9ff; --text-2:#a9bbcb; grid-template-areas:"stage depts" "views views" "bar bar"; grid-template-columns:minmax(0,1fr) 15.5em;grid-template-rows:minmax(0,1fr) auto auto;gap:.65em 1em; }
@@ -162,15 +156,6 @@
 .autonomy-scale {display:flex;list-style:none;padding:0;font-size:1em!important;gap:.3em;}
 .autonomy-scale li {flex:1;border-top:.2em solid var(--accent);padding:.4em .1em;}
 .autonomy-scale strong {display:block;margin-top:.3em;}
-.command[data-variant="B"] {background:radial-gradient(ellipse at 47% 35%,#0a1a3a,#040a1a);}
-.command[data-variant="B"] .command-face {position:relative;}
-.command[data-variant="B"] .command-face::before {content:"";position:absolute;width:60vh;height:60vh;background:radial-gradient(circle,rgba(101,217,255,.18),transparent 68%);pointer-events:none;}
-.command[data-variant="B"] .command-face > * {transform:scale(1.12);}
-.command[data-variant="B"] .command-indicator {box-shadow:0 0 2em rgba(101,217,255,.12);border-top-color:#8ce7ff;}
-.command[data-variant="B"] :is(h2,h3,.recap-title) {color:#b7efff;}
-.command[data-variant="C"] :is(h2,h3,.indicator-label) {font-family:var(--mono);text-transform:uppercase;}
-.command[data-variant="C"] .command-indicator {border-top:1px solid var(--command-line);border-left:.25em solid var(--accent);box-shadow:none;}
-.command[data-variant="C"] .department-orb {border-radius:4px;}
 .command-p1 {padding:.35em;}
 .funnel-line {display:flex;align-items:start;overflow:auto;gap:.2em;padding:1em 0;}
 .funnel-stage {text-align:center;min-width:5em;flex:1;}
@@ -201,7 +186,7 @@
 .result-shot.enlarged {position:fixed;inset:1em;z-index:100;background:#070d16;}.result-shot.enlarged img {height:80vh;}
 .result-warning {border-left:.2em solid #efbc66;padding:.3em .7em;}
 @media(max-width:1099px) {
- .command {display:flex;}.command-stage {display:flex;}.command-views {flex-wrap:wrap;}.command-views button {flex:1 1 25%;}.command-departments {display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:.25em;overflow:visible;}.command-departments h2 {grid-column:1/-1;}.command .department-row {margin:0;}.command-face {max-height:none;}.command-face canvas {max-height:none;}.command-bar {flex-wrap:wrap;}.command-bar>div:first-child {max-width:100%;}.command-company h2,.command-company>.command-source {position:static;}.radial-map {width:100%;aspect-ratio:auto;display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:.5em;}.command .department-node {position:static;transform:none;width:100%;max-height:none;}.sheet-columns,.system-nodes,.p1-columns {grid-template-columns:1fr;}.command[data-variant="B"] .command-face>* {transform:none;}
+ .command {display:flex;}.command-stage {display:flex;}.command-views {flex-wrap:wrap;}.command-views button {flex:1 1 25%;}.command-departments {display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:.25em;overflow:visible;}.command-departments h2 {grid-column:1/-1;}.command .department-row {margin:0;}.command-face {max-height:none;}.command-face canvas {max-height:none;}.command-bar {flex-wrap:wrap;}.command-bar>div:first-child {max-width:100%;}.command-company h2,.command-company>.command-source {position:static;}.radial-map {width:100%;aspect-ratio:auto;display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:.5em;}.command .department-node {position:static;transform:none;width:100%;max-height:none;}.sheet-columns,.system-nodes,.p1-columns {grid-template-columns:1fr;}
 }
 
 .system-nodes {position:relative;gap:1.2em;}
@@ -276,8 +261,6 @@
 
 /* Round 5: bounded presentation, shared palette provided by companyGraph.js. */
 .command { --command-stage-color:#0b1622; }
-.command[data-variant="B"] { --command-stage-color:#0a1a3a; }
-.command[data-variant="C"] { --command-stage-color:#06080b; }
 .command[data-view="recap"] .command-stage { grid-template-rows:auto 32vh minmax(0,1fr); }
 .command[data-view="recap"] .command-face { width:min(32vh,100%); height:32vh; }
 .command[data-view="recap"] .command-face canvas { width:min(32vh,100%); max-height:32vh; }
@@ -309,3 +292,22 @@
 }
 
 .command .command-indicator.has-split .indicator-value { font-size:1.5em; }
+
+/* Company map 2.0 (QA 2026-10-25): with twelve configured departments the captions of the 56vh ring crossed each other. From 1100 px the
+   map is an ellipse across the whole stage (the department list is hidden in this view: the map carries the same code, name, state and
+   counters) and every department is one opaque card, so no caption can cross a neighbour; the browser test checks it at every size. */
+@media(min-width:1100px) {
+ .command[data-view="company"] { grid-template-areas:"stage stage" "views views" "bar bar"; }
+ .command[data-view="company"] .command-departments { display:none; }
+ .command-company { display:flex; flex-direction:column; min-height:0; }
+ .command .radial-map { flex:1 1 0; width:100%; height:auto; min-height:12em; aspect-ratio:auto; margin:0; }
+ .command .radial-core { width:auto; height:40%; aspect-ratio:1; }
+ .command .department-node { width:9em; max-height:none; padding:.2em .4em .25em; gap:0; border:.12em solid var(--dept); border-radius:.5em; background:var(--command-stage-color); line-height:1.1; z-index:1; }
+ .command .department-node.planned { border:.12em dashed var(--dept); background:var(--command-stage-color); }
+ .command .radial-core > span { position:relative; z-index:1; background:var(--command-stage-color); padding:0 .3em; }
+ .command .department-orb { width:auto; height:auto; border:0; border-radius:0; background:transparent; gap:.35em; }
+ .command .department-orb strong { font-size:1.1em; }
+ .command .department-orb .dept-counts { position:static; flex-direction:row; gap:.2em; }
+ .command .department-label, .command .department-node > .command-source { background:transparent; padding:0; margin:0; }
+ .command .department-label { display:block; height:auto; min-height:0; max-width:none; overflow:visible; }
+}
