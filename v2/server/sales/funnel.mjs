@@ -7,7 +7,8 @@ import { OPPORTUNITY_TRANSITIONS } from "./sales.mjs";
 export const SIDE = Object.freeze(["ON_HOLD", "LOST"]);
 export const PIPELINE = Object.freeze(Object.keys(OPPORTUNITY_TRANSITIONS).filter((status) => !SIDE.includes(status)));
 export const CLOSED = Object.freeze(Object.keys(OPPORTUNITY_TRANSITIONS).filter((status) => OPPORTUNITY_TRANSITIONS[status].length === 0));
-const LABELS = ["Identificate", "Ofertă în lucru", "De revizuit de tine", "Aprobate intern", "Contactate (de tine)", "În discuție", "Câștigate"];
+/** Romanian stage labels in PIPELINE order (pinned by a test: a new or reordered Sales status fails it instead of shifting labels). */
+export const STAGE_LABELS = Object.freeze(["Identificate", "Ofertă în lucru", "De revizuit de tine", "Aprobate intern", "Contactate (de tine)", "În discuție", "Câștigate"]);
 export function funnelThreshold(value = 21) { const n = Number(value); if (!Number.isInteger(n) || n < 1 || n > 365) throw new HubError("validation", "Pragul trebuie să fie un număr întreg între 1 și 365 de zile"); return n; }
 /** Cohorts use transition history, never ratios of current stage counts. */
 export function funnelOf({ opportunities, transitions = [], proposals = [], contacts = [], drafts = [], outreach = "DISABLED", threshold = 21, now = new Date() }) {
@@ -31,7 +32,7 @@ export function funnelOf({ opportunities, transitions = [], proposals = [], cont
     const reached = cohort.filter(({ o, entered }) => (history.get(o.id) || []).some((t) => PIPELINE.indexOf(t.to_status) >= index + 1 && Date.parse(t.created_at) > Date.parse(entered.created_at) && Date.parse(t.created_at) <= end)).length;
     return { from, to, state: n >= 5 ? "ok" : "insufficient", rate: n >= 5 ? reached / n : null, cohort: { n, from: new Date(cutoff).toISOString(), to: new Date(end).toISOString() }, reason: n >= 5 ? null : opportunitiesView.length && opportunitiesView.every((o) => o.synthetic) ? "Date insuficiente: datele sunt sintetice; rate nu se calculează din ele." : "Date insuficiente: sunt necesare cel puțin 5 oportunități reale în cohortă." };
   });
-  return { readAt: new Date(end).toISOString(), outreach, note: "Aici doar se înregistrează; nu se trimite nimic.", threshold: { days: threshold, rule: `Se răcește când au trecut cel puțin ${threshold} de zile întregi (perioade de 24 h) de la ultima activitate înregistrată.` }, stages: PIPELINE.map((s, i) => group(s, LABELS[i])), side: [group("ON_HOLD", "În așteptare"), group("LOST", "Pierdute")], conversions, opportunities: opportunitiesView, lists: { moveNow: opportunitiesView.filter((o) => o.list === "move_now").map((o) => o.id), cooling: opportunitiesView.filter((o) => o.list === "cooling").map((o) => o.id) }, provenance: provenanceOf(opportunitiesView).provenance };
+  return { readAt: new Date(end).toISOString(), outreach, note: "Aici doar se înregistrează; nu se trimite nimic.", threshold: { days: threshold, rule: `Se răcește când au trecut cel puțin ${threshold} de zile întregi (perioade de 24 h) de la ultima activitate înregistrată.` }, stages: PIPELINE.map((s, i) => group(s, STAGE_LABELS[i])), side: [group("ON_HOLD", "În așteptare"), group("LOST", "Pierdute")], conversions, opportunities: opportunitiesView, lists: { moveNow: opportunitiesView.filter((o) => o.list === "move_now").map((o) => o.id), cooling: opportunitiesView.filter((o) => o.list === "cooling").map((o) => o.id) }, provenance: provenanceOf(opportunitiesView).provenance };
 }
 export function salesFunnel(hub, { threshold = 21, now = hub.config.now() } = {}) {
   const all = (table) => hub.db.prepare(`SELECT * FROM ${table}`).all();

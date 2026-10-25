@@ -300,9 +300,11 @@
  .command[data-view="company"] { grid-template-areas:"stage stage" "views views" "bar bar"; }
  .command[data-view="company"] .command-departments { display:none; }
  .command-company { display:flex; flex-direction:column; min-height:0; }
- .command .radial-map { flex:1 1 0; width:100%; height:auto; min-height:12em; aspect-ratio:auto; margin:0; }
+ .command .radial-map { flex:1 1 0; width:100%; height:auto; min-height:12em; aspect-ratio:auto; margin:0; container-type:size; }
  .command .radial-core { width:auto; height:40%; aspect-ratio:1; }
- .command .department-node { width:9em; max-height:none; padding:.2em .4em .25em; gap:0; border:.12em solid var(--dept); border-radius:.5em; background:var(--command-stage-color); line-height:1.1; z-index:1; }
+ /* The cards keep the page size (22 px at 1080p) on wide stages and shrink with the map on 4:3 / 5:4 / tall windows: a 9 em card needs the
+    map to be at least 66 em wide (neighbours at -60° / -30°) and 26 em high (neighbours at -30° / 0°, the top card inside the edge). */
+ .command .department-node { font-size:min(1em, 100cqw / 66, 100cqh / 26); width:9em; max-height:none; padding:.2em .4em .25em; gap:0; border:.12em solid var(--dept); border-radius:.5em; background:var(--command-stage-color); line-height:1.1; z-index:1; }
  .command .department-node.planned { border:.12em dashed var(--dept); background:var(--command-stage-color); }
  .command .radial-core > span { position:relative; z-index:1; background:var(--command-stage-color); padding:0 .3em; }
  .command .department-orb { width:auto; height:auto; border:0; border-radius:0; background:transparent; gap:.35em; }
@@ -311,3 +313,5 @@
  .command .department-label, .command .department-node > .command-source { background:transparent; padding:0; margin:0; }
  .command .department-label { display:block; height:auto; min-height:0; max-width:none; overflow:visible; }
 }
+.counts-legend { display:inline; } .counts-legend > span { white-space:nowrap; }
+.counts-legend svg { vertical-align:-.12em; }

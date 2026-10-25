@@ -168,6 +168,8 @@ test("M16 round 3: Command, recap, configured graph, sheets and GET-only TV", { 
         shots.push({name:`A-${view}-${width}x${height}.png`,data:await page.screenshot({fullPage:true})});
       }
     }
+    // 4:3, 5:4 and tall windows (a second monitor): the department cards shrink with the map and still never overlap.
+    for(const [width,height] of [[1100,1080],[1280,1024],[1600,1200]]) { await page.setViewportSize({width,height});await page.evaluate(hash=>{location.hash=hash;},"#/comanda?vedere=company");await page.locator(".department-node").first().waitFor();await commandChecks(page,"company",width,height);shots.push({name:`A-company-${width}x${height}.png`,data:await page.screenshot()}); }
     await page.setViewportSize({width:1920,height:1080});
     await page.goto(`${origin}/#/comanda?vedere=trace`);await page.getByLabel("Lucrare",{exact:true}).selectOption(prepared.mission.id);
     t.hub.db.prepare("UPDATE factory_missions SET stage='CLOSED' WHERE mission_id=?").run(prepared.mission.id);

@@ -5,7 +5,7 @@ import { DatabaseSync } from "node:sqlite";
 import { MIGRATIONS } from "../server/storage/migrations.mjs";
 import { TZ, bucharestDayStart, hhmm, dayMonth, dateTimeRo, roCount, roList } from "../server/owner/ro-text.mjs";
 import { createRecap, provenanceOf, recapSentences } from "../server/owner/recap.mjs";
-import { funnelOf, funnelThreshold, salesFunnel } from "../server/sales/funnel.mjs";
+import { funnelOf, funnelThreshold, salesFunnel, PIPELINE, CLOSED, STAGE_LABELS } from "../server/sales/funnel.mjs";
 import { traceOf } from "../server/factory/trace.mjs";
 import { systemMap } from "../server/domain/system-map.mjs";
 import { companyGraph } from "../server/domain/company-graph.mjs";
@@ -326,4 +326,10 @@ test("M16 R4 one failed source keeps healthy facts and stored indicator metadata
   assert.match(sentences.join(" "), /nu știu câte aprobări tehnice te așteaptă: sursa nu a răspuns/);
   assert.doesNotMatch(sentences.join(" "), /0 aprobări|stack|secret|Te așteaptă nu știu/);
   assert.equal(JSON.stringify(chapter.indicators), before);
+});
+
+test("M16 funnel stages come from the Sales state machine and every label stays on its status", () => {
+  assert.deepEqual(PIPELINE.map((status, i) => [status, STAGE_LABELS[i]]), [["IDENTIFIED", "Identificate"], ["PROPOSAL_DRAFT", "Ofertă în lucru"], ["READY_FOR_OWNER_REVIEW", "De revizuit de tine"], ["APPROVED_INTERNAL", "Aprobate intern"], ["CONTACTED", "Contactate (de tine)"], ["IN_DISCUSSION", "În discuție"], ["WON", "Câștigate"]]);
+  assert.equal(STAGE_LABELS.length, PIPELINE.length);
+  assert.deepEqual([...CLOSED].sort(), ["LOST", "WON"]);
 });
