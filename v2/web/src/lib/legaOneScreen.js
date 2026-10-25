@@ -13,6 +13,10 @@ export const decisionsReload = (e) => /^(approval|sales|factory|delivery|envelop
 
 /** Examples for the help popover (they used to fill the empty conversation, taking the room of the work). */
 export const COMMAND_EXAMPLES = Object.freeze([
+  "Ce s-a întâmplat azi?",
+  "L3ga, mod comandă",
+  "Arată Vânzările",
+  "Arată fișa ofertei",
   "Hai să lucrăm la …",
   "Doar arată-mi planul",
   "Ce avem azi?",

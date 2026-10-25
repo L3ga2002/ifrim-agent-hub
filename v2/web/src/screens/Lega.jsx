@@ -1,3 +1,6 @@
+import RecapCard from "./lega/RecapCard.jsx";
+import SheetCard from "./lega/SheetCard.jsx";
+import { applyCommandResult, recapContext, setCommand } from "../shell/CommandBridge.jsx";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AudioLines, Send, Settings2, Lock, LockOpen, VolumeX, Pause, Hand, Snowflake, Square, Undo2, Focus, Eye, EyeOff, Minimize2, Circle, Network, Maximize2, Radar, Monitor } from "lucide-react";
 import { api } from "../api.js";
@@ -74,6 +77,7 @@ function Cockpit({ projectId, go }) {
   const connection = useHub((s) => s.connection);
   const legaPhase = useHub((s) => s.legaPhase);
   const legaStatus = useHub((s) => s.legaStatus || "off");
+  const commandSheet = useHub((s) => s.command?.sheetShownAt ? s.command.sheetId : null);
   const owner = useOwner();
   const [currentProject, setCurrentProject] = usePref("lega.project", "");
   const pid = projectId || currentProject || "";
@@ -94,6 +98,18 @@ function Cockpit({ projectId, go }) {
   const [opsPlan, setOpsPlan] = useState(null);
   const [detailsTick, setDetailsTick] = useState(0);
   const legaSessionId = useHub((s) => s.legaSessionId || null);
+  useEffect(() => {
+    const pending = getState().commandPendingResult;
+    if (!pending || pending.projectId !== pid) return;
+    setState({ commandPendingResult: null });
+    for (const r of pending.response.results || []) {
+      if (r.plan) setPlan(r.plan);
+      if (r.opsPlan) setOpsPlan(r.opsPlan);
+    }
+    const res = pending.response, blocked = res.results?.find((r) => r.blockedBy);
+    setConversation((rows) => rows.map((row, index) => index === rows.length - 1 && row.role === "lega" ? { ...row, mount: mountRef.current, clarification: clarificationOf(res), blocker: blocked ? { ...blocked.blockedBy, requestId: blocked.workRequest?.id || null } : null, links: salesNavigation(res.results || []).links } : row));
+    setWorkTab("now");
+  }, [pid]);
   const startView = useResource("/api/owner/start-view", { reloadOn: (e) => e.type === "settings.changed" && e.payload?.key === "startView" });
   // One L3ga screen: the conversation and the unsent text live in the app store, per project — a change of view, „Ecran complet”, a
   // project switch (which remounts this screen) or a visit to another screen keeps them; the projects' histories stay separate.
@@ -324,7 +340,7 @@ function Cockpit({ projectId, go }) {
     sendingRef.current = true; planFocusPending.current = false;
     setConversation((c) => [...c.slice(-40), { role: "user", text: value, at: Date.now() }]);
     try {
-      const res = await api("/api/owner/intent", { method: "POST", body: { text: value, projectId: pid || undefined, source, presented: presentedPlan(opsPlan) || presentedFrom(plan?.envelope) || undefined, layout: layout || undefined, legaSessionId: legaStatus !== "off" && legaSessionId ? legaSessionId : undefined, choice: extra.choice || undefined } });
+      const res = await api("/api/owner/intent", { method: "POST", body: { text: value, recap: recapContext(), projectId: pid || undefined, source, presented: presentedPlan(opsPlan) || presentedFrom(plan?.envelope) || undefined, layout: layout || undefined, legaSessionId: legaStatus !== "off" && legaSessionId ? legaSessionId : undefined, choice: extra.choice || undefined } });
       applyFace(faceCommand(res.resolved.steps));
       let intelFound = null;
       // M10.2: a blocked request comes back with the server's explanation and its options (one next action each, never raw ids).
@@ -341,6 +357,8 @@ function Cockpit({ projectId, go }) {
       // may never run here): its rearm slot goes to the app store now, before the navigation, so the cockpit that opens shows the card.
       if (pendingRearm.current && rearmBeforeNavigation(res.results, pid)) { const fx = pendingRearm.current; pendingRearm.current = null; applyRearmFx(fx); }
       for (const r of res.results) {
+        await applyCommandResult(r, { go, typed: source === "typed" });
+        if (r.recap || r.recapControl || r.processSheet) setWorkTab("now");
         if (r.navigate?.startsWith("/cockpit/")) { const next = r.navigate.split("/")[2]; setCurrentProject(next); go(`/lega/${next}`); }
         // M09: "deschide studioul", "arată-mi clipul X", a proposed correction (opens the clip at that second with the proposal).
         if (r.navigate?.startsWith("/studio")) go(r.navigate);
@@ -595,6 +613,9 @@ function Cockpit({ projectId, go }) {
           <details className="lega-more">
             <summary className="btn sm ghost">Mai mult</summary>
             <div className="lega-more-pop stack tight">
+              <button className="btn sm ghost" onClick={() => go("/comanda")}>Mod Comandă (Alt+C)</button>
+              <button className="btn sm ghost" onClick={() => window.open("#/comanda?ecran=tv", "l3ga-tv", "popup,width=1920,height=1080")}>Mod Comandă pe al doilea ecran</button>
+              <p>Mută fereastra pe televizor și apasă «Pe tot ecranul»</p>
               {hub && <span className="row wrap"><Chip tone={hub.mode === "BUILD_SAFE" ? "info" : "warn"} title="Modul de lucru al Hub-ului">{hub.mode}</Chip><Chip tone={hub.executionGate?.status === "open" ? "ok" : "neutral"} title={hub.executionGate?.reason}>poarta {hub.executionGate?.status === "open" ? "deschisă" : "suspendată"}</Chip></span>}
               {typeof document !== "undefined" && document.fullscreenEnabled && <button className="btn sm ghost" aria-pressed={monitorFull} onClick={toggleMonitor} title="Ecranul Lega pe tot monitorul, fără bara browserului (ca F11)"><Monitor size={14} />{monitorFull ? "Ieși de pe tot monitorul" : "Tot monitorul"}</button>}
               <label className="start-view small" title="Ce se deschide când pornești Hub-ul fără o adresă anume">
@@ -692,6 +713,8 @@ function Cockpit({ projectId, go }) {
           {workTab === "history" && <div id="work-panel-history" role="tabpanel" aria-labelledby="work-tab-history"><HistoryList projectId={pid || null} go={go} onOpenDesk={openDesk} compact /></div>}
           {/* The work stays mounted while the history is shown (a plan, the rearm card and the desk keep their state and focus rules). */}
           <div id="work-panel-now" role="tabpanel" aria-labelledby="work-tab-now" className="work-now" hidden={workTab === "history"}>
+          <RecapCard go={go} visible={workTab !== "history"} />
+          {commandSheet && <><button onClick={() => setCommand({ sheetShownAt: null, sheetId: null })}>Închide fișa</button><SheetCard sheetId={commandSheet} /></>}
           {/* M11: the project's latest delivery, in Lega's own words (the result, never ids or grants), one click from the Delivery Room. */}
           {(cockpit.data?.deliveries || []).length > 0 && pid && (
             <div className="stack tight" aria-label="Livrări">

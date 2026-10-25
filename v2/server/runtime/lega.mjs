@@ -90,7 +90,7 @@ const plannerKindOf = (intent) => (intent === "sales_prepare" || intent === "sal
 const ANALYSIS_WORDS = /^\s*(?:analizeaza|citeste|rezuma|revizuieste|evalueaza|explica)\b/;
 const STUDIO_WORDS = /\b(clip|clipul|clipuri|video|videoclip|videoclipul|promo|promovare|reel|short|shorts|montaj|teaser|trailer)\b/;
 /** Screens the browser can open from a path the intake returned (the cockpit path becomes the Lega screen of that project). */
-const NAVIGABLE = /^\/(lega|studio|intel|missions|approvals|projects|system|integrations|conversations|sales)(\/|\?|$)/;
+const NAVIGABLE = /^\/(lega|comanda|studio|intel|missions|approvals|projects|system|integrations|conversations|sales)(\/|\?|$)/;
 /**
  * M10 zero-form start: at most this many starts with derived authority per owner session in a rolling window. Counted from the
  * audit events (lega.authority_derived), so a Hub restart does not reset it; it bounds a loop that would spend plan quota.
@@ -539,7 +539,7 @@ export function createLega({ bus, live, clock, settings, gate, grants, projects,
       // D4 review: the provider's handoffs (the owner's words each delegated turn was started for) and the turn each one belongs to (bounded).
       handoffs: [], turnHandoff: new Map(),
       // D1 review: the journal position each delegated turn started at, and the lines the Hub handed to the voice with their origin (bounded).
-      turnSeqs: new Map(), spokenLines: [],
+      turnSeqs: new Map(), spokenLines: [], recap: null,
       // M10.2 U13 (owner decision 8: ONE global gate, nothing written here): whether this session's audio goes through the local filter —
       // the page starts the gate whenever the setting is on (fail-closed if it cannot). Read once; enabling it later restarts the session.
       gated: Boolean(settings.get("voiceGate")?.enabled), pendingArm: null,
@@ -636,7 +636,7 @@ export function createLega({ bus, live, clock, settings, gate, grants, projects,
       current.attempt = { consumed: true, refunded: false, rule: did ? `sesiunea a avut activitate (${a.transcripts || 0} transcrieri, ${a.turns || 0} turnuri, ${a.toolCalls || 0} unelte): încercarea rămâne folosită`
         : "GPT-Live a pornit (răspuns SDP primit); fără activitate observată, dar consumul real e necunoscut: încercarea nu se restituie automat" };
     }
-    current.status = "ended"; current.endedAt = clock().toISOString(); current.endReason = reason; current.phase = "ended";
+    current.status = "ended"; current.endedAt = clock().toISOString(); current.endReason = reason; current.phase = "ended"; current.recap = null;
     clearTimers(current);
     for (const [runId, entry] of pendingRuns) if (entry.sessionId === current.id) pendingRuns.delete(runId);
     try { fs.rmSync(current.cwd, { recursive: true, force: true }); } catch { /* scratch dir; best effort */ }
@@ -709,7 +709,7 @@ export function createLega({ bus, live, clock, settings, gate, grants, projects,
     if (!safe) return false;
     setPhase(current, "speaking");
     if (current.spokenLines) current.spokenLines = [...current.spokenLines, { at: Date.now(), key: sentenceKey(safe), origin: SPEECH_ORIGINS.has(origin) ? origin : "hub_notice" }].slice(-SPOKEN_LINES_MAX);
-    await current.handle.appendSpeech(safe).catch(() => {});
+    try { await current.handle.appendSpeech(safe); } catch { return false; }
     live.publish({ type: "lega.said", sessionId: current.id, text: safe });
     return true;
   }
@@ -721,10 +721,39 @@ export function createLega({ bus, live, clock, settings, gate, grants, projects,
     const key = sentenceKey(text);
     const lines = current.spokenLines || [];
     const now = Date.now();
-    const i = key ? lines.findIndex((l) => now - l.at <= SPEECH_ORIGIN_MS && l.key && (l.key === key || (Math.min(l.key.length, key.length) >= 8 && (l.key.includes(key) || key.includes(l.key))))) : -1;
+    let i = key ? lines.findIndex((l) => now - l.at <= SPEECH_ORIGIN_MS && l.key && (l.key === key || (Math.min(l.key.length, key.length) >= 8 && (l.key.includes(key) || key.includes(l.key))))) : -1;
+    if (i < 0 && current.recap?.spoken && now - current.recap.spoken.at <= 120000) {
+      const words = current.recap.spoken.key.split(" ").filter(Boolean); const heard = new Set(key.split(" "));
+      if (words.length && words.filter((w) => heard.has(w)).length / words.length >= 0.9) i = lines.findIndex((l) => l.origin === "hub_bridge" && l.key === current.recap.spoken.key && now - l.at <= 120000);
+    }
     if (i < 0) return "realtime";
     const [line] = lines.splice(i, 1);
     return line.origin;
+  }
+
+  const recapOf = (id) => session?.id === id && session.status === "active" && session.recap ? { active: true, snapshotId: session.recap.snapshotId, index: session.recap.index } : { active: false, snapshotId: null, index: null };
+  const isHeld = (snapshotId) => session?.status === "active" && session.recap?.snapshotId === snapshotId;
+  function stopRecap(id) {
+    if (session?.id !== id || !session.recap) return;
+    const { snapshotId, index } = session.recap; const chapterKey = late.recap?.get(snapshotId)?.chapters[index]?.key || null;
+    session.recap = null;
+    live.publish({ type: "lega.recap", sessionId: id, snapshotId, index, chapterKey, action: "stop", handedOff: false, at: clock().toISOString() });
+  }
+  async function presentRecap({ sessionId, snapshotId, index, action = "show", ownerSession = null }) {
+    if (!Number.isInteger(index) || index < 0 || index > 5 || !["show", "stop"].includes(action)) throw new HubError("validation", "Capitol sau acțiune nevalidă");
+    const snapshot = late.recap?.get(snapshotId); const chapter = snapshot?.chapters[index];
+    const result = (handedOff, reason) => ({ snapshotId, index, chapterKey: chapter?.key || null, voice: { requested: action !== "stop", handedOff, reason } });
+    if (!session || session.status !== "active") return result(false, "voice_off");
+    if (session.id !== sessionId || session.authority === "owner_session" && !ownerSession || ownerSession && session.ownerSessionId !== ownerSession.id) return result(false, "other_session");
+    if (action === "stop") { if (session.recap) stopRecap(sessionId); else live.publish({ type: "lega.recap", sessionId, snapshotId, index, chapterKey: chapter?.key || null, action: "stop", handedOff: false, at: clock().toISOString() }); return result(false, null); }
+    if (!chapter) return result(false, "snapshot_gone");
+    const current = session;
+    current.recap = { snapshotId, index, spoken: null };
+    const handedOff = await speak(current, chapter.speech, "hub_bridge");
+    if (current !== session || current.status !== "active" || current.recap?.snapshotId !== snapshotId || current.recap.index !== index) return result(false, "voice_off");
+    if (handedOff) current.recap.spoken = { key: sentenceKey(speakable(redactText(chapter.speech))), at: Date.now() };
+    live.publish({ type: "lega.recap", sessionId, snapshotId, index, chapterKey: chapter.key, action: "show", handedOff, at: clock().toISOString() });
+    return result(handedOff, handedOff ? null : "provider_refused");
   }
 
   async function onEvent(current, event) {
@@ -756,6 +785,11 @@ export function createLega({ bus, live, clock, settings, gate, grants, projects,
       // D1 review: an assistant transcript says whose line it is (an enum, no extra words): the voice model's own, an agent turn's answer
       // or one of the Hub's own lines spoken through the same channel.
       const origin = role === "assistant" ? speechOriginOf(current, text) : null;
+      if (origin === "hub_bridge" && current.recap?.spoken && Date.now() - current.recap.spoken.at <= 120000) {
+        const words = current.recap.spoken.key.split(" ").filter(Boolean); const heard = new Set(sentenceKey(text).split(" "));
+        const match = words.length ? words.filter((w) => heard.has(w)).length / words.length : 0;
+        if (match >= 0.9) { live.publish({ type: "lega.recap_heard", sessionId: current.id, snapshotId: current.recap.snapshotId, index: current.recap.index, match, at: clock().toISOString() }); current.recap.spoken = null; }
+      }
       const recorded = bus.emit({ type: "lega.transcript", scopeType: "system", scopeId: current.id, source: role === "user" ? "user" : "lega", payload: { role, text, ...(origin ? { origin } : {}) } });
       live.publish({ type: "lega.transcript.done", sessionId: current.id, role, text });
       // The transcript's event id is its idempotency key at the intake: whoever forwards THIS sentence executes it at most once.
@@ -852,6 +886,9 @@ export function createLega({ bus, live, clock, settings, gate, grants, projects,
   /** Only the owner's own final words can trigger deterministic commands; Lega's words and agent output never can. */
   async function onOwnerWords(current, text, transcriptId = null) {
     const parsed = parseVoiceCommand(text, { legaPrefix: true });
+    // Addressed and explicit global commands retain priority over presentation controls.
+    const m16 = resolveIntent(text, { projects: projects.list(), processSheets: late.processSheets?.() || [], recap: recapOf(current.id), source: "voice-provider" }).steps;
+    if (!(parsed.kind === "command" && (parsed.addressed || parsed.explicit)) && m16.length && m16.every((s) => ["recap", "recap_control", "command_mode", "command_view", "command_numbers", "department_show", "process_sheet"].includes(s.intent))) { await bridge(current, text, transcriptId); return; }
     if (parsed.kind === "command") {
       current.lastOwnerCommand = { command: parsed.command, at: Date.now() };
       bus.emit({ type: "lega.command", scopeType: "system", scopeId: current.id, source: "user", payload: { command: parsed.command, addressed: Boolean(parsed.addressed) } });
@@ -859,7 +896,7 @@ export function createLega({ bus, live, clock, settings, gate, grants, projects,
       // In an open-mic session a bare "stop" / "oprește" / "pauză" (or a TV in the room) must not stop everything:
       // global commands need the name ("Lega, …") or the explicit form ("oprește tot"). Otherwise Lega just goes quiet.
       if (global && !parsed.addressed && !parsed.explicit) { live.publish({ type: "lega.silence", sessionId: current.id }); return; }
-      if (parsed.command === "stop_all") { await commandsApi.dispatch({ type: "system.stop_all", channel: "voice", actor: "voice", payload: { reason: "Lega: Oprește tot" }, intentText: text }); return; }
+      if (parsed.command === "stop_all") { stopRecap(current.id); await commandsApi.dispatch({ type: "system.stop_all", channel: "voice", actor: "voice", payload: { reason: "Lega: Oprește tot" }, intentText: text }); return; }
       if (parsed.command === "pause") {
         // M10.2 (D13): in a session derived from the owner session the pause is the OWNER's pause (credential recorded, active missions
         // paused), so „Continuă” typed or voice-local in that same credential can reopen it. Otherwise (grant path, or the owner session
@@ -875,7 +912,7 @@ export function createLega({ bus, live, clock, settings, gate, grants, projects,
         if (isVoiceFirst(current)) { try { late.intake?.pauseOpsPlans?.({ actor: "voice", reason: "Lega: pauză" }); } catch { /* a pause never fails */ } }
         return;
       }
-      if (parsed.command === "mute") { live.publish({ type: "lega.silence", sessionId: current.id }); return; }
+      if (parsed.command === "mute") { stopRecap(current.id); live.publish({ type: "lega.silence", sessionId: current.id }); return; }
       if (parsed.path) { live.publish({ type: "lega.navigate", sessionId: current.id, path: parsed.path }); return; }
     }
     // Review M10.2 #13/#23: "Da, execută planul" is the phrase the Hub itself asks for while a plan is ARMED in this session; the local
@@ -1104,7 +1141,7 @@ export function createLega({ bus, live, clock, settings, gate, grants, projects,
       // of its resume nor the „Continuă?” question (the owner heard what the Hub did); the rest of the sentence is answered as usual.
       const quiet = Boolean(copy?.afterVoice);
       const results = quiet ? (out.results || []).filter((r) => r?.intent !== "ops_continue" && !r?.args?.continueQuestion) : out.results || [];
-      const d = describeResults(results);
+      const d = describeResults(results.filter((r) => !r.recap && !r.recapControl && !["command_mode", "command_view", "command_numbers", "department_show", "process_sheet"].includes(r.intent)));
       // M10.2.1 (D20): „Continuă?” is a question, never the resume — the ONE clarification the resolver asked is said by the Hub.
       if (!quiet && !d.say && out.resolved?.clarification?.forIntent === "ops_continue" && out.resolved.clarification.question) { d.say = clip(out.resolved.clarification.question, 300); d.outcome = "question"; }
       // The resolver's intents plus the intents the Hub actually executed (a sentence that only names a project can complete a request
@@ -1113,6 +1150,24 @@ export function createLega({ bus, live, clock, settings, gate, grants, projects,
       // D4: the Hub answered this sentence completely and said it itself — every result a verified local desktop action (no plan, question,
       // refusal, read or second request in it): the agent's answer to the same sentence is then not spoken (turn.completed).
       entry.intents = intents;
+      const m16 = new Set(["recap", "recap_control", "command_mode", "command_view", "command_numbers", "department_show", "process_sheet"]);
+      const m16Results = results.filter((r) => m16.has(r.intent) && !r.refused && !r.error || r.recap && !r.refused && !r.error);
+      if (m16Results.length) {
+        entry.localOnly = results.every((r) => (m16.has(r.intent) || r.recap) && !r.refused && !r.error) && wholeSentenceLocal(words);
+        for (const r of m16Results) {
+          if (r.recap) { const presented = await presentRecap({ sessionId: current.id, snapshotId: r.recap.snapshot.id, index: 0, ownerSession: current.authority === "owner_session" ? { id: current.ownerSessionId } : null }); spoke ||= presented.voice.handedOff; }
+          else if (r.recapControl) {
+            const c = r.recapControl;
+            if (c.stopped) { stopRecap(current.id); spoke = await speak(current, r.message, "hub_bridge") || spoke; }
+            else { const presented = await presentRecap({ sessionId: current.id, snapshotId: c.snapshotId, index: c.index, ownerSession: current.authority === "owner_session" ? { id: current.ownerSessionId } : null }); spoke ||= presented.voice.handedOff; if (c.action === "open" && c.open) live.publish(c.open.view ? { type: "lega.command_view", sessionId: current.id, view: c.open.view } : { type: "lega.navigate", sessionId: current.id, path: c.open.path }); }
+          } else if (r.commandView) live.publish({ type: "lega.command_view", sessionId: current.id, ...r.commandView });
+          if (r.navigate && NAVIGABLE.test(r.navigate)) live.publish({ type: "lega.navigate", sessionId: current.id, path: r.navigate });
+          if (r.intent === "process_sheet" && !r.processSheet && r.message) spoke = await speak(current, r.message, "hub_bridge") || spoke;
+          recordAction(current, { heard: clip(words, 160), intents: [r.intent], outcome: "local", said: r.message || "", planId: null, workRequestId: null });
+        }
+        entry.acted = true;
+        if (entry.localOnly) return out;
+      }
       // D4 review: and only when the resolver's steps consumed the WHOLE sentence — „Deschide Notepad și spune-mi ce misiuni am” resolves to
       // desktop_open alone, so the agent's answer to the second request must still be spoken.
       entry.localOnly = d.outcome === "local" && Boolean(d.say) && results.length > 0 && results.every((r) => desktopResult(r) && !r.refused && !r.error)
@@ -1174,7 +1229,7 @@ export function createLega({ bus, live, clock, settings, gate, grants, projects,
    */
   function wholeSentenceLocal(words) {
     let steps = [];
-    try { steps = resolveIntent(words, { projects: projects.list().map((p) => ({ id: p.id, name: p.name, slug: p.slug, source: p.source })), missions: [], departments: [], source: "voice-provider" }).steps || []; }
+    try { steps = resolveIntent(words, { projects: projects.list().map((p) => ({ id: p.id, name: p.name, slug: p.slug, source: p.source })), missions: [], departments: [], source: "voice-provider", recap: { active: true }, processSheets: late.processSheets?.() || [] }).steps || []; }
     catch { return false; }
     return steps.length > 0 && steps.every((s) => s?.intent === "reopen_last" || clauseCovered(s?.intent, s?.text));
   }
@@ -2005,7 +2060,7 @@ export function createLega({ bus, live, clock, settings, gate, grants, projects,
     return { id: s.id, status: s.status, authority: s.authority || "grant", ownerSessionId: s.authority === "owner_session" ? s.ownerSessionId : null, gated: Boolean(s.gated), stopping: Boolean(s.stopping) };
   }
 
-  return { attachKnowledge: (k) => { knowledgeRef = k; }, start, connected, stop, stopAll, trackRun, proposalFailed, announce, announceResults, preview, tick, recover, authorityOf, state: () => publicView(session),
+  return { presentRecap, recapOf, isHeld, stopRecap, attachKnowledge: (k) => { knowledgeRef = k; }, start, connected, stop, stopAll, trackRun, proposalFailed, announce, announceResults, preview, tick, recover, authorityOf, state: () => publicView(session),
     // D23: a start waiting for its automatic account check counts as active (no session yet), so lega.session.stop „current” reaches it.
     active: () => Boolean(session && session.status !== "ended") || pendingStarts.size > 0,
     // M10.2: what the Hub did from the owner's words in the current session (the same list lega.hub_actions reads).

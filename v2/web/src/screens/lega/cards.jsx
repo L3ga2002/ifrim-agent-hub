@@ -540,6 +540,7 @@ export function CompanyMap({ departmentKey, onDepartment, ...rest }) {
         <ul className="plain">{focus.missions.length ? focus.missions.map((m) => <li key={m.id}><a href={`#/missions/${m.id}`}>{m.title}</a> <Src>{m.stage || m.status}{waitSuffix(m.waitReason, m.stage)}</Src>{m.executions.map((x) => <div key={x.runId} className="small">↳ {x.provider} · {x.environment} · {x.phase}</div>)}</li>) : <li className="faint small">Nicio misiune în departament.</li>}</ul>
       )}
       <Src>{map.data?.note}</Src>
+      <a className="btn sm" href="#/comanda?vedere=companie">Harta 2.0 (Mod Comandă)</a>
     </CardShell>
   );
 }

@@ -26,6 +26,7 @@ import { planImport, readLegacyTable } from "../storage/v1-import.mjs";
 import { gitState } from "../tools/git.mjs";
 import { HUB_VERSION, API_CONTRACT } from "../config.mjs";
 import { registerOwnerRoutes } from "../owner/owner-routes.mjs";
+import { registerCommandRoutes } from "../owner/command-routes.mjs";
 import { registerIntelRoutes } from "../intel/intel-routes.mjs";
 import { registerMediaRoutes } from "../media/media-routes.mjs";
 import { registerOpsRoutes } from "../ops/ops-routes.mjs";
@@ -75,6 +76,7 @@ export function registerRoutes(router, hub, { token }) {
   }
   const cmd = (type, map = ({ body }) => body, options) => (ctx) => dispatch(ctx.req, type, map(ctx), options);
   // M06: owner session, cockpit, envelopes, interruptions, voice profile, layout (v2/server/owner/owner-routes.mjs).
+  registerCommandRoutes(router, hub);
   const owner = registerOwnerRoutes(router, hub);
   registerIntelRoutes(router, hub);
   // M09 Content Studio (media + content routes; streaming media files and uploads).

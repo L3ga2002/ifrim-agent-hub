@@ -7,6 +7,7 @@ import "./styles/m07.css";
 import "./styles/m10.css";
 import "./styles/lega-one.css";
 import "./styles/m15.css";
+import "./styles/m16.css";
 import { startHubConnection, useHub, setState } from "./store.js";
 import { api } from "./api.js";
 import { Shell } from "./shell/Shell.jsx";
@@ -15,6 +16,7 @@ import { navigate } from "./nav.js";
 import { ensureOwnerSession } from "./lib/ownerSession.js";
 
 const screens = {
+  comanda: lazy(() => import("./screens/Command.jsx")),
   // M06: Lega 2.0 — the cockpit you drive by intent (the start screen); the full dashboard stays one click away.
   lega: lazy(() => import("./screens/Lega.jsx")),
   control: lazy(() => import("./screens/ControlRoom.jsx")),
@@ -71,6 +73,7 @@ export function navScreenOf(route) {
 }
 
 function App() {
+  const [isDisplay] = useState(() => { const r = parseRoute(window.location.hash); return r.name === "comanda" && r.query.ecran === "tv"; });
   const [route, setRoute] = useState(() => parseRoute(window.location.hash));
   useEffect(() => {
     const onHash = () => setRoute(parseRoute(window.location.hash));
@@ -82,7 +85,7 @@ function App() {
   const lastNav = useRef(null);
   const navKey = navScreenOf(route);
   useEffect(() => {
-    if (navKey === lastNav.current) return;
+    if (isDisplay || navKey === lastNav.current) return;
     lastNav.current = navKey;
     if (navKey) api("/api/owner/nav", { method: "POST", body: { screen: navKey } }).catch(() => {});
   }, [navKey]);
@@ -91,6 +94,7 @@ function App() {
   // (re-checked every 5 minutes: a profile turned off ends it on the Hub, and the badge goes away).
   const [devMode, setDevMode] = useState(false);
   useEffect(() => {
+    if (isDisplay) return;
     let alive = true;
     const check = () => ensureOwnerSession().then((on) => { if (alive) setDevMode(Boolean(on)); });
     check();
@@ -104,9 +108,10 @@ function App() {
     api("/api/owner/start-view").then((r) => { if (r?.startView === "stage") setState({ stageOpen: true }); }).catch(() => {});
   }, []);
   useEffect(() => { document.getElementById("main")?.focus({ preventScroll: true }); }, [route.name]);
-  const Screen = screens[route.name];
+  const Screen = isDisplay ? screens.comanda : screens[route.name];
   const loading = useHub((s) => s.loading);
   const go = useCallback((path) => navigate(path), []);
+  if (isDisplay) return <Suspense fallback={<Loading />}><Screen display query={route.query} /></Suspense>;
   if (route.name === "m") return <Suspense fallback={<div className="mobile-app"><Loading lines={4} /></div>}><Screen /></Suspense>;
   return (
     <Shell route={route} go={go}>

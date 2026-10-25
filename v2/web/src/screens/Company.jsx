@@ -188,6 +188,7 @@ function Structure() {
   const rolesTotal = org.data?.roles?.length ?? departments.reduce((n, d) => n + d.roles.length, 0);
   return (
     <div className="stack">
+      <a className="btn" href="#/comanda?vedere=companie">Harta 2.0 (Mod Comandă)</a>
       <ErrorNotice error={overview.error} onRetry={overview.reload} />
       <Panel title={company?.name || "Companie"} icon={Building2} actions={company?.slug ? <span className="faint mono small">{company.slug}</span> : null}>
         {company ? (

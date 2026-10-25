@@ -109,7 +109,9 @@ export function registerOwnerRoutes(router, hub) {
     // M08: the Lega session the plan is shown in (the Hub arms the short voice window only for it; review M08: it was dropped here).
     legaSessionId: typeof body.legaSessionId === "string" && body.legaSessionId ? body.legaSessionId.slice(0, 80) : undefined,
     // M10.2: a clarification button answers with the option id the Hub offered (checked against the server-held question).
-    choice: body.choice && typeof body.choice === "object" && !Array.isArray(body.choice) ? { forIntent: String(body.choice.forIntent || "").slice(0, 40), id: String(body.choice.id || "").slice(0, 80) } : undefined }));
+    choice: body.choice && typeof body.choice === "object" && !Array.isArray(body.choice) ? { forIntent: String(body.choice.forIntent || "").slice(0, 40), id: String(body.choice.id || "").slice(0, 80) } : undefined,
+    // M16: the recap the page is presenting (snapshot id + chapter index), so „următorul” / „înapoi” / „oprește” are read in its context only.
+    recap: body.recap && typeof body.recap === "object" && !Array.isArray(body.recap) ? { snapshotId: String(body.recap.snapshotId || "").slice(0, 80), index: body.recap.index } : undefined }));
   get("/api/envelopes", ({ query }) => ({ envelopes: query.projectId ? envelopes.forProject(projects.get(query.projectId)?.id || query.projectId, 20).map((e) => envelopes.view(e.id)) : envelopes.pending().map((e) => envelopes.view(e.id)) }));
   get("/api/envelopes/:id", ({ params }) => { const v = envelopes.view(params.id); if (!v) throw new HubError("not_found", "Plan necunoscut"); return v; });
   post("/api/envelopes", ({ req, body }) => dispatch(req, "envelope.propose", { projectId: body.projectId, missionIds: body.missionIds || [], level: body.level || undefined, constraints: body.constraints || {} }));

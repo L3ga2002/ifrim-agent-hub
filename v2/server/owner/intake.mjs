@@ -16,6 +16,8 @@
 // - 2.12.1 (D22): „Continuă” holds only what the current suspension's own stop stopped (owner/stop-scope.mjs: a Stop All, the shutdown,
 //   a security stop) and the missions, which need the open gate; work stopped for any other reason resumes as before, gate or not.
 import { HubError } from "../core/errors.mjs";
+import { activeWork } from "./recap.mjs";
+import { processSheetAliases } from "./process-sheets.mjs";
 import { parse } from "../storage/db.mjs";
 import { resolveIntent, matchRef, normalize, stripFillers, INTENT_EFFECTS, CONTINUE_QUESTION, stopTalkAnswer, modeAnswer, PREVIEW_START, stripOutreach, SALES_SEND_REASON,
   QUOTED_OUTREACH_NOTE, OWN_OUTREACH_TEXT, outreachCutNote } from "./intents.mjs";
@@ -980,6 +982,10 @@ export function createIntake(hub) {
   }
 
   // ---------------------------------------------------------------- the step executor
+  function recapContext(input, ctx) {
+    if (input.recap && hub.recap?.get(input.recap.snapshotId) && Number.isInteger(input.recap.index) && input.recap.index >= 0 && input.recap.index <= 5) return { active: true, ...input.recap };
+    return ctx.channel === "voice" && input.legaSessionId ? hub.lega.recapOf(input.legaSessionId) : { active: false };
+  }
   async function executeStep(step, env) {
     const { input, ctx, source, presented, presentedPlanId, planWaiting, awaiting, voiceWaiting = null, derived, conv, state } = env;
     const r = { intent: step.intent, effect: step.effect, constraints: step.constraints, args: step.args, effectClass: step.effectClass };
@@ -1027,7 +1033,22 @@ export function createIntake(hub) {
       }
     }
     try {
-      if (step.intent === "open_project" || step.intent === "switch_project") {
+      if (["recap", "recap_control", "command_mode", "command_view", "command_numbers", "department_show", "process_sheet"].includes(step.intent)) {
+        if (step.intent === "recap") { r.recap = { snapshot: hub.recap.build({ period: step.args.period, projectId }), index: 0 }; r.message = r.recap.snapshot.chapters[0].sentences.join(" "); }
+        else if (step.intent === "recap_control") {
+          const context = recapContext(input, ctx); const snapshot = hub.recap.get(context.snapshotId); const action = step.args.action;
+          let index = context.index || 0; const atEnd = action === "next" && index === 5;
+          if (action === "next") index = Math.min(index + 1, 5); if (action === "back") index = Math.max(index - 1, 0);
+          const chapter = snapshot?.chapters[index]; const stopped = !chapter || action === "stop";
+          const work = activeWork(hub) + hub.runs.activeRuns().length;
+          r.recapControl = { action, snapshotId: context.snapshotId, index, chapterKey: chapter?.key || null, stopped, atEnd, activeWork: work, open: action === "open" ? chapter?.open || null : null };
+          r.message = !chapter ? "Rezumatul nu mai e disponibil; spune „Ce s-a întâmplat azi?” pentru unul nou." : stopped ? `Am oprit rezumatul.${work > 0 ? " Lucrările merg mai departe; «Oprește tot» le oprește." : ""}` : atEnd ? "Acesta a fost ultimul capitol." : action === "open" ? `Deschid „${chapter.title}”.` : chapter.sentences.join(" ");
+        } else if (step.intent === "command_mode") { r.navigate = "/comanda"; r.view = "command"; }
+        else if (step.intent === "command_view") { r.commandView = { view: step.args.view }; r.navigate = `/comanda?vedere=${step.args.view}`; }
+        else if (step.intent === "command_numbers") r.commandView = { view: null, hideNumbers: step.args.hide };
+        else if (step.intent === "department_show") { r.commandView = { view: "department", ...step.args }; if (step.args.departmentKey) r.companyMap = cockpit.companyMap(); r.navigate = `/comanda?vedere=department&${step.args.departmentKey ? `departament=${encodeURIComponent(step.args.departmentKey)}` : `relative=${step.args.relative}`}`; }
+        else if (step.intent === "process_sheet") { if (step.args.sheetId) { r.processSheet = { id: step.args.sheetId }; r.commandView = { view: "sheet", sheetId: step.args.sheetId }; r.navigate = `/comanda?vedere=sheet&fisa=${encodeURIComponent(step.args.sheetId)}`; } else r.message = "Ce fișă vrei: Software Factory, ofertă comercială, dosar de pornire OPS, caz de suport SUP, deviz DVZ sau livrare media?"; }
+      } else if (step.intent === "open_project" || step.intent === "switch_project") {
         if (step.args.projectId) { projectId = step.args.projectId; r.cockpit = await cockpit.projectCockpit(projectId); r.navigate = `/cockpit/${projectId}`; }
         else r.message = step.args.unknownRef ? `Nu găsesc proiectul „${step.args.unknownRef}”.` : "Spune-mi proiectul.";
       } else if (["show_plan", "continue_work"].includes(step.intent)) {
@@ -1074,6 +1095,7 @@ export function createIntake(hub) {
       } else if (step.intent === "reorder") r.message = "Nu pot reordona pașii unui plan dintr-o frază. Spune ce faci întâi, pregătesc planul pentru acel pas, apoi pe următorul.";
       // D6: „Importă …” with no folder the Hub can read — ONE plain explanation (a read, from every source), never a silent unknown. The
       // step stays `unknown` for the probe, counted as answered.
+      else if (step.intent === "unknown" && step.args?.recapQuestion) r.message = "Dacă vrei capitolul următor, spune „următorul”.";
       else if (step.intent === "unknown" && step.args?.importNoFolder) r.message = IMPORT_FOLDER_HELP;
       // Stage before M12 (§5): a sentence that is only a restriction („Nu publica nimic”) is understood and said back, never silence.
       else if (step.intent === "unknown" && (step.constraints?.noPublish || step.constraints?.noDeploy || step.constraints?.noMessages || step.constraints?.noGit)) {
@@ -1110,10 +1132,10 @@ export function createIntake(hub) {
           if (r.preview) { if (pid !== projectId) r.navigate = `/cockpit/${pid}`; projectId = pid; }
         }
       }
-      else if (step.intent === "briefing" || step.intent === "continue_last") r.delta = cockpit.delta(projectId || "__company__");
+      else if (step.intent === "briefing" || step.intent === "continue_last") { r.delta = cockpit.delta(projectId || "__company__"); if (step.intent === "briefing") r.recap = { snapshot: hub.recap.build({ period: "since_visit", projectId }), index: 0 }; }
       else if (step.intent === "show_company" || step.intent === "zoom") { r.companyMap = cockpit.companyMap(); r.navigate = step.args.departmentKey ? `/company-map/${step.args.departmentKey}` : "/company-map"; }
       else if (step.intent === "recommendations") r.recommendations = advisor.recommendations();
-      else if (step.intent === "mute") r.interrupt = interrupts.mute({ actor: ctx.actor });
+      else if (step.intent === "mute") { if (recapContext(input, ctx).active) { r.recapStopped = true; if (ctx.channel === "voice") hub.lega.stopRecap(input.legaSessionId); } r.interrupt = interrupts.mute({ actor: ctx.actor }); }
       else if (step.intent === "pause") {
         // M10.2 (U11): the session that said „Pauză” is recorded with the suspension, so „Continuă” in the same credential can reopen it.
         // M10 / review #7: the same call also stops new operations of running operation plans (fail-safe; nothing is undone or closed)
@@ -1152,7 +1174,7 @@ export function createIntake(hub) {
         if (desk) { r.desktop = desk.desktop; r.plansPaused = desk.plansPaused; }
         r.interrupt = projectId ? await interrupts.takeover({ projectId, actor: ctx.actor }) : desk ? { summary: "Operatorul s-a oprit; controlul desktopului e al tău. Spune „Continuă” când vrei să reiau." } : { summary: "Ce proiect preiei?" };
       }
-      else if (step.intent === "stop_all") r.interrupt = (await hub.commands.dispatch({ type: "system.stop_all", channel: ctx.channel === "owner" ? "owner" : ctx.channel === "voice" ? "voice" : ctx.channel === "test" ? "test" : "ui", ownerSession: ctx.ownerSession, actor: ctx.actor, payload: { reason: "Oprește tot (Lega)" } })).result;
+      else if (step.intent === "stop_all") { if (recapContext(input, ctx).active) { r.recapStopped = true; if (ctx.channel === "voice") hub.lega.stopRecap(input.legaSessionId); } r.interrupt = (await hub.commands.dispatch({ type: "system.stop_all", channel: ctx.channel === "owner" ? "owner" : ctx.channel === "voice" ? "voice" : ctx.channel === "test" ? "test" : "ui", ownerSession: ctx.ownerSession, actor: ctx.actor, payload: { reason: "Oprește tot (Lega)" } })).result; }
       else if (step.intent === "quiet") r.prefs = advisor.setPrefs({ onlyDecisions: true }, ctx.actor);
       else if (step.intent === "notify_normal") r.prefs = advisor.setPrefs({ onlyDecisions: false }, ctx.actor);
       else if (step.intent === "autonomy") {
@@ -1578,7 +1600,7 @@ export function createIntake(hub) {
     }
     if (!String(input.text || "").trim()) throw new HubError("validation", "Text gol");
 
-    const resolveContext = () => ({ projects: projectList, currentProjectId: current?.id || null,
+    const resolveContext = () => ({ projects: projectList, currentProjectId: current?.id || null, recap: recapContext(input, ctx), processSheets: processSheetAliases(),
       missions: missions.list(current?.id || null).map((m) => ({ id: m.id, projectId: m.projectId, title: m.title, status: m.status, kind: m.kind })),
       departments: company.departments().map((d) => ({ key: d.key, name: d.name })),
       pendingEnvelopes: planWaiting ? [{ id: planWaiting.id, title: planWaiting.title }]

@@ -1,3 +1,4 @@
+import { VIEW_LABELS } from "./commandModel.js";
 // Cockpit logic (M06 §06, §12, §13, §19): pure functions shared by the Lega screen and its tests. Every sentence Lega shows
 // here is built from data the Hub returned; nothing is invented (no progress percentage, no test count that was not measured).
 import { opsReplyLines } from "./opsLogic.js";
@@ -152,6 +153,8 @@ export function replyFor(response) {
     if (r.error) { lines.push(`Nu am putut: ${r.error.message}`); continue; }
     if (r.refused) { lines.push(r.refused); continue; }
     if (r.message) { lines.push(r.message); continue; }
+    if (r.commandView) lines.push(`Am deschis ${VIEW_LABELS[r.commandView.view] || "vederea"} în Mod Comandă.`);
+    if (r.processSheet) lines.push("Fișa e în dreapta.");
     if (r.cockpit) lines.push(cockpitSummary(r.cockpit));
     if (r.plan) {
       if (r.plan.error) lines.push(`Nu pot pregăti planul: ${r.plan.error}`);

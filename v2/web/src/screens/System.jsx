@@ -1,3 +1,4 @@
+import SystemMap from "./command/SystemMap.jsx";
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Activity, Lock, History, CalendarClock, Scale, ScrollText, Workflow, BookOpen, Radar, Building2, Briefcase, ShieldCheck, Network, Brain, Gauge, HardDrive, CircleDot, Pause, RefreshCw, ChevronDown, ChevronRight, Plus, Trash2, Link2, Package, Monitor, Filter, X, Timer, ArrowRightLeft, ListTree } from "lucide-react";
 import { api, fmt } from "../api.js";
@@ -16,6 +17,7 @@ const TABS = [
   { id: "lifecycles", label: "Stări", icon: Workflow },
   { id: "skills", label: "Skills", icon: BookOpen },
   { id: "native", label: "Sesiuni native", icon: Radar },
+  { id: "map", label: "Hartă", icon: Network },
 ];
 const NEVER = () => false;
 const EMPTY = [];
@@ -1173,7 +1175,7 @@ function NativeTab() {
 
 // ---------------------------------------------------------------- screen
 
-const PANELS = { runs: RunsTab, environments: EnvironmentsTab, locks: LocksTab, checkpoints: CheckpointsTab, schedules: SchedulesTab, policies: PoliciesTab, commands: CommandsTab, lifecycles: LifecyclesTab, skills: SkillsTab, native: NativeTab };
+const PANELS = { map: SystemMap, runs: RunsTab, environments: EnvironmentsTab, locks: LocksTab, checkpoints: CheckpointsTab, schedules: SchedulesTab, policies: PoliciesTab, commands: CommandsTab, lifecycles: LifecyclesTab, skills: SkillsTab, native: NativeTab };
 
 export default function System({ query, go }) {
   const { tab, select, visited } = usePageTabs("system", TABS, query, go);

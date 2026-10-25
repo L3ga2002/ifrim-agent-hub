@@ -209,7 +209,7 @@ function ReplyOrOptOut({ opp, org, onChanged }) {
         <label className="field"><span>{kind === "OPT_OUT" ? "Ce a spus (obligatoriu)" : "Notă (opțional)"}</span><input className="input" value={note} maxLength={1000} onChange={(e) => setNote(e.target.value)} /></label>
       </div>
       {kind === "OPT_OUT" && <p className="warn-text small" style={{ margin: 0 }}>Firma devine imediat „Nu contacta”: ciornele se anulează, follow-up-urile se suspendă, iar la un reimport e recunoscută. Ridicarea cere aprobarea ta.</p>}
-      <div><button type="submit" className={`btn sm ${kind === "OPT_OUT" ? "danger" : ""}`} disabled={!valid || cmd.busy}>{cmd.busy ? "Se înregistrează…" : kind === "OPT_OUT" ? "Înregistrează opoziția" : "Înregistrează răspunsul"}</button></div>
+      <div><button type="submit" className={`btn sm ${kind === "OPT_OUT" ? "danger" : ""}`} disabled={!valid || cmd.busy}>{cmd.busy ? "Se înregistrează…" : kind === "OPT_OUT" ? "Înregistrează opoziția" : "Înregistrează răspunsul"}</button></div><p className="muted">Aici doar se înregistrează; nu se trimite nimic.</p>
       <ErrorNotice error={cmd.error} />
     </form>
   );
@@ -247,7 +247,7 @@ function ContactAndAcceptance({ opp, org, proposals, contactEvents, acceptances,
           </div>
           <label className="field"><span>Ce s-a discutat (opțional)</span><textarea className="textarea" rows={2} maxLength={1000} value={c.note} disabled={!contactReady.ok} onChange={(e) => setC({ ...c, note: e.target.value })} /></label>
           {contactReady.ok && <ConfirmField id={`confirm-contact-${opp.id}`} expected={contactExpected} value={c.confirm} onChange={(v) => setC({ ...c, confirm: v })} />}
-          <div><button type="submit" className="btn sm" disabled={!contactValid || contact.busy}>{contact.busy ? "Se înregistrează…" : "Înregistrează contactul"}</button></div>
+          <div><button type="submit" className="btn sm" disabled={!contactValid || contact.busy}>{contact.busy ? "Se înregistrează…" : "Înregistrează contactul"}</button></div><p className="muted">Aici doar se înregistrează; nu se trimite nimic.</p>
           <ErrorNotice error={contact.error} />
           <ApprovalGate gate={contact.approval} onDone={() => { contact.clearApproval(); onChanged(); }} onDismiss={contact.clearApproval} />
         </form>
@@ -268,7 +268,7 @@ function ContactAndAcceptance({ opp, org, proposals, contactEvents, acceptances,
                 <label className="field"><span>Notă (cum a acceptat)</span><input className="input" value={a.note} maxLength={1000} onChange={(e) => setA({ ...a, note: e.target.value })} /></label>
               </div>
               <ConfirmField id={`confirm-accept-${opp.id}`} expected={acceptExpected} value={a.confirm} onChange={(v) => setA({ ...a, confirm: v })} />
-              <div><button type="submit" className="btn sm primary" disabled={!acceptValid || accept.busy}>{accept.busy ? "Se înregistrează…" : "Înregistrează acceptarea"}</button></div>
+              <div><button type="submit" className="btn sm primary" disabled={!acceptValid || accept.busy}>{accept.busy ? "Se înregistrează…" : "Înregistrează acceptarea"}</button></div><p className="muted">Aici doar se înregistrează; nu se trimite nimic.</p>
             </>
           )}
           <ErrorNotice error={accept.error} />
@@ -394,11 +394,11 @@ function OppTransitions({ opp, transitions, contactEvents, onChanged }) {
           <li key={`${t.at}${t.to}${i}`}><div className="list-row sales-transition"><span className="nowrap small">{t.from ? statusMeta("opp", t.from).label : "—"} → <strong>{statusMeta("opp", t.to).label}</strong></span><span className="grow faint small break">{t.reason}</span><span className="faint small nowrap">{t.actor} · {when(t.at)}</span></div></li>
         ))}</ul> : <p className="faint small" style={{ margin: 0 }}>Nicio tranziție.</p>}
         {targets.length > 0 && (
-          <form className="sales-inline-form" onSubmit={(e) => { e.preventDefault(); if (to && reason.trim().length >= REASON_MIN.transition) cmd.run(`${opPath(opp.id)}/transition`, { to, reason: reason.trim() }); }}>
+          <><form className="sales-inline-form" onSubmit={(e) => { e.preventDefault(); if (to && reason.trim().length >= REASON_MIN.transition) cmd.run(`${opPath(opp.id)}/transition`, { to, reason: reason.trim() }); }}>
             <label className="field"><span>Stare nouă</span><select className="select" value={to} onChange={(e) => setTo(e.target.value)}><option value="">Alege…</option>{targets.map((s) => <option key={s} value={s}>{statusMeta("opp", s).label}</option>)}</select></label>
             <label className="field grow"><span>Motiv (min. {REASON_MIN.transition} caractere)</span><input className="input" value={reason} maxLength={300} onChange={(e) => setReason(e.target.value)} /></label>
             <button type="submit" className="btn sm" disabled={!to || reason.trim().length < REASON_MIN.transition || cmd.busy}>Schimbă starea</button>
-          </form>
+          </form><p className="muted">Aici doar se înregistrează; nu se trimite nimic.</p></>
         )}
         <p className="faint small" style={{ margin: 0 }}>„{statusMeta("opp", "APPROVED_INTERNAL").label}” vine din aprobarea propunerii, „{statusMeta("opp", "CONTACTED").label}” dintr-un contact înregistrat, iar „{statusMeta("opp", "WON").label}” din acceptarea clientului; nu se aleg manual.</p>
         <ErrorNotice error={cmd.error} />

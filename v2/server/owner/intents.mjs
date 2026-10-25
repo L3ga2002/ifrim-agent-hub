@@ -35,6 +35,7 @@ import { classOfIntent } from "../policy/effect-class.mjs";
 import { correctTypos, addKnownWords } from "./typos.mjs";
 
 export const INTENT_EFFECTS = Object.freeze({
+  recap: "read", recap_control: "none", command_mode: "navigate", command_view: "navigate", command_numbers: "none", department_show: "navigate", process_sheet: "read",
   open_project: "navigate", switch_project: "navigate", continue_last: "read", show_changes: "read", show_review: "read", show_tests: "read",
   show_preview: "read", show_plan: "plan", continue_work: "plan", confirm: "effect", not_yet: "none", reject_plan: "none", reorder: "none",
   status: "read", why_blocked: "read", why_route: "read", replay: "read", back: "navigate", live: "navigate", show_company: "navigate",
@@ -1550,6 +1551,52 @@ const OUTREACH_STRIPPED_PLANNERS = new Set(["engineering_request", "analysis_req
 // Pattern table: [intent, regex on the normalized clause, (match, clause) => args]. First match wins per clause.
 // M10.2.1 (D21): a free reference may hold a dot INSIDE a word ("factory demo m10.2", "v2.1"): `\.(?=[a-z0-9])`, never as its first
 // character and never at its end (a sentence-final period is cut with the clause and stripped before matching).
+const DEPARTMENT_ALIASES = {
+  executive: ["conducere", "executive", "executiv", "directiune"], product: ["produs", "product", "strategie"], engineering: ["engineering", "inginerie", "dezvoltare"],
+  "qa-security": ["qa", "calitate", "securitate"], devops: ["devops", "infrastructura"], sales: ["vanzari", "vanzarile", "sales"], marketing: ["marketing", "growth"],
+  "customer-success": ["relatia cu clientii", "customer success", "suport clienti"], "project-management": ["managementul proiectelor", "project management"], operations: ["operatiuni", "operatiunile", "operations"], research: ["cercetare", "research"], "finance-admin": ["financiar", "finante", "administrativ", "finance"],
+};
+/** Anchored M16 reads; contextual controls never consume quotations, questions or negations. */
+export function m16Match(text, context = {}, { asks = false, quoted = false, addressed = false } = {}) {
+  const t = String(text).replace(/[.!?,]+$/g, "").trim();
+  const result = (intent, args = {}) => ({ intent, args });
+  if (context.recap?.active && !quoted) {
+    const actions = { next: /^(urmatorul(?: capitol)?|capitolul urmator|next)$/, back: /^(inapoi|capitolul anterior|precedentul)$/, repeat: /^(repeta(?: capitolul)?|mai spune o data)$/, open: /^(deschide(?:-l)?|deschide capitolul)$/, stop: /^(opreste(?: rezumatul|-te din rezumat)?|stop|gata|ajunge)$/ };
+    for (const [action, re] of Object.entries(actions)) if (re.test(t)) {
+      if (action === "stop" && addressed && /^(stop|opreste)$/.test(t)) return null;
+      if (asks) return result("unknown", { recapQuestion: true });
+      return result("recap_control", { action });
+    }
+  }
+  if (/^(?:ce s-a (?:mai )?intamplat (?:azi|astazi)(?: in companie)?|fa(?:-mi)? (?:rezumatul(?: (?:zilei|de azi))?|un rezumat)|rezumatul (?:serii|de azi|zilei)|(?:vreau|da-mi) rezumatul)$/.test(t)) return result("recap", { period: "today" });
+  if (/^(?:(?:l3ga|lega)[, ]+)?(?:(?:deschide )?mod(?:ul)? comanda|ecran(?:ul)? de comanda|treci (?:pe|in) modul comanda)$/.test(t)) return result("command_mode");
+  for (const [view, re] of [["system", /^(?:(?:arata|deschide)(?:-mi)? )?harta sistemului$/], ["funnel", /^(?:(?:arata|deschide)(?:-mi)? )?palnia(?: de vanzari| vanzarilor)?$/], ["trace", /^(?:(?:arata|deschide)(?:-mi)? )?traseul lucrarii$/], ["result", /^(?:pune|arata)(?:-mi)? rezultatul pe ecranul mare$/], ["idle", /^(?:(?:revino la |arata )?ecranul de repaus|mod(?:ul)? repaus)$/]]) if (re.test(t)) return result("command_view", { view });
+  if (/^(ascunde|arata|afiseaza) cifrele$/.test(t)) return result("command_numbers", { hide: t.startsWith("ascunde") });
+  if (/^(urmatorul departament|departamentul urmator)$/.test(t)) return result("department_show", { relative: "next" });
+  if (/^(departamentul anterior|precedentul departament|departamentul dinainte)$/.test(t)) return result("department_show", { relative: "prev" });
+  const department = t.match(/^(?:arata(?:-mi)? (?:departamentul )?|deschide departamentul |intra (?:in|pe) (?:departamentul )?)(.+)$/)?.[1];
+  if (department) {
+    const project = (context.projects || []).find((p) => [normalize(p.name), normalize(p.slug || "")].includes(department));
+    if (project) return result("open_project", { projectId: project.id, projectRef: department });
+    for (const [departmentKey, aliases] of Object.entries(DEPARTMENT_ALIASES)) if (aliases.some((a) => [a, `${a}ul`, `${a}a`, `${a}le`, ...(a.endsWith("ie") ? [`${a.slice(0, -1)}a`] : [])].includes(department))) return result("department_show", { departmentKey });
+  }
+  const sheet = t.match(/^(?:(?:arata|deschide)(?:-mi)? )?fisa (?:de proces )?(?:a |pentru )?(.+)$/);
+  const how = t.match(/^cum (?:functioneaza|lucreaza) (.+)$/);
+  if (sheet || how) { const ref = (sheet || how)[1]; const matches = (context.processSheets || []).filter((s) => s.aliases.some((a) => sameSheetWords(a, ref))); if (matches.length === 1) return result("process_sheet", { sheetId: matches[0].id }); if (sheet) return result("process_sheet", { sheetRef: ref }); }
+  return null;
+}
+
+/**
+ * M16: a process sheet named in a sentence keeps its Romanian case and article („fișa ofertei”, „cum funcționează devizul”, „fișa dosarului de
+ * pornire”, „fișa livrării media”): every word of the alias and of the words heard is compared without its definite / genitive ending (the
+ * same rule on both sides, a stem of at least 3 letters), word for word, in order. Never a partial or fuzzy match.
+ */
+const sheetStem = (w) => { const m = String(w).replace(/(?:ului|ilor|elor|lor|ul|ei|ii|le|a|e|i)$/, ""); return m.length >= 3 ? m : String(w); };
+function sameSheetWords(alias, ref) {
+  const a = String(alias).trim().split(/\s+/), r = String(ref).replace(/[?.!]+$/, "").trim().split(/\s+/);
+  return a.length === r.length && a.every((w, i) => w === r[i] || sheetStem(w) === sheetStem(r[i]));
+}
+
 const P = [
   ["gate_rearm", GATE_REARM],
   // (the cheap lookahead first, so the reopen-verb assertions run only where a stop word starts)
@@ -1718,7 +1765,7 @@ const P = [
   ["show_preview", /\bpreview(?:-?(?:ul|ului|uri|urile|urilor))?\b|\bprevizualizare(?:a|ii)?\b|\barata(-mi)? (aplicatia|rezultatul)\b/, (_m, c) => (PREVIEW_START.test(c) ? { start: true } : {})],
   ["show_company", /\barata(-mi)? compania\b|\bharta (companiei|firmei)\b|\bcompania\b/],
   ["recommendations", /\bce recomanzi\b|\bce (putem|pot) simplifica\b|\brecomandari(le)?\b/],
-  ["briefing", /\bce s-a schimbat\b|\bbuna dimineata\b|\bbriefing\b|\bce e nou\b|\brezumatul zilei\b/],
+  ["briefing", /\bce s-a schimbat\b|\bbuna dimineata\b|\bbriefing\b|\bce e nou\b/],
   ["continue_last", /\bcontinua ce faceam\b|\bunde am ramas\b|\bce faceam (ieri|azi|aseara|data trecuta)\b/],
   // Review M10.2 #19: the catch-all `planul` never takes a clause that STARTS with a start verb ("Ok, execută planul acum, …"): such a
   // sentence is a confirmation when clean (above) or ONE question (resolveIntent), never a new proposal over the card on screen.
@@ -1879,6 +1926,8 @@ const COVER_FILLER = /^(?:(?:acum|imediat|repede|te rog|te rog frumos|va rog|din
 export function clauseCovered(intent, text) {
   const t = String(text || "").trim();
   if (!t) return false;
+  if (m16Match(t, { recap: { active: true } })?.intent === intent) return true;
+  if (intent === "process_sheet" && /^(?:(?:arata|deschide)(?:-mi)? )?fisa .+$|^cum (?:functioneaza|lucreaza) .+$/.test(t)) return true;
   for (const [i, re] of P) {
     if (i !== intent) continue;
     const m = t.match(re);
@@ -2041,7 +2090,7 @@ export function resolveIntent(text, context = {}) {
 function resolveIntentOnce(text, context = {}) {
   if (!patternWordsAdded) {
     patternWordsAdded = true;
-    const words = new Set([...Object.keys(VERB_FORMS), ...Object.values(VERB_FORMS)]);
+    const words = new Set([...Object.keys(VERB_FORMS), ...Object.values(VERB_FORMS), "intamplat", "astazi", "comanda", "capitolul", "departamentul", "functioneaza", "lucreaza", "cifrele", "palnia", "traseul", "repaus", "rezumatul", "rezumat"]);
     for (const [, re] of P) for (const w of String(re.source).replace(/[^a-z-]+/g, " ").split(" ")) if (w.length >= 4) words.add(w.replace(/^-+|-+$/g, ""));
     addKnownWords(words);
   }
@@ -2112,10 +2161,10 @@ function resolveIntentOnce(text, context = {}) {
       steps.push({ intent: "not_yet", args: { held: cond.heldIntent, condition: cond.condition, conditionWord: cond.word }, constraints: { ...matchedConstraints, conditional: true, noStart: true }, effect: "none", text: t });
       continue;
     }
-    let found = null;
+    let found = m16Match(stripFillers(clause), context, { asks: asks || modal, quoted: full.includes("\u0001"), addressed });
     // Typed "Lega, stop" = the same as on voice: a bare stop WITH her name stops everything; without it, it stays a plain word.
     // P0-R2: „Lega, stop?” asks — the hint, never the stop.
-    if (addressed && clauses.length === 1 && /^(?:stop|opreste|opriti)(?: acum| imediat)?$/.test(t)) {
+    if (!found && addressed && clauses.length === 1 && /^(?:stop|opreste|opriti)(?: acum| imediat)?$/.test(t)) {
       found = asks || modal ? { intent: "explain_stop", args: { mood: "ask", about: "stop_all" } } : { intent: "stop_all", args: { addressed: true } };
     }
     // "Deschide-l", "Mai deschide-l o dată", "Încă o dată": the last target (resolved from the server's lastTarget in resolveRefs).

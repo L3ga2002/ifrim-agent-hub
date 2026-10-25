@@ -1,0 +1,13 @@
+import { Fragment, useEffect } from "react";
+import { usePref } from "../../store.js";
+import { clampThreshold, orderedStages, conversionLabel } from "../../lib/funnelLogic.js";
+import { useRead, Source, ReadState, concealed } from "./Recap.jsx";
+export default function Funnel({ hideNumbers = false, display = false, thresholdOverride, onThreshold }) {
+    const [pref, setPref] = usePref("sales.coolingDays", 21), threshold = clampThreshold(thresholdOverride ?? pref), r = useRead(`/api/sales/funnel?threshold=${threshold}`), d = r.data, t = v => concealed(v, hideNumbers);
+    useEffect(() => { if (!display)
+        onThreshold?.(threshold); }, [display, threshold]);
+    if (!d)
+        return <ReadState resource={r}/>;
+    const circle = s => <div className="funnel-stage" data-stage={s.status}><div className="funnel-circle">{t(s.count)}</div><p>{s.label}</p>{s.synthetic > 0 && <span className="command-badge">{s.real > 0 ? "REAL + SINTETIC" : "SINTETIC"}</span>}</div>;
+    return <section className="command-funnel command-p1"><h2>Vânzări · pâlnia</h2><Source label="Pipeline comercial" at={d.readAt} hideNumbers={hideNumbers}/><div className="funnel-line">{orderedStages(d.stages).map((s, i) => <Fragment key={s.status}>{i > 0 && <p className="funnel-conversion" title={t(d.conversions[i - 1]?.reason)}>{t(conversionLabel(d.conversions[i - 1]))}</p>}{circle(s)}</Fragment>)}</div><div className="funnel-side">{d.side.map(s => <Fragment key={s.status}>{circle(s)}</Fragment>)}</div><div className="p1-columns">{[["moveNow", "De mișcat acum"], ["cooling", "Se răcesc"]].map(([key, label]) => <section key={key}><h3>{label}</h3><ul>{d.lists[key].map(id => { const o = d.opportunities.find(o => o.id === id); return o && <li key={id}>{display ? <strong>{t(o.title)}</strong> : <a href={`#/sales?tab=opp&id=${encodeURIComponent(id)}`}>{t(o.title)}</a>} · {t(o.orgName)} · {d.stages.concat(d.side).find(s => s.status === o.status)?.label || o.status}<p>{o.list === "cooling" && "◷ se răcește · "}{o.silentDays === null ? "necunoscut" : `${t(o.silentDays)} zile de liniște`}</p><Source label={o.lastActivitySource || "Sursă necunoscută"} at={o.lastActivityAt} hideNumbers={hideNumbers}/>{o.nextAction && <p>{t(o.nextAction)}</p>}</li>; })}</ul>{!d.lists[key].length && <p>Nicio oportunitate în această listă.</p>}</section>)}</div><p>{d.note}</p><label>Prag: {t(threshold)} de zile {!display && !hideNumbers && <input aria-label="Prag de răcire" type="number" min="1" max="365" value={threshold} onChange={e => setPref(clampThreshold(e.target.value))}/>}</label><p>{t(d.threshold.rule)}</p></section>;
+}

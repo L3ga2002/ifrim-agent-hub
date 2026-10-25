@@ -20,6 +20,10 @@ const PRE_SESSION = ["ui", "owner", "test"];
 export function registerOwnerCommands(reg, hub) {
   const { trust, envelopes, cockpit, interrupts, advisor, voice, projects, bus } = hub;
   const session = (ctx) => (ctx.channel === "owner" ? ctx.ownerSession : ctx.channel === "test" ? ctx.ownerSession || null : null);
+  // No action classifier, like owner.visit: presentation never requests an approval.
+  reg("recap.present", { describe: "Prezintă un capitol păstrat în sesiunea vocală curentă", async: true, channels: PRE_SESSION,
+    schema: { snapshotId: { required: true, max: 80 }, index: { type: "integer", required: true, min: 0, max: 5 }, legaSessionId: { max: 80 }, action: { enum: ["show", "stop"], default: "show" } },
+    execute: (input, ctx) => hub.lega.presentRecap({ sessionId: input.legaSessionId, snapshotId: input.snapshotId, index: input.index, action: input.action, ownerSession: session(ctx) }) });
 
   // ---------- trusted session ----------
   reg("owner.register.begin", { describe: "Începe înregistrarea autentificatorului (WebAuthn: Windows Hello / PIN / cheie)", channels: PRE_SESSION,
@@ -236,7 +240,7 @@ export function registerOwnerCommands(reg, hub) {
     // clarification by the id the Hub itself offered (a choice for a confirmation only presents that plan); `transcriptId` makes
     // a voice transcript execute at most once. The last target is server-held: no field of this schema can supply it.
     schema: { text: { max: 2000, default: "" }, projectId: { max: 80 }, source: { enum: ["typed", "voice-provider"], default: "typed" }, utteranceId: { max: 80 },
-      presented: { type: "object" }, layout: { type: "object" }, legaSessionId: { max: 80 }, choice: { type: "object" }, transcriptId: { max: 80 } },
+        presented: { type: "object" }, layout: { type: "object" }, legaSessionId: { max: 80 }, choice: { type: "object" }, transcriptId: { max: 80 }, recap: { type: "object" } },
     // 2.12.1 (D14): the rearm card's nonce goes to the owner's page only, never into the command log (as for gate.rearm.card).
     logResult: (r) => withoutRearmNonces(r),
     execute: (input, ctx) => intake.handle(input, ctx) });

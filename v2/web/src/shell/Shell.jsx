@@ -1,3 +1,4 @@
+import CommandBridge from "./CommandBridge.jsx";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Search, Square, ShieldCheck, Pause, CircleDot, X, MoreHorizontal, Plus, HardDrive, RefreshCw, WifiOff, Wifi, FlaskConical, Minimize2, FolderGit2, Target, Keyboard, MessageSquare, ChevronDown, ChevronRight } from "lucide-react";
 import { NAV, NAV_GROUPS, navHref, navCurrent } from "../nav.js";
@@ -107,7 +108,7 @@ function ProjectSwitcher({ go }) {
   );
 }
 
-const SHORTCUTS = [["Ctrl K", "paleta de comenzi"], ["Alt 1–9", "ecranele principale"], ["Alt M", "mini-asistent"], ["Ctrl ↵", "trimite mesajul"], ["Esc", "închide dialogul"]];
+const SHORTCUTS = [["Alt C", "Mod Comandă"], ["Ctrl K", "paleta de comenzi"], ["Alt 1–9", "ecranele principale"], ["Alt M", "mini-asistent"], ["Ctrl ↵", "trimite mesajul"], ["Esc", "închide dialogul"]];
 
 function CommandPalette({ onClose, go, onMini }) {
   const [query, setQuery] = useState("");
@@ -118,6 +119,7 @@ function CommandPalette({ onClose, go, onMini }) {
   const items = useMemo(() => {
     const act = async (fn, label) => { try { await fn(); pushToast(`pal-${label}`, "ok", label); } catch (e) { pushToast("palette-error", "error", e.message); } };
     const actions = [
+      { id: "command", label: "Mod Comandă", icon: CircleDot, run: () => go("/comanda"), hint: "Alt+C" },
       ...NAV.map((n) => ({ id: `go-${n.id}`, label: `Deschide ${n.long}`, icon: n.icon, run: () => go(n.href || `/${n.id}`), hint: n.key ? `Alt+${n.key}` : "" })),
       { id: "focus", label: "Intră în Focus", icon: MessageSquare, run: () => go("/conversations") },
       { id: "new-mission", label: "Misiune nouă", icon: Plus, run: () => go("/missions?new=1") },
@@ -292,6 +294,8 @@ export function Shell({ route, go, children }) {
   // The floating run indicator must never cover the end of a page: main gets extra bottom room while it shows.
   const activeRunCount = useHub((s) => s.hub?.activeRuns?.length || 0);
   const mainRef = useRef(null);
+  const commandReturn = useRef("/lega");
+  useEffect(() => { if (route.name !== "comanda") { commandReturn.current = location.hash.replace(/^#/, "") || "/lega"; setState({ commandReturn: commandReturn.current }); } }, [route.name, route.id]);
   const [stageOpen] = useStageToggle();
   // One L3ga screen (2026-10-18): „Ecran complet” is the Lega screen itself without these bars, never a modal over another screen. Asked
   // for anywhere else (Alt+J, the start view, the Control Room button, the voice intent), it opens #/lega; the screen keeps its state.
@@ -312,11 +316,12 @@ export function Shell({ route, go, children }) {
       // Plain Alt only: AltGr (Ctrl+Alt on Windows) types characters on the Romanian layout and must not switch screens.
       const key = appShortcutKey(e);
       if (key && /^[1-9]$/.test(key)) { const item = NAV.find((n) => n.key === key); if (item) { e.preventDefault(); go(item.href || `/${item.id}`); } }
+      if (key === "c") { e.preventDefault(); go(route.name === "comanda" ? commandReturn.current : "/comanda"); }
       if (key === "m") { e.preventDefault(); setMini((m) => !m); }
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [go, setMini]);
+  }, [go, setMini, route.name]);
   const current = navCurrent(route);
   // M15: the phone keeps L3ga, Decizii and Rezultate one tap away; everything else is under „Mai mult”.
   const mobileNav = ["lega", "decizii", "rezultate"];
@@ -325,7 +330,8 @@ export function Shell({ route, go, children }) {
   const waiting = (decisions.data?.items?.length || 0) + pending;
   const badgeOf = (id) => (id === "decizii" && waiting > 0 ? waiting : id === "approvals" && pending > 0 ? pending : 0);
   return (
-    <div className={`app ${simulation ? "is-sim" : ""}${immersive ? " is-immersive" : ""}`}>
+    <div className={`app ${simulation ? "is-sim" : ""}${immersive ? " is-immersive" : ""}${route.name === "comanda" ? " is-command" : ""}`}>
+      <CommandBridge go={go} />
       <a className="skip-link" href="#main" onClick={(e) => { e.preventDefault(); mainRef.current?.focus(); }}>Sari la conținut</a>
       {simulation && <SimBanner />}
       <HubStatusBanner />

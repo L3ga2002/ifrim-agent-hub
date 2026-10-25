@@ -1,4 +1,6 @@
 import fs from "node:fs";
+import { createRecap } from "./owner/recap.mjs";
+import { processSheetAliases } from "./owner/process-sheets.mjs";
 import os from "node:os";
 import path from "node:path";
 import crypto from "node:crypto";
@@ -408,6 +410,9 @@ export function createHub(config, { providerOverrides = {}, homeDir, browserLaun
   // M10.2 U06: preserved work requests (a blocked request is kept and re-proposed, never run by itself) and the automatic readiness
   // runner (inference-free steps on the automation channel; a same-fingerprint re-attestation only after a plan's confirmation).
   hub.workRequests = createWorkRequests({ db, bus, clock, live, trust, envelopes });
+  hub.recap = createRecap(hub);
+  legaLate.recap = hub.recap;
+  legaLate.processSheets = processSheetAliases;
   hub.readiness = createReadinessRunner(hub, { workRequests: hub.workRequests });
   hub.workRequests.attachExplainer((request) => hub.readiness.explainRequest(request));
   registerWorkRequestCommands((type, def) => commands.register(type, def), hub);

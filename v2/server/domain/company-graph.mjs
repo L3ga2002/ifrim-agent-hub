@@ -1,0 +1,28 @@
+import { DEPARTMENT_SEED } from "./company.mjs";
+import { ACTIVE_STAGES } from "../factory/factory.mjs";
+export const hubWords = (value) => Array.isArray(value) ? value : String(value || "").split(/[\s,]+/).filter(Boolean);
+const LABELS = ["Conducere", "Produs și strategie", "Engineering", "Calitate și securitate", "DevOps și infrastructură", "Vânzări", "Marketing și growth", "Relația cu clienții", "Managementul proiectelor", "Operațiuni", "Cercetare", "Financiar și administrativ"];
+export function companyGraph(hub) {
+  const configured = hub.company.departments(); const active = hub.runs.activeRuns();
+  const activeIds = new Set(active.map((r) => r.runId || r.id));
+  const runningRows = hub.db.prepare("SELECT r.id, r.role_id, t.mission_id FROM agent_runs r LEFT JOIN tasks t ON t.id = r.task_id WHERE r.status IN ('starting','running','waiting_approval')").all().filter((r) => activeIds.has(r.id));
+  const skills = hub.skills.list().map((s) => ({ id: s.id, name: s.id, description: s.description, roles: hubWords(s.metadata?.["hub-roles"]), tools: hubWords(s.metadata?.["hub-tools"]), permission: s.metadata?.["hub-permission"] || "READ_ONLY", version: s.currentVersion }));
+  const tools = hub.integrations.list().map((t) => ({ id: t.id, name: t.name || t.id, status: ["available", "needs_setup", "blocked", "connected"].includes(t.status) ? t.status : "needs_setup", kind: t.kind || null }));
+  const roles = hub.roleConfig.roles.map((r) => ({ id: r.id, name: r.name, department: r.department || null, reportsTo: r.reportsTo || null, authority: r.authority, responsibilities: r.responsibilities || [], tools: r.tools || [], skills: skills.filter((s) => s.roles.includes(r.id)).map((s) => s.id), runningNow: runningRows.filter((run) => run.role_id === r.id).length }));
+  for (const id of new Set([...roles.flatMap((r) => r.tools), ...skills.flatMap((s) => s.tools)])) if (!tools.some((t) => t.id === id)) tools.push({ id, name: id, status: "unregistered", kind: null });
+  const taskRoles = hub.db.prepare("SELECT mission_id, role_id, status FROM tasks WHERE role_id <> ''").all();
+  // companyMap is the same read model used by the existing cockpit, without interpreting configured roles as processes.
+  const map = hub.cockpit.companyMap();
+  const mapped = new Map((map.departments || []).flatMap((d) => (d.missions || []).map((m) => [m.id, m])));
+  const works = hub.db.prepare("SELECT m.id AS mission_id, m.title, m.department_id, m.status, f.stage FROM missions m LEFT JOIN factory_missions f ON f.mission_id = m.id").all().filter((m) => m.stage ? ACTIVE_STAGES.has(m.stage) || ["SPEC_DRAFT", "NEEDS_OWNER_DECISION", "DELIVERY_READY", "BLOCKED"].includes(m.stage) : ["ACTIVE", "RUNNING", "WAITING_OWNER", "WAITING_APPROVAL", "BLOCKED", "ATTENTION"].includes(m.status)).map((m) => ({ missionId: m.mission_id, title: m.title, department: configured.find((d) => d.id === m.department_id || d.key === m.department_id)?.key || null, stage: m.stage || m.status, roles: [...new Set(taskRoles.filter((t) => t.mission_id === m.mission_id && roles.some((r) => r.id === t.role_id)).map((t) => t.role_id))], runningNow: mapped.get(m.mission_id)?.executions?.length ?? runningRows.filter((r) => r.mission_id === m.mission_id).length, waiting: ["SPEC_DRAFT", "NEEDS_OWNER_DECISION", "DELIVERY_READY"].includes(m.stage) || !m.stage && ["WAITING_OWNER", "WAITING_APPROVAL"].includes(m.status), blocked: (m.stage || m.status) === "BLOCKED" || !m.stage && taskRoles.some((t) => t.mission_id === m.mission_id && t.status === "BLOCKED") }));
+  const departments = DEPARTMENT_SEED.map((seed, index) => { const d = configured.find((d) => d.key === seed.key) || seed; const w = works.filter((w) => w.department === seed.key); return { key: seed.key, name: d.name, labelRo: LABELS[index], status: d.status, validated: Boolean(d.milestoneValidated ?? d.validated), purpose: d.purpose, headRoleId: d.headRoleId || seed.head, color: index + 1, counts: { roles: roles.filter((r) => r.department === seed.key).length, works: w.length, blocked: w.filter((w) => w.blocked).length, waiting: w.filter((w) => w.waiting).length, runningNow: roles.filter((r) => r.department === seed.key).reduce((n, r) => n + r.runningNow, 0) } }; });
+  const edges = []; const edge = (from, to, kind, source, ref) => edges.push({ from, to, kind, provenance: { source, ref } });
+  for (const r of roles) {
+    if (r.reportsTo === "owner" || roles.some((x) => x.id === r.reportsTo)) edge(`role:${r.id}`, r.reportsTo === "owner" ? "owner" : `role:${r.reportsTo}`, "reports_to", "roles.json reportsTo", r.id);
+    if (departments.some((d) => d.key === r.department)) edge(`dept:${r.department}`, `role:${r.id}`, "dept_role", "roles.json department", r.id);
+    for (const t of r.tools) edge(`role:${r.id}`, `tool:${t}`, "role_tool", "roles.json tools", r.id);
+  }
+  for (const s of skills) { for (const r of s.roles.filter((id) => roles.some((r) => r.id === id))) edge(`role:${r}`, `skill:${s.name}`, "role_skill", "SKILL.md hub-roles", `v2/skills/${s.name}/SKILL.md`); for (const t of s.tools) edge(`skill:${s.name}`, `tool:${t}`, "skill_tool", "SKILL.md hub-tools", `v2/skills/${s.name}/SKILL.md`); }
+  for (const w of works) { if (w.department) edge(`work:${w.missionId}`, `dept:${w.department}`, "work_dept", "missions.department_id", w.missionId); for (const r of w.roles) edge(`work:${w.missionId}`, `role:${r}`, "work_role", "tasks.role_id", w.missionId); }
+  return { readAt: hub.config.now().toISOString(), company: { name: hub.company.company().name }, departments, roles, skills, tools, works, edges, note: "Structură configurată: un rol configurat nu înseamnă un proces care rulează." };
+}

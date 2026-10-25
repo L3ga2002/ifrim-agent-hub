@@ -16,7 +16,8 @@
 const VERBS = ["pregateste", "verifica", "deschide", "porneste", "arata", "continua", "construieste", "livreaza", "creeaza", "genereaza",
   "realizeaza", "monteaza", "importa", "ruleaza", "lanseaza", "repara", "adauga", "salveaza", "explica", "inregistreaza", "randeaza",
   "propune", "schimba", "modifica", "corecteaza", "testeaza", "filmeaza", "exporta", "pregatesc", "deschid", "pregatit", "pregatita"];
-const NOUNS = ["prezentarea", "prezentare", "prezentarii", "demo-ul", "demoul", "demo-ului", "livrarea", "livrare", "document", "documentul",
+const NOUNS = ["intamplat", "astazi", "companie", "comanda", "capitolul", "departamentul", "functioneaza", "lucreaza", "cifrele", "palnia", "traseul", "repaus", "factory", "sistemului",
+  "prezentarea", "prezentare", "prezentarii", "demo-ul", "demoul", "demo-ului", "livrarea", "livrare", "document", "documentul",
   "campanie", "campaniei", "pachet", "pachetul", "dosar", "dosarul", "clipul", "videoclip", "videoclipul", "vertical", "verticala",
   "rezumatul", "rezumat", "proiectul", "proiect", "planul", "misiunea", "site-ul", "siteul", "programarile", "programare", "programarea",
   "detailing", "excel", "excelul", "wordul", "demonstrative", "demonstrativ", "singur", "totul", "comercial", "variante", "varianta",

@@ -1,3 +1,4 @@
+import Trace from "../command/Trace.jsx";
 import { useState } from "react";
 import { Factory, ShieldCheck, Square, Pause, Play, CheckCircle2, XCircle, FileDiff, ListChecks, Timer, Package, AlertTriangle } from "lucide-react";
 import { api, fmt } from "../../api.js";
@@ -240,6 +241,7 @@ export function FactoryPanel({ missionId }) {
         </div>}>
         <div className="stack">
           <StageBar view={view} />
+          <Trace missionId={view.mission.id} />
           <dl className="kv">
             <dt>Etapa</dt><dd><strong>{FACTORY_STAGE_RO[f.stage] || f.stage}</strong> — {f.stageReason || "—"}</dd>
             <dt>Așteaptă</dt><dd>{factoryWaitLabel(f.waitReason, f.stage)}</dd>

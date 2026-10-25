@@ -82,8 +82,10 @@ export function facePoint(i) {
  * Graph: particles gathered around the nodes of the company graph (real departments/missions/runs from the stage graph),
  * each node a small cluster; particle i always goes to the same node (i mod nodes) at a stable offset.
  */
-function graphPoint(i, nodes) {
-  if (!nodes.length) return corePoint(i, 900);
+function graphPoint(i, nodes, count) {
+  // M16: without graph nodes the graph target is the core itself, over the SAME particle count (a fixed 900 left every particle past
+  // 900 at NaN: hidden in all three shapes, so a large figure without nodes showed only the top of the core).
+  if (!nodes.length) return corePoint(i, count);
   const node = nodes[i % nodes.length];
   const spread = node.kind === "core" ? 0.05 : 0.025 + (node.r || 3) * 0.003;
   return [node.x * 0.85 + (hash01(i, 5) - 0.5) * spread, node.y * 0.85 + (hash01(i, 6) - 0.5) * spread, node.z * 0.85 + (hash01(i, 7) - 0.5) * spread];
@@ -97,7 +99,7 @@ export function buildMorphTargets(count, { nodes = [] } = {}) {
   const core = new Float32Array(count * 3); const face = new Float32Array(count * 3); const graph = new Float32Array(count * 3);
   const jaw = new Float32Array(count); const seed = new Float32Array(count); const feature = new Float32Array(count);
   for (let i = 0; i < count; i += 1) {
-    const c = corePoint(i, count); const f = facePoint(i); const g = graphPoint(i, nodes);
+    const c = corePoint(i, count); const f = facePoint(i); const g = graphPoint(i, nodes, count);
     core.set(c, i * 3); face.set(f.slice(0, 3), i * 3); graph.set(g, i * 3);
     jaw[i] = f[3]; seed[i] = hash01(i, 9); feature[i] = f[4];
   }

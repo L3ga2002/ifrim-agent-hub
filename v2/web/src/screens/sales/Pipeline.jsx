@@ -1,3 +1,4 @@
+import Funnel from "../command/Funnel.jsx";
 import { KanbanSquare } from "lucide-react";
 import { usePref } from "../../store.js";
 import { Panel, Empty, Loading } from "../../components/ui.jsx";
@@ -13,11 +14,11 @@ export function Pipeline() {
   const [hideEmpty, setHideEmpty] = usePref("sales.pipeline.hideEmpty", true);
   if (res.loading && !res.data) return <Loading lines={6} />;
   if (res.error && !res.data) return <SalesError error={res.error} onRetry={res.reload} what="oportunitățile" />;
-  const groups = groupPipeline(listOf(res.data, "opportunities"));
+  const groups = groupPipeline(listOf(res.data, "opportunities")).map(g => ({ ...g, count: res.data.byStatus?.[g.status] ?? g.count }));
   const total = groups.reduce((s, g) => s + g.count, 0);
   const shown = hideEmpty ? groups.filter((g) => g.count > 0) : groups;
   return (
-    <Panel title={`Pipeline (${total})`} icon={KanbanSquare}
+    <div className="stack"><Funnel/><Panel title={`Pipeline (${total})`} icon={KanbanSquare}
       actions={<label className="check small"><input type="checkbox" checked={hideEmpty} onChange={(e) => setHideEmpty(e.target.checked)} />Ascunde etapele goale</label>}>
       {!total ? <Empty title="Nicio oportunitate">Deschide fișa unei firme și creează o oportunitate după audit și calificare.</Empty> : (
         <div className="sales-board" aria-busy={res.loading}>
@@ -40,6 +41,6 @@ export function Pipeline() {
           ))}
         </div>
       )}
-    </Panel>
+    </Panel></div>
   );
 }
