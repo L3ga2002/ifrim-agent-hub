@@ -1,5 +1,17 @@
 # Open Issues - Ifrim Agent Hub
 
+## 2026-10-25 — M16 „Ecranul de comandă L3ga” (code `2.19.0-m16`, no migration, schema 15, API contract 21; detail: `.ifrim/STAGE_2026-10-25_M16.md`, report `.ifrim/M16_RAPORT_FINAL.md`)
+
+This section takes precedence over the next ones where they overlap. Code `288f1d7` + `ae1de92` + `357dce0` in the dev clone
+C:\Users\mihai\m16-stage (branch `claude/project-thread-54wjea`, base `9b91bca`), Codex implementation (7 runs), two independent read-only
+Claude reviews + one re-review, all findings fixed. Gate 3 on `357dce0` (clone m16-gate): V2 2753/2754, 0 fail (T25 skip); V1 not affected.
+
+Open:
+1. Release through `C:\Users\mihai\m16-evidence\release\release.mjs <RELEASE>` + push (results in the post-release docs commit).
+2. The owner's acceptance session (`m16-evidence\PASII_PROPRIETAR_M16.md`): real voice, the recap commands, the TV / second monitor
+   readability (AC-16). M16 stays READY_FOR_OWNER_ACCEPTANCE until the owner writes „Accept M16”.
+3. Minor, non-blocking: the decorative orbits stretch into ovals on the elliptical map (labelled decor, can be turned off); a stale
+   `command.variant` browser preference is ignored; the funnel shows no conversion until 5 real opportunities form a cohort (by design).
 ## 2026-10-24 — M15 corecții finale (code `2.18.1-m15`, UI only, no migration, schema 15, API contract 20; detail: `.ifrim/STAGE_2026-10-24_M15_FINAL.md`)
 
 This section takes precedence over the next ones where they overlap. Code `1832977` in the dev clone C:\Users\mihai\m15-stage (branch
