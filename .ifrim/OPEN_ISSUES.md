@@ -1,5 +1,22 @@
 # Open Issues - Ifrim Agent Hub
 
+## 2026-10-26 — 2.19.1-m16: the owner's L3ga session of 2026-10-25 (migration 16, schema 16, API contract 22; detail: `.ifrim/STAGE_2026-10-26_L3GA_FIX.md`)
+
+This section takes precedence over the next ones where they overlap. The owner did not accept M16 („are încă buguri, nu poate face multe,
+wishlist-ul nu a mers”). Code `d3d1412` + `434999b` + `7d821ae` in the dev clone C:\Users\mihai\l3ga-fix (branch `claude/project-thread-xbytmo`, base `dd831d3`).
+
+Open:
+1. A parallel 2.19.1 was made by the M16 thread's local session (C:\Users\mihai\m17-stage, wishlist in settings, no migration). The owner
+   chose this line (A) on 2026-10-26 12:09 UTC; `m17-stage` is not pushed or released.
+2. Release = the owner's `l3ga-evidence\release\upgrade-2.19.1.cmd` (step 0 repairs the Hub folder's git state, see 3; verified backup;
+   managed upgrade with migration 16; GET-only verification). Then his check: the stalled turn, the wishlist by voice, the big map.
+3. The Hub folder was put back by OneDrive on 2026-10-25 between ~08:45 and 12:49 UTC: `.git/HEAD`, the index and 17 files outside `v2/`
+   (package.json, CLAUDE.md, 9 `.ifrim` docs, V1 files) have July contents; `v2/` equals `dd831d3` (line endings aside). 7 of those July
+   files exist in no commit; step 0 copies all 17 to `l3ga-evidence\release\onedrive-restore-saved\` before restoring them. Consider
+   moving the Hub folder out of OneDrive (owner's decision).
+4. Not done (new wishlist candidates, not asked): relative „următorul departament” typed while the map is open still goes to Mod Comandă
+   (by voice it stays on the map); „La <proiect>” now opens that project (the department words win only for department names).
+
 ## 2026-10-25 — M16 „Ecranul de comandă L3ga” (code `2.19.0-m16`, no migration, schema 15, API contract 21; detail: `.ifrim/STAGE_2026-10-25_M16.md`, report `.ifrim/M16_RAPORT_FINAL.md`)
 
 This section takes precedence over the next ones where they overlap. Code `288f1d7` + `ae1de92` + `357dce0` in the dev clone
