@@ -1573,7 +1573,7 @@ const WISH_EXPLICIT = new RegExp(String.raw`^${WISH_LEAD}(?:(?:si )?(?:mai )?(?:
 const WISH_BETWEEN = new RegExp(String.raw`^${WISH_LEAD}(?:si )?(?:mai )?${WISH_VERB}(?<o>-o|-l)? (?<item>.+?) (?:pe|in|la) (?:un |o )?${WISH}$`, "d");
 const WISH_BARE = new RegExp(String.raw`^${WISH_LEAD}(?:si )?(?:mai )?${WISH_VERB}(?:-o|-l)?(?: (?:asta|aia|aceasta|ideea|cererea|si asta))? (?:pe|in|la) (?:un |o )?${WISH}$`);
 const WISH_CREATE = new RegExp(String.raw`(?:^|[,.!?;]\s*|\s)(?:fa|faci|creeaza|deschide|incepe|porneste|vreau)(?:-mi|-ne)? (?:un |o )?${WISH}(?: nou| noua)?$`);
-const WISH_READ = new RegExp(String.raw`^${WISH_LEAD}(?:ce (?:e|este|ai|am|avem|sta|scrie|mai e|contine)(?: scris)? (?:pe|in) (?:un |o )?${WISH}|(?:arata|citeste|spune|deschide|da)(?:-mi|-ne)? (?:ce e pe )?${WISH}|(?:ai|ati|l-ai|ai mai) (?:trecut|pus|notat|adaugat|scris|salvat)(?: (?:asta|aia|ideea|cererea|-o))? (?:pe|in) (?:un |o )?${WISH}|${WISH})$`);
+const WISH_READ = new RegExp(String.raw`^${WISH_LEAD}(?:(?:(?:vreau|vrem|as vrea|as dori|doresc) sa (?:vad|stiu|aud|aflu|citesc) |spune(?:-mi|-ne)? |zi(?:-mi)? )?ce (?:e|este|ai|am|avem|sta|scrie|mai e|contine)(?: scris)? (?:pe|in) (?:un |o )?${WISH}|(?:arata|citeste|spune|deschide|da)(?:-mi|-ne)? (?:ce e pe )?${WISH}|(?:ai|ati|l-ai|ai mai) (?:trecut|pus|notat|adaugat|scris|salvat)(?: (?:asta|aia|ideea|cererea|-o))? (?:pe|in) (?:un |o )?${WISH}|${WISH})$`);
 export function wishlistMatch(raw) {
   const text = String(raw || "").slice(0, 2000);
   // foldKeep keeps every offset of the raw words (one folded character per character), so the item is cut from the raw text.

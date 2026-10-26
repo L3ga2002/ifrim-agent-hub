@@ -203,6 +203,7 @@ rl.on("line", async (line) => {
     }
     case "turn/interrupt":
       send({ id: msg.id, result: {} });
+      if (ignoredInterrupts.has(msg.params.turnId)) return log({ interruptIgnored: msg.params.turnId }); // 2.19.1 `{hang, ignoreInterrupt}`
       return send({ method: "turn/completed", params: { threadId, turn: { id: msg.params.turnId, status: "interrupted", items: [] } } });
     default:
       return send({ id: msg.id, error: { code: -32601, message: `fake: unknown ${msg.method}` } });
@@ -210,6 +211,8 @@ rl.on("line", async (line) => {
 });
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+/** 2.19.1: hung turns whose turn/interrupt is acknowledged but never completes them (a provider that ignores the interrupt). */
+const ignoredInterrupts = new Set();
 
 /**
  * Software Factory writer fixture: applies tests/fixtures/factory-patches/<name>.json ({ write: {path: text}, delete: [path] })
@@ -363,6 +366,7 @@ async function legaScript() {
         n += 1;
         send({ method: "turn/started", params: { threadId, turn: { id: `turn_lega_${n}`, status: "inProgress", items: [] } } });
         send({ method: "thread/realtime/itemAdded", params: { threadId, item: { type: "handoff_request", handoff_id: `h${n}`, item_id: `i${n}`, input_transcript: item.heard ?? "fake: hang", active_transcript: [] } } });
+        if (item.ignoreInterrupt) ignoredInterrupts.add(`turn_lega_${n}`);
         log({ hung: `turn_lega_${n}` });
       }
       // 2.19.1 `{slow: {items, every}, heard?}`: a delegated turn that works for longer than the stall watchdog (one reasoning item every

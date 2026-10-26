@@ -436,7 +436,8 @@ export function createLega({ bus, live, clock, settings, gate, grants, projects,
     if (!s || s.status !== "active") return;
     clearTimeout(s.idleTimer);
     s.idleTimer = setTimeout(() => {
-      const busy = (s.handle?.activeTurnCount() || 0) > 0 || [...pendingRuns.values()].some((r) => r.sessionId === s.id);
+      // 2.19.1: a turn the Hub interrupted for silence never keeps the session busy (a provider that ignores the interrupt included).
+      const busy = (s.handle?.activeTurnCount() || 0) - (s.stalledOpen?.size || 0) > 0 || [...pendingRuns.values()].some((r) => r.sessionId === s.id);
       if (busy) touch(s); else stop(s.id, "idle", "hub").catch(() => {});
     }, ms(s.idleTimeoutS * 1000));
   };
@@ -476,6 +477,7 @@ export function createLega({ bus, live, clock, settings, gate, grants, projects,
     const answered = reason === "timeout" ? await hubAnsweredLocally(current, key).catch(() => null) : null;
     if (!live_()) return;
     current.stalledTurns.add(key);
+    current.stalledOpen?.add(key);
     while (current.stalledTurns.size > 20) current.stalledTurns.delete(current.stalledTurns.values().next().value);
     const waitedMs = Date.now() - (current.turnStarts.get(key) || Date.now());
     try { bus.emit({ type: "lega.turn_stalled", scopeType: "system", scopeId: current.id, source: "hub", payload: { turnId: key.slice(0, 80), reason, waitedMs } }); } catch { /* telemetry never breaks a turn */ }
@@ -604,7 +606,7 @@ export function createLega({ bus, live, clock, settings, gate, grants, projects,
       // D1 review: the journal position each delegated turn started at, and the lines the Hub handed to the voice with their origin (bounded).
       turnSeqs: new Map(), spokenLines: [], recap: null,
       // 2.19.1: the stall watchdog of each running delegated turn (turnId → timer) and the turns the Hub interrupted (bounded).
-      turnTimers: new Map(), stalledTurns: new Set(), turnActivity: new Map(),
+      turnTimers: new Map(), stalledTurns: new Set(), stalledOpen: new Set(), turnActivity: new Map(),
       // M10.2 U13 (owner decision 8: ONE global gate, nothing written here): whether this session's audio goes through the local filter —
       // the page starts the gate whenever the setting is on (fail-closed if it cannot). Read once; enabling it later restarts the session.
       gated: Boolean(settings.get("voiceGate")?.enabled), pendingArm: null,
@@ -919,6 +921,7 @@ export function createLega({ bus, live, clock, settings, gate, grants, projects,
       if (turnKey) { current.turnStarts?.delete(turnKey); current.turnHandoff?.delete(turnKey); current.turnSeqs?.delete(turnKey); current.turnActivity?.delete(turnKey); }
       // 2.19.1: a turn the Hub interrupted (stallTurn) already got its answer from the Hub; whatever it carries now is not spoken.
       const stalled = Boolean(turnKey && current.stalledTurns?.has(turnKey));
+      if (turnKey) current.stalledOpen?.delete(turnKey);
       // D1 review: how the turn ended for the owner — status and flags only, never words (the probe closes a sentence only on a turn that spoke).
       const turnDone = (spoke, extra = {}) => { try { bus.emit({ type: "lega.turn_completed", scopeType: "system", scopeId: current.id, source: "lega",
         payload: { turnId: turnKey ? turnKey.slice(0, 80) : null, status: String(event.status || "").slice(0, 20), spoke: Boolean(spoke), startSeq: Number.isSafeInteger(startSeq) ? startSeq : null, ...extra } }); } catch { /* telemetry never breaks a turn */ } };

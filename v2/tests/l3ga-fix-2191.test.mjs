@@ -39,6 +39,7 @@ test("L3-01 the owner's own sentences of 2026-10-25 resolve to what he meant", (
     ["pune-o pe wishlist", "wishlist_add", { ref: "last" }],
     ["Ce e pe wishlist?", "wishlist_list", { asked: true }],
     ["Arată-mi wishlist-ul", "wishlist_list", { asked: false }],
+    ["Vreau să văd ce am pe wishlist", "wishlist_list", { asked: false }], ["Aș vrea să știu ce e pe wishlist", "wishlist_list", { asked: false }],
     ["Mărește harta", "map_view", { action: "bigger" }], ["Fă harta mai mare", "map_view", { action: "bigger" }],
     ["Micșorează harta", "map_view", { action: "smaller" }], ["Harta pe tot ecranul", "map_view", { action: "full" }],
     ["Harta normală", "map_view", { action: "reset" }], ["Închide harta", "map_view", { action: "close" }],
@@ -184,4 +185,13 @@ test("L3-06 the owner's wishlist is not read or written by an agent or a script;
   assert.equal(count(t.hub, "wishlist_items"), 0);
   assert.deepEqual(steps("Pune pe wishlist: nu vreau să mai repet comenzile"), [["wishlist_add", { text: "nu vreau să mai repet comenzile" }]]);
   assert.deepEqual(steps("Hai pune hai pe wishlist"), [["wishlist_add", { text: "hai" }]]);
+});
+
+test("L3-07 a provider that ignores the interrupt never keeps the session busy: the idle stop still ends it", { timeout: 60000 }, async () => {
+  const { t } = await voiceSession([{ sleep: 1200 }, { say: "Cât e cursul euro azi?" }, { hang: true, ignoreInterrupt: true, heard: "Cât e cursul euro azi" }, { sleep: 200 }]);
+  try {
+    await waitFor(() => t.readLog("codex").some((l) => l.interruptIgnored), 15000);
+    await waitFor(() => events(t, "lega.session.stopped").length > 0, 20000);
+    assert.equal(events(t, "lega.session.stopped")[0].payload.reason, "idle");
+  } finally { await t.hub.lega.stopAll("test").catch(() => {}); await t.cleanup(); }
 });
