@@ -35,6 +35,8 @@ import { classOfIntent } from "../policy/effect-class.mjs";
 import { correctTypos, addKnownWords } from "./typos.mjs";
 
 export const INTENT_EFFECTS = Object.freeze({
+  // 2.19.1: the map / conversation view on the L3ga screen (view only), the owner's wishlist (a note: a local write, never a task).
+  map_view: "none", chat_view: "none", wishlist_add: "local", wishlist_list: "read",
   recap: "read", recap_control: "none", command_mode: "navigate", command_view: "navigate", command_numbers: "none", department_show: "navigate", process_sheet: "read",
   open_project: "navigate", switch_project: "navigate", continue_last: "read", show_changes: "read", show_review: "read", show_tests: "read",
   show_preview: "read", show_plan: "plan", continue_work: "plan", confirm: "effect", not_yet: "none", reject_plan: "none", reorder: "none",
@@ -1556,10 +1558,82 @@ const DEPARTMENT_ALIASES = {
   "qa-security": ["qa", "calitate", "securitate"], devops: ["devops", "infrastructura"], sales: ["vanzari", "vanzarile", "sales"], marketing: ["marketing", "growth"],
   "customer-success": ["relatia cu clientii", "customer success", "suport clienti"], "project-management": ["managementul proiectelor", "project management"], operations: ["operatiuni", "operatiunile", "operations"], research: ["cercetare", "research"], "finance-admin": ["financiar", "finante", "administrativ", "finance"],
 };
+/**
+ * 2.19.1 (the owner's L3ga session of 2026-10-25): the wishlist. Matched on the whole sentence, folded letter by letter (same length as
+ * the raw words), so the item keeps the owner's own words: „Pune pe wishlist: mărirea hărții”, „Și mai vreau pe wishlist acest chat …”,
+ * „Pune mărirea hărții pe wishlist”. „Trece asta pe un wishlist” / „Fă un wishlist nou” name no item: ref "last" = the last request the
+ * Hub could not do in this conversation (the intake knows it). „Ce e pe wishlist?”, „Ai trecut pe wishlist?” read the list. A negated
+ * sentence („nu pune asta pe wishlist”) is not a request.
+ */
+const WISH = String.raw`(?:wish ?-?list(?:-?ul(?:ui)?)?|lista (?:mea )?de (?:dorinte|idei))`;
+const WISH_LEAD = String.raw`(?:(?:ok|okay|bine|da|pai|deci|si|acum|hai|atunci|te rog|lega|l3ga)[,!.]?\s+)*`;
+const WISH_VERB = String.raw`(?:pune|puneti|trece|treci|adauga|noteaza|scrie|baga|salveaza)(?:-mi|-ne)?`;
+const WISH_THIS = /^(?:-?o|-?l|asta|aia|aceasta|acesta|acest lucru|lucrul asta|ideea asta|ideea|cererea asta|cererea|ce (?:ti-)?am (?:zis|spus|cerut)|ce am cerut adineauri|ultima cerere|si asta|si aia)$/;
+const WISH_EXPLICIT = new RegExp(String.raw`^${WISH_LEAD}(?:(?:si )?(?:mai )?(?:${WISH_VERB}|vreau|vrem|as vrea|as dori|doresc))(?: si)? (?:pe|in|la) (?:un |o )?${WISH}(?: (?:ca|si anume|urmatorul lucru|urmatoarea idee))?[\s:,-]+(?<item>\S.*)$`, "d");
+const WISH_BETWEEN = new RegExp(String.raw`^${WISH_LEAD}(?:si )?(?:mai )?${WISH_VERB}(?<o>-o|-l)? (?<item>.+?) (?:pe|in|la) (?:un |o )?${WISH}$`, "d");
+const WISH_BARE = new RegExp(String.raw`^${WISH_LEAD}(?:si )?(?:mai )?${WISH_VERB}(?:-o|-l)?(?: (?:asta|aia|aceasta|ideea|cererea|si asta))? (?:pe|in|la) (?:un |o )?${WISH}$`);
+const WISH_CREATE = new RegExp(String.raw`(?:^|[,.!?;]\s*|\s)(?:fa|faci|creeaza|deschide|incepe|porneste|vreau)(?:-mi|-ne)? (?:un |o )?${WISH}(?: nou| noua)?$`);
+const WISH_READ = new RegExp(String.raw`^${WISH_LEAD}(?:ce (?:e|este|ai|am|avem|sta|scrie|mai e|contine)(?: scris)? (?:pe|in) (?:un |o )?${WISH}|(?:arata|citeste|spune|deschide|da)(?:-mi|-ne)? (?:ce e pe )?${WISH}|(?:ai|ati|l-ai|ai mai) (?:trecut|pus|notat|adaugat|scris|salvat)(?: (?:asta|aia|ideea|cererea|-o))? (?:pe|in) (?:un |o )?${WISH}|${WISH})$`);
+export function wishlistMatch(raw) {
+  const text = String(raw || "").slice(0, 2000);
+  // foldKeep keeps every offset of the raw words (one folded character per character), so the item is cut from the raw text.
+  const folded = foldKeep(text).replace(/[\u0001\u0002]/g, " ");
+  const trimmed = folded.replace(/[\s.!?]+$/g, "");
+  const lead = trimmed.length - trimmed.trimStart().length;
+  const s = trimmed.slice(lead);
+  const word = s.match(/\bwish ?-?list|\blista (?:mea )?de (?:dorinte|idei)\b/);
+  if (!word) return null;
+  // A negation before the wishlist word („nu pune asta pe wishlist”) is not a request; one inside the item („… : nu vreau să repet”) is its text.
+  if (/(?:^|\s)(?:nu|n-|fara)\s*(?:mai\s+)?(?:pune|trece|treci|adauga|noteaza|scrie|baga|vreau)\b/.test(s.slice(0, word.index))) return null;
+  // Runs of spaces become one for matching; `map` takes a position in the squashed words back to the raw text.
+  const map = []; let squash = "";
+  for (let i = 0; i < s.length; i += 1) { if (s[i] === " " && squash.endsWith(" ")) continue; map.push(lead + i); squash += s[i]; }
+  const item = ([start, end]) => text.slice(map[start], map[end - 1] + 1).trim();
+  if (WISH_READ.test(squash)) return { intent: "wishlist_list", args: { asked: /\?\s*$/.test(text.trim()) || /^(?:ai|ati|l-ai)\b/.test(squash.replace(new RegExp(`^${WISH_LEAD}`), "")) } };
+  let m = squash.match(WISH_EXPLICIT);
+  if (m) return WISH_THIS.test(m.groups.item.trim()) ? { intent: "wishlist_add", args: { ref: "last" } } : { intent: "wishlist_add", args: { text: item(m.indices.groups.item) } };
+  if (WISH_BARE.test(squash)) return { intent: "wishlist_add", args: { ref: "last" } };
+  m = squash.match(WISH_BETWEEN);
+  if (m) return WISH_THIS.test(m.groups.item.trim()) ? { intent: "wishlist_add", args: { ref: "last" } } : { intent: "wishlist_add", args: { text: item(m.indices.groups.item) } };
+  if (WISH_CREATE.test(squash)) return { intent: "wishlist_add", args: { ref: "last", create: true } };
+  return null;
+}
+
+/**
+ * 2.19.1: the company map on the L3ga screen and the conversation next to it (view only, nothing changes in the Hub). „Poți să o
+ * mărești?” after the map was shown, „Fă harta mai mare”, „Harta pe tot ecranul”, „Micșorează harta”, „Harta normală”; „Ascunde chatul”
+ * / „Arată conversația”. Anchored on the whole clause.
+ */
+const MAP_WORD = String.raw`(?:harta|mapa|hart-a)(?: companiei| firmei)?`;
+const VIEW_LEAD = /^(?:(?:ok|okay|bine|da|pai|hai|acum|atunci|si)[, ]+)+/;
+const MAP_BIGGER = new RegExp(String.raw`^(?:(?:s-)?o (?:maresti|mareste|faci mai mare)|mareste(?:-o|-l|-mi-o|-mi)?|mareste(?:-mi)? ${MAP_WORD}|fa(?:-mi)? ${MAP_WORD} (?:mai )?mare|fa-o (?:mai )?mare|${MAP_WORD} mai mare|mai mare|(?:da )?zoom(?: in)?(?: pe ${MAP_WORD})?|apropie(?:-o)?(?: ${MAP_WORD})?)(?: (?:putin|un pic|mai mult|si mai mult|si mai tare|inca o data|te rog))?$`);
+const MAP_SMALLER = new RegExp(String.raw`^(?:(?:s-)?o (?:micsorezi|micsoreaza|faci mai mica)|micsoreaza(?:-o|-l|-mi-o)?(?: ${MAP_WORD})?|fa(?:-mi)? ${MAP_WORD} (?:mai )?mica|fa-o (?:mai )?mica|${MAP_WORD} mai mica|mai mica|zoom out|departeaza(?:-o)?(?: ${MAP_WORD})?)(?: (?:putin|un pic|mai mult|te rog))?$`);
+const MAP_FULL = new RegExp(String.raw`^(?:(?:arata|deschide|pune|afiseaza|da)(?:-mi)? |vreau sa vad )?${MAP_WORD} (?:completa|intreaga|toata|pe tot ecranul|pe ecran complet|in ecran complet|pe ecranul mare|mare|la maxim)$`);
+const MAP_RESET = new RegExp(String.raw`^(?:(?:revino la|readu|pune|adu)(?:-mi)? )?${MAP_WORD} (?:la normal|normala|la dimensiunea normala|la marimea normala|ca inainte)$|^(?:dimensiunea|marimea) normala(?: a hartii)?$|^zoom(?:-ul)? normal$|^reseteaza (?:zoom(?:-ul|ul)?|${MAP_WORD})$`);
+const MAP_CLOSE = new RegExp(String.raw`^(?:inchide|ascunde|scoate) ${MAP_WORD}(?: mare)?(?: de pe ecran)?$`);
+const CHAT_NOUN = String.raw`(?:chat(?:-ul|ul)?|conversatia|discutia|fereastra de chat|panoul de chat|panoul conversatiei|fereastra conversatiei)(?: (?:cu tine|cu lega|cu l3ga|noastra))?`;
+const CHAT_HIDE = new RegExp(String.raw`^(?:ascunde|minimizeaza|minimiza|strange|inchide|pliaza|micsoreaza|da jos|coboara)(?:-mi|-l|-o)? ${CHAT_NOUN}$|^(?:fara|ascunde) chat$`);
+const CHAT_SHOW = new RegExp(String.raw`^(?:arata|deschide|readu|afiseaza|maximizeaza|adu inapoi|reafiseaza|ridica)(?:-mi)? ${CHAT_NOUN}(?: inapoi)?$`);
+export function viewMatch(text) {
+  const t = String(text || "").replace(/[.!?,]+$/g, "").trim().replace(VIEW_LEAD, "").trim();
+  if (!t) return null;
+  if (CHAT_HIDE.test(t)) return { intent: "chat_view", args: { hidden: true } };
+  if (CHAT_SHOW.test(t)) return { intent: "chat_view", args: { hidden: false } };
+  if (MAP_FULL.test(t)) return { intent: "map_view", args: { action: "full" } };
+  if (MAP_RESET.test(t)) return { intent: "map_view", args: { action: "reset" } };
+  if (MAP_CLOSE.test(t)) return { intent: "map_view", args: { action: "close" } };
+  if (MAP_BIGGER.test(t)) return { intent: "map_view", args: { action: "bigger" } };
+  if (MAP_SMALLER.test(t)) return { intent: "map_view", args: { action: "smaller" } };
+  return null;
+}
+
 /** Anchored M16 reads; contextual controls never consume quotations, questions or negations. */
 export function m16Match(text, context = {}, { asks = false, quoted = false, addressed = false } = {}) {
   const t = String(text).replace(/[.!?,]+$/g, "").trim();
   const result = (intent, args = {}) => ({ intent, args });
+  // 2.19.1: the map and the conversation on the L3ga screen (view only; a polite question is the same request).
+  const view = viewMatch(t);
+  if (view) return view;
   if (context.recap?.active && !quoted) {
     const actions = { next: /^(urmatorul(?: capitol)?|capitolul urmator|next)$/, back: /^(inapoi|capitolul anterior|precedentul)$/, repeat: /^(repeta(?: capitolul)?|mai spune o data)$/, open: /^(deschide(?:-l)?|deschide capitolul)$/, stop: /^(opreste(?: rezumatul|-te din rezumat)?|stop|gata|ajunge)$/ };
     for (const [action, re] of Object.entries(actions)) if (re.test(t)) {
@@ -1574,7 +1648,8 @@ export function m16Match(text, context = {}, { asks = false, quoted = false, add
   if (/^(ascunde|arata|afiseaza) cifrele$/.test(t)) return result("command_numbers", { hide: t.startsWith("ascunde") });
   if (/^(urmatorul departament|departamentul urmator)$/.test(t)) return result("department_show", { relative: "next" });
   if (/^(departamentul anterior|precedentul departament|departamentul dinainte)$/.test(t)) return result("department_show", { relative: "prev" });
-  const department = t.match(/^(?:arata(?:-mi)? (?:departamentul )?|deschide departamentul |intra (?:in|pe) (?:departamentul )?)(.+)$/)?.[1];
+  // 2.19.1: „La vânzări”, „Mergi la vânzări”, „Du-mă la Engineering” (the owner's own words on 2026-10-25) name a department too.
+  const department = t.match(/^(?:arata(?:-mi)? (?:departamentul )?|deschide departamentul |intra (?:in|pe|la) (?:departamentul )?|(?:(?:mergi|du-ma|treci|hai|sari) )?la (?:departamentul )?)(.+)$/)?.[1];
   if (department) {
     const project = (context.projects || []).find((p) => [normalize(p.name), normalize(p.slug || "")].includes(department));
     if (project) return result("open_project", { projectId: project.id, projectRef: department });
@@ -1927,6 +2002,8 @@ export function clauseCovered(intent, text) {
   const t = String(text || "").trim();
   if (!t) return false;
   if (m16Match(t, { recap: { active: true } })?.intent === intent) return true;
+  // 2.19.1: a wishlist sentence is one whole step (its item keeps every word).
+  if ((intent === "wishlist_add" || intent === "wishlist_list") && wishlistMatch(t)?.intent === intent) return true;
   if (intent === "process_sheet" && /^(?:(?:arata|deschide)(?:-mi)? )?fisa .+$|^cum (?:functioneaza|lucreaza) .+$/.test(t)) return true;
   for (const [i, re] of P) {
     if (i !== intent) continue;
@@ -2075,7 +2152,8 @@ let patternWordsAdded = false;
  */
 const QUOTE_CHARS = /[„“”«»"]/g;
 /** The screen-opening reads a copied example may also be (never a project switch, the full screen or the rearm card). */
-const QUOTED_NAVIGATE_READS = new Set(["sales_show", "delivery_open", "delivery_decisions"]);
+// 2.19.1: the M16 screens and the view controls too („„L3ga, mod comandă”” copied from the acceptance steps was not understood).
+const QUOTED_NAVIGATE_READS = new Set(["sales_show", "delivery_open", "delivery_decisions", "command_mode", "command_view", "command_numbers", "department_show", "show_company", "map_view", "chat_view"]);
 export function resolveIntent(text, context = {}) {
   const out = resolveIntentOnce(text, context);
   const raw = String(text || "");
@@ -2090,7 +2168,8 @@ export function resolveIntent(text, context = {}) {
 function resolveIntentOnce(text, context = {}) {
   if (!patternWordsAdded) {
     patternWordsAdded = true;
-    const words = new Set([...Object.keys(VERB_FORMS), ...Object.values(VERB_FORMS), "intamplat", "astazi", "comanda", "capitolul", "departamentul", "functioneaza", "lucreaza", "cifrele", "palnia", "traseul", "repaus", "rezumatul", "rezumat"]);
+    const words = new Set([...Object.keys(VERB_FORMS), ...Object.values(VERB_FORMS), "intamplat", "astazi", "comanda", "capitolul", "departamentul", "functioneaza", "lucreaza", "cifrele", "palnia", "traseul", "repaus", "rezumatul", "rezumat",
+      "wishlist", "wishlist-ul", "wishlistul", "dorinte", "mareste", "maresti", "micsoreaza", "micsorezi", "harta", "chatul", "chat-ul", "conversatia", "minimizeaza", "vanzari"]);
     for (const [, re] of P) for (const w of String(re.source).replace(/[^a-z-]+/g, " ").split(" ")) if (w.length >= 4) words.add(w.replace(/^-+|-+$/g, ""));
     addKnownWords(words);
   }
@@ -2125,6 +2204,14 @@ function resolveIntentOnce(text, context = {}) {
   // M10.2.1 (D20): any question mark (not only a final one) holds a resume: „Continuă? Te rog.” is still a question about resuming.
   const asked = /\?/.test(String(raw));
   if (interrupting) norm = afterPrefix;
+  // 2.19.1: the owner's wishlist is a whole-sentence request (its item keeps its own words, „și” and commas included): never split.
+  const wish = !interrupting ? wishlistMatch(raw) : null;
+  if (wish) {
+    const inert = INERT_SOURCES.has(source);
+    return { utterance: raw, normalized: norm, source, quotedConfirm: false, clarification: null, refused: inert ? [{ intent: wish.intent, reason: INERT_REASON }] : [],
+      steps: [{ intent: wish.intent, args: inert ? { ...wish.args, inert: true } : wish.args, constraints: {}, effect: inert ? "none" : INTENT_EFFECTS[wish.intent], text: norm,
+        effectClass: inert ? "REFUSED" : classOfIntent(wish.intent, INTENT_EFFECTS[wish.intent]) }] };
+  }
   if (!interrupting && !question && (TEACH_PREFIX.test(norm) || TEACH_PROCEDURE.test(norm) || forget)) {
     const lesson = forget ? { intent: "forget", args: { ref: forget.groups.ref.trim() } } : { intent: "teach", args: { text: stripRawPrefix(raw) } };
     const inert = INERT_SOURCES.has(source);

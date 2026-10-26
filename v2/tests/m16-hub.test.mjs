@@ -35,7 +35,7 @@ test("M16 Hub routes: exact chapters, all read adapters, channel refusals, no ne
   for (const index of [-1, 6, 0.5]) assert.equal((await t.request(`/api/recap/${snapshot.id}/present`, { body: { index } })).status, 400);
   assert.equal((await get(t, "/api/recap?period=week")).status, 400); assert.equal((await get(t, "/api/sales/funnel?threshold=366")).status, 400);
   assert.equal((await get(t, "/api/factory/unknown/trace")).status, 404); assert.equal((await get(t, "/api/recap/unknown")).status, 404);
-  assert.equal(HUB_VERSION, "2.19.0-m16"); assert.equal(API_CONTRACT, 21); assert.deepEqual(counts(t.hub), before);
+  assert.equal(HUB_VERSION, "2.19.1-m16"); assert.equal(API_CONTRACT, 22); assert.deepEqual(counts(t.hub), before);
 });
 test("M16 Hub intake: contextual navigation, since_visit briefing and isolated source failure", { timeout: 120000 }, async (c) => {
   const t = await acceptanceHub(); c.after(() => t.cleanup()); const seeded = await seedReady(t);

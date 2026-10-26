@@ -114,6 +114,15 @@ export function registerIntelRoutes(router, hub) {
   get("/api/owner/start-view", () => ({ startView: settings.get("startView") || "cockpit" }));
   post("/api/owner/start-view", cmd("owner.start_view"));
   post("/api/owner/plan/arm", cmd("envelope.arm"));
+  // 2.19.1: the owner's wishlist (a note per idea; nothing starts from it).
+  get("/api/wishlist", ({ req, query }) => {
+    // The owner's wishlist is his: a request that declares itself an agent or a script does not read it.
+    const declared = String(req.headers["x-hub-channel"] || "").toLowerCase();
+    if (declared === "agent" || declared === "cli") throw new HubError("policy", "Wishlist-ul proprietarului nu se citește din canalul agent sau cli");
+    return { items: hub.wishlist.list({ status: ["OPEN", "DONE"].includes(query.status) ? query.status : null }) };
+  });
+  post("/api/wishlist", cmd("wishlist.add", ({ body }) => ({ text: body?.text, projectId: body?.projectId || undefined })));
+  post("/api/wishlist/:id/status", cmd("wishlist.status", ({ params, body }) => ({ id: params.id, status: body?.status })));
 
   // ---------- Personal Mission Control ----------
   /** The phone's compact state: for a paired device, or for the owner's session on the PC (same view, used to preview it). */

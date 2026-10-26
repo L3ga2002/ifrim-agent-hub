@@ -208,4 +208,11 @@ export function registerIntelCommands(reg, hub) {
     execute: (input, ctx) => envelopes.armConfirmation({ envelopeId: input.envelopeId, session: session(ctx), legaSessionId: input.legaSessionId || null }) });
   reg("owner.start_view", { describe: "Ecranul de pornire: cockpit-ul proiectului sau ecranul mare cu harta", channels: ANY, schema: { view: { enum: ["cockpit", "stage"], required: true } },
     execute: (input, ctx) => { settings.set("startView", input.view, ctx.actor, `Ecranul de pornire: ${input.view}`); return { startView: input.view }; } });
+  // 2.19.1: the owner's wishlist from the L3ga screen (the conversation writes it through the intake, intent wishlist_add). A note only.
+  reg("wishlist.add", { describe: "Pune o idee pe wishlist (o notă; nu pornește nimic)", channels: OWNER_UI,
+    schema: { text: { required: true, min: 3, max: 300 }, projectId: { max: 80 } },
+    execute: (input, ctx) => hub.wishlist.add({ text: input.text, source: "ui", projectId: input.projectId || null, actor: ctx.actor }) });
+  reg("wishlist.status", { describe: "Marchează o idee de pe wishlist ca făcută, o redeschide sau o scoate de pe listă", channels: OWNER_UI,
+    schema: { id: { required: true, max: 80 }, status: { enum: ["OPEN", "DONE", "REMOVED"], required: true } },
+    execute: (input, ctx) => hub.wishlist.setStatus({ id: input.id, status: input.status, actor: ctx.actor }) });
 }

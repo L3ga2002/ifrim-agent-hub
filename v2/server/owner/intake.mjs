@@ -19,6 +19,7 @@ import { HubError } from "../core/errors.mjs";
 import { activeWork } from "./recap.mjs";
 import { processSheetAliases } from "./process-sheets.mjs";
 import { parse } from "../storage/db.mjs";
+import { redactText } from "../security/redact.mjs";
 import { resolveIntent, matchRef, normalize, stripFillers, INTENT_EFFECTS, CONTINUE_QUESTION, stopTalkAnswer, modeAnswer, PREVIEW_START, stripOutreach, SALES_SEND_REASON,
   QUOTED_OUTREACH_NOTE, OWN_OUTREACH_TEXT, outreachCutNote } from "./intents.mjs";
 import { layoutForIntent } from "./layout.mjs";
@@ -146,6 +147,13 @@ const stopVia = (source) => {
 const answeredUnknown = (step, r, resolved) => Boolean(step?.args?.refusedConfirmation || step?.args?.pendingVerb
   || ((step?.args?.continueQuestion || step?.args?.planStartUnclear) && resolved?.clarification)
   || r?.message || r?.clarification || r?.refused || r?.error || r?.explain);
+/** 2.19.1: what the Hub says for a map view change on the L3ga screen (view only). */
+const MAP_VIEW_SAID = Object.freeze({ bigger: "Am mărit harta companiei.", smaller: "Am micșorat harta companiei.", full: "Am pus harta companiei pe tot ecranul; conversația e minimizată.",
+  reset: "Harta e la mărimea normală.", close: "Am închis harta mare." });
+/** 2.19.1: „Pune asta pe wishlist” names the last request the Hub could not do in this conversation, if it is at most this old. */
+const WISH_LAST_MS = 15 * 60 * 1000;
+/** A greeting or an acknowledgement is never „the last request” a wishlist „asta” could name. */
+const NOT_A_REQUEST = /^(?:(?:hi|hei|hey|salut|buna|buna ziua|servus|ok|okay|da|nu|mersi|multumesc|bine|super|perfect|gata|lega|l3ga)\b[\s,.!?]*)+(?:\S+)?$/;
 /** VOICE-05: the owner's own words, quoted as heard (bounded; the closing punctuation dropped). */
 const heardQuote = (heard) => String(heard || "").replace(/[\s.!…]+$/u, "").slice(0, 120) || "Continuă";
 /**
@@ -1033,7 +1041,32 @@ export function createIntake(hub) {
       }
     }
     try {
-      if (["recap", "recap_control", "command_mode", "command_view", "command_numbers", "department_show", "process_sheet"].includes(step.intent)) {
+      if (step.intent === "map_view" || step.intent === "chat_view") {
+        // 2.19.1: view only, on the L3ga screen that sent the words (typed) or the one of this Lega session (voice, live event lega.view).
+        if (step.intent === "map_view") { r.mapView = { action: step.args.action }; r.message = MAP_VIEW_SAID[step.args.action] || MAP_VIEW_SAID.bigger; }
+        else { r.chatView = { hidden: step.args.hidden === true }; r.message = step.args.hidden ? "Am ascuns conversația; harta rămâne pe ecran. Spune „arată conversația” ca s-o readuc." : "Am readus conversația pe ecran."; }
+      } else if ((step.intent === "wishlist_add" || step.intent === "wishlist_list") && ["agent", "cli"].includes(ctx.channel)) {
+        // The owner's wishlist is his: an agent or a script neither reads nor writes it.
+        r.refused = "Wishlist-ul e al proprietarului: îl citește și îl scrie doar el (L3ga, text sau voce), nu un agent sau un script";
+      } else if (step.intent === "wishlist_add") {
+        const last = conv?.lastUnknown && nowMs() - conv.lastUnknown.at <= WISH_LAST_MS ? conv.lastUnknown : null;
+        const text = step.args.text || (step.args.ref === "last" ? last?.text : null);
+        if (!text) {
+          r.message = step.args.create ? "Wishlist-ul există deja. Spune ce pun pe el, de exemplu „Pune pe wishlist: mărirea hărții”." : "Ce pun pe wishlist? Spune, de exemplu, „Pune pe wishlist: mărirea hărții”.";
+        } else {
+          const added = hub.wishlist.add({ text, source: ctx.channel === "voice" || String(source).startsWith("voice") ? "voice" : "typed", origin: step.args.text ? null : input.text, projectId: projectId || null, actor: ctx.actor });
+          if (!step.args.text && conv) conv.lastUnknown = null;
+          const open = hub.wishlist.list({ status: "OPEN" }).length;
+          r.wishlist = { item: added.item, duplicate: added.duplicate, open };
+          r.message = added.duplicate ? `„${added.item.text}” e deja pe wishlist (${open === 1 ? "o idee deschisă" : `${open} idei deschise`}).`
+            : `Am trecut pe wishlist: „${added.item.text}”. ${open === 1 ? "E prima idee de pe listă" : `Sunt ${open} idei pe listă`}; o vezi în L3ga, la Wishlist.`;
+        }
+      } else if (step.intent === "wishlist_list") {
+        const items = hub.wishlist.list({ status: "OPEN" });
+        r.wishlist = { items, open: items.length };
+        r.message = !items.length ? "Wishlist-ul e gol. Spune „Pune pe wishlist: …” și notez ideea."
+          : `${step.args.asked ? "Da. " : ""}Pe wishlist ${items.length === 1 ? "e o idee" : `sunt ${items.length} idei`}: ${items.slice(0, 5).map((x, i) => `${i + 1}) ${x.text}`).join("; ")}${items.length > 5 ? `; și încă ${items.length - 5}` : ""}.`;
+      } else if (["recap", "recap_control", "command_mode", "command_view", "command_numbers", "department_show", "process_sheet"].includes(step.intent)) {
         if (step.intent === "recap") { r.recap = { snapshot: hub.recap.build({ period: step.args.period, projectId }), index: 0 }; r.message = r.recap.snapshot.chapters[0].sentences.join(" "); }
         else if (step.intent === "recap_control") {
           const context = recapContext(input, ctx); const snapshot = hub.recap.get(context.snapshotId); const action = step.args.action;
@@ -1661,6 +1694,12 @@ export function createIntake(hub) {
       // resolver's own clarification is already counted on owner.intent.
       if (r.clarification) bus.emit({ type: "intake.question", scopeType: "owner", scopeId: current?.id || "global", source: ctx.actor, payload: { intent: step.intent, options: (r.clarification.options || []).length } });
       results.push(r);
+    }
+    // 2.19.1: a sentence the Hub could not do at all is the „asta” of a following „Pune asta pe wishlist” (bounded, memory only).
+    if (unknownSteps > 0 && unknownSteps === resolved.steps.length && !resolved.clarification && !resolved.refused.length && !["document", "media-local"].includes(source)
+      && resolved.steps.every((s, i) => !answeredUnknown(s, results[i], resolved))) {
+      const words = stripFillers(normalize(input.text)).replace(LEGA_PREFIX, "").trim();
+      if (words.split(" ").length >= 2 && !NOT_A_REQUEST.test(words)) conv.lastUnknown = { text: redactText(String(input.text)).replace(/\s+/g, " ").trim().slice(0, 300), at: nowMs() };
     }
     if (unknownSteps) {
       const unanswered = resolved.steps.filter((s, i) => s.intent === "unknown" && !answeredUnknown(s, results[i], resolved)).length;

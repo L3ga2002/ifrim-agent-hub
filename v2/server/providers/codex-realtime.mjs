@@ -135,7 +135,9 @@ export function createCodexRealtime({ codex, supervisor }) {
         case "item/started":
         case "item/completed":
           if (params.item?.type && !allowedItems.has(params.item.type)) { violation(params.item.type); break; }
-          if (method === "item/completed" && params.item?.type === "webSearch") onEvent({ type: "web.search", text: webSearchText(params.item) });
+          // 2.19.1: a sign of work of this turn (the Hub's stall watchdog measures silence, not the length of real work).
+          if (params.turnId && activeTurns.has(params.turnId)) onEvent({ type: "turn.activity", turnId: params.turnId });
+          if (method === "item/completed" && params.item?.type === "webSearch") onEvent({ type: "web.search", text: webSearchText(params.item), turnId: params.turnId || null });
           if (method === "item/completed" && params.item?.type === "agentMessage" && typeof params.item.text === "string" && params.turnId) turnText.set(params.turnId, params.item.text);
           break;
         case "turn/completed": {
@@ -185,6 +187,11 @@ export function createCodexRealtime({ codex, supervisor }) {
     async function interruptTurns() {
       if (!alive()) return;
       await Promise.all([...activeTurns].map((turnId) => session.peer.request("turn/interrupt", { threadId, turnId }, 5000).catch(() => {})));
+    }
+    /** 2.19.1: one delegated turn the Hub stopped waiting for (the stall watchdog in runtime/lega.mjs); the others keep running. */
+    async function interruptTurn(turnId) {
+      if (!alive() || !activeTurns.has(turnId)) return;
+      await session.peer.request("turn/interrupt", { threadId, turnId }, 5000).catch(() => {});
     }
 
     /** Graceful stop (realtime/stop → interrupt → end process). Every caller gets the same in-flight promise. */
@@ -267,7 +274,7 @@ export function createCodexRealtime({ codex, supervisor }) {
         activity: () => ({ ...activity }),
         answerSdp, threadId, realtimeSessionId: info.realtimeSessionId, version: info.version, pid: session.record.pid, key, backend,
         appendSpeech: (text) => (alive() ? session.peer.request("thread/realtime/appendSpeech", { threadId, text }, 10000) : Promise.resolve(null)),
-        interruptTurns, stop, kill, activeTurnCount: () => activeTurns.size,
+        interruptTurns, interruptTurn, stop, kill, activeTurnCount: () => activeTurns.size,
       };
     } catch (error) {
       signal?.removeEventListener("abort", onAbort);

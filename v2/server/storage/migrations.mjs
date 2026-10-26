@@ -1186,4 +1186,19 @@ export const MIGRATIONS = [
       `);
     },
   },
+  {
+    // 2.19.1 (the owner's L3ga session of 2026-10-25): the owner's wishlist — what he wants the Hub or L3ga to do and it cannot do yet,
+    // in his own words (owner/wishlist.mjs). A note, never a task. Additive: the older code ignores the table, so `git revert` of the
+    // release + the managed upgrade stays a valid rollback without a database restore.
+    version: 16,
+    name: "l3ga-wishlist",
+    up(db) {
+      db.exec(`
+        CREATE TABLE wishlist_items (id TEXT PRIMARY KEY, text TEXT NOT NULL, status TEXT NOT NULL CHECK (status IN ('OPEN','DONE','REMOVED')),
+          source TEXT NOT NULL CHECK (source IN ('typed','voice','ui')), origin TEXT, project_id TEXT, created_by TEXT NOT NULL,
+          created_at TEXT NOT NULL, updated_at TEXT NOT NULL, done_at TEXT);
+        CREATE INDEX idx_wishlist_status ON wishlist_items(status, created_at);
+      `);
+    },
+  },
 ];

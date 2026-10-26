@@ -181,7 +181,7 @@ export function replyFor(response) {
   if (face?.shape === "FACE") lines.push("Aceasta e fața mea: linii și particule, nu chipul cuiva.");
   if (face?.shape === "CORE" && !lines.length) lines.push("Am revenit la nucleu.");
   if (face?.hidden) lines.push("Am ascuns fața.");
-  if (!lines.length) lines.push(resolved?.steps?.some((s) => s.intent === "unknown") ? "Nu am înțeles. Încearcă „Hai să lucrăm la …”, „Arată-mi planul”, „Ce face acum?”, „Oprește tot”." : "Gata.");
+  if (!lines.length) lines.push(resolved?.steps?.some((s) => s.intent === "unknown") ? "Nu am înțeles. Încearcă „Hai să lucrăm la …”, „Arată-mi planul”, „Ce face acum?”, „Oprește tot”. Dacă e ceva ce Hub-ul nu știe încă, spune „Pune asta pe wishlist” și îl notez." : "Gata.");
   return lines.filter(Boolean).join("\n");
 }
 

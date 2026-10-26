@@ -129,3 +129,41 @@
 .lega-desk .table-wrap { max-width: 100%; }
 /* M14: the record a Lega read opened („Arată devizul DVZ-0001”) is marked where it is shown. */
 .lega-desk .lega-desk-section.is-focused { outline: 1px solid rgba(101, 217, 255, 0.45); outline-offset: 4px; border-radius: var(--r); }
+
+/* ---------- 2.19.1: the readable company map on the L3ga screen (zoom, full screen), the minimized conversation and the wishlist ---------- */
+.lega-map { flex: 1 1 auto; min-height: min(56vh, 540px); display: flex; flex-direction: column; gap: var(--sp-2); padding: var(--sp-2) var(--sp-3);
+  background: rgba(8, 11, 16, 0.8); border: 1px solid rgba(101, 217, 255, 0.2); border-radius: var(--r, 10px); backdrop-filter: blur(6px); }
+.lega-map-bar { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: var(--sp-2); }
+.lega-map-title { font-size: var(--fs-m, 15px); }
+.lega-map-tools { gap: var(--sp-1); align-items: center; }
+.lega-map-zoom { min-width: 3.4em; text-align: center; font-variant-numeric: tabular-nums; }
+.lega-map-viewport { position: relative; flex: 1 1 auto; min-height: 0; overflow: auto; cursor: grab; touch-action: none; border-radius: 8px; }
+.lega-map-viewport.is-dragging { cursor: grabbing; user-select: none; }
+.lega-map-canvas.command { display: flex; flex-direction: column; height: calc(100% * var(--map-zoom, 1)); min-height: 100%; width: calc(100% * var(--map-zoom, 1)); min-width: 100%; padding: 0.4em; gap: 0; overflow: visible;
+  background: transparent; font-size: calc(clamp(12px, 1.45vh, 20px) * var(--map-zoom, 1)); }
+.lega-map .command-company { padding-top: 0.2em; }
+.lega-map .command-company > h2, .lega-map .command-company > .command-source { position: static; max-width: none; text-align: left; }
+/* The M16 map sizes itself from the Command stage (flex + container units); here its box is explicit and grows with the zoom. */
+.lega-map .command-company { display: flex; flex-direction: column; flex: 1 1 auto; min-height: 0; }
+/* From 1100 px the M16 ring fills the panel (its cards size themselves from the ring, container units); narrower, M16 shows the departments as a list. */
+@media (min-width: 1100px) { .lega-map .radial-map { flex: 1 1 0; width: 100%; height: auto; min-height: 16em; aspect-ratio: auto; margin: 0 auto; container-type: size; } }
+.lega-map .command-department { flex: 1 1 auto; }
+.lega-map .command-department { min-height: 0; }
+.lega-map-hint { margin: 0; }
+.lega-one.has-map .lega-one-center .lega-conv { flex: 0 1 auto; max-height: 30vh; min-height: 0; }
+.lega-one.is-map-full .lega-one-grid { grid-template-columns: minmax(0, 1fr); grid-template-rows: minmax(0, 1fr); grid-template-areas: "center"; }
+.lega-one.is-map-full .lega-one-side, .lega-one.is-map-full .cockpit-main { display: none; }
+.lega-one.is-map-full .lega-map { min-height: 0; }
+.lega-one.is-map-full .lega-figure { flex: none; }
+.lega-conv-min { flex: none; align-items: center; gap: var(--sp-2); padding: var(--sp-1) var(--sp-2); background: rgba(8, 11, 16, 0.6); border-radius: var(--r, 8px); }
+.lega-conv-min .faint { flex: 1 1 16em; }
+.wishlist-panel.is-flash { outline: 1px solid rgba(101, 217, 255, 0.55); outline-offset: 3px; }
+.wishlist-panel .wishlist-list li { display: flex; align-items: flex-start; justify-content: space-between; gap: var(--sp-1); }
+.wishlist-panel .wishlist-list.is-done li { opacity: 0.7; text-decoration: line-through; }
+.wishlist-panel .wishlist-add { gap: var(--sp-1); margin-top: var(--sp-1); }
+.wishlist-panel .wishlist-add .input { flex: 1 1 auto; min-width: 0; }
+@media (max-width: 900px) {
+  .lega-map { min-height: 60vh; }
+  .lega-one.is-map-full .lega-one-grid { display: flex; }
+}
+.lega-one-center .lega-view-controls { justify-content: center; flex: none; gap: var(--sp-1); }

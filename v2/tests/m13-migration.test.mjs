@@ -88,13 +88,14 @@ test("M13-MIG-03 dry run on a copy: 13 → 14, only additions (four tables, five
   const r = await dryRunMigration({ dbPath: file, tmpDir: path.join(d, "tmp") });
   // M14: migration 15 (m14-backup-owner) follows 14 in the same run; it only adds columns to backups and one index (M14-BKP-03).
   assert.deepEqual([r.schemaBefore, r.schemaAfter, r.integrity, r.rowCountsUnchanged], [13, MIGRATIONS.at(-1).version, "ok", true]);
-  assert.deepEqual(r.pending, ["14:m13-desk", "15:m14-backup-owner"]);
+  // 2.19.1: migration 16 (l3ga-wishlist) follows; it only adds the wishlist table and one index.
+  assert.deepEqual(r.pending, ["14:m13-desk", "15:m14-backup-owner", "16:l3ga-wishlist"]);
   const source = new DatabaseSync(file, { readOnly: true });
   try { assert.equal(source.prepare("SELECT MAX(version) AS v FROM schema_migrations").get().v, 13); } finally { source.close(); }
   const db = openDatabase(file);
   try {
     const after = master(db);
     for (const [name, sql] of Object.entries(before)) if (name !== "backups") assert.equal(after[name], sql, `${name} unchanged`);
-    assert.deepEqual(Object.keys(after).filter((n) => !(n in before)).sort(), [...NEW_TABLES, ...NEW_INDEXES, "idx_backups_status"].sort());
+    assert.deepEqual(Object.keys(after).filter((n) => !(n in before)).sort(), [...NEW_TABLES, ...NEW_INDEXES, "idx_backups_status", "wishlist_items", "idx_wishlist_status"].sort());
   } finally { db.close(); }
 });

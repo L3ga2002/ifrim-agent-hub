@@ -358,6 +358,27 @@ async function legaScript() {
       if (item.sleep) await sleep(item.sleep);
       else if (item.say) said(item.role || "user", item.say);
       else if (item.tool) { n += 1; await delegatedTurn(item.tool, item.args || {}, n, item.heard ?? null, Boolean(item.silent)); }
+      // 2.19.1 `{hang: true, heard?}`: a delegated turn that never answers nor calls a tool (live 2026-10-25); only turn/interrupt ends it.
+      else if (item.hang) {
+        n += 1;
+        send({ method: "turn/started", params: { threadId, turn: { id: `turn_lega_${n}`, status: "inProgress", items: [] } } });
+        send({ method: "thread/realtime/itemAdded", params: { threadId, item: { type: "handoff_request", handoff_id: `h${n}`, item_id: `i${n}`, input_transcript: item.heard ?? "fake: hang", active_transcript: [] } } });
+        log({ hung: `turn_lega_${n}` });
+      }
+      // 2.19.1 `{slow: {items, every}, heard?}`: a delegated turn that works for longer than the stall watchdog (one reasoning item every
+      // `every` ms), then answers: the watchdog measures silence, so it must not interrupt it.
+      else if (item.slow) {
+        n += 1;
+        const turnId = `turn_lega_${n}`;
+        send({ method: "turn/started", params: { threadId, turn: { id: turnId, status: "inProgress", items: [] } } });
+        send({ method: "thread/realtime/itemAdded", params: { threadId, item: { type: "handoff_request", handoff_id: `h${n}`, item_id: `i${n}`, input_transcript: item.heard ?? "fake: slow", active_transcript: [] } } });
+        for (let k = 0; k < item.slow.items; k += 1) {
+          await sleep(item.slow.every);
+          send({ method: "item/started", params: { threadId, turnId, item: { type: "reasoning", id: `r${n}_${k}` } } });
+        }
+        send({ method: "item/completed", params: { threadId, turnId, item: { type: "agentMessage", id: `m${n}`, text: "[FINAL] Răspuns lung, dar la timp." } } });
+        send({ method: "turn/completed", params: { threadId, turn: { id: turnId, status: "completed", items: [] } } });
+      }
       await sleep(30);
     }
     return log({ scriptDone: script.length });

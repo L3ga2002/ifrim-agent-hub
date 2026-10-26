@@ -2,7 +2,7 @@ import RecapCard from "./lega/RecapCard.jsx";
 import SheetCard from "./lega/SheetCard.jsx";
 import { applyCommandResult, recapContext, setCommand } from "../shell/CommandBridge.jsx";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { AudioLines, Send, Settings2, Lock, LockOpen, VolumeX, Pause, Hand, Snowflake, Square, Undo2, Focus, Eye, EyeOff, Minimize2, Circle, Network, Maximize2, Radar, Monitor } from "lucide-react";
+import { AudioLines, Send, Settings2, Lock, LockOpen, VolumeX, Pause, Hand, Snowflake, Square, Undo2, Focus, Eye, EyeOff, Minimize2, Circle, Network, Maximize2, Radar, Monitor, Map as MapIcon, MessageSquare, MessageSquareOff } from "lucide-react";
 import { api } from "../api.js";
 import { useHub, useResource, onHubEvent, onLive, pushToast, usePref, refresh, setState, getState } from "../store.js";
 import { markArmed, looksLikeConfirmation } from "../lib/voiceContext.js";
@@ -32,6 +32,9 @@ import { errorOutcome, canRetryDirectly } from "../lib/errorOutcome.js";
 import { attentionItems } from "../lib/stateVocab.js";
 import { conversationOf, withConversation, draftOf, withDraft, exchangeProject } from "../lib/legaConversation.js";
 import { salesOppFromPath, offerToShow, screenActivity } from "../lib/legaOneScreen.js";
+import { MAP_CLOSED, normalizeMapState, nextMapState, viewChangesOf, viewFromLiveEvent, conversationShown } from "../lib/legaMapView.js";
+import { MapPanel } from "./lega/MapPanel.jsx";
+import { WishlistPanel } from "./lega/WishlistPanel.jsx";
 
 /**
  * One L3ga screen (2026-10-18): this is THE Lega interface. The living company map (departments, missions, runs, decisions) is its
@@ -86,6 +89,31 @@ function Cockpit({ projectId, go }) {
   const [faceShape, setFaceShape] = usePref("lega.face", "CORE");
   const [faceHidden, setFaceHidden] = usePref("lega.faceHidden", false);
   const [discreet, setDiscreet] = usePref("lega.discreet", false);
+  // 2.19.1: the readable company map on this screen (open / full screen / zoom) and the conversation the owner can minimize, per browser.
+  // The next value is computed from a ref and written once (never inside a state updater: a reload right after it kept the old value).
+  const [mapPref, setMapPref] = usePref("lega.map", MAP_CLOSED);
+  const [chatHidden, setChatHidden] = usePref("lega.chatHidden", false);
+  const [mapDepartment, setMapDepartment] = useState(null);
+  const mapRef = useRef(mapPref);
+  mapRef.current = normalizeMapState(mapPref);
+  const mapAction = useCallback((action) => {
+    const next = nextMapState(mapRef.current, action);
+    mapRef.current = next;
+    setMapPref(next);
+    if (!next.open) setMapDepartment(null);
+  }, [setMapPref]);
+  const showChat = useCallback((hidden) => {
+    setChatHidden(hidden);
+    // Showing the conversation leaves the full-screen map (the map stays open next to it).
+    if (!hidden && mapRef.current.full) mapAction("reset");
+  }, [setChatHidden, mapAction]);
+  const mapLive = useRef(null);
+  mapLive.current = { map: mapAction, chat: showChat };
+  // 2.19.1: a wishlist answer (typed, or lega.wishlist from this tab's Lega session) brings the Wishlist panel into view.
+  const [wishFocus, setWishFocus] = useState(0);
+  // A department the owner named by voice while the map is open here (CommandBridge keeps it on this screen instead of Mod Comandă).
+  const voiceDepartment = useHub((s) => s.legaMapDepartment || null);
+  useEffect(() => { if (voiceDepartment?.key && mapRef.current.open) setMapDepartment(voiceDepartment.key); }, [voiceDepartment]);
   const [layout, setLayout] = useState(null);
   const [history, setHistory] = useState([]);
   const [plan, setPlan] = useState(null);
@@ -254,10 +282,19 @@ function Cockpit({ projectId, go }) {
     if (face?.shape) { setFaceShape(face.shape); setFaceHidden(false); }
     if (face?.hidden) setFaceHidden(true);
     if (face?.discreet) setDiscreet(true);
+    // 2.19.1: „Arată harta companiei” also opens the readable map on this screen (the figure alone was ~80 px).
+    if (face?.shape === "GRAPH") mapAction("open");
   };
   const faceLive = useRef(null);
   faceLive.current = { sessionId: legaStatus !== "off" ? legaSessionId : null, apply: applyFace };
   useEffect(() => onLive((e) => { const face = faceFromLiveEvent(e, faceLive.current.sessionId); if (face) faceLive.current.apply(face); }), []);
+  // 2.19.1: the map / conversation sentences the Hub heard from the owner in THIS tab's Lega session, and its wishlist answers.
+  useEffect(() => onLive((e) => {
+    const view = viewFromLiveEvent(e, faceLive.current.sessionId);
+    if (view?.map) mapLive.current.map(view.map);
+    if (typeof view?.chat === "boolean") mapLive.current.chat(view.chat);
+    if (e.type === "lega.wishlist" && faceLive.current.sessionId && e.sessionId === faceLive.current.sessionId) setWishFocus(Date.now());
+  }), []);
 
   // M10.2.1 (D14–D16): ONE rearm card in the cockpit. It comes from the Hub's answer to a request that met the stopped gate (the card
   // bound to that request), from a blocker option („Arată cardul de redeschidere”: the same card, asked, shown and confirmed here), or — under voice-first,
@@ -342,6 +379,10 @@ function Cockpit({ projectId, go }) {
     try {
       const res = await api("/api/owner/intent", { method: "POST", body: { text: value, recap: recapContext(), projectId: pid || undefined, source, presented: presentedPlan(opsPlan) || presentedFrom(plan?.envelope) || undefined, layout: layout || undefined, legaSessionId: legaStatus !== "off" && legaSessionId ? legaSessionId : undefined, choice: extra.choice || undefined } });
       applyFace(faceCommand(res.resolved.steps));
+      // 2.19.1: the map / conversation view the answer asks for (view only).
+      const viewChanges = viewChangesOf(res.results);
+      for (const action of viewChanges.map) mapAction(action);
+      if (typeof viewChanges.chat === "boolean") showChat(viewChanges.chat);
       let intelFound = null;
       // M10.2: a blocked request comes back with the server's explanation and its options (one next action each, never raw ids).
       // M10.2.1: with the preserved request's id, so an „Arată cardul de redeschidere” option binds the rearm card to THAT request.
@@ -356,8 +397,13 @@ function Cockpit({ projectId, go }) {
       // Last review round RR13: an answer that opens another project's cockpit replaces this screen (and its conversation, whose effect
       // may never run here): its rearm slot goes to the app store now, before the navigation, so the cockpit that opens shows the card.
       if (pendingRearm.current && rearmBeforeNavigation(res.results, pid)) { const fx = pendingRearm.current; pendingRearm.current = null; applyRearmFx(fx); }
+      const onMapResults = new Set();
       for (const r of res.results) {
-        await applyCommandResult(r, { go, typed: source === "typed" });
+        // 2.19.1: with the company map open here, a department („La vânzări”) opens on that map, next to the conversation.
+        const onMap = mapRef.current.open && r.intent === "department_show" && r.commandView?.departmentKey && !r.refused && !r.error;
+        if (onMap) { setMapDepartment(r.commandView.departmentKey); onMapResults.add(r); }
+        if (r.wishlist && !r.refused && !r.error) setWishFocus(Date.now());
+        await applyCommandResult(onMap ? { ...r, navigate: null, commandView: null, companyMap: null } : r, { go, typed: source === "typed" });
         if (r.recap || r.recapControl || r.processSheet) setWorkTab("now");
         if (r.navigate?.startsWith("/cockpit/")) { const next = r.navigate.split("/")[2]; setCurrentProject(next); go(`/lega/${next}`); }
         // M09: "deschide studioul", "arată-mi clipul X", a proposed correction (opens the clip at that second with the proposal).
@@ -372,7 +418,8 @@ function Cockpit({ projectId, go }) {
         if (r.explain) setExplain(r.explain);
         if (r.desk?.recordId) setDeskFocus({ id: r.desk.recordId, at: Date.now() });
         if (r.replay) setReplayMission(r.replay.missionId);
-        if (r.companyMap) { setDepartment(r.args?.departmentKey || null); changeLayout({ ...(layout || {}), cards: [{ type: "CompanyMap", ref: { kind: "company", id: "company" }, size: "l" }, ...((layout?.cards || []).filter((c) => c.type !== "CompanyMap"))] }); }
+        // 2.19.1: the map open on this screen already shows the company (no second, smaller map card).
+        if (r.companyMap && !onMap && !mapRef.current.open) { setDepartment(r.args?.departmentKey || null); changeLayout({ ...(layout || {}), cards: [{ type: "CompanyMap", ref: { kind: "company", id: "company" }, size: "l" }, ...((layout?.cards || []).filter((c) => c.type !== "CompanyMap"))] }); }
         if (r.layout) changeLayout(r.layout);
         // M08: an armed plan is confirmed by the Hub from your local voice; the card only shows the open window.
         if (r.armed?.armed && r.plan?.envelope?.id) markArmed(r.plan.envelope.id, r.armed.expiresAt);
@@ -409,7 +456,7 @@ function Cockpit({ projectId, go }) {
       const answerOpp = salesNav.links.map((l) => salesOppFromPath(l.path)).find(Boolean);
       if (answerOpp) setSalesOpp(answerOpp);
       // Review F2 (L4): a planner's question with choices (the run planner's, for example) gets its buttons too, not only the resolver's.
-      setConversation((c) => [...c, { mount: mountRef.current, role: "lega", text: replyFor(res), at: Date.now(), clarification: clarificationOf(res), blocker, links: salesNav.links }]);
+      setConversation((c) => [...c, { mount: mountRef.current, role: "lega", text: replyFor(onMapResults.size ? { ...res, results: res.results.map((r) => (onMapResults.has(r) ? { ...r, commandView: null, companyMap: null, message: "Am deschis departamentul pe harta companiei; „‹ Toată compania” revine la toată harta." } : r)) } : res), at: Date.now(), clarification: clarificationOf(res), blocker, links: salesNav.links }]);
       if (salesNav.go) go(salesNav.go);
       refresh(); cockpit.reload();
     } catch (e) {
@@ -586,8 +633,10 @@ function Cockpit({ projectId, go }) {
     return () => window.removeEventListener("keydown", onKey, true);
   }, [immersive]);
 
+  const mapView = normalizeMapState(mapPref);
+  const convShown = conversationShown(mapView, chatHidden);
   return (
-    <div className={`page cockpit lega-one ${layout?.focus ? "is-focus" : ""} ${immersive ? "is-immersive" : ""}${typing ? " is-typing" : ""}`}>
+    <div className={`page cockpit lega-one ${layout?.focus ? "is-focus" : ""} ${immersive ? "is-immersive" : ""}${typing ? " is-typing" : ""}${mapView.open ? " has-map" : ""}${mapView.full ? " is-map-full" : ""}${convShown ? "" : " is-chat-hidden"}`}>
       <StageCanvas className="lega-one-map" />
       <header className="cockpit-head">
         <div className="row wrap">
@@ -640,11 +689,13 @@ function Cockpit({ projectId, go }) {
           <AttentionPanel inbox={inbox} sources={sources} projectId={pid || null} workRequests={c?.workRequests || []} plans={waitingPlans} go={go} onShowOffer={(id) => { showOffer(id); setWorkTab("now"); }} onOpenDesk={openDesk}
             onOpenPlan={(p) => onPrimary({ kind: p.kind === "ops" ? "focus-ops" : "focus-plan" })} />
           <CompanyFold onDepartment={showDepartment} go={go} />
+          <WishlistPanel focusAt={wishFocus} />
         </aside>
         <section className="lega-one-center" aria-label="Lega">
           <div className="lega-one-scroll">
+          {mapView.open && <MapPanel map={mapView} onAction={mapAction} department={mapDepartment} onDepartment={setMapDepartment} shape={faceShape} coreState={core.state} go={go} />}
           <div className="lega-figure">
-            {!faceHidden && (
+            {!faceHidden && !mapView.open && (
               <div className={`face-box ${discreet ? "discreet" : ""}`}>
                 <LegaFace shape={faceShape} state={core.state} nodes={graphNodes} compact={discreet} />
               </div>
@@ -659,6 +710,12 @@ function Cockpit({ projectId, go }) {
                   ? <button className="btn sm ghost" onClick={() => setFaceHidden(false)}><Eye size={12} />Arată fața</button>
                   : <button className="btn sm ghost" onClick={() => setFaceHidden(true)} title="Doar harta companiei, fără figura Legăi"><EyeOff size={12} />Ascunde</button>}
               </div>
+              {/* 2.19.1: the readable company map on this screen, and the conversation minimized (also by voice). */}
+              <div className="lega-view-controls row wrap" role="group" aria-label="Harta și conversația">
+                <button className="btn sm ghost" aria-pressed={mapView.open} onClick={() => mapAction(mapView.open ? "close" : "open")} title="Harta companiei, mare și lizibilă (sau „Arată harta companiei”)"><MapIcon size={12} />{mapView.open ? "Închide harta" : "Harta companiei"}</button>
+                <button className="btn sm ghost" aria-pressed={!convShown} onClick={() => showChat(convShown)} title={convShown ? "Minimizează conversația (sau „Ascunde chatul”)" : "Arată conversația (sau „Arată conversația”)"}>
+                  {convShown ? <MessageSquareOff size={12} /> : <MessageSquare size={12} />}{convShown ? "Minimizează chatul" : "Arată chatul"}</button>
+              </div>
               <p className={`lega-one-activity tone-${activity.tone}`} role="status" aria-live="polite"><span className="dot" aria-hidden="true" />{activity.text}<span className="faint"> · {core.label}</span></p>
             </div>
           </div>
@@ -668,7 +725,13 @@ function Cockpit({ projectId, go }) {
               {caption.lega && <p className="stage-lega">{caption.lega}</p>}
             </div>
           )}
-          <ol className={`lega-conv${conversation.length ? "" : " is-empty"}`} aria-label="Conversația cu Lega" aria-live="polite">
+          {!convShown && (
+            <div className="lega-conv-min row between wrap" role="status">
+              <span className="faint small">{mapView.full ? "Harta e pe tot ecranul; conversația e minimizată" : "Conversația e minimizată"}{conversation.length ? ` · ${conversation.length} ${conversation.length === 1 ? "mesaj" : "mesaje"}` : ""}. Poți scrie sau vorbi în continuare.</span>
+              <button type="button" className="btn sm ghost" onClick={() => showChat(false)}><MessageSquare size={12} />Arată conversația</button>
+            </div>
+          )}
+          {convShown && <ol className={`lega-conv${conversation.length ? "" : " is-empty"}`} aria-label="Conversația cu Lega" aria-live="polite">
             {!conversation.length && <li className="faint small">Spune sau scrie ce vrei; exemplele sunt la butonul „?” de lângă casetă. Citirea și planul nu pornesc nimic.</li>}
             {conversation.map((m, i) => (
               <li key={i} className={`lc-${m.role}`}><span className="who">{m.role === "user" ? "Tu" : "Lega"}{m.at ? <span className="faint"> · {new Date(m.at).toLocaleTimeString("ro-RO", { hour: "2-digit", minute: "2-digit" })}</span> : null}</span><span className="lc-text">{m.text}</span>
@@ -677,7 +740,7 @@ function Cockpit({ projectId, go }) {
                 {m.links?.length > 0 && <span className="row wrap">{m.links.map((l) => <button key={l.path} className="btn sm" onClick={() => go(l.path)}>{l.label}</button>)}</span>}
                 {m.mount === mountRef.current && m.blocker?.options?.length > 0 && <BlockerActions options={m.blocker.options} projectId={pid || null} projectLevel={c?.autonomy?.level || null} requestId={m.blocker.requestId || null} onSay={(t) => send(t)} onDone={() => cockpit.reload()} onRearm={openRearm} />}</li>
             ))}
-          </ol>
+          </ol>}
           </div>
           <div className="lega-voice-dock" ref={dockRef} />
           <form className="lega-composer" onSubmit={(e) => { e.preventDefault(); const v = text; setText(""); send(v); }}>

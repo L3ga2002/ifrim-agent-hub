@@ -32,7 +32,7 @@ test("M14-BKP-01 a backup this Hub runs records its owner (boot id, pid, compute
     assert.equal(hub.backups.runningNow(), 0);
     const started = hub.bus.since(0).find((e) => e.type === "backup.started");
     assert.deepEqual(started.payload.owner, backup.owner);
-    assert.equal(MIGRATIONS.at(-1).name, "m14-backup-owner");
+    assert.ok(MIGRATIONS.some((m) => m.version === 15 && m.name === "m14-backup-owner")); // 2.19.1 adds 16 (l3ga-wishlist) after it
   } finally { await t.cleanup(); }
 });
 

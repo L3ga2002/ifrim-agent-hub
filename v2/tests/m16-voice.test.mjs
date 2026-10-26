@@ -8,7 +8,8 @@ const OFFER = "v=0\r\no=- 1 2 IN IP4 127.0.0.1\r\ns=-\r\nt=0 0\r\nm=audio 9 UDP/
 const script = (items) => `lega-script:${Buffer.from(JSON.stringify(items)).toString("base64url")}`;
 const spoken = (t) => t.readLog("codex").filter((r) => r.spoke).map((r) => r.spoke);
 test("M16 voice: one chapter per turn, delegated duplicate withheld, transcript-only heard evidence and session binding", { timeout: 120000 }, async (c) => {
-  const t = await makeTestHub({ queues: true, clock: () => new Date("2026-10-25T12:00:00Z") }); c.after(() => t.cleanup());
+  // The real clock: the billing declaration the helpers write is dated now, so a fixed past clock made it „from the future” after 2026-10-25.
+  const t = await makeTestHub({ queues: true }); c.after(() => t.cleanup());
   const owner = await enrolOwner(t, { activatePolicy: true }); await prepareLiveWithoutGrants(t.hub);
   t.hub.bus.transaction(() => t.hub.settings.set("legaConsent", { version: LEGA_CONSENT_VERSION, confirmedAt: t.config.now().toISOString() }, "test")); t.hub.refreshCodexConfig();
   const events = []; t.hub.live.subscribe((e) => events.push(e));

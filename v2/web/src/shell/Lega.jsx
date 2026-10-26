@@ -11,6 +11,7 @@ import { isAppShortcut, approvedNotStarted, legaStartReadiness, legaCheckHint, p
 import { unlockSession } from "../lib/ownerSession.js";
 import { continueVoiceNotice, rearmOutcome, rearmOfferFor, REARM_SETUP } from "../lib/rearmLogic.js";
 import { faceElsewhere } from "../lib/cockpitLogic.js";
+import { legaMapOnScreen } from "../lib/legaMapView.js";
 import { RearmCard } from "../screens/lega/RearmCard.jsx";
 
 // M10: the web-search setting the Lega panel last displayed; the start sends it, so a stale page never starts under a setting the
@@ -443,7 +444,8 @@ export function Lega({ go }) {
       if (final && e.text) setAnnounce(`${role === "user" ? "Tu" : "Lega"}: ${e.text}`);
     }
     else if (e.type === "lega.delegation") setLines((ls) => [...ls.slice(-60), { id: `d-${Date.now()}`, role: "system", text: `→ Predat agentului: „${e.text}”`, final: true }]);
-    else if (e.type === "lega.navigate" && e.path) go(e.path);
+    // 2.19.1: a department named by voice while the company map is open on the L3ga screen stays on that map (CommandBridge).
+    else if (e.type === "lega.navigate" && e.path) { if (!(e.path.startsWith("/comanda?vedere=department") && legaMapOnScreen())) go(e.path); }
     // Review F7 (L8): a face command heard by voice while the Lega screen is not on display — the cockpit applies it itself when shown.
     // Elsewhere the view preferences it reads are stored and, for a face or the core, the Lega screen opens: what the Hub reports („Am
     // arătat fața Legăi pe ecran”) is what the owner sees. View only: no authority, nothing sent to the Hub.

@@ -75,6 +75,7 @@ import { createSimulations } from "./intel/simulation.mjs";
 import { createLeague } from "./intel/league.mjs";
 import { createSkillEvolution } from "./intel/skill-evolution.mjs";
 import { createTeach } from "./intel/teach.mjs";
+import { createWishlist } from "./owner/wishlist.mjs";
 import { createDevices } from "./intel/devices.mjs";
 import { createPackages } from "./intel/packages.mjs";
 import { createMedia } from "./media/index.mjs";
@@ -301,6 +302,7 @@ export function createHub(config, { providerOverrides = {}, homeDir, browserLaun
   const skillEvolution = createSkillEvolution({ db, bus, clock });
   skills.setOverlay((projectId) => skillEvolution.overlayFor(projectId));
   const teach = createTeach({ db, bus, clock, memory, projects });
+  const wishlist = createWishlist({ db, bus, clock });
   const voiceProfilesDir = config.testMode || !voiceEngine.paths?.root ? path.join(config.dataDir, "voice") : path.join(voiceEngine.paths.root, "profiles");
   const packages = createPackages({ db, bus, clock, config, settings, projects, environments, voiceProfilesDir });
   const board = createBoard({ db, bus, clock, settings, sales, factory, approvals, envelopes, warroom, autopilot, company, environments, packages });
@@ -377,7 +379,7 @@ export function createHub(config, { providerOverrides = {}, homeDir, browserLaun
     company, chiefOfStaff, surfaces, schedules, computer, skills, artifacts, integrations, nativeSessions, telemetry, router, commands, checkpoints,
     breakers, supervisor, backups, providers, gate, runs, handoffs, tools, roleConfig, skillConfig, capabilityConfig, codexIsolation, lega, refreshCodexConfig, factory, factoryRunner,
     environments, wslRunner, trust, envelopes, armedWindows, cockpit, interrupts, advisor, voice, voiceEngine,
-    twin, warroom, autopilot, simulations, league, skillEvolution, teach, packages, board, devices, media, desktop, opsPlans, executors, deliveries, salesPreparations, salesLedger, salesAnswers, desk, deskLedger, deskAnswers };
+    twin, warroom, autopilot, simulations, league, skillEvolution, teach, wishlist, packages, board, devices, media, desktop, opsPlans, executors, deliveries, salesPreparations, salesLedger, salesAnswers, desk, deskLedger, deskAnswers };
   registerCommands(commands, hub);
   // Stage before M12: what Lega knows about the system (read-only, from the real registries and tables).
   hub.knowledge = createKnowledge(hub);

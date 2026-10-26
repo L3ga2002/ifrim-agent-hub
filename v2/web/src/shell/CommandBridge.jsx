@@ -5,6 +5,7 @@ import { openCommandChannel, sanitizeState } from "../lib/commandSync.js";
 import { carousel } from "../lib/companyGraph.js";
 import { recapStep, visibleRecapContext, recapPlayback, recapExit, commandTransition, intentSheetPatch, playbackSampling, relevantCommandEvent } from "../lib/commandModel.js";
 import { legaLevels } from "../lib/legaLevels.js";
+import { legaMapOnScreen } from "../lib/legaMapView.js";
 
 export function cacheRecap(snapshot) {
   if (!snapshot?.id) return;
@@ -102,6 +103,14 @@ export default function CommandBridge({ go }) {
     const offLive = onLive(async (e) => {
       if (!e.sessionId || e.sessionId !== getState().legaSessionId) return;
       if (e.type === "lega.command_view") {
+        // 2.19.1: a department named by voice while the company map is open on the L3ga screen opens on that map (the conversation stays).
+        // „Următorul departament” goes from the one the map shows (or the first).
+        if (e.view === "department" && (e.departmentKey || e.relative) && legaMapOnScreen()) {
+          let key = e.departmentKey ? String(e.departmentKey) : null;
+          if (!key) { try { const graph = await api("/api/company/graph"); key = carousel(graph.departments, getState().legaMapDepartment?.key || graph.departments?.[0]?.key, e.relative); } catch { key = null; } }
+          if (key) setState({ legaMapDepartment: { key, at: Date.now() } });
+          return;
+        }
         await applyCommandResult({ commandView: e }, { go, typed: false });
         if (["department", "company", "sheet"].includes(e.view) && !location.hash.startsWith("#/comanda")) go("/comanda");
       }

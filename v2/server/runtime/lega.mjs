@@ -92,6 +92,23 @@ const STUDIO_WORDS = /\b(clip|clipul|clipuri|video|videoclip|videoclipul|promo|p
 /** Screens the browser can open from a path the intake returned (the cockpit path becomes the Lega screen of that project). */
 const NAVIGABLE = /^\/(lega|comanda|studio|intel|missions|approvals|projects|system|integrations|conversations|sales)(\/|\?|$)/;
 /**
+ * Sentences the Hub answers itself, completely, without the agent's turn (M16 reads and presentation controls; 2.19.1 the map / conversation
+ * view and the wishlist): the agent's answer to the same sentence is withheld, so one sentence gets one answer.
+ */
+const VIEW_INTENTS = new Set(["command_mode", "command_view", "command_numbers", "department_show", "process_sheet", "map_view", "chat_view", "wishlist_add", "wishlist_list"]);
+const LOCAL_INTENTS = new Set(["recap", "recap_control", ...VIEW_INTENTS]);
+/**
+ * 2.19.1 (the owner's session of 2026-10-25, 18:15–18:19): a delegated agent turn that neither answers nor calls a tool within this time is
+ * interrupted (turn/interrupt) and the owner hears it in the Hub's words; the session goes on. Before the fix one such turn held every
+ * following sentence for four minutes, until Stop All.
+ */
+export const TURN_STALL_MS = 45000;
+/** A new owner request while an older turn has run this long without an answer interrupts that turn: the newest request wins. */
+export const TURN_SUPERSEDE_MS = 20000;
+/** However much a turn keeps announcing work, it is interrupted after this long without an answer. */
+export const TURN_MAX_MS = 180000;
+export const TURN_STALL_TEXT = "Nu am primit răspunsul la timp, așa că am oprit verificarea. Spune din nou ce vrei; dacă e ceva ce Hub-ul nu știe încă, spune „pune asta pe wishlist”.";
+/**
  * M10 zero-form start: at most this many starts with derived authority per owner session in a rolling window. Counted from the
  * audit events (lega.authority_derived), so a Hub restart does not reset it; it bounds a loop that would spend plan quota.
  */
@@ -423,7 +440,53 @@ export function createLega({ bus, live, clock, settings, gate, grants, projects,
       if (busy) touch(s); else stop(s.id, "idle", "hub").catch(() => {});
     }, ms(s.idleTimeoutS * 1000));
   };
-  const clearTimers = (s) => { clearTimeout(s.idleTimer); clearTimeout(s.maxTimer); clearTimeout(s.negotiationTimer); clearTimeout(s.warnTimer); };
+  const clearTimers = (s) => {
+    clearTimeout(s.idleTimer); clearTimeout(s.maxTimer); clearTimeout(s.negotiationTimer); clearTimeout(s.warnTimer);
+    for (const timer of s.turnTimers?.values() || []) clearTimeout(timer);
+    s.turnTimers?.clear();
+  };
+
+  /**
+   * 2.19.1: the stall watchdog of one delegated turn. Re-armed on every sign of work of that turn (it started, an item started or completed,
+   * a tool call, a web search), so it measures SILENCE, never the length of real work; TURN_MAX_MS bounds a turn that only keeps announcing.
+   */
+  function armTurn(current, turnId) {
+    const key = String(turnId || "");
+    if (!key || !current.turnTimers || !current.turnStarts?.has(key) || current.stalledTurns?.has(key)) return;
+    clearTimeout(current.turnTimers.get(key));
+    current.turnActivity?.set(key, Date.now());
+    const left = Math.max(10, Math.min(ms(TURN_STALL_MS), (current.turnStarts.get(key) || Date.now()) + ms(TURN_MAX_MS) - Date.now()));
+    const timer = setTimeout(() => { stallTurn(current, key, "timeout").catch(() => {}); }, left);
+    timer.unref?.();
+    current.turnTimers.set(key, timer);
+  }
+  /**
+   * 2.19.1: a delegated turn the Hub interrupts — `timeout` (silent for TURN_STALL_MS: the owner hears TURN_STALL_TEXT, unless the Hub already
+   * answered that sentence itself) or `superseded` (silent for TURN_SUPERSEDE_MS while the owner asked something else: the new request gets the
+   * answer). Recorded as lega.turn_stalled (ids and numbers only); the turn then completes as interrupted and says nothing.
+   */
+  async function stallTurn(current, turnId, reason) {
+    const key = String(turnId);
+    clearTimeout(current.turnTimers?.get(key));
+    current.turnTimers?.delete(key);
+    const live_ = () => current === session && current.status === "active" && current.turnStarts?.has(key) && !current.stalledTurns.has(key);
+    if (!live_()) return;
+    // The Hub answered this sentence itself (a view, the wishlist, a desktop action): nothing is missing, so nothing more is said. Read before
+    // the interrupt (the turn's completion forgets which sentence it was for), then checked again: a turn that completed meanwhile spoke itself.
+    const answered = reason === "timeout" ? await hubAnsweredLocally(current, key).catch(() => null) : null;
+    if (!live_()) return;
+    current.stalledTurns.add(key);
+    while (current.stalledTurns.size > 20) current.stalledTurns.delete(current.stalledTurns.values().next().value);
+    const waitedMs = Date.now() - (current.turnStarts.get(key) || Date.now());
+    try { bus.emit({ type: "lega.turn_stalled", scopeType: "system", scopeId: current.id, source: "hub", payload: { turnId: key.slice(0, 80), reason, waitedMs } }); } catch { /* telemetry never breaks a turn */ }
+    // Only this turn: never every running turn (a superseded turn must not take the new request's turn with it).
+    if (current.handle?.interruptTurn) await Promise.resolve(current.handle.interruptTurn(key)).catch(() => {});
+    else if (reason === "timeout") await Promise.resolve(current.handle?.interruptTurns?.()).catch(() => {});
+    if (reason !== "timeout" || answered || current !== session || current.status !== "active") return;
+    live.publish({ type: "lega.notice", sessionId: current.id, level: "warning", text: TURN_STALL_TEXT });
+    await speak(current, TURN_STALL_TEXT, "hub_bridge").catch(() => false);
+    setPhase(current, "listening");
+  }
 
   /**
    * `ownerSessionId` comes only from the command context (ctx.ownerSession: the owner channel's server-resolved cookie, or a test
@@ -540,6 +603,8 @@ export function createLega({ bus, live, clock, settings, gate, grants, projects,
       handoffs: [], turnHandoff: new Map(),
       // D1 review: the journal position each delegated turn started at, and the lines the Hub handed to the voice with their origin (bounded).
       turnSeqs: new Map(), spokenLines: [], recap: null,
+      // 2.19.1: the stall watchdog of each running delegated turn (turnId → timer) and the turns the Hub interrupted (bounded).
+      turnTimers: new Map(), stalledTurns: new Set(), turnActivity: new Map(),
       // M10.2 U13 (owner decision 8: ONE global gate, nothing written here): whether this session's audio goes through the local filter —
       // the page starts the gate whenever the setting is on (fail-closed if it cannot). Read once; enabling it later restarts the session.
       gated: Boolean(settings.get("voiceGate")?.enabled), pendingArm: null,
@@ -805,10 +870,21 @@ export function createLega({ bus, live, clock, settings, gate, grants, projects,
         current.handoffs = [...current.handoffs, { at: Date.now(), text, turnId: null }].slice(-20);
         linkHandoffs(current);
       }
+      // 2.19.1: a new, different request while an older turn has been silent for TURN_SUPERSEDE_MS — the newest request wins. A turn still
+      // working (recent activity) or handed the same words keeps going.
+      for (const [turnId] of current.turnStarts || []) {
+        const quietMs = Date.now() - (current.turnActivity?.get(turnId) || current.turnStarts.get(turnId) || Date.now());
+        const own = current.turnHandoff?.get(turnId);
+        if (current.turnTimers?.has(turnId) && quietMs >= ms(TURN_SUPERSEDE_MS) && (!own || sentenceKey(own) !== sentenceKey(text))) stallTurn(current, turnId, "superseded").catch(() => {});
+      }
       setPhase(current, "delegating", text);
+    } else if (event.type === "turn.activity") {
+      // 2.19.1: the turn is working (an item started or completed): its stall watchdog starts again.
+      armTurn(current, event.turnId);
     } else if (event.type === "web.search") {
       // Every web search is visible to the owner and recorded (the query, redacted; never the page contents).
       touch(current);
+      if (event.turnId) armTurn(current, event.turnId);
       const text = String(event.text || "").slice(0, 300);
       bus.emit({ type: "lega.web_search", scopeType: "system", scopeId: current.id, source: "lega", payload: { text } });
       live.publish({ type: "lega.web", sessionId: current.id, text });
@@ -825,10 +901,14 @@ export function createLega({ bus, live, clock, settings, gate, grants, projects,
           current.turnSeqs.set(String(event.turnId), (() => { try { return bus.lastSeq(); } catch { return null; } })());
           while (current.turnSeqs.size > 20) current.turnSeqs.delete(current.turnSeqs.keys().next().value);
         }
+        // 2.19.1: the stall watchdog of this turn (re-armed on its work, cleared when it completes; see armTurn / stallTurn).
+        armTurn(current, event.turnId);
       }
       setPhase(current, "delegating");
     } else if (event.type === "turn.completed") {
       touch(current);
+      // 2.19.1: the watchdog stops first (before any await below), so it never speaks over the real answer.
+      if (event.turnId) { clearTimeout(current.turnTimers?.get(String(event.turnId))); current.turnTimers?.delete(String(event.turnId)); }
       const wouldSpeak = (event.status === "completed" && event.text) || event.status === "failed";
       // D4: one answer per sentence — when the Hub itself answered the sentence with a verified local desktop result (and said it), the
       // agent's text for the same sentence is not spoken (live: „Am deschis Notepad.” and the agent's „deschide-l din Start” were both heard).
@@ -836,10 +916,18 @@ export function createLega({ bus, live, clock, settings, gate, grants, projects,
       if (current !== session || current.status === "ended") return;
       const turnKey = event.turnId ? String(event.turnId) : null;
       const startSeq = turnKey ? current.turnSeqs?.get(turnKey) ?? null : null;
-      if (turnKey) { current.turnStarts?.delete(turnKey); current.turnHandoff?.delete(turnKey); current.turnSeqs?.delete(turnKey); }
+      if (turnKey) { current.turnStarts?.delete(turnKey); current.turnHandoff?.delete(turnKey); current.turnSeqs?.delete(turnKey); current.turnActivity?.delete(turnKey); }
+      // 2.19.1: a turn the Hub interrupted (stallTurn) already got its answer from the Hub; whatever it carries now is not spoken.
+      const stalled = Boolean(turnKey && current.stalledTurns?.has(turnKey));
       // D1 review: how the turn ended for the owner — status and flags only, never words (the probe closes a sentence only on a turn that spoke).
       const turnDone = (spoke, extra = {}) => { try { bus.emit({ type: "lega.turn_completed", scopeType: "system", scopeId: current.id, source: "lega",
         payload: { turnId: turnKey ? turnKey.slice(0, 80) : null, status: String(event.status || "").slice(0, 20), spoke: Boolean(spoke), startSeq: Number.isSafeInteger(startSeq) ? startSeq : null, ...extra } }); } catch { /* telemetry never breaks a turn */ } };
+      if (stalled) {
+        turnDone(false, { stalled: true });
+        current.pendingArm = null;
+        setPhase(current, "listening");
+        return;
+      }
       if (withheld) {
         bus.emit({ type: "lega.answer_withheld", scopeType: "system", scopeId: current.id, source: "hub", payload: { reason: "hub_answered_local", intents: withheld.intents, status: String(event.status || "").slice(0, 20) } });
         turnDone(false, { withheld: true });
@@ -888,7 +976,7 @@ export function createLega({ bus, live, clock, settings, gate, grants, projects,
     const parsed = parseVoiceCommand(text, { legaPrefix: true });
     // Addressed and explicit global commands retain priority over presentation controls.
     const m16 = resolveIntent(text, { projects: projects.list(), processSheets: late.processSheets?.() || [], recap: recapOf(current.id), source: "voice-provider" }).steps;
-    if (!(parsed.kind === "command" && (parsed.addressed || parsed.explicit)) && m16.length && m16.every((s) => ["recap", "recap_control", "command_mode", "command_view", "command_numbers", "department_show", "process_sheet"].includes(s.intent))) { await bridge(current, text, transcriptId); return; }
+    if (!(parsed.kind === "command" && (parsed.addressed || parsed.explicit)) && m16.length && m16.every((s) => LOCAL_INTENTS.has(s.intent))) { await bridge(current, text, transcriptId); return; }
     if (parsed.kind === "command") {
       current.lastOwnerCommand = { command: parsed.command, at: Date.now() };
       bus.emit({ type: "lega.command", scopeType: "system", scopeId: current.id, source: "user", payload: { command: parsed.command, addressed: Boolean(parsed.addressed) } });
@@ -1141,7 +1229,7 @@ export function createLega({ bus, live, clock, settings, gate, grants, projects,
       // of its resume nor the „Continuă?” question (the owner heard what the Hub did); the rest of the sentence is answered as usual.
       const quiet = Boolean(copy?.afterVoice);
       const results = quiet ? (out.results || []).filter((r) => r?.intent !== "ops_continue" && !r?.args?.continueQuestion) : out.results || [];
-      const d = describeResults(results.filter((r) => !r.recap && !r.recapControl && !["command_mode", "command_view", "command_numbers", "department_show", "process_sheet"].includes(r.intent)));
+      const d = describeResults(results.filter((r) => !r.recap && !r.recapControl && !(VIEW_INTENTS.has(r.intent) && !r.refused && !r.error)));
       // M10.2.1 (D20): „Continuă?” is a question, never the resume — the ONE clarification the resolver asked is said by the Hub.
       if (!quiet && !d.say && out.resolved?.clarification?.forIntent === "ops_continue" && out.resolved.clarification.question) { d.say = clip(out.resolved.clarification.question, 300); d.outcome = "question"; }
       // The resolver's intents plus the intents the Hub actually executed (a sentence that only names a project can complete a request
@@ -1150,7 +1238,7 @@ export function createLega({ bus, live, clock, settings, gate, grants, projects,
       // D4: the Hub answered this sentence completely and said it itself — every result a verified local desktop action (no plan, question,
       // refusal, read or second request in it): the agent's answer to the same sentence is then not spoken (turn.completed).
       entry.intents = intents;
-      const m16 = new Set(["recap", "recap_control", "command_mode", "command_view", "command_numbers", "department_show", "process_sheet"]);
+      const m16 = LOCAL_INTENTS;
       const m16Results = results.filter((r) => m16.has(r.intent) && !r.refused && !r.error || r.recap && !r.refused && !r.error);
       if (m16Results.length) {
         entry.localOnly = results.every((r) => (m16.has(r.intent) || r.recap) && !r.refused && !r.error) && wholeSentenceLocal(words);
@@ -1161,6 +1249,10 @@ export function createLega({ bus, live, clock, settings, gate, grants, projects,
             if (c.stopped) { stopRecap(current.id); spoke = await speak(current, r.message, "hub_bridge") || spoke; }
             else { const presented = await presentRecap({ sessionId: current.id, snapshotId: c.snapshotId, index: c.index, ownerSession: current.authority === "owner_session" ? { id: current.ownerSessionId } : null }); spoke ||= presented.voice.handedOff; if (c.action === "open" && c.open) live.publish(c.open.view ? { type: "lega.command_view", sessionId: current.id, view: c.open.view } : { type: "lega.navigate", sessionId: current.id, path: c.open.path }); }
           } else if (r.commandView) live.publish({ type: "lega.command_view", sessionId: current.id, ...r.commandView });
+          // 2.19.1: the map / conversation view of this session's L3ga screen (view only), and the Hub's own words for it and for the wishlist.
+          if (r.mapView || r.chatView) live.publish({ type: "lega.view", sessionId: current.id, ...(r.mapView ? { map: { action: r.mapView.action } } : {}), ...(r.chatView ? { chat: { hidden: r.chatView.hidden } } : {}) });
+          if (r.wishlist) live.publish({ type: "lega.wishlist", sessionId: current.id, open: Number.isInteger(r.wishlist.open) ? r.wishlist.open : null });
+          if ((r.mapView || r.chatView || r.intent === "wishlist_add" || r.intent === "wishlist_list") && r.message) spoke = await speak(current, r.message, "hub_bridge") || spoke;
           if (r.navigate && NAVIGABLE.test(r.navigate)) live.publish({ type: "lega.navigate", sessionId: current.id, path: r.navigate });
           if (r.intent === "process_sheet" && !r.processSheet && r.message) spoke = await speak(current, r.message, "hub_bridge") || spoke;
           recordAction(current, { heard: clip(words, 160), intents: [r.intent], outcome: "local", said: r.message || "", planId: null, workRequestId: null });
@@ -1871,6 +1963,7 @@ export function createLega({ bus, live, clock, settings, gate, grants, projects,
 
   /** Answers a `lega.*` tool call from the delegated Codex turn. Must return quickly; effects go through the command bus. */
   async function onToolCall(current, { tool, args, turnId = null }) {
+    if (turnId) armTurn(current, turnId); // 2.19.1: a tool call is work (the stall watchdog starts again)
     if (current !== session || current.status !== "active") return { ok: false, text: "Sesiunea Lega nu mai este activă." };
     // A derived session re-checks its owner session before every tool call (idle / expiry are otherwise noticed on the next tick).
     if (!checkDerived(current)) return { ok: false, text: "Sesiunea ta de proprietar s-a închis; mă opresc." };
