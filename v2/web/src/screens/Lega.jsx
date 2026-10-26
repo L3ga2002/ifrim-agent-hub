@@ -393,11 +393,11 @@ function Cockpit({ projectId, go }) {
       // whose update renders at once, while the conversation is this screen's state — the card could be on screen before the answer and
       // its „Arată cardul de redeschidere” option.
       const rearmFx = rearmSlotFrom(res.results);
+      const onMapResults = new Set(); // 2.19.1: the departments this answer opened on the map of this screen (see the loop below)
       pendingRearm.current = rearmFx.action === "set" || rearmFx.action === "clear" ? rearmFx : null;
       // Last review round RR13: an answer that opens another project's cockpit replaces this screen (and its conversation, whose effect
       // may never run here): its rearm slot goes to the app store now, before the navigation, so the cockpit that opens shows the card.
       if (pendingRearm.current && rearmBeforeNavigation(res.results, pid)) { const fx = pendingRearm.current; pendingRearm.current = null; applyRearmFx(fx); }
-      const onMapResults = new Set();
       for (const r of res.results) {
         // 2.19.1: with the company map open here, a department („La vânzări”) opens on that map, next to the conversation.
         const onMap = mapRef.current.open && r.intent === "department_show" && r.commandView?.departmentKey && !r.refused && !r.error;
