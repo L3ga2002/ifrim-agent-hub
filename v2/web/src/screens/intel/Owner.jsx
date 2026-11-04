@@ -67,7 +67,12 @@ export function Lessons() {
             <button className="btn sm ghost" disabled={Boolean(r.busy)} onClick={async () => setForget(await act(`fp-${l.id}`, "/api/lessons/forget", { lessonId: l.id }))}><Eraser size={12} />Uită</button></li>
         ))}</ul> : <Empty title="Nicio regulă activă">Spune-i Lega „Ține minte că…” sau scrie aici.</Empty>}
         {forget?.effect && <Notice tone="info">{forget.effect}</Notice>}
-        <SourceNote>Regulile active intră în instrucțiunile agenților pentru proiectul lor; regulile Hub-ului rămân deasupra lor.</SourceNote>
+        {(list.data?.promptFit?.overLimit || []).map((o) => (
+          <Notice key={o.projectId} tone="warn" title="Prea multe reguli pentru un proiect">
+            {o.name}{o.missionId ? ` (misiunea ${o.missionTitle || o.missionId})` : ""}: {o.total} reguli se aplică, iar agenții primesc {list.data.promptFit.limit} — întâi cele ale misiunii și proiectului, apoi cele mai noi. {o.omitted} nu mai încap: uită-le pe cele care nu mai contează.
+          </Notice>
+        ))}
+        <SourceNote>Regulile active intră în instrucțiunile agenților pentru proiectul lor (cele „pentru misiunea asta” doar în misiunea lor); regulile Hub-ului rămân deasupra lor.</SourceNote>
       </Panel>
     </div>
   );

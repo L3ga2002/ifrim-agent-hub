@@ -1,5 +1,17 @@
 # Open Issues - Ifrim Agent Hub
 
+## 2026-11-04 — 2.19.2-m16: memoria agenților, etapele 0 + 1 (fără migrare, schema 16, API contract 23; detalii: `.ifrim/STAGE_2026-11-04_MEMORIE_ETAPE_0_1.md`, audit `docs/audit-memorie-agenti.md`)
+
+This section takes precedence over the next ones where they overlap. Made in the cloud only (branch `claude/project-thread-kvdcer`, base `1acca9e`), synthetic hubs, no model. NOT live.
+
+Open:
+1. Release = the owner's managed upgrade on the PC (no migration). Not visually checked: the overflow notice in Lecții.
+2. The dev profile ON still lets any local process of his account open an owner session (owner's decision to turn it off).
+3. Audit stages 2–6 wait for the owner after he sees 0 + 1.
+4. Cloud limit: `M03-FAC-02`, `M03-FAC-19`, `M09-IN-03` and `U04-05` fail on the unchanged base `1acca9e` too (no Chromium 1228 / media tools in the cloud), so they are not regressions; `L3-UI-02` is skipped (no Playwright browser).
+5. Decisions recorded as active before 2.19.2 by a process without a session (author "user") stay active; no migration reclassifies them. A later stage may list them for the owner to confirm or reject.
+6. Not done (review nit): the Memorie screen still defaults to the FACT type and asks for no re-auth; without a session the save is refused with `needSession` (401), it is not silently downgraded.
+
 ## 2026-10-26 — 2.19.1-m16: the owner's L3ga session of 2026-10-25 (migration 16, schema 16, API contract 22; detail: `.ifrim/STAGE_2026-10-26_L3GA_FIX.md`)
 
 This section takes precedence over the next ones where they overlap. The owner did not accept M16 („are încă buguri, nu poate face multe,

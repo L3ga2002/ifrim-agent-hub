@@ -218,7 +218,7 @@ export function createTwin({ db, bus, clock, projects, settings, envelopes = nul
       .filter((i) => parse(i.components_json, []).some((c) => components.includes(c.name)))
       .map((i) => ({ incidentId: i.id, title: i.title, status: i.status, at: i.created_at, source: { table: "incidents", id: i.id }, note: "implică aceeași componentă (nu dovedește o legătură cauzală)" }));
     const words = components.filter((c) => c.length >= 3);
-    const decisions = words.length ? db.prepare("SELECT id, title, decision, created_at FROM decisions WHERE project_id = ?").all(p.id)
+    const decisions = words.length ? db.prepare("SELECT id, title, decision, created_at FROM decisions WHERE project_id = ? AND status = 'active'").all(p.id)
       .filter((d) => words.some((w) => `${d.title} ${d.decision}`.toLowerCase().includes(w.toLowerCase()))).map((d) => ({ decisionId: d.id, title: d.title, at: d.created_at, source: { table: "decisions", id: d.id } })) : [];
     const declared = db.prepare("SELECT * FROM twin_claims WHERE project_id = ? AND status IN ('open','confirmed') AND ((subject_type = 'component' AND subject_id IN (" + components.map(() => "?").join(",") + ")) OR (object_type = 'component' AND object_id IN (" + components.map(() => "?").join(",") + ")))").all(p.id, ...components, ...components).map(claimRow);
     const tests = [...new Set(history.flatMap((h) => h.files).filter((f) => componentOf(f) === "teste"))];

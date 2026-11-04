@@ -526,14 +526,17 @@ export function registerRoutes(router, hub, { token }) {
   // ---------- memory, decisions, leads ----------
   get("/api/memory", ({ query }) => ({ items: memory.search(query.q || "", { scope: query.scope || null, scopeRef: query.scopeRef || null, includeInactive: query.all === "1" }), scopes: MEMORY_SCOPES, types: MEMORY_TYPES,
     sources: MEMORY_SOURCES, contradictions: memory.contradictions() }));
-  post("/api/memory", cmd("memory.add", ({ body }) => body, { created: true }));
-  post("/api/memory/:id/revise", cmd("memory.revise", ({ params, body }) => ({ ...body, memoryId: params.id })));
-  del("/api/memory/:id", cmd("memory.delete", ({ params }) => ({ memoryId: params.id })));
-  post("/api/memory/import", cmd("memory.import"));
+  // Audit 2026-11-03 (stage 1): memory writes go through the owner dispatcher, so the owner's session (when open) is recorded as the
+  // author; without it the write is the local UI's ("ui"), which may store assumptions only. Agent / CLI declarations are refused.
+  post("/api/memory", ({ req, body }) => owner.dispatch(req, "memory.add", body, { created: true }));
+  post("/api/memory/:id/revise", ({ req, params, body }) => owner.dispatch(req, "memory.revise", { ...body, memoryId: params.id }));
+  del("/api/memory/:id", ({ req, params }) => owner.dispatch(req, "memory.delete", { memoryId: params.id }));
+  post("/api/memory/import", ({ req, body }) => owner.dispatch(req, "memory.import", body));
   get("/api/memory/export", () => ({ __raw: true, contentType: "application/json; charset=utf-8", body: JSON.stringify(redactDeep(memory.exportAll()), null, 2) }));
   get("/api/memory/export/:provider", ({ params, query }) => memory.exportForProvider(params.provider, { scope: query.scope || null, scopeRef: query.scopeRef || null }));
   get("/api/decisions", ({ query }) => ({ decisions: db.prepare(`SELECT * FROM decisions ${query.projectId ? "WHERE project_id = ?" : ""} ORDER BY created_at DESC LIMIT 200`).all(...(query.projectId ? [query.projectId] : [])) }));
-  post("/api/decisions", cmd("decision.record", ({ body }) => body, { created: true }));
+  // Audit 2026-11-03 (review): the owner's session (when open) records an active decision; without it the decision is a draft.
+  post("/api/decisions", ({ req, body }) => owner.dispatch(req, "decision.record", body, { created: true }));
   get("/api/leads", () => ({ leads: leads.list(), statuses: LEAD_STATUSES }));
   post("/api/leads/import", cmd("lead.import"));
   post("/api/leads/:id/evidence", cmd("lead.evidence", ({ params, body }) => ({ ...body, leadId: params.id })));

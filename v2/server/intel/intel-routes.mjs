@@ -94,7 +94,8 @@ export function registerIntelRoutes(router, hub) {
   }
 
   // ---------- Teach Lega ----------
-  get("/api/lessons", ({ query }) => ({ lessons: teach.list({ status: query.status || null }), applies: query.projectId ? teach.rulesFor({ projectId: query.projectId }) : undefined }));
+  get("/api/lessons", ({ query }) => ({ lessons: teach.list({ status: query.status || null }), applies: query.projectId ? teach.rulesFor({ projectId: query.projectId, missionId: query.missionId || null }) : undefined,
+    promptFit: teach.promptFit() }));
   post("/api/lessons", cmd("lesson.propose"));
   post("/api/lessons/forget", cmd("lesson.forget"));
   post("/api/lessons/:id/confirm", cmd("lesson.confirm", ({ params }) => ({ lessonId: params.id })));

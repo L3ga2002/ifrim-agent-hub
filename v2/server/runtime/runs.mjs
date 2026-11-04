@@ -311,7 +311,7 @@ export function createRunManager(deps) {
       // A native thread lives in ONE client installation: an environment run never resumes a Windows thread (or vice versa).
       const sessionId = environment === "windows" ? conversations.latestSession(conversationId, provider) : null;
       let outputMessage;
-      const taskRow = taskId ? db.prepare("SELECT department_id, route_decision_id FROM tasks WHERE id = ?").get(taskId) : null;
+      const taskRow = taskId ? db.prepare("SELECT department_id, route_decision_id, mission_id FROM tasks WHERE id = ?").get(taskId) : null;
       // M09-A3: the skill composer decides ONCE, from Hub rows, which approved procedures this run receives; the record and the
       // prompt are both built from this one object (the version recorded is the version sent). Skills grant nothing: the
       // composition never reaches access, model, effort, grants, the gate or the adapter options. A composer failure means no
@@ -323,7 +323,8 @@ export function createRunManager(deps) {
         skillPlan = { records: [], usage: [], section: "", context: { composerVersion: COMPOSER_VERSION, error: String(error?.message || error).slice(0, 300) } };
         bus.emit({ type: "run.skills_failed", scopeType: "conversation", scopeId: conversationId, projectId: project.id, source: "hub", payload: { error: skillPlan.context.error } });
       }
-      const prompt = buildTurnPrompt({ db, conversations, conversation, project, git, provider, runId, environment, access, skillSection: skillPlan.section });
+      // Audit 2026-11-03 (stage 0): the run's mission (from its task, else the conversation's) selects that mission's confirmed lessons.
+      const prompt = buildTurnPrompt({ db, conversations, conversation, project, git, provider, runId, environment, access, skillSection: skillPlan.section, missionId: taskRow?.mission_id || null });
       const promptSha256 = sha256(prompt.text);
       timeline.mark("run_recorded");
       bus.transaction(() => {

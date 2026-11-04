@@ -11,7 +11,7 @@ import { APPROVAL_POLICIES } from "../policy/approval-policy.mjs";
 import { OWNER_DECIDED } from "../policy/approvals.mjs";
 import { EFFORT_PROFILES } from "../policy/run-plan.mjs";
 import { MISSION_TEMPLATES } from "../domain/missions.mjs";
-import { MEMORY_SCOPES, MEMORY_TYPES } from "../domain/memory.mjs";
+import { MEMORY_SCOPES, MEMORY_TYPES, AUTHORITATIVE_TYPES, isOwnerAuthor } from "../domain/memory.mjs";
 import { LEAD_STATUSES } from "../domain/leads.mjs";
 import { SCHEDULE_BACKENDS } from "../domain/schedules.mjs";
 import { VERIFICATION_LABELS } from "../domain/surfaces.mjs";
@@ -486,24 +486,41 @@ export function registerCommands(commands, hub) {
     execute: (input, ctx) => artifacts.register(input, ctx.actor) });
 
   // ---------- memory, decisions, leads ----------
-  reg("memory.add", { describe: "Element de memorie canonică", schema: { scope: { enum: MEMORY_SCOPES, required: true }, scopeRef: { max: 120 }, type: { enum: MEMORY_TYPES, required: true },
+  // Audit 2026-11-03 (stage 1): the author is who really wrote it — "owner:<session>" from the owner session, "user" on the test
+  // channel, "ui" from the local UI without a session (an assumption at most: any local process can reach that route).
+  const memoryAuthor = (ctx) => (ctx.channel === "owner" && ctx.ownerSession?.id ? `owner:${ctx.ownerSession.id}` : ctx.channel === "test" ? "user" : "ui");
+  const MEMORY_CHANNELS = ["ui", "owner", "test"];
+  reg("memory.add", { describe: "Element de memorie canonică", channels: MEMORY_CHANNELS, schema: { scope: { enum: MEMORY_SCOPES, required: true }, scopeRef: { max: 120 }, type: { enum: MEMORY_TYPES, required: true },
     title: { required: true, max: 200 }, body: { required: true, max: 20000 }, sourceRef: { max: 500 }, retentionUntil: { max: 40 } },
-    execute: (input) => memory.add({ ...input, author: "user", sourceKind: "user" }) });
-  reg("memory.revise", { describe: "Versiune nouă a unui element", schema: { memoryId: { required: true }, title: { max: 200 }, body: { max: 20000 }, type: { enum: MEMORY_TYPES }, sourceRef: { max: 500 }, scopeRef: { max: 120 } },
-    execute: (input, ctx) => { const { memoryId, ...patch } = input; return memory.revise(memoryId, Object.fromEntries(Object.entries(patch).filter(([, v]) => v !== undefined)), ctx.actor); } });
-  reg("memory.delete", { describe: "Ștergere autorizată (păstrează tombstone de audit)", schema: { memoryId: { required: true } }, execute: (input, ctx) => ({ deleted: memory.remove(input.memoryId, ctx.actor) }) });
-  reg("memory.import", { describe: "Import controlat din memoria unui vendor (ca ipoteze)", schema: { sourceKind: { enum: ["claude_native", "openai_native", "hermes", "import"], required: true },
+    execute: (input, ctx) => memory.add({ ...input, author: memoryAuthor(ctx), sourceKind: "user" }) });
+  reg("memory.revise", { describe: "Versiune nouă a unui element", channels: MEMORY_CHANNELS, schema: { memoryId: { required: true }, title: { max: 200 }, body: { max: 20000 }, type: { enum: MEMORY_TYPES }, sourceRef: { max: 500 }, scopeRef: { max: 120 } },
+    execute: (input, ctx) => { const { memoryId, ...patch } = input; return memory.revise(memoryId, Object.fromEntries(Object.entries(patch).filter(([, v]) => v !== undefined)), memoryAuthor(ctx)); } });
+  reg("memory.delete", { describe: "Ștergere autorizată (păstrează tombstone de audit)", channels: MEMORY_CHANNELS, schema: { memoryId: { required: true } },
+    execute: (input, ctx) => {
+      // A fact, preference or decision of the owner is deleted only from the owner session; an assumption may be dropped from the UI.
+      const item = memory.get(input.memoryId);
+      if (item && AUTHORITATIVE_TYPES.includes(item.type) && item.status === "active" && !isOwnerAuthor(memoryAuthor(ctx))) {
+        throw new HubError("authentication", "Un fapt, o preferință sau o decizie se șterge din sesiunea ta de proprietar", { data: { needSession: true } });
+      }
+      return { deleted: memory.remove(input.memoryId, memoryAuthor(ctx)) };
+    } });
+  reg("memory.import", { describe: "Import controlat din memoria unui vendor (ca ipoteze)", channels: MEMORY_CHANNELS, schema: { sourceKind: { enum: ["claude_native", "openai_native", "hermes", "import"], required: true },
     text: { required: true, max: 200000, trim: false }, scope: { enum: MEMORY_SCOPES, default: "GLOBAL" }, scopeRef: { max: 120, default: "" } },
     logPayload: (i) => ({ sourceKind: i.sourceKind, scope: i.scope, lines: i.text.split(/\r?\n/).length }),
-    execute: (input, ctx) => memory.importFromText(input, ctx.actor) });
-  reg("decision.record", { describe: "Decizie cu sursă", schema: { projectId: { max: 80 }, conversationId: { max: 80 }, title: { required: true, max: 200 }, decision: { required: true, max: 5000 },
+    execute: (input, ctx) => memory.importFromText(input, ctx.channel === "ui" ? "import" : ctx.actor) });
+  // Audit 2026-11-03 (stage 1): an active decision reaches every worker prompt of its project / conversation ("Decisions (with
+  // sources)") and every handoff package. Only the owner session (or the test channel) records it active; from the local UI without a
+  // session it is a DRAFT proposal, which the owner decides in the board meeting (board.decide, owner session) — never in a prompt before.
+  reg("decision.record", { describe: "Decizie cu sursă (activă doar din sesiunea ta; altfel propunere)", channels: MEMORY_CHANNELS, schema: { projectId: { max: 80 }, conversationId: { max: 80 }, title: { required: true, max: 200 }, decision: { required: true, max: 5000 },
     rationale: { max: 5000 }, sourceRef: { max: 500 } },
     execute: (input, ctx) => {
       const id = newId("dec");
-      db.prepare("INSERT INTO decisions (id, project_id, conversation_id, title, decision, rationale, source_ref, author, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)")
-        .run(id, input.projectId || null, input.conversationId || null, input.title, input.decision, input.rationale || "", input.sourceRef || "", ctx.actor, clock().toISOString());
-      bus.append({ type: "decision.recorded", scopeType: input.conversationId ? "conversation" : "project", scopeId: input.conversationId || input.projectId || "global", source: ctx.actor, payload: { decisionId: id, title: input.title } });
-      return { id };
+      const author = memoryAuthor(ctx);
+      const status = isOwnerAuthor(author) ? "active" : "draft";
+      db.prepare("INSERT INTO decisions (id, project_id, conversation_id, title, decision, rationale, source_ref, author, status, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
+        .run(id, input.projectId || null, input.conversationId || null, input.title, input.decision, input.rationale || "", input.sourceRef || "", author, status, clock().toISOString());
+      bus.append({ type: "decision.recorded", scopeType: input.conversationId ? "conversation" : "project", scopeId: input.conversationId || input.projectId || "global", source: ctx.actor, payload: { decisionId: id, title: input.title, status } });
+      return { id, status, ...(status === "draft" ? { note: "Propunere: intră în instrucțiunile agenților doar după ce o decizi în ședință (sesiunea ta)." } : {}) };
     } });
   reg("lead.import", { describe: "Import lead-uri (deduplicate)", schema: { text: { required: true, max: 200000, trim: false }, source: { max: 120, default: "manual-import" }, demo: { type: "boolean", default: false } },
     logPayload: (i) => ({ source: i.source, demo: i.demo, lines: i.text.split(/\r?\n/).length }),

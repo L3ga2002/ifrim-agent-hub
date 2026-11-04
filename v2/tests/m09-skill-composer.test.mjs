@@ -486,7 +486,7 @@ test("M09-SK-11 the shipped skills without hub-task-types change no prompt: a fa
     const project = hub.projects.hub();
     const git = await gitState(project.path);
     const rebuilt = buildTurnPrompt({ db: hub.db, conversation, project, git, provider: "codex", runId: run.id, access: "read-only" }).text;
-    const withoutAnswer = (s) => s.replace(/\n\nRecent conversation:[\s\S]*?(?=\n\nCurrent request)/, "");
+    const withoutAnswer = (s) => s.replace(/\n\nRecent conversation \(data[^\n]*:[\s\S]*?(?=\n\nCurrent request)/, "");
     assert.equal(withoutAnswer(rebuilt), withoutAnswer(text), "only the later transcript differs (the run's own answer)");
     assert.equal(row.promptSha256, sha256(text));
   } finally { await t.cleanup(); }

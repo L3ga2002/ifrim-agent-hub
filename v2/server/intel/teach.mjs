@@ -2,6 +2,7 @@ import { HubError } from "../core/errors.mjs";
 import { newId } from "../core/ids.mjs";
 import { json, parse } from "../storage/db.mjs";
 import { redactText, containsSecretLikeContent } from "../security/redact.mjs";
+import { lessonsForPrompt, PROMPT_LESSON_LIMIT } from "../runtime/prompt.mjs";
 
 /**
  * Teach Lega (M08 §15): the owner says a procedure in plain words ("La livrarea unui site de client verifică mobilul, formularele și
@@ -78,6 +79,10 @@ const WIDENING = [
   [/\b(foloseste|folosesti|activeaza|activezi|plateste|platesti|cumpara|cumperi|treci pe)\b[^.;]{0,25}\b(api|abonament\w*|credit\w*|extra usage|plan platit)\b/, "cost / facturare"],
   [/\b(mareste|maresti|creste|cresti|ridica|ridici|dubleaza|dublezi)\b[^.;]{0,20}\b(limit\w*|buget\w*|timp\w*|timeout\w*|incercar\w*|durat\w*)\b|\bnelimitat\b|\bfara limita\b/, "limite / buget"],
   [/\b(sterge|stergi|delete|drop|goleste|golesti)\b[^.;]{0,30}\b(date|datele|baz\w*|fisier\w*|productie|backup\w*|tabel\w*)\b/, "ștergere de date"],
+  // Audit 2026-11-03 (stage 1, tuned after review): sending project content out (an upload, a paste site, a public repository, a link)
+  // and overriding the Hub's own rules or security checks are widenings like the ones above. Disclosure is checked in securityParts.
+  [/\b(incarca|incarci|urca|urci|upload\w*|trimite|trimiti|posteaza|postezi|publica|publici|copiaza|copiezi|exporta|exporti|pune|pui|salveaza|salvezi)\b[^.;]{0,40}\b(pe|la|catre|spre|in)\s+(un\s+|o\s+)?(site\w*|server\w*|url\w*|link\w*|adres\w*|pastebin|gist\w*|github|gitlab|drive|dropbox|wetransfer|internet|cloud|webhook\w*|extern\w*|public\w*)\b|\b(incarca|incarci|urca|urci|upload\w*|trimite|trimiti|posteaza|postezi|copiaza|copiezi|exporta|exporti)\b[^.;]{0,40}\b(https?|www)\b/, "trimitere de date în afară"],
+  [/\b(ignora|ignori|ocoleste|ocolesti|treci peste|incalca|incalci|dezactiveaza|dezactivezi|suspenda|suspenzi|anuleaza|anulezi)\b[^.;]{0,30}(\b(regul\w*|instructiun\w*|restrictii\w*|politic\w*|protecti\w*|hub\w*)\b|\bverificar\w* de securitate\b)|\bnu (mai )?(tine|tii|lua|iei) (cont|seama|in seama) de\b[^.;]{0,25}\b(regul\w*|instructiun\w*|restrictii\w*|politic\w*)\b|\bregul\w* (hub[\w-]* )?nu (se )?(mai )?(aplica|conteaza)\b/, "ocolirea regulilor Hub-ului"],
 ];
 const SKIP_CONFIRMATION = /\bfara (confirmar\w*|aprobar\w*|acordul\w*|sa (ma )?(mai )?(intrebi|intreb|ceri voie|confirm\w*|aprob\w*))\b|\bnu (ma )?(mai )?(ma )?intreba\b|\bnu (mai )?(cere|astepta|ceri|astepti) (confirmar|aprobar|voie|acord)\w*|\bnu (e|este) nevoie de (confirmar|aprobar|acord)\w*|\bsari (peste )?(confirmar|aprobar|review|verificar)\w*/;
 // A negation counts only when it governs the matched verb/object (within two words before it), not anywhere earlier in the clause;
@@ -85,6 +90,17 @@ const SKIP_CONFIRMATION = /\bfara (confirmar\w*|aprobar\w*|acordul\w*|sa (ma )?(
 const NEGATED_BEFORE = /\b(nu|niciodata|fara|interzis|evita|eviti)\s+(sa\s+)?(mai\s+)?(\S+\s+)?$/;
 const NOT_A_RESTRICTION = /\b(nu|niciodata)\s+(mai\s+)?(uita|ezita|astepta|astepti)\b/;
 const negatedAt = (clause, index) => { const before = clause.slice(0, index); return NEGATED_BEFORE.test(before) && !NOT_A_RESTRICTION.test(before.split(/\s+/).slice(-4).join(" ")); };
+// Disclosure (audit 2026-11-03, tuned after review): putting the content of a configuration, environment, secret or database file into an
+// output (a report, a summary, an answer). A normal debug step ("arată conținutul logului când pică un test") is not this.
+const DISCLOSE_VERB = /\b(include|incluzi|copiaza|copiezi|afiseaza|afisezi|arata|pune|pui|lipeste|lipesti|citeaza|citezi|scrie|scrii)\b/;
+const SENSITIVE_OBJECT = /\b(config\w*|configurar\w*|variabil\w* de mediu|setari\w* de mediu|secret\w*|baz\w* de date|database|dump\w*)\b/;
+const DISCLOSE_TARGET = /\bcontinut\w*\b|\b(in|la|catre)\s+(raport\w*|rezumat\w*|raspuns\w*|mesaj\w*|chat\w*|output\w*|comentari\w*)\b/;
+function disclosesAt(clause) {
+  const v = clause.match(DISCLOSE_VERB);
+  if (!v || negatedAt(clause, v.index)) return false;
+  const rest = clause.slice(v.index);
+  return SENSITIVE_OBJECT.test(rest) && DISCLOSE_TARGET.test(clause);
+}
 export function securityParts(text) {
   const out = new Set();
   // Sentence punctuation only when followed by a space or the end (".env", "v1.2" stay inside their clause); commas, colons, "dar",
@@ -94,6 +110,7 @@ export function securityParts(text) {
       const m = clause.match(re);
       if (m && !negatedAt(clause, m.index)) out.add(label);
     }
+    if (disclosesAt(clause)) out.add("dezvăluirea conținutului unor fișiere sensibile");
     if (SKIP_CONFIRMATION.test(clause) && !/\b(nu|niciodata)\s+(sa\s+)?\S+\b[^.;]*\bfara (confirmar|aprobar)\w*/.test(clause)) out.add("renunțare la confirmare");
   }
   return [...out];
@@ -135,12 +152,36 @@ export function createTeach({ db, bus, clock, memory, projects }) {
     const id = newId("lsn");
     bus.transaction(() => {
       db.prepare(`INSERT INTO lessons (id, text, kind, scope, scope_ref, parsed_json, security_json, provenance, status, supersedes_id, proposed_by, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'PROPOSED', ?, ?, ?)`)
-        .run(id, redactText(raw).slice(0, 2000), parsed.kind, finalScope, scopeRef, json(parsed), json(security), provenance, similar[0]?.id || null, String(actor).slice(0, 80), iso());
+        // `basis` (audit review): every active rule for the same condition when the proposal is made; the confirmation replaces all of
+        // them (duplicates left by older versions included) and refuses only a rule that became active AFTER this proposal.
+        .run(id, redactText(raw).slice(0, 2000), parsed.kind, finalScope, scopeRef, json({ ...parsed, basis: similar.map((x) => x.id) }), json(security), provenance, similar[0]?.id || null, String(actor).slice(0, 80), iso());
       bus.append({ type: "lesson.proposed", scopeType: "lesson", scopeId: id, source: actor, payload: { kind: parsed.kind, scope: finalScope, security: security.length } });
     });
     return { lesson: need(id), refused: false, replaces: similar[0] || null,
       securityDecision: security.length ? { parts: security, note: "Partea asta schimbă accesul, costul sau limitele: nu o salvez ca regulă de lucru. Dacă o vrei, e o decizie de securitate separată (politici)." } : null,
       generalization: parsed.scopeHint ? null : `Am presupus scope-ul „${finalScope === "GLOBAL" ? "toate proiectele" : finalScope === "PROJECT" ? "acest proiect" : "această misiune"}”; schimbă-l dacă nu e așa.` };
+  }
+
+  /** The active rules for the same condition as `l` (same scope and normalized trigger), other than `l` itself. */
+  function sameCondition(l) {
+    const trigger = l.parsed?.trigger ? norm(l.parsed.trigger) : "";
+    if (!trigger) return [];
+    return db.prepare("SELECT * FROM lessons WHERE status IN ('ACTIVE','FORGET_PROPOSED') AND scope = ? AND scope_ref = ? AND id <> ?").all(l.scope, l.scopeRef, l.id).map(rowTo)
+      .filter((x) => x.parsed?.trigger && norm(x.parsed.trigger) === trigger);
+  }
+
+  /** Why a proposal no longer applies to the current rules (null when it still does): see confirm(). */
+  function staleBase(l, current) {
+    if (l.supersedesId) {
+      const prev = rowTo(db.prepare("SELECT * FROM lessons WHERE id = ?").get(l.supersedesId));
+      if (!prev || !["ACTIVE", "FORGET_PROPOSED"].includes(prev.status)) {
+        return `Regula pe care o înlocuia propunerea s-a schimbat între timp (${prev ? prev.status : "lipsește"}); propune din nou, pe regula curentă`;
+      }
+    }
+    // A proposal made before `basis` existed knew only the rule it named.
+    const basis = new Set(Array.isArray(l.parsed?.basis) ? l.parsed.basis : l.supersedesId ? [l.supersedesId] : []);
+    const newer = current.find((x) => !basis.has(x.id));
+    return newer ? `Între timp a devenit activă altă regulă pentru „${l.parsed.trigger}” (${newer.id}); propune din nou, ca să o înlocuiești pe ea` : null;
   }
 
   /** The owner's confirmation in a verified session: the lesson becomes a memory item (USER_PREFERENCE) bound to its scope. */
@@ -149,15 +190,28 @@ export function createTeach({ db, bus, clock, memory, projects }) {
     const l = need(id);
     if (l.status !== "PROPOSED") throw new HubError("conflict", `Lecția e în ${l.status}`);
     if (l.security.length) throw new HubError("policy", `Lecția conține o schimbare de securitate (${l.security.join(", ")}); reformuleaz-o fără acea parte sau decide-o separat în politici`);
+    // Audit 2026-11-03 (stage 0): a proposal replaces the rule that was active when it was made. If that rule changed meanwhile (another
+    // proposal replaced it, it was forgotten) or another rule for the same condition became active, confirming would leave two rules
+    // for one condition (the agent gets both): the proposal is stale and is made again on the current rule.
+    const current = sameCondition(l);
+    const stale = staleBase(l, current);
+    if (stale) throw new HubError("conflict", stale, { code: "LESSON_STALE_BASE" });
     const title = `${l.kind === "procedure" ? "Procedură" : l.kind === "preference" ? "Preferință" : "Regulă"}: ${l.parsed.trigger || l.parsed.steps[0]}`.slice(0, 160);
     const body = [l.parsed.trigger ? `Când: ${l.parsed.trigger}` : null, "Pași:", ...l.parsed.steps.map((s, i) => `${i + 1}. ${s}`), l.parsed.expected ? `Rezultat: ${l.parsed.expected}` : null, `(Lecție ${l.id}, de la proprietar)`].filter(Boolean).join("\n");
+    // The memory item records the owner session that confirmed it (audit 2026-11-03), "user" on the test channel.
+    const author = /^owner:[A-Za-z0-9_-]+$/.test(String(actor || "")) ? String(actor) : "user";
     const result = bus.transaction(() => {
       let item;
       const prev = l.supersedesId ? need(l.supersedesId) : null;
       if (prev?.memoryItemId && memory.get(prev.memoryItemId)?.status === "active") {
-        item = memory.revise(prev.memoryItemId, { title, body, sourceRef: `lesson:${l.id}` }, "user");
-        db.prepare("UPDATE lessons SET status = 'SUPERSEDED' WHERE id = ?").run(prev.id);
-      } else item = memory.add({ scope: l.scope, scopeRef: l.scopeRef, type: "USER_PREFERENCE", title, body, sourceRef: `lesson:${l.id}`, author: "user", sourceKind: "user" });
+        item = memory.revise(prev.memoryItemId, { title, body, sourceRef: `lesson:${l.id}` }, author);
+      } else item = memory.add({ scope: l.scope, scopeRef: l.scopeRef, type: "USER_PREFERENCE", title, body, sourceRef: `lesson:${l.id}`, author, sourceKind: "user" });
+      // Every rule for the same condition is replaced (the named one and any duplicate), whatever happened to its memory item:
+      // one condition, one active rule (audit review).
+      for (const old of current) {
+        db.prepare("UPDATE lessons SET status = 'SUPERSEDED', version = version + 1 WHERE id = ?").run(old.id);
+        if (old.memoryItemId && old.memoryItemId !== prev?.memoryItemId) memory.supersede(old.memoryItemId, actor);
+      }
       db.prepare("UPDATE lessons SET status = 'ACTIVE', memory_item_id = ?, decided_by = ?, decided_at = ?, version = version + 1 WHERE id = ?").run(item.id, String(actor).slice(0, 80), iso(), id);
       bus.append({ type: "lesson.confirmed", scopeType: "lesson", scopeId: id, source: actor, payload: { memoryItemId: item.id, scope: l.scope } });
       return item;
@@ -221,5 +275,24 @@ export function createTeach({ db, bus, clock, memory, projects }) {
     return need(id);
   }
 
-  return { propose, confirm, dismiss, proposeForget, confirmForget, cancelForget, rulesFor, list, get: need };
+  /**
+   * Audit 2026-11-03 (stage 0): the projects whose applicable rules (all projects + that project) exceed what one worker prompt carries.
+   * The newest rules are sent; the owner sees how many older ones do not fit, never a silent drop.
+   */
+  function promptFit() {
+    const out = [];
+    for (const p of projects.list?.() || []) {
+      const fit = lessonsForPrompt(db, { projectId: p.id });
+      if (fit.omitted.length) out.push({ projectId: p.id, name: p.name, total: fit.total, omitted: fit.omitted.length, omittedIds: fit.omitted });
+    }
+    // A mission's own rules come first in its prompt, so a mission with many of them can push its project's rules out (audit review).
+    for (const m of db.prepare(`SELECT DISTINCT l.scope_ref AS mission_id, m.project_id, m.title FROM lessons l JOIN missions m ON m.id = l.scope_ref
+      WHERE l.scope = 'MISSION' AND l.status IN ('ACTIVE','FORGET_PROPOSED')`).all()) {
+      const fit = lessonsForPrompt(db, { projectId: m.project_id, missionId: m.mission_id });
+      if (fit.omitted.length) out.push({ projectId: m.project_id, name: projects.get?.(m.project_id)?.name || m.project_id, missionId: m.mission_id, missionTitle: m.title, total: fit.total, omitted: fit.omitted.length, omittedIds: fit.omitted });
+    }
+    return { limit: PROMPT_LESSON_LIMIT, overLimit: out };
+  }
+
+  return { propose, confirm, dismiss, proposeForget, confirmForget, cancelForget, rulesFor, list, promptFit, get: need };
 }

@@ -7,6 +7,13 @@ export const MEMORY_SOURCES = Object.freeze(["hub", "user", "claude_native", "op
 export const SYNC_DIRECTIONS = Object.freeze(["none", "import_only", "export_only"]);
 const ECHO_MARKER = /hub-memory-id:(mem_[a-z0-9_]+)/i;
 export const MEMORY_TYPES = Object.freeze(["FACT", "USER_PREFERENCE", "DECISION", "ASSUMPTION", "HYPOTHESIS", "OUTDATED"]);
+/** The types that state something as true for the owner: only the owner writes them (a person through the owner session, or "user"). */
+export const AUTHORITATIVE_TYPES = Object.freeze(["FACT", "USER_PREFERENCE", "DECISION"]);
+/**
+ * Who may write an authoritative item: "owner:<sessionId>" (the verified owner session, audit 2026-11-03) or "user" (the Hub's own
+ * owner-confirmed paths and the test channel, as before). "ui" (the local UI without a session), agents and imports may not.
+ */
+export const isOwnerAuthor = (author) => author === "user" || /^owner:[A-Za-z0-9_-]+$/.test(String(author || ""));
 
 /**
  * Local memory with SQLite FTS5 (diacritics-insensitive). Agent-authored items can only be
@@ -26,7 +33,10 @@ export function createMemory({ db, bus, clock }) {
     if (!MEMORY_TYPES.includes(type)) throw new HubError("validation", "Unknown memory type");
     if (!title?.trim() || !body?.trim()) throw new HubError("validation", "Title and body are required");
     if (containsSecretLikeContent(`${title}\n${body}`)) throw new HubError("policy", "Memory must not contain credentials or tokens");
-    if (author !== "user" && ["FACT", "USER_PREFERENCE", "DECISION"].includes(type)) {
+    if (!isOwnerAuthor(author) && AUTHORITATIVE_TYPES.includes(type)) {
+      // Audit 2026-11-03 (stage 1): the local UI without the owner session is not proof that the owner wrote it (any local process can
+      // reach it): such an item is stored as an assumption, or saved as a fact from the owner session.
+      if (author === "ui") throw new HubError("authentication", "Un fapt, o preferință sau o decizie se salvează din sesiunea ta de proprietar; fără ea, salvează-l ca ipoteză (ASSUMPTION / HYPOTHESIS)", { data: { needSession: true } });
       throw new HubError("policy", "Agent-authored memory is stored as ASSUMPTION or HYPOTHESIS until you confirm it");
     }
   }
@@ -48,6 +58,11 @@ export function createMemory({ db, bus, clock }) {
     const current = get(id);
     if (!current) throw new HubError("not_found", "Memory item not found");
     if (current.status !== "active") throw new HubError("conflict", "Only active items can be revised");
+    // Audit 2026-11-03 (review): replacing the owner's fact / preference / decision (even by an assumption) is the owner's, like deleting it.
+    if (AUTHORITATIVE_TYPES.includes(current.type) && !isOwnerAuthor(author)) {
+      if (author === "ui") throw new HubError("authentication", "Un fapt, o preferință sau o decizie se schimbă din sesiunea ta de proprietar", { data: { needSession: true } });
+      throw new HubError("policy", "Only the owner revises a fact, a preference or a decision");
+    }
     const scopeRef = patch.scopeRef !== undefined ? String(patch.scopeRef).trim() : current.scopeRef;
     const next = add({ ...current, ...patch, scopeRef, author, version: current.version + 1, supersedesId: current.id, allowMissingScopeRef: !current.scopeRef && !scopeRef });
     db.prepare("UPDATE memory_items SET status = 'superseded', type = 'OUTDATED', updated_at = ? WHERE id = ?").run(clock().toISOString(), id);
@@ -62,6 +77,13 @@ export function createMemory({ db, bus, clock }) {
     db.prepare("UPDATE memory_items SET status = 'deleted', body = '[deleted]', updated_at = ? WHERE id = ?").run(clock().toISOString(), id);
     bus.append({ type: "memory.deleted", scopeType: "memory", scopeId: id, source: actor, payload: { title: current.title } });
     return true;
+  }
+
+  /** Marks an active item superseded without a new version (a lesson replaced together with its duplicates); content and history stay. */
+  function supersede(id, actor) {
+    const changed = db.prepare("UPDATE memory_items SET status = 'superseded', updated_at = ? WHERE id = ? AND status = 'active'").run(clock().toISOString(), id).changes;
+    if (changed) bus.append({ type: "memory.superseded", scopeType: "memory", scopeId: id, source: actor, payload: {} });
+    return changed > 0;
   }
 
   const get = (id) => rowTo(db.prepare("SELECT * FROM memory_items WHERE id = ?").get(id));
@@ -126,5 +148,5 @@ export function createMemory({ db, bus, clock }) {
     return result;
   }
 
-  return { add, revise, remove, get, search, contradictions, exportAll, exportForProvider, importFromText };
+  return { add, revise, remove, supersede, get, search, contradictions, exportAll, exportForProvider, importFromText };
 }
