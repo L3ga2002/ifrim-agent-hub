@@ -37,7 +37,7 @@ Cerere (Catalin, 2026-11-23): Vlad, un prieten, testează Hub-ul V2 pe calculato
 
 ## Ce face proprietarul
 
-1. Rulează `C:\Users\mihai\vlad-stage\release\publica-2.20.0.cmd`. Comanda lucrează din clona `C:SERSMIHAILAD-STAGEHUB`: URCă RAMURA, AVANSEAZă `V2-MILESTONE-01` PE GITHUB (FAST-FORWARD), CREEAZă TAG-UL `HUB-RELEASE/2.20.0-DIST` șI îL PUBLICă. FOLDERUL LOCAL AL LUI CATALIN NU SE SCHIMBă (PUSH-UL DIN SESIUNE A FOST REFUZAT DE PERMISIUNI).
+1. Rulează `C:\Users\mihai\vlad-stage\release\publica-2.20.0.cmd`. Comanda lucrează din clona `C:\Users\mihai\vlad-stage\hub`: urcă ramura, avansează `v2-milestone-01` pe GitHub (fast-forward), creează tag-ul `hub-release/2.20.0-dist` și îl publică. Folderul local al lui Catalin nu se schimbă. Push-ul din sesiune a fost refuzat de permisiuni.
 2. Îi trimite lui Vlad linkul ghidului: `https://github.com/L3ga2002/ifrim-agent-hub/blob/v2-milestone-01/v2/GHID_INSTALARE.md`.
 3. Versiunile următoare: după validare, `node v2/scripts/publish-release.mjs --tag` și apoi `git push origin hub-release/<versiune>`.
 
