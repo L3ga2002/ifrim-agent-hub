@@ -256,6 +256,6 @@ test("INT-05-HTTP the session route reports the pinned version and contract", as
       req.on("error", reject); req.end();
     });
     assert.equal(got.status, 200);
-    assert.deepEqual([got.json.version, got.json.apiContract, got.headers["x-hub-contract"]], ["2.19.1-m16", 22, "22"]);
+    assert.deepEqual([got.json.version, got.json.apiContract, got.headers["x-hub-contract"]], ["2.20.0-dist", 24, "24"]);
   } finally { await new Promise((r) => server.close(r)); await t.cleanup(); }
 });
