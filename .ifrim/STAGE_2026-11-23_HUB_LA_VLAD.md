@@ -27,7 +27,8 @@ Cerere (Catalin, 2026-11-23): Vlad, un prieten, testează Hub-ul V2 pe calculato
 
 ## Verificări
 
-- Teste noi: `m20-api-route` 9/9, `m20-updates` 4/4 (fixture, fără model). Suita completă: vezi raportul thread-ului.
+- Teste noi: `m20-api-route` 9/9, `m20-updates` 4/4 (fixture, fără model).
+- Suita completă (ramura la 857afa1): 2778/2783 trec, 1 skip. Cele 4 eșecuri: 3 reale (M01-NG1: git doar prin tools/git.mjs; M09-BE-02: forma billingInputs; R1-10: contract fixat la 22), reparate în 4f908d7 și 73b86c3 și rerulate verzi; T-DATASET-05 a picat sub încărcare (121 s) și trece singur 14/14, la fel ca pe baza 2.19.2.
 - E2E real izolat (`C:\Users\mihai\vlad-e2e`, origin bare local, porturile 8031/8032, bază sintetică nouă, fără model):
   - instalare de la zero: PASS;
   - A→B: PASS;
