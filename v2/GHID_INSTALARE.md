@@ -101,6 +101,7 @@ Ce face Hub-ul cu cheia ta:
 - O rulare oprită fără raport de cost se socotește la plafonul ei. Factura reală e cea de la furnizor.
 - Pe ruta API, Claude Code poate doar să citească: face analize și review. Scrierea în proiect o face Codex. Pe Windows, Claude nu are un sandbox care să țină cheia departe de comenzile pe care le rulează.
 - Zilele și lunile bugetului se socotesc după ora calculatorului tău.
+- Conversația vocală live cu L3ga (GPT-Live) merge doar prin abonamentul ChatGPT, niciodată pe cheia API. Conversația scrisă funcționează și fără ea.
 - **Oprește ruta API** te întoarce la abonament. **Oprește și șterge cheia** scoate cheia de pe calculator. Revocă cheia și în contul furnizorului dacă nu o mai folosești.
 
 ## 6. Adaugă proiectele tale demo
