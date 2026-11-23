@@ -4,7 +4,7 @@
 # <Root>\Proiecte\ifrim-agent-hub; tine datele (baza noua, goala) in <Root>\hub-data, in afara folderului de cod; creeaza registrul
 # de proiecte <Root>\Proiecte\PROJECTS.md; instaleaza dependentele (npm ci); construieste interfata; porneste Hub-ul pe
 # http://localhost:8011 (doar pe acest calculator) si deschide browserul. Nu porneste niciun model, nu cere chei, nu trimite nimic.
-# Datele, cheile si proiectele raman pe acest calculator. Ghidul complet: docs\GHID_INSTALARE.md din repository.
+# Datele, cheile si proiectele raman pe acest calculator. Ghidul complet: v2\GHID_INSTALARE.md din repository.
 param(
   [string]$Root = (Join-Path $env:USERPROFILE "IfrimHub"),
   [string]$Repo = "https://github.com/L3ga2002/ifrim-agent-hub.git",

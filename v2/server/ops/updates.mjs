@@ -74,7 +74,8 @@ export function createUpdateService({ config, settings, bus, clock = () => new D
       let record;
       try {
         const head = (await git(["rev-parse", "HEAD"], 15000)).trim();
-        const out = await git(["ls-remote", "--tags", "--refs", "origin", `refs/tags/${RELEASE_TAG_PREFIX}*`], 30000).catch(async () => git(["ls-remote", "--tags", "origin", `refs/tags/${RELEASE_TAG_PREFIX}*`], 30000));
+        // Without --refs: an annotated tag's line names the TAG object; its peeled "^{}" line names the commit (the one we need).
+        const out = await git(["ls-remote", "--tags", "origin", `refs/tags/${RELEASE_TAG_PREFIX}*`], 30000);
         const releases = parseReleaseTags(out);
         const latest = releases.at(-1) || null;
         const available = Boolean(latest && compareVersions(latest.version, HUB_VERSION) === 1);
