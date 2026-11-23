@@ -378,6 +378,7 @@ export function createCodexAdapter({ config, supervisor, homeDir = os.homedir(),
     let apiPrice = null;
     let apiBaseline = null;
     let apiCostUsd = api ? 0 : null;
+    let apiUsageSeen = false; // review #2: a cost of 0 is a report only when the provider actually reported usage
     let budgetStop = null;
     let policyStop = null; // set when the provider does something no Hub run may do; the run ends as a tool violation
     let turnRequested = false; // until turn/start is sent, a Stop kills the process: no model call may follow it
@@ -432,6 +433,7 @@ export function createCodexAdapter({ config, supervisor, homeDir = os.homedir(),
             if (apiBaseline === null) apiBaseline = tu.total && tu.last ? Math.max(0, total - codexCostUsd(tu.last, price)) : 0;
             const cost = Math.max(apiCostUsd || 0, total - apiBaseline);
             apiCostUsd = cost;
+            apiUsageSeen = true;
             onEvent({ type: "api_cost", usd: cost, estimated: true });
             if (cost >= api.maxUsd && !budgetStop) {
               budgetStop = `Rularea a atins plafonul ei pe ruta API (${cost.toFixed(2)} / ${Number(api.maxUsd).toFixed(2)} USD, estimare din tokeni); oprită`;
@@ -647,7 +649,7 @@ export function createCodexAdapter({ config, supervisor, homeDir = os.homedir(),
       }
     })();
 
-    const settled = api ? done.then((result) => ({ ...result, apiCostUsd: result.preInference && !(apiCostUsd > 0) ? null : apiCostUsd,
+    const settled = api ? done.then((result) => ({ ...result, apiCostUsd: apiUsageSeen ? apiCostUsd : null,
       apiCostSource: "Hub: tokeni raportați de Codex × tabelul de prețuri (estimare)" })) : done;
     return { key, pid: session.record.pid, done: settled, interrupt };
   }

@@ -17,7 +17,7 @@ const execFileAsync = promisify(execFile);
  */
 export const RELEASE_TAG_PREFIX = "hub-release/";
 const CHECK_INTERVAL_MS = 24 * 3600 * 1000;
-const GIT_SAFE = ["-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "-c", "credential.helper=", "-c", "protocol.allow=never", "-c", "protocol.https.allow=always", "-c", "protocol.file.allow=always"];
+const GIT_SAFE = ["-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "-c", "credential.helper=", "-c", "protocol.allow=never", "-c", "protocol.https.allow=always", "-c", "protocol.ssh.allow=always", "-c", "protocol.file.allow=always"];
 
 /** "2.20.0-dist" → [2, 20, 0]; null when not a version. */
 export function parseVersion(text) {
@@ -108,7 +108,8 @@ export function createUpdateService({ config, settings, bus, clock = () => new D
    */
   async function startApply({ version, actor }) {
     const st = status();
-    if (st.apply && st.apply.status === "running" && st.apply.pid && pidAlive(st.apply.pid)) throw Object.assign(new Error("O actualizare rulează deja"), { category: "conflict" });
+    const fresh = st.apply?.startedAt && Date.now() - Date.parse(st.apply.startedAt) < 2 * 3600 * 1000;
+    if (st.apply && ["running", "rolling_back"].includes(st.apply.status) && fresh && st.apply.pid && pidAlive(st.apply.pid)) throw Object.assign(new Error("O actualizare rulează deja"), { category: "conflict" });
     const latest = st.last?.latest;
     if (!st.available || !latest) throw Object.assign(new Error("Nu există o versiune publicată mai nouă (verifică din nou)"), { category: "conflict" });
     if (version && version !== latest.version) throw Object.assign(new Error(`Pagina arăta ${version}, dar ultima versiune publicată este ${latest.version}; reîncarcă`), { category: "conflict" });

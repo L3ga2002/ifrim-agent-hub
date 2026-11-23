@@ -64,8 +64,10 @@ export function codexCostUsd(breakdown, price) {
 }
 
 const round = (usd) => Math.round(Number(usd || 0) * 10000) / 10000;
-const dayOf = (now) => now.toISOString().slice(0, 10);
-const monthOf = (now) => now.toISOString().slice(0, 7);
+// Calendar days and months of THIS computer (the owner's local time), not UTC.
+const pad = (n) => String(n).padStart(2, "0");
+const dayOf = (now) => `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}`;
+const monthOf = (now) => `${now.getFullYear()}-${pad(now.getMonth() + 1)}`;
 
 export function normalizeBudget(input = {}) {
   const out = {};
@@ -93,24 +95,26 @@ export function createApiAccess({ settings, vault, clock = () => new Date(), bus
     return Boolean(c && c.textVersion === textVersion(API_CONSENT_TEXT[provider]) && c.at);
   }
 
-  function spent(provider, now = clock()) {
+  function spent(provider, now = clock(), { excludeRunId = null } = {}) {
     const days = spend().days || {};
     const today = Number(days[dayOf(now)]?.[provider] || 0);
     const month = Object.entries(days).filter(([d]) => d.startsWith(monthOf(now))).reduce((s, [, v]) => s + Number(v?.[provider] || 0), 0);
     let reserved = 0;
-    for (const r of inflight.values()) if (r.provider === provider) reserved += Math.max(r.observedUsd, r.maxUsd);
+    for (const [id, r] of inflight) if (r.provider === provider && id !== excludeRunId) reserved += Math.max(r.observedUsd, r.maxUsd);
     return { today: round(today), month: round(month), reserved: round(reserved) };
   }
 
   /** The budget left for ONE new run now: min(per-run, daily left, monthly left), with in-flight reservations subtracted. */
-  function budgetState(provider, now = clock()) {
+  function budgetState(provider, now = clock(), { excludeRunId = null } = {}) {
     const budget = routeOf(provider).budget || null;
-    const s = spent(provider, now);
+    const s = spent(provider, now, { excludeRunId });
+    // A run already admitted (excludeRunId) is checked against what was left WITHOUT its own reservation.
+    const own = excludeRunId && inflight.get(excludeRunId)?.provider === provider ? inflight.get(excludeRunId) : null;
     if (!budget) return { ok: false, detail: "Niciun plafon setat", spent: s, budget: null, maxForRun: 0 };
     const dayLeft = budget.dailyUsd - s.today - s.reserved;
     const monthLeft = budget.monthlyUsd - s.month - s.reserved;
     const maxForRun = round(Math.max(0, Math.min(budget.perRunUsd, dayLeft, monthLeft)));
-    const ok = maxForRun >= MIN_RUN_USD;
+    const ok = own ? maxForRun + 1e-9 >= Math.min(own.maxUsd, MIN_RUN_USD) : maxForRun >= MIN_RUN_USD;
     const which = dayLeft <= monthLeft ? "zilnic" : "lunar";
     return { ok, maxForRun, budget, spent: s, dayLeft: round(Math.max(0, dayLeft)), monthLeft: round(Math.max(0, monthLeft)),
       detail: ok ? `Disponibil pentru o rulare: ${maxForRun.toFixed(2)} USD (azi ${s.today.toFixed(2)}/${budget.dailyUsd}, luna ${s.month.toFixed(2)}/${budget.monthlyUsd})`
@@ -125,11 +129,11 @@ export function createApiAccess({ settings, vault, clock = () => new Date(), bus
   }
 
   /** What the billing gate reads for the API route (billing.mjs evaluateRoute). Pure facts; no secret. */
-  function routeInputs(provider, now = clock()) {
+  function routeInputs(provider, now = clock(), { excludeRunId = null } = {}) {
     if (mode(provider) !== "api_key") return null;
     const key = vault.status(provider);
     return { mode: "api_key", key: key.present && key.valid ? { fingerprint: key.fingerprint, last4: key.last4 } : null, keyProblem: key.present ? key.problem || null : "Nu există o cheie API salvată",
-      identity: key.valid ? apiKeyIdentity(key.fingerprint) : null, consent: consentValid(provider), budget: budgetState(provider, now) };
+      identity: key.valid ? apiKeyIdentity(key.fingerprint) : null, consent: consentValid(provider), budget: budgetState(provider, now, { excludeRunId }) };
   }
 
   /**

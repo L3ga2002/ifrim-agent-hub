@@ -276,7 +276,10 @@ export function createRunManager(deps) {
       // 2.20: the owner's API-key route (only on the Windows client; an environment route is refused by the billing check): the
       // run reserves its budget and gets the key for its own process only. A refusal here is a stop before the model.
       if (deps.apiAccess && environment === "windows" && deps.apiAccess.mode(provider) === "api_key") {
-        try { apiRun = await deps.apiAccess.admit(provider, runId); }
+        try {
+          if (provider === "claude" && access === "workspace-write") throw Object.assign(new Error("Pe ruta API, Claude rulează doar cu citire: cu scriere și comenzi shell, cheia ar ajunge la fiecare comandă (Windows nu are sandbox pentru Claude)"), { category: "policy" });
+          apiRun = await deps.apiAccess.admit(provider, runId);
+        }
         catch (error) {
           bus.transaction(() => leases.release(lease.id, "API route refused before start"));
           if (grant) refundPreInference(grant.id, `API route refused before ${runId} started`);
@@ -290,7 +293,7 @@ export function createRunManager(deps) {
       // M09 review: the billing evidence can change while this run waited for the backup / git state (the owner withdrew the
       // declaration, a concurrent run's report latched re-verification). The billing route is checked again here, the last moment
       // before anything reaches the provider (only that check: the lease and the attempt are already this run's).
-      const recheck = gate.evaluate({ provider, projectId: project.id, access, grantId, workspaceResource: resource, plan, environment });
+      const recheck = gate.evaluate({ provider, projectId: project.id, access, grantId, workspaceResource: resource, plan, environment, apiRunId: apiRun ? runId : null });
       // 2.12.1 (AS-01, the kill switch): a Stop All (or any suspension of the gate, or the revocation of the grant this start took)
       // while it waited for the backup / git state means the start never reaches its model — even when the gate was reopened in
       // between (the stop epoch). Only these checks are read here: the lease, the concurrency slot and the attempt are already this

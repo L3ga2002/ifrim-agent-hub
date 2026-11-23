@@ -14,6 +14,7 @@ param(
   [switch]$NoBrowser
 )
 $ErrorActionPreference = "Stop"
+$Root = [System.IO.Path]::GetFullPath($Root)
 # Port: 8011 unless HUB_V2_PORT names another (a second instance on the same computer).
 $port = 8011
 if ($env:HUB_V2_PORT -match '^\d{2,5}$') { $port = [int]$env:HUB_V2_PORT }

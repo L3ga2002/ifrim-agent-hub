@@ -61,7 +61,7 @@ export function createGate({ db, settings, projects, backups, leases, grants, br
   function attachEnvelopeAuthority(fn) { envelopeAuthority = typeof fn === "function" ? fn : null; }
 
   /** `environment` defaults to the project route (M05): the gate decides with the same route the run manager will use. */
-  function evaluate({ provider, projectId, access = "read-only", grantId = null, workspaceResource, plan = null, environment = null }) {
+  function evaluate({ provider, projectId, access = "read-only", grantId = null, workspaceResource, plan = null, environment = null, apiRunId = null }) {
     const route = environment || (environments ? environments.routeFor(projectId, provider) : "windows");
     const envService = route !== "windows" ? environments?.get(route) || null : null;
     const checks = [];
@@ -109,7 +109,7 @@ export function createGate({ db, settings, projects, backups, leases, grants, br
     const inspection = inspectionFromState(providerState.get(route === "windows" ? provider : `${provider}@${route}`), now);
     // M09-A2: the declaration is compared with THIS route's account (claude@wsl-runner has its own login and probe).
     // 2.20: the owner's API-key route replaces the subscription rules for this provider only while it is on (api-access.mjs).
-    const api = apiAccess ? apiAccess.routeInputs(provider, now) : null;
+    const api = apiAccess ? apiAccess.routeInputs(provider, now, { excludeRunId: apiRunId }) : null;
     const billing = evaluateRoute(provider, inspection, billingInputs(settings, inspection, now, { api, environment: route }));
     add("billing_route", billing.allowed, billing.allowed ? (api ? `Ruta API cu cheia ta verificată (…${api.key?.last4 || "?"}); ${api.budget.detail}` : `Rută inclusă în abonament verificată${route !== "windows" ? ` (clientul din ${route})` : ""}`) : billing.blockingReasons.join(" · "), { route: billing, ...(api ? { billingMode: "api_key" } : {}) });
 

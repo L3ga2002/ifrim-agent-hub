@@ -89,3 +89,29 @@ test("M20-UPD-03 installing: owner session only, the version shown, a clean inst
     assert.equal(hub.db.prepare("SELECT COUNT(*) AS n FROM events WHERE type = 'update.started'").get().n, 1);
   } finally { await t.cleanup(); }
 });
+
+test("M20-UPD-04 (review) a real annotated release tag: the check names the COMMIT (peeled), the one the updater verifies", async () => {
+  const { execFileSync } = await import("node:child_process");
+  const fs = await import("node:fs");
+  const path = await import("node:path");
+  const t = await makeTestHub();
+  try {
+    const src = path.join(t.dataDir, "rel-src");
+    const clone = path.join(t.dataDir, "rel-clone");
+    fs.mkdirSync(src);
+    const g = (cwd, ...a) => execFileSync("git", ["-c", "user.name=t", "-c", "user.email=t@example.com", "-c", "core.hooksPath=/dev/null", ...a], { cwd, encoding: "utf8" }).trim();
+    g(src, "init", "-q");
+    fs.writeFileSync(path.join(src, "a.txt"), "a\n");
+    g(src, "add", "a.txt");
+    g(src, "commit", "-q", "-m", "a");
+    g(src, "tag", "-a", "hub-release/99.1.0", "-m", "release");
+    const commit = g(src, "rev-parse", "HEAD");
+    assert.notEqual(g(src, "rev-parse", "hub-release/99.1.0"), commit, "an annotated tag object differs from its commit");
+    g(t.dataDir, "clone", "-q", src, clone);
+    const svc = createUpdateService({ config: { ...t.config, hubRoot: clone }, settings: t.hub.settings, bus: t.hub.bus });
+    const r = await svc.check("test");
+    assert.equal(r.ok, true, r.error);
+    assert.equal(r.latest.version, "99.1.0");
+    assert.equal(r.latest.commit, commit);
+  } finally { await t.cleanup(); }
+});

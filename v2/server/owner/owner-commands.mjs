@@ -232,6 +232,7 @@ export function registerOwnerCommands(reg, hub) {
   reg("api_route.disable", { describe: "Oprește ruta API (providerul revine la abonament)", async: true, channels: ANY_OWNER_FACING,
     schema: { provider: { enum: ["codex", "claude"], required: true }, reason: { max: 200, default: "" }, stopRunning: { type: "boolean", default: true }, removeKey: { type: "boolean", default: false } },
     execute: async (input, ctx) => {
+      if (input.removeKey && !session(ctx)) throw new HubError("authentication", "Ștergerea cheii cere sesiunea de proprietar (oprirea rutei nu)", { data: { needSession: true } });
       const stopped = input.stopRunning && interrupts ? await interrupts.stopWorker({ provider: input.provider, actor: ctx.actor }).catch((error) => ({ summary: `Oprirea execuțiilor a eșuat: ${error.message}` })) : null;
       hub.apiAccess.setRoute(input.provider, { enabled: false, disabledAt: hub.config.now().toISOString(), disabledReason: String(input.reason || "").slice(0, 200) || "oprită de tine" }, ctx.actor, `API route disabled for ${input.provider}`);
       const removed = input.removeKey ? hub.apiKeyVault.remove(input.provider) : false;

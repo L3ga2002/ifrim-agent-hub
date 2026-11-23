@@ -57,14 +57,24 @@ function readState() { try { return JSON.parse(fs.readFileSync(STATE, "utf8")); 
 function writeState(s) { fs.mkdirSync(DIR, { recursive: true }); const tmp = `${STATE}.${process.pid}.tmp`; fs.writeFileSync(tmp, JSON.stringify(s, null, 2)); fs.renameSync(tmp, STATE); return s; }
 function step(s, name, ok, detail = "") { s.steps.push({ name, ok, detail: String(detail).slice(0, 400), at: new Date().toISOString() }); writeState(s); log(`${ok ? "✓" : "✗"} ${name}${detail ? `: ${detail}` : ""}`); }
 
+/**
+ * Stops the Hub and PROVES its process is gone (review #4b): "no session" can also mean a Hub that is still booting (a first boot on
+ * new code migrates before it listens) — the pid file decides, and a process that never answers is ended after a bounded wait,
+ * so the database is never moved while a process may hold it.
+ */
 async function stopHub(force) {
+  const pid = readPid()?.pid || null;
   const session = await request("GET", "/api/session");
-  if (!session.json?.token) return "oprit";
-  const r = await request("POST", "/api/system/shutdown", { body: { force }, token: session.json.token });
-  if (r.status !== 200) throw new Error(r.json?.error?.message || `oprirea a fost refuzată (${r.status})`);
-  const pid = readPid()?.pid;
-  for (let i = 0; i < 100; i += 1) { await sleep(300); if (!pid || !pidAlive(pid)) return "oprit"; }
-  throw new Error("Hub-ul nu s-a oprit");
+  if (session.json?.token) {
+    const r = await request("POST", "/api/system/shutdown", { body: { force }, token: session.json.token });
+    if (r.status !== 200) throw new Error(r.json?.error?.message || `oprirea a fost refuzată (${r.status})`);
+  }
+  for (let i = 0; i < 100; i += 1) { if (!pid || !pidAlive(pid)) return "oprit"; await sleep(300); }
+  if (!force) throw new Error("Hub-ul nu s-a oprit");
+  // force: the process did not end by itself (no API, or a shutdown that hangs) — end it, then check again.
+  try { process.kill(pid); } catch { /* already gone */ }
+  for (let i = 0; i < 50; i += 1) { if (!pidAlive(pid)) return "oprit (procesul a fost închis)"; await sleep(200); }
+  throw new Error(`Procesul Hub-ului (pid ${pid}) nu s-a închis; baza nu a fost atinsă`);
 }
 async function startHub() {
   const r = process.platform === "win32"
@@ -93,9 +103,16 @@ async function rollback(s, cause) {
   log(`Revin la ${s.from.version} (${s.from.commit.slice(0, 12)}): ${cause}`);
   s.status = "rolling_back"; s.error = String(cause).slice(0, 400); writeState(s);
   try {
-    let stopped;
-    try { stopped = await stopHub(false); } catch { stopped = await stopHub(true); }
-    step(s, "rollback:stop", true, stopped);
+    // Review #4a: a failure before the upgrade runner stopped the Hub leaves the OLD version serving on the OLD schema: it is not
+    // stopped (no running work is interrupted); only the files go back (code, dependencies, UI).
+    const h = await health();
+    const oldStillServing = Boolean(h?.ok && h.version === s.from.version && schemaVersion() === s.from.schema);
+    if (oldStillServing) step(s, "rollback:stop", true, `Hub-ul rulează încă ${h.version}: nu îl opresc`);
+    else {
+      let stopped;
+      try { stopped = await stopHub(false); } catch { stopped = await stopHub(true); }
+      step(s, "rollback:stop", true, stopped);
+    }
     const now = schemaVersion();
     if (s.from.schema !== null && now !== null && now > s.from.schema) {
       const copy = preMigrationCopy(s.from.schema, s.startedAt);
@@ -112,9 +129,12 @@ async function rollback(s, cause) {
     step(s, "rollback:code", true, s.from.branch || s.from.commit.slice(0, 12));
     if (s.depsChanged) { npmCi(); step(s, "rollback:dependencies", true, "npm ci"); }
     buildUi(); step(s, "rollback:ui", true);
-    const h = await startHub();
-    if (h.version !== s.from.version) throw new Error(`după revenire Hub-ul servește ${h.version}, nu ${s.from.version}`);
-    step(s, "rollback:start", true, h.version);
+    if (oldStillServing) step(s, "rollback:start", true, `${s.from.version} a rulat tot timpul`);
+    else {
+      const after = await startHub();
+      if (after.version !== s.from.version) throw new Error(`după revenire Hub-ul servește ${after.version}, nu ${s.from.version}`);
+      step(s, "rollback:start", true, after.version);
+    }
     s.status = "rolled_back";
   } catch (error) {
     step(s, "rollback", false, error.message);
@@ -133,7 +153,8 @@ async function main() {
   try { fs.writeFileSync(LOCK, String(process.pid), { flag: "wx" }); }
   catch {
     const other = Number(fs.readFileSync(LOCK, "utf8")) || 0;
-    if (other && pidAlive(other)) { console.error(`O actualizare rulează deja (pid ${other}).`); process.exitCode = 1; return; }
+    const age = Date.now() - fs.statSync(LOCK).mtimeMs;
+    if (other && pidAlive(other) && age < 2 * 3600 * 1000) { console.error(`O actualizare rulează deja (pid ${other}).`); process.exitCode = 1; return; }
     fs.writeFileSync(LOCK, String(process.pid));
   }
   const s = { id: `upd_${Date.now().toString(36)}`, status: "running", pid: process.pid, startedAt: new Date().toISOString(), steps: [], to: { tag, version: tag.slice("hub-release/".length) } };

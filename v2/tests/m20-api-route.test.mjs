@@ -268,3 +268,48 @@ test("M20-API-07 the native Claude Code install (~/.local/bin) is found when the
   if (!resolved) { assert.equal(fs.existsSync(native), false); return; }
   assert.ok(fs.existsSync(resolved.executable));
 });
+
+test("M20-API-08 (review) a Codex turn stopped before any usage report is booked at its reservation, never at 0", async () => {
+  const t = await makeTestHub({ queues: true });
+  try {
+    const { hub } = t;
+    const { project, grant } = await enableLive(hub, { provider: "codex", attempts: 5 });
+    const owner = await enrolOwner(t);
+    await enableApi(t, owner, "codex", OPENAI_KEY, { monthlyUsd: 10, dailyUsd: 3, perRunUsd: 0.8 });
+    t.queue("codex", "hang");
+    const { run } = await hub.runs.start({ conversationId: conversation(hub, project).id, provider: "codex", access: "read-only", grantId: grant.id, model: "gpt-5", actor: "test" });
+    await waitFor(() => t.readLog("codex").some((e) => e.method === "turn/start"));
+    await hub.runs.interrupt(run.id, "user");
+    await settled(hub, run.id);
+    const booked = hub.settings.get("apiSpend").runs.at(-1);
+    assert.equal(booked.runId, run.id);
+    assert.equal(booked.usd, 0.8);
+    assert.equal(booked.estimated, true);
+  } finally { await t.cleanup(); }
+});
+
+test("M20-API-09 (review) the last part of a budget is usable: the pre-start recheck does not count the run's own reservation; Claude write is refused on the API route", async () => {
+  const t = await makeTestHub({ queues: true });
+  try {
+    const { hub } = t;
+    const { project, grant } = await enableLive(hub, { provider: "claude", attempts: 5 });
+    const owner = await enrolOwner(t);
+    await enableApi(t, owner, "claude", ANTHROPIC_KEY, { monthlyUsd: 10, dailyUsd: 1, perRunUsd: 1 });
+    await hub.apiAccess.admit("claude", "run_earlier");
+    hub.apiAccess.settle("run_earlier", { usd: 0.3 });
+    t.queue("claude", "api-cost:0.05");
+    const { run } = await hub.runs.start({ conversationId: conversation(hub, project).id, provider: "claude", access: "read-only", grantId: grant.id, model: "sonnet", actor: "test" });
+    const done = await settled(hub, run.id);
+    assert.equal(done.status, "completed", done.errorMessage);
+    const turn = t.readLog("claude").filter((e) => Array.isArray(e.args) && e.args.includes("-p")).at(-1);
+    assert.equal(turn.args[turn.args.indexOf("--max-budget-usd") + 1], "0.70", "the run got what was left of the day");
+    // Claude with write and shell would pass the key to every command it runs: refused before anything starts.
+    const writeGrant = hub.bus.transaction(() => hub.grants.create({ provider: "claude", projectId: project.id, access: "workspace-write", maxAttempts: 1, maxDurationS: 600, ttlMinutes: 30 }, "test"));
+    await assert.rejects(hub.runs.start({ conversationId: conversation(hub, project).id, provider: "claude", access: "workspace-write", grantId: writeGrant.id, model: "sonnet", actor: "test" }), /API route refused|refused|gate/i);
+    // Removing the key needs the owner session; turning the route off does not.
+    await assert.rejects(dispatch(hub, "api_route.disable", { provider: "claude", removeKey: true }), /sesiunea de proprietar/);
+    await dispatch(hub, "api_route.disable", { provider: "claude" });
+    assert.equal(hub.apiAccess.mode("claude"), "subscription");
+    assert.equal(hub.apiKeyVault.status("claude").present, true);
+  } finally { await t.cleanup(); }
+});
