@@ -19,7 +19,7 @@ const BILLING_LABEL = { api: "API plătit (per token)", paid_plan: "plan plătit
  * manual override. Every decision is persisted with factors, alternatives and a readable reason.
  * The router never starts anything: execution still goes through the command bus and the gate.
  */
-export function createRouter({ db, bus, clock, config, settings, surfaces, providerState, usage, projects, telemetry, computer, company, roleConfig }) {
+export function createRouter({ db, bus, clock, config, settings, surfaces, providerState, usage, projects, telemetry, computer, company, roleConfig, apiAccess = null }) {
   let table = readEcosystemConfig(config.v2Root, "routing") || { taskTypes: {} };
   const reload = () => { table = readEcosystemConfig(config.v2Root, "routing") || { taskTypes: {} }; return table; };
 
@@ -80,7 +80,7 @@ export function createRouter({ db, bus, clock, config, settings, surfaces, provi
     const provider = PROVIDER_OF_SURFACE(surface);
     if (!excluded && executionMode === "programmatic" && provider) {
       const inspection = inspectionFromState(providerState.get(provider), clock());
-      const route = evaluateRoute(provider, inspection, billingInputs(settings, inspection, clock()));
+      const route = evaluateRoute(provider, inspection, billingInputs(settings, inspection, clock(), { api: apiAccess ? apiAccess.routeInputs(provider) : null }));
       const failed = route.checks.filter((c) => c.status === "failed");
       const unverified = route.checks.filter((c) => c.status === "unverified" && c.id !== "allowance");
       if (failed.length) exclude("billing_route", failed.map((c) => `${c.id}: ${c.detail}`).join(" · "));

@@ -459,7 +459,14 @@ export function registerCommands(commands, hub) {
       const adapter = providers[input.provider];
       const installation = await adapter.inspectInstallation();
       if (!installation.installed) throw new HubError("transport", installation.reason);
-      const result = await adapter.probe({ withModels: Boolean(input.withModels), withUsage: true });
+      // 2.20: on the owner's API-key route the check logs in with the stored key (no model call) and binds the key's fingerprint.
+      let api = null;
+      if (hub.apiAccess && hub.apiAccess.mode(input.provider) === "api_key") {
+        try { api = await hub.apiKeyVault.reveal(input.provider); }
+        catch (error) { throw new HubError("authentication", String(error?.message || error).slice(0, 300)); }
+      }
+      const result = await adapter.probe({ withModels: Boolean(input.withModels), withUsage: true, ...(api ? { api } : {}) });
+      api = null;
       // A check without the model list keeps the last list (found in M05: "Verifică contul" erased it and the run plan failed).
       const previous = providerState.get(input.provider);
       const models = result.models === undefined && Array.isArray(previous?.models) ? { models: previous.models, modelsCheckedAt: previous.modelsCheckedAt || previous.probedAt } : {};

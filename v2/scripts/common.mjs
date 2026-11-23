@@ -15,7 +15,9 @@ function resolveDataDir() {
 export const DATA_DIR = resolveDataDir();
 export const PID_FILE = path.join(DATA_DIR, "v2-hub.pid.json");
 export const LOG_FILE = path.join(DATA_DIR, "v2-hub.log");
-export const PORT = Number(process.env.HUB_V2_PORT || 8011);
+// 2.20: --port N (start-detached.ps1 passes it: a WMI-created process does not inherit the caller's HUB_V2_PORT).
+const portArg = (() => { const i = process.argv.indexOf("--port"); return i > 0 && /^\d{2,5}$/.test(process.argv[i + 1] || "") ? process.argv[i + 1] : null; })();
+export const PORT = Number(process.env.HUB_V2_PORT || portArg || 8011);
 
 export function readPid() {
   try { return JSON.parse(fs.readFileSync(PID_FILE, "utf8")); } catch { return null; }

@@ -75,7 +75,10 @@ if (args[0] === "--help") { console.log("--output-format --include-partial-messa
 if (args[0] === "auth" && args[1] === "status") {
   // M09-A2: "other-account" = another login on the same plan (another e-mail → another pseudonym); "no-email" = a CLI that
   // prints no identity field (the Hub falls back to the weak tuple basis).
-  const status = scenario === "apikey" ? { loggedIn: true, authMethod: "api_key", apiProvider: "firstParty" }
+  // 2.20: an ANTHROPIC_API_KEY in the environment wins, as in the real CLI (verified on 2.1.322: authMethod api_key, apiKeySource).
+  if (process.env.ANTHROPIC_API_KEY) log({ authStatus: true, apiKeyLast4: process.env.ANTHROPIC_API_KEY.slice(-4) });
+  const status = process.env.ANTHROPIC_API_KEY ? { loggedIn: true, authMethod: "api_key", apiProvider: "firstParty", apiKeySource: "ANTHROPIC_API_KEY" }
+    : scenario === "apikey" ? { loggedIn: true, authMethod: "api_key", apiProvider: "firstParty" }
     : { loggedIn: true, authMethod: "claude.ai", apiProvider: "firstParty", ...(scenario === "no-email" ? {} : { email: scenario === "other-account" ? "other@example.com" : "x@example.com" }), subscriptionType: "max" };
   console.log(JSON.stringify(status));
   process.exit(0);
@@ -102,7 +105,7 @@ process.stdin.on("end", async () => {
   const sessionArg = args.indexOf("--session-id") >= 0 ? args[args.indexOf("--session-id") + 1] : args[args.indexOf("--resume") + 1];
   // M09-A3: the sha256 of the exact prompt received (compared with agent_runs.prompt_sha256), the skill procedure headers and
   // any test markers (SKILL_MARKER_*), so a test can check what the reviewer side actually got without logging the whole prompt.
-  log({ args, promptLength: prompt.length, promptHead: prompt.slice(0, 200), promptSha256: crypto.createHash("sha256").update(prompt, "utf8").digest("hex"),
+  log({ args, apiKeyLast4: process.env.ANTHROPIC_API_KEY ? process.env.ANTHROPIC_API_KEY.slice(-4) : null, promptLength: prompt.length, promptHead: prompt.slice(0, 200), promptSha256: crypto.createHash("sha256").update(prompt, "utf8").digest("hex"),
     skillHeaders: [...prompt.matchAll(/^### ([a-z0-9-]+) v(\d+) \(sha ([0-9a-f]{12})\)$/gm)].map((m) => `${m[1]} v${m[2]} ${m[3]}`),
     skillSection: prompt.includes("Hub skill procedures (approved;"), markers: [...new Set([...prompt.matchAll(/\bSKILL_MARKER_[A-Za-z0-9]+\b/g)].map((m) => m[0]))] });
   // init-apikey: the session reports an API key source; init-fable: the session resolved to a Fable model; init-model:<id>: the
@@ -112,7 +115,7 @@ process.stdin.on("end", async () => {
   const echoed = { sonnet: "claude-sonnet-fake", opus: "claude-opus-fake", haiku: "claude-haiku-fake" }[askedModel.toLowerCase()] || askedModel || "claude-fake";
   const initModel = scenario === "init-fable" ? "claude-fable-5" : scenario.startsWith("init-model:") ? scenario.slice("init-model:".length) : echoed;
   out({ type: "system", subtype: "init", session_id: sessionArg, model: initModel,
-    apiKeySource: scenario === "init-apikey" ? "ANTHROPIC_API_KEY" : "none", tools: scenario === "init-mcp" ? ["Read", "mcp__cua__click"] : ["Read"],
+    apiKeySource: scenario === "init-apikey" || (process.env.ANTHROPIC_API_KEY && scenario !== "api-source-none") ? "ANTHROPIC_API_KEY" : "none", tools: scenario === "init-mcp" ? ["Read", "mcp__cua__click"] : ["Read"],
     mcp_servers: scenario === "init-mcp" ? [{ name: "cua", status: "connected" }] : [], capabilities: [] });
   // M09-A2 rate_limit_event scenarios: rate-plain = an ordinary report (no credit fields); rate-overage = the CLI reports overage
   // in use (then would keep going — the Hub must stop it); rate-credits = the plan is exhausted and credits are required;
@@ -148,6 +151,8 @@ process.stdin.on("end", async () => {
     : /^author(-slow)?:/.test(scenario) ? authorAnswer(scenario.replace(/^author(-slow)?:/, ""), prompt) : `${ack ? `${ack}\n` : ""}Claude simulated answer.`;
   for (const part of text.match(/.{1,8}/gs)) out({ type: "stream_event", event: { type: "content_block_delta", delta: { type: "text_delta", text: part } }, session_id: sessionArg });
   out({ type: "assistant", message: { content: [{ type: "text", text }] }, session_id: sessionArg });
-  out({ type: "result", subtype: "success", is_error: false, result: text, session_id: sessionArg, usage: { input_tokens: 10, output_tokens: 5 }, total_cost_usd: 0.01, num_turns: 1 });
+  // 2.20: api-cost:<usd> reports that cost; api-nocost reports none (the Hub then books the whole reservation).
+  const cost = scenario.startsWith("api-cost:") ? Number(scenario.slice("api-cost:".length)) : scenario === "api-nocost" ? undefined : 0.01;
+  out({ type: "result", subtype: "success", is_error: false, result: text, session_id: sessionArg, usage: { input_tokens: 10, output_tokens: 5 }, ...(cost === undefined ? {} : { total_cost_usd: cost }), num_turns: 1 });
   process.exit(0);
 });

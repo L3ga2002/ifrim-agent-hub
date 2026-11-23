@@ -85,7 +85,8 @@ export const ATTESTATION_TEXT = Object.freeze({
  * account identity of the route's fresh probe); callers build the options with billingInputs() (billing-evidence.mjs). The
  * legacy `attestations` option is no longer read: a caller that still passes only it gets "missing" (blocked), never a pass.
  */
-export function evaluateRoute(provider, inspection, { evidence = {}, identity = null, now = new Date(), usage = null, reservePercent = 20 } = {}) {
+export function evaluateRoute(provider, inspection, { evidence = {}, identity = null, now = new Date(), usage = null, reservePercent = 20, api = null, environment = "windows" } = {}) {
+  if (api?.mode === "api_key") return evaluateApiRoute(provider, inspection, api, environment);
   const checks = [];
   const add = (id, status, detail, extra = {}) => checks.push({ id, status, detail, ...extra });
 
@@ -162,4 +163,71 @@ export function evaluateRoute(provider, inspection, { evidence = {}, identity = 
 
   const blocking = checks.filter((c) => c.status === "failed" || (c.status === "unverified" && c.id !== "allowance" && c.id !== "credits"));
   return { provider, policy: BILLING_POLICY, allowed: blocking.length === 0, checks, blockingReasons: blocking.map((c) => `${c.id}: ${c.detail}`) };
+}
+
+/**
+ * 2.20 — the owner's API-key route (policy/api-access.mjs). A separate, explicit billing mode of ONE instance: it is evaluated only
+ * when the owner enabled it for this provider (api.mode === "api_key"); the subscription rules above are untouched for every other
+ * case. Admissible only with: the official client installed; the provider reporting the API-key login of THE stored key (its
+ * fingerprint); no client config that could send the run elsewhere or swap the key; the owner's consent; budget left for one run.
+ * Execution environments (wsl-runner) have their own login and are not part of this route: a project routed there is refused.
+ */
+export const API_BILLING_POLICY = Object.freeze({
+  mode: "owner_api_key_with_budget",
+  paid_api_inference: "owner_opt_in_with_budget",
+  purchased_credits_consumption: "deny",
+  automatic_topups: "deny",
+  paid_fallback: "deny",
+  new_paid_services: "deny",
+  automatic_plan_upgrade: "deny",
+});
+
+export function evaluateApiRoute(provider, inspection, api, environment = "windows") {
+  const checks = [];
+  const add = (id, status, detail, extra = {}) => checks.push({ id, status, detail, ...extra });
+  if (environment !== "windows") add("environment", "failed", `Ruta API (cheia ta) nu este disponibilă în mediul ${environment}; folosește ruta Windows pentru acest proiect sau oprește ruta API`);
+  if (!inspection || inspection.installed === false) add("installation", "failed", "Clientul oficial nu a fost găsit sau neinspectat");
+  else add("installation", "verified", `${inspection.binary || ""} ${inspection.version || ""}`.trim());
+
+  if (!api.key) add("api_key", "failed", api.keyProblem || "Nu există o cheie API salvată (Integrări → Cheie API)");
+  else add("api_key", "verified", `Cheie salvată criptat (…${api.key.last4})`);
+
+  const auth = inspection?.auth || null;
+  const bound = auth?.accountIdentity?.value || null;
+  if (!auth) add("identity", "unverified", "Rulează „Verifică contul” după ce salvezi cheia (Hub-ul verifică ruta API fără model)");
+  else if (provider === "codex" && auth.accountType !== "apiKey") add("identity", "failed", `Verificarea a raportat contul ${auth.accountType || "niciunul"}, nu cheia API; rulează din nou „Verifică contul”`);
+  else if (provider === "claude" && (auth.authMethod !== "api_key" || auth.apiKeySource !== "ANTHROPIC_API_KEY" || auth.apiProvider !== "firstParty")) add("identity", "failed", `Claude Code a raportat ${auth.authMethod || "?"}/${auth.apiKeySource || "?"}/${auth.apiProvider || "?"}, nu cheia API transmisă de Hub; rulează din nou „Verifică contul”`);
+  else if (!api.key || !bound || bound !== api.key.fingerprint) add("identity", "unverified", "Verificarea contului s-a făcut pentru altă cheie sau pentru abonament; rulează din nou „Verifică contul”");
+  else add("identity", "verified", `Cheie API ${provider === "codex" ? "OpenAI" : "Anthropic"} verificată fără model (…${api.key.last4})`);
+
+  if (provider === "codex") {
+    if (inspection?.config?.customProvider) add("config", "failed", `config.toml selectează model_provider=${inspection.config.customProvider}: rularea ar putea merge la alt furnizor`);
+    else if (inspection?.config) add("config", "verified", "Fără provider personalizat în configurația Codex");
+    else add("config", "unverified", "Configurația Codex nu a fost inspectată");
+  } else if (provider === "claude") {
+    if (inspection?.config?.apiKeyHelper) add("config", "failed", "Un apiKeyHelper în setările Claude ar înlocui cheia Hub-ului");
+    else if (inspection?.config?.riskyEnvInSettings?.length) add("config", "failed", `Setările Claude definesc ${inspection.config.riskyEnvInSettings.join(", ")}: ar putea înlocui cheia sau destinația`);
+    else if (inspection?.config?.fallbackModelSet) add("config", "failed", "Setările Claude definesc fallbackModel (comutare automată pe alt model); scoate cheia din setări");
+    else if (inspection?.config) add("config", "verified", "Fără apiKeyHelper, variabile de facturare sau fallbackModel în setările Claude");
+    else add("config", "unverified", "Setările Claude nu au fost inspectate");
+  } else add("provider", "failed", `Unknown provider ${provider}`);
+
+  add("api_consent", api.consent ? "verified" : "failed", api.consent ? "Acordul tău pentru ruta API (textul curent)" : "Lipsește acordul tău pentru ruta API (Integrări → Cheie API → Pornește)");
+  add("api_budget", api.budget?.ok ? "verified" : "failed", api.budget?.detail || "Niciun plafon setat");
+
+  const blocking = checks.filter((c) => c.status === "failed" || c.status === "unverified");
+  return { provider, route: "api_key", policy: API_BILLING_POLICY, allowed: blocking.length === 0, checks, blockingReasons: blocking.map((c) => `${c.id}: ${c.detail}`) };
+}
+
+/** The only provider credential variables a child may receive, each only on the API route, each for its own provider. */
+export const API_KEY_ENV = Object.freeze({ claude: "ANTHROPIC_API_KEY" });
+
+/** buildChildEnv + exactly one API credential (Claude's ANTHROPIC_API_KEY). Every other billing-risk name stays refused. */
+export function buildApiChildEnv(provider, key, extra = {}, env = process.env) {
+  const name = API_KEY_ENV[provider];
+  if (!name) throw new Error(`Providerul ${provider} nu primește cheia prin mediu`);
+  if (typeof key !== "string" || !key.trim()) throw new Error("Cheia API lipsește");
+  const out = buildChildEnv(extra, env);
+  out[name] = key.trim();
+  return out;
 }

@@ -8,6 +8,8 @@ import { createJsonRpcPeer } from "./jsonrpc.mjs";
 import { classifyCodexTurnError, classifyText } from "./classify.mjs";
 import { buildChildEnv } from "../policy/billing.mjs";
 import { deriveAccountIdentity } from "../policy/billing-evidence.mjs";
+import { apiKeyIdentity } from "../policy/api-keys.mjs";
+import { codexPriceFor, codexCostUsd } from "../policy/api-access.mjs";
 import { codexIsolationArgs, CODEX_PROFILE_BY_ACCESS } from "../policy/isolation.mjs";
 import { HUB_VERSION } from "../config.mjs";
 import { KNOWN_EFFORTS } from "../policy/run-plan.mjs";
@@ -26,6 +28,24 @@ export const CODEX_ALLOWED_METHODS = new Set([
   "model/list", "account/read", "account/rateLimits/read",
   "windowsSandbox/readiness", "permissionProfile/list", "mcpServerStatus/list",
 ]);
+
+/**
+ * 2.20 — the owner's API-key route only: the same list plus account/login/start, used ONCE per process to log in with the
+ * stored key into an in-memory credential store (cli_auth_credentials_store="ephemeral": nothing is written to CODEX_HOME, an
+ * existing ChatGPT login there is neither read nor changed — verified on codex-cli 0.171.0-alpha.13, 2026-11-23).
+ */
+export const CODEX_API_ALLOWED_METHODS = new Set([...CODEX_ALLOWED_METHODS, "account/login/start"]);
+export const CODEX_EPHEMERAL_AUTH_ARGS = Object.freeze(["-c", 'cli_auth_credentials_store="ephemeral"']);
+
+/** Logs one app-server process in with the API key (in memory) and returns the normalized account. Never logs the key. */
+export async function codexApiLogin(peer, api) {
+  if (!api?.key) throw Object.assign(new Error("Cheia API lipsește"), { category: "billing", preInference: true });
+  try { await peer.request("account/login/start", { type: "apiKey", apiKey: api.key }, 30000); }
+  catch (error) { throw Object.assign(new Error(`Autentificarea Codex cu cheia API a eșuat: ${String(error?.rpcError?.message || error?.message || "eroare").slice(0, 200)}`), { category: "authentication", preInference: true }); }
+  const account = normalizeAccount(await peer.request("account/read", {}, 30000));
+  if (account.accountType === "apiKey") account.accountIdentity = apiKeyIdentity(api.fingerprint);
+  return account;
+}
 
 /**
  * Per-process reasoning effort (M03 §09): the thread default then comes from the Hub, not from the owner's config.toml
@@ -176,6 +196,12 @@ export function resolveCodexBinary(config) {
       .sort((a, b) => b.mtime - a.mtime);
     if (candidates[0]) return { executable: candidates[0].file, prefixArgs: [], source: "Codex desktop bundle" };
   } catch { /* not installed */ }
+  // 2.20: the CLI installed with npm (npm i -g @openai/codex): the real native binary of its Windows package, never the .cmd shim.
+  const appData = process.env.APPDATA || path.join(os.homedir(), "AppData", "Roaming");
+  const vendor = path.join(appData, "npm", "node_modules", "@openai", "codex", "node_modules", "@openai", "codex-win32-x64", "vendor", "x86_64-pc-windows-msvc");
+  for (const file of [path.join(vendor, "bin", "codex.exe"), path.join(vendor, "codex", "codex.exe")]) {
+    if (fs.existsSync(file)) return { executable: file, prefixArgs: [], source: "npm global @openai/codex" };
+  }
   return null;
 }
 
@@ -256,7 +282,9 @@ export function createCodexAdapter({ config, supervisor, homeDir = os.homedir(),
    * `experimentalApi`, `allowedMethods` and `extraArgs` exist for the Lega voice process only (codex-realtime.mjs): it is a
    * separate app-server with its own narrow allowlist. Every run/probe process keeps experimentalApi=false and the run allowlist.
    */
-  function openSession({ cwd, key, access = "read-only", onNotification, onServerRequest, onExit, experimentalApi = false, allowedMethods = CODEX_ALLOWED_METHODS, extraArgs = [], webSearch = "disabled", label = "codex app-server", launchVars = {} }) {
+  function openSession({ cwd, key, access = "read-only", onNotification, onServerRequest, onExit, experimentalApi = false, allowedMethods = CODEX_ALLOWED_METHODS, extraArgs = [], webSearch = "disabled", label = "codex app-server", launchVars = {}, apiRoute = false }) {
+    // 2.20: an API-key process keeps its credential in memory only and may call account/login/start; nothing else changes.
+    if (apiRoute) { allowedMethods = CODEX_API_ALLOWED_METHODS; extraArgs = [...CODEX_EPHEMERAL_AUTH_ARGS, ...extraArgs]; }
     const base = codexBaseOverrides({ webSearch });
     const binary = launch.spawn({ cwd, access, base, extraArgs, vars: launchVars }); // the provider binary (or wsl.exe → the environment's binary)
     let peer;
@@ -289,16 +317,17 @@ export function createCodexAdapter({ config, supervisor, homeDir = os.homedir(),
    * No turn is started, so no inference happens. Identity (email) is never returned: M09-A2 keeps only its salted pseudonym
    * (auth.accountIdentity), computed here and the e-mail discarded.
    */
-  async function probe({ withUsage = true, withModels = false, cwd = launch.probeCwd || config.hubRoot } = {}) {
+  async function probe({ withUsage = true, withModels = false, cwd = launch.probeCwd || config.hubRoot, api = null } = {}) {
     const key = `probe-codex-${launch.environment}-${Date.now()}`;
     let session;
-    const out = { provider: id, environment: launch.environment, probedAt: new Date().toISOString(), config: launch.inspectConfig() };
+    const out = { provider: id, environment: launch.environment, probedAt: new Date().toISOString(), config: launch.inspectConfig(), ...(api ? { route: "api_key" } : {}) };
     try {
-      session = openSession({ cwd, key });
+      if (api && launch.environment !== "windows") throw Object.assign(new Error("Ruta API rulează doar cu clientul Windows"), { category: "billing" });
+      session = openSession({ cwd, key, apiRoute: Boolean(api) });
       const init = await session.ready;
       out.protocol = { userAgent: String(init?.userAgent || "").slice(0, 120), platform: `${init?.platformFamily || ""}/${init?.platformOs || ""}` };
-      const account = await session.peer.request("account/read", {}, 30000);
-      out.auth = normalizeAccount(account, { salt: salt() });
+      if (api) out.auth = await codexApiLogin(session.peer, api);
+      else out.auth = normalizeAccount(await session.peer.request("account/read", {}, 30000), { salt: salt() });
       if (withUsage && out.auth.accountType === "chatgpt") {
         try { out.usage = normalizeRateLimits(await session.peer.request("account/rateLimits/read", {}, 30000)); }
         catch (error) { out.usage = { error: error.message }; }
@@ -339,8 +368,17 @@ export function createCodexAdapter({ config, supervisor, homeDir = os.homedir(),
    * (allowance ceiling) → thread start/resume → turn/start → events until turn/completed.
    * Nothing after a pre-inference failure is retried here.
    */
-  function startTurn({ runId, cwd, prompt, access = "read-only", model = "", effort = "", threadId = "", onEvent, requestApproval, admitUsage, launchVars = {} }) {
+  function startTurn({ runId, cwd, prompt, access = "read-only", model = "", effort = "", threadId = "", onEvent, requestApproval, admitUsage, launchVars = {}, api = null }) {
     const key = `run-${runId}`;
+    if (api && launch.environment !== "windows") {
+      return { key, pid: null, interrupt: async () => ({ interrupted: false, graceful: true, reason: "not started" }),
+        done: Promise.resolve({ status: "failed", errorCategory: "billing", preInference: true, error: "Ruta API rulează doar cu clientul Windows", output: "", usage: {}, threadId }) };
+    }
+    // 2.20: the API route's running cost (Hub estimate from the reported token usage × the price table) and its stop.
+    let apiPrice = null;
+    let apiBaseline = null;
+    let apiCostUsd = api ? 0 : null;
+    let budgetStop = null;
     let policyStop = null; // set when the provider does something no Hub run may do; the run ends as a tool violation
     let turnRequested = false; // until turn/start is sent, a Stop kills the process: no model call may follow it
     // Decided before the process starts: an MCP server that is not disabled would already run outside the sandbox.
@@ -384,6 +422,26 @@ export function createCodexAdapter({ config, supervisor, homeDir = os.homedir(),
       } else if (method === "thread/tokenUsage/updated") {
         usage = { ...usage, tokens: params.tokenUsage || params };
         onEvent({ type: "usage", usage });
+        if (api) {
+          const tu = params.tokenUsage || params;
+          const price = apiPrice || codexPriceFor(model);
+          if (!price.refused) {
+            const total = codexCostUsd(tu.total || tu, price);
+            // A resumed thread reports the earlier turns in "total": the first report of this process sets the baseline
+            // (total minus this call's "last"); without "last" the whole total counts (over-estimates, never under).
+            if (apiBaseline === null) apiBaseline = tu.total && tu.last ? Math.max(0, total - codexCostUsd(tu.last, price)) : 0;
+            const cost = Math.max(apiCostUsd || 0, total - apiBaseline);
+            apiCostUsd = cost;
+            onEvent({ type: "api_cost", usd: cost, estimated: true });
+            if (cost >= api.maxUsd && !budgetStop) {
+              budgetStop = `Rularea a atins plafonul ei pe ruta API (${cost.toFixed(2)} / ${Number(api.maxUsd).toFixed(2)} USD, estimare din tokeni); oprită`;
+              onEvent({ type: "notice", level: "warning", text: budgetStop });
+              interrupt("budget").catch(() => {});
+            }
+          }
+        }
+      } else if (method === "account/rateLimits/updated" && api) {
+        // 2.20: the API route has no plan allowance; the notification is ignored (never a subscription quota stop).
       } else if (method === "account/rateLimits/updated") {
         const snapshot = normalizeRateLimits(params);
         usage = { ...usage, rateLimits: snapshot };
@@ -441,7 +499,7 @@ export function createCodexAdapter({ config, supervisor, homeDir = os.homedir(),
     const phase = (name) => { try { onEvent({ type: "phase", phase: name }); } catch { /* timeline never breaks a run */ } };
     // The owner's config MCP servers are disabled by name for this process (key names only are read from config.toml).
     let session;
-    try { session = openSession({ cwd, key, access, extraArgs, onNotification, onServerRequest, launchVars,
+    try { session = openSession({ cwd, key, access, extraArgs, onNotification, onServerRequest, launchVars, apiRoute: Boolean(api),
       onExit: (exit) => finish(interruptReason
         ? { status: "interrupted", output, usage, threadId: currentThread, turnId, errorCategory: null, error: `interrupted (${interruptReason})`, preInference: !turnId }
         : { status: "failed", output, usage, threadId: currentThread, turnId, errorCategory: "transport", error: `app-server exited (${exit.code})`, preInference: !turnId }) });
@@ -475,6 +533,15 @@ export function createCodexAdapter({ config, supervisor, homeDir = os.homedir(),
       try {
         await session.ready;
         phase("initialized");
+        if (api) {
+          // 2.20: the owner's API-key route: in-memory login with the stored key, then the account must be exactly that key.
+          const account = await codexApiLogin(session.peer, api);
+          phase("account_checked");
+          onEvent({ type: "auth", auth: account });
+          if (account.accountType !== "apiKey" || account.accountIdentity?.value !== api.fingerprint) {
+            return { status: "failed", errorCategory: "billing", preInference: true, error: `Codex a raportat contul ${account.accountType || "niciunul"} în loc de cheia API a Hub-ului; oprit înainte de model`, output, usage, threadId: currentThread };
+          }
+        } else {
         const account = normalizeAccount(await session.peer.request("account/read", {}, 30000), { salt: salt() });
         phase("account_checked");
         onEvent({ type: "auth", auth: account });
@@ -488,6 +555,7 @@ export function createCodexAdapter({ config, supervisor, homeDir = os.homedir(),
         onEvent({ type: "usage", usage });
         const verdict = admitUsage?.(limits) || { ok: true };
         if (!verdict.ok) return { status: "failed", errorCategory: "quota", preInference: true, error: verdict.reason, output, usage, threadId: currentThread };
+        }
 
         // approvalsReviewer "user": approvals come to the Hub as server requests, never to an auto_review subagent
         // selected in the owner's config (schema 0.159.0: user | auto_review | guardian_subagent).
@@ -532,6 +600,12 @@ export function createCodexAdapter({ config, supervisor, homeDir = os.homedir(),
           return { status: "failed", errorCategory: "policy", preInference: true, output, usage, threadId: currentThread,
             error: `Codex a ales modelul ${thread.model} în loc de ${model}; oprit înainte de turn (fără substituire tăcută)` };
         }
+        // 2.20: on the API route the model the thread will use must be priceable and not a "pro" model (checked before the turn).
+        if (api) {
+          apiPrice = codexPriceFor(thread.model || model);
+          if (apiPrice.refused) return { status: "failed", errorCategory: "billing", preInference: true, output, usage, threadId: currentThread, error: `${apiPrice.reason}; oprit înainte de turn` };
+          if (!apiPrice.exact) onEvent({ type: "notice", level: "warning", text: `Modelul ${thread.model || model || "?"} nu are preț în tabelul Hub-ului: costul se estimează prudent (${apiPrice.input}/${apiPrice.output} USD la 1M tokeni)` });
+        }
         // The effort the thread will use must be the one the Hub set for this process (never the config's "max" by accident).
         const reportedEffort = String(thread.reasoningEffort ?? "").trim().toLowerCase();
         if (effort && reportedEffort && reportedEffort !== effort) {
@@ -558,7 +632,10 @@ export function createCodexAdapter({ config, supervisor, homeDir = os.homedir(),
         onEvent({ type: "turn", turnId });
         const result = await completion;
         // "tool", not "policy": the model already ran (policy counts as a pre-inference stop in the run record).
-        return policyStop ? { ...result, status: "failed", errorCategory: "tool", preInference: false, error: policyStop } : result;
+        if (policyStop) return { ...result, status: "failed", errorCategory: "tool", preInference: false, error: policyStop };
+        // 2.20: a run stopped at its API budget is a quota stop after inference (its cost is booked).
+        if (budgetStop) return { ...result, status: "failed", errorCategory: "quota", preInference: false, error: budgetStop };
+        return result;
       } catch (error) {
         if (interruptReason) return { status: "interrupted", errorCategory: null, preInference: !turnId, error: `interrupted (${interruptReason})`, output, usage, threadId: currentThread, turnId };
         const category = error.category || classifyText(error.message);
@@ -570,7 +647,9 @@ export function createCodexAdapter({ config, supervisor, homeDir = os.homedir(),
       }
     })();
 
-    return { key, pid: session.record.pid, done, interrupt };
+    const settled = api ? done.then((result) => ({ ...result, apiCostUsd: result.preInference && !(apiCostUsd > 0) ? null : apiCostUsd,
+      apiCostSource: "Hub: tokeni raportați de Codex × tabelul de prețuri (estimare)" })) : done;
+    return { key, pid: session.record.pid, done: settled, interrupt };
   }
 
   return { id, environment: launch.environment, displayName: "Codex (ChatGPT plan)", inspectInstallation, probe, startTurn, openSession, inspectConfig: () => launch.inspectConfig() };

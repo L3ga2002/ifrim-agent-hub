@@ -63,6 +63,7 @@ let initialized = false;
 let experimental = false;
 let legaProject = "";
 let threadId = "";
+let apiKeyLogin = null; // 2.20: the key of account/login/start (in memory, like cli_auth_credentials_store="ephemeral")
 let serverRequestId = 1000;
 const pendingServer = new Map();
 
@@ -86,7 +87,13 @@ rl.on("line", async (line) => {
   if (String(msg.method).startsWith("thread/realtime/") && !experimental) return send({ id: msg.id, error: { code: -32600, message: `${msg.method} requires experimentalApi capability` } });
   if (String(msg.method).startsWith("thread/realtime/")) return realtime(msg);
   switch (msg.method) {
+    case "account/login/start":
+      if (msg.params?.type !== "apiKey" || typeof msg.params.apiKey !== "string") return send({ id: msg.id, error: { code: -32602, message: "unsupported login" } });
+      apiKeyLogin = msg.params.apiKey;
+      send({ id: msg.id, result: { type: "apiKey" } });
+      return send({ method: "account/login/completed", params: { loginId: null, success: true, error: null } });
     case "account/read":
+      if (apiKeyLogin) return send({ id: msg.id, result: { account: { type: "apiKey" }, requiresOpenaiAuth: true } });
       if (scenario === "apikey") return send({ id: msg.id, result: { account: { type: "apiKey" }, requiresOpenaiAuth: true } });
       if (scenario === "noauth") return send({ id: msg.id, result: { account: null, requiresOpenaiAuth: true } });
       return send({ id: msg.id, result: { account: { type: "chatgpt", email: "someone@example.com", planType: "pro" }, requiresOpenaiAuth: true } });
@@ -181,7 +188,12 @@ rl.on("line", async (line) => {
       const ack = (prompt.match(/HANDOFF_ACK \S+ \S+/) || [""])[0];
       const text = `${ack ? `${ack}\n` : ""}Codex simulated answer.`;
       for (const part of text.match(/.{1,8}/gs)) send({ method: "item/agentMessage/delta", params: { threadId, turnId, itemId: "m1", delta: part } });
-      send({ method: "thread/tokenUsage/updated", params: { threadId, turnId, tokenUsage: { total: { inputTokens: 10, outputTokens: 5 } } } });
+      // 2.20: api-expensive reports enough tokens to pass any small per-run API budget (2M in + 0.5M out); it then keeps the turn open.
+      if (scenario === "api-expensive") {
+        const big = { inputTokens: 2000000, cachedInputTokens: 0, outputTokens: 500000, reasoningOutputTokens: 0, totalTokens: 2500000 };
+        send({ method: "thread/tokenUsage/updated", params: { threadId, turnId, tokenUsage: { total: big, last: big } } });
+        await new Promise((r) => setTimeout(r, 4000));
+      } else send({ method: "thread/tokenUsage/updated", params: { threadId, turnId, tokenUsage: { total: { inputTokens: 10, outputTokens: 5 }, last: { inputTokens: 10, outputTokens: 5 } } } });
       if (scenario === "fail") return send({ method: "turn/completed", params: { threadId, turn: { id: turnId, status: "failed", items: [], error: { message: "usage limit", codexErrorInfo: "usageLimitExceeded" } } } });
       return send({ method: "turn/completed", params: { threadId, turn: { id: turnId, status: "completed", items: [] } } });
     }

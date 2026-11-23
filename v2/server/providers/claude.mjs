@@ -5,7 +5,8 @@ import crypto from "node:crypto";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { classifyClaudeRetry, classifyText, claudeOutputTokenMaximum } from "./classify.mjs";
-import { buildChildEnv, BILLING_RISK_ENV } from "../policy/billing.mjs";
+import { buildChildEnv, buildApiChildEnv, BILLING_RISK_ENV } from "../policy/billing.mjs";
+import { apiKeyIdentity } from "../policy/api-keys.mjs";
 import { deriveAccountIdentity, normalizeClaudeRateLimit, classifyClaudeRateLimit } from "../policy/billing-evidence.mjs";
 import { claudeDeniedReads } from "../policy/isolation.mjs";
 
@@ -75,7 +76,7 @@ export const CLAUDE_KNOWN_FLAGS = Object.freeze(["--output-format", "--include-p
  * The exact argv of one Hub turn of Claude Code after the binary (M07: shared by the Windows client and the reviewer inside
  * the wsl-runner environment, so both run with the same flags; only the deny rules carry their own platform's paths).
  */
-export function claudeTurnArgs({ access = "read-only", deniedReads, newSession, sessionId, model = "", effort = "" }) {
+export function claudeTurnArgs({ access = "read-only", deniedReads, newSession, sessionId, model = "", effort = "", maxBudgetUsd = null }) {
   const tools = access === "workspace-write" ? WRITE_TOOLS : READ_ONLY_TOOLS;
   return ["-p", "--output-format", "stream-json", "--verbose", "--include-partial-messages",
     "--permission-mode", access === "workspace-write" ? "acceptEdits" : "dontAsk",
@@ -86,7 +87,16 @@ export function claudeTurnArgs({ access = "read-only", deniedReads, newSession, 
     "--disallowedTools", ...deniedReads,
     ...(access === "workspace-write" ? ["--allowedTools", ...SAFE_BASH] : []),
     ...(newSession ? ["--session-id", sessionId] : ["--resume", sessionId]),
-    ...(model ? ["--model", model] : []), ...(effort ? ["--effort", effort] : [])];
+    ...(model ? ["--model", model] : []), ...(effort ? ["--effort", effort] : []),
+    // 2.20: only on the owner's API-key route: the CLI's own hard stop at the run's budget (refused on the subscription route).
+    ...(maxBudgetUsd !== null ? ["--max-budget-usd", formatBudget(maxBudgetUsd)] : [])];
+}
+
+/** A positive dollar amount with at most 2 decimals, never rounded up (the CLI stops at or before it). */
+export function formatBudget(usd) {
+  const v = Math.floor(Number(usd) * 100) / 100;
+  if (!Number.isFinite(v) || v <= 0) throw Object.assign(new Error("Bugetul rulării API trebuie să fie pozitiv"), { category: "billing" });
+  return v.toFixed(2);
 }
 
 export function resolveClaudeBinary(config) {
@@ -97,6 +107,9 @@ export function resolveClaudeBinary(config) {
   // The npm `claude.exe` in %APPDATA%\npm is a shim; use the real, unmodified binary shipped in the package.
   const real = path.join(appData, "npm", "node_modules", "@anthropic-ai", "claude-code", "bin", "claude.exe");
   if (fs.existsSync(real)) return { executable: real, prefixArgs: [], source: "npm global @anthropic-ai/claude-code" };
+  // 2.20 (live finding of 2026-10-31): the native installer puts the real binary in %USERPROFILE%\.local\bin (not a shim).
+  const native = path.join(os.homedir(), ".local", "bin", process.platform === "win32" ? "claude.exe" : "claude");
+  if (fs.existsSync(native)) return { executable: native, prefixArgs: [], source: "instalare nativă (~/.local/bin)" };
   return null;
 }
 
@@ -106,10 +119,15 @@ export function resolveClaudeBinary(config) {
  * Revert: remove authorLimits handling and the one env assignment below; there is no global state or settings to clean up.
  */
 export function claudeTurnLaunch({ binary, cwd, deniedReads, access, model, effort, newSession, sessionId,
-  parentEnv = {}, launcherEnv = CLAUDE_GUARD_ENV, environment = "windows", maxOutputTokens }) {
+  parentEnv = {}, launcherEnv = CLAUDE_GUARD_ENV, environment = "windows", maxOutputTokens, apiKey = null, maxBudgetUsd = null }) {
+  // 2.20: the API route needs the key AND the budget, and runs only with the Windows client.
+  if ((apiKey === null) !== (maxBudgetUsd === null)) throw Object.assign(new Error("Ruta API cere cheia și bugetul împreună"), { category: "billing" });
+  if (apiKey !== null && environment !== "windows") throw Object.assign(new Error("Ruta API rulează doar cu clientul Windows"), { category: "billing" });
   const env = buildChildEnv(launcherEnv, parentEnv);
   if (environment === "windows" && maxOutputTokens === 64000) env.CLAUDE_CODE_MAX_OUTPUT_TOKENS = "64000";
-  return { executable: binary.executable, args: [...binary.prefixArgs, ...claudeTurnArgs({ access, deniedReads, model, effort, newSession, sessionId })], cwd, env };
+  // The key never joins `env` (the supervisor rebuilds env through the allowlist): it travels as apiCredential, added last.
+  return { executable: binary.executable, args: [...binary.prefixArgs, ...claudeTurnArgs({ access, deniedReads, model, effort, newSession, sessionId, maxBudgetUsd })], cwd, env,
+    ...(apiKey !== null ? { apiCredential: { provider: "claude", key: apiKey } } : {}) };
 }
 
 function readJson(file) {
@@ -199,7 +217,8 @@ export function windowsClaudeLauncher({ config, homeDir = os.homedir() }) {
  */
 export function claudeAuthFacts(status, { salt = null } = {}) {
   const s = status && typeof status === "object" ? status : {};
-  const out = { loggedIn: Boolean(s.loggedIn), authMethod: s.authMethod || null, apiProvider: s.apiProvider || null, subscriptionType: s.subscriptionType || null };
+  const out = { loggedIn: Boolean(s.loggedIn), authMethod: s.authMethod || null, apiProvider: s.apiProvider || null, subscriptionType: s.subscriptionType || null,
+    ...(typeof s.apiKeySource === "string" ? { apiKeySource: s.apiKeySource.slice(0, 40) } : {}) };
   if (!salt || !out.loggedIn) return out;
   const pick = (...keys) => keys.map((k) => s[k]).find((v) => typeof v === "string" && v.trim()) || null;
   const email = pick("email", "emailAddress", "accountEmail");
@@ -214,10 +233,11 @@ export function createClaudeAdapter({ config, supervisor, homeDir = os.homedir()
   const host = launcher || windowsClaudeLauncher({ config, homeDir });
   const salt = () => { try { return typeof identitySalt === "function" ? identitySalt() : null; } catch { return null; } };
 
-  async function run(args, timeout = 30000) {
+  async function run(args, timeout = 30000, apiKey = null) {
     const binary = resolveClaudeBinary(config);
     if (!binary) throw Object.assign(new Error("Claude Code not installed"), { category: "transport" });
-    const { stdout } = await execFileAsync(binary.executable, [...binary.prefixArgs, ...args], { env: buildChildEnv(CLAUDE_GUARD_ENV), windowsHide: true, timeout, maxBuffer: 1024 * 1024 });
+    const env = apiKey ? buildApiChildEnv("claude", apiKey, CLAUDE_GUARD_ENV) : buildChildEnv(CLAUDE_GUARD_ENV);
+    const { stdout } = await execFileAsync(binary.executable, [...binary.prefixArgs, ...args], { env, windowsHide: true, timeout, maxBuffer: 1024 * 1024 });
     return stdout;
   }
 
@@ -235,11 +255,13 @@ export function createClaudeAdapter({ config, supervisor, homeDir = os.homedir()
   }
 
   /** Official, local `claude auth status --json` with the exact controlled environment used for runs. */
-  async function probe() {
-    const out = { provider: id, probedAt: new Date().toISOString(), config: inspectClaudeConfig(homeDir) };
+  async function probe({ api = null } = {}) {
+    const out = { provider: id, probedAt: new Date().toISOString(), config: inspectClaudeConfig(homeDir), ...(api ? { route: "api_key" } : {}) };
     try {
-      const status = JSON.parse(await run(["auth", "status", "--json"], 30000));
-      out.auth = claudeAuthFacts(status, { salt: salt() });
+      const status = JSON.parse(await run(["auth", "status", "--json"], 30000, api?.key || null));
+      out.auth = claudeAuthFacts(status, { salt: api ? null : salt() });
+      // 2.20: on the API route the account IS the stored key (its fingerprint), never an e-mail or a plan tuple.
+      if (api && out.auth.authMethod === "api_key" && out.auth.apiKeySource === "ANTHROPIC_API_KEY") out.auth.accountIdentity = apiKeyIdentity(api.fingerprint);
       out.ok = true;
     } catch (error) {
       out.ok = false;
@@ -258,7 +280,7 @@ export function createClaudeAdapter({ config, supervisor, homeDir = os.homedir()
    * `verifyInitModel(reportedModel)` (M09, given by the run manager): returns null when the model Claude Code reports at init is
    * the approved one (the bound family or dated id), otherwise the reason to stop before the model.
    */
-  function startTurn({ runId, cwd, prompt, access = "read-only", model = "", effort = "", sessionId = "", trustedWorkspace = false, onEvent, launchVars = {}, verifyInitModel = null, maxOutputTokens = null }) {
+  function startTurn({ runId, cwd, prompt, access = "read-only", model = "", effort = "", sessionId = "", trustedWorkspace = false, onEvent, launchVars = {}, verifyInitModel = null, maxOutputTokens = null, api = null }) {
     const binary = host.resolve();
     const key = `run-${runId}`;
     const requested = host.environment === "windows" && maxOutputTokens === 64000 ? 64000 : null;
@@ -287,10 +309,11 @@ export function createClaudeAdapter({ config, supervisor, homeDir = os.homedir()
       const launch = host.spawn({ binary, args: [], cwd, launchVars });
       spec = claudeTurnLaunch({ binary: { executable: launch.executable, prefixArgs: launch.args }, cwd: launch.cwd,
         access, deniedReads: host.deniedReads(cwd), newSession, sessionId: nativeSessionId, model, effort,
-        parentEnv: process.env, launcherEnv: launch.env, environment: host.environment, maxOutputTokens });
+        parentEnv: process.env, launcherEnv: launch.env, environment: host.environment, maxOutputTokens,
+        ...(api ? { apiKey: api.key, maxBudgetUsd: api.maxUsd } : {}) });
     }
     catch (error) { return fail(error.category || "transport", String(error.message || error).slice(0, 300)); }
-    if (spec.args.some((arg) => CLAUDE_FORBIDDEN_FLAGS.includes(arg))) return fail("policy", "Forbidden Claude flag");
+    if (spec.args.some((arg) => CLAUDE_FORBIDDEN_FLAGS.includes(arg) && !(api && arg === "--max-budget-usd"))) return fail("policy", "Forbidden Claude flag");
 
     let output = "";
     let usage = {};
@@ -303,16 +326,18 @@ export function createClaudeAdapter({ config, supervisor, homeDir = os.homedir()
     let initMismatch = null;
     let lastAssistantStop = null;
     let largestMessageOutput = 0;
+    let apiCostUsd = null; // 2.20: the cost Claude Code reports on the API route (result.total_cost_usd)
     const observeUsage = (tokens) => { if (Number.isSafeInteger(tokens) && tokens > largestMessageOutput) largestMessageOutput = tokens; };
     let record;
     try { record = supervisor.start({ key, label: host.label || "claude -p", executable: spec.executable, args: spec.args, cwd: spec.cwd,
-      env: spec.env,
+      env: spec.env, ...(spec.apiCredential ? { apiCredential: spec.apiCredential } : {}),
       onStdoutLine: (line) => {
         let event;
         try { event = JSON.parse(line); } catch { return; }
         if (event.type === "system" && event.subtype === "init") {
           // Last check before any model call: the session must use the subscription and a non-Fable model.
-          if (event.apiKeySource && event.apiKeySource !== "none") initStop = { category: "billing", message: `Claude Code a raportat apiKeySource=${event.apiKeySource}: rută API refuzată înainte de model` };
+          // 2.20: the subscription route needs no API key at all; the API route needs exactly the key the Hub passed.
+          if (api ? event.apiKeySource !== "ANTHROPIC_API_KEY" : (event.apiKeySource && event.apiKeySource !== "none")) initStop = { category: "billing", message: api ? `Claude Code a raportat apiKeySource=${event.apiKeySource || "?"}, nu cheia transmisă de Hub: oprit înainte de model` : `Claude Code a raportat apiKeySource=${event.apiKeySource}: rută API refuzată înainte de model` };
           else if (event.model && CLAUDE_REFUSED_MODELS.test(String(event.model))) initStop = { category: "billing", message: `Claude Code a selectat modelul ${event.model}: oprit înainte de model (${refusedModelReason(event.model)})` };
           // M09: the model the CLI resolved must be the approved one (an alias resolves through the installed CLI); never a
           // silent substitution. Recorded on the run (model_verified) before the stop.
@@ -365,6 +390,10 @@ export function createClaudeAdapter({ config, supervisor, homeDir = os.homedir()
           onEvent({ type: "notice", level: "warning", text: `Claude Code a comutat modelul ${String(event.original_model || "?").slice(0, 60)} → ${String(event.fallback_model || "?").slice(0, 60)}; execuția e oprită` });
           billingStop = `Claude Code a comutat modelul în timpul execuției (${String(event.original_model || "?").slice(0, 60)} → ${String(event.fallback_model || "?").slice(0, 60)}); oprit`;
           supervisor.stop(key, { graceMs: 0 }).catch(() => {});
+        } else if (event.type === "rate_limit_event" && api) {
+          // 2.20: the API route has no plan or usage credits; a rate limit here is the API's own (shown, never billing evidence).
+          const snapshot = normalizeClaudeRateLimit(event.rate_limit_info ?? event.rateLimitInfo ?? null, new Date().toISOString());
+          if (snapshot.status === "rejected") onEvent({ type: "notice", level: "warning", text: `Claude API: limită de rată${snapshot.resetsAt ? `, resetare ${snapshot.resetsAt}` : ""}` });
         } else if (event.type === "rate_limit_event") {
           // M09-A2: what the provider reports about the plan, recorded as a provider report. A tripwire, never the
           // pre-inference proof (it arrives after the request). Only an explicit overage signal latches the reverify and stops
@@ -395,7 +424,8 @@ export function createClaudeAdapter({ config, supervisor, homeDir = os.homedir()
           const used = Object.keys(event.modelUsage || {});
           const refused = used.find((m) => CLAUDE_REFUSED_MODELS.test(m));
           if (refused) billingStop = `Rezultatul raportează folosirea modelului ${refused.slice(0, 60)}: rezultatul nu e acceptat`;
-          if (event.usage) usage = { tokens: event.usage, clientEstimateUsd: event.total_cost_usd ?? null, note: "total_cost_usd is a client-side estimate, not a subscription charge" };
+          if (event.usage) usage = { tokens: event.usage, clientEstimateUsd: event.total_cost_usd ?? null, note: api ? "total_cost_usd: costul raportat de Claude Code pe ruta API (cheia ta)" : "total_cost_usd is a client-side estimate, not a subscription charge" };
+          if (api && Number.isFinite(Number(event.total_cost_usd))) { apiCostUsd = Number(event.total_cost_usd); onEvent({ type: "api_cost", usd: apiCostUsd, estimated: false }); }
           if (!output && typeof event.result === "string") { output = event.result; onEvent({ type: "delta", text: event.result }); }
           onEvent({ type: "usage", usage });
         }
@@ -432,7 +462,7 @@ export function createClaudeAdapter({ config, supervisor, homeDir = os.homedir()
       const proof = terminalMaximum !== null ? `CLI: exceeded the ${terminalMaximum} output token maximum`
         : effective !== null ? `at least ${effective} (usage.output_tokens al unui mesaj assistant)` : "nedemonstrat";
       return { ...result, authorOutputLimit: { requested, settingsOverride, effective,
-        evidence: proof + evidenceSuffix } };
+        evidence: proof + evidenceSuffix }, ...(api ? { apiCostUsd, apiCostSource: "Claude Code total_cost_usd" } : {}) };
     });
 
     async function interrupt(reason = "user") {

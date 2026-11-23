@@ -3,7 +3,7 @@ import { spawn, execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { isInside } from "../security/paths.mjs";
 import { redactText } from "../security/redact.mjs";
-import { buildChildEnv } from "../policy/billing.mjs";
+import { buildChildEnv, buildApiChildEnv } from "../policy/billing.mjs";
 import { HubError } from "../core/errors.mjs";
 import { drainWithin } from "./shutdown.mjs";
 
@@ -46,14 +46,15 @@ export function createSupervisor({ config, onEvent = () => {}, treeKill = killOw
    * Spawns `executable args`. `.cmd`/`.bat` shims are refused (quoting through cmd.exe is unsafe);
    * callers must resolve the real .exe or run `node script.js`.
    */
-  function start({ key, executable, args = [], cwd, env = {}, label = "process", onStdoutLine = () => {}, onStderrLine = () => {} }) {
+  function start({ key, executable, args = [], cwd, env = {}, label = "process", onStdoutLine = () => {}, onStderrLine = () => {}, apiCredential = null }) {
     if (closing) throw new HubError("policy", "Hub-ul se oprește; nicio operație nouă nu pornește", { code: "HUB_SHUTDOWN" });
     if (/\.(cmd|bat)$/i.test(executable)) throw new Error("Refusing to spawn a .cmd/.bat shim; resolve the executable");
     assertSpawnAllowed(executable);
     if (config.testMode && args[0] && /\.(mjs|js)$/.test(args[0])) assertSpawnAllowed(args[0]);
     const startRequestedAt = new Date().toISOString();
     const child = spawn(executable, args, {
-      cwd, env: buildChildEnv(env), windowsHide: true, shell: false, stdio: ["pipe", "pipe", "pipe"],
+      // 2.20: the owner's API key (API-key route only) is the one credential a child may get, added after the allowlist.
+      cwd, env: apiCredential ? buildApiChildEnv(apiCredential.provider, apiCredential.key, env, process.env) : buildChildEnv(env), windowsHide: true, shell: false, stdio: ["pipe", "pipe", "pipe"],
     });
     const record = { key, label, pid: child.pid, startRequestedAt, startedAt: new Date().toISOString(), child, stderrTail: [], exited: false, exitCode: null };
     // A write racing the child's death emits 'error' on the pipe; unhandled, it would crash the whole Hub.

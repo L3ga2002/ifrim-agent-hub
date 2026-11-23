@@ -494,8 +494,8 @@ test("R1-09 (REG-02) the typed OPEN GATE next to a security event with no authen
 });
 
 // ------------------------------------------------------------------------------------------------------------------------------ REG-04
-test("R1-10 (REG-04) the current API contract (22 since 2.19.1: the wishlist and the map / conversation view): reported by the server; a UI built for contract 11 is refused (409 UI_STALE) on the rearm routes", async () => {
-  assert.equal(API_CONTRACT, 22);
+test("R1-10 (REG-04) the current API contract (24 since 2.20.0: the API-key route and the update channel): reported by the server; a UI built for contract 11 is refused (409 UI_STALE) on the rearm routes", async () => {
+  assert.equal(API_CONTRACT, 24);
   const t = await makeTestHub();
   const { server, token } = createHttpServer(t.hub);
   await new Promise((resolve) => server.listen(t.config.port, "127.0.0.1", resolve));

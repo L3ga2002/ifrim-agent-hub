@@ -239,9 +239,9 @@ test("INT-04 a deadline that fired on a turn whose answer never arrives (process
 });
 
 // ------------------------------------------------------------------------------------------------------------------------------ INT-05
-test("INT-05 the server reports 2.19.1-m16 with API contract 22 (2.19.1: the wishlist, the map / conversation view)", () => {
-  assert.equal(HUB_VERSION, "2.19.1-m16");
-  assert.equal(API_CONTRACT, 22);
+test("INT-05 the server reports 2.20.0-dist with API contract 24 (2.20.0: the API-key route and the update channel)", () => {
+  assert.equal(HUB_VERSION, "2.20.0-dist");
+  assert.equal(API_CONTRACT, 24);
 });
 
 test("INT-05-HTTP the session route reports the pinned version and contract", async () => {

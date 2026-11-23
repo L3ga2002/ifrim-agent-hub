@@ -19,7 +19,7 @@ const FAILSAFE = ["/api/stop-all", "/api/runs/*/interrupt", "/api/lega/sessions/
   // M08: the phone's stop/forget, revoking a phone and rolling a skill back always work (same list as the server).
   "/api/m/command", "/api/m/forget", "/api/skills/candidates/*/rollback", "/api/devices/*/revoke",
   // M09: withdrawing a billing declaration and stopping media work (same list as the server).
-  "/api/owner/billing/withdraw", "/api/media/renders/*/cancel", "/api/media/captures/*/cancel", "/api/media/captures/*/obs/stop", "/api/media/transcripts/*/cancel",
+  "/api/owner/billing/withdraw", "/api/owner/api-route/disable", "/api/media/renders/*/cancel", "/api/media/captures/*/cancel", "/api/media/captures/*/obs/stop", "/api/media/transcripts/*/cancel",
   "/api/content/releases/*/cancel", "/api/media/rights/*/revoke", "/api/media/policy/capture-off",
   // M10: desktop Stop / Preiau eu, pausing / cancelling a plan, withdrawing an app or an import folder (same list as the server).
   "/api/desktop/stop", "/api/desktop/takeover", "/api/desktop/apps/revoke", "/api/ops/plans/*/pause", "/api/ops/plans/*/cancel", "/api/media/import-folders/*/revoke"];

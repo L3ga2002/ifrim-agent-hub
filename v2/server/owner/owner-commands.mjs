@@ -3,6 +3,7 @@ import { AUTONOMY_LEVELS } from "./envelopes.mjs";
 import { newId } from "../core/ids.mjs";
 import { ATTESTATION_TEXT } from "../policy/billing.mjs";
 import { buildDeclaration, applyDeclaration, applyLatch, evidenceOf, DECLARE_PROBE_MAX_AGE_H } from "../policy/billing-evidence.mjs";
+import { API_CONSENT_TEXT, textVersion as apiTextVersion, normalizeBudget } from "../policy/api-access.mjs";
 import { createIntake } from "./intake.mjs";
 import { registerEngineeringPlanner } from "./planners/engineering.mjs";
 import { normalizeLimits, ROLE_DEFAULT_BINDINGS } from "../factory/plan.mjs";
@@ -181,6 +182,73 @@ export function registerOwnerCommands(reg, hub) {
       });
       const stopped = input.stopRunning && interrupts ? await interrupts.stopWorker({ provider: input.provider, actor: ctx.actor }).catch((error) => ({ summary: `Oprirea execuțiilor a eșuat: ${error.message}` })) : null;
       return { provider: input.provider, withdrawn: true, blockedUntil: "o declarație nouă în sesiunea de proprietar", stopped: stopped ? { summary: stopped.summary } : null };
+    } });
+
+  // ---------- 2.20: the owner's API-key route (off by default; policy/api-access.mjs) ----------
+  /**
+   * Saving a key, turning the route on and raising a budget ADD authority: the owner session, freshly re-authenticated. Turning
+   * it off, removing the key and lowering nothing else are fail-safe (any owner-facing channel). The key itself never reaches the
+   * command log (logPayload), an event or an answer: only its last 4 characters.
+   */
+  const apiProviderName = (provider) => (provider === "codex" ? "OpenAI (Codex)" : "Anthropic (Claude Code)");
+  const budgetSchema = { monthlyUsd: { type: "number" }, dailyUsd: { type: "number" }, perRunUsd: { type: "number" } };
+  reg("api_route.key.set", { describe: "Salvează cheia ta API (criptată pe acest calculator, doar pentru acest Hub)", async: true, channels: OWNER,
+    schema: { provider: { enum: ["codex", "claude"], required: true }, key: { required: true, max: 500 } },
+    logPayload: (input) => ({ provider: input.provider, key: "[ascunsă]" }),
+    execute: async (input, ctx) => {
+      trust.requireFresh(session(ctx), "salvarea cheii API");
+      let saved;
+      try { saved = await hub.apiKeyVault.set(input.provider, input.key, { now: hub.config.now() }); }
+      catch (error) { throw new HubError(error.category === "validation" ? "validation" : "internal", String(error?.message || error).slice(0, 200)); }
+      bus.emit({ type: "api_route.key_set", scopeType: "provider", scopeId: input.provider, source: ctx.actor, payload: { provider: input.provider, last4: saved.last4 } });
+      return { provider: input.provider, last4: saved.last4, setAt: saved.setAt, next: hub.apiAccess.mode(input.provider) === "api_key" ? "Rulează „Verifică contul” pentru noua cheie" : "Pornește ruta API cu acordul tău și plafoanele" };
+    } });
+  reg("api_route.enable", { describe: "Pornește ruta API pentru un provider (acordul tău exact + plafoane)", channels: OWNER,
+    schema: { provider: { enum: ["codex", "claude"], required: true }, confirmText: { required: true, max: 600 }, ...budgetSchema },
+    execute: (input, ctx) => {
+      const s = trust.requireFresh(session(ctx), "pornirea rutei API");
+      if (input.confirmText !== API_CONSENT_TEXT[input.provider]) throw new HubError("validation", "Textul acordului nu corespunde exact textului afișat");
+      const key = hub.apiKeyVault.status(input.provider);
+      if (!key.present || key.valid === false || key.problem) throw new HubError("conflict", key.problem || `Salvează întâi cheia API ${apiProviderName(input.provider)}`);
+      let budget;
+      try { budget = normalizeBudget(input); } catch (error) { throw new HubError("validation", error.message); }
+      const at = hub.config.now().toISOString();
+      hub.apiAccess.setRoute(input.provider, { enabled: true, consent: { textVersion: apiTextVersion(API_CONSENT_TEXT[input.provider]), at, sessionId: s.id }, budget, enabledAt: at, enabledBy: ctx.actor, disabledAt: null, disabledReason: null },
+        ctx.actor, `API route enabled for ${input.provider} in the owner session`);
+      bus.emit({ type: "api_route.enabled", scopeType: "provider", scopeId: input.provider, source: ctx.actor, payload: { provider: input.provider, budget, last4: key.last4, sessionId: s.id } });
+      return { provider: input.provider, enabled: true, budget, next: "Rulează „Verifică contul”: Hub-ul verifică cheia fără model" };
+    } });
+  reg("api_route.budget.set", { describe: "Schimbă plafoanele rutei API (USD: lunar, zilnic, pe rulare)", channels: OWNER,
+    schema: { provider: { enum: ["codex", "claude"], required: true }, ...budgetSchema },
+    execute: (input, ctx) => {
+      trust.requireFresh(session(ctx), "schimbarea plafoanelor API");
+      let budget;
+      try { budget = normalizeBudget(input); } catch (error) { throw new HubError("validation", error.message); }
+      hub.apiAccess.setRoute(input.provider, { budget }, ctx.actor, `API budget changed for ${input.provider}`);
+      bus.emit({ type: "api_route.budget_set", scopeType: "provider", scopeId: input.provider, source: ctx.actor, payload: { provider: input.provider, budget } });
+      return { provider: input.provider, budget, state: hub.apiAccess.budgetState(input.provider) };
+    } });
+  // Fail-safe: off from any owner-facing channel; by default it also stops that provider's running work.
+  reg("api_route.disable", { describe: "Oprește ruta API (providerul revine la abonament)", async: true, channels: ANY_OWNER_FACING,
+    schema: { provider: { enum: ["codex", "claude"], required: true }, reason: { max: 200, default: "" }, stopRunning: { type: "boolean", default: true }, removeKey: { type: "boolean", default: false } },
+    execute: async (input, ctx) => {
+      const stopped = input.stopRunning && interrupts ? await interrupts.stopWorker({ provider: input.provider, actor: ctx.actor }).catch((error) => ({ summary: `Oprirea execuțiilor a eșuat: ${error.message}` })) : null;
+      hub.apiAccess.setRoute(input.provider, { enabled: false, disabledAt: hub.config.now().toISOString(), disabledReason: String(input.reason || "").slice(0, 200) || "oprită de tine" }, ctx.actor, `API route disabled for ${input.provider}`);
+      const removed = input.removeKey ? hub.apiKeyVault.remove(input.provider) : false;
+      bus.emit({ type: "api_route.disabled", scopeType: "provider", scopeId: input.provider, source: ctx.actor, payload: { provider: input.provider, channel: ctx.channel, keyRemoved: removed } });
+      return { provider: input.provider, enabled: false, keyRemoved: removed, stopped: stopped ? { summary: stopped.summary } : null };
+    } });
+
+  // ---------- 2.20: the update channel (ops/updates.mjs) ----------
+  reg("update.check", { describe: "Verifică dacă există o versiune publicată mai nouă (citește tag-urile repository-ului; fără model)", async: true, channels: ["ui", "owner", "test", "automation"],
+    execute: (input, ctx) => hub.updates.check(ctx.actor) });
+  // Applying replaces the running code: the owner session, freshly re-authenticated, and the exact version the page showed.
+  reg("update.apply", { describe: "Instalează versiunea publicată afișată (backup, migrare verificată, repornire; revine singur la eșec)", async: true, channels: OWNER,
+    schema: { version: { required: true, max: 40 } },
+    execute: async (input, ctx) => {
+      trust.requireFresh(session(ctx), "actualizarea Hub-ului");
+      try { return await hub.updates.startApply({ version: input.version, actor: ctx.actor }); }
+      catch (error) { throw new HubError(error.category || "internal", String(error?.message || error).slice(0, 300)); }
     } });
 
   // ---------- natural language (M10.2: one command path) ----------

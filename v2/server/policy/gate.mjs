@@ -48,7 +48,7 @@ const settledByAccountCheck = (c) => (c.id === "identity" && c.status === "unver
  * Execution gate: every check is evaluated and reported, the run is admitted only when all pass.
  * The gate is the single place that decides; UI, companion, voice and automations all go through it.
  */
-export function createGate({ db, settings, projects, backups, leases, grants, breakers, providerState, clock, activeRunCount, codexIsolation = null, environments = null }) {
+export function createGate({ db, settings, projects, backups, leases, grants, breakers, providerState, clock, activeRunCount, codexIsolation = null, environments = null, apiAccess = null }) {
   /*
    * M10.2 envelope-scoped live authority, late-bound by hub.mjs once the envelope service exists (it needs the gate first).
    * (missionId, bindingHash, { provider, projectId, access }) → null (no plan of this mission in force) or { envelopeId, grantId }
@@ -108,8 +108,10 @@ export function createGate({ db, settings, projects, backups, leases, grants, br
     // Billing facts of the route that will run: the environment client has its own login and config.
     const inspection = inspectionFromState(providerState.get(route === "windows" ? provider : `${provider}@${route}`), now);
     // M09-A2: the declaration is compared with THIS route's account (claude@wsl-runner has its own login and probe).
-    const billing = evaluateRoute(provider, inspection, billingInputs(settings, inspection, now));
-    add("billing_route", billing.allowed, billing.allowed ? `Rută inclusă în abonament verificată${route !== "windows" ? ` (clientul din ${route})` : ""}` : billing.blockingReasons.join(" · "), { route: billing });
+    // 2.20: the owner's API-key route replaces the subscription rules for this provider only while it is on (api-access.mjs).
+    const api = apiAccess ? apiAccess.routeInputs(provider, now) : null;
+    const billing = evaluateRoute(provider, inspection, billingInputs(settings, inspection, now, { api, environment: route }));
+    add("billing_route", billing.allowed, billing.allowed ? (api ? `Ruta API cu cheia ta verificată (…${api.key?.last4 || "?"}); ${api.budget.detail}` : `Rută inclusă în abonament verificată${route !== "windows" ? ` (clientul din ${route})` : ""}`) : billing.blockingReasons.join(" · "), { route: billing, ...(api ? { billingMode: "api_key" } : {}) });
 
     if (route !== "windows") {
       // M05: the run goes through an execution environment; Windows sandbox facts do not apply to it.

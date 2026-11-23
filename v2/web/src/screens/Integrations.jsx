@@ -7,6 +7,8 @@ import { takeGrantPrefill } from "../lib/legaBridge.js";
 import { withReauth } from "../lib/ownerSession.js";
 import { gateRearmHint, REARM_SETUP } from "../lib/rearmLogic.js";
 import { StopAllButton } from "../shell/Shell.jsx";
+import ApiKeyPanel from "./integrations/ApiKeyPanel.jsx";
+import UpdatesPanel from "./integrations/UpdatesPanel.jsx";
 
 /** Only known grant fields with values the form can show; anything else Lega sends is ignored. */
 const clampInt = (v, min, max) => (Number.isInteger(v) ? Math.min(max, Math.max(min, v)) : undefined);
@@ -37,7 +39,7 @@ function ProviderCard({ provider, attestationText, onChange }) {
   });
   const withdraw = useAction(async () => { await api("/api/owner/billing/withdraw", { method: "POST", body: { provider: provider.id, reason: "retrasă din Integrări" } }); onChange(); });
   return (
-    <Panel title={provider.displayName} icon={Plug} data-lega-target="billing" actions={<Chip tone={provider.route.allowed ? "ok" : "warn"}>{provider.route.allowed ? "rută inclusă verificată" : "blocat"}</Chip>}>
+    <Panel title={provider.displayName} icon={Plug} data-lega-target="billing" actions={<Chip tone={provider.route.allowed ? "ok" : "warn"}>{provider.route.allowed ? (provider.billingMode === "api_key" ? "ruta API (cheia ta) verificată" : "rută inclusă verificată") : "blocat"}</Chip>}>
       <div className="stack">
         <dl className="kv">
           <dt>Instalare</dt><dd>{provider.installation ? (provider.installation.installed ? `${provider.installation.version} · ${provider.installation.source || ""}` : provider.installation.reason) : "neinspectat"}</dd>
@@ -362,6 +364,8 @@ export default function Integrations({ query = {} }) {
       <div className="grid two" style={{ marginTop: 16 }}>
         {data.providers.map((p) => <ProviderCard key={p.id} provider={p} attestationText={data.attestationText[p.id]} onChange={() => { reload(); refresh(); }} />)}
       </div>
+      <div style={{ marginTop: 16 }}><ApiKeyPanel /></div>
+      <div style={{ marginTop: 16 }}><UpdatesPanel /></div>
       <div style={{ marginTop: 16 }}><IsolationPanel voiceFirst={voiceFirst} /></div>
       <div style={{ marginTop: 16 }}><LivePanel integrations={data} onChange={reload} voiceFirst={voiceFirst} /></div>
       <div style={{ marginTop: 16 }}>

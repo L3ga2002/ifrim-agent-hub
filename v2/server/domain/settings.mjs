@@ -67,6 +67,13 @@ export const DEFAULT_SETTINGS = Object.freeze({
   // M09-A2: the random salt of the pseudonymous account identity (HMAC-SHA256, 16 hex). Created at first use; never returned
   // by the API (/api/settings strips it) and redacted in command logs (the key name matches the secret pattern).
   billingIdentitySecret: null,
+  // 2.20: the optional API-key route per provider (off by default; see policy/api-access.mjs). Never holds a key: the key lives
+  // encrypted (DPAPI) in <dataDir>/v2-api-keys. { [provider]: { enabled, consent, budget, enabledAt, enabledBy, disabledAt, disabledReason } }
+  apiRoutes: {},
+  // 2.20: what the API route spent (Hub estimates; the provider's invoice is the truth): per day and provider, last runs.
+  apiSpend: { days: {}, runs: [] },
+  // 2.20: the update channel (release tags on the repository); see ops/updates.mjs. Only the last check is kept.
+  updateCheck: null,
   // M09 Content Studio policy. Every external effect is OFF by default and is not switched on by the existence of code: live
   // capture (OBS / screen), live upload to a platform and automatic publication each need their own owner decision.
   mediaPolicy: { autoPublish: false, liveUpload: false, liveCapture: false, renderConcurrency: 1, diskReserveGb: 15, libraryQuotaGb: 40,

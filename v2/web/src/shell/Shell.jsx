@@ -10,6 +10,7 @@ import { VoiceControl } from "./Voice.jsx";
 import { Lega } from "./Lega.jsx";
 import { Spotlight } from "./Spotlight.jsx";
 import { DesktopBar } from "./DesktopBar.jsx";
+import { UpdateBanner } from "./UpdateBanner.jsx";
 import { useStageToggle } from "../screens/stage/LegaStage.jsx";
 import { Core3D } from "../components/core/Core3D.jsx";
 import { deriveCoreState, CORE_VISUALS } from "../lib/coreState.js";
@@ -371,6 +372,8 @@ export function Shell({ route, go, children }) {
       {/* M10: the Desktop Operator's permanent activity bar (Stop / Preiau eu always one click away while it works). */}
       <ErrorBoundary label="desktop-bar" fallback={() => null}><DesktopBar go={go} /></ErrorBoundary>
       <main className={`main${activeRunCount ? " has-indicator" : ""}`} id="main" tabIndex={-1} ref={mainRef}>
+        {/* 2.20: „Actualizare disponibilă” (only when a newer released version exists, or while/after an update runs). */}
+        <ErrorBoundary label="update" fallback={() => null}><UpdateBanner /></ErrorBoundary>
         {/* A failing screen never takes the shell down: navigation, Stop All and the connection state keep working. */}
         <ErrorBoundary label="screen" resetKey={`${route.name}:${route.id || ""}`} fallback={(error, reset) => (
           <div className="page"><Notice tone="error" title="Ecranul a întâmpinat o eroare">

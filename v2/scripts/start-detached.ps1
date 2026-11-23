@@ -8,13 +8,18 @@ $node = (Get-Command node -ErrorAction Stop).Source
 $system = Join-Path $env:ProgramFiles "nodejs\node.exe"
 if ($node -match '\\(fnm_multishells|fnm|nvm|volta)\\' -and (Test-Path $system)) { $node = $system }
 $start = Join-Path $root "v2\scripts\start.mjs"
-$result = Invoke-CimMethod -ClassName Win32_Process -MethodName Create -Arguments @{ CommandLine = "`"$node`" `"$start`""; CurrentDirectory = $root }
+# 2.20: a second, isolated instance on another port (HUB_V2_PORT). The WMI process does not inherit this shell's environment, so
+# the port travels on the command line (start.mjs / common.mjs read --port); 8011 otherwise.
+$port = 8011
+if ($env:HUB_V2_PORT -match '^\d{2,5}$') { $port = [int]$env:HUB_V2_PORT }
+$portArg = if ($port -ne 8011) { " --port $port" } else { "" }
+$result = Invoke-CimMethod -ClassName Win32_Process -MethodName Create -Arguments @{ CommandLine = "`"$node`" `"$start`"$portArg"; CurrentDirectory = $root }
 if ($result.ReturnValue -ne 0) { Write-Host "Win32_Process.Create failed ($($result.ReturnValue))"; exit 1 }
 for ($i = 0; $i -lt 80; $i++) {
   Start-Sleep -Milliseconds 500
   try {
-    $h = Invoke-RestMethod -Uri "http://127.0.0.1:8011/api/health" -TimeoutSec 2
-    if ($h.ok) { Write-Host "Ifrim Agent Hub V2 $($h.version), mod $($h.mode), contract $($h.apiContract), http://localhost:8011"; exit 0 }
+    $h = Invoke-RestMethod -Uri "http://127.0.0.1:$port/api/health" -TimeoutSec 2
+    if ($h.ok) { Write-Host "Ifrim Agent Hub V2 $($h.version), mod $($h.mode), contract $($h.apiContract), http://localhost:$port"; exit 0 }
   } catch { }
 }
 Write-Host "Hub-ul nu a raspuns in 40 s; vezi v2-hub.log in folderul de date (.ifrim\private sau locatia din .ifrim\data-location.json)"

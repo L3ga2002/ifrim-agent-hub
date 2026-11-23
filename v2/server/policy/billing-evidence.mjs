@@ -124,13 +124,16 @@ export function evidenceState(provider, { evidence = {}, identity = null, now = 
 export const describeReasons = (reasons = []) => reasons.filter((r) => r !== "latched" || reasons.length === 1).map((r) => REASON_TEXT[r] || r).join("; ");
 
 /** The single place the gate, the router and the HTTP summary read their billing inputs from (they cannot diverge). */
-export function billingInputs(settings, inspection, now = new Date()) {
+export function billingInputs(settings, inspection, now = new Date(), { api = null, environment = "windows" } = {}) {
   return {
     evidence: settings.get("billingEvidence") || {},
     identity: inspection?.auth?.accountIdentity || null,
     now,
     usage: inspection?.usage || null,
     reservePercent: settings.get("usageReservePercent"),
+    // 2.20: the owner's API-key route facts (api-access.mjs routeInputs) when that route is on for this provider; null otherwise.
+    api,
+    environment,
   };
 }
 

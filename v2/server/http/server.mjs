@@ -14,7 +14,7 @@ export const FAILSAFE_PATHS = Object.freeze(["/api/stop-all", "/api/runs/*/inter
   "/api/owner/policy/deactivate", "/api/owner/logout", "/api/owner/sessions/revoke-all", "/api/envelopes/*/revoke",
   "/api/factory/*/stop", "/api/factory/*/pause", "/api/grants/*/revoke", "/api/m/command", "/api/m/forget", "/api/skills/candidates/*/rollback", "/api/devices/*/revoke",
   // M09: withdrawing a billing declaration and stopping media work (render, capture, transcription, a distribution attempt, a right).
-  "/api/owner/billing/withdraw", "/api/media/renders/*/cancel", "/api/media/captures/*/cancel", "/api/media/captures/*/obs/stop", "/api/media/transcripts/*/cancel",
+  "/api/owner/billing/withdraw", "/api/owner/api-route/disable", "/api/media/renders/*/cancel", "/api/media/captures/*/cancel", "/api/media/captures/*/obs/stop", "/api/media/transcripts/*/cancel",
   "/api/content/releases/*/cancel", "/api/media/rights/*/revoke", "/api/media/policy/capture-off",
   // M10: stopping the desktop operator, taking over, pausing / cancelling a plan, withdrawing an app or a folder.
   "/api/desktop/stop", "/api/desktop/takeover", "/api/desktop/apps/revoke", "/api/ops/plans/*/pause", "/api/ops/plans/*/cancel", "/api/media/import-folders/*/revoke"]);

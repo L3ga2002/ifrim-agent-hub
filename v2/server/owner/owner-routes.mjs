@@ -79,6 +79,16 @@ export function registerOwnerRoutes(router, hub) {
   post("/api/owner/billing/declare", ({ req, body }) => dispatch(req, "billing.declare", { provider: body.provider, confirmText: body.confirmText, displayedIdentity: body.displayedIdentity,
     route: body.route || undefined }, { requireOwner: true }));
   post("/api/owner/billing/withdraw", ({ req, body }) => dispatch(req, "billing.withdraw", { provider: body.provider, reason: body.reason || "", stopRunning: body.stopRunning !== false }));
+  // 2.20: the owner's optional API-key route. The key travels once, in this request body, to the DPAPI vault; it is never returned.
+  get("/api/api-route", () => hub.apiAccess.summary());
+  // 2.20: the update channel.
+  get("/api/updates", () => hub.updates.status());
+  post("/api/updates/check", ({ req }) => dispatch(req, "update.check", {}));
+  post("/api/owner/updates/apply", ({ req, body }) => dispatch(req, "update.apply", { version: body?.version }, { requireOwner: true }));
+  post("/api/owner/api-route/key", ({ req, body }) => dispatch(req, "api_route.key.set", { provider: body?.provider, key: typeof body?.key === "string" ? body.key : "" }, { requireOwner: true }));
+  post("/api/owner/api-route/enable", ({ req, body }) => dispatch(req, "api_route.enable", { provider: body?.provider, confirmText: body?.confirmText, monthlyUsd: body?.monthlyUsd, dailyUsd: body?.dailyUsd, perRunUsd: body?.perRunUsd }, { requireOwner: true }));
+  post("/api/owner/api-route/budget", ({ req, body }) => dispatch(req, "api_route.budget.set", { provider: body?.provider, monthlyUsd: body?.monthlyUsd, dailyUsd: body?.dailyUsd, perRunUsd: body?.perRunUsd }, { requireOwner: true }));
+  post("/api/owner/api-route/disable", ({ req, body }) => dispatch(req, "api_route.disable", { provider: body?.provider, reason: body?.reason || "", stopRunning: body?.stopRunning !== false, removeKey: body?.removeKey === true }));
 
   // ---------- cockpit, explain, replay, company map ----------
   get("/api/cockpit/:projectId", async ({ params }) => {

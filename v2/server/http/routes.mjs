@@ -154,14 +154,15 @@ export function registerRoutes(router, hub, { token }) {
     const state = providerState.get(id);
     const now = clock();
     const inspection = inspectionFromState(state, now);
-    const inputs = billingInputs(settings, inspection, now);
+    const api = hub.apiAccess ? hub.apiAccess.routeInputs(id, now) : null;
+    const inputs = billingInputs(settings, inspection, now, { api });
     const route = evaluateRoute(id, inspection, inputs);
     // M09-A2: the evidence behind provider_side_overage_setting (pseudonyms only; the account identity shown is the one the
     // owner's declaration must name — displayedIdentity — and only while the probe is fresh).
     const billing = { ...evidenceSummary(id, { evidence: inputs.evidence, identity: inputs.identity, now, currentText: ATTESTATION_TEXT[id] }), declarationText: ATTESTATION_TEXT[id],
       probeFresh: Boolean(inspection?.auth), ownerRoute: "/api/owner/billing/declare", withdrawRoute: "/api/owner/billing/withdraw" };
     return { id, displayName: providers[id].displayName, installation: state?.installation || null, auth: publicAuth(state?.auth), probedAt: state?.probedAt || null,
-      probeOk: state?.ok ?? null, probeError: state?.error || null, models: Array.isArray(state?.models) ? state.models : null, route, billing };
+      probeOk: state?.ok ?? null, probeError: state?.error || null, models: Array.isArray(state?.models) ? state.models : null, route, billing, billingMode: api ? "api_key" : "subscription" };
   }
   /** The auth facts the UI shows: plan facts and the short pseudonym (the full 16-hex value travels only in `billing.currentIdentity`). */
   function publicAuth(auth) {

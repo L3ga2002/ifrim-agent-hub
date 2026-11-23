@@ -245,6 +245,7 @@ export function createRunManager(deps) {
     starting.add(conversationId);
     let lease = null;
     let grant = null;
+    let apiRun = null;
     const runId = newId("run");
     try {
       lease = bus.transaction(() => leases.acquire({ resource, holder: `${provider}:${runId}`, taskId, runId: null, ttlSeconds: 1800 }));
@@ -272,6 +273,20 @@ export function createRunManager(deps) {
       const git = closed ? {} : await gitState(project.path);
       if (detached) throw shutdownError();
       timeline.mark("git_state");
+      // 2.20: the owner's API-key route (only on the Windows client; an environment route is refused by the billing check): the
+      // run reserves its budget and gets the key for its own process only. A refusal here is a stop before the model.
+      if (deps.apiAccess && environment === "windows" && deps.apiAccess.mode(provider) === "api_key") {
+        try { apiRun = await deps.apiAccess.admit(provider, runId); }
+        catch (error) {
+          bus.transaction(() => leases.release(lease.id, "API route refused before start"));
+          if (grant) refundPreInference(grant.id, `API route refused before ${runId} started`);
+          const run = recordBlockedRun({ conversation, provider, access, taskId, stage, roleId, inputMessageId: lastUser.id, category: "gate",
+            message: `api_route: ${String(error?.message || error).slice(0, 400)}`, evidence: { apiRoute: { refused: true, category: error?.category || null } }, timeline, plan, environment });
+          throw new HubError("gate", "API route refused the run; the model was not started", { data: { runId: run.id, reason: String(error?.message || error).slice(0, 400) } });
+        }
+        if (detached) throw shutdownError();
+        timeline.mark("api_admitted");
+      }
       // M09 review: the billing evidence can change while this run waited for the backup / git state (the owner withdrew the
       // declaration, a concurrent run's report latched re-verification). The billing route is checked again here, the last moment
       // before anything reaches the provider (only that check: the lease and the attempt are already this run's).
@@ -362,6 +377,8 @@ export function createRunManager(deps) {
         // M09: Claude's init model is compared with the bound (or explicitly requested) model; a mismatch stops before the model.
         ...(expectedModel ? { verifyInitModel: (reported) => compareAtInit(expectedModel, reported) } : {}),
         admitUsage: (snapshot) => usage.admit(provider, snapshot),
+        // 2.20: present only on the owner's API-key route: the key for this process and the run's spending limit (USD).
+        ...(apiRun ? { api: { key: apiRun.key, fingerprint: apiRun.fingerprint, maxUsd: apiRun.maxUsd } } : {}),
         requestApproval: (request) => waitForApproval({ runId, conversation, project, provider, request, taskId }),
         onEvent: (event) => onProviderEvent(runId, conversationId, event, (text) => {
           content += text;
@@ -382,6 +399,8 @@ export function createRunManager(deps) {
       completion.then(() => completions.delete(completion), () => { completions.set(completion, true); }); // retain finalization errors for shutdown
       return { run: getRun(runId), gate: decision };
     } catch (error) {
+      // 2.20: a start that never reached its adapter gives its API reservation back (nothing was sent to the provider).
+      if (apiRun && !active.has(runId)) { try { deps.apiAccess.release(runId); } catch { /* booked at the next boot at worst */ } }
       if (!detached && lease && !active.has(runId)) {
         const held = db.prepare("SELECT status FROM leases WHERE id = ?").get(lease.id);
         if (held?.status === "active") bus.transaction(() => leases.release(lease.id, `start aborted: ${error.message}`));
@@ -619,6 +638,12 @@ export function createRunManager(deps) {
     // explicit overage signal latches the reverify in the same transaction (the adapter already stopped the run).
     if (event.type === "billing_evidence") { recordBillingEvidence(runId, event); return; }
     if (event.type === "turn") db.prepare("UPDATE agent_runs SET native_turn_id = ? WHERE id = ?").run(event.turnId || null, runId);
+    if (event.type === "api_cost") {
+      // 2.20: the running cost on the API route (USD, Hub estimate) — kept for the budget and shown live; never a billing proof.
+      const seen = deps.apiAccess ? deps.apiAccess.observe(runId, event.usd) : null;
+      if (seen) live.publish({ type: "run.api_cost", conversationId, runId, usd: seen.observedUsd, maxUsd: seen.maxUsd, estimated: Boolean(event.estimated) });
+      return;
+    }
     if (event.type === "usage") {
       db.prepare("UPDATE agent_runs SET usage_json = ? WHERE id = ?").run(json(event.usage), runId);
       if (event.usage?.rateLimits) usage.record(getRun(runId).provider, event.usage.rateLimits);
@@ -719,7 +744,11 @@ export function createRunManager(deps) {
     const turnDeadline = turnDeadlineEvidence(entry);
     if (firedDeadline) result = turnTimeoutOutcome(result, firedDeadline, entry);
     const run = getRun(runId);
-    if (!run || !["running", "waiting_approval", "starting"].includes(run.status)) { active.delete(runId); stoppedRuns.delete(runId); return; }
+    if (!run || !["running", "waiting_approval", "starting"].includes(run.status)) {
+      // 2.20: an API reservation never outlives its run (booked: the cost reported, else the whole reservation).
+      if (deps.apiAccess?.inflightOf(runId)) { try { deps.apiAccess.settle(runId, { usd: Number.isFinite(Number(result?.apiCostUsd)) && result?.apiCostUsd !== null ? Number(result.apiCostUsd) : null, model: run?.model || null }); } catch { /* booked at the next boot */ } }
+      active.delete(runId); stoppedRuns.delete(runId); return;
+    }
     const content = result.output || getContent() || "";
     const pre = Boolean(result.preInference) || PRE_INFERENCE_CATEGORIES.has(result.errorCategory);
     const status = result.status === "completed" ? "completed" : result.status === "interrupted" ? "interrupted" : pre ? "blocked" : "failed";
@@ -728,6 +757,15 @@ export function createRunManager(deps) {
     const processGone = (!record || (record.exited && !record.treeUnverified)) && result.environment?.reap?.ok !== false;
     if (entry?.timeline) entry.timeline.mark("finished");
     const turnSent = Boolean(entry?.timeline?.has("turn_sent"));
+    // 2.20: the API route's booking. Nothing sent to the model → the reservation is released; otherwise the reported cost is booked
+    // (no report → the whole reservation, marked estimated).
+    let apiSpend = null;
+    if (deps.apiAccess?.inflightOf(runId)) {
+      try {
+        if (pre && !turnSent && !(Number(result.apiCostUsd) > 0)) { deps.apiAccess.release(runId); apiSpend = { usd: 0, released: true }; }
+        else apiSpend = deps.apiAccess.settle(runId, { usd: Number.isFinite(Number(result.apiCostUsd)) && result.apiCostUsd !== null ? Number(result.apiCostUsd) : null, model: run.model || null, source: result.apiCostSource || "provider" });
+      } catch (error) { apiSpend = { error: String(error?.message || error).slice(0, 200) }; }
+    }
     bus.transaction(() => {
       if (entry?.timeline) db.prepare("UPDATE agent_runs SET timeline_json = ? WHERE id = ?").run(json(entry.timeline.toJSON()), runId);
       db.prepare(`UPDATE agent_runs SET status = ?, error_category = ?, error_message = ?, pre_inference = ?, finished_at = ?, native_thread_id = COALESCE(native_thread_id, ?),
@@ -735,6 +773,7 @@ export function createRunManager(deps) {
         .run(status, result.errorCategory || null, result.error ? redactText(String(result.error)).slice(0, 2000) : null, pre ? 1 : 0, clock().toISOString(),
           result.threadId || result.sessionId || null, result.turnId || null, json(result.usage || run.usage), json({ ...run.evidence, permissionDenials: result.permissionDenials, numTurns: result.numTurns, promptPackage: entry?.promptPackage, ...(result.environment ? { environment: result.environment } : {}),
           ...(result.authorOutputLimit ? { authorOutputLimit: result.authorOutputLimit } : {}),
+          ...(apiSpend ? { apiSpend } : {}),
           ...(turnDeadline ? { turnDeadline } : {}),
           ...(result.turnTimeout ? { turnTimeout: result.turnTimeout } : {}) }), runId);
       if (turnDeadline) bus.append({ type: "run.turn_deadline", scopeType: "conversation", scopeId: run.conversationId, source: "hub", runId, payload: turnDeadline });

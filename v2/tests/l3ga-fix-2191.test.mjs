@@ -67,7 +67,7 @@ test("L3-01 the owner's own sentences of 2026-10-25 resolve to what he meant", (
 test("L3-02 the wishlist through the conversation and the screen: „asta” is the last request the Hub could not do; nothing starts", { timeout: 120000 }, async (c) => {
   const t = await acceptanceHub(); c.after(() => t.cleanup());
   assert.equal(MIGRATIONS.at(-1).version, 16); assert.equal(count(t.hub, "wishlist_items"), 0);
-  assert.equal(HUB_VERSION, "2.19.2-m16"); assert.equal(API_CONTRACT, 23); // 2.19.2 (memory audit stages 0 + 1) follows
+  assert.equal(HUB_VERSION, "2.20.0-dist"); assert.equal(API_CONTRACT, 24);
   const before = work(t.hub);
   // Nothing to name yet: one question, nothing written.
   assert.match(one(await ask(t, "Păi ce verifici, fă un wishlist nou"), "wishlist_add").message, /Wishlist-ul există deja/);

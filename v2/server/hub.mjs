@@ -36,6 +36,9 @@ import { createLega } from "./runtime/lega.mjs";
 import { createLeases } from "./runtime/leases.mjs";
 import { createSupervisor, isPidAlive } from "./runtime/supervisor.mjs";
 import { createRunManager } from "./runtime/runs.mjs";
+import { createApiKeyVault } from "./policy/api-keys.mjs";
+import { createApiAccess } from "./policy/api-access.mjs";
+import { createUpdateService } from "./ops/updates.mjs";
 import { createHandoffs } from "./runtime/handoff.mjs";
 import { createCheckpoints } from "./runtime/checkpoints.mjs";
 import { createTelemetry } from "./runtime/telemetry.mjs";
@@ -120,7 +123,7 @@ function createLiveChannel() {
  * provider call and no run is started here. `boot()` runs recovery (safe mode), seeds the company,
  * surfaces, integrations, computer environments and skills, and starts housekeeping.
  */
-export function createHub(config, { providerOverrides = {}, homeDir, browserLaunch = null, supervisorOptions = {}, turnTimers = null } = {}) {
+export function createHub(config, { providerOverrides = {}, homeDir, browserLaunch = null, supervisorOptions = {}, turnTimers = null, apiKeyProtector = null, updateOptions: hubOptionsUpdate = null } = {}) {
   const clock = config.now;
   fs.mkdirSync(config.dataDir, { recursive: true });
   // M10: a pending migration on an existing database is preceded by a verified copy (refused, Hub not started, if it fails).
@@ -166,6 +169,11 @@ export function createHub(config, { providerOverrides = {}, homeDir, browserLaun
     bus.transaction(() => settings.set("billingIdentitySecret", created, "hub", "Billing identity salt created"));
     return created;
   };
+  // 2.20: the owner's optional API-key route (off by default): the DPAPI vault and the budget/spend service.
+  const apiKeyVault = createApiKeyVault({ config, salt: identitySalt, protector: config.testMode ? apiKeyProtector : null });
+  const apiAccess = createApiAccess({ settings, vault: apiKeyVault, clock, bus });
+  // 2.20: the update channel (released tags only; applied only on the owner's request, by a separate updater process).
+  const updates = createUpdateService({ config, settings, bus, clock, ...(config.testMode && hubOptionsUpdate ? hubOptionsUpdate : {}) });
   const providers = {
     codex: providerOverrides.codex || createCodexAdapter({ config, supervisor, homeDir, identitySalt }),
     claude: providerOverrides.claude || createClaudeAdapter({ config, supervisor, homeDir, identitySalt }),
@@ -204,14 +212,14 @@ export function createHub(config, { providerOverrides = {}, homeDir, browserLaun
   // The exact paths the Codex profile denies on this machine; a recorded consent is valid only for this list.
   // Globs included (M03 R3): a consent given for the M02 list does not cover config.toml / history.jsonl.
   const codexIsolation = () => { const paths = codexDeniedEntries({ homeDir: homeDir || os.homedir(), extra: [config.dataDir, config.backupDir] }); return { paths, fingerprint: denyListFingerprint(paths) }; };
-  const gate = createGate({ db, settings, projects, backups, leases, grants, breakers, providerState, clock, activeRunCount: () => runs.activeCount() + (lega?.active() ? 1 : 0), codexIsolation, environments });
-  runs = createRunManager({ db, bus, clock, settings, projects, conversations, missions, gate, leases, grants, backups, approvals, providers, breakers, usage, live, policy, skills, providerState, environments,
+  const gate = createGate({ db, settings, projects, backups, leases, grants, breakers, providerState, clock, activeRunCount: () => runs.activeCount() + (lega?.active() ? 1 : 0), codexIsolation, environments, apiAccess });
+  runs = createRunManager({ db, bus, clock, settings, projects, conversations, missions, gate, leases, grants, backups, approvals, providers, breakers, usage, live, policy, skills, providerState, environments, apiAccess,
     supervisorRecord: (key) => supervisor.get(key), turnTimers: config.testMode ? turnTimers : null });
   const checkpoints = createCheckpoints({ db, bus, clock, projects, conversations, missions, approvals, leases, backups });
   const handoffs = createHandoffs({ db, bus, clock, conversations, missions, projects, leases, approvals, supervisor, runs, checkpoints });
   const tools = createTools({ db, bus, clock, projects, approvals, supervisor, config });
   const integrations = createIntegrations({ db, bus, clock, config, toolDefinitions: tools.definitions });
-  const router = createRouter({ db, bus, clock, config, settings, surfaces, providerState, usage, projects, telemetry, computer, company, roleConfig });
+  const router = createRouter({ db, bus, clock, config, settings, surfaces, providerState, usage, projects, telemetry, computer, company, roleConfig, apiAccess });
   const commands = createCommandBus({ db, bus, clock, policy, approvals, config });
   // Lega (voice): a separate Codex app-server with GPT-Live; admitted by gate.evaluateVoice, stopped by Stop All.
   const refreshCodexConfig = () => {
@@ -375,7 +383,7 @@ export function createHub(config, { providerOverrides = {}, homeDir, browserLaun
     return { armed: false, reason: "plan necunoscut" };
   };
 
-  const hub = { config, db, bus, live, settings, projects, conversations, missions, approvals, policy, leases, grants, providerState, usage, memory, leads, sales,
+  const hub = { config, db, bus, live, settings, apiAccess, apiKeyVault, updates, projects, conversations, missions, approvals, policy, leases, grants, providerState, usage, memory, leads, sales,
     company, chiefOfStaff, surfaces, schedules, computer, skills, artifacts, integrations, nativeSessions, telemetry, router, commands, checkpoints,
     breakers, supervisor, backups, providers, gate, runs, handoffs, tools, roleConfig, skillConfig, capabilityConfig, codexIsolation, lega, refreshCodexConfig, factory, factoryRunner,
     environments, wslRunner, trust, envelopes, armedWindows, cockpit, interrupts, advisor, voice, voiceEngine,
@@ -600,6 +608,9 @@ export function createHub(config, { providerOverrides = {}, homeDir, browserLaun
     // M10: a derived Lega authority whose voice session died with the previous process is closed in the audit (nothing starts).
     try { bootReport.lega = lega.recover(); } catch (error) { bootReport.lega = { error: String(error?.message || error).slice(0, 300) }; }
     bootReport.billing = convertLegacyBilling();
+    // 2.20: API-route reservations a previous process left behind (it stopped during a run) are booked at their maximum.
+    try { const recovered = apiAccess.recoverPending(); if (recovered.length) bootReport.apiSpendRecovered = recovered.map((r) => ({ runId: r.runId, provider: r.provider, usd: r.usd })); }
+    catch (error) { bootReport.apiSpendRecovered = { error: String(error?.message || error).slice(0, 200) }; }
     try { deliveries.boot(); } catch (error) { bootReport.deliveries = { error: String(error?.message || error).slice(0, 300) }; }
     // M12: a Sales preparation's listeners (the owner's approval, the plan's end, Stop All); a deferred, silent reconciliation pass.
     try { salesPreparations.boot(); } catch (error) { bootReport.salesPreparations = { error: String(error?.message || error).slice(0, 300) }; }
@@ -623,6 +634,7 @@ export function createHub(config, { providerOverrides = {}, homeDir, browserLaun
     if (preMigrationBackup) bus.transaction(() => bus.append({ type: "storage.pre_migration_backup", scopeType: "system", scopeId: bootId, source: "hub",
       payload: { file: path.basename(preMigrationBackup.file), sha256: preMigrationBackup.sha256.slice(0, 16), fromVersion: preMigrationBackup.schemaVersion, toVersion: preMigrationBackup.toVersion } }));
     if (!config.testMode) scheduler.start();
+    updates.schedule();
     // Optional sandbox warm-up (M05 §21): off unless the owner enabled it; no model, no project code, never blocks the boot.
     if (!config.testMode && settings.get("environmentWarmup")?.onBoot) {
       Promise.resolve().then(() => factoryRunner.preflight("windows")).then((result) => bus.emit({ type: "environment.warmup", scopeType: "environment", scopeId: "windows", source: "hub",
@@ -641,6 +653,7 @@ export function createHub(config, { providerOverrides = {}, homeDir, browserLaun
     sync("runs.close", () => runs.close());
     sync("supervisor.beginClose", () => supervisor.beginClose());
     sync("scheduler.stop", () => scheduler.stop());
+    sync("updates.stop", () => updates.stop());
     sync("envelopes.close", () => envelopes.close());
     sync("deliveries.close", () => deliveries.close_());
     sync("salesPreparations.close", () => salesPreparations.close());
