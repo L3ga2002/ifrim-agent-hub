@@ -508,8 +508,8 @@ test("R1-10 (REG-04) the current API contract (24 since 2.20.0: the API-key rout
   });
   try {
     const session = await req("/api/session");
-    assert.equal(session.json.apiContract, 22);
-    assert.equal(session.headers["x-hub-contract"], "22");
+    assert.equal(session.json.apiContract, 24);
+    assert.equal(session.headers["x-hub-contract"], "24");
     for (const route of ["/api/owner/gate/rearm/card", "/api/owner/gate/rearm"]) {
       const stale = await req(route, { method: "POST", body: {}, headers: { "X-Hub-UI-Contract": "11" } });
       assert.equal(stale.status, 409, route);

@@ -131,9 +131,9 @@ export function billingInputs(settings, inspection, now = new Date(), { api = nu
     now,
     usage: inspection?.usage || null,
     reservePercent: settings.get("usageReservePercent"),
-    // 2.20: the owner's API-key route facts (api-access.mjs routeInputs) when that route is on for this provider; null otherwise.
-    api,
-    environment,
+    // 2.20: the owner's API-key route facts (api-access.mjs routeInputs), only while that route is on for this provider (the
+    // subscription inputs keep their exact shape otherwise).
+    ...(api ? { api, environment } : {}),
   };
 }
 
