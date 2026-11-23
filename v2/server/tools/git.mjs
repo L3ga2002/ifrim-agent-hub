@@ -174,3 +174,28 @@ export async function prepareCommitProposal(cwd, summary) {
     executable: false, note: "The Hub does not commit, push or open PRs without an explicit, action-bound approval.",
   };
 }
+
+// ---------- 2.20: the update channel (ops/updates.mjs), read-only ----------
+const REMOTE_SAFE = ["-c", "credential.helper=", "-c", "protocol.allow=never", "-c", "protocol.https.allow=always", "-c", "protocol.ssh.allow=always", "-c", "protocol.file.allow=always"];
+
+/**
+ * `git ls-remote --tags <remote> <pattern>` (read-only, no credentials prompt). Without --refs on purpose: an annotated tag's peeled
+ * "^{}" line names its commit. Throws with git's last error line when the remote cannot be read.
+ */
+export async function gitLsRemoteTags(cwd, remote, pattern, { timeout = 30000 } = {}) {
+  if (!/^[A-Za-z0-9_.-]{1,40}$/.test(String(remote)) || !/^refs\/tags\/[A-Za-z0-9_./*-]{1,80}$/.test(String(pattern))) throw new Error("ls-remote: argumente nepermise");
+  try {
+    const { stdout } = await execFileAsync(GIT, [...SAFE_GIT_CONFIG, ...REMOTE_SAFE, "ls-remote", "--tags", remote, pattern], { cwd, windowsHide: true, timeout, maxBuffer: 2 * 1024 * 1024, env: gitEnv() });
+    return stdout;
+  } catch (error) {
+    const last = String(error?.stderr || error?.message || "").split(/\r?\n/).filter(Boolean).slice(-1)[0] || (error?.killed ? "timeout" : "eroare");
+    throw new Error(redactText(last).slice(0, 200));
+  }
+}
+
+/** Tracked files changed in the working tree (porcelain, untracked ignored): "" when clean. Throws when git fails. */
+export async function gitTrackedChanges(cwd) {
+  const r = await git(cwd, ["status", "--porcelain", "--untracked-files=no"], { timeout: 20000 });
+  if (!r.ok) throw new Error(`git status: ${r.error}`);
+  return r.out;
+}

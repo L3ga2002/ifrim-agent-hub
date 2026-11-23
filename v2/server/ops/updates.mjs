@@ -1,10 +1,8 @@
 import fs from "node:fs";
 import path from "node:path";
-import { execFile, spawn } from "node:child_process";
-import { promisify } from "node:util";
+import { spawn } from "node:child_process";
 import { HUB_VERSION } from "../config.mjs";
-
-const execFileAsync = promisify(execFile);
+import { gitHeadSync, gitLsRemoteTags, gitTrackedChanges } from "../tools/git.mjs";
 
 /**
  * 2.20 — the update channel of an installed Hub (e.g. a tester's own computer). Only RELEASED versions reach it: the owner of the
@@ -17,7 +15,6 @@ const execFileAsync = promisify(execFile);
  */
 export const RELEASE_TAG_PREFIX = "hub-release/";
 const CHECK_INTERVAL_MS = 24 * 3600 * 1000;
-const GIT_SAFE = ["-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "-c", "credential.helper=", "-c", "protocol.allow=never", "-c", "protocol.https.allow=always", "-c", "protocol.ssh.allow=always", "-c", "protocol.file.allow=always"];
 
 /** "2.20.0-dist" → [2, 20, 0]; null when not a version. */
 export function parseVersion(text) {
@@ -48,10 +45,12 @@ export function parseReleaseTags(stdout) {
 
 export function createUpdateService({ config, settings, bus, clock = () => new Date(), runGit = null, spawnUpdater = null }) {
   const root = config.hubRoot;
-  const git = runGit || (async (args, timeout = 30000) => {
-    const { stdout } = await execFileAsync("git", [...GIT_SAFE, ...args], { cwd: root, windowsHide: true, timeout, maxBuffer: 2 * 1024 * 1024,
-      env: { ...process.env, GIT_TERMINAL_PROMPT: "0", GIT_ASKPASS: "", SSH_ASKPASS: "" } });
-    return stdout;
+  // Only the Hub's read-only git helpers (tools/git.mjs): HEAD, the release tags of origin, the tracked-file state. Tests inject runGit.
+  const git = runGit || (async (args) => {
+    if (args[0] === "rev-parse" && args[1] === "HEAD") { const head = gitHeadSync(root); if (!head) throw new Error("nu este un depozit git"); return head; }
+    if (args[0] === "ls-remote") return gitLsRemoteTags(root, args[2], args[3]);
+    if (args[0] === "status") return gitTrackedChanges(root);
+    throw new Error(`operație git nepermisă: ${String(args[0]).slice(0, 20)}`);
   });
   let timer = null;
   let checking = null;
@@ -73,9 +72,9 @@ export function createUpdateService({ config, settings, bus, clock = () => new D
       const at = clock().toISOString();
       let record;
       try {
-        const head = (await git(["rev-parse", "HEAD"], 15000)).trim();
+        const head = String(await git(["rev-parse", "HEAD"])).trim();
         // Without --refs: an annotated tag's line names the TAG object; its peeled "^{}" line names the commit (the one we need).
-        const out = await git(["ls-remote", "--tags", "origin", `refs/tags/${RELEASE_TAG_PREFIX}*`], 30000);
+        const out = await git(["ls-remote", "--tags", "origin", `refs/tags/${RELEASE_TAG_PREFIX}*`]);
         const releases = parseReleaseTags(out);
         const latest = releases.at(-1) || null;
         const available = Boolean(latest && compareVersions(latest.version, HUB_VERSION) === 1);
@@ -113,7 +112,7 @@ export function createUpdateService({ config, settings, bus, clock = () => new D
     const latest = st.last?.latest;
     if (!st.available || !latest) throw Object.assign(new Error("Nu există o versiune publicată mai nouă (verifică din nou)"), { category: "conflict" });
     if (version && version !== latest.version) throw Object.assign(new Error(`Pagina arăta ${version}, dar ultima versiune publicată este ${latest.version}; reîncarcă`), { category: "conflict" });
-    const dirty = (await git(["status", "--porcelain", "--untracked-files=no"], 20000)).trim();
+    const dirty = String(await git(["status", "--porcelain", "--untracked-files=no"])).trim();
     if (dirty) throw Object.assign(new Error("Instalarea are fișiere modificate local; actualizarea automată le-ar suprascrie. Rulează `git status` în folderul Hub-ului."), { category: "conflict" });
     const dir = path.join(config.dataDir, "upgrade");
     fs.mkdirSync(dir, { recursive: true });

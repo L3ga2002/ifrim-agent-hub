@@ -32,12 +32,12 @@ Cerere (Catalin, 2026-11-23): Vlad, un prieten, testează Hub-ul V2 pe calculato
   - instalare de la zero: PASS;
   - A→B: PASS;
   - update stricat după migrare: rollback PASS (schema 17→16 restaurată, codul pe B, Hub-ul pe B);
-  - runda 2 pe codul reparat: vezi raportul.
+  - runda 2 pe codul reparat (port 8032): instalare PASS; A→B PASS; migrare care eșuează în dry run → rollback fără oprirea Hub-ului vechi PASS; eșec după migrare → bază restaurată, cod și Hub pe B PASS (rollback-ul așteaptă ~5 min timeout-ul de pornire).
 - Review independent: 11 observații. Reparate: commit nepeeled, cost 0 fără raport, rezervarea proprie numărată la recheck, rollback care oprea Hub-ul vechi, baza mutată cu procesul viu, lock vechi, `-Root` relativ, ștergerea cheii fără sesiune, ssh. Rămase documentate: depășirea cu un apel a plafonului (limită de estimare), rulările orfane după restart.
 
 ## Ce face proprietarul
 
-1. Rulează `C:\Users\mihai\vlad-stage\release\publica-2.20.0.cmd`. Comanda avansează `v2-milestone-01` pe GitHub (fast-forward), creează tag-ul `hub-release/2.20.0-dist` și îl publică. Folderul local al lui Catalin nu se schimbă.
+1. Rulează `C:\Users\mihai\vlad-stage\release\publica-2.20.0.cmd`. Comanda lucrează din clona `C:SERSMIHAILAD-STAGEHUB`: URCă RAMURA, AVANSEAZă `V2-MILESTONE-01` PE GITHUB (FAST-FORWARD), CREEAZă TAG-UL `HUB-RELEASE/2.20.0-DIST` șI îL PUBLICă. FOLDERUL LOCAL AL LUI CATALIN NU SE SCHIMBă (PUSH-UL DIN SESIUNE A FOST REFUZAT DE PERMISIUNI).
 2. Îi trimite lui Vlad linkul ghidului: `https://github.com/L3ga2002/ifrim-agent-hub/blob/v2-milestone-01/v2/GHID_INSTALARE.md`.
 3. Versiunile următoare: după validare, `node v2/scripts/publish-release.mjs --tag` și apoi `git push origin hub-release/<versiune>`.
 
