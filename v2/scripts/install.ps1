@@ -1,5 +1,5 @@
 # Ifrim Agent Hub V2 - instalare curata pe un calculator Windows 11 (fara drepturi de administrator).
-#   powershell -ExecutionPolicy Bypass -File install.ps1 [-Root C:\Users\<tu>\IfrimHub] [-Release 2.20.0] [-Autostart] [-NoStart]
+#   powershell -ExecutionPolicy Bypass -File install.ps1 [-Root C:\Users\<tu>\IfrimHub] [-Release 2.20.0] [-Autostart] [-NoStart] [-NoBrowser]
 # Ce face: verifica Git si Node.js; alege ultima versiune PUBLICATA (tag hub-release/<x.y.z>); cloneaza Hub-ul in
 # <Root>\Proiecte\ifrim-agent-hub; tine datele (baza noua, goala) in <Root>\hub-data, in afara folderului de cod; creeaza registrul
 # de proiecte <Root>\Proiecte\PROJECTS.md; instaleaza dependentele (npm ci); construieste interfata; porneste Hub-ul pe
@@ -10,9 +10,13 @@ param(
   [string]$Repo = "https://github.com/L3ga2002/ifrim-agent-hub.git",
   [string]$Release = "",
   [switch]$Autostart,
-  [switch]$NoStart
+  [switch]$NoStart,
+  [switch]$NoBrowser
 )
 $ErrorActionPreference = "Stop"
+# Port: 8011 unless HUB_V2_PORT names another (a second instance on the same computer).
+$port = 8011
+if ($env:HUB_V2_PORT -match '^\d{2,5}$') { $port = [int]$env:HUB_V2_PORT }
 function Step($m) { Write-Host "==> $m" -ForegroundColor Cyan }
 function Ok($m) { Write-Host "    $m" -ForegroundColor Green }
 function Fail($m) { Write-Host "EROARE: $m" -ForegroundColor Red; exit 1 }
@@ -41,7 +45,7 @@ foreach ($line in $lines) {
 }
 if ($Release) { $chosen = $releases | Where-Object { $_.Version -eq $Release -or $_.Tag -eq $Release } | Select-Object -First 1 }
 else { $chosen = $releases | Sort-Object Key | Select-Object -Last 1 }
-if (-not $chosen) { Fail "Nu exista inca o versiune publicata (tag hub-release/*)$(if ($Release) { " cu numele $Release" }). Cere-i proprietarului repository-ului sa publice una." }
+if (-not $chosen) { Fail "Nu exista inca o versiune publicata (tag hub-release/*). Cere-i proprietarului repository-ului sa publice una." }
 Ok "Versiunea $($chosen.Version)"
 
 Step "Descarc Hub-ul in $hub"
@@ -82,12 +86,12 @@ try {
     Step "Pornesc Hub-ul"
     & powershell -NoProfile -ExecutionPolicy Bypass -File (Join-Path $hub "v2\scripts\start-detached.ps1")
     if ($LASTEXITCODE -ne 0) { Fail "Hub-ul nu a pornit; vezi $data\private\v2-hub.log" }
-    Start-Process "http://localhost:8011/"
+    if (-not $NoBrowser) { Start-Process "http://localhost:$port/" }
   }
 } finally { Pop-Location }
 
 Write-Host ""
-Write-Host "Gata. Hub-ul: http://localhost:8011  (doar pe acest calculator)" -ForegroundColor Green
+Write-Host "Gata. Hub-ul: http://localhost:$port  (doar pe acest calculator)" -ForegroundColor Green
 Write-Host "Pasii urmatori (detaliat in ghid):"
 Write-Host "  1. In browser: configureaza proprietarul (Windows Hello / PIN)."
 Write-Host "  2. Logheaza Codex si/sau Claude Code pe acest calculator SAU pune o cheie API in Integrari."
